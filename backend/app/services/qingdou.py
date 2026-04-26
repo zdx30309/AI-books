@@ -78,7 +78,14 @@ class QingdouClient:
         self.close()
 
     def commit_get_text_task(self, source_url: str) -> int:
-        payload = {"userInputList": [source_url]}
+        payload = {
+            "userInputList": [
+                {
+                    "numberIndex": 0,
+                    "url": source_url,
+                }
+            ]
+        }
         resp = self._client.post(self.base_url, json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -177,6 +184,11 @@ class QingdouClient:
                     return int(batch_id)
                 except (TypeError, ValueError):
                     return None
+        elif result is not None:
+            try:
+                return int(result)
+            except (TypeError, ValueError):
+                return None
         for key in ("batchId", "batch_id"):
             if key in data and data[key] is not None:
                 try:
