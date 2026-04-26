@@ -1,0 +1,28 @@
+# ===========================================================
+# Gravity Singularity - 视频转网文后端依赖清单
+# Python 3.11+ (本机 3.14)
+# ===========================================================
+
+# --- Web 框架 ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# --- 异步任务队列 (Redis / Upstash) ---
+celery[redis]>=5.4.0
+redis>=5.2.0
+
+# --- 数据库 (Supabase Postgres + SQLAlchemy) ---
+SQLAlchemy>=2.0.30
+psycopg2-binary>=2.9.10
+
+# --- HTTP / LLM ---
+httpx>=0.28.0
+openai>=1.59.0
+
+# --- 配置 / 校验 ---
+python-dotenv>=1.0.1
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# --- 工具 ---
+tenacity>=9.0.0
