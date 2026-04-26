@@ -34,36 +34,38 @@ from app.tasks.system_tasks import ping_task  # noqa: E402
 from app.core.config import settings  # noqa: E402
 
 
+def _normalize_redis_url(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned.startswith("REDIS_URL="):
+        cleaned = cleaned[len("REDIS_URL="):].strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 def raw_redis_ping() -> None:
-    redis_url = os.getenv("REDIS_URL") or settings.REDIS_URL
-    print(f"[Step A] Using REDIS_URL: {redis_url}")
+    redis_url = _normalize_redis_url(os.getenv("REDIS_URL") or settings.REDIS_URL)
+    broker_url = _normalize_redis_url(os.getenv("CELERY_BROKER_URL") or settings.CELERY_BROKER_URL)
+    backend_url = _normalize_redis_url(os.getenv("CELERY_RESULT_BACKEND") or settings.CELERY_RESULT_BACKEND)
+
+    print(f"[Step A] REDIS_URL           = {redis_url}")
+    print(f"[Step A] CELERY_BROKER_URL   = {broker_url}")
+    print(f"[Step A] CELERY_RESULT_BACKEND = {backend_url}")
 
     try:
         client = Redis.from_url(
             redis_url,
-            ssl_cert_reqs=None,
+            ssl_cert_reqs=ssl.CERT_NONE,
             decode_responses=True,
+            socket_connect_timeout=10,
+            socket_timeout=10,
+            retry_on_timeout=True,
         )
         if client.ping():
             print("Redis Ping Success!")
         else:
             raise RuntimeError("Redis ping returned False")
-    except ValueError:
-        fixed_url = redis_url.strip()
-        if fixed_url.startswith('REDIS_URL='):
-            fixed_url = fixed_url.split('=', 1)[1].strip().strip('"')
-        fixed_url = fixed_url.replace('REDIS_URL=', '').strip().strip('"')
-        print(f"[Step A] Retrying with fixed URL: {fixed_url}")
-        client = Redis.from_url(
-            fixed_url,
-            ssl_cert_reqs=None,
-            decode_responses=True,
-        )
-        if client.ping():
-            print("Redis Ping Success!")
-        else:
-            raise RuntimeError("Redis ping returned False")
-    except (RedisError, ssl.SSLError, TimeoutError, OSError, ConnectionError) as exc:
+    except (RedisError, ssl.SSLError, TimeoutError, OSError, ConnectionError, ValueError) as exc:
         raise RuntimeError(f"Redis ping failed: {type(exc).__name__}: {exc}") from exc
 
 

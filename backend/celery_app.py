@@ -13,17 +13,21 @@ from celery import Celery
 
 from app.core.config import settings
 
+redis_ssl_query = "?ssl_cert_reqs=none"
+broker_url = settings.CELERY_BROKER_URL if "ssl_cert_reqs=" in settings.CELERY_BROKER_URL else f"{settings.CELERY_BROKER_URL}{redis_ssl_query}"
+backend_url = settings.CELERY_RESULT_BACKEND if "ssl_cert_reqs=" in settings.CELERY_RESULT_BACKEND else f"{settings.CELERY_RESULT_BACKEND}{redis_ssl_query}"
+
 celery_app = Celery(
     "gravity_singularity",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND,
+    broker=broker_url,
+    backend=backend_url,
     include=["app.tasks.tasks", "app.tasks.system_tasks"],
 )
 
 import ssl
 
-celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": None}
-celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": None}
+celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 celery_app.autodiscover_tasks(["app.tasks"], force=True)
 
