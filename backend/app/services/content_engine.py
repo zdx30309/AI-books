@@ -7,7 +7,14 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI, OpenAIError
+import httpx
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
@@ -41,20 +48,43 @@ def _extract_json_text(text: str) -> str:
     return match.group(0)
 
 
-async def _chat(system_prompt: str, user_prompt: str, *, temperature: float) -> str:
-    def _call() -> str:
-        resp = _text_client.chat.completions.create(
-            model=settings.DEEPSEEK_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            response_format={"type": "json_object"} if system_prompt == BLUEPRINT_ARCHITECT_PROMPT else None,
-        )
-        return (resp.choices[0].message.content or "").strip()
+def _log_retry(retry_state) -> None:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    attempt = retry_state.attempt_number
+    logger.warning(
+        "网络断开，正在进行第 %d 次重试... 原因: %s",
+        attempt,
+        type(exc).__name__ if exc else "unknown",
+    )
 
-    return await asyncio.to_thread(_call)
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=4, max=20),
+    retry=retry_if_exception_type(
+        (APIConnectionError, APITimeoutError, InternalServerError, httpx.RemoteProtocolError)
+    ),
+    reraise=True,
+    before_sleep=_log_retry,
+)
+def _call_chat(system_prompt: str, user_prompt: str, *, temperature: float) -> str:
+    resp = _text_client.chat.completions.create(
+        model=settings.DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+        timeout=180.0,
+        response_format={"type": "json_object"}
+        if system_prompt == BLUEPRINT_ARCHITECT_PROMPT
+        else None,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+async def _chat(system_prompt: str, user_prompt: str, *, temperature: float) -> str:
+    return await asyncio.to_thread(_call_chat, system_prompt, user_prompt, temperature=temperature)
 
 
 async def generate_blueprint(anxiety_point: str, raw_text: str) -> dict[str, Any]:
