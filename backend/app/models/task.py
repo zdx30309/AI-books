@@ -11,12 +11,26 @@ from app.db.session import Base
 
 
 class TaskStatus:
-    """Task.status 的合法取值常量。"""
+    """Task.status 的合法取值常量。
 
-    PENDING = "pending"          # 已入队, 未开始
-    PROCESSING = "processing"    # Celery 处理中
-    COMPLETED = "completed"      # 全流程成功
-    FAILED = "failed"            # 任意阶段失败
+    Phase 2 状态机约定:
+      pending -> fetching_topics -> filtering_topics -> generating_outline
+      -> writing_chapters -> fact_checking -> completed / failed
+
+    现有实现仍可能只使用部分状态，但数据库层允许后续工作流直接沿用。
+    """
+
+    PENDING = "pending"
+    FETCHING_TOPICS = "fetching_topics"
+    FILTERING_TOPICS = "filtering_topics"
+    GENERATING_OUTLINE = "generating_outline"
+    WRITING_CHAPTERS = "writing_chapters"
+    FACT_CHECKING = "fact_checking"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    # 兼容旧流水线状态名，避免历史代码引用时失效。
+    PROCESSING = "processing"
 
 
 class Task(Base):
