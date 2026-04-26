@@ -67,24 +67,39 @@ def _log_retry(retry_state) -> None:
     reraise=True,
     before_sleep=_log_retry,
 )
-def _call_chat(system_prompt: str, user_prompt: str, *, temperature: float) -> str:
-    resp = _text_client.chat.completions.create(
+def _call_chat(rendered_prompt: str, *, json_mode: bool = False, temperature: float) -> str:
+    messages = [{"role": "user", "content": rendered_prompt}]
+
+    if json_mode:
+        resp = _text_client.chat.completions.create(
+            model=settings.DEEPSEEK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            timeout=180.0,
+            response_format={"type": "json_object"},
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    response = _text_client.chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=messages,
         temperature=temperature,
         timeout=180.0,
-        response_format={"type": "json_object"}
-        if system_prompt == BLUEPRINT_ARCHITECT_PROMPT
-        else None,
+        stream=True,
     )
-    return (resp.choices[0].message.content or "").strip()
+    chunks: list[str] = []
+    for chunk in response:
+        delta = chunk.choices[0].delta
+        content = getattr(delta, "content", None)
+        if content:
+            print(content, end="", flush=True)
+            chunks.append(content)
+    print()
+    return "".join(chunks).strip()
 
 
-async def _chat(system_prompt: str, user_prompt: str, *, temperature: float) -> str:
-    return await asyncio.to_thread(_call_chat, system_prompt, user_prompt, temperature=temperature)
+async def _chat(rendered_prompt: str, *, json_mode: bool = False, temperature: float) -> str:
+    return await asyncio.to_thread(_call_chat, rendered_prompt, json_mode=json_mode, temperature=temperature)
 
 
 async def generate_blueprint(anxiety_point: str, raw_text: str) -> dict[str, Any]:
@@ -94,12 +109,12 @@ async def generate_blueprint(anxiety_point: str, raw_text: str) -> dict[str, Any
     if not raw_text or not raw_text.strip():
         raise ValueError("raw_text 不能为空")
 
-    user_prompt = BLUEPRINT_ARCHITECT_PROMPT.format(
+    rendered_prompt = BLUEPRINT_ARCHITECT_PROMPT.format(
         anxiety_point=anxiety_point.strip(),
         raw_text=raw_text.strip(),
     )
     logger.info("正在生成蓝图...")
-    content = await _chat(BLUEPRINT_ARCHITECT_PROMPT, user_prompt, temperature=0.3)
+    content = await _chat(rendered_prompt, json_mode=True, temperature=0.3)
     json_text = _extract_json_text(content)
     try:
         return json.loads(json_text)
@@ -127,13 +142,13 @@ async def generate_full_book(anxiety_point: str, blueprint: dict[str, Any]) -> s
         core_logic = str(chapter.get("core_logic") or "")
         logger.info("正在生成第 %d 章...", idx)
 
-        user_prompt = CHAPTER_WRITER_PROMPT.format(
+        rendered_prompt = CHAPTER_WRITER_PROMPT.format(
             anxiety_point=anxiety_point.strip(),
             previous_context=previous_context[-400:],
             chapter_title=chapter_title,
             core_logic=core_logic,
         )
-        chapter_content = await _chat(CHAPTER_WRITER_PROMPT, user_prompt, temperature=0.75)
+        chapter_content = await _chat(rendered_prompt, json_mode=False, temperature=0.75)
         final_markdown += f"## {chapter_title}\n{chapter_content}\n\n"
         previous_context = chapter_content[-400:]
 
