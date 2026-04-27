@@ -27,6 +27,7 @@ from tenacity import (
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
     SCENE_CRITIC_PROMPT,
+    SCENE_WRITER_PROMPT,
     SUPREME_AUDITOR_PROMPT,
     get_prompts,
 )
@@ -276,7 +277,7 @@ async def generate_blueprint(
         raw_text=raw_text.strip(),
     )
     logger.info("正在生成蓝图... [category=%s]", category)
-    content = await _chat(rendered_prompt, json_mode=True, temperature=0.3)
+    content = await _chat(rendered_prompt, json_mode=False, temperature=0.3, stream=True)
     json_text = _extract_json_text(content)
     try:
         blueprint = json.loads(json_text)
@@ -377,8 +378,20 @@ async def generate_full_book(
         )
         chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
         sub_scenes = chapter.get("sub_scenes") or []
+    title = str(blueprint.get("title") or "未命名之书")
+    intro = str(blueprint.get("intro") or "")
+    global_context = str(blueprint.get("global_context") or "")
+    chapters = blueprint.get("chapters") or []
 
-        # 兜底：如果蓝图未给出 sub_scenes，把整章退化为 1 个子场景，避免静默丢章
+    final_markdown = f"# {title}\n\n## 简介\n{intro}\n\n"
+    previous_scene_tail = intro[-400:] if intro else global_context[-400:]
+
+    chapters = blueprint.get("chapters") or []
+    for chapter_index, chapter in enumerate(chapters, start=1):
+        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"第{chapter_index}章")
+        chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
+        sub_scenes = chapter.get("sub_scenes") or []
+
         if not sub_scenes:
             sub_scenes = [{
                 "scene_purpose": chapter_goal or "完成本章核心论证",
@@ -386,18 +399,17 @@ async def generate_full_book(
                 "target_length": 1500,
             }]
 
-        logger.info(
-            "正在生成第 %d 章 [%s] —— 子场景数 %d",
-            ch_idx, chapter_title, len(sub_scenes),
-        )
+        logger.info("正在生成第 %d 章 [%s] —— 子场景数 %d", chapter_index, chapter_title, len(sub_scenes))
         final_markdown += f"## {chapter_title}\n\n"
 
-        for sc_idx, scene in enumerate(sub_scenes, start=1):
+        for scene_index, scene in enumerate(sub_scenes, start=1):
             scene_purpose = str(scene.get("scene_purpose") or "")
             required_elements = str(scene.get("required_elements") or "")
             target_length = str(scene.get("target_length") or 800)
+            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
+            progress_label = f"[{chapter_index}/{len(chapters)}] [{scene_index}/{len(sub_scenes)}]"
 
-            # Step 1: 品类专版 Scene Writer 出初稿
+            logger.info("%s 正在生成: %s - %s (初稿)...", progress_label, chapter_title, scene_title)
             writer_rendered = scene_writer_prompt.format(
                 anxiety_point=anxiety_point.strip(),
                 global_context=global_context,
@@ -408,19 +420,19 @@ async def generate_full_book(
                 target_length=target_length,
                 previous_scene_tail=previous_scene_tail,
             )
-            logger.info("  ├─ 场景 %d 初稿生成中...", sc_idx)
-            draft = await _chat(writer_rendered, json_mode=False, temperature=0.75)
+            draft_content = await _chat(writer_rendered, json_mode=False, temperature=0.75)
 
-            # Step 2: 通用 Critic CoT 双标签输出，再用正则剥离纯净正文
-            critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
-            logger.info("  └─ 场景 %d 洗稿中（CoT 双标签）...", sc_idx)
+            logger.info("%s 毒舌主编正在洗稿 (流式输出)...", progress_label)
+            critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft_content)
             critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5)
             polished = _extract_final_text(critic_raw)
 
-            final_markdown += f"{polished}\n\n"
-            # 用洗稿后的尾部维持衔接，避免把 AI 味带到下一段
-            previous_scene_tail = polished[-400:]
+            if polished:
+                print(polished, end="", flush=True)
+                print()
 
-    # Step 5: 全部章节拼接完毕，OpenAI 异厂模型做出厂终审 + 标签剥离
+            final_markdown += f"{polished}\n\n"
+            previous_scene_tail = polished[-400:] if polished else previous_scene_tail
+
     final_markdown = await _run_supreme_audit(final_markdown)
     return final_markdown
