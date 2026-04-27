@@ -119,15 +119,21 @@ class QingdouClient:
         batch_id: int,
         *,
         timeout_seconds: int | None = None,
-        poll_interval_seconds: float = 3.0,
+        poll_interval_seconds: float = 2.0,
         max_video_duration: int | None = None,
     ) -> QingdouTaskResult:
-        timeout_seconds = timeout_seconds or settings.LLM_REQUEST_TIMEOUT
+        timeout_seconds = timeout_seconds or 60
         deadline = time.monotonic() + timeout_seconds
 
         while True:
+            if time.monotonic() >= deadline:
+                raise QingdouTimeoutError(f"batchId={batch_id} 轮询超时，仍未返回结果")
+
             result = self.get_task_result(batch_id)
-            status = self._extract_item_status(result.raw)
+            batch_status = self._safe_int((result.raw.get("result") or {}).get("batchStatus"))
+            items = (result.raw.get("result") or {}).get("list") or []
+            first = items[0] if items else None
+            item_status = self._safe_int((first or {}).get("status")) if first else None
 
             if result.video_time is not None and max_video_duration is not None:
                 if result.video_time > max_video_duration:
@@ -135,23 +141,26 @@ class QingdouClient:
                         f"视频时长 {result.video_time}s 超过限制 {max_video_duration}s"
                     )
 
-            if status == 0:
-                if time.monotonic() >= deadline:
-                    raise QingdouTimeoutError(
-                        f"batchId={batch_id} 轮询超时，仍处于处理中"
-                    )
+            if batch_status == 0 or item_status in (None, 0):
                 time.sleep(poll_interval_seconds)
                 continue
 
-            if status == 1000:
+            if item_status == 1000 or batch_status == 1000:
+                if not result.video_content:
+                    raise QingdouError(f"轻抖任务完成但未返回 videoContent: {result.raw}")
                 return result
 
-            if status is None:
-                raise QingdouError(f"无法识别任务状态: {result.raw}")
+            if batch_status is not None and batch_status not in (0, 1000):
+                raise QingdouError(
+                    f"轻抖任务失败 batchId={batch_id}, batchStatus={batch_status}, raw={result.raw}"
+                )
 
-            raise QingdouError(
-                f"轻抖任务失败 batchId={batch_id}, status={status}, raw={result.raw}"
-            )
+            if item_status is not None and item_status not in (0, 1000):
+                raise QingdouError(
+                    f"轻抖任务失败 batchId={batch_id}, status={item_status}, raw={result.raw}"
+                )
+
+            time.sleep(poll_interval_seconds)
 
     def extract_text(
         self,
