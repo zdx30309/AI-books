@@ -27,7 +27,6 @@ from tenacity import (
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
     SCENE_CRITIC_PROMPT,
-    SCENE_WRITER_PROMPT,
     SUPREME_AUDITOR_PROMPT,
     get_prompts,
 )
@@ -296,6 +295,7 @@ async def generate_blueprint(
 
 async def _generate_scene_draft(
     *,
+    scene_writer_prompt: str,
     global_context: str,
     chapter_goal: str,
     scene_purpose: str,
@@ -303,7 +303,7 @@ async def _generate_scene_draft(
     previous_scene_tail: str,
     temperature: float = 0.65,
 ) -> str:
-    rendered_prompt = SCENE_WRITER_PROMPT.format(
+    rendered_prompt = scene_writer_prompt.format(
         global_context=global_context,
         previous_scene_tail=previous_scene_tail,
         chapter_goal=chapter_goal,
@@ -386,11 +386,41 @@ async def generate_full_book(
     final_markdown = f"# {title}\n\n## 简介\n{intro}\n\n"
     previous_scene_tail = intro[-400:] if intro else global_context[-400:]
 
-    chapters = blueprint.get("chapters") or []
+    total_chapters = len(chapters)
     for chapter_index, chapter in enumerate(chapters, start=1):
         chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"第{chapter_index}章")
         chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
+        logger.info("正在生成第 %d 章: %s", chapter_index, chapter_title)
+        final_markdown += f"## {chapter_title}\n"
+
         sub_scenes = chapter.get("sub_scenes") or []
+        total_scenes = len(sub_scenes)
+        for scene_index, scene in enumerate(sub_scenes, start=1):
+            scene_purpose = str(scene.get("scene_purpose") or "")
+            required_elements = str(scene.get("required_elements") or "")
+            target_length = str(scene.get("target_length") or "")
+            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
+            progress_label = f"[{chapter_index}/{total_chapters}] [{scene_index}/{total_scenes}]"
+
+            logger.info("%s 正在生成: %s - %s (初稿)...", progress_label, chapter_title, scene_title)
+            draft_content = await _generate_scene_draft(
+                scene_writer_prompt=scene_writer_prompt,
+                global_context=global_context,
+                chapter_goal=chapter_goal,
+                scene_purpose=f"{scene_purpose}\n目标字数：{target_length}".strip(),
+                required_elements=required_elements,
+                previous_scene_tail=previous_scene_tail,
+            )
+
+            logger.info("%s 毒舌主编正在洗稿 (流式输出)...", progress_label)
+            final_scene_content = await _polish_scene_content(draft_content)
+
+            if final_scene_content:
+                print(final_scene_content, end="", flush=True)
+                print()
+
+            final_markdown += f"{final_scene_content}\n\n"
+            previous_scene_tail = final_scene_content[-400:] if final_scene_content else previous_scene_tail
 
         if not sub_scenes:
             sub_scenes = [{
@@ -399,17 +429,17 @@ async def generate_full_book(
                 "target_length": 1500,
             }]
 
-        logger.info("正在生成第 %d 章 [%s] —— 子场景数 %d", chapter_index, chapter_title, len(sub_scenes))
+        logger.info(
+            "正在生成第 %d 章 [%s] —— 子场景数 %d",
+            chapter_index, chapter_title, len(sub_scenes),
+        )
         final_markdown += f"## {chapter_title}\n\n"
 
-        for scene_index, scene in enumerate(sub_scenes, start=1):
+        for sc_idx, scene in enumerate(sub_scenes, start=1):
             scene_purpose = str(scene.get("scene_purpose") or "")
             required_elements = str(scene.get("required_elements") or "")
             target_length = str(scene.get("target_length") or 800)
-            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
-            progress_label = f"[{chapter_index}/{len(chapters)}] [{scene_index}/{len(sub_scenes)}]"
 
-            logger.info("%s 正在生成: %s - %s (初稿)...", progress_label, chapter_title, scene_title)
             writer_rendered = scene_writer_prompt.format(
                 anxiety_point=anxiety_point.strip(),
                 global_context=global_context,
@@ -420,19 +450,16 @@ async def generate_full_book(
                 target_length=target_length,
                 previous_scene_tail=previous_scene_tail,
             )
-            draft_content = await _chat(writer_rendered, json_mode=False, temperature=0.75)
+            logger.info("  ├─ 场景 %d 初稿生成中...", sc_idx)
+            draft = await _chat(writer_rendered, json_mode=False, temperature=0.75)
 
-            logger.info("%s 毒舌主编正在洗稿 (流式输出)...", progress_label)
-            critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft_content)
+            critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
+            logger.info("  └─ 场景 %d 洗稿中（CoT 双标签）...", sc_idx)
             critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5)
             polished = _extract_final_text(critic_raw)
 
-            if polished:
-                print(polished, end="", flush=True)
-                print()
-
             final_markdown += f"{polished}\n\n"
-            previous_scene_tail = polished[-400:] if polished else previous_scene_tail
+            previous_scene_tail = polished[-400:]
 
     final_markdown = await _run_supreme_audit(final_markdown)
     return final_markdown
