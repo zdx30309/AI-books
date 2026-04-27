@@ -323,123 +323,66 @@ async def generate_full_book(
     blueprint: dict[str, Any],
     category: str = "social_science",
 ) -> str:
-    """Generate the full markdown book via the chapter × sub_scene double loop.
+    """Generate the full markdown book via the chapter ? sub_scene double loop.
 
-    流水线：
-        蓝图阶段：3 个 title_candidates / intro_candidates 拼装到文档头部
-        场景循环（每个 sub_scene 都执行）：
-            1. Scene Writer (品类专版)            -> draft 初稿
-            2. Scene Critic CoT (通用底座)        -> <audit> + <final_text>
-            3. _extract_final_text                -> 纯净 polished
-            4. polished 的尾部更新 previous_scene_tail
-        全部章节拼装完成后：
-            5. _run_supreme_audit (OpenAI 异厂)   -> 全局终审 + 标签剥离
+    ???
+        1. Scene Writer ????
+        2. Scene Critic CoT ???????
+        3. ???????????
     """
     if not anxiety_point or not anxiety_point.strip():
-        raise ValueError("anxiety_point 不能为空")
+        raise ValueError("anxiety_point ????")
     if not isinstance(blueprint, dict):
-        raise ValueError("blueprint 必须是字典")
+        raise ValueError("blueprint ?????")
 
     prompts = get_prompts(category)
     scene_writer_prompt = prompts["scene_writer"]
 
-    # 蓝图字段读取 —— title_candidates / intro_candidates 与 title / intro 并存兼容
     title_candidates_raw = blueprint.get("title_candidates") or []
     intro_candidates_raw = blueprint.get("intro_candidates") or []
     title_candidates = [str(t) for t in title_candidates_raw if t]
     intro_candidates = [str(i) for i in intro_candidates_raw if i]
 
-    title = str(
-        blueprint.get("title")
-        or (title_candidates[0] if title_candidates else "未命名之书")
-    )
-    intro = str(
-        blueprint.get("intro")
-        or (intro_candidates[0] if intro_candidates else "")
-    )
+    title = str(blueprint.get("title") or (title_candidates[0] if title_candidates else "?????"))
+    intro = str(blueprint.get("intro") or (intro_candidates[0] if intro_candidates else ""))
     preface = str(blueprint.get("preface") or "")
     global_context = str(blueprint.get("global_context") or "")
 
-    # 头部组装：备选方案块插入到主标题与简介之间
     candidates_block = _build_candidates_block(title_candidates, intro_candidates)
     final_markdown = (
         f"# {title}\n\n"
         f"{candidates_block}"
-        f"## 简介\n{intro}\n\n"
-        f"## 导言\n{preface}\n\n"
+        f"## ??\n{intro}\n\n"
+        f"## ??\n{preface}\n\n"
     )
-    # 滑动窗口式局部记忆：用最近一段成稿尾部维持子场景间的自然衔接
     previous_scene_tail = (preface or global_context or intro)[-400:]
 
     chapters = blueprint.get("chapters") or []
-    for ch_idx, chapter in enumerate(chapters, start=1):
-        chapter_title = str(
-            chapter.get("chapter_title") or chapter.get("title") or f"第{ch_idx}章"
-        )
-        chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
-        sub_scenes = chapter.get("sub_scenes") or []
-    title = str(blueprint.get("title") or "未命名之书")
-    intro = str(blueprint.get("intro") or "")
-    global_context = str(blueprint.get("global_context") or "")
-    chapters = blueprint.get("chapters") or []
-
-    final_markdown = f"# {title}\n\n## 简介\n{intro}\n\n"
-    previous_scene_tail = intro[-400:] if intro else global_context[-400:]
-
     total_chapters = len(chapters)
     for chapter_index, chapter in enumerate(chapters, start=1):
-        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"第{chapter_index}章")
+        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"?{chapter_index}?")
         chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
-        logger.info("正在生成第 %d 章: %s", chapter_index, chapter_title)
-        final_markdown += f"## {chapter_title}\n"
 
         sub_scenes = chapter.get("sub_scenes") or []
+        if not sub_scenes:
+            sub_scenes = [{
+                "scene_purpose": chapter_goal or "????????",
+                "required_elements": "???????? / ?? / ????",
+                "target_length": 1500,
+            }]
+
+        logger.info("????? %d ? [%s] ?? ???? %d", chapter_index, chapter_title, len(sub_scenes))
+        final_markdown += f"## {chapter_title}\n\n"
+
         total_scenes = len(sub_scenes)
         for scene_index, scene in enumerate(sub_scenes, start=1):
             scene_purpose = str(scene.get("scene_purpose") or "")
             required_elements = str(scene.get("required_elements") or "")
-            target_length = str(scene.get("target_length") or "")
-            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
+            target_length = str(scene.get("target_length") or 800)
+            scene_title = str(scene.get("scene_title") or f"??{scene_index}")
             progress_label = f"[{chapter_index}/{total_chapters}] [{scene_index}/{total_scenes}]"
 
-            logger.info("%s 正在生成: %s - %s (初稿)...", progress_label, chapter_title, scene_title)
-            draft_content = await _generate_scene_draft(
-                scene_writer_prompt=scene_writer_prompt,
-                global_context=global_context,
-                chapter_goal=chapter_goal,
-                scene_purpose=f"{scene_purpose}\n目标字数：{target_length}".strip(),
-                required_elements=required_elements,
-                previous_scene_tail=previous_scene_tail,
-            )
-
-            logger.info("%s 毒舌主编正在洗稿 (流式输出)...", progress_label)
-            final_scene_content = await _polish_scene_content(draft_content)
-
-            if final_scene_content:
-                print(final_scene_content, end="", flush=True)
-                print()
-
-            final_markdown += f"{final_scene_content}\n\n"
-            previous_scene_tail = final_scene_content[-400:] if final_scene_content else previous_scene_tail
-
-        if not sub_scenes:
-            sub_scenes = [{
-                "scene_purpose": chapter_goal or "完成本章核心论证",
-                "required_elements": "至少一个具体人物 / 场景 / 数据锚点",
-                "target_length": 1500,
-            }]
-
-        logger.info(
-            "正在生成第 %d 章 [%s] —— 子场景数 %d",
-            chapter_index, chapter_title, len(sub_scenes),
-        )
-        final_markdown += f"## {chapter_title}\n\n"
-
-        for sc_idx, scene in enumerate(sub_scenes, start=1):
-            scene_purpose = str(scene.get("scene_purpose") or "")
-            required_elements = str(scene.get("required_elements") or "")
-            target_length = str(scene.get("target_length") or 800)
-
+            logger.info("%s ????: %s - %s (??)...", progress_label, chapter_title, scene_title)
             writer_rendered = scene_writer_prompt.format(
                 anxiety_point=anxiety_point.strip(),
                 global_context=global_context,
@@ -450,16 +393,17 @@ async def generate_full_book(
                 target_length=target_length,
                 previous_scene_tail=previous_scene_tail,
             )
-            logger.info("  ├─ 场景 %d 初稿生成中...", sc_idx)
-            draft = await _chat(writer_rendered, json_mode=False, temperature=0.75)
+            draft = await _chat(writer_rendered, json_mode=False, temperature=0.75, stream=False)
 
+            logger.info("%s ????CoT ????...", progress_label)
             critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
-            logger.info("  └─ 场景 %d 洗稿中（CoT 双标签）...", sc_idx)
-            critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5)
+            critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5, stream=False)
             polished = _extract_final_text(critic_raw)
 
             final_markdown += f"{polished}\n\n"
-            previous_scene_tail = polished[-400:]
+            previous_scene_tail = polished[-400:] if polished else previous_scene_tail
 
     final_markdown = await _run_supreme_audit(final_markdown)
+    return final_markdown
+
     return final_markdown
