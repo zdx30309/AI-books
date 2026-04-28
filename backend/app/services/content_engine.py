@@ -7,7 +7,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 import httpx
@@ -25,9 +24,12 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.core.banned_rules import BannedRule, scan_violations
 from app.core.config import settings
+from app.core.rewriter import force_rewrite_all, has_zero_tolerance
 from app.prompts.goal_driven_templates import (
     SCENE_CRITIC_PROMPT,
+    SCENE_CRITIC_RETRY_PROMPT,
     SUPREME_AUDITOR_PROMPT,
     get_prompts,
 )
@@ -145,43 +147,6 @@ def _extract_final_text(cot_output: str) -> str:
     return cleaned or cot_output.strip()
 
 
-_BANNED_SENTENCE_RE = re.compile(
-    r"[^。！？；\n]*不是[^。！？；\n]*而是[^。！？；\n]*[。！？；\n]"
-)
-
-
-async def _force_rewrite_banned_sentences(text: str) -> str:
-    """物理拦截器：正则捕获所有「不是…而是…」违规句，逐句调用低温 LLM 重写。"""
-    hits = _BANNED_SENTENCE_RE.findall(text)
-    if not hits:
-        return text
-
-    logger.warning("物理拦截器捕获 %d 句「不是…而是…」违规，逐句重写中...", len(hits))
-    for bad_sentence in hits:
-        bad_sentence = bad_sentence.strip()
-        if not bad_sentence:
-            continue
-        rewrite_prompt = (
-            "你是一个中文改写工具。请重写下面这句话，保持原意不变，"
-            "但绝对不允许出现「不是」或「而是」这两个词。"
-            "用句号把对比的两层意思断成两个独立短句。"
-            "只输出改写结果，不要任何解释。\n\n"
-            f"原句：{bad_sentence}"
-        )
-        rewritten = await _chat(
-            rewrite_prompt,
-            json_mode=False,
-            temperature=0.1,
-            stream=False,
-        )
-        rewritten = rewritten.strip()
-        if rewritten and "不是" not in rewritten:
-            text = text.replace(bad_sentence, rewritten, 1)
-            logger.info("重写成功: [%s] → [%s]", bad_sentence[:30], rewritten[:30])
-        else:
-            logger.warning("重写结果仍含违禁词或为空，保留原句: %s", bad_sentence[:30])
-    return text
-
 
 def _build_candidates_block(titles: list[str], intros: list[str]) -> str:
     """把蓝图阶段的 3 个备选包装方向（书名 + 简介）拼成 Markdown 头部块。
@@ -203,6 +168,73 @@ def _build_candidates_block(titles: list[str], intros: list[str]) -> str:
         lines.append(f"- 简介：{intro_i}")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _format_violations_for_prompt(violations: list[tuple[BannedRule, list[str]]]) -> str:
+    """把违规清单格式化成 prompt 能看懂的列表。"""
+    lines: list[str] = []
+    for rule, hits in violations:
+        for hit in hits[:3]:
+            lines.append(
+                f"- 违反规则【{rule.name}】：「{hit.strip()}」 → 改写要求：{rule.rewrite_instruction}"
+            )
+    return "\n".join(lines) if lines else "- 无"
+
+
+async def critic_with_self_check(
+    draft: str,
+    *,
+    max_rounds: int = 2,
+    progress_label: str = "",
+) -> str:
+    """Critic 自检循环。"""
+    critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
+    critic_raw = await _chat(
+        critic_rendered,
+        json_mode=False,
+        temperature=0.5,
+        stream=False,
+    )
+    polished = _extract_final_text(critic_raw)
+
+    for round_num in range(1, max_rounds):
+        violations = scan_violations(polished)
+        if not violations:
+            logger.info("%s Critic 第 %d 轮通过，无残留违规", progress_label, round_num)
+            return polished
+
+        violation_list = _format_violations_for_prompt(violations)
+        logger.info(
+            "%s Critic 第 %d 轮发现 %d 类违规，进入显式指证轮次",
+            progress_label,
+            round_num,
+            len(violations),
+        )
+
+        retry_rendered = SCENE_CRITIC_RETRY_PROMPT.format(
+            previous_polished=polished,
+            violation_list=violation_list,
+        )
+        retry_raw = await _chat(
+            retry_rendered,
+            json_mode=False,
+            temperature=0.3,
+            stream=False,
+        )
+        polished = retry_raw.strip()
+
+    final_violations = scan_violations(polished)
+    if final_violations:
+        logger.warning(
+            "%s Critic 用尽 %d 轮后仍有 %d 类违规，启用物理拦截器",
+            progress_label,
+            max_rounds,
+            len(final_violations),
+        )
+        polished, stats = await force_rewrite_all(polished)
+        logger.info("%s 物理拦截器最终兜底统计: %s", progress_label, stats)
+
+    return polished
 
 
 async def _run_supreme_audit(manuscript: str) -> str:
@@ -412,12 +444,23 @@ async def generate_full_book(
             )
             draft = await _chat(writer_rendered, json_mode=False, temperature=0.55, stream=False)
 
-            draft = await _force_rewrite_banned_sentences(draft)
+            if has_zero_tolerance(draft):
+                logger.info("%s 触发零容忍短语，跳过 Critic 直接物理重写", progress_label)
+                draft, stats = await force_rewrite_all(draft)
+                logger.info("%s 物理重写统计: %s", progress_label, stats)
 
-            logger.info("%s 进入 Critic CoT 洗稿阶段...", progress_label)
-            critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
-            critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5, stream=False)
-            polished = _extract_final_text(critic_raw)
+            logger.info("%s 进入 Critic 自检循环洗稿阶段...", progress_label)
+            polished = await critic_with_self_check(
+                draft,
+                max_rounds=2,
+                progress_label=progress_label,
+            )
+            final_violations = scan_violations(polished)
+            if final_violations:
+                polished, final_stats = await force_rewrite_all(polished)
+                logger.info("%s 终末物理拦截统计: %s", progress_label, final_stats)
+            else:
+                logger.info("%s Critic 自检后无残留违规，跳过终末物理拦截", progress_label)
 
             final_markdown += f"{polished}\n\n"
             previous_scene_tail = polished[-400:] if polished else previous_scene_tail

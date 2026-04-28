@@ -256,13 +256,29 @@ def _extract_containing_sentence(text: str, hit_start: int, hit_end: int) -> str
 def _detect(text: str, pattern: str) -> list[str]:
     sentences_with_hit: list[str] = []
     if pattern.startswith("re:"):
-        regex = re.compile(pattern[3:], re.MULTILINE)
-        for match in regex.finditer(text):
-            sentence = _extract_containing_sentence(text, match.start(), match.end())
-            if sentence:
-                sentences_with_hit.append(sentence)
-            if len(sentences_with_hit) >= 10:
-                break
+        raw = pattern[3:]
+        if raw == r"不是.*?而是":
+            start = 0
+            while True:
+                idx1 = text.find("不是", start)
+                if idx1 == -1:
+                    break
+                idx2 = text.find("而是", idx1 + 2)
+                if idx2 != -1 and idx2 - idx1 <= 40:
+                    sentence = _extract_containing_sentence(text, idx1, idx2 + 2)
+                    if sentence:
+                        sentences_with_hit.append(sentence)
+                    if len(sentences_with_hit) >= 10:
+                        break
+                    start = idx2 + 2
+                else:
+                    start = idx1 + 2
+        else:
+            idx = text.find(raw)
+            if idx != -1:
+                sentence = _extract_containing_sentence(text, idx, idx + len(raw))
+                if sentence:
+                    sentences_with_hit.append(sentence)
     else:
         start = 0
         while True:
@@ -349,7 +365,7 @@ def measure_quality(markdown: str) -> QualityReport:
         report.avg_paragraph_length = sum(len(p) for p in paragraphs) / len(paragraphs)
 
     for name, pattern in A1_PATTERN_RULES.items():
-        hits = _detect(markdown, pattern)
+        hits = _detect(markdown, f"re:{pattern}")
         if hits:
             report.a1_pattern_hits[name] = hits
 

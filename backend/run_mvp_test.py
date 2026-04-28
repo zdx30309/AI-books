@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from app.services.content_engine import generate_blueprint, generate_full_book
+from app.core.workflow import run_full_workflow
 
 
 def main() -> None:
@@ -15,15 +15,8 @@ def main() -> None:
     )
 
     async def _run() -> None:
-        print("正在生成蓝图...")
-        blueprint = await generate_blueprint(test_anxiety, test_raw_text)
-
-        print("正在生成全书正文...")
-        book_markdown = await generate_full_book(test_anxiety, blueprint)
-
-        output_path = Path(__file__).resolve().parent / "mvp_output_book.md"
-        output_path.write_text(book_markdown, encoding="utf-8")
-        print(f"已保存到: {output_path}")
+        output_path = Path(__file__).resolve().parent / "output" / "mvp_test"
+        await run_full_workflow(test_anxiety, test_raw_text, output_path)
 
     asyncio.run(_run())
 

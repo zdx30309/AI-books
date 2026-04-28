@@ -7,7 +7,7 @@ from pathlib import Path
 from time import perf_counter
 
 from app.core.config import settings
-from app.services.content_engine import generate_blueprint, generate_full_book
+from app.core.workflow import run_full_workflow
 from app.services.qingdou import QingdouClient, QingdouError, QingdouTimeoutError
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -77,21 +77,17 @@ async def _run() -> None:
     print(f"视频前100字: {raw_text[:100]}")
     print(f"轻抖解析耗时: {extract_cost:.2f} 秒")
 
-    print("\n正在生成蓝图...")
-    blueprint_start = perf_counter()
-    blueprint = await generate_blueprint(anxiety_point, raw_text)
-    blueprint_cost = perf_counter() - blueprint_start
-    print(f"蓝图生成耗时: {blueprint_cost:.2f} 秒")
-
-    print("\n正在生成全书正文...")
-    book_start = perf_counter()
-    book_markdown = await generate_full_book(anxiety_point, blueprint)
-    book_cost = perf_counter() - book_start
-    print(f"全书生成耗时: {book_cost:.2f} 秒")
-
-    output_path = Path(__file__).resolve().parent / "real_douyin_output.md"
-    output_path.write_text(book_markdown, encoding="utf-8")
-    print(f"\n已保存到: {output_path}")
+    print("\n正在进入蓝图审查工作流...")
+    output_path = Path(__file__).resolve().parent / "output" / "real_douyin_test"
+    workflow_start = perf_counter()
+    book_path = await run_full_workflow(anxiety_point, raw_text, output_path)
+    workflow_cost = perf_counter() - workflow_start
+    print(f"工作流耗时: {workflow_cost:.2f} 秒")
+    report_path = output_path / "quality_report.txt"
+    if report_path.exists():
+        print(f"质量体检报告: {report_path}")
+    if book_path is not None:
+        print(f"\n已保存到: {book_path}")
 
 
 def main() -> None:
