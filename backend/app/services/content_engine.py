@@ -144,6 +144,44 @@ def _extract_final_text(cot_output: str) -> str:
     return cleaned or cot_output.strip()
 
 
+_BANNED_SENTENCE_RE = re.compile(
+    r"[^。！？；\n]*不是[^。！？；\n]*而是[^。！？；\n]*[。！？；\n]"
+)
+
+
+async def _force_rewrite_banned_sentences(text: str) -> str:
+    """物理拦截器：正则捕获所有「不是…而是…」违规句，逐句调用低温 LLM 重写。"""
+    hits = _BANNED_SENTENCE_RE.findall(text)
+    if not hits:
+        return text
+
+    logger.warning("物理拦截器捕获 %d 句「不是…而是…」违规，逐句重写中...", len(hits))
+    for bad_sentence in hits:
+        bad_sentence = bad_sentence.strip()
+        if not bad_sentence:
+            continue
+        rewrite_prompt = (
+            "你是一个中文改写工具。请重写下面这句话，保持原意不变，"
+            "但绝对不允许出现「不是」或「而是」这两个词。"
+            "用句号把对比的两层意思断成两个独立短句。"
+            "只输出改写结果，不要任何解释。\n\n"
+            f"原句：{bad_sentence}"
+        )
+        rewritten = await _chat(
+            rewrite_prompt,
+            json_mode=False,
+            temperature=0.1,
+            stream=False,
+        )
+        rewritten = rewritten.strip()
+        if rewritten and "不是" not in rewritten:
+            text = text.replace(bad_sentence, rewritten, 1)
+            logger.info("重写成功: [%s] → [%s]", bad_sentence[:30], rewritten[:30])
+        else:
+            logger.warning("重写结果仍含违禁词或为空，保留原句: %s", bad_sentence[:30])
+    return text
+
+
 def _build_candidates_block(titles: list[str], intros: list[str]) -> str:
     """把蓝图阶段的 3 个备选包装方向（书名 + 简介）拼成 Markdown 头部块。
 
@@ -393,7 +431,9 @@ async def generate_full_book(
                 target_length=target_length,
                 previous_scene_tail=previous_scene_tail,
             )
-            draft = await _chat(writer_rendered, json_mode=False, temperature=0.75, stream=False)
+            draft = await _chat(writer_rendered, json_mode=False, temperature=0.55, stream=False)
+
+            draft = await _force_rewrite_banned_sentences(draft)
 
             logger.info("%s ????CoT ????...", progress_label)
             critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
