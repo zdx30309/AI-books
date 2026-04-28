@@ -24,29 +24,51 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.core.banned_rules import BannedRule, scan_violations
 from app.core.config import settings
 from app.core.rewriter import force_rewrite_all, has_zero_tolerance
-from app.prompts.goal_driven_templates import (
-    SCENE_CRITIC_PROMPT,
-    SCENE_CRITIC_RETRY_PROMPT,
-    SUPREME_AUDITOR_PROMPT,
-    get_prompts,
-)
+from app.prompts.goal_driven_templates import SUPREME_AUDITOR_PROMPT, get_prompts
 
 logger = logging.getLogger(__name__)
 
-# 主创作链路用的同步 DeepSeek 客户端（Architect / Writer / Critic 都走这里）
-_text_client = OpenAI(
+# DeepSeek 客户端：用于物理拦截器单句重写、可选退路通道
+_deepseek_client = OpenAI(
     api_key=settings.DEEPSEEK_API_KEY or "sk-placeholder",
     base_url=settings.DEEPSEEK_BASE_URL,
     timeout=settings.LLM_REQUEST_TIMEOUT,
 )
 
+# OpenAI 主笔客户端（GPT-5.5）：用于蓝图 + 全书生成
+_openai_writer_client: OpenAI | None = None
+
+
+def _resolve_openai_api_key() -> str | None:
+    """优先读取 settings，其次回退到进程环境变量。"""
+    api_key = (settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY") or "").strip()
+    return api_key or None
+
+
+def _get_openai_writer_client() -> OpenAI:
+    """Lazy-init OpenAI 主笔客户端。"""
+    global _openai_writer_client
+    if _openai_writer_client is not None:
+        return _openai_writer_client
+
+    client_kwargs: dict[str, Any] = {
+        "base_url": settings.OPENAI_BASE_URL,
+        "timeout": 1800.0,  # GPT-5.5 xhigh 思考时间长，给足 30 分钟
+    }
+    api_key = _resolve_openai_api_key()
+    if api_key:
+        client_kwargs["api_key"] = api_key
+
+    _openai_writer_client = OpenAI(**client_kwargs)
+    return _openai_writer_client
+
+
 # 出厂终审专用的异步 OpenAI 客户端（异厂模型做最后交叉校验）
-# 模型可通过环境变量 OPENAI_AUDIT_MODEL 切换，默认 gpt-4o，为 GPT-5.5 升级预留
+# 模型可通过 settings.OPENAI_AUDITOR_MODEL 切换，默认 gpt-4o，为 GPT-5.5 升级预留
 _supreme_auditor_client: AsyncOpenAI | None = None
-_OPENAI_AUDIT_MODEL = os.getenv("OPENAI_AUDIT_MODEL", "gpt-4o")
+_OPENAI_AUDIT_MODEL = settings.OPENAI_AUDITOR_MODEL
 
 
 def _get_supreme_auditor_client() -> AsyncOpenAI | None:
@@ -61,6 +83,7 @@ def _get_supreme_auditor_client() -> AsyncOpenAI | None:
     return _supreme_auditor_client
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.DOTALL)
+_JSON_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
 def _strip_json_fence(text: str) -> str:
@@ -88,9 +111,31 @@ def _extract_json_like_segment(text: str) -> str:
     return cleaned
 
 
+def _repair_json_text(text: str) -> str:
+    """对模型输出做轻量 JSON 修复，优先消除尾逗号等格式噪声。"""
+    repaired = text.strip()
+    repaired = _JSON_TRAILING_COMMA_RE.sub(r"\1", repaired)
+    return repaired
+
+
+def _loads_json_with_repair(text: str, *, source_name: str) -> dict[str, Any]:
+    """宽松 JSON 解析：先直读，再做尾逗号修复，再尝试一次。"""
+    candidates = [text, _repair_json_text(text)]
+    last_exc: Exception | None = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+            raise ValueError(f"{source_name} 解析结果必须是字典")
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+    raise ValueError(f"{source_name} JSON 解析失败: {last_exc}. 原始输出: {text[:1000]}")
+
+
 def _stream_chat(rendered_prompt: str, *, temperature: float) -> str:
     messages = [{"role": "user", "content": rendered_prompt}]
-    response = _text_client.chat.completions.create(
+    response = _deepseek_client.chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=messages,
         temperature=temperature,
@@ -110,7 +155,7 @@ def _stream_chat(rendered_prompt: str, *, temperature: float) -> str:
 
 def _non_stream_chat(rendered_prompt: str, *, temperature: float) -> str:
     messages = [{"role": "user", "content": rendered_prompt}]
-    resp = _text_client.chat.completions.create(
+    resp = _deepseek_client.chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=messages,
         temperature=temperature,
@@ -119,8 +164,151 @@ def _non_stream_chat(rendered_prompt: str, *, temperature: float) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
+def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> tuple[str, Any | None]:
+    """流式收集 OpenAI Responses 输出。"""
+    client = _get_openai_writer_client()
+    stream = client.responses.create(
+        model=settings.OPENAI_WRITER_MODEL,
+        input=rendered_prompt,
+        reasoning={"effort": effort},
+        text={"verbosity": verb},
+        max_output_tokens=max_tok,
+        stream=True,
+    )
+    chunks: list[str] = []
+    final_response: Any | None = None
+    for event in stream:
+        event_type = getattr(event, "type", "") or ""
+        if event_type.endswith("output_text.delta"):
+            delta = getattr(event, "delta", None)
+            if delta:
+                print(delta, end="", flush=True)
+                chunks.append(delta)
+        elif event_type.endswith("output_text.done"):
+            pass
+        elif event_type.endswith("response.completed"):
+            final_response = getattr(event, "response", None) or final_response
+    print()
+    return "".join(chunks).strip(), final_response
+
+
+def _openai_writer_call(
+    rendered_prompt: str,
+    *,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    max_output_tokens: int | None = None,
+) -> str:
+    """通过 OpenAI Responses API 调用 GPT-5.5。"""
+    effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
+    verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
+    max_tok = max_output_tokens or settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS
+
+    logger.info(
+        "OpenAI Writer 调用 [model=%s, effort=%s, verbosity=%s, max_tokens=%d]",
+        settings.OPENAI_WRITER_MODEL, effort, verb, max_tok,
+    )
+
+    response: Any | None = None
+    text = ""
+    try:
+        text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
+    except Exception as exc:
+        logger.warning(
+            "OpenAI Writer 流式调用失败 [%s: %s]，尝试重建客户端后重试一次。",
+            type(exc).__name__,
+            exc,
+        )
+        global _openai_writer_client
+        _openai_writer_client = None
+        client = _get_openai_writer_client()
+        try:
+            stream = client.responses.create(
+                model=settings.OPENAI_WRITER_MODEL,
+                input=rendered_prompt,
+                reasoning={"effort": effort},
+                text={"verbosity": verb},
+                max_output_tokens=max_tok,
+                stream=True,
+            )
+            chunks: list[str] = []
+            for event in stream:
+                event_type = getattr(event, "type", "") or ""
+                if event_type.endswith("output_text.delta"):
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        print(delta, end="", flush=True)
+                        chunks.append(delta)
+                elif event_type.endswith("response.completed"):
+                    response = getattr(event, "response", None) or response
+            print()
+            text = "".join(chunks).strip()
+        except Exception:
+            logger.warning("OpenAI Writer 流式重试失败，回退到非流式 Responses 调用。")
+            response = client.responses.create(
+                model=settings.OPENAI_WRITER_MODEL,
+                input=rendered_prompt,
+                reasoning={"effort": effort},
+                text={"verbosity": verb},
+                max_output_tokens=max_tok,
+            )
+            text = getattr(response, "output_text", "") or ""
+
+    if not text:
+        if response is not None and hasattr(response, "output_text") and response.output_text:
+            text = response.output_text
+        else:
+            text_parts: list[str] = []
+            for item in getattr(response, "output", []) or []:
+                if getattr(item, "type", None) == "message":
+                    for content in getattr(item, "content", []) or []:
+                        if getattr(content, "type", None) == "output_text":
+                            text_parts.append(getattr(content, "text", ""))
+            text = "".join(text_parts)
+
+    if not text or not text.strip():
+        raise ValueError("OpenAI Writer 返回空响应")
+
+    usage = getattr(response, "usage", None) if response is not None else None
+    if usage is not None:
+        logger.info(
+            "OpenAI Writer 用量 [input=%s, output=%s, reasoning=%s, total=%s]",
+            getattr(usage, "input_tokens", "?"),
+            getattr(usage, "output_tokens", "?"),
+            getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", "?")
+                if hasattr(usage, "output_tokens_details") else "?",
+            getattr(usage, "total_tokens", "?"),
+        )
+
+    return text.strip()
+
+
+async def _route_writer_call(
+    rendered_prompt: str,
+    *,
+    temperature: float = 0.55,
+    stream: bool = False,
+    is_writer_task: bool = True,
+) -> str:
+    """主笔调用路由。
+
+    is_writer_task=True 且 WRITER_PROVIDER=openai → 走 GPT-5.5 Responses
+    否则走 DeepSeek（chat.completions）—— 用于物理拦截器单句重写
+    """
+    if is_writer_task and settings.WRITER_PROVIDER == "openai":
+        return await asyncio.to_thread(_openai_writer_call, rendered_prompt)
+
+    return await asyncio.to_thread(
+        _call_chat,
+        rendered_prompt,
+        json_mode=False,
+        temperature=temperature,
+        stream=stream,
+    )
+
+
 # ---- CoT 输出剥离 ---------------------------------------------------------
-# Critic 与 Supreme Auditor 都走 <audit>...</audit><final_text>...</final_text> 双标签协议
+# Supreme Auditor 走 <audit>...</audit><final_text>...</final_text> 双标签协议
 _FINAL_TEXT_RE = re.compile(
     r"<final_text>\s*([\s\S]*?)\s*</final_text>",
     re.IGNORECASE,
@@ -147,7 +335,6 @@ def _extract_final_text(cot_output: str) -> str:
     return cleaned or cot_output.strip()
 
 
-
 def _build_candidates_block(titles: list[str], intros: list[str]) -> str:
     """把蓝图阶段的 3 个备选包装方向（书名 + 简介）拼成 Markdown 头部块。
 
@@ -170,73 +357,6 @@ def _build_candidates_block(titles: list[str], intros: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _format_violations_for_prompt(violations: list[tuple[BannedRule, list[str]]]) -> str:
-    """把违规清单格式化成 prompt 能看懂的列表。"""
-    lines: list[str] = []
-    for rule, hits in violations:
-        for hit in hits[:3]:
-            lines.append(
-                f"- 违反规则【{rule.name}】：「{hit.strip()}」 → 改写要求：{rule.rewrite_instruction}"
-            )
-    return "\n".join(lines) if lines else "- 无"
-
-
-async def critic_with_self_check(
-    draft: str,
-    *,
-    max_rounds: int = 2,
-    progress_label: str = "",
-) -> str:
-    """Critic 自检循环。"""
-    critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
-    critic_raw = await _chat(
-        critic_rendered,
-        json_mode=False,
-        temperature=0.5,
-        stream=False,
-    )
-    polished = _extract_final_text(critic_raw)
-
-    for round_num in range(1, max_rounds):
-        violations = scan_violations(polished)
-        if not violations:
-            logger.info("%s Critic 第 %d 轮通过，无残留违规", progress_label, round_num)
-            return polished
-
-        violation_list = _format_violations_for_prompt(violations)
-        logger.info(
-            "%s Critic 第 %d 轮发现 %d 类违规，进入显式指证轮次",
-            progress_label,
-            round_num,
-            len(violations),
-        )
-
-        retry_rendered = SCENE_CRITIC_RETRY_PROMPT.format(
-            previous_polished=polished,
-            violation_list=violation_list,
-        )
-        retry_raw = await _chat(
-            retry_rendered,
-            json_mode=False,
-            temperature=0.3,
-            stream=False,
-        )
-        polished = retry_raw.strip()
-
-    final_violations = scan_violations(polished)
-    if final_violations:
-        logger.warning(
-            "%s Critic 用尽 %d 轮后仍有 %d 类违规，启用物理拦截器",
-            progress_label,
-            max_rounds,
-            len(final_violations),
-        )
-        polished, stats = await force_rewrite_all(polished)
-        logger.info("%s 物理拦截器最终兜底统计: %s", progress_label, stats)
-
-    return polished
-
-
 async def _run_supreme_audit(manuscript: str) -> str:
     """OpenAI 异厂模型担任出厂终审。
 
@@ -245,14 +365,18 @@ async def _run_supreme_audit(manuscript: str) -> str:
     跨厂校验是性价比最高的兜底。
 
     行为：
+        - OPENAI_AUDITOR_ENABLED=False → 直接跳过终审
         - OPENAI_API_KEY 未配置 → 跳过终审，回退原稿（不阻塞主流程）
         - API 调用异常 → 记录日志后回退原稿
         - 输出经 _extract_final_text 剥洗，确保 <audit>/<final_text> 标签
           绝不会泄漏到最终 Markdown 文件
     """
+    if not settings.OPENAI_AUDITOR_ENABLED:
+        logger.info("Supreme Auditor 已通过配置关闭（主笔已是 OpenAI 通道时无需终审）")
+        return manuscript
     client = _get_supreme_auditor_client()
     if client is None:
-        logger.warning("OPENAI_API_KEY 未设置，跳过出厂终审，文稿走原稿通路。")
+        logger.warning("OPENAI_API_KEY 未设置，跳过出厂终审")
         return manuscript
 
     rendered = SUPREME_AUDITOR_PROMPT.format(manuscript_content=manuscript)
@@ -347,21 +471,38 @@ async def generate_blueprint(
         raw_text=raw_text.strip(),
     )
     logger.info("正在生成蓝图... [category=%s]", category)
-    content = await _chat(rendered_prompt, json_mode=False, temperature=0.3, stream=True)
+    content = await _route_writer_call(
+        rendered_prompt,
+        is_writer_task=True,
+    )
     json_text = _extract_json_text(content)
-    try:
-        blueprint = json.loads(json_text)
-    except json.JSONDecodeError as exc:
-        cleaned = _extract_json_like_segment(content)
-        try:
-            blueprint = json.loads(cleaned)
-        except json.JSONDecodeError as inner_exc:
-            raise ValueError(f"蓝图 JSON 解析失败: {exc}. 原始输出: {content[:1000]}") from inner_exc
+    cleaned = _repair_json_text(_extract_json_like_segment(json_text))
+    blueprint = _loads_json_with_repair(cleaned, source_name="蓝图")
 
-    if not isinstance(blueprint, dict):
-        raise ValueError("蓝图解析结果必须是字典")
     blueprint.setdefault("chapters", [])
     return blueprint
+
+
+def _build_chapters_outline_block(chapters: list[dict]) -> str:
+    """把蓝图的 chapters 数组拼成 prompt 能用的章节大纲字符串。"""
+    blocks: list[str] = []
+    for ch in chapters:
+        num = ch.get("chapter_num", "?")
+        title = ch.get("chapter_title", f"第{num}章")
+        layer = ch.get("chapter_layer", "")
+        goal = ch.get("chapter_goal", "")
+        outline = ch.get("chapter_outline") or ch.get("core_logic", "")
+        target = ch.get("target_length", 4000)
+
+        block = (
+            f"### 第 {num} 章 · {title}\n"
+            f"层级：{layer}\n"
+            f"目标字数：约 {target} 字\n"
+            f"章节目标：{goal}\n"
+            f"详细写作指南：\n{outline}\n"
+        )
+        blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 async def generate_full_book(
@@ -370,14 +511,14 @@ async def generate_full_book(
     category: str = "social_science",
     output_dir: Path | None = None,
 ) -> str:
-    """Generate the full markdown book via the chapter → sub_scene double loop.
+    """一次性出全书架构（v3 GPT-5.5 通道）。
 
     流程：
-        1. Scene Writer 出场景草稿
-        2. 物理拦截器扫描违规句并低温重写
-        3. Scene Critic CoT 审稿并洗稿
-        4. 全书拼接后调用 Supreme Auditor 跨厂终审
-        5. 自动质量度量并落地报告
+        1. 装配 prompt（书名/引言/前言/章节大纲全部塞进一条 prompt）
+        2. 一次调用主笔（GPT-5.5 Responses API + reasoning effort）
+        3. 物理拦截器扫违规并重写
+        4. （可选）Supreme Auditor 终审 —— 默认关闭
+        5. 自动质量度量
     """
     if not anxiety_point or not anxiety_point.strip():
         raise ValueError("anxiety_point 不能为空")
@@ -385,8 +526,14 @@ async def generate_full_book(
         raise ValueError("blueprint 必须是字典")
 
     prompts = get_prompts(category)
-    scene_writer_prompt = prompts["scene_writer"]
+    full_book_writer_prompt = prompts.get("full_book_writer")
+    if full_book_writer_prompt is None:
+        raise ValueError(
+            f"category={category} 没有注册 full_book_writer prompt。"
+            "请检查 PROMPT_REGISTRY。"
+        )
 
+    # ===== 装配输入 =====
     title_candidates_raw = blueprint.get("title_candidates") or []
     intro_candidates_raw = blueprint.get("intro_candidates") or []
     title_candidates = [str(t) for t in title_candidates_raw if t]
@@ -397,78 +544,64 @@ async def generate_full_book(
     preface = str(blueprint.get("preface") or "")
     global_context = str(blueprint.get("global_context") or "")
 
-    candidates_block = _build_candidates_block(title_candidates, intro_candidates)
-    final_markdown = (
-        f"# {title}\n\n"
-        f"{candidates_block}"
-        f"## 引言\n{intro}\n\n"
-        f"## 前言\n{preface}\n\n"
-    )
-    previous_scene_tail = (preface or global_context or intro)[-400:]
-
     chapters = blueprint.get("chapters") or []
-    total_chapters = len(chapters)
-    for chapter_index, chapter in enumerate(chapters, start=1):
-        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"第{chapter_index}章")
-        chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
+    if not chapters:
+        raise ValueError("蓝图 chapters 为空，无法生成全书")
 
-        sub_scenes = chapter.get("sub_scenes") or []
-        if not sub_scenes:
-            sub_scenes = [{
-                "scene_purpose": chapter_goal or "延续本章核心论点的具体展开",
-                "required_elements": "具体人物或群体 / 数据或场景细节 / 反差对比",
-                "target_length": 1500,
-            }]
+    chapters_outline = _build_chapters_outline_block(chapters)
 
-        logger.info("开始生成第 %d 章 [%s]，共 %d 个场景", chapter_index, chapter_title, len(sub_scenes))
-        final_markdown += f"## {chapter_title}\n\n"
+    total_target_length = blueprint.get("total_target_length")
+    if not total_target_length:
+        total_target_length = sum(int(ch.get("target_length", 4000)) for ch in chapters)
+    total_target_length = int(total_target_length)
 
-        total_scenes = len(sub_scenes)
-        for scene_index, scene in enumerate(sub_scenes, start=1):
-            scene_purpose = str(scene.get("scene_purpose") or "")
-            required_elements = str(scene.get("required_elements") or "")
-            target_length = str(scene.get("target_length") or 800)
-            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
-            progress_label = f"[{chapter_index}/{total_chapters}] [{scene_index}/{total_scenes}]"
+    logger.info(
+        "开始生成全书 [provider=%s, 章节数=%d, 目标字数=%d]",
+        settings.WRITER_PROVIDER, len(chapters), total_target_length,
+    )
 
-            logger.info("%s 写作中: %s - %s (草稿)...", progress_label, chapter_title, scene_title)
-            writer_rendered = scene_writer_prompt.format(
-                anxiety_point=anxiety_point.strip(),
-                global_context=global_context,
-                chapter_title=chapter_title,
-                chapter_goal=chapter_goal,
-                scene_purpose=scene_purpose,
-                required_elements=required_elements,
-                target_length=target_length,
-                previous_scene_tail=previous_scene_tail,
+    writer_rendered = full_book_writer_prompt.format(
+        anxiety_point=anxiety_point.strip(),
+        title=title,
+        intro=intro,
+        preface=preface,
+        global_context=global_context,
+        chapters_outline=chapters_outline,
+        total_target_length=total_target_length,
+    )
+
+    logger.info("主笔调用开始（这一步会比较慢，xhigh 思考可能需要 5-15 分钟）...")
+    raw_book = await _route_writer_call(
+        writer_rendered,
+        is_writer_task=True,
+    )
+    logger.info("主笔调用完成，原始字数 = %d", len(raw_book))
+
+    candidates_block = _build_candidates_block(title_candidates, intro_candidates)
+    if candidates_block:
+        first_h2_idx = raw_book.find("\n## ")
+        if first_h2_idx != -1:
+            final_markdown = (
+                raw_book[:first_h2_idx + 1]
+                + "\n"
+                + candidates_block
+                + raw_book[first_h2_idx + 1:]
             )
-            draft = await _chat(writer_rendered, json_mode=False, temperature=0.55, stream=False)
+        else:
+            final_markdown = raw_book + "\n\n" + candidates_block
+    else:
+        final_markdown = raw_book
 
-            if has_zero_tolerance(draft):
-                logger.info("%s 触发零容忍短语，跳过 Critic 直接物理重写", progress_label)
-                draft, stats = await force_rewrite_all(draft)
-                logger.info("%s 物理重写统计: %s", progress_label, stats)
+    logger.info("启动物理拦截器扫违规...")
+    zero_hits = has_zero_tolerance(final_markdown)
+    if zero_hits:
+        logger.warning("触发零容忍短语 %s，启动物理重写", zero_hits)
 
-            logger.info("%s 进入 Critic 自检循环洗稿阶段...", progress_label)
-            polished = await critic_with_self_check(
-                draft,
-                max_rounds=2,
-                progress_label=progress_label,
-            )
-            final_violations = scan_violations(polished)
-            if final_violations:
-                polished, final_stats = await force_rewrite_all(polished)
-                logger.info("%s 终末物理拦截统计: %s", progress_label, final_stats)
-            else:
-                logger.info("%s Critic 自检后无残留违规，跳过终末物理拦截", progress_label)
-
-            final_markdown += f"{polished}\n\n"
-            previous_scene_tail = polished[-400:] if polished else previous_scene_tail
+    final_markdown, rewrite_stats = await force_rewrite_all(final_markdown)
+    logger.info("物理拦截器统计: %s", rewrite_stats)
 
     final_markdown = await _run_supreme_audit(final_markdown)
 
-    # ===== 自动质量度量（落地报告） =====
-    # 注：quality_metrics 模块在下一个任务实现，本任务只挂 stub
     if output_dir is not None:
         try:
             from app.core.quality_metrics import measure_quality, format_report
@@ -481,18 +614,14 @@ async def generate_full_book(
             report_path.write_text(report_text, encoding="utf-8")
 
             logger.info(
-                "质量度量完成 [总字数=%d, 总违规=%d, 违规密度=%.2f/千字]，"
-                "报告已写入 %s",
+                "质量度量完成 [总字数=%d, 总违规=%d, 违规密度=%.2f/千字]，报告 → %s",
                 report.total_chars,
                 report.total_violations,
                 report.violation_density_per_kchar,
                 report_path,
             )
-        except ImportError:
-            logger.warning(
-                "quality_metrics 模块尚未实现，跳过自动质量度量。"
-                "完成下一个任务（模块 2）后此功能将自动启用。"
-            )
+        except ImportError as exc:
+            logger.warning("质量度量模块导入失败（这不应发生）: %s", exc)
         except Exception as exc:
             logger.error(
                 "质量度量执行失败 [%s: %s]，不影响主流程",

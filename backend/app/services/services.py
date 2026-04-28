@@ -26,14 +26,14 @@ from tenacity import (
 )
 
 from app.core.config import settings
-from app.services.prompt_templates import (
-    OUTLINE_SYSTEM_PROMPT,
-    OUTLINE_USER_TEMPLATE,
-    PATCH_USER_TEMPLATE,
-    POSTER_SYSTEM_PROMPT,
-    POSTER_USER_TEMPLATE,
-    WRITING_SYSTEM_PROMPT,
-    WRITING_USER_TEMPLATE,
+from app.prompts.goal_driven_templates import (
+    SCENE_CRITIC_PROMPT,
+    SUPREME_AUDITOR_PROMPT,
+    SOCIAL_SCIENCE_BLUEPRINT_ARCHITECT_PROMPT,
+    SOCIAL_SCIENCE_SCENE_WRITER_PROMPT,
+    PROMPT_REGISTRY,
+    SUPPORTED_CATEGORIES,
+    get_prompts,
 )
 
 logger = logging.getLogger(__name__)

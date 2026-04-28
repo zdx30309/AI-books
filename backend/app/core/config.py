@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
 
+    # --- 主笔模型路由 ---
+    WRITER_PROVIDER: str = "openai"  # 可选 "openai" 或 "deepseek"
+
+    # --- OpenAI 主笔配置 ---
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_WRITER_MODEL: str = "gpt-5.5"
+    OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
+    OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
+    OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 60000
+
+    # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
+    OPENAI_AUDITOR_ENABLED: bool = False
+    OPENAI_AUDITOR_MODEL: str = "gpt-5.5"
+
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"

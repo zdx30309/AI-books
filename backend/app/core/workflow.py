@@ -21,7 +21,7 @@ def print_blueprint_summary(blueprint: dict) -> None:
     for i, t in enumerate(blueprint.get("title_candidates", []), 1):
         print(f"  方向 {chr(64+i)}: {t}")
 
-    print(f"\n【主选简介】（300 字）")
+    print(f"\n【主选简介】（300 字内）")
     print(blueprint.get("intro", ""))
 
     print(f"\n【导言】（200 字）")
@@ -30,11 +30,19 @@ def print_blueprint_summary(blueprint: dict) -> None:
     print(f"\n【全书宪法（global_context）】")
     print(blueprint.get("global_context", ""))
 
-    print(f"\n【章节结构】共 {len(blueprint.get('chapters', []))} 章")
-    for ch in blueprint.get("chapters", []):
-        n_scenes = len(ch.get("sub_scenes", []))
-        print(f"  第{ch.get('chapter_num', '?')}章: {ch.get('chapter_title', '?')} ({n_scenes} 个场景)")
-        print(f"    目标: {ch.get('chapter_goal', '?')[:80]}...")
+    chapters = blueprint.get("chapters", [])
+    total_target = blueprint.get("total_target_length", "?")
+    print(f"\n【章节结构】共 {len(chapters)} 章，目标总字数 ≈ {total_target}")
+    for ch in chapters:
+        target_len = ch.get("target_length", "?")
+        layer = ch.get("chapter_layer", "?")
+        print(f"\n  第{ch.get('chapter_num', '?')}章: {ch.get('chapter_title', '?')}")
+        print(f"    层级: {layer} | 目标字数: {target_len}")
+        print(f"    目标: {ch.get('chapter_goal', '?')[:120]}...")
+        outline = ch.get("chapter_outline", "")
+        if outline:
+            preview = outline[:300].replace("\n", " ")
+            print(f"    写作指南预览: {preview}...")
     print("=" * 70)
 
 
@@ -52,7 +60,9 @@ async def step1_generate_blueprint(
     else:
         augmented_raw = raw_text
 
+    print("\n=== 蓝图阶段开始 ===")
     blueprint = await generate_blueprint(anxiety_point, augmented_raw, category)
+    print("=== 蓝图阶段完成 ===")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     blueprint_path = output_dir / "blueprint.json"
@@ -95,7 +105,9 @@ async def step3_generate_book(
 ) -> Path:
     blueprint = json.loads(blueprint_path.read_text(encoding="utf-8"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    print("\n=== 正文阶段开始 ===")
     markdown = await generate_full_book(anxiety_point, blueprint, category, output_dir=output_dir)
+    print("=== 正文阶段完成 ===")
 
     book_path = output_dir / "book.md"
     book_path.write_text(markdown, encoding="utf-8")

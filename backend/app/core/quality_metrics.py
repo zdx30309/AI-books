@@ -49,19 +49,19 @@ class QualityReport:
 
 
 A1_PATTERN_RULES: dict[str, str] = {
-    "不是X而是Y": r"不是.*?而是",
-    "像是在X更像是Y": r"像是在.*?更像是",
+    "不是X而是Y": r"不是.{1,30}?而是",
+    "像是在X更像是Y": r"像是在.{1,30}?更像是",
     "常常会先被人...": r"常常会先被人.{0,20}",
-    "真正使X进入Y": r"真正使.{1,20}进入",
-    "X长出来": rf"(?:{ELLIPSIS_RE})?长出来",
-    "X接住": rf"(?:{ELLIPSIS_RE})?接住",
-    "X压下来": rf"(?:{ELLIPSIS_RE})?压下来",
-    "往X压": rf"往.{1,15}(?:{ELLIPSIS_RE})?压(?![力下抑制制制])",
-    "把X送过去": rf"把.{1,15}(?:{ELLIPSIS_RE})?送过去",
-    "如果只X分量就轻了": r"如果只.{1,30}分量就轻了",
-    "一步步把X拉直": r"一步步把.{1,20}拉直",
+    "真正使X进入Y": r"真正使.{1,20}?进入",
+    "X长出来": rf".{{1,15}}{ELLIPSIS_RE}长出来",
+    "X接住": rf".{{1,15}}{ELLIPSIS_RE}接住",
+    "X压下来": rf".{{1,15}}{ELLIPSIS_RE}压下来",
+    "往X压": rf"往.{{1,15}}{ELLIPSIS_RE}压",
+    "把X送过去": rf"把.{{1,15}}{ELLIPSIS_RE}送过去",
+    "如果只X分量就轻了": r"如果只.{1,30}?分量就轻了",
+    "一步步把X拉直": r"一步步把.{1,20}?拉直",
     "把这条链条慢慢展开": r"把这条链条慢慢展开",
-    "在X沉下去": rf"在.{1,15}(?:{ELLIPSIS_RE})?沉下去",
+    "在X沉下去": rf"在.{{1,15}}{ELLIPSIS_RE}沉下去",
     "后来之所以总被反复提起": r"后来之所以总被反复提起",
 }
 
@@ -254,32 +254,22 @@ def _extract_containing_sentence(text: str, hit_start: int, hit_end: int) -> str
 
 
 def _detect(text: str, pattern: str) -> list[str]:
+    """统一检测：'re:' 开头走正则，否则走固定字串。返回命中所在整句，最多 10 条。"""
     sentences_with_hit: list[str] = []
+
     if pattern.startswith("re:"):
-        raw = pattern[3:]
-        if raw == r"不是.*?而是":
-            start = 0
-            while True:
-                idx1 = text.find("不是", start)
-                if idx1 == -1:
-                    break
-                idx2 = text.find("而是", idx1 + 2)
-                if idx2 != -1 and idx2 - idx1 <= 40:
-                    sentence = _extract_containing_sentence(text, idx1, idx2 + 2)
-                    if sentence:
-                        sentences_with_hit.append(sentence)
-                    if len(sentences_with_hit) >= 10:
-                        break
-                    start = idx2 + 2
-                else:
-                    start = idx1 + 2
-        else:
-            idx = text.find(raw)
-            if idx != -1:
-                sentence = _extract_containing_sentence(text, idx, idx + len(raw))
-                if sentence:
-                    sentences_with_hit.append(sentence)
+        try:
+            regex = re.compile(pattern[3:], re.MULTILINE)
+        except re.error:
+            return []
+        for match in regex.finditer(text):
+            sentence = _extract_containing_sentence(text, match.start(), match.end())
+            if sentence:
+                sentences_with_hit.append(sentence)
+            if len(sentences_with_hit) >= 10:
+                break
     else:
+        # 固定字串：用 str.find 循环
         start = 0
         while True:
             idx = text.find(pattern, start)
@@ -291,6 +281,7 @@ def _detect(text: str, pattern: str) -> list[str]:
             start = idx + len(pattern)
             if len(sentences_with_hit) >= 10:
                 break
+
     return sentences_with_hit
 
 
