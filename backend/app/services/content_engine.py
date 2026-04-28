@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -331,47 +332,25 @@ async def generate_blueprint(
     return blueprint
 
 
-async def _generate_scene_draft(
-    *,
-    scene_writer_prompt: str,
-    global_context: str,
-    chapter_goal: str,
-    scene_purpose: str,
-    required_elements: str,
-    previous_scene_tail: str,
-    temperature: float = 0.65,
-) -> str:
-    rendered_prompt = scene_writer_prompt.format(
-        global_context=global_context,
-        previous_scene_tail=previous_scene_tail,
-        chapter_goal=chapter_goal,
-        scene_purpose=scene_purpose,
-        required_elements=required_elements,
-    )
-    return await _chat(rendered_prompt, json_mode=False, temperature=temperature, stream=False)
-
-
-async def _polish_scene_content(draft_content: str, *, temperature: float = 0.25) -> str:
-    rendered_prompt = SCENE_CRITIC_PROMPT.format(draft_content=draft_content)
-    return await _chat(rendered_prompt, json_mode=False, temperature=temperature, stream=True)
-
-
 async def generate_full_book(
     anxiety_point: str,
     blueprint: dict[str, Any],
     category: str = "social_science",
+    output_dir: Path | None = None,
 ) -> str:
-    """Generate the full markdown book via the chapter ? sub_scene double loop.
+    """Generate the full markdown book via the chapter → sub_scene double loop.
 
-    ???
-        1. Scene Writer ????
-        2. Scene Critic CoT ???????
-        3. ???????????
+    流程：
+        1. Scene Writer 出场景草稿
+        2. 物理拦截器扫描违规句并低温重写
+        3. Scene Critic CoT 审稿并洗稿
+        4. 全书拼接后调用 Supreme Auditor 跨厂终审
+        5. 自动质量度量并落地报告
     """
     if not anxiety_point or not anxiety_point.strip():
-        raise ValueError("anxiety_point ????")
+        raise ValueError("anxiety_point 不能为空")
     if not isinstance(blueprint, dict):
-        raise ValueError("blueprint ?????")
+        raise ValueError("blueprint 必须是字典")
 
     prompts = get_prompts(category)
     scene_writer_prompt = prompts["scene_writer"]
@@ -381,7 +360,7 @@ async def generate_full_book(
     title_candidates = [str(t) for t in title_candidates_raw if t]
     intro_candidates = [str(i) for i in intro_candidates_raw if i]
 
-    title = str(blueprint.get("title") or (title_candidates[0] if title_candidates else "?????"))
+    title = str(blueprint.get("title") or (title_candidates[0] if title_candidates else "未命名书稿"))
     intro = str(blueprint.get("intro") or (intro_candidates[0] if intro_candidates else ""))
     preface = str(blueprint.get("preface") or "")
     global_context = str(blueprint.get("global_context") or "")
@@ -390,26 +369,26 @@ async def generate_full_book(
     final_markdown = (
         f"# {title}\n\n"
         f"{candidates_block}"
-        f"## ??\n{intro}\n\n"
-        f"## ??\n{preface}\n\n"
+        f"## 引言\n{intro}\n\n"
+        f"## 前言\n{preface}\n\n"
     )
     previous_scene_tail = (preface or global_context or intro)[-400:]
 
     chapters = blueprint.get("chapters") or []
     total_chapters = len(chapters)
     for chapter_index, chapter in enumerate(chapters, start=1):
-        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"?{chapter_index}?")
+        chapter_title = str(chapter.get("chapter_title") or chapter.get("title") or f"第{chapter_index}章")
         chapter_goal = str(chapter.get("chapter_goal") or chapter.get("core_logic") or "")
 
         sub_scenes = chapter.get("sub_scenes") or []
         if not sub_scenes:
             sub_scenes = [{
-                "scene_purpose": chapter_goal or "????????",
-                "required_elements": "???????? / ?? / ????",
+                "scene_purpose": chapter_goal or "延续本章核心论点的具体展开",
+                "required_elements": "具体人物或群体 / 数据或场景细节 / 反差对比",
                 "target_length": 1500,
             }]
 
-        logger.info("????? %d ? [%s] ?? ???? %d", chapter_index, chapter_title, len(sub_scenes))
+        logger.info("开始生成第 %d 章 [%s]，共 %d 个场景", chapter_index, chapter_title, len(sub_scenes))
         final_markdown += f"## {chapter_title}\n\n"
 
         total_scenes = len(sub_scenes)
@@ -417,10 +396,10 @@ async def generate_full_book(
             scene_purpose = str(scene.get("scene_purpose") or "")
             required_elements = str(scene.get("required_elements") or "")
             target_length = str(scene.get("target_length") or 800)
-            scene_title = str(scene.get("scene_title") or f"??{scene_index}")
+            scene_title = str(scene.get("scene_title") or f"场景{scene_index}")
             progress_label = f"[{chapter_index}/{total_chapters}] [{scene_index}/{total_scenes}]"
 
-            logger.info("%s ????: %s - %s (??)...", progress_label, chapter_title, scene_title)
+            logger.info("%s 写作中: %s - %s (草稿)...", progress_label, chapter_title, scene_title)
             writer_rendered = scene_writer_prompt.format(
                 anxiety_point=anxiety_point.strip(),
                 global_context=global_context,
@@ -435,7 +414,7 @@ async def generate_full_book(
 
             draft = await _force_rewrite_banned_sentences(draft)
 
-            logger.info("%s ????CoT ????...", progress_label)
+            logger.info("%s 进入 Critic CoT 洗稿阶段...", progress_label)
             critic_rendered = SCENE_CRITIC_PROMPT.format(draft_content=draft)
             critic_raw = await _chat(critic_rendered, json_mode=False, temperature=0.5, stream=False)
             polished = _extract_final_text(critic_raw)
@@ -444,6 +423,37 @@ async def generate_full_book(
             previous_scene_tail = polished[-400:] if polished else previous_scene_tail
 
     final_markdown = await _run_supreme_audit(final_markdown)
-    return final_markdown
+
+    # ===== 自动质量度量（落地报告） =====
+    # 注：quality_metrics 模块在下一个任务实现，本任务只挂 stub
+    if output_dir is not None:
+        try:
+            from app.core.quality_metrics import measure_quality, format_report
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            report = measure_quality(final_markdown)
+            report_text = format_report(report)
+
+            report_path = output_dir / "quality_report.txt"
+            report_path.write_text(report_text, encoding="utf-8")
+
+            logger.info(
+                "质量度量完成 [总字数=%d, 总违规=%d, 违规密度=%.2f/千字]，"
+                "报告已写入 %s",
+                report.total_chars,
+                report.total_violations,
+                report.violation_density_per_kchar,
+                report_path,
+            )
+        except ImportError:
+            logger.warning(
+                "quality_metrics 模块尚未实现，跳过自动质量度量。"
+                "完成下一个任务（模块 2）后此功能将自动启用。"
+            )
+        except Exception as exc:
+            logger.error(
+                "质量度量执行失败 [%s: %s]，不影响主流程",
+                type(exc).__name__, exc,
+            )
 
     return final_markdown
