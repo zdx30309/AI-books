@@ -60,7 +60,6 @@ async def _extract_raw_text(douyin_url: str) -> tuple[str, int | None]:
 
 async def _run() -> None:
     douyin_input = _read_input("请输入抖音/快手视频分享链接 (douyin_url): ")
-    anxiety_point = _read_input("请输入核心焦虑痛点/议题 (anxiety_point): ")
 
     try:
         douyin_url = _extract_url_from_text(douyin_input)
@@ -77,10 +76,10 @@ async def _run() -> None:
     print(f"视频前100字: {raw_text[:100]}")
     print(f"轻抖解析耗时: {extract_cost:.2f} 秒")
 
-    print("\n正在进入蓝图审查工作流...")
+    print("\n正在进入蓝图与正文生成工作流...")
     output_path = Path(__file__).resolve().parent / "output" / "real_douyin_test"
     workflow_start = perf_counter()
-    book_path = await run_full_workflow(anxiety_point, raw_text, output_path)
+    book_path = await run_full_workflow(raw_text, output_path)
     workflow_cost = perf_counter() - workflow_start
     print(f"工作流耗时: {workflow_cost:.2f} 秒")
     report_path = output_path / "quality_report.txt"
