@@ -35,7 +35,14 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
 
     # --- 主笔模型路由 ---
-    WRITER_PROVIDER: str = "openai"  # 可选 "openai" 或 "deepseek"
+    WRITER_PROVIDER: str = "openai"  # 可选 "openai" / "deepseek" / "gemini"
+
+    # --- Gemini 配置 ---
+    GOOGLE_API_KEY: str = ""
+    GOOGLE_GENAI_USE_VERTEXAI: bool = False
+    GOOGLE_CLOUD_PROJECT: str = ""
+    GOOGLE_CLOUD_LOCATION: str = "us-central1"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite-preview"
 
     # --- OpenAI 主笔配置 ---
     OPENAI_API_KEY: str = ""
@@ -53,6 +60,13 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-chat"
+
+    # --- Gemini / Google Gen AI ---
+    GOOGLE_API_KEY: str = ""
+    GOOGLE_GENAI_USE_VERTEXAI: bool = False
+    GOOGLE_CLOUD_PROJECT: str = ""
+    GOOGLE_CLOUD_LOCATION: str = "us-central1"
+    GEMINI_MODEL: str = "gemini-3.1-flash"
 
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
