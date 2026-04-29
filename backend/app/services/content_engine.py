@@ -11,6 +11,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts
+from app.services.gemini import polish_book_text
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,8 @@ async def generate_full_book(
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
 
-    final_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
+    generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
+    final_markdown = await asyncio.to_thread(polish_book_text, generated_markdown)
 
     if output_dir is not None:
         try:
