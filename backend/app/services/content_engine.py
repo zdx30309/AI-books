@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -35,44 +33,6 @@ def _get_openai_writer_client() -> OpenAI:
 
     _openai_writer_client = OpenAI(**client_kwargs)
     return _openai_writer_client
-
-
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.DOTALL)
-_JSON_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
-
-
-def _strip_json_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = _JSON_FENCE_RE.sub("", text).strip()
-    return text
-
-
-def _extract_json_text(text: str) -> str:
-    cleaned = _strip_json_fence(text)
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"大模型返回内容中未找到完整 JSON 对象: {cleaned[:300]}")
-    return cleaned[start : end + 1]
-
-
-def _repair_json_text(text: str) -> str:
-    return _JSON_TRAILING_COMMA_RE.sub(r"\1", text.strip())
-
-
-def _loads_json_with_repair(text: str, *, source_name: str) -> dict[str, Any]:
-    candidates = [text, _repair_json_text(text)]
-    last_exc: Exception | None = None
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, dict):
-                return data
-            raise ValueError(f"{source_name} 解析结果必须是字典")
-        except json.JSONDecodeError as exc:
-            last_exc = exc
-    raise ValueError(f"{source_name} JSON 解析失败: {last_exc}. 原始输出: {text[:1000]}")
 
 
 def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> tuple[str, Any | None]:
@@ -149,32 +109,15 @@ async def _route_writer_call(rendered_prompt: str) -> str:
     return await asyncio.to_thread(_openai_writer_call, rendered_prompt)
 
 
-async def generate_blueprint(raw_text: str, category: str = "social_science") -> dict[str, Any]:
-    prompts = get_prompts(category)
-    rendered_prompt = prompts["blueprint_architect"].format(raw_text=raw_text.strip())
-    content = await _route_writer_call(rendered_prompt)
-    json_text = _extract_json_text(content)
-    return _loads_json_with_repair(json_text, source_name="蓝图")
-
-
 async def generate_full_book(
-    blueprint: dict[str, Any],
+    raw_text: str,
     category: str = "social_science",
     output_dir: Path | None = None,
 ) -> str:
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
 
-    raw_text = str(blueprint.get("raw_text") or blueprint.get("source_text") or "")
-    if not raw_text:
-        raw_text = json.dumps(blueprint, ensure_ascii=False)
-
-    final_markdown = await _route_writer_call(
-        full_book_writer_prompt.format(
-            raw_text=raw_text,
-            blueprint=json.dumps(blueprint, ensure_ascii=False),
-        ),
-    )
+    final_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
 
     if output_dir is not None:
         try:

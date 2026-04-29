@@ -76,7 +76,7 @@ async def _run() -> None:
     print(f"视频前100字: {raw_text[:100]}")
     print(f"轻抖解析耗时: {extract_cost:.2f} 秒")
 
-    print("\n正在进入蓝图与正文生成工作流...")
+    print("\n正在进入正文生成工作流...")
     output_path = Path(__file__).resolve().parent / "output" / "real_douyin_test"
     workflow_start = perf_counter()
     book_path = await run_full_workflow(raw_text, output_path)
