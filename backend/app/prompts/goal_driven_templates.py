@@ -35,19 +35,15 @@ SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文
 
 
 GEMINI_FAST_POLISH_PROMPT = """将我的文本重新表达为自然流畅的现代汉语，不要掉书袋，对大众读者友好。
+"""
 
-特别注意：
-- 每次处理的文本尽量控制在一千字以内；如果原文很长，请按完整段落分块处理，不能机械截断句子
-- 将语义重复的内容删除，如果前文已经出现过有关论述，将重复内容删掉，并一笔带过
-- 个别措辞做微调，保持原意不变
-- 修改章节序号，将【第N章：】改为【N.】
-- 重新分段，每段50~100字；如逻辑紧密，可放宽到200字
-- 不要掉书袋，不要学术腔，不要翻译腔，不要心理和情绪刻画，不要使用比喻修辞
-- 不要使用“不是……而是……”句式，不要使用破折号——
-- 只保留原文内容，不新增观点
 
-原文：
-{text}
+GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）
+需要完成以下工作：
+1. 将语义重复的内容删除。如果前文已经出现过有关论述，将重复的内容删掉，并一笔带过，如“如前文所述……”。
+2. 对少量措辞做自然微调，保持原意不变，不要引入新的说法。
+3. 修改章节序号，将【第N章：】改为【N.】，如【第一章：名校仍有价值，但终极目标需要重排】改为【1.名校仍有价值，但终极目标需要重排】。
+4. 重新分段，每段50~100字；如内容偏多，或逻辑关系紧密，不适合分段，可宽限到200字。
 """
 
 
@@ -70,6 +66,7 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "social_science": {
         "full_book_writer": SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT,
         "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
+        "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
         "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
     },
 }
@@ -85,6 +82,9 @@ def get_prompts(category: str) -> dict[str, str]:
 
 __all__ = [
     "SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT",
+    "GEMINI_FAST_POLISH_PROMPT",
+    "GEMINI_FAST_REFINE_PROMPT",
+    "DEEPSEEK_V4_PRO_FORMAT_PROMPT",
     "PROMPT_REGISTRY",
     "SUPPORTED_CATEGORIES",
     "get_prompts",

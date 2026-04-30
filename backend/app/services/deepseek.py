@@ -32,18 +32,16 @@ def generate_text(
     system_instruction: str | None = None,
 ) -> str:
     client = get_deepseek_client()
-    config: dict[str, Any] = {}
-    if temperature is not None:
-        config["temperature"] = temperature
-    if max_output_tokens is not None:
-        config["max_output_tokens"] = max_output_tokens
+    messages: list[dict[str, str]] = []
     if system_instruction:
-        config["system_instruction"] = system_instruction
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": prompt})
 
     response = client.chat.completions.create(
         model=model or settings.DEEPSEEK_MODEL,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=temperature or 0.1,
+        max_tokens=max_output_tokens,
     )
     return (response.choices[0].message.content or "").strip()
 

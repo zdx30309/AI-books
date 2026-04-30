@@ -7,13 +7,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-
 from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts
-from app.services.gemini import polish_book_text, refine_book_text
 from app.services.deepseek import format_book_text
+from app.services.gemini import polish_book_text, refine_book_text
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +111,65 @@ async def _route_writer_call(rendered_prompt: str) -> str:
     return await asyncio.to_thread(_openai_writer_call, rendered_prompt)
 
 
+def _split_text_into_chunks(text: str, *, target_chars: int = 1000) -> list[str]:
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        para_len = len(para)
+        if current and current_len + para_len > target_chars:
+            chunks.append("\n".join(current).strip())
+            current = [para]
+            current_len = para_len
+        else:
+            current.append(para)
+            current_len += para_len
+
+    if current:
+        chunks.append("\n".join(current).strip())
+
+    return [chunk for chunk in chunks if chunk]
+
+
+async def _polish_in_chunks(text: str) -> str:
+    chunks = _split_text_into_chunks(text, target_chars=1000)
+    if not chunks:
+        return text
+
+    polished_chunks: list[str] = []
+    for chunk in chunks:
+        polished_chunks.append(await asyncio.to_thread(polish_book_text, chunk))
+    return "\n\n".join(polished_chunks).strip()
+
+
+def _front_matter_missing(text: str) -> bool:
+    required_sections = ("三个备选书名", "三个备选简介", "目录")
+    return not all(marker in text for marker in required_sections)
+
+
+async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
+    repair_prompt = (
+        "你现在只负责修复书稿的前置块，不要重写全文。\n"
+        "必须补齐并保留以下三个部分：\n"
+        "1. 三个备选书名\n"
+        "2. 三个备选简介\n"
+        "3. 目录\n"
+        "要求：\n"
+        "- 只输出修复后的完整书稿，前置块和正文都要保留\n"
+        "- 正文尽量沿用原稿，不要大幅改写\n"
+        "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
+        "- 不要解释，不要输出分析\n\n"
+        f"[原始视频文稿]\n{raw_text.strip()}\n\n"
+        f"[当前书稿]\n{generated_markdown.strip()}\n"
+    )
+    return await _route_writer_call(repair_prompt)
+
+
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
@@ -121,14 +179,22 @@ async def generate_full_book(
     full_book_writer_prompt = prompts["full_book_writer"]
 
     generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
-    polished_markdown = await asyncio.to_thread(polish_book_text, generated_markdown)
+    if _front_matter_missing(generated_markdown):
+        logger.warning("主模型初稿缺少前置块，尝试修复。")
+        repaired_markdown = await _repair_front_matter(raw_text, generated_markdown)
+        if repaired_markdown.strip():
+            generated_markdown = repaired_markdown
+
+    polished_markdown = await _polish_in_chunks(generated_markdown)
     refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
     final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
 
-    front_matter_required = ("三个备选书名", "三个备选简介", "目录")
-    if not all(marker in final_markdown for marker in front_matter_required):
-        logger.warning("后处理丢失前置块，回退到主模型原始输出以确保书名/简介/目录保留。")
+    if _front_matter_missing(final_markdown):
+        logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")
         final_markdown = generated_markdown
+
+    if _front_matter_missing(final_markdown):
+        logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
 
     if output_dir is not None:
         try:
