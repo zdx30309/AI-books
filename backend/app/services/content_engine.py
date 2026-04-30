@@ -184,6 +184,32 @@ async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
     return await _route_writer_call(repair_prompt)
 
 
+def _dump_stage(output_dir: Path | None, filename: str, content: str) -> None:
+    """把每一层的产物落盘，便于审稿和定位是哪一层吃掉了内容。"""
+    if output_dir is None or not content:
+        return
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / filename).write_text(content, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("中间产物 %s 写盘失败: %s", filename, exc)
+
+
+def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
+    n = len(content)
+    if prev_chars and prev_chars > 0:
+        ratio = 100.0 * n / prev_chars
+        logger.info("[stage %s] %d 字，较上一层保留 %.1f%%", stage, n, ratio)
+        if ratio < 80.0:
+            logger.warning(
+                "[stage %s] 字数缩减超过 20%%（%d → %d），可能存在过度删减，"
+                "请检查 output_dir 下的中间产物对比",
+                stage, prev_chars, n,
+            )
+    else:
+        logger.info("[stage %s] %d 字", stage, n)
+
+
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
@@ -192,16 +218,40 @@ async def generate_full_book(
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
 
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 第 1 层: OpenAI Writer ----
     generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
+    _log_stage("1/4 writer", generated_markdown)
+    _dump_stage(output_dir, "01_writer.md", generated_markdown)
+
     if _front_matter_missing(generated_markdown):
         logger.warning("主模型初稿缺少前置块，尝试修复。")
         repaired_markdown = await _repair_front_matter(raw_text, generated_markdown)
         if repaired_markdown.strip():
             generated_markdown = repaired_markdown
+            _log_stage("1b/4 writer-repaired", generated_markdown)
+            _dump_stage(output_dir, "01b_writer_repaired.md", generated_markdown)
 
+    writer_chars = len(generated_markdown)
+
+    # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
     polished_markdown = await _polish_by_paragraph_chunks(generated_markdown, target_chars=1000)
+    _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
+    _dump_stage(output_dir, "02_polish.md", polished_markdown)
+    polish_chars = len(polished_markdown)
+
+    # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
+    _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
+    _dump_stage(output_dir, "03_refine.md", refined_markdown)
+    refine_chars = len(refined_markdown)
+
+    # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
+    _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
+    _dump_stage(output_dir, "04_format.md", final_markdown)
 
     if _front_matter_missing(final_markdown):
         logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")
@@ -210,11 +260,16 @@ async def generate_full_book(
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
 
+    logger.info(
+        "[summary] writer=%d → polish=%d → refine=%d → final=%d 字 (整体保留 %.1f%%)",
+        writer_chars, polish_chars, refine_chars, len(final_markdown),
+        100.0 * len(final_markdown) / max(writer_chars, 1),
+    )
+
     if output_dir is not None:
         try:
             from app.core.quality_metrics import measure_quality, format_report
 
-            output_dir.mkdir(parents=True, exist_ok=True)
             report = measure_quality(final_markdown)
             report_text = format_report(report)
             report_path = output_dir / "quality_report.txt"
