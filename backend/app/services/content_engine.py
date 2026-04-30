@@ -111,8 +111,16 @@ async def _route_writer_call(rendered_prompt: str) -> str:
     return await asyncio.to_thread(_openai_writer_call, rendered_prompt)
 
 
-def _split_text_into_chunks(text: str, *, target_chars: int = 1000) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
+    """按完整段落切块，每块目标 ~target_chars 字。
+
+    - 段落边界 = 一个或多个空行（保留 markdown 段落语义）
+    - 不破坏段落：单个段落超过 target_chars 时独立成块
+    - 否则贪心拼装到接近 target_chars
+    """
+    import re
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     if not paragraphs:
         return []
 
@@ -123,7 +131,7 @@ def _split_text_into_chunks(text: str, *, target_chars: int = 1000) -> list[str]
     for para in paragraphs:
         para_len = len(para)
         if current and current_len + para_len > target_chars:
-            chunks.append("\n".join(current).strip())
+            chunks.append("\n\n".join(current))
             current = [para]
             current_len = para_len
         else:
@@ -131,20 +139,26 @@ def _split_text_into_chunks(text: str, *, target_chars: int = 1000) -> list[str]
             current_len += para_len
 
     if current:
-        chunks.append("\n".join(current).strip())
+        chunks.append("\n\n".join(current))
 
-    return [chunk for chunk in chunks if chunk]
+    return chunks
 
 
-async def _polish_in_chunks(text: str) -> str:
-    chunks = _split_text_into_chunks(text, target_chars=1000)
+async def _polish_by_paragraph_chunks(text: str, *, target_chars: int = 1000) -> str:
+    """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
+    （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
+    """
+    if not text or not text.strip():
+        return text
+    chunks = _split_text_by_paragraph(text, target_chars=target_chars)
     if not chunks:
         return text
 
-    polished_chunks: list[str] = []
-    for chunk in chunks:
-        polished_chunks.append(await asyncio.to_thread(polish_book_text, chunk))
-    return "\n\n".join(polished_chunks).strip()
+    polished: list[str] = []
+    for idx, chunk in enumerate(chunks, 1):
+        logger.info("Gemini 一润 块 %d/%d (%d 字)", idx, len(chunks), len(chunk))
+        polished.append(await asyncio.to_thread(polish_book_text, chunk))
+    return "\n\n".join(p.strip() for p in polished if p and p.strip())
 
 
 def _front_matter_missing(text: str) -> bool:
@@ -185,7 +199,7 @@ async def generate_full_book(
         if repaired_markdown.strip():
             generated_markdown = repaired_markdown
 
-    polished_markdown = await _polish_in_chunks(generated_markdown)
+    polished_markdown = await _polish_by_paragraph_chunks(generated_markdown, target_chars=1000)
     refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
     final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
 
