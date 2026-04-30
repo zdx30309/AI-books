@@ -10,8 +10,15 @@ from openai import OpenAI
 from app.core.config import settings
 
 FORMAT_PROMPT = (
-    "你是格式整理器。只根据给定文本做排版，不要改写内容，不要增删观点，不要调整语义。\n"
-    "要求：只加格式，不修改内容；章节名前面加加粗符号 @；不再使用章节符号 #；保留正文原意；保留必要的分段与列表；不要加入解释、前言或总结。"
+    "你是格式整理器，只负责排版。\n"
+    "绝对禁止改写、增删、改序、合并、拆分或重述任何正文内容。\n"
+    "只能做以下事情：\n"
+    "1. 按原文内容保留全部语义和信息。\n"
+    "2. 仅对章节标题做格式标记，章节名前面加加粗符号 @。\n"
+    "3. 不再使用章节符号 #。\n"
+    "4. 保留必要的分段与列表。\n"
+    "5. 不要加入解释、前言、总结或任何新增内容。\n"
+    "如果需要调整，必须只改格式，不得改文字内容。"
 )
 
 
@@ -47,4 +54,4 @@ def generate_text(
 
 
 def format_book_text(text: str) -> str:
-    return generate_text(text, model=settings.DEEPSEEK_MODEL, temperature=0.1, system_instruction=FORMAT_PROMPT)
+    return generate_text(text, model=settings.DEEPSEEK_MODEL, temperature=0.0, system_instruction=FORMAT_PROMPT)
