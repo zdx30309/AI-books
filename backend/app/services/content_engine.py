@@ -7,11 +7,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+
 from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts
-from app.services.gemini import polish_book_text
+from app.services.gemini import polish_book_text, refine_book_text
+from app.services.deepseek import format_book_text
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,14 @@ async def generate_full_book(
     full_book_writer_prompt = prompts["full_book_writer"]
 
     generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
-    final_markdown = await asyncio.to_thread(polish_book_text, generated_markdown)
+    polished_markdown = await asyncio.to_thread(polish_book_text, generated_markdown)
+    refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
+    final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
+
+    front_matter_required = ("三个备选书名", "三个备选简介", "目录")
+    if not all(marker in final_markdown for marker in front_matter_required):
+        logger.warning("后处理丢失前置块，回退到主模型原始输出以确保书名/简介/目录保留。")
+        final_markdown = generated_markdown
 
     if output_dir is not None:
         try:
