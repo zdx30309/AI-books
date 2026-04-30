@@ -1,25 +1,22 @@
 """
 Gravity Singularity - Celery 流水线任务
 
-当前主任务 process_video 已切换为“新引擎为主、旧工作流做外壳”的融合模式：
-- 轻抖解析仍保留为输入层
-- 新 content_engine 负责蓝图 + 正文 + 洗稿 + 终审
-- Task / Chapter 仍用于状态回写与可观测性
+主任务 process_video 流水线：
+- 轻抖解析获取视频文案
+- content_engine.generate_full_book 直出全文（writer → polish → refine → format）
+- Task / Chapter 用于状态回写与可观测性
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import uuid
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.workflow import step1_generate_blueprint
 from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
@@ -29,7 +26,7 @@ from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_CHAPTER_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_CHAPTER_HEADING_RE = re.compile(r"^@\s*(.+?)\s*$", re.MULTILINE)
 
 
 # ============================================================
@@ -142,35 +139,23 @@ def process_video(self, task_id: str) -> dict:
         _update_progress(db, task, progress=8, step="正在获取视频文案")
         video_text = _fetch_video_text(task.source_url, task.config or {})
         _patch_config(task, raw_text_chars=len(video_text))
-        _update_progress(db, task, progress=12, step=f"文案就绪 ({len(video_text)} 字符)")
+        _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)")
 
-        anxiety_point = str((task.config or {}).get("anxiety_point") or "用户关心的核心议题")
         category = str((task.config or {}).get("category") or "social_science")
 
-        _update_progress(db, task, progress=18, step="新引擎生成蓝图")
         output_dir = settings.PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
-        blueprint_path = asyncio.run(
-            step1_generate_blueprint(
-                anxiety_point,
-                video_text,
-                output_dir,
-                category=category,
-            )
-        )
-        _patch_config(task, blueprint_path=str(blueprint_path))
-        _update_progress(db, task, progress=32, step="蓝图就绪，进入正文生成")
 
-        blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+        _update_progress(db, task, progress=25, step="主模型生成初稿")
         markdown = asyncio.run(
             generate_full_book(
-                anxiety_point,
-                blueprint,
+                video_text,
                 category=category,
                 output_dir=output_dir,
             )
         )
         _patch_config(task, markdown_chars=len(markdown))
+        _update_progress(db, task, progress=90, step="全文生成完成，正在写入章节")
 
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown)
