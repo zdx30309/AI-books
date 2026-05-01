@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 
@@ -13,6 +13,14 @@ from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts
 from app.services.deepseek import format_book_text
 from app.services.gemini import polish_book_text, refine_book_text
+
+# 进度上报回调：(stage_name, info_dict)
+# stage_name 取值：
+#   writer_start / writer_done
+#   polish_start / polish_chunk / polish_done
+#   refine_start / refine_done
+#   format_start / format_done
+StageCallback = Callable[[str, dict[str, Any]], None]
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +152,12 @@ def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str
     return chunks
 
 
-async def _polish_by_paragraph_chunks(text: str, *, target_chars: int = 1000) -> str:
+async def _polish_by_paragraph_chunks(
+    text: str,
+    *,
+    target_chars: int = 1000,
+    on_stage: StageCallback | None = None,
+) -> str:
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
     （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
     """
@@ -154,9 +167,12 @@ async def _polish_by_paragraph_chunks(text: str, *, target_chars: int = 1000) ->
     if not chunks:
         return text
 
+    total = len(chunks)
     polished: list[str] = []
     for idx, chunk in enumerate(chunks, 1):
-        logger.info("Gemini 一润 块 %d/%d (%d 字)", idx, len(chunks), len(chunk))
+        logger.info("Gemini 一润 块 %d/%d (%d 字)", idx, total, len(chunk))
+        if on_stage:
+            on_stage("polish_chunk", {"idx": idx, "total": total, "chars": len(chunk)})
         polished.append(await asyncio.to_thread(polish_book_text, chunk))
     return "\n\n".join(p.strip() for p in polished if p and p.strip())
 
@@ -214,6 +230,7 @@ async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
     output_dir: Path | None = None,
+    on_stage: StageCallback | None = None,
 ) -> str:
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
@@ -222,9 +239,13 @@ async def generate_full_book(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 第 1 层: OpenAI Writer ----
+    if on_stage:
+        on_stage("writer_start", {})
     generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
     _log_stage("1/4 writer", generated_markdown)
     _dump_stage(output_dir, "01_writer.md", generated_markdown)
+    if on_stage:
+        on_stage("writer_done", {"chars": len(generated_markdown)})
 
     if _front_matter_missing(generated_markdown):
         logger.warning("主模型初稿缺少前置块，尝试修复。")
@@ -237,21 +258,37 @@ async def generate_full_book(
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
-    polished_markdown = await _polish_by_paragraph_chunks(generated_markdown, target_chars=1000)
+    if on_stage:
+        on_stage("polish_start", {})
+    polished_markdown = await _polish_by_paragraph_chunks(
+        generated_markdown,
+        target_chars=1000,
+        on_stage=on_stage,
+    )
     _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
     _dump_stage(output_dir, "02_polish.md", polished_markdown)
     polish_chars = len(polished_markdown)
+    if on_stage:
+        on_stage("polish_done", {"chars": polish_chars})
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
+    if on_stage:
+        on_stage("refine_start", {})
     refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
     _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
     _dump_stage(output_dir, "03_refine.md", refined_markdown)
     refine_chars = len(refined_markdown)
+    if on_stage:
+        on_stage("refine_done", {"chars": refine_chars})
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
+    if on_stage:
+        on_stage("format_start", {})
     final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
     _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
     _dump_stage(output_dir, "04_format.md", final_markdown)
+    if on_stage:
+        on_stage("format_done", {"chars": len(final_markdown)})
 
     if _front_matter_missing(final_markdown):
         logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")

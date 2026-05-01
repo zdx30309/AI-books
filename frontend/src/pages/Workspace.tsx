@@ -48,7 +48,10 @@ export function Workspace() {
         onCreate={() => setModalOpen(true)}
       />
 
-      <WorkshopSection onStartCreate={() => setModalOpen(true)} />
+      <WorkshopSection
+        onStartCreate={() => setModalOpen(true)}
+        latestTaskId={tasks[0]?.id ?? null}
+      />
 
       <CreateTaskModal
         open={modalOpen}

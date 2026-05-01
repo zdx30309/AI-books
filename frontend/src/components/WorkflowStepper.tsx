@@ -1,0 +1,83 @@
+import { Check, Circle, Loader2 } from "lucide-react";
+
+interface Step {
+  key: string;
+  label: string;
+  /** 触发本步的进度阈值（>= 即视为已开始） */
+  start: number;
+}
+
+const STEPS: Step[] = [
+  { key: "queue", label: "排队建库", start: 0 },
+  { key: "fetch", label: "解析视频文案", start: 8 },
+  { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
+  { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
+  { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
+  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
+];
+
+interface Props {
+  progress: number;
+  currentStep: string;
+  status: string;
+}
+
+export function WorkflowStepper({ progress, currentStep, status }: Props) {
+  const isFailed = status === "failed";
+  const isCompleted = status === "completed" || progress >= 100;
+
+  return (
+    <ol className="space-y-3">
+      {STEPS.map((step, idx) => {
+        const next = STEPS[idx + 1];
+        // 已完成：下一步已经开始 / 整体完成
+        const done = isCompleted || (next ? progress >= next.start : false);
+        // 进行中：自身已开始但下一步未开始
+        const active = !done && progress >= step.start && !isFailed;
+        // 失败：当前步骤定格在 active
+        const failed = isFailed && active;
+
+        return (
+          <li key={step.key} className="flex items-start gap-3">
+            <span
+              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-colors ${
+                done
+                  ? "bg-gold-500/15 text-gold-300"
+                  : active
+                    ? "bg-gold-500/10 text-gold-200"
+                    : "bg-warm-600/10 text-warm-500"
+              }`}
+            >
+              {done ? (
+                <Check className="h-3 w-3" strokeWidth={2.5} />
+              ) : active ? (
+                <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+              ) : (
+                <Circle className="h-2 w-2 fill-current" />
+              )}
+            </span>
+            <div className="flex-1 -mt-0.5">
+              <div
+                className={`text-sm tracking-wide ${
+                  done
+                    ? "text-warm-200"
+                    : active
+                      ? "text-warm-100"
+                      : "text-warm-500"
+                }`}
+              >
+                {step.label}
+              </div>
+              {active && currentStep && (
+                <div className="mt-1 text-[11px] tracking-wide text-warm-400">
+                  {failed ? "已停止" : currentStep}
+                </div>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}

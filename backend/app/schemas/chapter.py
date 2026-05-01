@@ -20,3 +20,9 @@ class ChaptersListResponse(BaseModel):
     task_id: UUID
     total: int
     chapters: list[ChapterResponse]
+
+
+class ChapterUpdateRequest(BaseModel):
+    """编辑器保存请求；title 选填，content 必填。"""
+    title: str | None = None
+    content: str

@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
-import { LayoutGrid, BookMarked, User } from "lucide-react";
+import { LayoutGrid, BookMarked, User, LogOut } from "lucide-react";
+import { useAuth } from "@/auth/AuthContext";
 
 const navItems = [
   { to: "/", label: "工作台", icon: LayoutGrid, end: true },
@@ -8,6 +9,8 @@ const navItems = [
 ];
 
 export function Sidebar() {
+  const { user, logout } = useAuth();
+
   return (
     <aside className="fixed left-0 top-0 bottom-0 z-30 flex w-[220px] flex-col border-r border-gold-500/8 bg-base-800/70 backdrop-blur-md">
       {/* Logo */}
@@ -35,6 +38,17 @@ export function Sidebar() {
             <span className="text-sm tracking-wide">{label}</span>
           </NavLink>
         ))}
+
+        {user && (
+          <button
+            type="button"
+            onClick={logout}
+            className="nav-item mt-1 w-full text-left"
+          >
+            <LogOut className="h-[18px] w-[18px]" strokeWidth={1.6} />
+            <span className="text-sm tracking-wide">退出登录</span>
+          </button>
+        )}
       </nav>
 
       {/* 角落标语 */}

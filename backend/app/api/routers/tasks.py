@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus
-from app.schemas.chapter import ChapterResponse, ChaptersListResponse
+from app.schemas.chapter import (
+    ChapterResponse,
+    ChapterUpdateRequest,
+    ChaptersListResponse,
+)
 from app.schemas.task import (
     CreateTaskRequest,
     CreateTaskResponse,
@@ -178,6 +182,36 @@ def get_chapters(
         total=len(chapters),
         chapters=[ChapterResponse.model_validate(c) for c in chapters],
     )
+
+
+@router.put(
+    "/{task_id}/chapters/{chapter_num}",
+    response_model=ChapterResponse,
+    summary="更新指定章节内容（编辑器保存）",
+)
+def update_chapter(
+    task_id: UUID,
+    chapter_num: int,
+    body: ChapterUpdateRequest,
+    db: Session = Depends(get_db),
+) -> ChapterResponse:
+    chapter = (
+        db.query(Chapter)
+        .filter(Chapter.task_id == task_id, Chapter.chapter_num == chapter_num)
+        .first()
+    )
+    if chapter is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"chapter {chapter_num} of task {task_id} not found",
+        )
+    if body.title is not None and body.title.strip():
+        chapter.title = body.title.strip()
+    chapter.content = body.content
+    chapter.word_count = len(body.content)
+    db.commit()
+    db.refresh(chapter)
+    return ChapterResponse.model_validate(chapter)
 
 
 @router.get(

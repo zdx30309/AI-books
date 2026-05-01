@@ -146,16 +146,52 @@ def process_video(self, task_id: str) -> dict:
         output_dir = settings.PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _update_progress(db, task, progress=25, step="主模型生成初稿")
+        _update_progress(db, task, progress=25, step="即将启动主模型")
+
+        _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
+            "writer_start": (28, "OpenAI 主模型生成初稿中"),
+            "writer_done": (45, "主模型初稿完成"),
+            "polish_start": (50, "Gemini 一润启动"),
+            "polish_done": (70, "Gemini 一润完成"),
+            "refine_start": (72, "Gemini 二润中"),
+            "refine_done": (85, "二润完成"),
+            "format_start": (87, "DeepSeek 终稿格式化中"),
+            "format_done": (90, "终稿就绪"),
+        }
+
+        def _on_stage(stage: str, info: dict[str, Any]) -> None:
+            try:
+                if stage == "polish_chunk":
+                    idx = int(info.get("idx", 0))
+                    total = max(int(info.get("total", 1)), 1)
+                    prog = 50 + int(20 * idx / total)
+                    _update_progress(
+                        db, task,
+                        progress=min(prog, 70),
+                        step=f"Gemini 一润 {idx}/{total} 块",
+                    )
+                    return
+                mapped = _STAGE_TO_PROGRESS.get(stage)
+                if mapped is None:
+                    return
+                prog, step = mapped
+                chars = info.get("chars")
+                if chars:
+                    step = f"{step} ({chars:,} 字)"
+                _update_progress(db, task, progress=prog, step=step)
+            except Exception:
+                logger.exception("on_stage 回调写库失败 stage=%s", stage)
+
         markdown = asyncio.run(
             generate_full_book(
                 video_text,
                 category=category,
                 output_dir=output_dir,
+                on_stage=_on_stage,
             )
         )
         _patch_config(task, markdown_chars=len(markdown))
-        _update_progress(db, task, progress=90, step="全文生成完成，正在写入章节")
+        _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节")
 
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown)

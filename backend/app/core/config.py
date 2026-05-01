@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     LLM_REQUEST_TIMEOUT: int = 120
     LLM_MAX_RETRIES: int = 3
 
+    # --- 鉴权 (JWT) ---
+    JWT_SECRET: str = "change-me-please-very-long-random-secret-key-for-jwt-signing-only"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRES_HOURS: int = 24 * 7   # 默认 7 天
+
     # --- CORS ---
     CORS_ALLOW_ORIGINS: str = "*"
 

@@ -95,3 +95,51 @@ export interface StageContentResponse {
   content: string;
   char_count: number;
 }
+
+export interface ChapterUpdateRequest {
+  title?: string | null;
+  content: string;
+}
+
+// 段落润色
+
+export interface PolishParagraphRequest {
+  text: string;
+}
+
+export interface PolishParagraphResponse {
+  original: string;
+  polished: string;
+  original_chars: number;
+  polished_chars: number;
+}
+
+// 鉴权
+
+export interface RegisterRequest {
+  email?: string | null;
+  phone?: string | null;
+  password: string;
+  name?: string | null;
+}
+
+export interface LoginRequest {
+  identifier: string;
+  password: string;
+}
+
+export interface UserPublic {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  name: string;
+  avatar_url: string | null;
+  is_vip: boolean;
+  created_at: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user: UserPublic;
+}

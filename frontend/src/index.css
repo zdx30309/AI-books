@@ -150,6 +150,11 @@
     @apply inline-flex items-center rounded-full bg-gold-500/15 px-2 py-0.5 text-[10px] font-medium tracking-wider text-gold-300 border border-gold-500/25;
   }
 
+  /* 鉴权页输入框 */
+  .auth-input {
+    @apply w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50;
+  }
+
   /* 书籍封面占位 (无封面图时使用) */
   .cover-placeholder {
     background:

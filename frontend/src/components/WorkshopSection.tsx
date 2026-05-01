@@ -1,11 +1,13 @@
-import { Video, Wand2, ImageIcon, Upload } from "lucide-react";
+import { Sparkles, FileDown } from "lucide-react";
+import { Link } from "react-router-dom";
 import { FeatureCard } from "./FeatureCard";
 
 interface Props {
   onStartCreate: () => void;
+  latestTaskId?: string | null;
 }
 
-export function WorkshopSection({ onStartCreate }: Props) {
+export function WorkshopSection({ onStartCreate, latestTaskId }: Props) {
   return (
     <section className="mt-16">
       <header className="mb-6 flex items-center justify-between">
@@ -15,31 +17,29 @@ export function WorkshopSection({ onStartCreate }: Props) {
         </h2>
       </header>
 
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <FeatureCard
-          icon={Video}
-          title="视频转书稿"
-          description="AI 提取视频文稿，智能优化内容结构"
+          icon={Sparkles}
+          title="一键成书"
+          description="抖音视频文稿 → AI 提取 / 智能润色 / 自动封面，全流程一键完成"
           onClick={onStartCreate}
         />
-        <FeatureCard
-          icon={Wand2}
-          title="智能润色"
-          description="优化语言表达，提升阅读体验"
-          comingSoon
-        />
-        <FeatureCard
-          icon={ImageIcon}
-          title="封面生成"
-          description="AI 生成高质量书籍封面，多种风格可选"
-          comingSoon
-        />
-        <FeatureCard
-          icon={Upload}
-          title="导出发布"
-          description="一键导出多种格式，轻松发布与分享"
-          comingSoon
-        />
+
+        {latestTaskId ? (
+          <Link to={`/book/${latestTaskId}`} className="block">
+            <FeatureCard
+              icon={FileDown}
+              title="导出预览"
+              description="进入最近一本书稿，查看终稿、按段落润色、导出 Markdown / 纯文本"
+            />
+          </Link>
+        ) : (
+          <FeatureCard
+            icon={FileDown}
+            title="导出预览"
+            description="完成第一本书稿后，可在书架点入查看终稿并导出 Markdown / 纯文本"
+          />
+        )}
       </div>
     </section>
   );

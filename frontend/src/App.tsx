@@ -1,12 +1,16 @@
 import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar";
 import { UserBadge } from "./components/UserBadge";
+import { AuthProvider } from "./auth/AuthContext";
+import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { Workspace } from "./pages/Workspace";
 import { Bookshelf } from "./pages/Bookshelf";
 import { Profile } from "./pages/Profile";
 import { BookDetail } from "./pages/BookDetail";
+import { LoginPage } from "./pages/Login";
+import { RegisterPage } from "./pages/Register";
 
-function Layout({ children }: { children: React.ReactNode }) {
+function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-base-900">
       <Sidebar />
@@ -20,13 +24,54 @@ function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <Layout>
+    <AuthProvider>
       <Routes>
-        <Route path="/" element={<Workspace />} />
-        <Route path="/bookshelf" element={<Bookshelf />} />
-        <Route path="/profile" element={<Profile />} />
-        <Route path="/book/:id" element={<BookDetail />} />
+        {/* 公共路由 */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+
+        {/* 受保护路由：需要登录 */}
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Workspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/bookshelf"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Bookshelf />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Profile />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/book/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <BookDetail />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
       </Routes>
-    </Layout>
+    </AuthProvider>
   );
 }
