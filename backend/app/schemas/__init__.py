@@ -4,6 +4,11 @@ from app.schemas.common import HealthResponse
 from app.schemas.task import (
     CreateTaskRequest,
     CreateTaskResponse,
+    MarkdownResponse,
+    StageContentResponse,
+    StatsResponse,
+    TaskListItem,
+    TaskListResponse,
     TaskStatusResponse,
 )
 
@@ -12,6 +17,11 @@ __all__ = [
     "CreateTaskRequest",
     "CreateTaskResponse",
     "TaskStatusResponse",
+    "TaskListItem",
+    "TaskListResponse",
+    "StatsResponse",
+    "MarkdownResponse",
+    "StageContentResponse",
     "ChapterResponse",
     "ChaptersListResponse",
 ]
