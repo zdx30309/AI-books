@@ -9,6 +9,8 @@
 - worker 关闭 gossip/mingle/heartbeat，减少 Upstash Redis 长连接抖动
 - 任意一个进程崩溃，会把另一个一并杀掉，避免半死状态
 - Ctrl+C 干净退出双进程
+- 默认不启用 uvicorn --reload，避免文件保存触发重载时把正在跑的 Celery 任务一起中断。
+  如需本地接口热重载，可先设置环境变量 RUN_UVICORN_RELOAD=1。
 
 如果只想要传统两窗口模式，可以分别运行：
     uvicorn main:app --reload --port 8000
@@ -79,12 +81,13 @@ def main() -> int:
         "-m",
         "uvicorn",
         "main:app",
-        "--reload",
         "--host",
         "0.0.0.0",
         "--port",
         "8000",
     ]
+    if os.getenv("RUN_UVICORN_RELOAD", "").lower() in {"1", "true", "yes"}:
+        api_cmd.insert(4, "--reload")
 
     worker = _spawn("celery worker", worker_cmd)
     # 给 worker 一秒注册 broker 连接，避免日志交错难读

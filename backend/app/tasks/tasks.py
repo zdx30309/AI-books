@@ -29,6 +29,7 @@ from celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 _CHAPTER_HEADING_RE = re.compile(r"^@\s*(\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+_BODY_SECTION_RE = re.compile(r"^@?\s*正文\s*$", re.MULTILINE)
 _BOOK_TITLE_SECTION_RE = re.compile(
     r"^@?\s*三个备选书名\s*$([\s\S]*?)(?=^@?\s*三个备选简介\s*$|^@?\s*目录\s*$|^@|\Z)",
     re.MULTILINE,
@@ -126,7 +127,10 @@ def _generate_cover_safely(title: str, markdown: str, output_dir: Path, task: Ta
 
 def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
-    matches = list(_CHAPTER_HEADING_RE.finditer(markdown))
+    body_match = _BODY_SECTION_RE.search(markdown or "")
+    body_offset = body_match.end() if body_match else 0
+    body_text = markdown[body_offset:] if body_match else markdown
+    matches = list(_CHAPTER_HEADING_RE.finditer(body_text))
     if not matches:
         chapter = Chapter(task_id=task.id, chapter_num=1, title="全文", content=markdown, word_count=len(markdown))
         db.add(chapter)
@@ -137,8 +141,8 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
         chapter_num = int(match.group(1))
         title = match.group(2).strip()
         start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
-        content = markdown[start:end].strip()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body_text)
+        content = body_text[start:end].strip()
         chapter = Chapter(
             task_id=task.id,
             chapter_num=chapter_num or idx + 1,

@@ -11,11 +11,11 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import DEEPSEEK_V4_PRO_FORMAT_PROMPT
-from app.utils.retry_utils import network_retry
 
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_DEEPSEEK_ERRORS = (OpenAIError, httpx.HTTPError, ConnectionError, TimeoutError, ValueError)
+_REQUIRED_FORMAT_MARKERS = ("@三个备选书名", "@三个备选简介", "@目录", "@正文")
 
 
 @lru_cache
@@ -30,7 +30,6 @@ def get_deepseek_client() -> OpenAI:
     )
 
 
-@network_retry
 @retry(
     retry=retry_if_exception_type(_RETRYABLE_DEEPSEEK_ERRORS),
     wait=wait_exponential(multiplier=2, min=5, max=60),
@@ -59,17 +58,42 @@ def generate_text(
     if max_output_tokens is not None:
         kwargs["max_tokens"] = max_output_tokens
 
-    response = client.chat.completions.create(**kwargs)
-    content = (response.choices[0].message.content or "").strip()
+    chunks: list[str] = []
+    try:
+        stream = client.chat.completions.create(**kwargs, stream=True)
+        for event in stream:
+            if not event.choices:
+                continue
+            delta = event.choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                chunks.append(piece)
+    except (httpx.RemoteProtocolError, httpx.ReadError, OpenAIError) as exc:
+        partial = "".join(chunks).strip()
+        if _looks_like_complete_format_output(partial):
+            logger.warning(
+                "DeepSeek 流式连接提前关闭，但已收到结构完整输出，继续使用: chars=%d error=%s",
+                len(partial),
+                exc,
+            )
+            return partial
+        raise
+    content = "".join(chunks).strip()
     if not content:
         raise ValueError("DeepSeek 返回空响应")
     return content
 
 
+def _looks_like_complete_format_output(text: str) -> bool:
+    if not text or len(text) < 5000:
+        return False
+    return all(marker in text for marker in _REQUIRED_FORMAT_MARKERS)
+
+
 def format_book_text(text: str) -> str:
     """格式整理。Prompt 来源: goal_driven_templates.DEEPSEEK_V4_PRO_FORMAT_PROMPT"""
-    rendered = DEEPSEEK_V4_PRO_FORMAT_PROMPT.format(text=text)
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
+    rendered = DEEPSEEK_V4_PRO_FORMAT_PROMPT.format(text=text)
     return generate_text(
         rendered,
         model=settings.DEEPSEEK_MODEL,

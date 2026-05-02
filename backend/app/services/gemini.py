@@ -18,41 +18,42 @@ from app.prompts.goal_driven_templates import (
 logger = logging.getLogger(__name__)
 
 
-_vertex_client: genai.Client | None = None
-_api_key_client: genai.Client | None = None
+_vertex_clients: dict[int, genai.Client] = {}
+_api_key_clients: dict[int, genai.Client] = {}
 
 
 def _resolve_google_api_key() -> str | None:
     return (settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "")).strip() or None
 
 
-def _build_http_options() -> types.HttpOptions:
+def _build_http_options(timeout_seconds: int) -> types.HttpOptions:
     return types.HttpOptions(
         apiVersion="v1",
-        timeout=settings.GEMINI_REQUEST_TIMEOUT * 1000,
+        timeout=timeout_seconds * 1000,
     )
 
 
-def _get_vertex_client() -> genai.Client:
-    global _vertex_client
-    if _vertex_client is not None:
-        return _vertex_client
+def _get_vertex_client(timeout_seconds: int | None = None) -> genai.Client:
+    timeout = int(timeout_seconds or settings.GEMINI_REQUEST_TIMEOUT)
+    if timeout in _vertex_clients:
+        return _vertex_clients[timeout]
 
     project = (settings.GOOGLE_CLOUD_PROJECT or os.getenv("GOOGLE_CLOUD_PROJECT", "video-plan2")).strip() or "video-plan2"
     location = (settings.GOOGLE_CLOUD_LOCATION or os.getenv("GOOGLE_CLOUD_LOCATION", "global")).strip() or "global"
-    _vertex_client = genai.Client(
+    client = genai.Client(
         vertexai=True,
         project=project,
         location=location,
-        http_options=_build_http_options(),
+        http_options=_build_http_options(timeout),
     )
-    return _vertex_client
+    _vertex_clients[timeout] = client
+    return client
 
 
-def _get_api_key_client() -> genai.Client:
-    global _api_key_client
-    if _api_key_client is not None:
-        return _api_key_client
+def _get_api_key_client(timeout_seconds: int | None = None) -> genai.Client:
+    timeout = int(timeout_seconds or settings.GEMINI_REQUEST_TIMEOUT)
+    if timeout in _api_key_clients:
+        return _api_key_clients[timeout]
 
     api_key = _resolve_google_api_key()
     if not api_key:
@@ -60,11 +61,12 @@ def _get_api_key_client() -> genai.Client:
             "GOOGLE_API_KEY 未配置，无法切换到 Gemini API Key 通道。"
             "请在 .env 设置 GOOGLE_API_KEY，或保持 GOOGLE_GENAI_USE_VERTEXAI=True 使用 Vertex AI。"
         )
-    _api_key_client = genai.Client(
+    client = genai.Client(
         api_key=api_key,
-        http_options=_build_http_options(),
+        http_options=_build_http_options(timeout),
     )
-    return _api_key_client
+    _api_key_clients[timeout] = client
+    return client
 
 
 def get_gemini_client() -> genai.Client:
@@ -121,6 +123,7 @@ def generate_text(
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     system_instruction: str | None = None,
+    request_timeout_seconds: int | None = None,
     retries: int = 2,
 ) -> str:
     """使用 Gemini 生成纯文本。
@@ -159,8 +162,9 @@ def generate_text(
 
     last_exc: Exception | None = None
     attempts = max(1, retries)
+    timeout = int(request_timeout_seconds or settings.GEMINI_REQUEST_TIMEOUT)
     for backend in backends:
-        client = _get_vertex_client() if backend == "vertex" else _get_api_key_client()
+        client = _get_vertex_client(timeout) if backend == "vertex" else _get_api_key_client(timeout)
         for attempt in range(1, attempts + 1):
             try:
                 response = client.models.generate_content(
@@ -218,6 +222,7 @@ def polish_book_text(text: str) -> str:
         temperature=0.3,
         max_output_tokens=settings.GEMINI_POLISH_MAX_OUTPUT_TOKENS,
         system_instruction=GEMINI_FAST_POLISH_PROMPT,
+        request_timeout_seconds=settings.GEMINI_REQUEST_TIMEOUT,
         retries=settings.GEMINI_MAX_RETRIES,
     )
 
@@ -230,5 +235,6 @@ def refine_book_text(text: str) -> str:
         temperature=0.2,
         max_output_tokens=settings.GEMINI_REFINE_MAX_OUTPUT_TOKENS,
         system_instruction=GEMINI_FAST_REFINE_PROMPT,
+        request_timeout_seconds=settings.GEMINI_REFINE_REQUEST_TIMEOUT,
         retries=settings.GEMINI_MAX_RETRIES,
     )

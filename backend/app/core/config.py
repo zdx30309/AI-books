@@ -62,9 +62,9 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-chat"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 20000
-    DEEPSEEK_REQUEST_TIMEOUT: int = 300
+    DEEPSEEK_REQUEST_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 1
-    DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 420
+    DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800
 
     # --- Gemini / Google Gen AI ---
     GOOGLE_API_KEY: str = ""
@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3-flash-preview"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 30
+    GEMINI_REFINE_REQUEST_TIMEOUT: int = 240
     GEMINI_MAX_RETRIES: int = 1
     GEMINI_THINKING_BUDGET: int = 0
     GEMINI_POLISH_CALL_TIMEOUT: int = 45
@@ -86,6 +87,9 @@ class Settings(BaseSettings):
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"
     IMAGE_MODEL: str = "gpt-image-2"
     IMAGE_SIZE: str = "1024x1536"
+    IMAGE_QUALITY: str = ""
+    IMAGE_RESPONSE_FORMAT: str = ""
+    IMAGE_OUTPUT_FORMAT: str = ""
 
     # --- 轻抖 API (视频文案提取) ---
     QINGDOU_API_KEY: str = ""
