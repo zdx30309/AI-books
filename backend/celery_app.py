@@ -13,9 +13,20 @@ from celery import Celery
 
 from app.core.config import settings
 
-redis_ssl_query = "?ssl_cert_reqs=none"
-broker_url = settings.CELERY_BROKER_URL if "ssl_cert_reqs=" in settings.CELERY_BROKER_URL else f"{settings.CELERY_BROKER_URL}{redis_ssl_query}"
-backend_url = settings.CELERY_RESULT_BACKEND if "ssl_cert_reqs=" in settings.CELERY_RESULT_BACKEND else f"{settings.CELERY_RESULT_BACKEND}{redis_ssl_query}"
+
+def _with_redis_ssl_options(url: str) -> str:
+    if not url.startswith("rediss://") or "ssl_cert_reqs=" in url:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}ssl_cert_reqs=none"
+
+
+def _socket_timeout(value: int) -> int | None:
+    return None if value <= 0 else value
+
+
+broker_url = _with_redis_ssl_options(settings.CELERY_BROKER_URL)
+backend_url = _with_redis_ssl_options(settings.CELERY_RESULT_BACKEND)
 
 celery_app = Celery(
     "gravity_singularity",
@@ -42,10 +53,40 @@ celery_app.conf.update(
     enable_utc=True,
 
     # --- 可靠性 ---
-    task_track_started=True,                  # 让 PENDING/STARTED/SUCCESS 都可见
-    task_acks_late=True,                      # worker 崩溃前未完成的任务会重投
-    worker_prefetch_multiplier=1,             # LLM 任务长，避免一个 worker 抢一堆
-    broker_connection_retry_on_startup=True,  # 兼容 Upstash 偶发抖动
+    task_track_started=True,                    # 让 PENDING/STARTED/SUCCESS 都可见
+    task_acks_late=True,                        # worker 崩溃前未完成的任务会重投
+    task_acks_on_failure_or_timeout=True,        # 失败/超时也尽量回收 ack 状态
+    task_reject_on_worker_lost=True,             # worker 异常丢失时让任务重新入队
+    worker_prefetch_multiplier=1,               # LLM 任务长，避免一个 worker 抢一堆
+    worker_max_tasks_per_child=1,               # 任务跑久后重启子进程，降低连接/内存漂移
+    worker_cancel_long_running_tasks_on_connection_loss=settings.CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS,
+    worker_enable_remote_control=False,          # Upstash 长连接下禁用 pidbox，减少 pub/sub 断连
+    worker_send_task_events=False,
+    broker_connection_retry_on_startup=settings.CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP,
+    broker_connection_retry=True,
+    broker_connection_max_retries=None,
+    broker_heartbeat=settings.CELERY_BROKER_HEARTBEAT,
+    broker_pool_limit=settings.CELERY_BROKER_POOL_LIMIT,
+    broker_transport_options={
+        "visibility_timeout": 86400,
+        "socket_connect_timeout": settings.CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+        "socket_timeout": _socket_timeout(settings.CELERY_BROKER_SOCKET_TIMEOUT),
+        "socket_keepalive": True,
+        "tcp_keepalive": True,
+        "retry_on_timeout": True,
+        "health_check_interval": settings.CELERY_REDIS_HEALTH_CHECK_INTERVAL,
+        "max_retries": settings.CELERY_REDIS_MAX_RETRIES,
+    },
+    result_backend_transport_options={
+        "visibility_timeout": 86400,
+        "socket_connect_timeout": settings.CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+        "socket_timeout": _socket_timeout(settings.CELERY_BROKER_SOCKET_TIMEOUT),
+        "socket_keepalive": True,
+        "tcp_keepalive": True,
+        "retry_on_timeout": True,
+        "health_check_interval": settings.CELERY_REDIS_HEALTH_CHECK_INTERVAL,
+        "max_retries": settings.CELERY_REDIS_MAX_RETRIES,
+    },
 
     # --- 时间限制 (5000字章节循环最长场景) ---
     task_time_limit=60 * 60,        # 1 小时硬超时 (KILL)

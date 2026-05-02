@@ -39,6 +39,7 @@ class TaskStatusResponse(BaseModel):
     progress: int                  # 0-100
     current_step: str
     cover_url: str | None = None
+    title: str | None = None
     error_message: str | None = None
     created_at: datetime
 

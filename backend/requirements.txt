@@ -19,6 +19,7 @@ psycopg2-binary>=2.9.10
 httpx>=0.28.0
 openai>=1.59.0
 google-genai>=0.8.0
+gevent>=24.10.3
 
 # --- 配置 / 校验 ---
 python-dotenv>=1.0.1

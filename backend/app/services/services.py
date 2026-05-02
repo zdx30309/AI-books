@@ -17,6 +17,7 @@ import logging
 import re
 from typing import Any
 
+import httpx
 from openai import OpenAI, OpenAIError
 from tenacity import (
     retry,
@@ -24,6 +25,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+from app.utils.retry_utils import network_retry
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
@@ -42,20 +45,26 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # LLM 客户端 (单例)
 # ------------------------------------------------------------
-# DeepSeek 与 GPT Image 都通过 openai SDK 走 OpenAI 兼容协议，
-# 唯一差别是 base_url 与 api_key。
+# 文本主笔根据 WRITER_PROVIDER 路由到 OpenAI / DeepSeek / Gemini。
+# 图像生成继续走 OpenAI 兼容接口。
 # ============================================================
 
 _text_client = OpenAI(
+    api_key=settings.OPENAI_API_KEY or "sk-placeholder",
+    base_url=settings.OPENAI_BASE_URL,
+    timeout=httpx.Timeout(1800.0, connect=60.0),
+)
+
+_deepseek_client = OpenAI(
     api_key=settings.DEEPSEEK_API_KEY or "sk-placeholder",
     base_url=settings.DEEPSEEK_BASE_URL,
-    timeout=settings.LLM_REQUEST_TIMEOUT,
+    timeout=httpx.Timeout(1800.0, connect=60.0),
 )
 
 _image_client = OpenAI(
     api_key=settings.IMAGE_API_KEY or "sk-placeholder",
     base_url=settings.IMAGE_BASE_URL,
-    timeout=settings.LLM_REQUEST_TIMEOUT,
+    timeout=httpx.Timeout(1800.0, connect=60.0),
 )
 
 
@@ -81,13 +90,16 @@ def count_words(text: str) -> int:
 # ============================================================
 
 
+@network_retry
 @retry(
     stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
     wait=wait_exponential(multiplier=1, min=2, max=20),
     retry=retry_if_exception_type(OpenAIError),
     reraise=True,
 )
-def _chat(
+def _chat_with_client(
+    client: OpenAI,
+    model: str,
     system_prompt: str,
     user_prompt: str,
     *,
@@ -97,7 +109,7 @@ def _chat(
 ) -> str:
     """统一的 chat.completions 入口。所有 LLM 文本调用都过这里。"""
     kwargs: dict[str, Any] = {
-        "model": settings.DEEPSEEK_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -109,9 +121,48 @@ def _chat(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    resp = _text_client.chat.completions.create(**kwargs)
+    resp = client.chat.completions.create(**kwargs)
     content = (resp.choices[0].message.content or "").strip()
     return content
+
+
+def _chat(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    temperature: float,
+    json_mode: bool = False,
+    max_tokens: int | None = None,
+) -> str:
+    provider = (settings.WRITER_PROVIDER or "openai").lower()
+    if provider == "gemini":
+        raise NotImplementedError(
+            "当前版本未接入 Gemini SDK；请将 WRITER_PROVIDER 切换为 openai 或 deepseek。"
+        )
+    if provider == "deepseek":
+        return _chat_with_client(
+            _deepseek_client,
+            settings.DEEPSEEK_MODEL,
+            system_prompt,
+            user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+        )
+    return _chat_with_client(
+        _text_client,
+        settings.OPENAI_WRITER_MODEL,
+        system_prompt,
+        user_prompt,
+        temperature=temperature,
+        json_mode=json_mode,
+        max_tokens=max_tokens,
+    )
+
+
+# ============================================================
+# Gemini 兼容主笔（如果未来接入 SDK，可在此扩展）
+# ============================================================
 
 
 # ============================================================
@@ -233,6 +284,7 @@ def generate_cover_prompt(outline_summary: str) -> str:
     )
 
 
+@network_retry
 @retry(
     stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
     wait=wait_exponential(multiplier=1, min=2, max=30),

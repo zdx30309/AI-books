@@ -33,16 +33,17 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
+    CELERY_BROKER_HEARTBEAT: int = 30
+    CELERY_BROKER_POOL_LIMIT: int = 0
+    CELERY_BROKER_SOCKET_CONNECT_TIMEOUT: int = 60
+    CELERY_BROKER_SOCKET_TIMEOUT: int = 0
+    CELERY_REDIS_HEALTH_CHECK_INTERVAL: int = 10
+    CELERY_REDIS_MAX_RETRIES: int = 20
+    CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS: bool = False
 
     # --- 主笔模型路由 ---
     WRITER_PROVIDER: str = "openai"  # 可选 "openai" / "deepseek" / "gemini"
-
-    # --- Gemini 配置 ---
-    GOOGLE_API_KEY: str = ""
-    GOOGLE_GENAI_USE_VERTEXAI: bool = False
-    GOOGLE_CLOUD_PROJECT: str = ""
-    GOOGLE_CLOUD_LOCATION: str = "us-central1"
-    GEMINI_MODEL: str = "gemini-3.1-flash-lite-preview"
 
     # --- OpenAI 主笔配置 ---
     OPENAI_API_KEY: str = ""
@@ -60,18 +61,30 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_FORMAT_MAX_TOKENS: int = 20000
+    DEEPSEEK_REQUEST_TIMEOUT: int = 300
+    DEEPSEEK_MAX_RETRIES: int = 1
+    DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 420
 
     # --- Gemini / Google Gen AI ---
     GOOGLE_API_KEY: str = ""
-    GOOGLE_GENAI_USE_VERTEXAI: bool = False
-    GOOGLE_CLOUD_PROJECT: str = ""
-    GOOGLE_CLOUD_LOCATION: str = "us-central1"
-    GEMINI_MODEL: str = "gemini-3.1-flash"
+    GOOGLE_GENAI_USE_VERTEXAI: bool = True
+    GOOGLE_CLOUD_PROJECT: str = "video-plan2"
+    GOOGLE_CLOUD_LOCATION: str = "global"
+    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_FALLBACK_TO_API_KEY: bool = True
+    GEMINI_REQUEST_TIMEOUT: int = 30
+    GEMINI_MAX_RETRIES: int = 1
+    GEMINI_THINKING_BUDGET: int = 0
+    GEMINI_POLISH_CALL_TIMEOUT: int = 45
+    GEMINI_REFINE_CALL_TIMEOUT: int = 180
+    GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 4096
+    GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 60000
 
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"
-    IMAGE_MODEL: str = "gpt-image-1"
+    IMAGE_MODEL: str = "gpt-image-2"
     IMAGE_SIZE: str = "1024x1536"
 
     # --- 轻抖 API (视频文案提取) ---

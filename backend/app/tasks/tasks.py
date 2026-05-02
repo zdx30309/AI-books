@@ -12,21 +12,28 @@ import asyncio
 import logging
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import PROJECT_ROOT, settings
 from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
 from app.services.content_engine import generate_full_book
+from app.services.cover import generate_cover_file
 from app.services.qingdou import extract_video_text_with_qingdou
 from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_CHAPTER_HEADING_RE = re.compile(r"^@\s*(.+?)\s*$", re.MULTILINE)
+_CHAPTER_HEADING_RE = re.compile(r"^@\s*(\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+_BOOK_TITLE_SECTION_RE = re.compile(
+    r"^@?\s*三个备选书名\s*$([\s\S]*?)(?=^@?\s*三个备选简介\s*$|^@?\s*目录\s*$|^@|\Z)",
+    re.MULTILINE,
+)
+_BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
 
 
 # ============================================================
@@ -86,6 +93,37 @@ def _patch_config(task: Task, **kv: Any) -> None:
     task.config = cfg
 
 
+def _extract_book_title(markdown: str) -> str:
+    """Pick the first generated title candidate as the book title."""
+    section = _BOOK_TITLE_SECTION_RE.search(markdown or "")
+    if section:
+        for line in section.group(1).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            match = _BOOK_TITLE_LINE_RE.match(line)
+            if match:
+                title = match.group(1).strip(" -_*　")
+                if title:
+                    return title[:120]
+
+    first_chapter = _CHAPTER_HEADING_RE.search(markdown or "")
+    if first_chapter:
+        return first_chapter.group(2).strip()[:120]
+    return "未命名书稿"
+
+
+def _generate_cover_safely(title: str, markdown: str, output_dir: Path, task: Task) -> None:
+    """Generate cover as a best-effort side effect; never fail the book workflow."""
+    try:
+        cover_path = generate_cover_file(title, markdown, output_dir)
+        task.cover_url = f"/api/v1/tasks/{task.id}/cover"
+        _patch_config(task, cover_path=str(cover_path), cover_model=settings.IMAGE_MODEL)
+    except Exception as exc:
+        logger.exception("[task %s] 封面生成失败，保留书稿继续完成: %s", task.id, exc)
+        _patch_config(task, cover_error=f"{type(exc).__name__}: {exc}"[:1000])
+
+
 def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
     matches = list(_CHAPTER_HEADING_RE.finditer(markdown))
@@ -96,13 +134,14 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
         return 1
 
     for idx, match in enumerate(matches):
-        title = match.group(1).strip()
+        chapter_num = int(match.group(1))
+        title = match.group(2).strip()
         start = match.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
         content = markdown[start:end].strip()
         chapter = Chapter(
             task_id=task.id,
-            chapter_num=idx + 1,
+            chapter_num=chapter_num or idx + 1,
             title=title,
             content=content or markdown,
             word_count=len(content or markdown),
@@ -122,7 +161,7 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
     name="tasks.process_video",
     max_retries=0,
 )
-def process_video(self, task_id: str) -> dict:
+def process_video(_self, task_id: str) -> dict:
     """主流水线 - 由 POST /api/v1/tasks 触发，task_id 为已建好的 Task.id。"""
     db: Session = SessionLocal()
     task: Task | None = None
@@ -137,13 +176,14 @@ def process_video(self, task_id: str) -> dict:
         _update_progress(db, task, progress=1, step="任务启动")
 
         _update_progress(db, task, progress=8, step="正在获取视频文案")
+        db.flush()
         video_text = _fetch_video_text(task.source_url, task.config or {})
         _patch_config(task, raw_text_chars=len(video_text))
         _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)")
 
         category = str((task.config or {}).get("category") or "social_science")
 
-        output_dir = settings.PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         _update_progress(db, task, progress=25, step="即将启动主模型")
@@ -182,6 +222,7 @@ def process_video(self, task_id: str) -> dict:
             except Exception:
                 logger.exception("on_stage 回调写库失败 stage=%s", stage)
 
+        db.flush()
         markdown = asyncio.run(
             generate_full_book(
                 video_text,
@@ -193,8 +234,12 @@ def process_video(self, task_id: str) -> dict:
         _patch_config(task, markdown_chars=len(markdown))
         _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节")
 
+        book_title = _extract_book_title(markdown)
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
-        _patch_config(task, markdown=markdown)
+        _patch_config(task, markdown=markdown, title=book_title)
+
+        _update_progress(db, task, progress=94, step="正在生成图书封面")
+        _generate_cover_safely(book_title, markdown, output_dir, task)
 
         report = measure_quality(markdown)
         report_text = format_report(report)

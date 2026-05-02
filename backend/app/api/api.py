@@ -6,6 +6,7 @@ from app.api.routers import (
     health_router,
     polish_router,
     stats_router,
+    system_router,
     tasks_router,
 )
 
@@ -15,3 +16,4 @@ api_router.include_router(auth_router)
 api_router.include_router(tasks_router)
 api_router.include_router(stats_router)
 api_router.include_router(polish_router)
+api_router.include_router(system_router)

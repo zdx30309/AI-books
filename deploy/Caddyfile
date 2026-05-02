@@ -1,0 +1,13 @@
+sheke.asia, www.sheke.asia {
+    root * /usr/share/caddy
+    encode gzip zstd
+
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+}

@@ -4,7 +4,7 @@ import { Plus } from "lucide-react";
 import { BookCard } from "@/components/BookCard";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { EmptyState } from "@/components/EmptyState";
-import { api } from "@/api/client";
+import { api, ApiError } from "@/api/client";
 import type { TaskListItem, TaskStatus } from "@/api/types";
 
 const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
@@ -48,6 +48,20 @@ export function Bookshelf() {
             ),
           )
         : tasks.filter((t) => t.status === filter);
+
+  const handleDelete = async (task: TaskListItem) => {
+    const ok = window.confirm(
+      `确定删除《${task.title || "未命名书稿"}》吗？删除后不可恢复。`,
+    );
+    if (!ok) return;
+    try {
+      await api.deleteTask(task.id);
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : "删除失败";
+      alert(`删除失败：${msg}`);
+    }
+  };
 
   return (
     <>
@@ -114,7 +128,7 @@ export function Bookshelf() {
       ) : (
         <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
           {filtered.map((task) => (
-            <BookCard key={task.id} task={task} />
+            <BookCard key={task.id} task={task} onDelete={handleDelete} />
           ))}
         </div>
       )}

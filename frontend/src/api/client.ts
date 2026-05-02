@@ -15,6 +15,7 @@ import type {
   StageContentResponse,
   StageName,
   StatsResponse,
+  SystemHealth,
   TaskListResponse,
   TaskStatusResponse,
   TokenResponse,
@@ -71,6 +72,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function download(path: string): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "book.md";
+  const filename = decodeURIComponent(rawName);
+  return { blob: await res.blob(), filename };
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   // 任务
   listTasks: (page = 1, pageSize = 20) =>
@@ -81,6 +119,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  deleteTask: (id: string) =>
+    request<void>(`/tasks/${id}`, { method: "DELETE" }),
+  retryTask: (id: string) =>
+    request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
+  regenerateCover: (id: string) =>
+    request<TaskStatusResponse>(`/tasks/${id}/cover/regenerate`, { method: "POST" }),
   getChapters: (id: string) =>
     request<ChaptersListResponse>(`/tasks/${id}/chapters`),
   updateChapter: (
@@ -99,6 +143,10 @@ export const api = {
   getStats: () => request<StatsResponse>("/stats"),
   downloadUrl: (id: string, fmt: "md" | "txt" = "md") =>
     `${BASE}/tasks/${id}/download?fmt=${fmt}`,
+  downloadFile: async (id: string, fmt: "md" | "txt" = "md") => {
+    const { blob, filename } = await download(`/tasks/${id}/download?fmt=${fmt}`);
+    saveBlob(blob, filename);
+  },
 
   // 段落润色
   polishParagraph: (body: PolishParagraphRequest) =>
@@ -106,6 +154,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // 系统健康（检测 Celery worker 是否在线）
+  systemHealth: () => request<SystemHealth>("/system/health"),
 
   // 鉴权
   register: (body: RegisterRequest) =>

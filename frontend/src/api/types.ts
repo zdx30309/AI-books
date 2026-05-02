@@ -28,8 +28,13 @@ export interface TaskStatusResponse {
   progress: number;
   current_step: string;
   cover_url: string | null;
+  title: string | null;
   error_message: string | null;
   created_at: string;
+}
+
+export interface DeleteTaskResponse {
+  success: boolean;
 }
 
 export interface TaskListItem {
@@ -142,4 +147,13 @@ export interface TokenResponse {
   access_token: string;
   token_type: string;
   user: UserPublic;
+}
+
+// 系统健康
+
+export interface SystemHealth {
+  celery_alive: boolean;
+  celery_workers: string[];
+  celery_error: string | null;
+  queue_lengths: Record<string, number> | null;
 }

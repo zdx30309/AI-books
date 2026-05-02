@@ -160,6 +160,10 @@ async def _polish_by_paragraph_chunks(
 ) -> str:
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
     （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
+
+    健壮性原则：一润是质量增强层，不是必经任务。任何单块失败都不应让整个任务挂掉。
+    每块独立 try：成功用润色稿；失败或超时则用原 chunk 兜底，继续往下走。
+    最后日志统计降级数量。
     """
     if not text or not text.strip():
         return text
@@ -169,11 +173,40 @@ async def _polish_by_paragraph_chunks(
 
     total = len(chunks)
     polished: list[str] = []
+    fallback_count = 0
+
+    async def _polish_once(chunk: str) -> str:
+        return await asyncio.wait_for(
+            asyncio.to_thread(polish_book_text, chunk),
+            timeout=settings.GEMINI_POLISH_CALL_TIMEOUT,
+        )
+
     for idx, chunk in enumerate(chunks, 1):
         logger.info("Gemini 一润 块 %d/%d (%d 字)", idx, total, len(chunk))
         if on_stage:
             on_stage("polish_chunk", {"idx": idx, "total": total, "chars": len(chunk)})
-        polished.append(await asyncio.to_thread(polish_book_text, chunk))
+
+        try:
+            polished.append(await _polish_once(chunk))
+            continue
+        except asyncio.TimeoutError as exc:
+            first_err = f"超时（{exc.__class__.__name__}）"
+        except Exception as exc:
+            first_err = f"{exc.__class__.__name__}: {exc}"
+
+        fallback_count += 1
+        logger.error(
+            "Gemini 一润 块 %d/%d 失败 [%s]，回退到原文继续",
+            idx, total, first_err,
+        )
+        polished.append(chunk)
+
+    if fallback_count:
+        logger.warning(
+            "Gemini 一润完成但有降级 [成功 %d / 总 %d / 降级 %d 块]",
+            total - fallback_count, total, fallback_count,
+        )
+
     return "\n\n".join(p.strip() for p in polished if p and p.strip())
 
 
@@ -238,14 +271,34 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _read_stage(filename: str) -> str | None:
+        if output_dir is None:
+            return None
+        path = output_dir / filename
+        if not path.exists():
+            return None
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+            return content or None
+        except Exception as exc:
+            logger.warning("读取中间产物 %s 失败: %s", filename, exc)
+            return None
+
     # ---- 第 1 层: OpenAI Writer ----
-    if on_stage:
-        on_stage("writer_start", {})
-    generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
-    _log_stage("1/4 writer", generated_markdown)
-    _dump_stage(output_dir, "01_writer.md", generated_markdown)
-    if on_stage:
-        on_stage("writer_done", {"chars": len(generated_markdown)})
+    generated_markdown = _read_stage("01_writer.md")
+    if generated_markdown:
+        logger.info("复用已存在的 01_writer.md")
+        _log_stage("1/4 writer (resume)", generated_markdown)
+        if on_stage:
+            on_stage("writer_done", {"chars": len(generated_markdown)})
+    else:
+        if on_stage:
+            on_stage("writer_start", {})
+        generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
+        _log_stage("1/4 writer", generated_markdown)
+        _dump_stage(output_dir, "01_writer.md", generated_markdown)
+        if on_stage:
+            on_stage("writer_done", {"chars": len(generated_markdown)})
 
     if _front_matter_missing(generated_markdown):
         logger.warning("主模型初稿缺少前置块，尝试修复。")
@@ -258,37 +311,75 @@ async def generate_full_book(
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
-    if on_stage:
-        on_stage("polish_start", {})
-    polished_markdown = await _polish_by_paragraph_chunks(
-        generated_markdown,
-        target_chars=1000,
-        on_stage=on_stage,
-    )
-    _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
-    _dump_stage(output_dir, "02_polish.md", polished_markdown)
-    polish_chars = len(polished_markdown)
-    if on_stage:
-        on_stage("polish_done", {"chars": polish_chars})
+    polished_markdown = _read_stage("02_polish.md")
+    if polished_markdown:
+        logger.info("复用已存在的 02_polish.md")
+        _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
+        polish_chars = len(polished_markdown)
+        if on_stage:
+            on_stage("polish_done", {"chars": polish_chars})
+    else:
+        if on_stage:
+            on_stage("polish_start", {})
+        polished_markdown = await _polish_by_paragraph_chunks(
+            generated_markdown,
+            target_chars=1000,
+            on_stage=on_stage,
+        )
+        _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
+        _dump_stage(output_dir, "02_polish.md", polished_markdown)
+        polish_chars = len(polished_markdown)
+        if on_stage:
+            on_stage("polish_done", {"chars": polish_chars})
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
-    if on_stage:
-        on_stage("refine_start", {})
-    refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown)
-    _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
-    _dump_stage(output_dir, "03_refine.md", refined_markdown)
-    refine_chars = len(refined_markdown)
-    if on_stage:
-        on_stage("refine_done", {"chars": refine_chars})
+    refined_markdown = _read_stage("03_refine.md")
+    if refined_markdown:
+        logger.info("复用已存在的 03_refine.md")
+        _log_stage("3/4 refine (resume)", refined_markdown, prev_chars=polish_chars)
+        refine_chars = len(refined_markdown)
+        if on_stage:
+            on_stage("refine_done", {"chars": refine_chars})
+    else:
+        if on_stage:
+            on_stage("refine_start", {})
+        try:
+            refined_markdown = await asyncio.wait_for(
+                asyncio.to_thread(refine_book_text, polished_markdown),
+                timeout=settings.GEMINI_REFINE_CALL_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.error("Gemini 二润失败，回退到一润结果继续: %s", exc)
+            refined_markdown = polished_markdown
+        _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+        refine_chars = len(refined_markdown)
+        if on_stage:
+            on_stage("refine_done", {"chars": refine_chars})
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
-    if on_stage:
-        on_stage("format_start", {})
-    final_markdown = await asyncio.to_thread(format_book_text, refined_markdown)
-    _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
-    _dump_stage(output_dir, "04_format.md", final_markdown)
-    if on_stage:
-        on_stage("format_done", {"chars": len(final_markdown)})
+    final_markdown = _read_stage("04_format.md")
+    if final_markdown:
+        logger.info("复用已存在的 04_format.md")
+        _log_stage("4/4 format (resume)", final_markdown, prev_chars=refine_chars)
+        if on_stage:
+            on_stage("format_done", {"chars": len(final_markdown)})
+    else:
+        if on_stage:
+            on_stage("format_start", {})
+        try:
+            final_markdown = await asyncio.wait_for(
+                asyncio.to_thread(format_book_text, refined_markdown),
+                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"DeepSeek 终稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"
+            ) from exc
+        _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
+        _dump_stage(output_dir, "04_format.md", final_markdown)
+        if on_stage:
+            on_stage("format_done", {"chars": len(final_markdown)})
 
     if _front_matter_missing(final_markdown):
         logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")

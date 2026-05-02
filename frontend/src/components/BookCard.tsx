@@ -1,9 +1,10 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { TaskListItem } from "@/api/types";
 
 interface Props {
   task: TaskListItem;
+  onDelete?: (task: TaskListItem) => void;
 }
 
 function statusLabel(status: string, progress: number): string {
@@ -34,11 +35,12 @@ function deriveSubtitle(task: TaskListItem): string {
   return task.current_step || statusLabel(task.status, task.progress);
 }
 
-export function BookCard({ task }: Props) {
+export function BookCard({ task, onDelete }: Props) {
   const title = deriveTitle(task);
   const subtitle = deriveSubtitle(task);
   const isCompleted = task.status === "completed";
   const progressPct = isCompleted ? 100 : task.progress;
+  const canDelete = task.status !== "completed";
 
   return (
     <article className="group flex flex-col gap-3">
@@ -98,13 +100,25 @@ export function BookCard({ task }: Props) {
       </div>
 
       {/* 操作 */}
-      <Link
-        to={`/book/${task.id}`}
-        className="mt-1 inline-flex items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-      >
-        <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
-        <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
-      </Link>
+      <div className="mt-1 flex gap-2">
+        {canDelete && onDelete && (
+          <button
+            type="button"
+            onClick={() => onDelete(task)}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-red-500/15 bg-base-700/40 px-3 py-2 text-xs tracking-widest text-red-200 transition-colors hover:border-red-400/35 hover:bg-red-500/10 hover:text-red-100"
+          >
+            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <span>删除书稿</span>
+          </button>
+        )}
+        <Link
+          to={`/book/${task.id}`}
+          className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
+        >
+          <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
+          <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
+        </Link>
+      </div>
     </article>
   );
 }

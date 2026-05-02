@@ -1,0 +1,14 @@
+.git
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+backend/output
+.env
+secrets

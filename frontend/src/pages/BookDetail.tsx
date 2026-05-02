@@ -17,9 +17,12 @@ import {
   Save,
   Wand2,
   Check,
+  Trash2,
+  RefreshCcw,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
+import { StuckBanner } from "@/components/StuckBanner";
 import type {
   ChapterResponse,
   StageName,
@@ -76,6 +79,7 @@ export function BookDetail() {
   // 选段润色浮标
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
+  const [coverGenerating, setCoverGenerating] = useState(false);
 
   const pollRef = useRef<number | null>(null);
 
@@ -261,6 +265,71 @@ export function BookDetail() {
     [dirty],
   );
 
+  const handleDelete = useCallback(async () => {
+    if (!id || !task) return;
+    const ok = window.confirm(
+      `确定删除这本《${chapters[0]?.title || "未命名书稿"}》吗？删除后不可恢复。`,
+    );
+    if (!ok) return;
+    try {
+      await api.deleteTask(id);
+      window.location.href = "/bookshelf";
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : "删除失败";
+      alert(`删除失败：${msg}`);
+    }
+  }, [id, task, chapters]);
+
+  const handleRetry = useCallback(async () => {
+    if (!id || !task) return;
+    const ok = window.confirm("要继续生成这本书稿吗？系统会重新投递任务到队列。");
+    if (!ok) return;
+    try {
+      await api.retryTask(id);
+      setError(null);
+      setLoading(true);
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : "重试失败";
+      alert(`继续生成失败：${msg}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, task, refresh]);
+
+  const handleDownload = useCallback(
+    async (fmt: "md" | "txt") => {
+      if (!id) return;
+      try {
+        await api.downloadFile(id, fmt);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : "下载失败";
+        alert(`下载失败：${msg}`);
+      }
+    },
+    [id],
+  );
+
+  const handleRegenerateCover = useCallback(async () => {
+    if (!id) return;
+    setCoverGenerating(true);
+    try {
+      const updated = await api.regenerateCover(id);
+      setTask(updated);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `[${e.status}] ${e.detail}`
+          : "封面生成失败";
+      alert(`封面生成失败：${msg}`);
+    } finally {
+      setCoverGenerating(false);
+    }
+  }, [id]);
+
   if (loading) {
     return (
       <div className="flex items-center gap-3 text-warm-300">
@@ -286,46 +355,112 @@ export function BookDetail() {
   const isActive = ACTIVE_STATUSES.has(task.status);
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
+  const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
 
   return (
     <div className="relative">
-      <Link
-        to="/bookshelf"
-        className="mb-6 inline-flex items-center gap-2 text-xs tracking-widest text-warm-400 transition-colors hover:text-warm-100"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-        返回书架
-      </Link>
+      <div className="mb-6 flex items-center justify-between gap-3">
+        <Link
+          to="/bookshelf"
+          className="inline-flex items-center gap-2 text-xs tracking-widest text-warm-400 transition-colors hover:text-warm-100"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
+          返回书架
+        </Link>
+      </div>
+
+      {/* 卡 0% 自动诊断（worker 没启动时弹横幅） */}
+      <StuckBanner
+        taskId={task.id}
+        progress={task.progress}
+        status={task.status}
+        onRetried={refresh}
+      />
 
       {/* 顶部状态卡 */}
       <section className="card-warm mb-8 p-8">
         <div className="flex items-start justify-between gap-6">
-          <div className="flex-1">
-            <h1 className="font-serif text-2xl tracking-wide text-warm-100">
-              {chapters[0]?.title || "书稿生成中"}
-            </h1>
-            <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
-              来源：{task.source_url}
-            </p>
-            {isFailed && task.error_message && (
-              <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
-                {task.error_message}
+          <div className="flex flex-1 gap-5">
+            <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
+              {task.cover_url ? (
+                <img
+                  src={task.cover_url}
+                  alt={task.title || chapters[0]?.title || "书稿封面"}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
+                  {isCompleted
+                    ? task.title || chapters[0]?.title || "封面待生成"
+                    : "书稿生成中"}
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h1 className="font-serif text-2xl tracking-wide text-warm-100">
+                {task.title || chapters[0]?.title || "书稿生成中"}
+              </h1>
+              <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
+                来源：{task.source_url}
+              </p>
+              {isFailed && task.error_message && (
+                <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
+                  {task.error_message}
+                </div>
+              )}
+              {isCompleted && !task.cover_url && (
+                <div className="mt-4 rounded-lg border border-gold-500/20 bg-gold-500/8 px-4 py-2.5 text-xs text-warm-300">
+                  封面尚未生成。若使用 gpt-image-2，请先完成 OpenAI 组织验证。
+                </div>
+              )}
               </div>
-            )}
           </div>
 
-          {isCompleted && (
-            <div className="flex flex-col gap-2">
-              <a href={api.downloadUrl(task.id, "md")} className="btn-ghost" download>
-                <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
-                Markdown
-              </a>
-              <a href={api.downloadUrl(task.id, "txt")} className="btn-ghost" download>
-                <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
-                纯文本
-              </a>
-            </div>
-          )}
+          <div className="flex flex-col gap-2">
+            {canRetry ? (
+              <button type="button" onClick={handleRetry} className="btn-ghost">
+                <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                继续生成
+              </button>
+            ) : null}
+            <button type="button" onClick={handleDelete} className="btn-ghost">
+              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+              删除任务
+            </button>
+            {isCompleted && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleRegenerateCover}
+                  disabled={coverGenerating}
+                  className="btn-ghost disabled:opacity-60"
+                >
+                  {coverGenerating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                  ) : (
+                    <Wand2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  )}
+                  {task.cover_url ? "重生成封面" : "生成封面"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownload("md")}
+                  className="btn-ghost"
+                >
+                  <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  Markdown
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownload("txt")}
+                  className="btn-ghost"
+                >
+                  <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  纯文本
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* 进度条 */}

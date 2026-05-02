@@ -3,7 +3,7 @@ Task ORM - 一次视频转网文任务的全生命周期记录。
 """
 import uuid
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -38,6 +38,12 @@ class Task(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_url = Column(String(2048), nullable=False)
+    owner_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
     status = Column(
         String(32),
@@ -67,6 +73,13 @@ class Task(Base):
         cascade="all, delete-orphan",
         order_by="Chapter.chapter_num",
     )
+    owner = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Task id={self.id} status={self.status} progress={self.progress}>"
+
+    @property
+    def title(self) -> str | None:
+        cfg = self.config or {}
+        title = cfg.get("title")
+        return title if isinstance(title, str) and title.strip() else None
