@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from time import sleep
-from typing import Any
+from typing import Any, Iterator
 
 from google import genai
 from google.genai import types
@@ -22,6 +23,42 @@ _vertex_clients: dict[int, genai.Client] = {}
 _api_key_clients: dict[int, genai.Client] = {}
 
 
+def _configure_google_runtime() -> None:
+    """Apply ADC environment expected by google-auth and Google Gen AI."""
+    credentials = (settings.GOOGLE_APPLICATION_CREDENTIALS or "").strip()
+    if credentials and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials
+
+
+@contextmanager
+def _google_proxy_env() -> Iterator[None]:
+    """Temporarily expose a Google-only proxy during ADC/Gemini calls."""
+    proxy = (settings.GOOGLE_HTTPS_PROXY or "").strip()
+    if not proxy:
+        yield
+        return
+
+    keys = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ["HTTPS_PROXY"] = proxy
+        os.environ["https_proxy"] = proxy
+        if proxy.startswith("http://"):
+            os.environ["HTTP_PROXY"] = proxy
+            os.environ["http_proxy"] = proxy
+        no_proxy = previous.get("NO_PROXY") or previous.get("no_proxy") or ""
+        additions = "localhost,127.0.0.1,backend,web,worker,*.supabase.co,*.pooler.supabase.com,*.upstash.io"
+        os.environ["NO_PROXY"] = ",".join(part for part in (no_proxy, additions) if part)
+        os.environ["no_proxy"] = os.environ["NO_PROXY"]
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _resolve_google_api_key() -> str | None:
     return (settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "")).strip() or None
 
@@ -34,23 +71,26 @@ def _build_http_options(timeout_seconds: int) -> types.HttpOptions:
 
 
 def _get_vertex_client(timeout_seconds: int | None = None) -> genai.Client:
+    _configure_google_runtime()
     timeout = int(timeout_seconds or settings.GEMINI_REQUEST_TIMEOUT)
     if timeout in _vertex_clients:
         return _vertex_clients[timeout]
 
     project = (settings.GOOGLE_CLOUD_PROJECT or os.getenv("GOOGLE_CLOUD_PROJECT", "video-plan2")).strip() or "video-plan2"
     location = (settings.GOOGLE_CLOUD_LOCATION or os.getenv("GOOGLE_CLOUD_LOCATION", "global")).strip() or "global"
-    client = genai.Client(
-        vertexai=True,
-        project=project,
-        location=location,
-        http_options=_build_http_options(timeout),
-    )
+    with _google_proxy_env():
+        client = genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
+            http_options=_build_http_options(timeout),
+        )
     _vertex_clients[timeout] = client
     return client
 
 
 def _get_api_key_client(timeout_seconds: int | None = None) -> genai.Client:
+    _configure_google_runtime()
     timeout = int(timeout_seconds or settings.GEMINI_REQUEST_TIMEOUT)
     if timeout in _api_key_clients:
         return _api_key_clients[timeout]
@@ -61,10 +101,11 @@ def _get_api_key_client(timeout_seconds: int | None = None) -> genai.Client:
             "GOOGLE_API_KEY 未配置，无法切换到 Gemini API Key 通道。"
             "请在 .env 设置 GOOGLE_API_KEY，或保持 GOOGLE_GENAI_USE_VERTEXAI=True 使用 Vertex AI。"
         )
-    client = genai.Client(
-        api_key=api_key,
-        http_options=_build_http_options(timeout),
-    )
+    with _google_proxy_env():
+        client = genai.Client(
+            api_key=api_key,
+            http_options=_build_http_options(timeout),
+        )
     _api_key_clients[timeout] = client
     return client
 
@@ -167,11 +208,12 @@ def generate_text(
         client = _get_vertex_client(timeout) if backend == "vertex" else _get_api_key_client(timeout)
         for attempt in range(1, attempts + 1):
             try:
-                response = client.models.generate_content(
-                    model=model or settings.GEMINI_MODEL,
-                    contents=contents,
-                    config=config,
-                )
+                with _google_proxy_env():
+                    response = client.models.generate_content(
+                        model=model or settings.GEMINI_MODEL,
+                        contents=contents,
+                        config=config,
+                    )
                 text = (response.text or "").strip()
                 if text:
                     if backend != primary_backend:

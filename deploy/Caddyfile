@@ -1,4 +1,4 @@
-sheke.asia, www.sheke.asia {
+(app) {
     root * /usr/share/caddy
     encode gzip zstd
 
@@ -10,4 +10,12 @@ sheke.asia, www.sheke.asia {
         try_files {path} /index.html
         file_server
     }
+}
+
+:80 {
+    import app
+}
+
+sheke.asia, www.sheke.asia {
+    import app
 }

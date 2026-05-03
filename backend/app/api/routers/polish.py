@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.routers.auth import get_current_user
+from app.models import User
 from app.services.gemini import polish_book_text
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,10 @@ class PolishParagraphResponse(BaseModel):
     response_model=PolishParagraphResponse,
     summary="对单段文字调用 Gemini 一润 prompt 重新润色",
 )
-async def polish_paragraph(req: PolishParagraphRequest) -> PolishParagraphResponse:
+async def polish_paragraph(
+    req: PolishParagraphRequest,
+    _user: User = Depends(get_current_user),
+) -> PolishParagraphResponse:
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="待润色文本不能为空")

@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # --- OpenAI 主笔配置 ---
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_HTTPS_PROXY: str = ""
     OPENAI_WRITER_MODEL: str = "gpt-5.5"
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
@@ -71,6 +72,8 @@ class Settings(BaseSettings):
     GOOGLE_GENAI_USE_VERTEXAI: bool = True
     GOOGLE_CLOUD_PROJECT: str = "video-plan2"
     GOOGLE_CLOUD_LOCATION: str = "global"
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""
+    GOOGLE_HTTPS_PROXY: str = ""
     GEMINI_MODEL: str = "gemini-3-flash-preview"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 30

@@ -80,6 +80,7 @@ export function BookDetail() {
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
   const [coverGenerating, setCoverGenerating] = useState(false);
+  const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
 
@@ -118,6 +119,29 @@ export function BookDetail() {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
   }, [id, refresh]);
+
+  useEffect(() => {
+    let alive = true;
+    let objectUrl: string | null = null;
+    setCoverSrc(null);
+    if (!id || !task?.cover_url) return undefined;
+
+    api
+      .getCoverBlob(id)
+      .then((blob) => {
+        if (!alive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setCoverSrc(objectUrl);
+      })
+      .catch(() => {
+        if (alive) setCoverSrc(null);
+      });
+
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [id, task?.cover_url]);
 
   // 任务完成或失败：停止轮询
   useEffect(() => {
@@ -382,9 +406,9 @@ export function BookDetail() {
         <div className="flex items-start justify-between gap-6">
           <div className="flex flex-1 gap-5">
             <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
-              {task.cover_url ? (
+              {coverSrc ? (
                 <img
-                  src={task.cover_url}
+                  src={coverSrc}
                   alt={task.title || chapters[0]?.title || "书稿封面"}
                   className="h-full w-full object-cover"
                 />

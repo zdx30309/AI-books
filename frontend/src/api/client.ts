@@ -98,6 +98,26 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   return { blob: await res.blob(), filename };
 }
 
+async function fetchBlob(path: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -147,6 +167,7 @@ export const api = {
     const { blob, filename } = await download(`/tasks/${id}/download?fmt=${fmt}`);
     saveBlob(blob, filename);
   },
+  getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
 
   // 段落润色
   polishParagraph: (body: PolishParagraphRequest) =>

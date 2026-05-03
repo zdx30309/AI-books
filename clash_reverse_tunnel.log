@@ -1,0 +1,339 @@
+2026-05-03 12:43:14 reverse tunnel up: 172.18.0.1:7897 -> 127.0.0.1:7897
+2026-05-03 14:21:34 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:21:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:21:53 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:21:59 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:22:06 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:22:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:22:26 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:22:34 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:22:44 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:22:53 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:23:03 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:23:14 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:23:21 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:23:32 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:23:41 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:23:50 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:23:58 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:06 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:13 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:21 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:28 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:37 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:45 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:24:54 tunnel restart after error: AuthenticationException: Authentication failed: transport shut down or saw EOF
+2026-05-03 14:25:02 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:10 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:18 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:26 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:33 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:42 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:50 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:25:59 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:26:06 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:26:13 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:26:38 tunnel restart after error: SSHException: No existing session
+2026-05-03 14:27:51 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:27:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:20 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:26 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:32 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:28:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:24 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:29:54 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:08 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:14 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:22 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:28 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:50 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:30:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:15 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:21 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:27 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:31:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:32:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:02 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:18 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:24 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:38 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:45 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:52 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:33:59 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:05 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:20 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:27 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:34 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:34:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:11 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:18 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:25 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:35:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:07 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:14 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:21 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:37 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:44 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:36:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:14 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:20 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:26 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:33 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:40 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:46 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:37:54 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:22 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:38:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:22 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:39:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:34 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:40 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:47 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:40:54 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:00 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:06 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:13 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:21 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:28 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:34 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:40 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:47 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:53 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:41:59 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:07 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:13 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:19 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:25 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:33 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:40 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:46 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:52 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:42:58 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:05 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:11 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:17 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:44 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:51 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:43:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:02 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:18 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:24 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:44:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:07 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:45:54 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:00 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:05 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:19 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:25 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:31 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:37 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:50 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:46:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:03 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:15 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:22 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:47:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:07 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:13 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:19 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:26 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:32 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:39 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:45 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:50 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:48:58 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:41 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:47 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:53 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:49:58 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:05 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:11 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:17 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:51 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:50:58 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:17 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:31 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:37 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:50 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:51:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:02 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:15 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:30 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:39 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:45 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:51 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:52:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:22 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:28 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:35 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:50 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:53:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:17 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:28 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:54:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:55:06 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:55:16 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:55:28 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:55:56 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 14:56:21 tunnel restart after error: SSHException: No existing session
+2026-05-03 14:56:46 tunnel restart after error: SSHException: No existing session
+2026-05-03 14:56:56 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:06 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:16 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:26 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:36 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:46 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:57:56 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:06 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:16 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:26 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:36 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:46 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:58:56 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:59:21 tunnel restart after error: SSHException: No existing session
+2026-05-03 14:59:31 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:59:41 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:59:51 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 14:59:59 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:12 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:19 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:26 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:38 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:45 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:00:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:10 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:33 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:42 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:48 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:01:55 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:09 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:15 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:21 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:27 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:40 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:47 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:02:57 tunnel restart after error: SSHException: Error reading SSH protocol banner
+2026-05-03 15:03:05 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:03:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:03:38 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:03:45 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:03:54 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:01 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:08 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:16 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:23 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:29 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:36 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:43 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:49 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:04:57 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:05:04 tunnel restart after error: SSHException: TCP forwarding request denied
+2026-05-03 15:05:09 tunnel restart after error: SSHException: TCP forwarding request denied

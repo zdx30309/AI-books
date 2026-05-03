@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 from openai import OpenAI
 
 from app.core.config import settings
@@ -37,6 +38,9 @@ def _get_openai_writer_client() -> OpenAI:
         return _openai_writer_client
 
     client_kwargs: dict[str, Any] = {"base_url": settings.OPENAI_BASE_URL, "timeout": 1800.0}
+    proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
+    if proxy:
+        client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=1800.0)
     api_key = _resolve_openai_api_key()
     if api_key:
         client_kwargs["api_key"] = api_key

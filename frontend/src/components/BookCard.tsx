@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { ChevronRight, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { api } from "@/api/client";
 import type { TaskListItem } from "@/api/types";
 
 interface Props {
@@ -41,6 +43,30 @@ export function BookCard({ task, onDelete }: Props) {
   const isCompleted = task.status === "completed";
   const progressPct = isCompleted ? 100 : task.progress;
   const canDelete = task.status !== "completed";
+  const [coverSrc, setCoverSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    let objectUrl: string | null = null;
+    setCoverSrc(null);
+    if (!task.cover_url) return undefined;
+
+    api
+      .getCoverBlob(task.id)
+      .then((blob) => {
+        if (!alive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setCoverSrc(objectUrl);
+      })
+      .catch(() => {
+        if (alive) setCoverSrc(null);
+      });
+
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [task.cover_url, task.id]);
 
   return (
     <article className="group flex flex-col gap-3">
@@ -50,9 +76,9 @@ export function BookCard({ task, onDelete }: Props) {
         className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
         aria-label={`查看《${title}》`}
       >
-        {task.cover_url ? (
+        {coverSrc ? (
           <img
-            src={task.cover_url}
+            src={coverSrc}
             alt={title}
             className="h-full w-full object-cover"
             loading="lazy"

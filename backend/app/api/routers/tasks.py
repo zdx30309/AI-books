@@ -271,14 +271,24 @@ def get_task(
     "/{task_id}/cover",
     summary="返回任务封面图",
 )
-def get_cover(task_id: UUID) -> FileResponse:
+def get_cover(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     cover_path = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}" / "cover.png"
     if not cover_path.exists():
         raise HTTPException(status_code=404, detail=f"cover of task {task_id} not found")
     return FileResponse(
         cover_path,
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Vary": "Authorization",
+        },
     )
 
 
