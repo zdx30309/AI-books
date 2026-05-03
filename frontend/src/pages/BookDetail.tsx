@@ -79,8 +79,6 @@ export function BookDetail() {
   // 选段润色浮标
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
-  const [coverGenerating, setCoverGenerating] = useState(false);
-  const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
 
@@ -119,29 +117,6 @@ export function BookDetail() {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
   }, [id, refresh]);
-
-  useEffect(() => {
-    let alive = true;
-    let objectUrl: string | null = null;
-    setCoverSrc(null);
-    if (!id || !task?.cover_url) return undefined;
-
-    api
-      .getCoverBlob(id)
-      .then((blob) => {
-        if (!alive) return;
-        objectUrl = URL.createObjectURL(blob);
-        setCoverSrc(objectUrl);
-      })
-      .catch(() => {
-        if (alive) setCoverSrc(null);
-      });
-
-    return () => {
-      alive = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [id, task?.cover_url]);
 
   // 任务完成或失败：停止轮询
   useEffect(() => {
@@ -322,7 +297,7 @@ export function BookDetail() {
   }, [id, task, refresh]);
 
   const handleDownload = useCallback(
-    async (fmt: "md" | "txt") => {
+    async (fmt: "md" | "docx") => {
       if (!id) return;
       try {
         await api.downloadFile(id, fmt);
@@ -336,23 +311,6 @@ export function BookDetail() {
     },
     [id],
   );
-
-  const handleRegenerateCover = useCallback(async () => {
-    if (!id) return;
-    setCoverGenerating(true);
-    try {
-      const updated = await api.regenerateCover(id);
-      setTask(updated);
-    } catch (e) {
-      const msg =
-        e instanceof ApiError
-          ? `[${e.status}] ${e.detail}`
-          : "封面生成失败";
-      alert(`封面生成失败：${msg}`);
-    } finally {
-      setCoverGenerating(false);
-    }
-  }, [id]);
 
   if (loading) {
     return (
@@ -398,6 +356,7 @@ export function BookDetail() {
         taskId={task.id}
         progress={task.progress}
         status={task.status}
+        currentStep={task.current_step}
         onRetried={refresh}
       />
 
@@ -406,19 +365,11 @@ export function BookDetail() {
         <div className="flex items-start justify-between gap-6">
           <div className="flex flex-1 gap-5">
             <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
-              {coverSrc ? (
-                <img
-                  src={coverSrc}
-                  alt={task.title || chapters[0]?.title || "书稿封面"}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
-                  {isCompleted
-                    ? task.title || chapters[0]?.title || "封面待生成"
-                    : "书稿生成中"}
-                </div>
-              )}
+              <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
+                {isCompleted
+                  ? task.title || chapters[0]?.title || "书稿已完成"
+                  : "书稿生成中"}
+              </div>
             </div>
             <div className="min-w-0 flex-1">
               <h1 className="font-serif text-2xl tracking-wide text-warm-100">
@@ -430,11 +381,6 @@ export function BookDetail() {
               {isFailed && task.error_message && (
                 <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
                   {task.error_message}
-                </div>
-              )}
-              {isCompleted && !task.cover_url && (
-                <div className="mt-4 rounded-lg border border-gold-500/20 bg-gold-500/8 px-4 py-2.5 text-xs text-warm-300">
-                  封面尚未生成。若使用 gpt-image-2，请先完成 OpenAI 组织验证。
                 </div>
               )}
               </div>
@@ -455,19 +401,6 @@ export function BookDetail() {
               <>
                 <button
                   type="button"
-                  onClick={handleRegenerateCover}
-                  disabled={coverGenerating}
-                  className="btn-ghost disabled:opacity-60"
-                >
-                  {coverGenerating ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
-                  ) : (
-                    <Wand2 className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  )}
-                  {task.cover_url ? "重生成封面" : "生成封面"}
-                </button>
-                <button
-                  type="button"
                   onClick={() => handleDownload("md")}
                   className="btn-ghost"
                 >
@@ -476,11 +409,11 @@ export function BookDetail() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDownload("txt")}
+                  onClick={() => handleDownload("docx")}
                   className="btn-ghost"
                 >
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  纯文本
+                  Word
                 </button>
               </>
             )}

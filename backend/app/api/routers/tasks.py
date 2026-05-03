@@ -3,21 +3,24 @@ from __future__ import annotations
 
 import logging
 import re
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.config import PROJECT_ROOT, settings
+from app.core.config import PROJECT_ROOT
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
-from app.services.cover import generate_cover_file
+from app.services.content_engine import normalize_final_markdown
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -33,7 +36,6 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.tasks.tasks import process_video
-from app.tasks.tasks import _extract_book_title, _patch_config
 
 _STAGE_FILES = {
     "writer": "01_writer.md",
@@ -198,7 +200,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     md = cfg.get("markdown")
     if md:
-        return str(md)
+        return normalize_final_markdown(str(md))
 
     chapters = (
         db.query(Chapter)
@@ -206,7 +208,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
         .order_by(Chapter.chapter_num.asc())
         .all()
     )
-    return "\n\n".join(f"@{c.title}\n\n{c.content}" for c in chapters)
+    return normalize_final_markdown("\n".join(f"@{c.title}\n{c.content}" for c in chapters))
 
 
 def _safe_download_name(task: Task, fmt: str) -> str:
@@ -215,13 +217,49 @@ def _safe_download_name(task: Task, fmt: str) -> str:
     return f"{safe[:80]}.{fmt}"
 
 
-def _markdown_to_plain_text(markdown: str) -> str:
-    """Convert the final delivery markdown to reader-friendly plain text."""
-    text = markdown.replace("\r\n", "\n")
-    text = re.sub(r"^@\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    return text.strip() + "\n"
+def _markdown_to_docx(markdown: str) -> bytes:
+    """Build a minimal .docx while preserving the Markdown delivery text verbatim."""
+    paragraphs = []
+    for line in normalize_final_markdown(markdown).splitlines():
+        text = escape(line, {'"': "&quot;"})
+        paragraphs.append(
+            "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" "
+            "w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
+            f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>"
+        )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        + "".join(paragraphs)
+        + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
+        'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
+        "</w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as docx:
+        docx.writestr("[Content_Types].xml", content_types)
+        docx.writestr("_rels/.rels", rels)
+        docx.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
 
 
 @router.get(
@@ -294,43 +332,17 @@ def get_cover(
 
 @router.post(
     "/{task_id}/cover/regenerate",
-    response_model=TaskStatusResponse,
-    summary="重新生成任务封面（仅任务主人可操作）",
+    summary="封面生成已暂时停用",
 )
 def regenerate_cover(
     task_id: UUID,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> TaskStatusResponse:
+) -> Response:
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-
-    markdown = _read_task_markdown(db, task)
-    if not markdown:
-        raise HTTPException(status_code=404, detail="任务尚未产出任何内容，无法生成封面")
-
-    title = task.title or _extract_book_title(markdown)
-    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
-    try:
-        cover_path = generate_cover_file(title, markdown, output_dir)
-    except Exception as exc:
-        logger.exception("[task %s] 重新生成封面失败", task.id)
-        _patch_config(task, cover_error=f"{type(exc).__name__}: {exc}"[:1000])
-        db.commit()
-        raise HTTPException(status_code=502, detail=f"封面生成失败: {exc}") from exc
-
-    task.cover_url = f"/api/v1/tasks/{task.id}/cover"
-    _patch_config(
-        task,
-        title=title,
-        cover_path=str(cover_path),
-        cover_model=settings.IMAGE_MODEL,
-        cover_error=None,
-    )
-    db.commit()
-    db.refresh(task)
-    return TaskStatusResponse.model_validate(task)
+    raise HTTPException(status_code=410, detail="封面生成已暂时停用")
 
 
 @router.get(
@@ -414,12 +426,11 @@ def get_markdown(
 
 @router.get(
     "/{task_id}/download",
-    summary="下载最终稿 (md/txt)",
-    response_class=PlainTextResponse,
+    summary="下载最终稿 (md/docx)",
 )
 def download_markdown(
     task_id: UUID,
-    fmt: str = Query("md", pattern="^(md|txt)$"),
+    fmt: str = Query("md", pattern="^(md|docx|txt)$"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response:
@@ -431,13 +442,18 @@ def download_markdown(
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
-    content = md if fmt == "md" else _markdown_to_plain_text(md)
-    media_type = "text/markdown" if fmt == "md" else "text/plain"
-    filename = _safe_download_name(task, fmt)
+    if fmt == "docx" or fmt == "txt":
+        content = _markdown_to_docx(md)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = _safe_download_name(task, "docx")
+    else:
+        content = normalize_final_markdown(md)
+        media_type = "text/markdown; charset=utf-8"
+        filename = _safe_download_name(task, "md")
     encoded_filename = quote(filename)
     return Response(
         content=content,
-        media_type=f"{media_type}; charset=utf-8",
+        media_type=media_type,
         headers={
             "Content-Disposition": (
                 f'attachment; filename="{encoded_filename}"; '

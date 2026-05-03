@@ -1,24 +1,33 @@
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, RefreshCw, Terminal, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { SystemHealth } from "@/api/types";
 
 interface Props {
   taskId: string;
-  /** 任务进度多久没有变化后视为"卡住"。默认 120s。 */
   thresholdSeconds?: number;
-  /** 任务进度（用来判断是否已经动起来） */
   progress: number;
-  /** 任务状态 */
   status: string;
+  currentStep?: string;
   onRetried?: () => void;
 }
 
+const LONG_RUNNING_STEP_PATTERNS = [
+  "OpenAI",
+  "Gemini",
+  "DeepSeek",
+  "格式化",
+  "封面",
+  "生成",
+  "润",
+];
+
 export function StuckBanner({
   taskId,
-  thresholdSeconds = 120,
+  thresholdSeconds = 900,
   progress,
   status,
+  currentStep = "",
   onRetried,
 }: Props) {
   const [health, setHealth] = useState<SystemHealth | null>(null);
@@ -40,13 +49,19 @@ export function StuckBanner({
   }, []);
 
   const idleSeconds = (now - lastProgressRef.current.changedAt) / 1000;
-
-  // 任务处于活动态但进度长期不变化时展示。覆盖 0%、66% 等所有僵尸进度。
+  const isKnownLongRunningStep = useMemo(
+    () =>
+      status === "processing" &&
+      LONG_RUNNING_STEP_PATTERNS.some((pattern) => currentStep.includes(pattern)),
+    [currentStep, status],
+  );
+  const effectiveThreshold = isKnownLongRunningStep
+    ? Math.max(thresholdSeconds, 1800)
+    : thresholdSeconds;
   const isStuck =
     (status === "pending" || status === "processing") &&
-    idleSeconds >= thresholdSeconds;
+    idleSeconds >= effectiveThreshold;
 
-  // 卡住后开始拉系统健康
   useEffect(() => {
     if (!isStuck || health || healthLoading) return;
     setHealthLoading(true);
@@ -57,19 +72,24 @@ export function StuckBanner({
       .finally(() => setHealthLoading(false));
   }, [isStuck, health, healthLoading]);
 
-  // 每 8s 复查一次
   useEffect(() => {
     if (!isStuck) return;
-    const t = window.setInterval(() => {
+    const timer = window.setInterval(() => {
       api.systemHealth().then(setHealth).catch(() => undefined);
-    }, 8000);
-    return () => window.clearInterval(t);
+    }, 30000);
+    return () => window.clearInterval(timer);
   }, [isStuck]);
 
   if (!isStuck) return null;
 
-  const noWorker = health && !health.celery_alive;
-  const workerOk = health && health.celery_alive;
+  const healthTimedOut = Boolean(health?.celery_error?.includes("TimeoutError"));
+  const noWorker =
+    health &&
+    !health.celery_alive &&
+    !healthTimedOut &&
+    (status === "pending" || progress <= 1);
+  const workerOk = health?.celery_alive;
+  const workerBusyOrUnknown = health && !workerOk && !noWorker;
 
   const retry = async () => {
     setRetrying(true);
@@ -96,47 +116,46 @@ export function StuckBanner({
 
         <div className="flex-1">
           <h3 className="font-serif text-base tracking-wide text-warm-100">
-            任务似乎卡住了
+            任务耗时较久
           </h3>
 
           {healthLoading && !health && (
             <p className="mt-2 flex items-center gap-2 text-xs tracking-wide text-warm-400">
               <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-              正在检测后端 Celery 状态…
+              正在检测后端 Celery 状态...
             </p>
           )}
 
           {noWorker && (
-            <>
-              <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-                后端检测到 <span className="text-amber-300">Celery worker 没有运行</span>
-                ，所以任务一直在队列里没人处理。请在新终端启动 worker：
-              </p>
-              <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/15 bg-base-900/60 px-4 py-3">
-                <Terminal
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300"
-                  strokeWidth={1.5}
-                />
-                <code className="select-all text-xs leading-relaxed text-amber-100">
-                  cd E:/video-plan/backend{"\n"}
-                  celery -A celery_app.celery_app worker --pool=solo --loglevel=info
-                </code>
-              </div>
-              <p className="mt-3 text-[11px] tracking-wide text-warm-400">
-                启动 worker 后，点下面「重试任务」按钮即可重新投递。
-              </p>
-            </>
+            <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
+              后端没有检测到可用的 Celery worker，任务可能还在队列里等待处理。
+              服务器部署环境请检查 Docker worker 服务是否运行。
+            </p>
           )}
 
           {workerOk && (
             <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-              Worker 在线，但任务进度已经 {Math.floor(idleSeconds)} 秒没有变化。
-              这通常是早先重启或断线留下的僵尸进度，建议点「重试任务」重新投递一次。
+              Worker 在线。当前步骤已经 {Math.floor(idleSeconds)}
+              秒没有进度变化，可能是模型调用或封面生成耗时较久。
               {health.celery_workers.length > 0 && (
                 <span className="ml-2 text-[10px] text-warm-500">
                   Workers: {health.celery_workers.join(", ")}
                 </span>
               )}
+            </p>
+          )}
+
+          {workerBusyOrUnknown && (
+            <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
+              健康检查暂时没有返回，通常是 worker 正在处理长任务或队列较忙。
+              如果任务已经进入 OpenAI、Gemini、DeepSeek 或封面阶段，请先等待当前请求返回。
+            </p>
+          )}
+
+          {!health && !healthLoading && (
+            <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
+              当前步骤已经 {Math.floor(idleSeconds)}
+              秒没有进度变化。长模型调用期间前端可能暂时看不到进度更新。
             </p>
           )}
 

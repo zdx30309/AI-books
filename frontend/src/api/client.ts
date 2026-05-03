@@ -161,9 +161,9 @@ export const api = {
   getStage: (id: string, stage: StageName) =>
     request<StageContentResponse>(`/tasks/${id}/stages/${stage}`),
   getStats: () => request<StatsResponse>("/stats"),
-  downloadUrl: (id: string, fmt: "md" | "txt" = "md") =>
+  downloadUrl: (id: string, fmt: "md" | "docx" = "md") =>
     `${BASE}/tasks/${id}/download?fmt=${fmt}`,
-  downloadFile: async (id: string, fmt: "md" | "txt" = "md") => {
+  downloadFile: async (id: string, fmt: "md" | "docx" = "md") => {
     const { blob, filename } = await download(`/tasks/${id}/download?fmt=${fmt}`);
     saveBlob(blob, filename);
   },

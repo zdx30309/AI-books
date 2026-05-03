@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,6 +27,86 @@ StageCallback = Callable[[str, dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
 _openai_writer_client: OpenAI | None = None
+
+
+_FRONT_SECTION_TITLES = ("三个备选书名", "三个备选简介", "目录", "导言", "正文")
+
+
+def _strip_title_colons(title: str) -> str:
+    return re.sub(r"\s*[:：]\s*", "，", title).strip(" ，,")
+
+
+def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
+    stripped = line.strip()
+    if not stripped:
+        return line.rstrip()
+
+    marker = re.match(r"^@\s*(.+?)\s*$", stripped)
+    if marker and marker.group(1).strip() in _FRONT_SECTION_TITLES:
+        return "@" + marker.group(1).strip()
+
+    should_clean = False
+    prefix = ""
+    title = stripped
+
+    chapter = re.match(r"^(@?\s*\d+\.\s*)(.+?)\s*$", stripped)
+    if chapter:
+        should_clean = True
+        prefix = chapter.group(1).strip()
+        title = chapter.group(2).strip()
+    elif current_section in {"三个备选书名", "目录"}:
+        should_clean = True
+        numbered = re.match(r"^(\s*(?:[-*]\s*|\d+[\.、]\s*))(.+?)\s*$", line.rstrip())
+        if numbered:
+            prefix = numbered.group(1)
+            title = numbered.group(2).strip()
+    elif stripped.startswith("@"):
+        should_clean = True
+        prefix = "@"
+        title = stripped[1:].strip()
+
+    if not should_clean:
+        return line.rstrip()
+
+    title = re.sub(r"\b结语\b|结语", "", title).strip()
+    title = _strip_title_colons(title)
+    if not title:
+        title = "最后一章"
+    sep = "" if prefix.endswith((" ", "\t", "@")) else " "
+    return f"{prefix}{sep}{title}".rstrip()
+
+
+def _postprocess_delivery_markdown(markdown: str) -> str:
+    """Apply hard delivery rules that should not depend on model compliance."""
+    current_section: str | None = None
+    cleaned: list[str] = []
+    for raw_line in (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.rstrip()
+        section = re.match(r"^@?\s*(三个备选书名|三个备选简介|目录|导言|正文)\s*$", line)
+        if section:
+            current_section = section.group(1)
+            cleaned.append("@" + current_section)
+            continue
+        cleaned.append(_clean_delivery_title_line(line, current_section))
+    return "\n".join(cleaned)
+
+
+def normalize_final_markdown(markdown: str) -> str:
+    """Remove blank spacer lines only from the body, preserving front matter layout."""
+    text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
+    match = re.search(r"(?m)^@?\s*正文\s*$", text)
+    if not match:
+        lines = [line.rstrip() for line in text.split("\n")]
+        compact = [line for line in lines if line.strip()]
+        return "\n".join(compact).strip() + ("\n" if compact else "")
+
+    front = text[: match.end()]
+    body = text[match.end() :]
+    front_lines = [line.rstrip() for line in front.split("\n")]
+    body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
+    result_lines = front_lines + body_lines
+    result = "\n".join(result_lines).strip()
+    return result + ("\n" if result else "")
 
 
 def _resolve_openai_api_key() -> str | None:
@@ -215,21 +296,27 @@ async def _polish_by_paragraph_chunks(
 
 
 def _front_matter_missing(text: str) -> bool:
-    required_sections = ("三个备选书名", "三个备选简介", "目录")
+    required_sections = ("三个备选书名", "三个备选简介", "目录", "导言", "正文")
     return not all(marker in text for marker in required_sections)
 
 
 async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
     repair_prompt = (
         "你现在只负责修复书稿的前置块，不要重写全文。\n"
-        "必须补齐并保留以下三个部分：\n"
-        "1. 三个备选书名\n"
-        "2. 三个备选简介\n"
-        "3. 目录\n"
+        "必须补齐并保留以下五个部分，标题前的 @ 加工符号也必须保留：\n"
+        "1. @三个备选书名\n"
+        "2. @三个备选简介\n"
+        "3. @目录\n"
+        "4. @导言\n"
+        "5. @正文\n"
         "要求：\n"
         "- 只输出修复后的完整书稿，前置块和正文都要保留\n"
+        "- 导言放在目录之后、正文之前，长度 300~600 字\n"
+        "- 导言第一段要带钩子：用问题、冲突、反常识判断或现实困境把读者带入；但只搭建阅读入口，不提前展开正文完整论证\n"
+        "- 导言钩子要冷静克制，不要标题党、悬疑营销、鸡汤口号或夸张情绪\n"
         "- 正文尽量沿用原稿，不要大幅改写\n"
         "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
+        "- 所有书名、目录标题和正文章节标题都不要出现冒号；最后一章不要命名为“结语”\n"
         "- 不要解释，不要输出分析\n\n"
         f"[原始视频文稿]\n{raw_text.strip()}\n\n"
         f"[当前书稿]\n{generated_markdown.strip()}\n"
@@ -391,6 +478,9 @@ async def generate_full_book(
 
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
+
+    final_markdown = normalize_final_markdown(final_markdown)
+    _dump_stage(output_dir, "04_format.md", final_markdown)
 
     logger.info(
         "[summary] writer=%d → polish=%d → refine=%d → final=%d 字 (整体保留 %.1f%%)",

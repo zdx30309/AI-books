@@ -30,14 +30,14 @@ export function WorkshopSection({ onStartCreate, latestTaskId }: Props) {
             <FeatureCard
               icon={FileDown}
               title="导出预览"
-              description="进入最近一本书稿，查看终稿、按段落润色、导出 Markdown / 纯文本"
+              description="进入最近一本书稿，查看终稿、按段落润色、导出 Markdown / Word"
             />
           </Link>
         ) : (
           <FeatureCard
             icon={FileDown}
             title="导出预览"
-            description="完成第一本书稿后，可在书架点入查看终稿并导出 Markdown / 纯文本"
+            description="完成第一本书稿后，可在书架点入查看终稿并导出 Markdown / Word"
           />
         )}
       </div>

@@ -40,7 +40,11 @@ async def run_douyin_workflow(
                 douyin_url,
                 timeout_seconds=60,
                 poll_interval_seconds=2.0,
-                max_video_duration=settings.QINGDOU_MAX_VIDEO_DURATION,
+                max_video_duration=(
+                    settings.QINGDOU_MAX_VIDEO_DURATION
+                    if settings.QINGDOU_MAX_VIDEO_DURATION > 0
+                    else None
+                ),
             )
     except QingdouTimeoutError as exc:
         raise RuntimeError(f"轻抖解析超时：{exc}") from exc

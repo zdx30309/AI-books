@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # --- 轻抖 API (视频文案提取) ---
     QINGDOU_API_KEY: str = ""
     QINGDOU_BASE_URL: str = "https://www.qingdou.vip/web/api/commitGetTextTask"
-    QINGDOU_MAX_VIDEO_DURATION: int = 900
+    QINGDOU_MAX_VIDEO_DURATION: int = 0
     QINGDOU_POLL_INTERVAL_SECONDS: float = 3.0
     QINGDOU_POLL_TIMEOUT_SECONDS: int = 300
 

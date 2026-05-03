@@ -21,8 +21,7 @@ from app.core.config import PROJECT_ROOT, settings
 from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
-from app.services.content_engine import generate_full_book
-from app.services.cover import generate_cover_file
+from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
 from celery_app import celery_app
 
@@ -70,16 +69,20 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
             logger.info("使用 config['%s'] 提供的预解析文案 (%d 字)", key, len(val))
             return val.strip()
 
-    max_duration = int(config.get("max_video_duration") or settings.QINGDOU_MAX_VIDEO_DURATION)
+    raw_max_duration = config.get("max_video_duration")
+    if raw_max_duration is None:
+        raw_max_duration = settings.QINGDOU_MAX_VIDEO_DURATION
+    max_duration = int(raw_max_duration) if raw_max_duration not in ("", None) else 0
+    max_duration_arg = max_duration if max_duration > 0 else None
     poll_interval = float(config.get("poll_interval_seconds") or settings.QINGDOU_POLL_INTERVAL_SECONDS)
     poll_timeout = int(config.get("poll_timeout_seconds") or settings.QINGDOU_POLL_TIMEOUT_SECONDS)
 
-    logger.info("调用轻抖 API 解析视频: source_url=%s", source_url)
+    logger.info("调用轻抖 API 解析视频: source_url=%s max_duration=%s", source_url, max_duration_arg or "unlimited")
     text, duration, result = extract_video_text_with_qingdou(
         source_url,
         timeout_seconds=poll_timeout,
         poll_interval_seconds=poll_interval,
-        max_video_duration=max_duration,
+        max_video_duration=max_duration_arg,
     )
     logger.info(
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
@@ -115,14 +118,9 @@ def _extract_book_title(markdown: str) -> str:
 
 
 def _generate_cover_safely(title: str, markdown: str, output_dir: Path, task: Task) -> None:
-    """Generate cover as a best-effort side effect; never fail the book workflow."""
-    try:
-        cover_path = generate_cover_file(title, markdown, output_dir)
-        task.cover_url = f"/api/v1/tasks/{task.id}/cover"
-        _patch_config(task, cover_path=str(cover_path), cover_model=settings.IMAGE_MODEL)
-    except Exception as exc:
-        logger.exception("[task %s] 封面生成失败，保留书稿继续完成: %s", task.id, exc)
-        _patch_config(task, cover_error=f"{type(exc).__name__}: {exc}"[:1000])
+    """Cover generation is temporarily disabled by product request."""
+    task.cover_url = None
+    _patch_config(task, cover_disabled=True, cover_error=None)
 
 
 def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
@@ -235,6 +233,7 @@ def process_video(_self, task_id: str) -> dict:
                 on_stage=_on_stage,
             )
         )
+        markdown = normalize_final_markdown(markdown)
         _patch_config(task, markdown_chars=len(markdown))
         _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节")
 
@@ -242,7 +241,7 @@ def process_video(_self, task_id: str) -> dict:
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown, title=book_title)
 
-        _update_progress(db, task, progress=94, step="正在生成图书封面")
+        _update_progress(db, task, progress=94, step="正在写入质量报告")
         _generate_cover_safely(book_title, markdown, output_dir, task)
 
         report = measure_quality(markdown)
