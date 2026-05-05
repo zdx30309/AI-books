@@ -30,6 +30,18 @@ class CreateTaskResponse(BaseModel):
     status: str
 
 
+class TaskCategoryOption(BaseModel):
+    id: str
+    label: str
+    core_feature: str
+    directions: str
+    prompt_status: str
+
+
+class TaskCategoryListResponse(BaseModel):
+    items: list[TaskCategoryOption]
+
+
 class TaskStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

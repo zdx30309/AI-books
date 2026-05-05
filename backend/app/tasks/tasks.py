@@ -21,6 +21,7 @@ from app.core.config import PROJECT_ROOT, settings
 from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
+from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
 from celery_app import celery_app
@@ -183,7 +184,14 @@ def process_video(_self, task_id: str) -> dict:
         _patch_config(task, raw_text_chars=len(video_text))
         _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)")
 
-        category = str((task.config or {}).get("category") or "social_science")
+        category = normalize_category(str((task.config or {}).get("category") or "social_science"))
+        category_meta = get_category_meta(category)
+        _patch_config(
+            task,
+            category=category,
+            category_label=category_meta["label"],
+            category_prompt_status=category_meta["prompt_status"],
+        )
 
         output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)

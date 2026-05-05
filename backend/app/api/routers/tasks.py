@@ -20,6 +20,11 @@ from app.core.config import PROJECT_ROOT
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
+from app.prompts.goal_driven_templates import (
+    get_category_meta,
+    list_categories,
+    normalize_category,
+)
 from app.services.content_engine import normalize_final_markdown
 from app.schemas.chapter import (
     ChapterResponse,
@@ -33,6 +38,7 @@ from app.schemas.task import (
     StageContentResponse,
     TaskListItem,
     TaskListResponse,
+    TaskCategoryListResponse,
     TaskStatusResponse,
 )
 from app.tasks.tasks import process_video
@@ -61,10 +67,21 @@ def create_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
+    cfg = dict(req.config or {})
+    try:
+        category = normalize_category(str(cfg.get("category") or "social_science"))
+        category_meta = get_category_meta(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cfg.update(
+        category=category,
+        category_label=category_meta["label"],
+        category_prompt_status=category_meta["prompt_status"],
+    )
     task = Task(
         source_url=req.url,
         owner_id=user.id,
-        config=req.config or {},
+        config=cfg,
         status=TaskStatus.PENDING,
         progress=0,
         current_step="排队中",
@@ -87,6 +104,15 @@ def create_task(
         )
 
     return CreateTaskResponse(task_id=task.id, status=task.status)
+
+
+@router.get(
+    "/categories",
+    response_model=TaskCategoryListResponse,
+    summary="获取可选书籍方向分类",
+)
+def get_task_categories() -> TaskCategoryListResponse:
+    return TaskCategoryListResponse(items=list_categories())
 
 
 @router.delete(

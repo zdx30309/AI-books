@@ -90,10 +90,10 @@ def _looks_like_complete_format_output(text: str) -> bool:
     return all(marker in text for marker in _REQUIRED_FORMAT_MARKERS)
 
 
-def format_book_text(text: str) -> str:
+def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
     """格式整理。Prompt 来源: goal_driven_templates.DEEPSEEK_V4_PRO_FORMAT_PROMPT"""
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
-    rendered = DEEPSEEK_V4_PRO_FORMAT_PROMPT.format(text=text)
+    rendered = (prompt_template or DEEPSEEK_V4_PRO_FORMAT_PROMPT).format(text=text)
     return generate_text(
         rendered,
         model=settings.DEEPSEEK_MODEL,

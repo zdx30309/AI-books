@@ -241,6 +241,7 @@ async def _polish_by_paragraph_chunks(
     text: str,
     *,
     target_chars: int = 1000,
+    system_instruction: str | None = None,
     on_stage: StageCallback | None = None,
 ) -> str:
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
@@ -262,7 +263,11 @@ async def _polish_by_paragraph_chunks(
 
     async def _polish_once(chunk: str) -> str:
         return await asyncio.wait_for(
-            asyncio.to_thread(polish_book_text, chunk),
+            asyncio.to_thread(
+                polish_book_text,
+                chunk,
+                system_instruction=system_instruction,
+            ),
             timeout=settings.GEMINI_POLISH_CALL_TIMEOUT,
         )
 
@@ -358,6 +363,9 @@ async def generate_full_book(
 ) -> str:
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
+    gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
+    gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
+    deepseek_v4_pro_format_prompt = prompts["deepseek_v4_pro_format"]
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -415,6 +423,7 @@ async def generate_full_book(
         polished_markdown = await _polish_by_paragraph_chunks(
             generated_markdown,
             target_chars=1000,
+            system_instruction=gemini_fast_polish_prompt,
             on_stage=on_stage,
         )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
@@ -436,7 +445,11 @@ async def generate_full_book(
             on_stage("refine_start", {})
         try:
             refined_markdown = await asyncio.wait_for(
-                asyncio.to_thread(refine_book_text, polished_markdown),
+                asyncio.to_thread(
+                    refine_book_text,
+                    polished_markdown,
+                    system_instruction=gemini_fast_refine_prompt,
+                ),
                 timeout=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
         except Exception as exc:
@@ -460,7 +473,11 @@ async def generate_full_book(
             on_stage("format_start", {})
         try:
             final_markdown = await asyncio.wait_for(
-                asyncio.to_thread(format_book_text, refined_markdown),
+                asyncio.to_thread(
+                    format_book_text,
+                    refined_markdown,
+                    prompt_template=deepseek_v4_pro_format_prompt,
+                ),
                 timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
         except asyncio.TimeoutError as exc:

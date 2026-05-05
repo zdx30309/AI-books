@@ -62,6 +62,58 @@ SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文
 请直接输出完整书稿。"""
 
 
+LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的人生哲学类非虚构长文写作者。
+
+任务：参考我的视频文稿，直接生成一篇完整的人生哲学类深度长文。
+
+输出要求：
+- 严格按以下顺序输出，不得打乱：
+  1. @三个备选书名
+  2. @三个备选简介
+  3. @目录
+  4. @导言
+  5. @正文
+- 三个备选书名、三个备选简介、目录、导言、正文，五块必须都单独成节，且标题文字必须原样保留为：
+  - @三个备选书名
+  - @三个备选简介
+  - @目录
+  - @导言
+  - @正文
+- 导言必须放在目录之后、正文之前，长度 200~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言。
+- 导言要带钩子，但要和正文区分开：第一段先抛出一个能抓住读者的问题、冲突、反常识判断或现实困境；后面只搭建阅读入口和判断框架，不要提前展开正文里的完整论证。
+- 导言的钩子要冷静、有分寸、有现实感，不要写成标题党、悬疑营销、鸡汤口号或夸张情绪。
+- 导言排版要求：标题独立一行，下面 2~4 个自然段；段落之间可以保留一个空行，整体要像正式书稿开篇。
+- 正文必须紧接在导言之后，不要插入额外说明
+- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程
+
+内容要求：
+- 文章需与原始视频文稿有一定差别，可做合理的拓展延伸
+- 保持自然、清晰、连贯
+- 写作要有叙事张力和阅读钩子：开篇先抛出一个清晰的问题、冲突或反常识判断，让读者愿意继续读；正文推进要有轻重、转折和层次，不要只平铺分析现象。
+- 观点要有深度和洞察力：不只描述一个人为什么痛苦、焦虑、失败、犹豫或失控，还要解释背后的认知结构、情绪惯性、利益牵引、长期代价和替代选择。
+- 要能把具体问题提炼成可长期反复阅读的人生原则，但不要写成口号、鸡汤、励志语录或成功学模板。
+- 对于人生困境和提出和解决，应尽量形成一个清晰闭环：现实处境 → 常见反应 → 隐含误区 → 长期代价 → 替代认知 → 行动原则。
+- 不要空话，不要学术腔，不要翻译腔，不要做心理和情绪刻画，不要使用比喻修辞
+- 不要使用“不是……而是……”句式，不要使用破折号——
+- 允许你自行组织结构，不必预设固定章节层级
+- 最终正文长度控制在约12000字，允许小幅浮动
+- 所有书名、目录标题和正文章节标题都不要出现冒号（包括中文冒号和英文冒号）。
+- 正文最后一章不要命名为“结语”，也不要出现“结语”两个字作为章节标题；把它作为普通章节自然收束即可。
+
+输出顺序：
+1. @三个备选书名
+2. @三个备选简介
+3. @目录
+4. @导言
+5. @正文
+
+输入：
+[原始视频文稿]
+{raw_text}
+
+请直接输出完整书稿。"""
+
+
 GEMINI_FAST_POLISH_PROMPT = """请把下面的文字重写成自然流畅、适合大众阅读的现代汉语。
 用一位有生活阅历的作者口吻来写，有个人视角，不要像AI那样工整、中立、每段都总结。
 不要掉书袋，不要太学术，保留原文核心观点，但表达要更顺。
@@ -128,6 +180,155 @@ DEEPSEEK_V4_PRO_FORMAT_PROMPT = """你是格式整理器，负责把书稿整理
 """
 
 
+CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
+    {
+        "id": "social_science",
+        "label": "社会痛点",
+        "core_feature": "直面现实困境，高共鸣",
+        "directions": "教育、婚姻、住房、职场压力、养老",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "life_philosophy",
+        "label": "人生哲学",
+        "core_feature": "提供认知升级或心灵慰藉",
+        "directions": "励志、成长、价值观、生活态度",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "popular_science",
+        "label": "科普读物",
+        "core_feature": "把复杂知识讲明白",
+        "directions": "AI、经济、投资、科技、名人思想",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "wisdom_stories",
+        "label": "小故事·智慧",
+        "core_feature": "以故事承载哲理，易传播",
+        "directions": "佛学、禅宗、寓言、民间智慧",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "biography",
+        "label": "传记·人物",
+        "core_feature": "浓缩人生关键节点与品格",
+        "directions": "名人成长、失败与转折、精神内核",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "history_culture",
+        "label": "历史·文化",
+        "core_feature": "切片式讲述，有趣有料",
+        "directions": "冷知识、人物趣闻、古代生活、历史启示",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "emotion_relationship",
+        "label": "情感·关系",
+        "core_feature": "贴近日常，治愈或实用",
+        "directions": "亲情、友情、爱情、社交边界",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "psychology_self_help",
+        "label": "心理自助",
+        "core_feature": "方法导向，解决具体情绪问题",
+        "directions": "焦虑、内耗、拖延、自卑、失眠",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "suspense_micro_reasoning",
+        "label": "悬疑·微推理",
+        "core_feature": "篇幅短小，反转或悬念",
+        "directions": "日常谜团、封闭场景、人性故事",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "workplace_survival",
+        "label": "职场生存",
+        "core_feature": "实战技巧，新人友好",
+        "directions": "沟通、汇报、效率、避坑、跳槽",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "health_wellness",
+        "label": "健康·养生",
+        "core_feature": "轻科普，可立即行动",
+        "directions": "睡眠、运动、饮食、放松、预防",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "classic_interpretation",
+        "label": "经典·解读",
+        "core_feature": "降低门槛，提取精华",
+        "directions": "名著、电影、哲学、艺术",
+        "prompt_status": "pending",
+    },
+    {
+        "id": "web_short_story",
+        "label": "网文短篇",
+        "core_feature": "网络文学风格，强节奏、爽点密集",
+        "directions": "系统文、重生/穿书、甜宠、沙雕脑洞、悬疑反转式短篇",
+        "prompt_status": "pending",
+    },
+)
+
+
+def _build_category_placeholder_writer_prompt(category: dict[str, str]) -> str:
+    label = category["label"]
+    core_feature = category["core_feature"]
+    directions = category["directions"]
+    return f"""你是一名成熟的{label}类长文写作者。
+
+任务：参考我的视频文稿，直接生成一篇完整的{label}类深度长文。
+
+当前分类画像：
+- 核心特点：{core_feature}
+- 适合方向：{directions}
+- 说明：本分类正式 prompt 待甲方补充。当前必须严格按上面的分类画像写作，不要退回泛社科口径。
+
+输出要求：
+- 严格按以下顺序输出，不得打乱：
+  1. @三个备选书名
+  2. @三个备选简介
+  3. @目录
+  4. @导言
+  5. @正文
+- 三个备选书名、三个备选简介、目录、导言、正文，五块必须都单独成节，且标题文字必须原样保留为：
+  - @三个备选书名
+  - @三个备选简介
+  - @目录
+  - @导言
+  - @正文
+- 导言必须放在目录之后、正文之前，长度 200~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言。
+- 导言要带钩子，但要和正文区分开：第一段先抛出一个能抓住读者的问题、冲突、反常识判断或现实困境；后面只搭建阅读入口和判断框架，不要提前展开正文里的完整论证。
+- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程
+
+内容要求：
+- 文章需与原始视频文稿有一定差别，可做合理的拓展延伸。
+- 保持自然、清晰、连贯，写作要有叙事张力和阅读钩子。
+- 所有论述、故事、案例和标题都必须服务于“{label}”这个方向。
+- 不要空话，不要学术腔，不要翻译腔，不要使用夸张标题党或模板化金句。
+- 不要使用“不是……而是……”句式，不要使用破折号——
+- 最终正文长度控制在约12000字，允许小幅浮动。
+- 所有书名、目录标题和正文章节标题都不要出现冒号（包括中文冒号和英文冒号）。
+- 正文最后一章不要命名为“结语”，也不要出现“结语”两个字作为章节标题；把它作为普通章节自然收束即可。
+
+输出顺序：
+1. @三个备选书名
+2. @三个备选简介
+3. @目录
+4. @导言
+5. @正文
+
+输入：
+[原始视频文稿]
+{{raw_text}}
+
+请直接输出完整书稿。"""
+
+
 PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "social_science": {
         "full_book_writer": SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT,
@@ -135,24 +336,71 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
         "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
     },
+    "life_philosophy": {
+        "full_book_writer": LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
+        "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
+        "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
+        "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
+    },
 }
 
+for _category in CATEGORY_OPTIONS:
+    _category_id = _category["id"]
+    if _category_id not in PROMPT_REGISTRY:
+        PROMPT_REGISTRY[_category_id] = {
+            "full_book_writer": _build_category_placeholder_writer_prompt(_category),
+            "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
+            "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
+            "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
+        }
+
 SUPPORTED_CATEGORIES: tuple[str, ...] = tuple(PROMPT_REGISTRY.keys())
+CATEGORY_ALIASES: dict[str, str] = {
+    "social_pain": "social_science",
+    "social": "social_science",
+}
+for _category in CATEGORY_OPTIONS:
+    CATEGORY_ALIASES[_category["id"]] = _category["id"]
+    CATEGORY_ALIASES[_category["label"]] = _category["id"]
 
 
-def get_prompts(category: str) -> dict[str, str]:
-    if category not in PROMPT_REGISTRY:
+def normalize_category(category: str | None) -> str:
+    key = (category or "social_science").strip() or "social_science"
+    normalized = CATEGORY_ALIASES.get(key)
+    if normalized is None:
         raise ValueError(f"未支持的品类: {category!r}。已注册品类: {SUPPORTED_CATEGORIES}")
-    return PROMPT_REGISTRY[category]
+    return normalized
+
+
+def list_categories() -> list[dict[str, str]]:
+    return [dict(category) for category in CATEGORY_OPTIONS]
+
+
+def get_category_meta(category: str | None) -> dict[str, str]:
+    normalized = normalize_category(category)
+    for item in CATEGORY_OPTIONS:
+        if item["id"] == normalized:
+            return dict(item)
+    raise ValueError(f"未支持的品类: {category!r}。已注册品类: {SUPPORTED_CATEGORIES}")
+
+
+def get_prompts(category: str | None) -> dict[str, str]:
+    normalized = normalize_category(category)
+    return PROMPT_REGISTRY[normalized]
 
 
 __all__ = [
     "BOOK_TITLE_AND_DESCRIPTION_PROMPT",
     "SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT",
+    "LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT",
     "GEMINI_FAST_POLISH_PROMPT",
     "GEMINI_FAST_REFINE_PROMPT",
     "DEEPSEEK_V4_PRO_FORMAT_PROMPT",
+    "CATEGORY_OPTIONS",
     "PROMPT_REGISTRY",
     "SUPPORTED_CATEGORIES",
+    "get_category_meta",
     "get_prompts",
+    "list_categories",
+    "normalize_category",
 ]

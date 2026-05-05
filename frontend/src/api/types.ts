@@ -21,6 +21,18 @@ export interface CreateTaskResponse {
   status: TaskStatus;
 }
 
+export interface TaskCategoryOption {
+  id: string;
+  label: string;
+  core_feature: string;
+  directions: string;
+  prompt_status: string;
+}
+
+export interface TaskCategoryListResponse {
+  items: TaskCategoryOption[];
+}
+
 export interface TaskStatusResponse {
   id: string;
   source_url: string;
