@@ -9,12 +9,14 @@ import paramiko
 
 HOST = os.environ["VIDEO_PLAN_SSH_HOST"]
 USER = os.environ.get("VIDEO_PLAN_SSH_USER", "root")
-PASSWORD = os.environ["VIDEO_PLAN_SSH_PASSWORD"]
+PASSWORD = os.environ.get("VIDEO_PLAN_SSH_PASSWORD") or None
+KEY_FILENAME = os.environ.get("VIDEO_PLAN_SSH_KEY") or None
 REMOTE_BIND = os.environ.get("VIDEO_PLAN_REMOTE_BIND", "172.18.0.1")
 REMOTE_PORT = int(os.environ.get("VIDEO_PLAN_REMOTE_PORT", "7897"))
 LOCAL_HOST = os.environ.get("VIDEO_PLAN_LOCAL_PROXY_HOST", "127.0.0.1")
 LOCAL_PORT = int(os.environ.get("VIDEO_PLAN_LOCAL_PROXY_PORT", "7897"))
 LOG = os.environ.get("VIDEO_PLAN_TUNNEL_LOG", r"E:\video-plan\clash_reverse_tunnel.log")
+KEEPALIVE_SECONDS = int(os.environ.get("VIDEO_PLAN_SSH_KEEPALIVE_SECONDS", "30"))
 
 
 def log(message: str) -> None:
@@ -61,11 +63,14 @@ while True:
             HOST,
             username=USER,
             password=PASSWORD,
+            key_filename=KEY_FILENAME,
+            look_for_keys=not KEY_FILENAME,
             timeout=20,
             banner_timeout=60,
             auth_timeout=30,
         )
         transport = client.get_transport()
+        transport.set_keepalive(KEEPALIVE_SECONDS)
         transport.request_port_forward(REMOTE_BIND, REMOTE_PORT)
         log(f"reverse tunnel up: {REMOTE_BIND}:{REMOTE_PORT} -> {LOCAL_HOST}:{LOCAL_PORT}")
         while transport.is_active():
