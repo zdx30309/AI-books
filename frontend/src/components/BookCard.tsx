@@ -31,6 +31,10 @@ function deriveTitle(task: TaskListItem): string {
 
 function deriveSubtitle(task: TaskListItem): string {
   if (task.status === "completed") {
+    if (task.bookshelf && task.word_count) {
+      return `${task.bookshelf} · 共 ${task.word_count.toLocaleString()} 字`;
+    }
+    if (task.bookshelf) return task.bookshelf;
     if (task.word_count) return `共 ${task.word_count.toLocaleString()} 字`;
     return "已完成";
   }

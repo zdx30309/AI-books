@@ -15,7 +15,7 @@ from app.prompts.goal_driven_templates import DEEPSEEK_V4_PRO_FORMAT_PROMPT
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_DEEPSEEK_ERRORS = (OpenAIError, httpx.HTTPError, ConnectionError, TimeoutError, ValueError)
-_REQUIRED_FORMAT_MARKERS = ("@三个备选书名", "@三个备选简介", "@目录", "@导言", "@正文")
+_REQUIRED_FORMAT_MARKERS = ("@最终书名", "@最终简介", "@目录", "@导言", "@正文")
 
 
 @lru_cache

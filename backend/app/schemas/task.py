@@ -30,6 +30,25 @@ class CreateTaskResponse(BaseModel):
     status: str
 
 
+class BatchCreateTaskRequest(BaseModel):
+    urls: list[str] = Field(..., min_length=1, max_length=100, description="候选链接列表，最多 100 条")
+    config: dict[str, Any] = Field(default_factory=dict, description="批量任务共享配置")
+
+
+class BatchCreateTaskItem(BaseModel):
+    url: str
+    task_id: UUID | None = None
+    status: str
+    reason: str | None = None
+
+
+class BatchCreateTaskResponse(BaseModel):
+    created: list[BatchCreateTaskItem]
+    skipped: list[BatchCreateTaskItem]
+    total_created: int
+    total_skipped: int
+
+
 class TaskCategoryOption(BaseModel):
     id: str
     label: str
@@ -52,6 +71,7 @@ class TaskStatusResponse(BaseModel):
     current_step: str
     cover_url: str | None = None
     title: str | None = None
+    bookshelf: str | None = None
     error_message: str | None = None
     created_at: datetime
 
@@ -68,6 +88,7 @@ class TaskListItem(BaseModel):
     cover_url: str | None = None
     created_at: datetime
     title: str | None = None       # 取自 config.title 或第一章标题
+    bookshelf: str | None = None   # 用户手动维护的书架 / 分类
     word_count: int = 0            # 全文字数 (config.markdown_chars 或章节累加)
     chapter_count: int = 0
 
@@ -98,3 +119,19 @@ class StageContentResponse(BaseModel):
     stage: str                     # writer / writer_repaired / polish / refine / format
     content: str
     char_count: int
+
+
+class TaskMetadataUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    bookshelf: str | None = Field(default=None, max_length=80)
+
+
+class RegenerateSelectionRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=20000, description="待重新生成的选中文本")
+
+
+class RegenerateSelectionResponse(BaseModel):
+    original: str
+    regenerated: str
+    original_chars: int
+    regenerated_chars: int

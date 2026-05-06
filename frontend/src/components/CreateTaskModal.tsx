@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpenCheck, Loader2, X } from "lucide-react";
+import { BookOpenCheck, ListPlus, Loader2, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { TaskCategoryOption } from "@/api/types";
 
@@ -104,8 +104,10 @@ const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
 ];
 
 export function CreateTaskModal({ open, onClose, onCreated }: Props) {
+  const [mode, setMode] = useState<"single" | "batch">("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
+  const [candidateLinks, setCandidateLinks] = useState("");
   const [category, setCategory] = useState("social_science");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
   const [submitting, setSubmitting] = useState(false);
@@ -115,8 +117,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   useEffect(() => {
     if (!open) {
+      setMode("single");
       setUrl("");
       setRawText("");
+      setCandidateLinks("");
       setCategory("social_science");
       setCategories(DEFAULT_CATEGORIES);
       setError(null);
@@ -156,8 +160,50 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
+  const parseCandidateLinks = () =>
+    candidateLinks
+      .split(/[\s,，]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
   const submit = async () => {
     setError(null);
+    if (mode === "batch") {
+      const urls = parseCandidateLinks();
+      if (urls.length === 0) {
+        setError("请放入至少 1 个候选链接");
+        return;
+      }
+      if (urls.length > 100) {
+        setError("候选链接一次最多 100 个");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await api.createTaskBatch({ urls, config: { category } });
+        const first = res.created.find((item) => item.task_id)?.task_id;
+        if (!first) {
+          setError(`没有新任务被创建，已跳过 ${res.total_skipped} 个重复链接`);
+          return;
+        }
+        if (res.total_skipped > 0) {
+          window.alert(`已创建 ${res.total_created} 个任务，自动跳过 ${res.total_skipped} 个重复链接。`);
+        }
+        onCreated(first);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建任务失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (!url.trim() && !rawText.trim()) {
       setError("请填入抖音链接，或直接粘贴视频文稿");
       return;
@@ -208,10 +254,36 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴抖音链接或已有文稿，AI 会生成对应类型的完整书稿
+          选择书籍方向后，粘贴单个视频链接、已有文稿，或把候选链接批量放入自动生成库
         </p>
 
         <div className="mt-7 space-y-5">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setMode("single")}
+              className={`rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "single"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              单条生成
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("batch")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "batch"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
+              候选库
+            </button>
+          </div>
+
           <div>
             <label
               htmlFor="task-category"
@@ -237,45 +309,71 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             </p>
           </div>
 
-          <div>
-            <label
-              htmlFor="task-url"
-              className="mb-2 block text-[11px] tracking-widest text-warm-300"
-            >
-              视频链接
-            </label>
-            <input
-              id="task-url"
-              type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://v.douyin.com/..."
-              className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
-            />
-          </div>
+          {mode === "single" ? (
+            <>
+              <div>
+                <label
+                  htmlFor="task-url"
+                  className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                >
+                  视频链接
+                </label>
+                <input
+                  id="task-url"
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://v.douyin.com/..."
+                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
 
-          <div className="relative flex items-center text-[10px] tracking-widest text-warm-500">
-            <div className="flex-1 border-t border-gold-500/10" />
-            <span className="px-3">或直接粘贴已有文稿</span>
-            <div className="flex-1 border-t border-gold-500/10" />
-          </div>
+              <div className="relative flex items-center text-[10px] tracking-widest text-warm-500">
+                <div className="flex-1 border-t border-gold-500/10" />
+                <span className="px-3">或直接粘贴已有文稿</span>
+                <div className="flex-1 border-t border-gold-500/10" />
+              </div>
 
-          <div>
-            <label
-              htmlFor="task-raw-text"
-              className="mb-2 block text-[11px] tracking-widest text-warm-300"
-            >
-              视频文稿（可选）
-            </label>
-            <textarea
-              id="task-raw-text"
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
-              placeholder="如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
-              rows={6}
-              className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
-            />
-          </div>
+              <div>
+                <label
+                  htmlFor="task-raw-text"
+                  className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                >
+                  视频文稿（可选）
+                </label>
+                <textarea
+                  id="task-raw-text"
+                  value={rawText}
+                  onChange={(e) => setRawText(e.target.value)}
+                  placeholder="如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
+                  rows={6}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="candidate-links"
+                  className="block text-[11px] tracking-widest text-warm-300"
+                >
+                  候选链接
+                </label>
+                <span className="text-[10px] tracking-widest text-warm-500">
+                  {parseCandidateLinks().length}/100
+                </span>
+              </div>
+              <textarea
+                id="candidate-links"
+                value={candidateLinks}
+                onChange={(e) => setCandidateLinks(e.target.value)}
+                placeholder="每行一个链接，最多 100 个；系统会自动跳过重复链接"
+                rows={12}
+                className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+              />
+            </div>
+          )}
 
           {error && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
@@ -304,7 +402,9 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 <span className="tracking-widest">提交中</span>
               </>
             ) : (
-              <span className="tracking-widest">立即生成</span>
+              <span className="tracking-widest">
+                {mode === "batch" ? "加入候选库" : "立即生成"}
+              </span>
             )}
           </button>
         </div>

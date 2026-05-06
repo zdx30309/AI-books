@@ -2,6 +2,8 @@
 // 自动从 localStorage 读 token 并加 Authorization 头。
 
 import type {
+  BatchCreateTaskRequest,
+  BatchCreateTaskResponse,
   ChapterResponse,
   ChapterUpdateRequest,
   ChaptersListResponse,
@@ -11,11 +13,14 @@ import type {
   MarkdownResponse,
   PolishParagraphRequest,
   PolishParagraphResponse,
+  RegenerateSelectionRequest,
+  RegenerateSelectionResponse,
   RegisterRequest,
   StageContentResponse,
   StageName,
   StatsResponse,
   SystemHealth,
+  TaskMetadataUpdateRequest,
   TaskCategoryListResponse,
   TaskListResponse,
   TaskStatusResponse,
@@ -141,10 +146,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  createTaskBatch: (body: BatchCreateTaskRequest) =>
+    request<BatchCreateTaskResponse>("/tasks/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   deleteTask: (id: string) =>
     request<void>(`/tasks/${id}`, { method: "DELETE" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
+  updateTaskMetadata: (id: string, body: TaskMetadataUpdateRequest) =>
+    request<TaskStatusResponse>(`/tasks/${id}/metadata`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  regenerateSelection: (id: string, body: RegenerateSelectionRequest) =>
+    request<RegenerateSelectionResponse>(`/tasks/${id}/regenerate-selection`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   regenerateCover: (id: string) =>
     request<TaskStatusResponse>(`/tasks/${id}/cover/regenerate`, { method: "POST" }),
   getChapters: (id: string) =>

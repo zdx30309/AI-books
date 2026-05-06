@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
 _INTRO_SECTION_RE = re.compile(
-    r"^@?\s*三个备选简介\s*$([\s\S]*?)(?=^@?\s*目录\s*$|^@?\s*正文\s*$|^@|\Z)",
+    r"^@?\s*(?:最终简介|三个备选简介)\s*$([\s\S]*?)(?=^@?\s*目录\s*$|^@?\s*正文\s*$|^@|\Z)",
     re.MULTILINE,
 )
 _INTRO_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")

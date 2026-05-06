@@ -9,7 +9,6 @@ import {
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
-  Download,
   FileText,
   Loader2,
   Pencil,
@@ -65,6 +64,10 @@ export function BookDetail() {
 
   // 编辑/查看模式
   const [editing, setEditing] = useState(false);
+  const [metaTitle, setMetaTitle] = useState("");
+  const [metaBookshelf, setMetaBookshelf] = useState("");
+  const [metaDirty, setMetaDirty] = useState(false);
+  const [savingMeta, setSavingMeta] = useState(false);
 
   // 阶段切换：终稿章节 vs 中间产物
   const [activeView, setActiveView] = useState<"final" | StageName>("final");
@@ -79,6 +82,7 @@ export function BookDetail() {
   // 选段润色浮标
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const pollRef = useRef<number | null>(null);
 
@@ -125,6 +129,12 @@ export function BookDetail() {
       if (pollRef.current) window.clearInterval(pollRef.current);
     }
   }, [task]);
+
+  useEffect(() => {
+    if (!task || metaDirty) return;
+    setMetaTitle(task.title || chapters[0]?.title || "");
+    setMetaBookshelf(task.bookshelf || "");
+  }, [task, chapters, metaDirty]);
 
   // 切到中间产物 tab：拉对应文件
   useEffect(() => {
@@ -259,6 +269,70 @@ export function BookDetail() {
     }
   }, [polishTrigger, chapters]);
 
+  const saveMetadata = useCallback(async () => {
+    if (!id) return;
+    setSavingMeta(true);
+    try {
+      const next = await api.updateTaskMetadata(id, {
+        title: metaTitle,
+        bookshelf: metaBookshelf,
+      });
+      setTask(next);
+      setMetaDirty(false);
+    } catch (e) {
+      const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "保存失败";
+      alert(`保存书名/书架失败：${msg}`);
+    } finally {
+      setSavingMeta(false);
+    }
+  }, [id, metaTitle, metaBookshelf]);
+
+  const regenerateSelected = useCallback(async () => {
+    if (!id) return;
+    if (!editing || activeView !== "final") {
+      alert("请先切到编辑模式，并在终稿中选中要重新生成的内容。");
+      return;
+    }
+    if (!polishTrigger) {
+      alert("请先在正文编辑框里选中一段内容。");
+      return;
+    }
+
+    const { chapterId, textareaEl, start, end, text } = polishTrigger;
+    setRegenerating(true);
+    try {
+      const r = await api.regenerateSelection(id, { text });
+      const target = chapters.find((c) => c.id === chapterId);
+      if (!target) return;
+      const newContent =
+        target.content.slice(0, start) +
+        r.regenerated +
+        target.content.slice(end);
+      setChapters((prev) =>
+        prev.map((c) =>
+          c.id === chapterId
+            ? { ...c, content: newContent, word_count: newContent.length }
+            : c,
+        ),
+      );
+      setDirty((d) => ({ ...d, [chapterId]: true }));
+      setPolishTrigger(null);
+      setTimeout(() => {
+        textareaEl.focus();
+        const newEnd = start + r.regenerated.length;
+        textareaEl.setSelectionRange(newEnd, newEnd);
+      }, 0);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `[${e.status}] ${e.detail}`
+          : "重新生成失败";
+      alert(`重新生成失败：${msg}`);
+    } finally {
+      setRegenerating(false);
+    }
+  }, [id, editing, activeView, polishTrigger, chapters]);
+
   const dirtyCount = useMemo(
     () => Object.values(dirty).filter(Boolean).length,
     [dirty],
@@ -338,6 +412,7 @@ export function BookDetail() {
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
+  const displayTitle = metaTitle || task.title || chapters[0]?.title || "书稿生成中";
 
   return (
     <div className="relative">
@@ -366,18 +441,72 @@ export function BookDetail() {
           <div className="flex flex-1 gap-5">
             <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
               <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
-                {isCompleted
-                  ? task.title || chapters[0]?.title || "书稿已完成"
-                  : "书稿生成中"}
+                {isCompleted ? displayTitle : "书稿生成中"}
               </div>
             </div>
             <div className="min-w-0 flex-1">
               <h1 className="font-serif text-2xl tracking-wide text-warm-100">
-                {task.title || chapters[0]?.title || "书稿生成中"}
+                {displayTitle}
               </h1>
               <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
                 来源：{task.source_url}
               </p>
+              {isCompleted && (
+                <div className="mt-5 grid gap-3 md:grid-cols-[1.4fr_1fr_auto]">
+                  <div>
+                    <label
+                      htmlFor="book-title"
+                      className="mb-2 block text-[10px] tracking-widest text-warm-500"
+                    >
+                      书名
+                    </label>
+                    <input
+                      id="book-title"
+                      type="text"
+                      value={metaTitle}
+                      onChange={(e) => {
+                        setMetaTitle(e.target.value);
+                        setMetaDirty(true);
+                      }}
+                      className="w-full rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/45"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="book-bookshelf"
+                      className="mb-2 block text-[10px] tracking-widest text-warm-500"
+                    >
+                      书架
+                    </label>
+                    <input
+                      id="book-bookshelf"
+                      type="text"
+                      value={metaBookshelf}
+                      onChange={(e) => {
+                        setMetaBookshelf(e.target.value);
+                        setMetaDirty(true);
+                      }}
+                      placeholder="例如 社科 / 教育 / 商业"
+                      className="w-full rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={saveMetadata}
+                      disabled={savingMeta || !metaDirty}
+                      className="btn-ghost h-[38px] shrink-0 disabled:opacity-50"
+                    >
+                      {savingMeta ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                      ) : (
+                        <Save className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      )}
+                      保存
+                    </button>
+                  </div>
+                </div>
+              )}
               {isFailed && task.error_message && (
                 <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
                   {task.error_message}
@@ -401,11 +530,16 @@ export function BookDetail() {
               <>
                 <button
                   type="button"
-                  onClick={() => handleDownload("md")}
-                  className="btn-ghost"
+                  onClick={regenerateSelected}
+                  disabled={regenerating}
+                  className="btn-ghost disabled:opacity-50"
                 >
-                  <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  Markdown
+                  {regenerating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                  ) : (
+                    <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  )}
+                  {regenerating ? "重新生成中" : "重新生成"}
                 </button>
                 <button
                   type="button"

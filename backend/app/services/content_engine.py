@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _openai_writer_client: OpenAI | None = None
 
 
-_FRONT_SECTION_TITLES = ("三个备选书名", "三个备选简介", "目录", "导言", "正文")
+_FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "正文")
 
 
 def _strip_title_colons(title: str) -> str:
@@ -54,7 +54,7 @@ def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
         should_clean = True
         prefix = chapter.group(1).strip()
         title = chapter.group(2).strip()
-    elif current_section in {"三个备选书名", "目录"}:
+    elif current_section in {"最终书名", "三个备选书名", "目录"}:
         should_clean = True
         numbered = re.match(r"^(\s*(?:[-*]\s*|\d+[\.、]\s*))(.+?)\s*$", line.rstrip())
         if numbered:
@@ -82,7 +82,7 @@ def _postprocess_delivery_markdown(markdown: str) -> str:
     cleaned: list[str] = []
     for raw_line in (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw_line.rstrip()
-        section = re.match(r"^@?\s*(三个备选书名|三个备选简介|目录|导言|正文)\s*$", line)
+        section = re.match(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|正文)\s*$", line)
         if section:
             current_section = section.group(1)
             cleaned.append("@" + current_section)
@@ -301,7 +301,7 @@ async def _polish_by_paragraph_chunks(
 
 
 def _front_matter_missing(text: str) -> bool:
-    required_sections = ("三个备选书名", "三个备选简介", "目录", "导言", "正文")
+    required_sections = ("最终书名", "最终简介", "目录", "导言", "正文")
     return not all(marker in text for marker in required_sections)
 
 
@@ -309,8 +309,8 @@ async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
     repair_prompt = (
         "你现在只负责修复书稿的前置块，不要重写全文。\n"
         "必须补齐并保留以下五个部分，标题前的 @ 加工符号也必须保留：\n"
-        "1. @三个备选书名\n"
-        "2. @三个备选简介\n"
+        "1. @最终书名\n"
+        "2. @最终简介\n"
         "3. @目录\n"
         "4. @导言\n"
         "5. @正文\n"

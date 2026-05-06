@@ -21,6 +21,25 @@ export interface CreateTaskResponse {
   status: TaskStatus;
 }
 
+export interface BatchCreateTaskRequest {
+  urls: string[];
+  config?: Record<string, unknown>;
+}
+
+export interface BatchCreateTaskItem {
+  url: string;
+  task_id: string | null;
+  status: string;
+  reason: string | null;
+}
+
+export interface BatchCreateTaskResponse {
+  created: BatchCreateTaskItem[];
+  skipped: BatchCreateTaskItem[];
+  total_created: number;
+  total_skipped: number;
+}
+
 export interface TaskCategoryOption {
   id: string;
   label: string;
@@ -41,6 +60,7 @@ export interface TaskStatusResponse {
   current_step: string;
   cover_url: string | null;
   title: string | null;
+  bookshelf: string | null;
   error_message: string | null;
   created_at: string;
 }
@@ -58,6 +78,7 @@ export interface TaskListItem {
   cover_url: string | null;
   created_at: string;
   title: string | null;
+  bookshelf: string | null;
   word_count: number;
   chapter_count: number;
 }
@@ -116,6 +137,22 @@ export interface StageContentResponse {
 export interface ChapterUpdateRequest {
   title?: string | null;
   content: string;
+}
+
+export interface TaskMetadataUpdateRequest {
+  title?: string | null;
+  bookshelf?: string | null;
+}
+
+export interface RegenerateSelectionRequest {
+  text: string;
+}
+
+export interface RegenerateSelectionResponse {
+  original: string;
+  regenerated: string;
+  original_chars: number;
+  regenerated_chars: number;
 }
 
 // 段落润色

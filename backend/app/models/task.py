@@ -83,3 +83,9 @@ class Task(Base):
         cfg = self.config or {}
         title = cfg.get("title")
         return title if isinstance(title, str) and title.strip() else None
+
+    @property
+    def bookshelf(self) -> str | None:
+        cfg = self.config or {}
+        bookshelf = cfg.get("bookshelf")
+        return bookshelf if isinstance(bookshelf, str) and bookshelf.strip() else None

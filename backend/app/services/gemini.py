@@ -280,3 +280,25 @@ def refine_book_text(text: str, *, system_instruction: str | None = None) -> str
         request_timeout_seconds=settings.GEMINI_REFINE_REQUEST_TIMEOUT,
         retries=settings.GEMINI_MAX_RETRIES,
     )
+
+
+def regenerate_selected_text(text: str) -> str:
+    """重新生成编辑器选中的局部内容，保持主题和篇幅相近。"""
+    system_instruction = (
+        "你是中文非虚构书稿编辑。请根据用户提供的选中文本，重新生成一版更清晰、"
+        "更自然、更有阅读推进感的内容。\n"
+        "要求：\n"
+        "- 只输出重新生成后的正文，不要解释、不要标题、不要代码块。\n"
+        "- 保留原文的核心观点、事实、数字、人名、地名和关键判断。\n"
+        "- 篇幅与原文接近，允许上下浮动 20%，不要大幅压缩或扩写。\n"
+        "- 语言要像正式书稿，不要像口播稿、营销文案或 AI 总结。\n"
+    )
+    return generate_text(
+        text,
+        model=settings.GEMINI_MODEL,
+        temperature=0.45,
+        max_output_tokens=settings.GEMINI_POLISH_MAX_OUTPUT_TOKENS,
+        system_instruction=system_instruction,
+        request_timeout_seconds=settings.GEMINI_REQUEST_TIMEOUT,
+        retries=settings.GEMINI_MAX_RETRIES,
+    )

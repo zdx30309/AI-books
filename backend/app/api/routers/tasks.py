@@ -1,6 +1,7 @@
 """Task routers."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import zipfile
@@ -32,15 +33,22 @@ from app.schemas.chapter import (
     ChaptersListResponse,
 )
 from app.schemas.task import (
+    BatchCreateTaskItem,
+    BatchCreateTaskRequest,
+    BatchCreateTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
     MarkdownResponse,
+    RegenerateSelectionRequest,
+    RegenerateSelectionResponse,
     StageContentResponse,
+    TaskMetadataUpdateRequest,
     TaskListItem,
     TaskListResponse,
     TaskCategoryListResponse,
     TaskStatusResponse,
 )
+from app.services.gemini import regenerate_selected_text
 from app.tasks.tasks import process_video
 
 _STAGE_FILES = {
@@ -50,10 +58,106 @@ _STAGE_FILES = {
     "refine": "03_refine.md",
     "format": "04_format.md",
 }
+_FRONT_SECTION_NAMES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "正文")
+_BODY_SECTION_RE = re.compile(r"^@?\s*正文\s*$", re.MULTILINE)
+_FINAL_TITLE_SECTION_RE = re.compile(
+    r"^@?\s*(最终书名|三个备选书名)\s*$([\s\S]*?)(?=^@?\s*(?:"
+    + "|".join(map(re.escape, _FRONT_SECTION_NAMES))
+    + r")\s*$|\Z)",
+    re.MULTILINE,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["Tasks"])
+
+
+def _normalize_task_config(config: dict | None) -> dict:
+    cfg = dict(config or {})
+    try:
+        category = normalize_category(str(cfg.get("category") or "social_science"))
+        category_meta = get_category_meta(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cfg.update(
+        category=category,
+        category_label=category_meta["label"],
+        category_prompt_status=category_meta["prompt_status"],
+    )
+    return cfg
+
+
+def _dispatch_task(task: Task) -> None:
+    try:
+        process_video.delay(str(task.id))
+    except Exception as e:
+        logger.exception("[task %s] Celery 投递失败", task.id)
+        raise RuntimeError(f"Celery dispatch failed: {e}") from e
+
+
+def _normalize_candidate_urls(urls: list[str]) -> tuple[list[str], list[str]]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    duplicates: list[str] = []
+    for raw in urls:
+        url = (raw or "").strip()
+        if not url:
+            continue
+        if url in seen:
+            duplicates.append(url)
+            continue
+        seen.add(url)
+        unique.append(url)
+    return unique, duplicates
+
+
+def _render_chapters_markdown(chapters: list[Chapter]) -> str:
+    lines: list[str] = ["@正文"]
+    for chapter in sorted(chapters, key=lambda c: c.chapter_num):
+        title = chapter.title.strip() or f"第{chapter.chapter_num}章"
+        content = (chapter.content or "").strip()
+        lines.extend([f"@{chapter.chapter_num}. {title}", content])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _merge_chapters_into_markdown(markdown: str, chapters: list[Chapter]) -> str:
+    body = _render_chapters_markdown(chapters)
+    if not markdown:
+        return normalize_final_markdown(body)
+    match = _BODY_SECTION_RE.search(markdown)
+    if not match:
+        return normalize_final_markdown(body)
+    front = markdown[: match.start()].rstrip()
+    return normalize_final_markdown(f"{front}\n{body}")
+
+
+def _sync_markdown_from_chapters(db: Session, task: Task) -> None:
+    chapters = (
+        db.query(Chapter)
+        .filter(Chapter.task_id == task.id)
+        .order_by(Chapter.chapter_num.asc())
+        .all()
+    )
+    markdown = _merge_chapters_into_markdown(str((task.config or {}).get("markdown") or ""), chapters)
+    cfg = dict(task.config or {})
+    cfg["markdown"] = markdown
+    cfg["markdown_chars"] = len(markdown)
+    task.config = cfg
+
+
+def _replace_title_in_markdown(markdown: str, title: str) -> str:
+    clean_title = title.strip()
+    if not markdown.strip():
+        return f"@最终书名\n{clean_title}\n"
+
+    match = _FINAL_TITLE_SECTION_RE.search(markdown)
+    if match:
+        return normalize_final_markdown(
+            markdown[: match.start()]
+            + f"@{match.group(1)}\n{clean_title}\n"
+            + markdown[match.end() :]
+        )
+    return normalize_final_markdown(f"@最终书名\n{clean_title}\n{markdown}")
 
 
 @router.post(
@@ -67,17 +171,7 @@ def create_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
-    cfg = dict(req.config or {})
-    try:
-        category = normalize_category(str(cfg.get("category") or "social_science"))
-        category_meta = get_category_meta(category)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    cfg.update(
-        category=category,
-        category_label=category_meta["label"],
-        category_prompt_status=category_meta["prompt_status"],
-    )
+    cfg = _normalize_task_config(req.config)
     task = Task(
         source_url=req.url,
         owner_id=user.id,
@@ -92,7 +186,7 @@ def create_task(
     logger.info("[task %s] 建库完成, 准备投 Celery", task.id)
 
     try:
-        process_video.delay(str(task.id))
+        _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
         task.status = TaskStatus.FAILED
@@ -113,6 +207,78 @@ def create_task(
 )
 def get_task_categories() -> TaskCategoryListResponse:
     return TaskCategoryListResponse(items=list_categories())
+
+
+@router.post(
+    "/batch",
+    response_model=BatchCreateTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="候选自动生成库：批量去重建任务并逐个入队",
+)
+def create_task_batch(
+    req: BatchCreateTaskRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BatchCreateTaskResponse:
+    urls, duplicate_urls = _normalize_candidate_urls(req.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="候选链接不能为空")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="一次最多放入 100 个链接")
+
+    cfg = _normalize_task_config(req.config)
+    existing_urls = {
+        row[0]
+        for row in db.query(Task.source_url)
+        .filter(Task.owner_id == user.id, Task.source_url.in_(urls))
+        .all()
+    }
+
+    created: list[BatchCreateTaskItem] = []
+    skipped: list[BatchCreateTaskItem] = [
+        BatchCreateTaskItem(url=url, status="skipped", reason="候选列表内重复")
+        for url in duplicate_urls
+    ]
+    tasks_to_dispatch: list[Task] = []
+
+    for url in urls:
+        if url in existing_urls:
+            skipped.append(BatchCreateTaskItem(url=url, status="skipped", reason="已存在任务"))
+            continue
+        task = Task(
+            source_url=url,
+            owner_id=user.id,
+            config=dict(cfg),
+            status=TaskStatus.PENDING,
+            progress=0,
+            current_step="排队中",
+        )
+        db.add(task)
+        db.flush()
+        tasks_to_dispatch.append(task)
+        created.append(BatchCreateTaskItem(url=url, task_id=task.id, status=task.status))
+
+    db.commit()
+
+    for task in tasks_to_dispatch:
+        try:
+            _dispatch_task(task)
+        except Exception as exc:
+            task.status = TaskStatus.FAILED
+            task.error_message = str(exc)[:2000]
+            db.commit()
+            for item in created:
+                if item.task_id == task.id:
+                    item.status = TaskStatus.FAILED
+                    item.reason = str(exc)[:300]
+                    break
+
+    return BatchCreateTaskResponse(
+        created=created,
+        skipped=skipped,
+        total_created=len(created),
+        total_skipped=len(skipped),
+    )
 
 
 @router.delete(
@@ -170,7 +336,7 @@ def retry_task(
     db.refresh(task)
 
     try:
-        process_video.delay(str(task.id))
+        _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 重新投递失败", task.id)
         task.status = TaskStatus.FAILED
@@ -217,6 +383,7 @@ def _build_list_item(db: Session, task: Task) -> TaskListItem:
         cover_url=task.cover_url,
         created_at=task.created_at,
         title=title,
+        bookshelf=str(cfg.get("bookshelf")).strip() if cfg.get("bookshelf") else None,
         word_count=int(word_count),
         chapter_count=int(chapter_count),
     )
@@ -331,6 +498,81 @@ def get_task(
     return TaskStatusResponse.model_validate(task)
 
 
+@router.patch(
+    "/{task_id}/metadata",
+    response_model=TaskStatusResponse,
+    summary="更新书稿书名和书架",
+)
+def update_task_metadata(
+    task_id: UUID,
+    body: TaskMetadataUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TaskStatusResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    cfg = dict(task.config or {})
+    fields = body.model_fields_set
+    if "title" in fields:
+        title = (body.title or "").strip()
+        if title:
+            cfg["title"] = title
+            if cfg.get("markdown"):
+                cfg["markdown"] = _replace_title_in_markdown(str(cfg["markdown"]), title)
+                cfg["markdown_chars"] = len(str(cfg["markdown"]))
+        else:
+            cfg.pop("title", None)
+    if "bookshelf" in fields:
+        bookshelf = (body.bookshelf or "").strip()
+        if bookshelf:
+            cfg["bookshelf"] = bookshelf
+        else:
+            cfg.pop("bookshelf", None)
+
+    task.config = cfg
+    db.commit()
+    db.refresh(task)
+    return TaskStatusResponse.model_validate(task)
+
+
+@router.post(
+    "/{task_id}/regenerate-selection",
+    response_model=RegenerateSelectionResponse,
+    summary="重新生成编辑器中选中的内容",
+)
+async def regenerate_selection(
+    task_id: UUID,
+    body: RegenerateSelectionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> RegenerateSelectionResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="选中文本不能为空")
+
+    try:
+        regenerated = await asyncio.to_thread(regenerate_selected_text, text)
+    except Exception as exc:
+        logger.exception("[task %s] 选区重新生成失败", task_id)
+        raise HTTPException(status_code=502, detail=f"重新生成失败: {exc}") from exc
+
+    regenerated = (regenerated or "").strip()
+    if not regenerated:
+        raise HTTPException(status_code=502, detail="模型返回为空")
+    return RegenerateSelectionResponse(
+        original=text,
+        regenerated=regenerated,
+        original_chars=len(text),
+        regenerated_chars=len(regenerated),
+    )
+
+
 @router.get(
     "/{task_id}/cover",
     summary="返回任务封面图",
@@ -424,6 +666,7 @@ def update_chapter(
         chapter.title = body.title.strip()
     chapter.content = body.content
     chapter.word_count = len(body.content)
+    _sync_markdown_from_chapters(db, chapter.task)
     db.commit()
     db.refresh(chapter)
     return ChapterResponse.model_validate(chapter)

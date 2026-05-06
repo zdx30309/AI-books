@@ -2,11 +2,17 @@
 from app.schemas.chapter import ChapterResponse, ChaptersListResponse
 from app.schemas.common import HealthResponse
 from app.schemas.task import (
+    BatchCreateTaskItem,
+    BatchCreateTaskRequest,
+    BatchCreateTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
     MarkdownResponse,
+    RegenerateSelectionRequest,
+    RegenerateSelectionResponse,
     StageContentResponse,
     StatsResponse,
+    TaskMetadataUpdateRequest,
     TaskListItem,
     TaskListResponse,
     TaskStatusResponse,
@@ -14,6 +20,9 @@ from app.schemas.task import (
 
 __all__ = [
     "HealthResponse",
+    "BatchCreateTaskItem",
+    "BatchCreateTaskRequest",
+    "BatchCreateTaskResponse",
     "CreateTaskRequest",
     "CreateTaskResponse",
     "TaskStatusResponse",
@@ -22,6 +31,9 @@ __all__ = [
     "StatsResponse",
     "MarkdownResponse",
     "StageContentResponse",
+    "TaskMetadataUpdateRequest",
+    "RegenerateSelectionRequest",
+    "RegenerateSelectionResponse",
     "ChapterResponse",
     "ChaptersListResponse",
 ]
