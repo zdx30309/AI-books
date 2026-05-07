@@ -366,6 +366,7 @@ async def generate_full_book(
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     deepseek_v4_pro_format_prompt = prompts["deepseek_v4_pro_format"]
+    post_writer_audit_prompt = prompts.get("post_writer_audit")
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -406,6 +407,21 @@ async def generate_full_book(
             generated_markdown = repaired_markdown
             _log_stage("1b/4 writer-repaired", generated_markdown)
             _dump_stage(output_dir, "01b_writer_repaired.md", generated_markdown)
+
+    if post_writer_audit_prompt:
+        audited_markdown = _read_stage("01c_writer_audited.md")
+        if audited_markdown:
+            logger.info("复用已存在的 01c_writer_audited.md")
+            generated_markdown = audited_markdown
+        else:
+            logger.info("执行题材专属初稿审读。")
+            audited_markdown = await _route_writer_call(
+                post_writer_audit_prompt.format(text=generated_markdown.strip())
+            )
+            if audited_markdown.strip():
+                generated_markdown = audited_markdown
+                _log_stage("1c/4 writer-audited", generated_markdown)
+                _dump_stage(output_dir, "01c_writer_audited.md", generated_markdown)
 
     writer_chars = len(generated_markdown)
 

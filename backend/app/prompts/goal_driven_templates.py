@@ -207,82 +207,89 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "科普读物",
         "core_feature": "把复杂知识讲明白",
         "directions": "AI、经济、投资、科技、名人思想",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "wisdom_stories",
         "label": "小故事·智慧",
         "core_feature": "以故事承载哲理，易传播",
         "directions": "佛学、禅宗、寓言、民间智慧",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "biography",
         "label": "传记·人物",
         "core_feature": "浓缩人生关键节点与品格",
         "directions": "名人成长、失败与转折、精神内核",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "history_culture",
         "label": "历史·文化",
         "core_feature": "切片式讲述，有趣有料",
         "directions": "冷知识、人物趣闻、古代生活、历史启示",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "emotion_relationship",
         "label": "情感·关系",
         "core_feature": "贴近日常，治愈或实用",
         "directions": "亲情、友情、爱情、社交边界",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "psychology_self_help",
         "label": "心理自助",
         "core_feature": "方法导向，解决具体情绪问题",
         "directions": "焦虑、内耗、拖延、自卑、失眠",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "suspense_micro_reasoning",
         "label": "悬疑·微推理",
         "core_feature": "篇幅短小，反转或悬念",
         "directions": "日常谜团、封闭场景、人性故事",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
-        "id": "workplace_survival",
-        "label": "职场生存",
-        "core_feature": "实战技巧，新人友好",
-        "directions": "沟通、汇报、效率、避坑、跳槽",
-        "prompt_status": "pending",
+        "id": "classical_chinese",
+        "label": "古文白话",
+        "core_feature": "文言文直译与意译并重",
+        "directions": "古文、家书、碑铭、史传、经典段落白话化",
+        "prompt_status": "ready",
     },
     {
         "id": "health_wellness",
         "label": "健康·养生",
         "core_feature": "轻科普，可立即行动",
         "directions": "睡眠、运动、饮食、放松、预防",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "classic_interpretation",
         "label": "经典·解读",
         "core_feature": "降低门槛，提取精华",
         "directions": "名著、电影、哲学、艺术",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
     {
         "id": "web_short_story",
         "label": "网文短篇",
         "core_feature": "网络文学风格，强节奏、爽点密集",
         "directions": "系统文、重生/穿书、甜宠、沙雕脑洞、悬疑反转式短篇",
-        "prompt_status": "pending",
+        "prompt_status": "ready",
     },
 )
 
 
-def _build_category_placeholder_writer_prompt(category: dict[str, str]) -> str:
+def _category_option(category_id: str) -> dict[str, str]:
+    for category in CATEGORY_OPTIONS:
+        if category["id"] == category_id:
+            return category
+    raise KeyError(category_id)
+
+
+def _build_category_writer_prompt(category: dict[str, str]) -> str:
     label = category["label"]
     core_feature = category["core_feature"]
     directions = category["directions"]
@@ -293,7 +300,7 @@ def _build_category_placeholder_writer_prompt(category: dict[str, str]) -> str:
 当前分类画像：
 - 核心特点：{core_feature}
 - 适合方向：{directions}
-- 说明：本分类正式 prompt 待甲方补充。当前必须严格按上面的分类画像写作，不要退回泛社科口径。
+- 说明：这是“{label}”题材的独立基础 prompt。必须严格按本题材画像写作，不要混用其它题材口径。
 
 输出要求：
 - 严格按以下顺序输出，不得打乱：
@@ -337,35 +344,222 @@ def _build_category_placeholder_writer_prompt(category: dict[str, str]) -> str:
 请直接输出完整书稿。"""
 
 
-PROMPT_REGISTRY: dict[str, dict[str, str]] = {
-    "social_science": {
-        "full_book_writer": SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT,
-        "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
-        "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
-        "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
-    },
-    "life_philosophy": {
-        "full_book_writer": LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
-        "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
-        "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
-        "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
-    },
-}
+POPULAR_SCIENCE_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("popular_science"))
+WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("wisdom_stories"))
+HISTORY_CULTURE_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("history_culture"))
+EMOTION_RELATIONSHIP_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("emotion_relationship"))
+PSYCHOLOGY_SELF_HELP_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("psychology_self_help"))
+SUSPENSE_MICRO_REASONING_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("suspense_micro_reasoning"))
+HEALTH_WELLNESS_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("health_wellness"))
+CLASSIC_INTERPRETATION_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("classic_interpretation"))
+WEB_SHORT_STORY_FULL_BOOK_WRITER_PROMPT = _build_category_writer_prompt(_category_option("web_short_story"))
 
-for _category in CATEGORY_OPTIONS:
-    _category_id = _category["id"]
-    if _category_id not in PROMPT_REGISTRY:
-        PROMPT_REGISTRY[_category_id] = {
-            "full_book_writer": _build_category_placeholder_writer_prompt(_category),
-            "gemini_fast_polish": GEMINI_FAST_POLISH_PROMPT,
-            "gemini_fast_refine": GEMINI_FAST_REFINE_PROMPT,
-            "deepseek_v4_pro_format": DEEPSEEK_V4_PRO_FORMAT_PROMPT,
-        }
+
+BIOGRAPHY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的人物传记类非虚构长文写作者。
+
+任务：参考我的视频文稿，直接生成一篇完整的人物传记类深度长文。
+
+输出要求：
+- 严格按以下顺序输出，不得打乱：
+  1. @最终书名
+  2. @最终简介
+  3. @目录
+  4. @导言
+  5. @正文
+- 最终书名、最终简介、目录、导言、正文，五块必须都单独成节，且标题文字必须原样保留。
+- 导言必须放在目录之后、正文之前，长度 100~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言，不要和正文太相似。
+- 正文必须紧接在导言之后，不要插入额外说明。
+- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程。
+
+""" + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
+
+内容要求：
+- 文章需与原始视频文稿有一定差别，只允许基于公开可信资料、可核验事实进行扩写。不得虚构人物心理、私人对话、未证实关系、动机、矛盾、丑闻和细节。
+- 凡无法确认的信息，必须降级表达为“有资料称”“据公开报道”“尚无可靠资料证实”，或直接不写。
+- 写作要有叙事张力和阅读钩子，但只能来自真实经历、时代背景、公开事件和人物选择；不得通过虚构冲突、夸大苦难、制造阴谋、暗示私德问题来增强戏剧性。
+- 可以评价人物贡献、争议、局限和时代位置，但必须基于事实，不做人格攻击，不做未经证实的道德推断。
+- 不要空话，不要学术腔，不要翻译腔，不要做心理臆测，不要使用比喻修辞。
+- 不要使用“不是……而是……”句式，不要使用破折号——
+- 允许你自行组织结构，不必预设固定章节层级。
+- 最终正文长度控制在12000字以上，允许小幅缩减，但是没有上限。
+- 所有书名、目录标题和正文章节标题都不要出现冒号（包括中文冒号和英文冒号）。
+- 正文最后一章不要命名为“结语”，也不要出现“结语”两个字作为章节标题；把它作为普通章节自然收束即可。
+
+输入：
+[原始视频文稿]
+{raw_text}
+
+请直接输出完整书稿。"""
+
+
+BIOGRAPHY_FACT_CHECK_PROMPT = """你是一名人物传记类非虚构编辑，负责事实核查、风险审读和事实修订。
+
+任务：检查下面这篇人物传记书稿中是否存在不实、夸大、造谣、抹黑、未经证实的判断或过度心理描写，并在不改变文章整体结构和写作风格的前提下，删除虚假内容，用公开可信资料和可核验事实进行替换。
+
+请重点检查：
+1. 是否编造了人物经历、年份、地点、作品、职位、奖项、关系、病情、死因、经济状况。
+2. 是否把传闻、野史、营销号说法写成了确定事实。
+3. 是否存在故意抹黑、人格攻击、道德审判。
+4. 是否存在未经证实的私生活内容。
+5. 是否存在心理臆测，例如“他内心一定”“她早就知道”“他其实嫉妒”等。
+6. 是否存在过度戏剧化、阴谋化、丑闻化表达。
+7. 是否存在来源不足却语气肯定的判断。
+8. 是否对在世人物写入高风险负面信息。
+
+修订原则：
+- 对确定为虚假、无可靠来源、无法核实的内容，直接删除。
+- 对表述过满但可能有事实依据的内容，改成更审慎的表达。
+- 对错误事实，用公开可信资料、权威传记、官方网站、博物馆/纪念馆资料、出版社资料、学术资料、主流媒体报道等可核验信息替换。
+- 不得为了补足篇幅而自行编造新情节、新对话、新心理活动或新细节。
+- 不得使用野史、营销号、短视频文案、论坛传闻、未经核实的网文作为事实依据。
+- 如果找不到可靠资料支撑某个细节，宁可删除，也不要保留。
+- 对存在争议的内容，不要强行定论，应改为“关于这一点，资料存在不同说法”“目前较可靠的资料只能确认……”。
+- 对在世人物尤其谨慎，不写未经证实的负面信息，不暗示违法、出轨、欺诈、操控、背叛等严重指控。
+- 保留 @最终书名、@最终简介、@目录、@导言、@正文 结构，不要输出解释。
+
+【待审书稿】
+{text}
+"""
+
+
+BIOGRAPHY_GEMINI_FAST_POLISH_PROMPT = """请把下面的人物传记文字重写成自然流畅、适合大众阅读的现代汉语。文字要自然、清楚、有温度，但不要煽情，不要掉书袋，不要太学术，不要翻译腔。
+
+【字数与内容保护（重要，违反等于任务失败）】
+- 这是一润，不是改写故事。目标只是让文字更自然，不是删减、不是缩写、不是总结。
+- 不得新增任何人物经历、年份、地点、关系、作品、奖项、职位、病情、死因、争议和私生活细节。
+- 不得把不确定信息改成确定语气，不得加入心理臆测，不得把人物写得更伟大、更悲惨、更阴暗或更传奇。
+- 输出字数必须与原文字数基本一致（允许 ±5% 浮动）。绝不允许删段、删句、合并段落、省略例子。
+- 原文中的所有具体例子、数据、人名、地名、机构名、案例细节，必须 100% 全部保留。
+- 如果某段已经够自然，原样返回即可，不要为了"显得做了工作"而改写。
+- 不要输出任何解释、注释、前言或总结，直接输出润色后的全文。
+"""
+
+
+BIOGRAPHY_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这是"微调"，不是"精简"，更不是"压缩"。
+
+【字数硬约束（违反等于任务失败）】
+- 输出字数必须与原文字数基本一致，允许 ±10% 浮动；严禁把 8000 字砍成 3000 字这样的大幅删减。
+- 不得以"前文已涉及"为由删除任何具体例子、案例、数据、细节、独立段落或独立章节。
+- 章节数量、章节标题、章节内段落数量必须全部保留，不得合并章节、不得砍段。
+
+【需要完成的工作】
+1. 仅删除"字面完全重复"的句子：同一句话重复出现两次以上时，去掉重复出现的那一份。除此之外的任何"语义近似""主题相关""观点相同"都不算重复，必须保留。
+2. 对少量措辞做自然微调，保持原意不变，不要引入新的说法。
+3. 修改章节序号，将【第N章：】改为【N.】。
+4. 在不删减内容的前提下重新分段，每段 50~100 字；如内容偏多或逻辑紧密不适合分段，可宽限到 200 字。
+
+【输出要求】
+- 直接输出微调后的全文，不要解释，不要总结，不要省略号代替正文。
+"""
+
+
+LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT = """将我的文本重新表达为自然流畅的现代汉语，不要掉书袋，对大众读者友好。
+
+【字数与内容保护（重要，违反等于任务失败）】
+- 这是一润，目标只是让文字更自然，不是删减、不是缩写、不是总结。
+- 输出字数必须与原文字数基本一致（允许 ±5% 浮动）。绝不允许删段、删句、合并段落、省略例子。
+- 原文中的所有具体例子、数据、人名、地名、机构名、案例细节，必须 100% 全部保留。
+- 不得新增内容，也不得删除内容；只允许在句子级别替换为更自然的表达。
+- 如果某段已经够自然，原样返回即可，不要为了"显得做了工作"而改写。
+- 不要输出任何解释、注释、前言或总结，直接输出润色后的全文。
+"""
+
+
+LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这是"微调"，不是"精简"，更不是"压缩"。
+
+【字数硬约束（违反等于任务失败）】
+- 输出字数必须与原文字数基本一致，允许 ±10% 浮动；严禁把 8000 字砍成 3000 字这样的大幅删减。
+- 不得以"前文已涉及"为由删除任何具体例子、案例、数据、细节、独立段落或独立章节。
+- 章节数量、章节标题、章节内段落数量必须全部保留，不得合并章节、不得砍段。
+
+【需要完成的工作】
+1. 仅删除"字面完全重复"的句子：同一句话重复出现两次以上时，去掉重复出现的那一份。除此之外的任何"语义近似""主题相关""观点相同"都不算重复，必须保留。严禁使用"如前文所述"这类一笔带过的写法去合并段落。
+2. 对少量措辞做自然微调，保持原意不变，不要引入新的说法。
+3. 修改章节序号，将【第N章：】改为【N.】。
+4. 在不删减内容的前提下重新分段，每段 50~100 字；如内容偏多或逻辑紧密不适合分段，可宽限到 200 字。
+
+【输出要求】
+- 直接输出微调后的全文，不要解释，不要总结，不要省略号代替正文。
+"""
+
+
+CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT = """你是一名古文白话转换编辑，擅长把文言文转成准确、自然、易读的现代汉语。
+
+任务：根据用户粘贴的文言文原文，直接生成一份白话转换稿。这个题材不处理视频链接，不调用轻抖文案解析。
+
+输出要求：
+- 严格按以下顺序输出，不得打乱：
+  1. @最终书名
+  2. @最终简介
+  3. @目录
+  4. @导言
+  5. @正文
+- @正文 下必须包含若干章节，建议结构为：原文整理、白话译文、疑难词句、阅读提示。若原文很短，可以合并为 2~3 个章节。
+- 白话译文要忠实原意，不强行发挥，不把古人意思改成现代鸡汤。
+- 遇到典故、人名、地名、制度名，可以在疑难词句中做简明解释；无法确认的地方要保守表达。
+- 不要使用轻浮网感，不要过度口语化，不要加入原文没有的故事情节。
+- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程。
+
+输入：
+[文言文原文]
+{raw_text}
+
+请直接输出完整白话转换稿。"""
+
+
+def _prompt_set(
+    full_book_writer: str,
+    *,
+    polish: str | None = None,
+    refine: str | None = None,
+    formatter: str | None = None,
+    post_writer_audit: str | None = None,
+) -> dict[str, str]:
+    data = {
+        "full_book_writer": full_book_writer,
+        "gemini_fast_polish": polish or GEMINI_FAST_POLISH_PROMPT,
+        "gemini_fast_refine": refine or GEMINI_FAST_REFINE_PROMPT,
+        "deepseek_v4_pro_format": formatter or DEEPSEEK_V4_PRO_FORMAT_PROMPT,
+    }
+    if post_writer_audit:
+        data["post_writer_audit"] = post_writer_audit
+    return data
+
+
+PROMPT_REGISTRY: dict[str, dict[str, str]] = {
+    "social_science": _prompt_set(SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT),
+    "life_philosophy": _prompt_set(
+        LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
+        polish=LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT,
+        refine=LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT,
+    ),
+    "popular_science": _prompt_set(POPULAR_SCIENCE_FULL_BOOK_WRITER_PROMPT),
+    "wisdom_stories": _prompt_set(WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT),
+    "biography": _prompt_set(
+        BIOGRAPHY_FULL_BOOK_WRITER_PROMPT,
+        polish=BIOGRAPHY_GEMINI_FAST_POLISH_PROMPT,
+        refine=BIOGRAPHY_GEMINI_FAST_REFINE_PROMPT,
+        post_writer_audit=BIOGRAPHY_FACT_CHECK_PROMPT,
+    ),
+    "history_culture": _prompt_set(HISTORY_CULTURE_FULL_BOOK_WRITER_PROMPT),
+    "emotion_relationship": _prompt_set(EMOTION_RELATIONSHIP_FULL_BOOK_WRITER_PROMPT),
+    "psychology_self_help": _prompt_set(PSYCHOLOGY_SELF_HELP_FULL_BOOK_WRITER_PROMPT),
+    "suspense_micro_reasoning": _prompt_set(SUSPENSE_MICRO_REASONING_FULL_BOOK_WRITER_PROMPT),
+    "classical_chinese": _prompt_set(CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT),
+    "health_wellness": _prompt_set(HEALTH_WELLNESS_FULL_BOOK_WRITER_PROMPT),
+    "classic_interpretation": _prompt_set(CLASSIC_INTERPRETATION_FULL_BOOK_WRITER_PROMPT),
+    "web_short_story": _prompt_set(WEB_SHORT_STORY_FULL_BOOK_WRITER_PROMPT),
+}
 
 SUPPORTED_CATEGORIES: tuple[str, ...] = tuple(PROMPT_REGISTRY.keys())
 CATEGORY_ALIASES: dict[str, str] = {
     "social_pain": "social_science",
     "social": "social_science",
+    "workplace_survival": "social_science",
+    "职场生存": "social_science",
+    "guwen": "classical_chinese",
+    "ancient_chinese": "classical_chinese",
+    "文言文": "classical_chinese",
 }
 for _category in CATEGORY_OPTIONS:
     CATEGORY_ALIASES[_category["id"]] = _category["id"]

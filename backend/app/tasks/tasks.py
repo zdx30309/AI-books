@@ -64,11 +64,15 @@ def _update_progress(
 
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
+    category = str(config.get("category") or "").strip()
     for key in ("raw_text", "video_text", "transcript"):
         val = config.get(key)
         if val and isinstance(val, str) and val.strip():
             logger.info("使用 config['%s'] 提供的预解析文案 (%d 字)", key, len(val))
             return val.strip()
+
+    if category == "classical_chinese":
+        raise ValueError("古文白话题材请直接粘贴文言文原文，不需要填写视频链接")
 
     raw_max_duration = config.get("max_video_duration")
     if raw_max_duration is None:

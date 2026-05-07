@@ -53,6 +53,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const selectedCategory =
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
+  const isClassicalChinese = category === "classical_chinese";
 
   useEffect(() => {
     if (!open) {
@@ -89,6 +90,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   }, [open]);
 
   useEffect(() => {
+    if (isClassicalChinese) setMode("single");
+  }, [isClassicalChinese]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -102,6 +107,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const submit = async () => {
     setError(null);
     if (mode === "batch") {
+      if (isClassicalChinese) {
+        setError("古文白话请单条粘贴文言文原文，不使用候选链接库");
+        return;
+      }
       const { urls, duplicateCount } = candidateLinkStats;
       if (urls.length === 0) {
         setError("请放入至少 1 个候选链接");
@@ -142,7 +151,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       return;
     }
 
-    if (!url.trim() && !rawText.trim()) {
+    if (isClassicalChinese && !rawText.trim()) {
+      setError("请粘贴需要转换的文言文原文");
+      return;
+    }
+    if (!isClassicalChinese && !url.trim() && !rawText.trim()) {
       setError("请填入抖音链接，或直接粘贴视频文稿");
       return;
     }
@@ -151,7 +164,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       const config: Record<string, unknown> = { category };
       if (rawText.trim()) config.raw_text = rawText.trim();
       const res = await api.createTask({
-        url: url.trim() || "manual://raw_text",
+        url: isClassicalChinese ? "manual://classical_chinese" : url.trim() || "manual://raw_text",
         config,
       });
       onCreated(res.task_id);
@@ -211,10 +224,13 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             <button
               type="button"
               onClick={() => setMode("batch")}
+              disabled={isClassicalChinese}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "batch"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+                  : isClassicalChinese
+                    ? "cursor-not-allowed border-gold-500/10 text-warm-600"
+                    : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
             >
               <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
@@ -249,42 +265,50 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
           {mode === "single" ? (
             <>
-              <div>
-                <label
-                  htmlFor="task-url"
-                  className="mb-2 block text-[11px] tracking-widest text-warm-300"
-                >
-                  视频链接
-                </label>
-                <input
-                  id="task-url"
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://v.douyin.com/..."
-                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
-                />
-              </div>
+              {!isClassicalChinese && (
+                <>
+                  <div>
+                    <label
+                      htmlFor="task-url"
+                      className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                    >
+                      视频链接
+                    </label>
+                    <input
+                      id="task-url"
+                      type="text"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="https://v.douyin.com/..."
+                      className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                    />
+                  </div>
 
-              <div className="relative flex items-center text-[10px] tracking-widest text-warm-500">
-                <div className="flex-1 border-t border-gold-500/10" />
-                <span className="px-3">或直接粘贴已有文稿</span>
-                <div className="flex-1 border-t border-gold-500/10" />
-              </div>
+                  <div className="relative flex items-center text-[10px] tracking-widest text-warm-500">
+                    <div className="flex-1 border-t border-gold-500/10" />
+                    <span className="px-3">或直接粘贴已有文稿</span>
+                    <div className="flex-1 border-t border-gold-500/10" />
+                  </div>
+                </>
+              )}
 
               <div>
                 <label
                   htmlFor="task-raw-text"
                   className="mb-2 block text-[11px] tracking-widest text-warm-300"
                 >
-                  视频文稿（可选）
+                  {isClassicalChinese ? "文言文原文" : "视频文稿（可选）"}
                 </label>
                 <textarea
                   id="task-raw-text"
                   value={rawText}
                   onChange={(e) => setRawText(e.target.value)}
-                  placeholder="如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
-                  rows={6}
+                  placeholder={
+                    isClassicalChinese
+                      ? "请直接粘贴需要转成白话文的文言文原文"
+                      : "如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
+                  }
+                  rows={isClassicalChinese ? 10 : 6}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
               </div>

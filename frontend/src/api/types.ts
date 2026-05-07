@@ -132,6 +132,7 @@ export interface MarkdownResponse {
 export type StageName =
   | "writer"
   | "writer_repaired"
+  | "writer_audited"
   | "polish"
   | "refine"
   | "format";

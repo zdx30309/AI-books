@@ -57,6 +57,7 @@ from app.tasks.tasks import process_video
 _STAGE_FILES = {
     "writer": "01_writer.md",
     "writer_repaired": "01b_writer_repaired.md",
+    "writer_audited": "01c_writer_audited.md",
     "polish": "02_polish.md",
     "refine": "03_refine.md",
     "format": "04_format.md",
@@ -181,6 +182,8 @@ def create_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     cfg = _normalize_task_config(req.config)
+    if cfg.get("category") == "classical_chinese" and not str(cfg.get("raw_text") or "").strip():
+        raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
     task = Task(
         source_url=req.url,
         owner_id=user.id,
@@ -236,6 +239,8 @@ def create_task_batch(
         raise HTTPException(status_code=400, detail="一次最多放入 100 个链接")
 
     cfg = _normalize_task_config(req.config)
+    if cfg.get("category") == "classical_chinese":
+        raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
