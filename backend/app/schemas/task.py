@@ -49,6 +49,11 @@ class BatchCreateTaskResponse(BaseModel):
     total_skipped: int
 
 
+class BatchDownloadRequest(BaseModel):
+    task_ids: list[UUID] = Field(..., min_length=1, max_length=100, description="要打包下载的任务 ID")
+    fmt: str = Field(default="docx", pattern="^(md|docx)$", description="下载格式")
+
+
 class TaskCategoryOption(BaseModel):
     id: str
     label: str

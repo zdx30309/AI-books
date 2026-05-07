@@ -40,6 +40,11 @@ export interface BatchCreateTaskResponse {
   total_skipped: number;
 }
 
+export interface BatchDownloadRequest {
+  task_ids: string[];
+  fmt: "md" | "docx";
+}
+
 export interface TaskCategoryOption {
   id: string;
   label: string;

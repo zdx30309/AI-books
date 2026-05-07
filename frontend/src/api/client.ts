@@ -4,6 +4,7 @@
 import type {
   BatchCreateTaskRequest,
   BatchCreateTaskResponse,
+  BatchDownloadRequest,
   ChapterResponse,
   ChapterUpdateRequest,
   ChaptersListResponse,
@@ -104,6 +105,41 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   return { blob: await res.blob(), filename };
 }
 
+async function downloadWithBody(
+  path: string,
+  body: unknown,
+): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      detail = errorBody?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "books.zip";
+  const filename = decodeURIComponent(rawName);
+  return { blob: await res.blob(), filename };
+}
+
 async function fetchBlob(path: string): Promise<Blob> {
   const headers: Record<string, string> = {};
   const token = tokenStore.get();
@@ -187,6 +223,10 @@ export const api = {
     `${BASE}/tasks/${id}/download?fmt=${fmt}`,
   downloadFile: async (id: string, fmt: "md" | "docx" = "md") => {
     const { blob, filename } = await download(`/tasks/${id}/download?fmt=${fmt}`);
+    saveBlob(blob, filename);
+  },
+  downloadBatchFile: async (body: BatchDownloadRequest) => {
+    const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
     saveBlob(blob, filename);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),

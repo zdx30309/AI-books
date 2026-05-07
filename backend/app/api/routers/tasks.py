@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 import zipfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
@@ -36,6 +37,7 @@ from app.schemas.task import (
     BatchCreateTaskItem,
     BatchCreateTaskRequest,
     BatchCreateTaskResponse,
+    BatchDownloadRequest,
     CreateTaskRequest,
     CreateTaskResponse,
     MarkdownResponse,
@@ -428,6 +430,24 @@ def _safe_download_name(task: Task, fmt: str) -> str:
     return f"{safe[:80]}.{fmt}"
 
 
+def _unique_zip_name(filename: str, used: set[str]) -> str:
+    if filename not in used:
+        used.add(filename)
+        return filename
+    if "." in filename:
+        stem, ext = filename.rsplit(".", 1)
+        suffix = f".{ext}"
+    else:
+        stem, suffix = filename, ""
+    idx = 2
+    while True:
+        candidate = f"{stem}_{idx}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        idx += 1
+
+
 def _markdown_to_docx(markdown: str) -> bytes:
     """Build a minimal .docx while preserving the Markdown delivery text verbatim."""
     paragraphs = []
@@ -726,6 +746,61 @@ def get_markdown(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     return MarkdownResponse(task_id=task_id, markdown=md, char_count=len(md))
+
+
+@router.post(
+    "/download-batch",
+    summary="批量打包下载最终稿 (zip)",
+)
+def download_batch(
+    req: BatchDownloadRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    task_ids = list(dict.fromkeys(req.task_ids))
+    rows = (
+        db.query(Task)
+        .filter(Task.owner_id == user.id, Task.id.in_(task_ids))
+        .all()
+    )
+    task_map = {task.id: task for task in rows}
+    buffer = BytesIO()
+    used_names: set[str] = set()
+    written = 0
+
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for task_id in task_ids:
+            task = task_map.get(task_id)
+            if task is None:
+                continue
+            md = _read_task_markdown(db, task)
+            if not md:
+                continue
+            if req.fmt == "docx":
+                content = _markdown_to_docx(md)
+                filename = _safe_download_name(task, "docx")
+            else:
+                content = normalize_final_markdown(md)
+                filename = _safe_download_name(task, "md")
+            archive.writestr(_unique_zip_name(filename, used_names), content)
+            written += 1
+
+    if written == 0:
+        raise HTTPException(status_code=404, detail="所选书稿尚未产出可下载内容")
+
+    today = datetime.now().strftime("%Y%m%d")
+    filename = f"books_{today}_{written}_{req.fmt}.zip"
+    encoded_filename = quote(filename)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{encoded_filename}"; '
+                f"filename*=UTF-8''{encoded_filename}"
+            )
+        },
+    )
 
 
 @router.get(

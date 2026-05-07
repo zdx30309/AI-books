@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
+import { CheckSquare, ChevronRight, Loader2, Pencil, Save, Square, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
 import { categoryIdForLabel, categoryLabelFor } from "@/constants/categories";
@@ -18,6 +18,10 @@ interface Props {
       category_label: string | null;
     },
   ) => void;
+  selectionMode?: boolean;
+  selected?: boolean;
+  selectionDisabled?: boolean;
+  onSelect?: (task: TaskListItem) => void;
 }
 
 function statusLabel(status: string, progress: number): string {
@@ -63,7 +67,16 @@ function formatBookDate(value: string) {
   }).format(date);
 }
 
-export function BookCard({ task, categories = [], onDelete, onMetadataUpdated }: Props) {
+export function BookCard({
+  task,
+  categories = [],
+  onDelete,
+  onMetadataUpdated,
+  selectionMode = false,
+  selected = false,
+  selectionDisabled = false,
+  onSelect,
+}: Props) {
   const [localTitle, setLocalTitle] = useState(task.title);
   const [localBookshelf, setLocalBookshelf] = useState(task.bookshelf);
   const initialCategory = task.category || categoryIdForLabel(task.bookshelf, categories);
@@ -88,6 +101,7 @@ export function BookCard({ task, categories = [], onDelete, onMetadataUpdated }:
   const [editCategory, setEditCategory] = useState(localCategory || "");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const canSelect = selectionMode && !selectionDisabled;
 
   useEffect(() => {
     setLocalTitle(task.title);
@@ -158,38 +172,86 @@ export function BookCard({ task, categories = [], onDelete, onMetadataUpdated }:
     }
   };
 
+  const coverInner = (
+    <>
+      {coverSrc ? (
+        <img
+          src={coverSrc}
+          alt={title}
+          className="h-full w-full object-cover"
+          loading="lazy"
+        />
+      ) : (
+        <div className="cover-placeholder relative flex h-full w-full items-center justify-center">
+          <div className="px-4 text-center">
+            <div className="font-serif text-xl leading-tight text-warm-100/85 line-clamp-3">
+              {title}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectionMode && (
+        <div
+          className={`absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border backdrop-blur-sm ${
+            selected
+              ? "border-gold-300/80 bg-gold-400/20 text-gold-100"
+              : selectionDisabled
+                ? "border-warm-600/30 bg-base-900/60 text-warm-600"
+                : "border-gold-500/30 bg-base-900/70 text-warm-300"
+          }`}
+        >
+          {selected ? (
+            <CheckSquare className="h-4 w-4" strokeWidth={1.7} />
+          ) : (
+            <Square className="h-4 w-4" strokeWidth={1.7} />
+          )}
+        </div>
+      )}
+
+      {/* 失败态遮罩 */}
+      {task.status === "failed" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-base-900/80 text-xs tracking-widest text-warm-300">
+          生成失败
+        </div>
+      )}
+
+      {selectionMode && selectionDisabled && (
+        <div className="absolute inset-x-0 bottom-0 bg-base-900/80 px-2 py-2 text-center text-[10px] tracking-widest text-warm-400">
+          完成后可下载
+        </div>
+      )}
+    </>
+  );
+
   return (
     <article className="group flex flex-col gap-3">
       {/* 封面 */}
-      <Link
-        to={`/book/${task.id}`}
-        className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
-        aria-label={`查看《${title}》`}
-      >
-        {coverSrc ? (
-          <img
-            src={coverSrc}
-            alt={title}
-            className="h-full w-full object-cover"
-            loading="lazy"
-          />
-        ) : (
-          <div className="cover-placeholder relative flex h-full w-full items-center justify-center">
-            <div className="px-4 text-center">
-              <div className="font-serif text-xl leading-tight text-warm-100/85 line-clamp-3">
-                {title}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 失败态遮罩 */}
-        {task.status === "failed" && (
-          <div className="absolute inset-0 flex items-center justify-center bg-base-900/80 text-xs tracking-widest text-warm-300">
-            生成失败
-          </div>
-        )}
-      </Link>
+      {selectionMode ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (canSelect) onSelect?.(task);
+          }}
+          disabled={!canSelect}
+          className={`relative aspect-[3/4] overflow-hidden rounded-xl border text-left transition-transform duration-300 ${
+            selected
+              ? "border-gold-300/70 ring-2 ring-gold-400/35"
+              : "border-gold-500/10"
+          } ${canSelect ? "group-hover:-translate-y-1" : "cursor-not-allowed opacity-60"}`}
+          aria-label={selected ? `取消选择《${title}》` : `选择《${title}》`}
+        >
+          {coverInner}
+        </button>
+      ) : (
+        <Link
+          to={`/book/${task.id}`}
+          className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
+          aria-label={`查看《${title}》`}
+        >
+          {coverInner}
+        </Link>
+      )}
 
       {/* 标题 */}
       <div>
@@ -222,33 +284,57 @@ export function BookCard({ task, categories = [], onDelete, onMetadataUpdated }:
 
       {/* 操作 */}
       <div className="mt-1 flex gap-2">
-        {canDelete && onDelete && (
+        {selectionMode ? (
           <button
             type="button"
-            onClick={() => onDelete(task)}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-red-500/15 bg-base-700/40 px-3 py-2 text-xs tracking-widest text-red-200 transition-colors hover:border-red-400/35 hover:bg-red-500/10 hover:text-red-100"
+            onClick={() => {
+              if (canSelect) onSelect?.(task);
+            }}
+            disabled={!canSelect}
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              selected
+                ? "border-gold-300/70 bg-gold-500/15 text-warm-100"
+                : "border-gold-500/15 bg-base-700/50 text-warm-300 hover:border-gold-400/40 hover:text-warm-100"
+            }`}
           >
-            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>删除书稿</span>
+            {selected ? (
+              <CheckSquare className="h-3.5 w-3.5" strokeWidth={1.5} />
+            ) : (
+              <Square className="h-3.5 w-3.5" strokeWidth={1.5} />
+            )}
+            <span>{selectionDisabled ? "不可下载" : selected ? "已选择" : "选择"}</span>
           </button>
+        ) : (
+          <>
+            {canDelete && onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(task)}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-red-500/15 bg-base-700/40 px-3 py-2 text-xs tracking-widest text-red-200 transition-colors hover:border-red-400/35 hover:bg-red-500/10 hover:text-red-100"
+              >
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span>删除书稿</span>
+              </button>
+            )}
+            {isCompleted && (
+              <button
+                type="button"
+                onClick={openEditor}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
+              >
+                <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span>编辑</span>
+              </button>
+            )}
+            <Link
+              to={`/book/${task.id}`}
+              className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
+            >
+              <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
+              <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
+            </Link>
+          </>
         )}
-        {isCompleted && (
-          <button
-            type="button"
-            onClick={openEditor}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-          >
-            <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>编辑</span>
-          </button>
-        )}
-        <Link
-          to={`/book/${task.id}`}
-          className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-        >
-          <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
-          <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
-        </Link>
       </div>
 
       {editing && (
