@@ -19,6 +19,28 @@ function extractCandidateLinks(text: string) {
     .filter(Boolean);
 }
 
+function normalizeCandidateLinks(text: string) {
+  const rawLinks = extractCandidateLinks(text);
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  let duplicateCount = 0;
+
+  rawLinks.forEach((link) => {
+    if (seen.has(link)) {
+      duplicateCount += 1;
+      return;
+    }
+    seen.add(link);
+    urls.push(link);
+  });
+
+  return {
+    urls,
+    rawCount: rawLinks.length,
+    duplicateCount,
+  };
+}
+
 export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [url, setUrl] = useState("");
@@ -30,6 +52,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
   const selectedCategory =
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
+  const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
 
   useEffect(() => {
     if (!open) {
@@ -76,12 +99,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
-  const parseCandidateLinks = () => extractCandidateLinks(candidateLinks);
-
   const submit = async () => {
     setError(null);
     if (mode === "batch") {
-      const urls = parseCandidateLinks();
+      const { urls, duplicateCount } = candidateLinkStats;
       if (urls.length === 0) {
         setError("请放入至少 1 个候选链接");
         return;
@@ -95,11 +116,16 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
         const res = await api.createTaskBatch({ urls, config: { category } });
         const first = res.created.find((item) => item.task_id)?.task_id;
         if (!first) {
-          setError(`没有新任务被创建，已跳过 ${res.total_skipped} 个重复链接`);
+          const duplicateHint =
+            duplicateCount > 0 ? `已自动合并 ${duplicateCount} 个重复链接。` : "";
+          setError(`这些链接都已存在任务，未重复创建。${duplicateHint}`);
           return;
         }
-        if (res.total_skipped > 0) {
-          window.alert(`已创建 ${res.total_created} 个任务，自动跳过 ${res.total_skipped} 个重复链接。`);
+        if (res.total_skipped > 0 || duplicateCount > 0) {
+          const parts = [`已创建 ${res.total_created} 个任务`];
+          if (duplicateCount > 0) parts.push(`自动合并 ${duplicateCount} 个重复链接`);
+          if (res.total_skipped > 0) parts.push(`跳过 ${res.total_skipped} 个已存在任务`);
+          window.alert(`${parts.join("，")}。`);
         }
         onCreated(first);
       } catch (e) {
@@ -273,7 +299,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   候选链接
                 </label>
                 <span className="text-[10px] tracking-widest text-warm-500">
-                  {parseCandidateLinks().length}/100
+                  {candidateLinkStats.urls.length}/100
                 </span>
               </div>
               <textarea
@@ -284,6 +310,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 rows={12}
                 className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
               />
+              {candidateLinkStats.duplicateCount > 0 && (
+                <p className="mt-2 text-xs leading-relaxed text-gold-200">
+                  已自动合并 {candidateLinkStats.duplicateCount} 个重复链接，将保留第一次出现的链接生成书籍。
+                </p>
+              )}
             </div>
           )}
 

@@ -97,12 +97,16 @@ def _dispatch_task(task: Task) -> None:
         raise RuntimeError(f"Celery dispatch failed: {e}") from e
 
 
+def _clean_candidate_url(raw: str) -> str:
+    return (raw or "").strip().rstrip("，。；;、！？!?.,)）]】")
+
+
 def _normalize_candidate_urls(urls: list[str]) -> tuple[list[str], list[str]]:
     seen: set[str] = set()
     unique: list[str] = []
     duplicates: list[str] = []
     for raw in urls:
-        url = (raw or "").strip()
+        url = _clean_candidate_url(raw)
         if not url:
             continue
         if url in seen:
