@@ -63,6 +63,19 @@ export function Bookshelf() {
     }
   };
 
+  const handleMetadataUpdated = (
+    taskId: string,
+    metadata: { title: string | null; bookshelf: string | null },
+  ) => {
+    setTasks((prev) =>
+      prev.map((task) =>
+        task.id === taskId
+          ? { ...task, title: metadata.title, bookshelf: metadata.bookshelf }
+          : task,
+      ),
+    );
+  };
+
   return (
     <>
       <div className="mb-10 flex items-end justify-between">
@@ -128,7 +141,12 @@ export function Bookshelf() {
       ) : (
         <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
           {filtered.map((task) => (
-            <BookCard key={task.id} task={task} onDelete={handleDelete} />
+            <BookCard
+              key={task.id}
+              task={task}
+              onDelete={handleDelete}
+              onMetadataUpdated={handleMetadataUpdated}
+            />
           ))}
         </div>
       )}

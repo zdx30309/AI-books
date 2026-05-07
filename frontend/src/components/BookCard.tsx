@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, Trash2 } from "lucide-react";
+import { ChevronRight, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api } from "@/api/client";
+import { api, ApiError } from "@/api/client";
 import type { TaskListItem } from "@/api/types";
 
 interface Props {
   task: TaskListItem;
   onDelete?: (task: TaskListItem) => void;
+  onMetadataUpdated?: (
+    taskId: string,
+    metadata: { title: string | null; bookshelf: string | null },
+  ) => void;
 }
 
 function statusLabel(status: string, progress: number): string {
@@ -41,13 +45,26 @@ function deriveSubtitle(task: TaskListItem): string {
   return task.current_step || statusLabel(task.status, task.progress);
 }
 
-export function BookCard({ task, onDelete }: Props) {
-  const title = deriveTitle(task);
-  const subtitle = deriveSubtitle(task);
+export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
+  const [localTitle, setLocalTitle] = useState(task.title);
+  const [localBookshelf, setLocalBookshelf] = useState(task.bookshelf);
+  const displayTask = { ...task, title: localTitle, bookshelf: localBookshelf };
+  const title = deriveTitle(displayTask);
+  const subtitle = deriveSubtitle(displayTask);
   const isCompleted = task.status === "completed";
   const progressPct = isCompleted ? 100 : task.progress;
   const canDelete = task.status !== "completed";
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(localTitle || "");
+  const [editBookshelf, setEditBookshelf] = useState(localBookshelf || "");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalTitle(task.title);
+    setLocalBookshelf(task.bookshelf);
+  }, [task.title, task.bookshelf]);
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +88,41 @@ export function BookCard({ task, onDelete }: Props) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [task.cover_url, task.id]);
+
+  const openEditor = () => {
+    setEditTitle(localTitle || "");
+    setEditBookshelf(localBookshelf || "");
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const saveMetadata = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const next = await api.updateTaskMetadata(task.id, {
+        title: editTitle,
+        bookshelf: editBookshelf,
+      });
+      setLocalTitle(next.title);
+      setLocalBookshelf(next.bookshelf);
+      onMetadataUpdated?.(task.id, {
+        title: next.title,
+        bookshelf: next.bookshelf,
+      });
+      setEditing(false);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.detail
+          : e instanceof Error
+            ? e.message
+            : "保存失败";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <article className="group flex flex-col gap-3">
@@ -141,6 +193,16 @@ export function BookCard({ task, onDelete }: Props) {
             <span>删除书稿</span>
           </button>
         )}
+        {isCompleted && (
+          <button
+            type="button"
+            onClick={openEditor}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
+          >
+            <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <span>编辑</span>
+          </button>
+        )}
         <Link
           to={`/book/${task.id}`}
           className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
@@ -149,6 +211,71 @@ export function BookCard({ task, onDelete }: Props) {
           <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
         </Link>
       </div>
+
+      {editing && (
+        <div className="rounded-lg border border-gold-500/15 bg-base-800/80 p-3">
+          <div className="space-y-3">
+            <div>
+              <label
+                htmlFor={`book-title-${task.id}`}
+                className="mb-1.5 block text-[10px] tracking-widest text-warm-500"
+              >
+                书名
+              </label>
+              <input
+                id={`book-title-${task.id}`}
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="w-full rounded-md border border-gold-500/15 bg-base-700/70 px-2.5 py-2 text-xs text-warm-100 outline-none transition-colors focus:border-gold-400/45"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor={`book-bookshelf-${task.id}`}
+                className="mb-1.5 block text-[10px] tracking-widest text-warm-500"
+              >
+                书架
+              </label>
+              <input
+                id={`book-bookshelf-${task.id}`}
+                value={editBookshelf}
+                onChange={(e) => setEditBookshelf(e.target.value)}
+                placeholder="例如 社科 / 情感 / 商业"
+                className="w-full rounded-md border border-gold-500/15 bg-base-700/70 px-2.5 py-2 text-xs text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
+              />
+            </div>
+            {saveError && (
+              <p className="text-[11px] leading-relaxed text-red-300">
+                {saveError}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={saveMetadata}
+                disabled={saving}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-gold-400/35 bg-gold-500/10 px-2.5 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:opacity-60"
+              >
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                ) : (
+                  <Save className="h-3.5 w-3.5" strokeWidth={1.5} />
+                )}
+                <span>{saving ? "保存中" : "保存"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                disabled={saving}
+                className="inline-flex items-center justify-center rounded-md border border-gold-500/15 px-2.5 py-2 text-warm-400 transition-colors hover:text-warm-100 disabled:opacity-60"
+                aria-label="取消编辑"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={1.5} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
