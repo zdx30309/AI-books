@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
+from ssl import CERT_NONE
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import redis
 
 from app.core.config import settings
 
@@ -38,12 +43,73 @@ class QingdouError(RuntimeError):
     pass
 
 
+class QingdouBusyError(QingdouError):
+    pass
+
+
 class QingdouTimeoutError(QingdouError):
     pass
 
 
 class QingdouDurationExceededError(QingdouError):
     pass
+
+
+_LOCK_KEY = "video-plan:qingdou:extract-lock"
+
+
+def _redis_url() -> str:
+    return (settings.REDIS_URL or settings.CELERY_BROKER_URL or "").strip()
+
+
+@lru_cache(maxsize=1)
+def _redis_client() -> redis.Redis:
+    url = _redis_url()
+    kwargs: dict[str, Any] = {
+        "socket_connect_timeout": 10,
+        "socket_timeout": 10,
+        "decode_responses": True,
+    }
+    if url.startswith("rediss://"):
+        kwargs["ssl_cert_reqs"] = CERT_NONE
+    return redis.Redis.from_url(url, **kwargs)
+
+
+@contextmanager
+def _qingdou_serial_lock(*, ttl_seconds: int):
+    if not settings.QINGDOU_SERIAL_LOCK_ENABLED:
+        yield
+        return
+
+    token = str(uuid.uuid4())
+    client = _redis_client()
+    deadline = time.monotonic() + max(1, settings.QINGDOU_LOCK_WAIT_TIMEOUT_SECONDS)
+    acquired = False
+
+    while time.monotonic() < deadline:
+        try:
+            acquired = bool(client.set(_LOCK_KEY, token, nx=True, ex=max(30, ttl_seconds)))
+        except Exception as exc:
+            logger.warning("轻抖串行锁获取失败，退回本次直接调用: %s", exc)
+            yield
+            return
+        if acquired:
+            logger.info("轻抖串行锁已获取")
+            break
+        time.sleep(2)
+
+    if not acquired:
+        raise QingdouTimeoutError("等待轻抖解析锁超时，请稍后重试")
+
+    try:
+        yield
+    finally:
+        try:
+            if client.get(_LOCK_KEY) == token:
+                client.delete(_LOCK_KEY)
+                logger.info("轻抖串行锁已释放")
+        except Exception:
+            logger.exception("释放轻抖串行锁失败")
 
 
 class QingdouClient:
@@ -170,13 +236,30 @@ class QingdouClient:
         poll_interval_seconds: float = 3.0,
         max_video_duration: int | None = None,
     ) -> QingdouTaskResult:
-        batch_id = self.commit_get_text_task(source_url)
+        batch_id = self._commit_with_busy_retry(source_url)
         return self.poll_text_result(
             batch_id,
             timeout_seconds=timeout_seconds,
             poll_interval_seconds=poll_interval_seconds,
             max_video_duration=max_video_duration,
         )
+
+    def _commit_with_busy_retry(self, source_url: str) -> int:
+        max_attempts = max(1, settings.QINGDOU_BUSY_MAX_ATTEMPTS)
+        sleep_seconds = max(1.0, settings.QINGDOU_BUSY_RETRY_SECONDS)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self.commit_get_text_task(source_url)
+            except QingdouBusyError:
+                if attempt >= max_attempts:
+                    raise
+                logger.info(
+                    "轻抖当前仍有处理中任务，等待后重试 commit (%d/%d)",
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(sleep_seconds)
+        raise QingdouBusyError("轻抖任务繁忙，重试后仍无法提交")
 
     def _result_url(self) -> str:
         if self.base_url.endswith("commitGetTextTask"):
@@ -229,6 +312,8 @@ class QingdouClient:
         status = data.get("status") or {}
         code = status.get("code")
         if str(code) != "1001" and code != 1001:
+            if str(code) == "4001":
+                raise QingdouBusyError(f"{endpoint} 返回繁忙: {data}")
             raise QingdouError(f"{endpoint} 返回失败: {data}")
 
 
@@ -240,13 +325,18 @@ def extract_video_text_with_qingdou(
     max_video_duration: int | None = None,
 ) -> tuple[str, int | None, QingdouTaskResult]:
     """一站式获取视频文案，返回 (text, duration, raw_result)。"""
-    with QingdouClient() as client:
-        result = client.extract_text(
-            source_url,
-            timeout_seconds=timeout_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            max_video_duration=max_video_duration,
-        )
+    lock_ttl = max(
+        settings.QINGDOU_LOCK_TTL_SECONDS,
+        int(timeout_seconds or settings.QINGDOU_POLL_TIMEOUT_SECONDS) + 120,
+    )
+    with _qingdou_serial_lock(ttl_seconds=lock_ttl):
+        with QingdouClient() as client:
+            result = client.extract_text(
+                source_url,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                max_video_duration=max_video_duration,
+            )
     text = (result.video_content or "").strip()
     if not text:
         raise QingdouError(f"轻抖任务完成但未返回 videoContent: {result.raw}")

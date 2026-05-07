@@ -202,13 +202,15 @@ export function Bookshelf() {
       alert("请先选择要下载的书稿");
       return;
     }
-    setBatchDownloading(fmt);
     try {
-      await api.downloadBatchFile({
+      setBatchDownloading(fmt);
+      api.downloadBatchFileDirect({
         task_ids: [...selectedTaskIds],
         fmt,
       });
+      window.setTimeout(() => setBatchDownloading(null), 900);
     } catch (e) {
+      setBatchDownloading(null);
       const msg =
         e instanceof ApiError
           ? `[${e.status}] ${e.detail}`
@@ -216,8 +218,6 @@ export function Bookshelf() {
             ? e.message
             : "批量下载失败";
       alert(`批量下载失败：${msg}`);
-    } finally {
-      setBatchDownloading(null);
     }
   };
 

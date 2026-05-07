@@ -12,7 +12,7 @@ from urllib.parse import quote
 from uuid import UUID
 from xml.sax.saxutils import escape
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import PROJECT_ROOT
 from app.api.routers.auth import get_current_user
+from app.core.security import JWTDecodeError, decode_token
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
 from app.prompts.goal_driven_templates import (
@@ -748,16 +749,14 @@ def get_markdown(
     return MarkdownResponse(task_id=task_id, markdown=md, char_count=len(md))
 
 
-@router.post(
-    "/download-batch",
-    summary="批量打包下载最终稿 (zip)",
-)
-def download_batch(
-    req: BatchDownloadRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+def _build_batch_download_response(
+    task_ids: list[UUID],
+    *,
+    fmt: str,
+    db: Session,
+    user: User,
 ) -> Response:
-    task_ids = list(dict.fromkeys(req.task_ids))
+    task_ids = list(dict.fromkeys(task_ids))
     rows = (
         db.query(Task)
         .filter(Task.owner_id == user.id, Task.id.in_(task_ids))
@@ -776,7 +775,7 @@ def download_batch(
             md = _read_task_markdown(db, task)
             if not md:
                 continue
-            if req.fmt == "docx":
+            if fmt == "docx":
                 content = _markdown_to_docx(md)
                 filename = _safe_download_name(task, "docx")
             else:
@@ -789,7 +788,7 @@ def download_batch(
         raise HTTPException(status_code=404, detail="所选书稿尚未产出可下载内容")
 
     today = datetime.now().strftime("%Y%m%d")
-    filename = f"books_{today}_{written}_{req.fmt}.zip"
+    filename = f"books_{today}_{written}_{fmt}.zip"
     encoded_filename = quote(filename)
     return Response(
         content=buffer.getvalue(),
@@ -801,6 +800,71 @@ def download_batch(
             )
         },
     )
+
+
+@router.post(
+    "/download-batch",
+    summary="批量打包下载最终稿 (zip)",
+)
+def download_batch(
+    req: BatchDownloadRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    return _build_batch_download_response(req.task_ids, fmt=req.fmt, db=db, user=user)
+
+
+def _get_current_user_from_download_token(
+    db: Session,
+    *,
+    authorization: str | None,
+    token: str | None,
+) -> User:
+    raw_token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        raw_token = authorization.split(" ", 1)[1].strip()
+    elif token:
+        raw_token = token.strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="缺少或非法的 Authorization 头")
+    try:
+        payload = decode_token(raw_token)
+    except JWTDecodeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="token 缺少 sub")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    return user
+
+
+@router.get(
+    "/download-batch/direct",
+    summary="批量打包下载最终稿 (zip, browser-native)",
+)
+def download_batch_direct(
+    task_ids: str = Query(..., min_length=1),
+    fmt: str = Query("docx", pattern="^(md|docx)$"),
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> Response:
+    user = _get_current_user_from_download_token(
+        db,
+        authorization=authorization,
+        token=token,
+    )
+    try:
+        ids = [UUID(item.strip()) for item in task_ids.split(",") if item.strip()]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="task_ids 参数格式不正确") from exc
+    if not ids:
+        raise HTTPException(status_code=400, detail="请选择要下载的书稿")
+    if len(ids) > 100:
+        raise HTTPException(status_code=400, detail="一次最多下载 100 本书稿")
+    return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 
 @router.get(

@@ -171,6 +171,15 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function openHiddenDownload(url: string) {
+  const iframe = document.createElement("iframe");
+  iframe.src = url;
+  iframe.style.display = "none";
+  iframe.setAttribute("aria-hidden", "true");
+  document.body.appendChild(iframe);
+  window.setTimeout(() => iframe.remove(), 60_000);
+}
+
 export const api = {
   // 任务
   listTasks: (page = 1, pageSize = 20) =>
@@ -228,6 +237,16 @@ export const api = {
   downloadBatchFile: async (body: BatchDownloadRequest) => {
     const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
     saveBlob(blob, filename);
+  },
+  downloadBatchFileDirect: (body: BatchDownloadRequest) => {
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "请先登录");
+    const params = new URLSearchParams({
+      task_ids: body.task_ids.join(","),
+      fmt: body.fmt,
+      token,
+    });
+    openHiddenDownload(`${BASE}/tasks/download-batch/direct?${params.toString()}`);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
 
