@@ -2,14 +2,21 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
-import type { TaskListItem } from "@/api/types";
+import { categoryIdForLabel, categoryLabelFor } from "@/constants/categories";
+import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
 interface Props {
   task: TaskListItem;
+  categories?: TaskCategoryOption[];
   onDelete?: (task: TaskListItem) => void;
   onMetadataUpdated?: (
     taskId: string,
-    metadata: { title: string | null; bookshelf: string | null },
+    metadata: {
+      title: string | null;
+      bookshelf: string | null;
+      category: string | null;
+      category_label: string | null;
+    },
   ) => void;
 }
 
@@ -35,36 +42,59 @@ function deriveTitle(task: TaskListItem): string {
 
 function deriveSubtitle(task: TaskListItem): string {
   if (task.status === "completed") {
-    if (task.bookshelf && task.word_count) {
-      return `${task.bookshelf} · 共 ${task.word_count.toLocaleString()} 字`;
+    const shelf = task.bookshelf || task.category_label;
+    if (shelf && task.word_count) {
+      return `${shelf} · 共 ${task.word_count.toLocaleString()} 字`;
     }
-    if (task.bookshelf) return task.bookshelf;
+    if (shelf) return shelf;
     if (task.word_count) return `共 ${task.word_count.toLocaleString()} 字`;
     return "已完成";
   }
   return task.current_step || statusLabel(task.status, task.progress);
 }
 
-export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
+function formatBookDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+export function BookCard({ task, categories = [], onDelete, onMetadataUpdated }: Props) {
   const [localTitle, setLocalTitle] = useState(task.title);
   const [localBookshelf, setLocalBookshelf] = useState(task.bookshelf);
-  const displayTask = { ...task, title: localTitle, bookshelf: localBookshelf };
+  const initialCategory = task.category || categoryIdForLabel(task.bookshelf, categories);
+  const [localCategory, setLocalCategory] = useState(initialCategory);
+  const [localCategoryLabel, setLocalCategoryLabel] = useState(task.category_label);
+  const displayTask = {
+    ...task,
+    title: localTitle,
+    bookshelf: localBookshelf,
+    category: localCategory,
+    category_label: localCategoryLabel,
+  };
   const title = deriveTitle(displayTask);
   const subtitle = deriveSubtitle(displayTask);
+  const bookDate = formatBookDate(task.created_at);
   const isCompleted = task.status === "completed";
   const progressPct = isCompleted ? 100 : task.progress;
   const canDelete = task.status !== "completed";
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(localTitle || "");
-  const [editBookshelf, setEditBookshelf] = useState(localBookshelf || "");
+  const [editCategory, setEditCategory] = useState(localCategory || "");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     setLocalTitle(task.title);
     setLocalBookshelf(task.bookshelf);
-  }, [task.title, task.bookshelf]);
+    setLocalCategory(task.category || categoryIdForLabel(task.bookshelf, categories));
+    setLocalCategoryLabel(task.category_label);
+  }, [task.title, task.bookshelf, task.category, task.category_label, categories]);
 
   useEffect(() => {
     let alive = true;
@@ -91,7 +121,7 @@ export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
 
   const openEditor = () => {
     setEditTitle(localTitle || "");
-    setEditBookshelf(localBookshelf || "");
+    setEditCategory(localCategory || "");
     setSaveError(null);
     setEditing(true);
   };
@@ -102,13 +132,17 @@ export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
     try {
       const next = await api.updateTaskMetadata(task.id, {
         title: editTitle,
-        bookshelf: editBookshelf,
+        category: editCategory,
       });
       setLocalTitle(next.title);
       setLocalBookshelf(next.bookshelf);
+      setLocalCategory(next.category);
+      setLocalCategoryLabel(next.category_label);
       onMetadataUpdated?.(task.id, {
         title: next.title,
         bookshelf: next.bookshelf,
+        category: next.category,
+        category_label: next.category_label,
       });
       setEditing(false);
     } catch (e) {
@@ -165,6 +199,11 @@ export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
         <p className="mt-1 text-[11px] tracking-wide text-warm-400 line-clamp-1">
           {subtitle}
         </p>
+        {bookDate && (
+          <p className="mt-1 text-[10px] tracking-widest text-warm-500">
+            {bookDate}
+          </p>
+        )}
       </div>
 
       {/* 进度条 */}
@@ -234,15 +273,26 @@ export function BookCard({ task, onDelete, onMetadataUpdated }: Props) {
                 htmlFor={`book-bookshelf-${task.id}`}
                 className="mb-1.5 block text-[10px] tracking-widest text-warm-500"
               >
-                书架
+                书架分类
               </label>
-              <input
+              <select
                 id={`book-bookshelf-${task.id}`}
-                value={editBookshelf}
-                onChange={(e) => setEditBookshelf(e.target.value)}
-                placeholder="例如 社科 / 情感 / 商业"
+                value={editCategory}
+                onChange={(e) => setEditCategory(e.target.value)}
                 className="w-full rounded-md border border-gold-500/15 bg-base-700/70 px-2.5 py-2 text-xs text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
-              />
+              >
+                <option value="">未分类</option>
+                {categories.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                    {item.prompt_status === "pending" ? "（待优化）" : ""}
+                  </option>
+                ))}
+                {editCategory &&
+                  !categoryLabelFor(editCategory, categories) && (
+                    <option value={editCategory}>{editCategory}</option>
+                  )}
+              </select>
             </div>
             {saveError && (
               <p className="text-[11px] leading-relaxed text-red-300">

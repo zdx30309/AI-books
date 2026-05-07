@@ -72,6 +72,8 @@ class TaskStatusResponse(BaseModel):
     cover_url: str | None = None
     title: str | None = None
     bookshelf: str | None = None
+    category: str | None = None
+    category_label: str | None = None
     error_message: str | None = None
     created_at: datetime
 
@@ -89,6 +91,8 @@ class TaskListItem(BaseModel):
     created_at: datetime
     title: str | None = None       # 取自 config.title 或第一章标题
     bookshelf: str | None = None   # 用户手动维护的书架 / 分类
+    category: str | None = None
+    category_label: str | None = None
     word_count: int = 0            # 全文字数 (config.markdown_chars 或章节累加)
     chapter_count: int = 0
 
@@ -124,6 +128,7 @@ class StageContentResponse(BaseModel):
 class TaskMetadataUpdateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     bookshelf: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=80)
 
 
 class RegenerateSelectionRequest(BaseModel):

@@ -20,11 +20,13 @@ import {
   RefreshCcw,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
+import { DEFAULT_CATEGORIES, categoryIdForLabel } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
 import type {
   ChapterResponse,
   StageName,
+  TaskCategoryOption,
   TaskStatusResponse,
 } from "@/api/types";
 
@@ -66,6 +68,8 @@ export function BookDetail() {
   const [editing, setEditing] = useState(false);
   const [metaTitle, setMetaTitle] = useState("");
   const [metaBookshelf, setMetaBookshelf] = useState("");
+  const [metaCategory, setMetaCategory] = useState("");
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
   const [metaDirty, setMetaDirty] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
 
@@ -122,6 +126,21 @@ export function BookDetail() {
     };
   }, [id, refresh]);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getTaskCategories()
+      .then((res) => {
+        if (!cancelled && res.items.length > 0) setCategories(res.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCategories(DEFAULT_CATEGORIES);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 任务完成或失败：停止轮询
   useEffect(() => {
     if (!task) return;
@@ -134,7 +153,8 @@ export function BookDetail() {
     if (!task || metaDirty) return;
     setMetaTitle(task.title || chapters[0]?.title || "");
     setMetaBookshelf(task.bookshelf || "");
-  }, [task, chapters, metaDirty]);
+    setMetaCategory(task.category || categoryIdForLabel(task.bookshelf, categories) || "");
+  }, [task, chapters, metaDirty, categories]);
 
   // 切到中间产物 tab：拉对应文件
   useEffect(() => {
@@ -275,9 +295,11 @@ export function BookDetail() {
     try {
       const next = await api.updateTaskMetadata(id, {
         title: metaTitle,
-        bookshelf: metaBookshelf,
+        category: metaCategory,
       });
       setTask(next);
+      setMetaBookshelf(next.bookshelf || "");
+      setMetaCategory(next.category || "");
       setMetaDirty(false);
     } catch (e) {
       const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "保存失败";
@@ -285,7 +307,7 @@ export function BookDetail() {
     } finally {
       setSavingMeta(false);
     }
-  }, [id, metaTitle, metaBookshelf]);
+  }, [id, metaTitle, metaCategory]);
 
   const regenerateSelected = useCallback(async () => {
     if (!id) return;
@@ -478,17 +500,26 @@ export function BookDetail() {
                     >
                       书架
                     </label>
-                    <input
+                    <select
                       id="book-bookshelf"
-                      type="text"
-                      value={metaBookshelf}
+                      value={metaCategory}
                       onChange={(e) => {
-                        setMetaBookshelf(e.target.value);
+                        setMetaCategory(e.target.value);
                         setMetaDirty(true);
                       }}
-                      placeholder="例如 社科 / 教育 / 商业"
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
-                    />
+                    >
+                      <option value="">未分类</option>
+                      {categories.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label}
+                          {item.prompt_status === "pending" ? "（待优化）" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] tracking-widest text-warm-500">
+                      当前书架：{metaBookshelf || "未分类"}
+                    </p>
                   </div>
                   <div className="flex items-end">
                     <button

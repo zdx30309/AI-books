@@ -61,6 +61,8 @@ export interface TaskStatusResponse {
   cover_url: string | null;
   title: string | null;
   bookshelf: string | null;
+  category: string | null;
+  category_label: string | null;
   error_message: string | null;
   created_at: string;
 }
@@ -79,6 +81,8 @@ export interface TaskListItem {
   created_at: string;
   title: string | null;
   bookshelf: string | null;
+  category: string | null;
+  category_label: string | null;
   word_count: number;
   chapter_count: number;
 }
@@ -142,6 +146,7 @@ export interface ChapterUpdateRequest {
 export interface TaskMetadataUpdateRequest {
   title?: string | null;
   bookshelf?: string | null;
+  category?: string | null;
 }
 
 export interface RegenerateSelectionRequest {

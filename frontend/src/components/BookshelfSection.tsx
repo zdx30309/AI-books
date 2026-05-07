@@ -2,15 +2,32 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { BookCard } from "./BookCard";
 import { EmptyState } from "./EmptyState";
-import type { TaskListItem } from "@/api/types";
+import { DEFAULT_CATEGORIES } from "@/constants/categories";
+import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
 interface Props {
   tasks: TaskListItem[];
+  categories?: TaskCategoryOption[];
   loading: boolean;
   onCreate?: () => void;
+  onMetadataUpdated?: (
+    taskId: string,
+    metadata: {
+      title: string | null;
+      bookshelf: string | null;
+      category: string | null;
+      category_label: string | null;
+    },
+  ) => void;
 }
 
-export function BookshelfSection({ tasks, loading, onCreate }: Props) {
+export function BookshelfSection({
+  tasks,
+  categories = DEFAULT_CATEGORIES,
+  loading,
+  onCreate,
+  onMetadataUpdated,
+}: Props) {
   return (
     <section className="mt-16">
       <header className="mb-6 flex items-center justify-between">
@@ -66,7 +83,12 @@ export function BookshelfSection({ tasks, loading, onCreate }: Props) {
       ) : (
         <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
           {tasks.slice(0, 6).map((task) => (
-            <BookCard key={task.id} task={task} />
+            <BookCard
+              key={task.id}
+              task={task}
+              categories={categories}
+              onMetadataUpdated={onMetadataUpdated}
+            />
           ))}
         </div>
       )}

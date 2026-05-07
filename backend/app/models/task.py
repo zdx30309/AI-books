@@ -88,4 +88,19 @@ class Task(Base):
     def bookshelf(self) -> str | None:
         cfg = self.config or {}
         bookshelf = cfg.get("bookshelf")
-        return bookshelf if isinstance(bookshelf, str) and bookshelf.strip() else None
+        if isinstance(bookshelf, str) and bookshelf.strip():
+            return bookshelf
+        category_label = cfg.get("category_label")
+        return category_label if isinstance(category_label, str) and category_label.strip() else None
+
+    @property
+    def category(self) -> str | None:
+        cfg = self.config or {}
+        category = cfg.get("category")
+        return category if isinstance(category, str) and category.strip() else None
+
+    @property
+    def category_label(self) -> str | None:
+        cfg = self.config or {}
+        category_label = cfg.get("category_label")
+        return category_label if isinstance(category_label, str) and category_label.strip() else None

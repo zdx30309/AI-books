@@ -84,6 +84,8 @@ def _normalize_task_config(config: dict | None) -> dict:
         category_label=category_meta["label"],
         category_prompt_status=category_meta["prompt_status"],
     )
+    if not str(cfg.get("bookshelf") or "").strip():
+        cfg["bookshelf"] = category_meta["label"]
     return cfg
 
 
@@ -353,6 +355,16 @@ def retry_task(
 def _build_list_item(db: Session, task: Task) -> TaskListItem:
     """把 Task 包装成列表卡片视图，含字数与章节数。"""
     cfg = task.config or {}
+    raw_category = str(cfg.get("category") or "").strip() or None
+    category = None
+    category_label = str(cfg.get("category_label") or "").strip() or None
+    if raw_category:
+        try:
+            category = normalize_category(raw_category)
+            category_meta = get_category_meta(category)
+            category_label = category_label or category_meta["label"]
+        except ValueError:
+            category = raw_category
     word_count = int(cfg.get("markdown_chars") or 0)
     chapter_count = (
         db.query(func.count(Chapter.id)).filter(Chapter.task_id == task.id).scalar() or 0
@@ -383,7 +395,9 @@ def _build_list_item(db: Session, task: Task) -> TaskListItem:
         cover_url=task.cover_url,
         created_at=task.created_at,
         title=title,
-        bookshelf=str(cfg.get("bookshelf")).strip() if cfg.get("bookshelf") else None,
+        bookshelf=str(cfg.get("bookshelf")).strip() if cfg.get("bookshelf") else category_label,
+        category=category,
+        category_label=category_label,
         word_count=int(word_count),
         chapter_count=int(chapter_count),
     )
@@ -529,6 +543,23 @@ def update_task_metadata(
         if bookshelf:
             cfg["bookshelf"] = bookshelf
         else:
+            cfg.pop("bookshelf", None)
+    if "category" in fields:
+        raw_category = (body.category or "").strip()
+        if raw_category:
+            try:
+                category = normalize_category(raw_category)
+                category_meta = get_category_meta(category)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            cfg["category"] = category
+            cfg["category_label"] = category_meta["label"]
+            cfg["category_prompt_status"] = category_meta["prompt_status"]
+            cfg["bookshelf"] = category_meta["label"]
+        else:
+            cfg.pop("category", None)
+            cfg.pop("category_label", None)
+            cfg.pop("category_prompt_status", None)
             cfg.pop("bookshelf", None)
 
     task.config = cfg
