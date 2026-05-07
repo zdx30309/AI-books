@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckSquare, FileArchive, FileText, Loader2, Plus, X } from "lucide-react";
+import { CheckSquare, FileArchive, FileText, Loader2, Plus, Trash2, X } from "lucide-react";
 import { BookCard } from "@/components/BookCard";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { EmptyState } from "@/components/EmptyState";
@@ -89,6 +89,7 @@ export function Bookshelf() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
   const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | null>(null);
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,6 +145,10 @@ export function Bookshelf() {
     .filter((task) => inDateFilter(task, dateFilter));
 
   const downloadableFiltered = filtered.filter((task) => task.status === "completed");
+  const selectedTasks = tasks.filter((task) => selectedTaskIds.has(task.id));
+  const selectedCompletedTaskIds = selectedTasks
+    .filter((task) => task.status === "completed")
+    .map((task) => task.id);
 
   const grouped = filtered.reduce<Record<string, TaskListItem[]>>((acc, task) => {
     const key = dateKey(taskDate(task));
@@ -175,7 +180,6 @@ export function Bookshelf() {
   };
 
   const toggleTaskSelection = (task: TaskListItem) => {
-    if (task.status !== "completed") return;
     setSelectedTaskIds((prev) => {
       const next = new Set(prev);
       if (next.has(task.id)) {
@@ -190,7 +194,7 @@ export function Bookshelf() {
   const selectAllVisible = () => {
     setSelectedTaskIds((prev) => {
       const next = new Set(prev);
-      downloadableFiltered.forEach((task) => next.add(task.id));
+      filtered.forEach((task) => next.add(task.id));
       return next;
     });
   };
@@ -198,14 +202,14 @@ export function Bookshelf() {
   const clearSelection = () => setSelectedTaskIds(new Set());
 
   const handleBatchDownload = async (fmt: "md" | "docx") => {
-    if (selectedTaskIds.size === 0) {
-      alert("请先选择要下载的书稿");
+    if (selectedCompletedTaskIds.length === 0) {
+      alert("请先选择已完成的书稿");
       return;
     }
     try {
       setBatchDownloading(fmt);
       api.downloadBatchFileDirect({
-        task_ids: [...selectedTaskIds],
+        task_ids: selectedCompletedTaskIds,
         fmt,
       });
       window.setTimeout(() => setBatchDownloading(null), 900);
@@ -218,6 +222,35 @@ export function Bookshelf() {
             ? e.message
             : "批量下载失败";
       alert(`批量下载失败：${msg}`);
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    const ids = [...selectedTaskIds];
+    if (ids.length === 0) {
+      alert("请先选择要删除的书稿");
+      return;
+    }
+    const ok = window.confirm(
+      `确定删除选中的 ${ids.length} 本书稿吗？删除后不可恢复。`,
+    );
+    if (!ok) return;
+
+    setBatchDeleting(true);
+    const failed: string[] = [];
+    for (const id of ids) {
+      try {
+        await api.deleteTask(id);
+      } catch {
+        failed.push(id);
+      }
+    }
+    setTasks((prev) => prev.filter((task) => !ids.includes(task.id) || failed.includes(task.id)));
+    setSelectedTaskIds(new Set(failed));
+    setBatchDeleting(false);
+
+    if (failed.length > 0) {
+      alert(`有 ${failed.length} 本删除失败，已保留在选择中，请稍后重试。`);
     }
   };
 
@@ -286,7 +319,7 @@ export function Bookshelf() {
             ) : (
               <CheckSquare className="h-4 w-4" strokeWidth={1.7} />
             )}
-            <span className="tracking-widest">{selectionMode ? "退出多选" : "多选下载"}</span>
+            <span className="tracking-widest">{selectionMode ? "退出多选" : "多选管理"}</span>
           </button>
           <button
             type="button"
@@ -389,14 +422,14 @@ export function Bookshelf() {
               已选择 {selectedTaskIds.size} 本
             </div>
             <p className="mt-1 text-xs leading-relaxed text-warm-500">
-              当前筛选下有 {downloadableFiltered.length} 本已完成书稿可下载，批量下载会打包成一个 ZIP。
+              当前筛选下有 {filtered.length} 本书稿，其中 {downloadableFiltered.length} 本已完成可下载。批量删除会移除所有选中的书稿。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={selectAllVisible}
-              disabled={downloadableFiltered.length === 0}
+              disabled={filtered.length === 0 || batchDeleting}
               className="rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               全选当前筛选
@@ -404,15 +437,28 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={clearSelection}
-              disabled={selectedTaskIds.size === 0}
+              disabled={selectedTaskIds.size === 0 || batchDeleting}
               className="rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               清空选择
             </button>
             <button
               type="button"
+              onClick={handleBatchDelete}
+              disabled={selectedTaskIds.size === 0 || batchDeleting}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-400/35 bg-red-500/10 px-4 py-2 text-xs tracking-widest text-red-100 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchDeleting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
+              )}
+              批量删除
+            </button>
+            <button
+              type="button"
               onClick={() => handleBatchDownload("docx")}
-              disabled={selectedTaskIds.size === 0 || batchDownloading !== null}
+              disabled={selectedCompletedTaskIds.length === 0 || batchDownloading !== null || batchDeleting}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-400/45 bg-gold-500/10 px-4 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchDownloading === "docx" ? (
@@ -425,7 +471,7 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={() => handleBatchDownload("md")}
-              disabled={selectedTaskIds.size === 0 || batchDownloading !== null}
+              disabled={selectedCompletedTaskIds.length === 0 || batchDownloading !== null || batchDeleting}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchDownloading === "md" ? (
@@ -485,7 +531,7 @@ export function Bookshelf() {
                     onMetadataUpdated={handleMetadataUpdated}
                     selectionMode={selectionMode}
                     selected={selectedTaskIds.has(task.id)}
-                    selectionDisabled={task.status !== "completed"}
+                    selectionDisabled={false}
                     onSelect={toggleTaskSelection}
                   />
                 ))}
