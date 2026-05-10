@@ -5,7 +5,7 @@
 
 # --- Web 框架 ---
 fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+uvicorn>=0.32.0
 
 # --- 异步任务队列 (Redis / Upstash) ---
 celery[redis]>=5.4.0
