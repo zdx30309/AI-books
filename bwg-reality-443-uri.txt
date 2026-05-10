@@ -1,0 +1,1 @@
+vless://20d75ce5-9915-4b47-bd15-fb9cdcc77de3@45.78.76.202:443?type=tcp&security=reality&flow=xtls-rprx-vision&fp=chrome&sni=www.microsoft.com&pbk=q5HWFHhntmD0-qFXaoiot7soL8rfFH29rezZn4deaEw&sid=62fefff2&spx=%2F#BWG-Reality-443-Stealth

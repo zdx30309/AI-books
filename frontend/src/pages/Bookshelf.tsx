@@ -444,19 +444,6 @@ export function Bookshelf() {
             </button>
             <button
               type="button"
-              onClick={handleBatchDelete}
-              disabled={selectedTaskIds.size === 0 || batchDeleting}
-              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-400/35 bg-red-500/10 px-4 py-2 text-xs tracking-widest text-red-100 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {batchDeleting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
-              ) : (
-                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
-              )}
-              批量删除
-            </button>
-            <button
-              type="button"
               onClick={() => handleBatchDownload("docx")}
               disabled={selectedCompletedTaskIds.length === 0 || batchDownloading !== null || batchDeleting}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-400/45 bg-gold-500/10 px-4 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
@@ -480,6 +467,19 @@ export function Bookshelf() {
                 <FileText className="h-3.5 w-3.5" strokeWidth={1.7} />
               )}
               下载 Markdown
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchDelete}
+              disabled={selectedTaskIds.size === 0 || batchDeleting}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-400/35 bg-red-500/10 px-4 py-2 text-xs tracking-widest text-red-100 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchDeleting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
+              )}
+              批量删除
             </button>
           </div>
         </div>

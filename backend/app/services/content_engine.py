@@ -91,6 +91,107 @@ def _postprocess_delivery_markdown(markdown: str) -> str:
     return "\n".join(cleaned)
 
 
+_SOFT_LINE_ENDINGS = "，,、；;：:"
+_HARD_LINE_ENDINGS = "。."
+_SENTENCE_ENDINGS = "。.!！?？；;：:」』”’）)]"
+_CONTINUATION_PREFIXES = (
+    "以及",
+    "和",
+    "与",
+    "还有",
+    "包括",
+    "比如",
+    "例如",
+    "譬如",
+    "尤其",
+    "甚至",
+    "同时",
+    "并且",
+    "而且",
+    "或者",
+    "或",
+    "也",
+    "还",
+    "更",
+    "但",
+    "但是",
+    "而",
+    "却",
+    "其中",
+    "这些",
+    "这种",
+    "这类",
+)
+
+
+def _is_structural_markdown_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped.startswith(("@", "#", "```", "|", ">")):
+        return True
+    if re.match(r"^(?:[-*+]\s+|\d+[.．、]\s+)", stripped):
+        return True
+    return False
+
+
+def _looks_like_continuation_fragment(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _is_structural_markdown_line(stripped):
+        return False
+    if stripped.startswith(("，", ",", "、", "；", ";", "：", ":", "。", ".", "）", ")", "」", "』", "”")):
+        return True
+    if stripped.startswith(_CONTINUATION_PREFIXES):
+        return True
+    core = stripped.rstrip("。.!！?？")
+    return len(core) <= 28 and core.endswith(("等", "等等", "之类", "一类", "这类"))
+
+
+def _join_broken_body_lines(lines: list[str]) -> list[str]:
+    """Repair obvious model-introduced line breaks inside one sentence."""
+    repaired: list[str] = []
+    for line in lines:
+        current = line.rstrip()
+        if not current.strip():
+            continue
+        if not repaired or _is_structural_markdown_line(current):
+            repaired.append(current)
+            continue
+
+        previous = repaired[-1]
+        if _is_structural_markdown_line(previous):
+            repaired.append(current)
+            continue
+
+        previous_stripped = previous.rstrip()
+        current_stripped = current.lstrip()
+        should_join = False
+        soften_previous_period = False
+
+        if previous_stripped.endswith(tuple(_SOFT_LINE_ENDINGS)):
+            should_join = True
+        elif not previous_stripped.endswith(tuple(_SENTENCE_ENDINGS)):
+            should_join = True
+        elif previous_stripped.endswith(tuple(_HARD_LINE_ENDINGS)) and _looks_like_continuation_fragment(current):
+            should_join = True
+            soften_previous_period = True
+
+        if not should_join:
+            repaired.append(current)
+            continue
+
+        if soften_previous_period:
+            previous_stripped = previous_stripped[:-1] + "，"
+        elif previous_stripped.endswith((",", "，", ":", "：")):
+            previous_stripped = previous_stripped[:-1] + "，"
+        elif previous_stripped.endswith((";", "；")):
+            previous_stripped = previous_stripped[:-1] + "；"
+
+        repaired[-1] = f"{previous_stripped}{current_stripped}"
+
+    return repaired
+
+
 def normalize_final_markdown(markdown: str) -> str:
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
@@ -104,6 +205,7 @@ def normalize_final_markdown(markdown: str) -> str:
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
+    body_lines = _join_broken_body_lines(body_lines)
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
     return result + ("\n" if result else "")
