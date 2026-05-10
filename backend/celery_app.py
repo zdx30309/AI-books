@@ -7,7 +7,7 @@ Broker / Backend 都用 Redis (Upstash 兼容)。
   celery -A celery_app.celery_app worker --loglevel=info --pool=solo
 
   # 生产环境 (Linux):
-  celery -A celery_app.celery_app worker --loglevel=info --concurrency=4
+  celery -A celery_app.celery_app worker --loglevel=info --concurrency=10
 """
 from celery import Celery
 

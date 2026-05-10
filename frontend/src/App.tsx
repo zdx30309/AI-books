@@ -9,6 +9,7 @@ import { Profile } from "./pages/Profile";
 import { BookDetail } from "./pages/BookDetail";
 import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
+import { WeReadTool } from "./pages/WeReadTool";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -57,6 +58,16 @@ export default function App() {
             <ProtectedRoute>
               <AppShell>
                 <Profile />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/weread"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <WeReadTool />
               </AppShell>
             </ProtectedRoute>
           }

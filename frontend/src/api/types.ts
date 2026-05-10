@@ -217,3 +217,32 @@ export interface SystemHealth {
   celery_error: string | null;
   queue_lengths: Record<string, number> | null;
 }
+
+// 微信读书推荐值工具
+
+export interface WeReadAnalyzeRequest {
+  catalog_text: string;
+  profit_text?: string | null;
+}
+
+export interface WeReadBookRow {
+  query_title: string;
+  query_author: string | null;
+  matched_title: string | null;
+  matched_author: string | null;
+  recommendation: number | null;
+  rating_count: string | null;
+  today_reading: string | null;
+  total_reading: string | null;
+  word_count: string | null;
+  source_url: string | null;
+  profit: number | null;
+  status: string;
+  error: string | null;
+}
+
+export interface WeReadAnalyzeResponse {
+  total: number;
+  matched: number;
+  items: WeReadBookRow[];
+}

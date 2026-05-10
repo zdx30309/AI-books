@@ -56,6 +56,7 @@ class QingdouDurationExceededError(QingdouError):
 
 
 _LOCK_KEY = "video-plan:qingdou:extract-lock"
+_SLOTS_KEY = "video-plan:qingdou:extract-slots"
 
 
 def _redis_url() -> str:
@@ -110,6 +111,62 @@ def _qingdou_serial_lock(*, ttl_seconds: int):
                 logger.info("轻抖串行锁已释放")
         except Exception:
             logger.exception("释放轻抖串行锁失败")
+
+
+@contextmanager
+def _qingdou_concurrency_slot(*, ttl_seconds: int):
+    max_concurrent = max(1, int(settings.QINGDOU_MAX_CONCURRENT_TASKS or 1))
+    if settings.QINGDOU_SERIAL_LOCK_ENABLED:
+        with _qingdou_serial_lock(ttl_seconds=ttl_seconds):
+            yield
+        return
+
+    token = str(uuid.uuid4())
+    client = _redis_client()
+    deadline = time.monotonic() + max(1, settings.QINGDOU_LOCK_WAIT_TIMEOUT_SECONDS)
+    acquired = False
+
+    while time.monotonic() < deadline:
+        now = time.time()
+        expire_before = now - max(30, ttl_seconds)
+        try:
+            with client.pipeline() as pipe:
+                pipe.watch(_SLOTS_KEY)
+                pipe.zremrangebyscore(_SLOTS_KEY, 0, expire_before)
+                active_count = pipe.zcard(_SLOTS_KEY)
+                if active_count < max_concurrent:
+                    pipe.multi()
+                    pipe.zadd(_SLOTS_KEY, {token: now})
+                    pipe.expire(_SLOTS_KEY, max(30, ttl_seconds))
+                    pipe.execute()
+                    acquired = True
+                    logger.info(
+                        "轻抖并发槽已获取 active=%d/%d",
+                        active_count + 1,
+                        max_concurrent,
+                    )
+                    break
+                pipe.unwatch()
+        except redis.WatchError:
+            time.sleep(0.2)
+            continue
+        except Exception as exc:
+            logger.warning("轻抖并发槽获取失败，退回本次直接调用: %s", exc)
+            yield
+            return
+        time.sleep(2)
+
+    if not acquired:
+        raise QingdouTimeoutError(f"等待轻抖并发槽超时，当前上限 {max_concurrent}，请稍后重试")
+
+    try:
+        yield
+    finally:
+        try:
+            client.zrem(_SLOTS_KEY, token)
+            logger.info("轻抖并发槽已释放")
+        except Exception:
+            logger.exception("释放轻抖并发槽失败")
 
 
 class QingdouClient:
@@ -329,7 +386,7 @@ def extract_video_text_with_qingdou(
         settings.QINGDOU_LOCK_TTL_SECONDS,
         int(timeout_seconds or settings.QINGDOU_POLL_TIMEOUT_SECONDS) + 120,
     )
-    with _qingdou_serial_lock(ttl_seconds=lock_ttl):
+    with _qingdou_concurrency_slot(ttl_seconds=lock_ttl):
         with QingdouClient() as client:
             result = client.extract_text(
                 source_url,

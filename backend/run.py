@@ -5,7 +5,7 @@
     python run.py
 
 行为：
-- 同时拉起 FastAPI (uvicorn :8000) 与 Celery worker (--pool=threads --concurrency=4)
+- 同时拉起 FastAPI (uvicorn :8000) 与 Celery worker (--pool=threads --concurrency=10)
 - worker 关闭 gossip/mingle/heartbeat，减少 Upstash Redis 长连接抖动
 - 任意一个进程崩溃，会把另一个一并杀掉，避免半死状态
 - Ctrl+C 干净退出双进程
@@ -14,7 +14,7 @@
 
 如果只想要传统两窗口模式，可以分别运行：
     uvicorn main:app --reload --port 8000
-    celery -A celery_app.celery_app worker --pool=threads --concurrency=4 --loglevel=info --without-gossip --without-mingle --without-heartbeat
+    celery -A celery_app.celery_app worker --pool=threads --concurrency=10 --loglevel=info --without-gossip --without-mingle --without-heartbeat
 """
 from __future__ import annotations
 
@@ -26,6 +26,15 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+
+def _worker_concurrency() -> str:
+    raw = os.getenv("CELERY_WORKER_CONCURRENCY", "10").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 10
+    return str(max(1, value))
 
 
 def _spawn(name: str, cmd: list[str]) -> subprocess.Popen[bytes]:
@@ -70,7 +79,7 @@ def main() -> int:
         "celery_app.celery_app",
         "worker",
         "--pool=threads",
-        "--concurrency=4",
+        f"--concurrency={_worker_concurrency()}",
         "--loglevel=info",
         "--without-gossip",
         "--without-mingle",

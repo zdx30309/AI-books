@@ -27,6 +27,9 @@ import type {
   TaskStatusResponse,
   TokenResponse,
   UserPublic,
+  WeReadAnalyzeRequest,
+  WeReadAnalyzeResponse,
+  WeReadBookRow,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -259,6 +262,17 @@ export const api = {
 
   // 系统健康（检测 Celery worker 是否在线）
   systemHealth: () => request<SystemHealth>("/system/health"),
+
+  // 微信读书推荐值
+  analyzeWeReadBooks: (body: WeReadAnalyzeRequest) =>
+    request<WeReadAnalyzeResponse>("/weread/analyze", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  downloadWeReadExcel: async (rows: WeReadBookRow[]) => {
+    const { blob, filename } = await downloadWithBody("/weread/export", { rows });
+    saveBlob(blob, filename);
+  },
 
   // 鉴权
   register: (body: RegisterRequest) =>

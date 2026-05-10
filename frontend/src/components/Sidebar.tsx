@@ -1,10 +1,11 @@
 import { NavLink } from "react-router-dom";
-import { LayoutGrid, BookMarked, User, LogOut } from "lucide-react";
+import { LayoutGrid, BookMarked, FileSpreadsheet, User, LogOut } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
 
 const navItems = [
   { to: "/", label: "工作台", icon: LayoutGrid, end: true },
   { to: "/bookshelf", label: "书架", icon: BookMarked, end: false },
+  { to: "/weread", label: "推荐值工具", icon: FileSpreadsheet, end: false },
   { to: "/profile", label: "个人中心", icon: User, end: false },
 ];
 
