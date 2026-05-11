@@ -70,7 +70,7 @@ export function Sidebar() {
         </div>
         <div className="space-y-1 text-[11px] leading-relaxed tracking-widest text-warm-400">
           <div>在碎片的世界里</div>
-          <div>把想想写成书</div>
+          <div>把想象写成书</div>
           <div>让时间留住价值</div>
         </div>
       </div>
