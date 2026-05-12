@@ -12,7 +12,8 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT, get_prompts
+from app.prompts.goal_driven_templates import get_prompts
+from app.services.deepseek import format_book_text
 from app.services.gemini import polish_book_text, refine_book_text
 
 # 进度上报回调：(stage_name, info_dict)
@@ -273,16 +274,114 @@ def _get_openai_writer_client() -> OpenAI:
     if _openai_writer_client is not None:
         return _openai_writer_client
 
-    client_kwargs: dict[str, Any] = {"base_url": settings.OPENAI_BASE_URL, "timeout": 1800.0}
+    request_timeout = httpx.Timeout(1800.0, connect=30.0)
+    client_kwargs: dict[str, Any] = {"base_url": settings.OPENAI_BASE_URL, "timeout": request_timeout}
     proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
     if proxy:
-        client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=1800.0)
+        logger.info("OpenAI Writer 使用代理: %s", proxy)
+        client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=request_timeout)
     api_key = _resolve_openai_api_key()
     if api_key:
         client_kwargs["api_key"] = api_key
 
     _openai_writer_client = OpenAI(**client_kwargs)
     return _openai_writer_client
+
+
+def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
+    proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
+    parts = [
+        "OpenAI 初稿生成连接失败",
+        f"base_url={settings.OPENAI_BASE_URL}",
+        f"proxy={proxy or '未配置'}",
+        f"error={type(exc).__name__}: {exc}",
+    ]
+    if first_exc is not None:
+        parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
+    if proxy:
+        parts.append("请确认代理端口可从容器访问；当前部署通常需要北京机 172.18.0.1:7897 隧道在线。")
+    return "；".join(parts)
+
+
+def _response_attr(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _extract_openai_response_text(response: Any | None) -> str:
+    if response is None:
+        return ""
+
+    output_text = _response_attr(response, "output_text", "")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    text_parts: list[str] = []
+    for item in _response_attr(response, "output", []) or []:
+        item_type = _response_attr(item, "type")
+        if item_type == "output_text":
+            item_text = _response_attr(item, "text", "")
+            if isinstance(item_text, str):
+                text_parts.append(item_text)
+            continue
+
+        content_items = _response_attr(item, "content", []) or []
+        if isinstance(content_items, str):
+            text_parts.append(content_items)
+            continue
+
+        for content in content_items:
+            content_type = _response_attr(content, "type")
+            if content_type in {"output_text", "text"}:
+                content_text = _response_attr(content, "text", "")
+                if isinstance(content_text, str):
+                    text_parts.append(content_text)
+
+    if text_parts:
+        return "".join(text_parts).strip()
+
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict) and dumped is not response:
+            return _extract_openai_response_text(dumped)
+
+    return ""
+
+
+def _openai_response_debug_summary(response: Any | None) -> str:
+    if response is None:
+        return "response=None"
+
+    output_types = []
+    for item in _response_attr(response, "output", []) or []:
+        output_types.append(str(_response_attr(item, "type", "unknown")))
+
+    incomplete_details = _response_attr(response, "incomplete_details")
+    if incomplete_details is not None:
+        reason = _response_attr(incomplete_details, "reason", incomplete_details)
+    else:
+        reason = None
+
+    usage = _response_attr(response, "usage")
+    return (
+        f"status={_response_attr(response, 'status', 'unknown')}; "
+        f"incomplete_reason={reason or 'none'}; "
+        f"output_types={output_types or 'none'}; "
+        f"usage={usage or 'unknown'}"
+    )
+
+
+def _openai_writer_retry_efforts(current_effort: str) -> list[str]:
+    efforts = []
+    for effort in ("medium", "low"):
+        if effort != current_effort and effort not in efforts:
+            efforts.append(effort)
+    return efforts
 
 
 def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> tuple[str, Any | None]:
@@ -322,32 +421,50 @@ def _openai_writer_call(
 
     response: Any | None = None
     text = ""
+    first_exc: Exception | None = None
     try:
         text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
-    except Exception:
+    except Exception as exc:
+        first_exc = exc
         global _openai_writer_client
         _openai_writer_client = None
         client = _get_openai_writer_client()
-        response = client.responses.create(
-            model=settings.OPENAI_WRITER_MODEL,
-            input=rendered_prompt,
-            reasoning={"effort": effort},
-            text={"verbosity": verb},
-            max_output_tokens=max_tok,
-        )
-        text = getattr(response, "output_text", "") or ""
+        try:
+            response = client.responses.create(
+                model=settings.OPENAI_WRITER_MODEL,
+                input=rendered_prompt,
+                reasoning={"effort": effort},
+                text={"verbosity": verb},
+                max_output_tokens=max_tok,
+            )
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                _openai_writer_connection_error_message(fallback_exc, first_exc)
+            ) from fallback_exc
+        text = _extract_openai_response_text(response)
 
     if not text:
-        if response is not None and hasattr(response, "output_text") and response.output_text:
-            text = response.output_text
-        else:
-            text_parts: list[str] = []
-            for item in getattr(response, "output", []) or []:
-                if getattr(item, "type", None) == "message":
-                    for content in getattr(item, "content", []) or []:
-                        if getattr(content, "type", None) == "output_text":
-                            text_parts.append(getattr(content, "text", ""))
-            text = "".join(text_parts)
+        text = _extract_openai_response_text(response)
+
+    if not text or not text.strip():
+        logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
+        client = _get_openai_writer_client()
+        for retry_effort in _openai_writer_retry_efforts(effort):
+            logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
+            response = client.responses.create(
+                model=settings.OPENAI_WRITER_MODEL,
+                input=rendered_prompt,
+                reasoning={"effort": retry_effort},
+                text={"verbosity": verb},
+                max_output_tokens=max_tok,
+            )
+            text = _extract_openai_response_text(response)
+            if text.strip():
+                break
+            logger.warning(
+                "OpenAI Writer retry returned empty response: %s",
+                _openai_response_debug_summary(response),
+            )
 
     if not text or not text.strip():
         raise ValueError("OpenAI Writer 返回空响应")
@@ -355,17 +472,20 @@ def _openai_writer_call(
     return text.strip()
 
 
-def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
-    logger.info("OpenAI 格式层开始: input_chars=%d model=%s", len(text or ""), settings.OPENAI_WRITER_MODEL)
-    rendered = (prompt_template or FINAL_BOOK_FORMAT_PROMPT).format(text=text)
-    return _openai_writer_call(
-        rendered,
-        max_output_tokens=settings.OPENAI_FORMAT_MAX_OUTPUT_TOKENS,
+async def _route_writer_call(
+    rendered_prompt: str,
+    *,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    max_output_tokens: int | None = None,
+) -> str:
+    return await asyncio.to_thread(
+        _openai_writer_call,
+        rendered_prompt,
+        reasoning_effort=reasoning_effort,
+        verbosity=verbosity,
+        max_output_tokens=max_output_tokens,
     )
-
-
-async def _route_writer_call(rendered_prompt: str) -> str:
-    return await asyncio.to_thread(_openai_writer_call, rendered_prompt)
 
 
 def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
@@ -519,45 +639,6 @@ def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
         logger.info("[stage %s] %d 字", stage, n)
 
 
-def _style_reference_instruction(style_reference: str | None, style_notes: str | None = None) -> str:
-    reference = (style_reference or "").strip()
-    notes = (style_notes or "").strip()
-    if not reference and not notes:
-        return ""
-
-    reference = reference[:120]
-    notes = notes[:500]
-    lines = [
-        "笔锋参考要求：",
-        "- 用户希望这篇网文短篇初稿参考指定作者、作品气质或类型笔法。",
-        "- 如果参考对象可能是在世作者，不要直接模仿其独特表达、固定句法或可辨识的个人风格；请改为提炼高层次写作特征，例如叙事节奏、场景密度、人物关系推进、悬念铺设、冲突兑现、语言冷暖和爽点结构，并写成原创文本。",
-        "- 不要引用、改写或复刻该作者原文句子，不要输出风格分析过程。",
-    ]
-    if reference:
-        lines.append(f"- 参考对象：{reference}")
-    if notes:
-        lines.append(f"- 用户补充：{notes}")
-    return "\n".join(lines)
-
-
-def _apply_web_short_story_style_instruction(
-    prompt: str,
-    *,
-    category: str,
-    style_reference: str | None,
-    style_notes: str | None = None,
-) -> str:
-    if category != "web_short_story":
-        return prompt
-    instruction = _style_reference_instruction(style_reference, style_notes)
-    if not instruction:
-        return prompt
-    marker = "\n输入："
-    if marker in prompt:
-        return prompt.replace(marker, f"\n{instruction}\n{marker}", 1)
-    return f"{prompt.rstrip()}\n\n{instruction}"
-
-
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
@@ -600,12 +681,6 @@ async def generate_full_book(
         if on_stage:
             on_stage("writer_start", {})
         writer_prompt = full_book_writer_prompt.format(raw_text=raw_text.strip())
-        writer_prompt = _apply_web_short_story_style_instruction(
-            writer_prompt,
-            category=category,
-            style_reference=style_reference,
-            style_notes=style_notes,
-        )
         generated_markdown = await _route_writer_call(writer_prompt)
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
@@ -631,9 +706,17 @@ async def generate_full_book(
             logger.info("执行题材专属初稿审读。")
             if on_stage:
                 on_stage("audit_start", {})
-            audited_markdown = await _route_writer_call(
-                post_writer_audit_prompt.format(text=generated_markdown.strip())
-            )
+            try:
+                audited_markdown = await _route_writer_call(
+                    post_writer_audit_prompt.format(text=generated_markdown.strip()),
+                    reasoning_effort="low",
+                    verbosity="low",
+                )
+            except ValueError as exc:
+                if "OpenAI Writer" not in str(exc):
+                    raise
+                logger.warning("题材专属审读返回空响应，保留主模型初稿继续后续流程。")
+                audited_markdown = ""
             if audited_markdown.strip():
                 generated_markdown = audited_markdown
                 _log_stage("1c/4 writer-audited", generated_markdown)
@@ -695,7 +778,7 @@ async def generate_full_book(
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
 
-    # ---- 第 4 层: OpenAI 格式 (整篇) ----
+    # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")
     if final_markdown:
         logger.info("复用已存在的 04_format.md")
@@ -712,11 +795,11 @@ async def generate_full_book(
                     refined_markdown,
                     prompt_template=final_book_format_prompt,
                 ),
-                timeout=settings.OPENAI_FORMAT_CALL_TIMEOUT,
+                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
-                f"OpenAI 终稿格式化超过 {settings.OPENAI_FORMAT_CALL_TIMEOUT} 秒未返回"
+                f"DeepSeek 终稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"
             ) from exc
         _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
         _dump_stage(output_dir, "04_format.md", final_markdown)

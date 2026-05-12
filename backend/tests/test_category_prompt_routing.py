@@ -42,7 +42,7 @@ def test_generate_full_book_routes_writer_prompt_by_category(
     writer_prompts: list[str] = []
     expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=raw_text)
 
-    async def fake_route_writer_call(prompt: str) -> str:
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
         if prompt == expected_prompt:
             writer_prompts.append(prompt)
         return MINIMAL_MANUSCRIPT
@@ -77,24 +77,22 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "final_book_format" in prompts
 
 
-def test_web_short_story_uses_dedicated_prompts() -> None:
+def test_web_short_story_is_history_test_prompt_sync() -> None:
     history_prompts = get_prompts("history_culture")
     web_short_story_prompts = get_prompts("web_short_story")
 
-    assert web_short_story_prompts["full_book_writer"] != history_prompts["full_book_writer"]
-    assert web_short_story_prompts["post_writer_audit"] != history_prompts["post_writer_audit"]
-    assert "网文短篇作者" in web_short_story_prompts["full_book_writer"]
-    assert "网文短篇编辑" in web_short_story_prompts["post_writer_audit"]
+    assert web_short_story_prompts == history_prompts
+    assert get_category_meta("web_short_story")["label"] == "历史测试版"
 
 
-def test_web_short_story_style_reference_is_injected(
+def test_web_short_story_style_reference_keeps_history_prompt_sync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_text = "女主醒来发现自己穿进了短剧反派剧本。"
     writer_prompts: list[str] = []
 
-    async def fake_route_writer_call(prompt: str) -> str:
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
         writer_prompts.append(prompt)
         return MINIMAL_MANUSCRIPT
 
@@ -113,7 +111,6 @@ def test_web_short_story_style_reference_is_injected(
         )
     )
 
-    assert "笔锋参考要求" in writer_prompts[0]
-    assert "参考对象：冷峻悬疑作家" in writer_prompts[0]
-    assert "用户补充：第一人称，反转更密。" in writer_prompts[0]
-    assert "不要直接模仿其独特表达" in writer_prompts[0]
+    assert writer_prompts[0] == get_prompts("history_culture")["full_book_writer"].format(raw_text=raw_text)
+    assert "笔锋参考要求" not in writer_prompts[0]
+    assert "参考对象：冷峻悬疑作家" not in writer_prompts[0]

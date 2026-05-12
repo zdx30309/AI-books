@@ -14,7 +14,7 @@ const STEPS: Step[] = [
   { key: "audit", label: "题材专属审读", start: 46 },
   { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
   { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
-  { key: "format", label: "OpenAI 终稿格式化", start: 87 },
+  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 

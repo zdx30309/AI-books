@@ -225,7 +225,7 @@ def process_video(_self, task_id: str) -> dict:
             "polish_done": (70, "Gemini 一润完成"),
             "refine_start": (72, "Gemini 二润中"),
             "refine_done": (85, "二润完成"),
-            "format_start": (87, "OpenAI 终稿格式化中"),
+            "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
         }
 

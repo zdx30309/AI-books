@@ -10,7 +10,7 @@ from openai import OpenAI, OpenAIError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import DEEPSEEK_V4_PRO_FORMAT_PROMPT
+from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,9 @@ def _looks_like_complete_format_output(text: str) -> bool:
 
 
 def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
-    """格式整理。Prompt 来源: goal_driven_templates.DEEPSEEK_V4_PRO_FORMAT_PROMPT"""
+    """格式整理。Prompt 来源: goal_driven_templates.FINAL_BOOK_FORMAT_PROMPT"""
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
-    rendered = (prompt_template or DEEPSEEK_V4_PRO_FORMAT_PROMPT).format(text=text)
+    rendered = (prompt_template or FINAL_BOOK_FORMAT_PROMPT).format(text=text)
     return generate_text(
         rendered,
         model=settings.DEEPSEEK_MODEL,

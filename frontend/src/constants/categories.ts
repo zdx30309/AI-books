@@ -87,9 +87,9 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   },
   {
     id: "web_short_story",
-    label: "网文短篇",
-    core_feature: "网络文学风格，强节奏、爽点密集",
-    directions: "系统文、重生/穿书、甜宠、沙雕脑洞、悬疑反转式短篇",
+    label: "历史测试版",
+    core_feature: "与历史小说端口同步，用于历史叙事测试",
+    directions: "历史故事、制度缝隙、人物命运、时代暗流",
     prompt_status: "ready",
   },
 ];
