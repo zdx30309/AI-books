@@ -201,7 +201,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       onClick={onClose}
     >
       <div
-        className="card-warm relative w-[min(640px,92vw)] p-8 shadow-card-warm"
+        className="card-warm relative max-h-[calc(100dvh-32px)] w-[min(600px,90vw)] overflow-y-auto p-6 shadow-card-warm"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -210,7 +210,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           type="button"
           onClick={onClose}
           aria-label="关闭"
-          className="absolute right-5 top-5 flex h-8 w-8 items-center justify-center rounded-full text-warm-400 transition-colors hover:bg-warm-600/15 hover:text-warm-100"
+          className="sticky top-4 z-10 -mb-8 ml-auto flex h-8 w-8 items-center justify-center rounded-full bg-base-700/80 text-warm-400 transition-colors hover:bg-warm-600/15 hover:text-warm-100"
         >
           <X className="h-4 w-4" strokeWidth={1.5} />
         </button>
@@ -222,7 +222,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           选择书籍方向后，粘贴单个视频链接、已有文稿，或把候选链接批量放入自动生成库
         </p>
 
-        <div className="mt-7 space-y-5">
+        <div className="mt-6 space-y-4">
           <div className="flex gap-2">
             <button
               type="button"
@@ -278,7 +278,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           </div>
 
           {isWebShortStory && (
-            <div className="space-y-3 rounded-lg border border-gold-500/15 bg-base-700/35 p-4">
+            <div className="space-y-2.5 rounded-lg border border-gold-500/15 bg-base-700/35 p-3.5">
               <label
                 htmlFor="style-reference"
                 className="flex items-center gap-2 text-[11px] tracking-widest text-warm-300"
@@ -301,7 +301,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 onChange={(e) => setStyleNotes(e.target.value)}
                 placeholder="可补充节奏、叙事视角、人物关系、爽点密度等要求"
                 maxLength={300}
-                rows={3}
+                rows={2}
                 className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
               />
               <p className="text-[11px] leading-relaxed text-warm-500">
@@ -355,7 +355,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                       ? "请直接粘贴需要转成白话文的文言文原文"
                       : "如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
                   }
-                  rows={isClassicalChinese ? 10 : 6}
+                  rows={isClassicalChinese ? 9 : 5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
               </div>
@@ -378,7 +378,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 value={candidateLinks}
                 onChange={(e) => setCandidateLinks(e.target.value)}
                 placeholder="可以直接粘贴整段文字、评论、表格或多平台分享文本；系统会自动识别其中完整链接，最多 100 个"
-                rows={12}
+                rows={10}
                 className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
               />
               {candidateLinkStats.duplicateCount > 0 && (
@@ -396,7 +396,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           )}
         </div>
 
-        <div className="mt-8 flex items-center justify-end gap-3">
+        <div className="mt-6 flex items-center justify-end gap-3">
           <button
             type="button"
             onClick={onClose}
