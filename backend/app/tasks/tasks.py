@@ -102,6 +102,20 @@ def _patch_config(task: Task, **kv: Any) -> None:
     task.config = cfg
 
 
+def _user_facing_generation_error(exc: Exception) -> str:
+    raw = f"{type(exc).__name__}: {exc}"
+    normalized = raw.lower()
+    if "insufficient_quota" in normalized or "exceeded your current quota" in normalized:
+        return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
+    if "rate_limit" in normalized or "429" in normalized:
+        return "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "模型调用超时，任务已停止。可以稍后点击继续生成重试。"
+    if "api key" in normalized or "unauthorized" in normalized or "401" in normalized:
+        return "模型 API Key 无效或未授权，请检查服务器环境变量后重试。"
+    return raw[:2000]
+
+
 def _extract_book_title(markdown: str) -> str:
     """Pick the first generated title candidate as the book title."""
     section = _BOOK_TITLE_SECTION_RE.search(markdown or "")
@@ -205,11 +219,13 @@ def process_video(_self, task_id: str) -> dict:
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
+            "audit_start": (46, "题材专属审读中"),
+            "audit_done": (49, "题材专属审读完成"),
             "polish_start": (50, "Gemini 一润启动"),
             "polish_done": (70, "Gemini 一润完成"),
             "refine_start": (72, "Gemini 二润中"),
             "refine_done": (85, "二润完成"),
-            "format_start": (87, "DeepSeek 终稿格式化中"),
+            "format_start": (87, "OpenAI 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
         }
 
@@ -284,8 +300,10 @@ def process_video(_self, task_id: str) -> dict:
             if task is None:
                 task = db.get(Task, uuid.UUID(task_id))
             if task is not None:
+                message = _user_facing_generation_error(e)
                 task.status = TaskStatus.FAILED
-                task.error_message = f"{type(e).__name__}: {e}"[:2000]
+                task.error_message = message[:2000]
+                task.current_step = f"失败：{message}"[:255]
                 db.commit()
         except Exception:
             logger.exception("[task %s] 写入失败状态时再次出错", task_id)

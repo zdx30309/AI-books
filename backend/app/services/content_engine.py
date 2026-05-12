@@ -12,8 +12,7 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import get_prompts
-from app.services.deepseek import format_book_text
+from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT, get_prompts
 from app.services.gemini import polish_book_text, refine_book_text
 
 # 进度上报回调：(stage_name, info_dict)
@@ -30,6 +29,7 @@ _openai_writer_client: OpenAI | None = None
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "正文")
+_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|正文)\s*$")
 
 
 def _strip_title_colons(title: str) -> str:
@@ -82,13 +82,65 @@ def _postprocess_delivery_markdown(markdown: str) -> str:
     cleaned: list[str] = []
     for raw_line in (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw_line.rstrip()
-        section = re.match(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|正文)\s*$", line)
+        section = _FRONT_SECTION_RE.match(line)
         if section:
             current_section = section.group(1)
             cleaned.append("@" + current_section)
             continue
         cleaned.append(_clean_delivery_title_line(line, current_section))
     return "\n".join(cleaned)
+
+
+def _chapter_title_map_from_body(lines: list[str]) -> dict[str, str]:
+    chapter_titles: dict[str, str] = {}
+    in_body = False
+    for line in lines:
+        stripped = line.strip()
+        section = _FRONT_SECTION_RE.match(stripped)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+
+        chapter = re.match(r"^@?\s*(\d+)[.．、]\s*(.+?)\s*$", stripped)
+        if not chapter:
+            continue
+        title = re.sub(r"\b结语\b|结语", "", chapter.group(2)).strip()
+        title = _strip_title_colons(title)
+        if title:
+            chapter_titles.setdefault(chapter.group(1), title)
+    return chapter_titles
+
+
+def _repair_blank_catalog_titles(text: str) -> str:
+    """Fill catalog lines like `1.` from matching body chapter titles."""
+    lines = text.split("\n")
+    chapter_titles = _chapter_title_map_from_body(lines)
+    if not chapter_titles:
+        return text
+
+    current_section: str | None = None
+    repaired: list[str] = []
+    for line in lines:
+        section = _FRONT_SECTION_RE.match(line.strip())
+        if section:
+            current_section = section.group(1)
+            repaired.append(line)
+            continue
+
+        if current_section == "目录":
+            blank_number = re.match(r"^(\s*)(\d+)([.．、])\s*$", line)
+            fallback_title = re.match(r"^(\s*)(\d+)([.．、])\s*最后一章\s*$", line)
+            match = blank_number or fallback_title
+            if match and match.group(2) in chapter_titles:
+                repaired.append(
+                    f"{match.group(1)}{match.group(2)}{match.group(3)} {chapter_titles[match.group(2)]}"
+                )
+                continue
+
+        repaired.append(line)
+    return "\n".join(repaired)
 
 
 _SOFT_LINE_ENDINGS = "，,、；;：:"
@@ -195,6 +247,7 @@ def _join_broken_body_lines(lines: list[str]) -> list[str]:
 def normalize_final_markdown(markdown: str) -> str:
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
+    text = _repair_blank_catalog_titles(text)
     match = re.search(r"(?m)^@?\s*正文\s*$", text)
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
@@ -300,6 +353,15 @@ def _openai_writer_call(
         raise ValueError("OpenAI Writer 返回空响应")
 
     return text.strip()
+
+
+def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
+    logger.info("OpenAI 格式层开始: input_chars=%d model=%s", len(text or ""), settings.OPENAI_WRITER_MODEL)
+    rendered = (prompt_template or FINAL_BOOK_FORMAT_PROMPT).format(text=text)
+    return _openai_writer_call(
+        rendered,
+        max_output_tokens=settings.OPENAI_FORMAT_MAX_OUTPUT_TOKENS,
+    )
 
 
 async def _route_writer_call(rendered_prompt: str) -> str:
@@ -508,7 +570,7 @@ async def generate_full_book(
     full_book_writer_prompt = prompts["full_book_writer"]
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
-    deepseek_v4_pro_format_prompt = prompts["deepseek_v4_pro_format"]
+    final_book_format_prompt = prompts["final_book_format"]
     post_writer_audit_prompt = prompts.get("post_writer_audit")
 
     if output_dir is not None:
@@ -563,8 +625,12 @@ async def generate_full_book(
         if audited_markdown:
             logger.info("复用已存在的 01c_writer_audited.md")
             generated_markdown = audited_markdown
+            if on_stage:
+                on_stage("audit_done", {"chars": len(generated_markdown)})
         else:
             logger.info("执行题材专属初稿审读。")
+            if on_stage:
+                on_stage("audit_start", {})
             audited_markdown = await _route_writer_call(
                 post_writer_audit_prompt.format(text=generated_markdown.strip())
             )
@@ -572,6 +638,8 @@ async def generate_full_book(
                 generated_markdown = audited_markdown
                 _log_stage("1c/4 writer-audited", generated_markdown)
                 _dump_stage(output_dir, "01c_writer_audited.md", generated_markdown)
+            if on_stage:
+                on_stage("audit_done", {"chars": len(generated_markdown)})
 
     writer_chars = len(generated_markdown)
 
@@ -627,7 +695,7 @@ async def generate_full_book(
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
 
-    # ---- 第 4 层: DeepSeek 格式 (整篇) ----
+    # ---- 第 4 层: OpenAI 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")
     if final_markdown:
         logger.info("复用已存在的 04_format.md")
@@ -642,13 +710,13 @@ async def generate_full_book(
                 asyncio.to_thread(
                     format_book_text,
                     refined_markdown,
-                    prompt_template=deepseek_v4_pro_format_prompt,
+                    prompt_template=final_book_format_prompt,
                 ),
-                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+                timeout=settings.OPENAI_FORMAT_CALL_TIMEOUT,
             )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
-                f"DeepSeek 终稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"
+                f"OpenAI 终稿格式化超过 {settings.OPENAI_FORMAT_CALL_TIMEOUT} 秒未返回"
             ) from exc
         _log_stage("4/4 format", final_markdown, prev_chars=refine_chars)
         _dump_stage(output_dir, "04_format.md", final_markdown)

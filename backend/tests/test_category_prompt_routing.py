@@ -74,15 +74,17 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "full_book_writer" in prompts
         assert "gemini_fast_polish" in prompts
         assert "gemini_fast_refine" in prompts
-        assert "deepseek_v4_pro_format" in prompts
+        assert "final_book_format" in prompts
 
 
-def test_web_short_story_reuses_history_culture_prompts() -> None:
+def test_web_short_story_uses_dedicated_prompts() -> None:
     history_prompts = get_prompts("history_culture")
     web_short_story_prompts = get_prompts("web_short_story")
 
-    assert web_short_story_prompts["full_book_writer"] == history_prompts["full_book_writer"]
-    assert web_short_story_prompts["post_writer_audit"] == history_prompts["post_writer_audit"]
+    assert web_short_story_prompts["full_book_writer"] != history_prompts["full_book_writer"]
+    assert web_short_story_prompts["post_writer_audit"] != history_prompts["post_writer_audit"]
+    assert "网文短篇作者" in web_short_story_prompts["full_book_writer"]
+    assert "网文短篇编辑" in web_short_story_prompts["post_writer_audit"]
 
 
 def test_web_short_story_style_reference_is_injected(

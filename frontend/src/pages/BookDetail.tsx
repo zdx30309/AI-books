@@ -47,6 +47,24 @@ const ACTIVE_STATUSES = new Set([
   "fact_checking",
 ]);
 
+function friendlyTaskError(message: string | null | undefined) {
+  if (!message) return null;
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("exceeded your current quota")
+  ) {
+    return "OpenAI 额度不足或账单不可用，请检查服务器当前 API Key 的余额、账单状态，或更换可用 Key 后重试。";
+  }
+  if (normalized.includes("rate_limit") || normalized.includes("429")) {
+    return "OpenAI 请求被限流，请稍后重试，或降低并发后继续生成。";
+  }
+  if (normalized.includes("timeout") || normalized.includes("timed out")) {
+    return "模型调用超时，任务已停止。可以稍后点击继续生成重试。";
+  }
+  return message;
+}
+
 interface PolishTrigger {
   chapterId: string;
   textareaEl: HTMLTextAreaElement;
@@ -434,7 +452,13 @@ export function BookDetail() {
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
-  const displayTitle = metaTitle || task.title || chapters[0]?.title || "书稿生成中";
+  const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
+  const displayTitle =
+    isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
+      ? "生成失败"
+      : titleCandidate || "书稿生成中";
+  const coverTitle = isFailed ? "生成失败" : isCompleted ? displayTitle : "书稿生成中";
+  const failureMessage = friendlyTaskError(task.error_message);
 
   return (
     <div className="relative">
@@ -463,7 +487,7 @@ export function BookDetail() {
           <div className="flex flex-1 gap-5">
             <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
               <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
-                {isCompleted ? displayTitle : "书稿生成中"}
+                {coverTitle}
               </div>
             </div>
             <div className="min-w-0 flex-1">
@@ -538,9 +562,10 @@ export function BookDetail() {
                   </div>
                 </div>
               )}
-              {isFailed && task.error_message && (
-                <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs text-red-300">
-                  {task.error_message}
+              {isFailed && failureMessage && (
+                <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-2.5 text-xs leading-relaxed text-red-300">
+                  <span className="font-medium text-red-200">失败原因：</span>
+                  {failureMessage}
                 </div>
               )}
               </div>
