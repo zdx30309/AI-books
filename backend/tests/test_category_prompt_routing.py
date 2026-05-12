@@ -75,3 +75,43 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "gemini_fast_polish" in prompts
         assert "gemini_fast_refine" in prompts
         assert "deepseek_v4_pro_format" in prompts
+
+
+def test_web_short_story_reuses_history_culture_prompts() -> None:
+    history_prompts = get_prompts("history_culture")
+    web_short_story_prompts = get_prompts("web_short_story")
+
+    assert web_short_story_prompts["full_book_writer"] == history_prompts["full_book_writer"]
+    assert web_short_story_prompts["post_writer_audit"] == history_prompts["post_writer_audit"]
+
+
+def test_web_short_story_style_reference_is_injected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "女主醒来发现自己穿进了短剧反派剧本。"
+    writer_prompts: list[str] = []
+
+    async def fake_route_writer_call(prompt: str) -> str:
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="web_short_story",
+            output_dir=tmp_path / "web_short_story",
+            style_reference="冷峻悬疑作家",
+            style_notes="第一人称，反转更密。",
+        )
+    )
+
+    assert "笔锋参考要求" in writer_prompts[0]
+    assert "参考对象：冷峻悬疑作家" in writer_prompts[0]
+    assert "用户补充：第一人称，反转更密。" in writer_prompts[0]
+    assert "不要直接模仿其独特表达" in writer_prompts[0]

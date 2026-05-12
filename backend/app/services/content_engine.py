@@ -457,11 +457,52 @@ def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
         logger.info("[stage %s] %d 字", stage, n)
 
 
+def _style_reference_instruction(style_reference: str | None, style_notes: str | None = None) -> str:
+    reference = (style_reference or "").strip()
+    notes = (style_notes or "").strip()
+    if not reference and not notes:
+        return ""
+
+    reference = reference[:120]
+    notes = notes[:500]
+    lines = [
+        "笔锋参考要求：",
+        "- 用户希望这篇网文短篇初稿参考指定作者、作品气质或类型笔法。",
+        "- 如果参考对象可能是在世作者，不要直接模仿其独特表达、固定句法或可辨识的个人风格；请改为提炼高层次写作特征，例如叙事节奏、场景密度、人物关系推进、悬念铺设、冲突兑现、语言冷暖和爽点结构，并写成原创文本。",
+        "- 不要引用、改写或复刻该作者原文句子，不要输出风格分析过程。",
+    ]
+    if reference:
+        lines.append(f"- 参考对象：{reference}")
+    if notes:
+        lines.append(f"- 用户补充：{notes}")
+    return "\n".join(lines)
+
+
+def _apply_web_short_story_style_instruction(
+    prompt: str,
+    *,
+    category: str,
+    style_reference: str | None,
+    style_notes: str | None = None,
+) -> str:
+    if category != "web_short_story":
+        return prompt
+    instruction = _style_reference_instruction(style_reference, style_notes)
+    if not instruction:
+        return prompt
+    marker = "\n输入："
+    if marker in prompt:
+        return prompt.replace(marker, f"\n{instruction}\n{marker}", 1)
+    return f"{prompt.rstrip()}\n\n{instruction}"
+
+
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
     output_dir: Path | None = None,
     on_stage: StageCallback | None = None,
+    style_reference: str | None = None,
+    style_notes: str | None = None,
 ) -> str:
     prompts = get_prompts(category)
     full_book_writer_prompt = prompts["full_book_writer"]
@@ -496,7 +537,14 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("writer_start", {})
-        generated_markdown = await _route_writer_call(full_book_writer_prompt.format(raw_text=raw_text.strip()))
+        writer_prompt = full_book_writer_prompt.format(raw_text=raw_text.strip())
+        writer_prompt = _apply_web_short_story_style_instruction(
+            writer_prompt,
+            category=category,
+            style_reference=style_reference,
+            style_notes=style_notes,
+        )
+        generated_markdown = await _route_writer_call(writer_prompt)
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         if on_stage:

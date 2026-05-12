@@ -1353,8 +1353,8 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         post_writer_audit=CLASSIC_INTERPRETATION_FIDELITY_AUDIT_PROMPT,
     ),
     "web_short_story": _prompt_set(
-        WEB_SHORT_STORY_FULL_BOOK_WRITER_PROMPT,
-        post_writer_audit=WEB_SHORT_STORY_PACING_AUDIT_PROMPT,
+        HISTORY_CULTURE_FULL_BOOK_WRITER_PROMPT,
+        post_writer_audit=HISTORY_CULTURE_FACT_CHECK_PROMPT,
     ),
 }
 

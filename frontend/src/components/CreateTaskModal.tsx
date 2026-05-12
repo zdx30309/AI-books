@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpenCheck, ListPlus, Loader2, X } from "lucide-react";
+import { BookOpenCheck, ListPlus, Loader2, PenLine, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { TaskCategoryOption } from "@/api/types";
@@ -46,6 +46,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
+  const [styleReference, setStyleReference] = useState("");
+  const [styleNotes, setStyleNotes] = useState("");
   const [category, setCategory] = useState("social_science");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
   const [submitting, setSubmitting] = useState(false);
@@ -54,6 +56,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const isClassicalChinese = category === "classical_chinese";
+  const isWebShortStory = category === "web_short_story";
 
   useEffect(() => {
     if (!open) {
@@ -61,6 +64,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setUrl("");
       setRawText("");
       setCandidateLinks("");
+      setStyleReference("");
+      setStyleNotes("");
       setCategory("social_science");
       setCategories(DEFAULT_CATEGORIES);
       setError(null);
@@ -122,7 +127,12 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       }
       setSubmitting(true);
       try {
-        const res = await api.createTaskBatch({ urls, config: { category } });
+        const config: Record<string, unknown> = { category };
+        if (isWebShortStory) {
+          if (styleReference.trim()) config.style_reference = styleReference.trim();
+          if (styleNotes.trim()) config.style_notes = styleNotes.trim();
+        }
+        const res = await api.createTaskBatch({ urls, config });
         const first = res.created.find((item) => item.task_id)?.task_id;
         if (!first) {
           const duplicateHint =
@@ -163,6 +173,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     try {
       const config: Record<string, unknown> = { category };
       if (rawText.trim()) config.raw_text = rawText.trim();
+      if (isWebShortStory) {
+        if (styleReference.trim()) config.style_reference = styleReference.trim();
+        if (styleNotes.trim()) config.style_notes = styleNotes.trim();
+      }
       const res = await api.createTask({
         url: isClassicalChinese ? "manual://classical_chinese" : url.trim() || "manual://raw_text",
         config,
@@ -262,6 +276,39 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               {selectedCategory.core_feature} · {selectedCategory.directions}
             </p>
           </div>
+
+          {isWebShortStory && (
+            <div className="space-y-3 rounded-lg border border-gold-500/15 bg-base-700/35 p-4">
+              <label
+                htmlFor="style-reference"
+                className="flex items-center gap-2 text-[11px] tracking-widest text-warm-300"
+              >
+                <PenLine className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />
+                笔锋参考
+              </label>
+              <input
+                id="style-reference"
+                type="text"
+                value={styleReference}
+                onChange={(e) => setStyleReference(e.target.value)}
+                placeholder="输入想参考的作者、作品气质或类型笔法"
+                maxLength={80}
+                className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+              />
+              <textarea
+                id="style-notes"
+                value={styleNotes}
+                onChange={(e) => setStyleNotes(e.target.value)}
+                placeholder="可补充节奏、叙事视角、人物关系、爽点密度等要求"
+                maxLength={300}
+                rows={3}
+                className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+              />
+              <p className="text-[11px] leading-relaxed text-warm-500">
+                系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿；不会复刻原文句子。
+              </p>
+            </div>
+          )}
 
           {mode === "single" ? (
             <>

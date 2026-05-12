@@ -243,6 +243,8 @@ def process_video(_self, task_id: str) -> dict:
                 category=category,
                 output_dir=output_dir,
                 on_stage=_on_stage,
+                style_reference=str((task.config or {}).get("style_reference") or "").strip() or None,
+                style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
             )
         )
         markdown = normalize_final_markdown(markdown)
