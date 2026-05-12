@@ -1,0 +1,23 @@
+[Unit]
+Description=Video Plan OpenAI/Gemini proxy tunnel to Japan
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=2 \
+  -o TCPKeepAlive=yes \
+  -o ConnectTimeout=20 \
+  -o StrictHostKeyChecking=yes \
+  -i /root/.ssh/video_plan_jp_proxy_ed25519 \
+  -L 172.18.0.1:7896:127.0.0.1:3128 \
+  root@45.77.180.12
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -57,7 +57,6 @@ from app.tasks.tasks import process_video
 _STAGE_FILES = {
     "writer": "01_writer.md",
     "writer_repaired": "01b_writer_repaired.md",
-    "writer_audited": "01c_writer_audited.md",
     "polish": "02_polish.md",
     "refine": "03_refine.md",
     "format": "04_format.md",

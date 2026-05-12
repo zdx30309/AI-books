@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -288,6 +289,34 @@ def _get_openai_writer_client() -> OpenAI:
     return _openai_writer_client
 
 
+def _reset_openai_writer_client() -> None:
+    global _openai_writer_client
+    _openai_writer_client = None
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    msg = f"{exc.__class__.__name__}: {exc}".lower()
+    retryable_signatures = (
+        "apiconnectionerror",
+        "connecterror",
+        "connection error",
+        "connection refused",
+        "remoteprotocolerror",
+        "incomplete chunked read",
+        "peer closed connection",
+        "readtimeout",
+        "read timeout",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "gateway timeout",
+        "502",
+        "503",
+        "504",
+    )
+    return any(signature in msg for signature in retryable_signatures)
+
+
 def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
     proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
     parts = [
@@ -299,7 +328,10 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
     if first_exc is not None:
         parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
     if proxy:
-        parts.append("请确认代理端口可从容器访问；当前部署通常需要北京机 172.18.0.1:7897 隧道在线。")
+        parts.append(
+            "请确认北京 ECS 的 video-plan-jp-proxy-tunnel.service 正常，"
+            "且容器可访问当前 OPENAI_HTTPS_PROXY；生产链路应走日本代理服务器，不能依赖个人电脑代理。"
+        )
     return "；".join(parts)
 
 
@@ -421,27 +453,45 @@ def _openai_writer_call(
 
     response: Any | None = None
     text = ""
-    first_exc: Exception | None = None
-    try:
-        text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
-    except Exception as exc:
-        first_exc = exc
-        global _openai_writer_client
-        _openai_writer_client = None
-        client = _get_openai_writer_client()
+    first_stream_exc: Exception | None = None
+    attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1))
+    backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
+
+    for attempt in range(1, attempts + 1):
         try:
-            response = client.responses.create(
-                model=settings.OPENAI_WRITER_MODEL,
-                input=rendered_prompt,
-                reasoning={"effort": effort},
-                text={"verbosity": verb},
-                max_output_tokens=max_tok,
+            try:
+                text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
+            except Exception as stream_exc:
+                if first_stream_exc is None:
+                    first_stream_exc = stream_exc
+                _reset_openai_writer_client()
+                client = _get_openai_writer_client()
+                response = client.responses.create(
+                    model=settings.OPENAI_WRITER_MODEL,
+                    input=rendered_prompt,
+                    reasoning={"effort": effort},
+                    text={"verbosity": verb},
+                    max_output_tokens=max_tok,
+                )
+                text = _extract_openai_response_text(response)
+            break
+        except Exception as exc:
+            _reset_openai_writer_client()
+            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                raise RuntimeError(
+                    _openai_writer_connection_error_message(exc, first_stream_exc)
+                ) from exc
+            sleep_for = min(backoff_seconds * attempt, 30.0)
+            logger.warning(
+                "OpenAI Writer 调用失败，准备重试 attempt=%d/%d sleep=%.1fs error=%s: %s",
+                attempt,
+                attempts,
+                sleep_for,
+                exc.__class__.__name__,
+                str(exc)[:500],
             )
-        except Exception as fallback_exc:
-            raise RuntimeError(
-                _openai_writer_connection_error_message(fallback_exc, first_exc)
-            ) from fallback_exc
-        text = _extract_openai_response_text(response)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
     if not text:
         text = _extract_openai_response_text(response)
@@ -451,13 +501,19 @@ def _openai_writer_call(
         client = _get_openai_writer_client()
         for retry_effort in _openai_writer_retry_efforts(effort):
             logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
-            response = client.responses.create(
-                model=settings.OPENAI_WRITER_MODEL,
-                input=rendered_prompt,
-                reasoning={"effort": retry_effort},
-                text={"verbosity": verb},
-                max_output_tokens=max_tok,
-            )
+            try:
+                response = client.responses.create(
+                    model=settings.OPENAI_WRITER_MODEL,
+                    input=rendered_prompt,
+                    reasoning={"effort": retry_effort},
+                    text={"verbosity": verb},
+                    max_output_tokens=max_tok,
+                )
+            except Exception as exc:
+                _reset_openai_writer_client()
+                raise RuntimeError(
+                    _openai_writer_connection_error_message(exc, first_stream_exc)
+                ) from exc
             text = _extract_openai_response_text(response)
             if text.strip():
                 break
@@ -652,7 +708,6 @@ async def generate_full_book(
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
-    post_writer_audit_prompt = prompts.get("post_writer_audit")
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -694,35 +749,6 @@ async def generate_full_book(
             generated_markdown = repaired_markdown
             _log_stage("1b/4 writer-repaired", generated_markdown)
             _dump_stage(output_dir, "01b_writer_repaired.md", generated_markdown)
-
-    if post_writer_audit_prompt:
-        audited_markdown = _read_stage("01c_writer_audited.md")
-        if audited_markdown:
-            logger.info("复用已存在的 01c_writer_audited.md")
-            generated_markdown = audited_markdown
-            if on_stage:
-                on_stage("audit_done", {"chars": len(generated_markdown)})
-        else:
-            logger.info("执行题材专属初稿审读。")
-            if on_stage:
-                on_stage("audit_start", {})
-            try:
-                audited_markdown = await _route_writer_call(
-                    post_writer_audit_prompt.format(text=generated_markdown.strip()),
-                    reasoning_effort="low",
-                    verbosity="low",
-                )
-            except ValueError as exc:
-                if "OpenAI Writer" not in str(exc):
-                    raise
-                logger.warning("题材专属审读返回空响应，保留主模型初稿继续后续流程。")
-                audited_markdown = ""
-            if audited_markdown.strip():
-                generated_markdown = audited_markdown
-                _log_stage("1c/4 writer-audited", generated_markdown)
-                _dump_stage(output_dir, "01c_writer_audited.md", generated_markdown)
-            if on_stage:
-                on_stage("audit_done", {"chars": len(generated_markdown)})
 
     writer_chars = len(generated_markdown)
 

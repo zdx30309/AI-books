@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 60000
+    OPENAI_WRITER_MAX_RETRIES: int = 3
+    OPENAI_WRITER_RETRY_BACKOFF_SECONDS: float = 8.0
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False

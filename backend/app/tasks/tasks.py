@@ -219,8 +219,6 @@ def process_video(_self, task_id: str) -> dict:
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
-            "audit_start": (46, "题材专属审读中"),
-            "audit_done": (49, "题材专属审读完成"),
             "polish_start": (50, "Gemini 一润启动"),
             "polish_done": (70, "Gemini 一润完成"),
             "refine_start": (72, "Gemini 二润中"),
