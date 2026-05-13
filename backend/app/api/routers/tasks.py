@@ -89,6 +89,20 @@ def _normalize_task_config(config: dict | None) -> dict:
     )
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
+    if category == "web_short_story":
+        style_reference = str(cfg.get("style_reference") or "").strip()[:200]
+        style_notes = str(cfg.get("style_notes") or "").strip()[:1000]
+        if style_reference:
+            cfg["style_reference"] = style_reference
+        else:
+            cfg.pop("style_reference", None)
+        if style_notes:
+            cfg["style_notes"] = style_notes
+        else:
+            cfg.pop("style_notes", None)
+    else:
+        cfg.pop("style_reference", None)
+        cfg.pop("style_notes", None)
     return cfg
 
 

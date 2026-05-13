@@ -13,7 +13,7 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import get_prompts
+from app.prompts.goal_driven_templates import get_prompts, normalize_category
 from app.services.deepseek import format_book_text
 from app.services.gemini import polish_book_text, refine_book_text
 
@@ -695,6 +695,39 @@ def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
         logger.info("[stage %s] %d 字", stage, n)
 
 
+def _append_history_test_style_prompt(
+    writer_prompt: str,
+    *,
+    category: str,
+    style_reference: str | None,
+    style_notes: str | None,
+) -> str:
+    if normalize_category(category) != "web_short_story":
+        return writer_prompt
+
+    reference = (style_reference or "").strip()
+    notes = (style_notes or "").strip()
+    if not reference and not notes:
+        return writer_prompt
+
+    parts = [
+        "\n【笔锋参考要求】",
+        "这是历史测试版专用的文风控制项，只影响叙事笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
+    ]
+    if reference:
+        parts.append(f"- 参考对象：{reference}")
+    if notes:
+        parts.append(f"- 补充要求：{notes}")
+    parts.extend(
+        [
+            "- 请提炼参考对象的叙事节奏、镜头感、人物推进、信息密度、段落呼吸和语言锋利度。",
+            "- 只能学习气质和技法，必须生成原创书稿；不要复刻、改写或搬运任何现成作品句子。",
+            "- 仍要严格遵守历史测试版当前 prompt，不要改成网文爽文、不要偏离历史叙事。",
+        ]
+    )
+    return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
+
+
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
@@ -703,7 +736,8 @@ async def generate_full_book(
     style_reference: str | None = None,
     style_notes: str | None = None,
 ) -> str:
-    prompts = get_prompts(category)
+    normalized_category = normalize_category(category)
+    prompts = get_prompts(normalized_category)
     full_book_writer_prompt = prompts["full_book_writer"]
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
@@ -736,6 +770,12 @@ async def generate_full_book(
         if on_stage:
             on_stage("writer_start", {})
         writer_prompt = full_book_writer_prompt.format(raw_text=raw_text.strip())
+        writer_prompt = _append_history_test_style_prompt(
+            writer_prompt,
+            category=normalized_category,
+            style_reference=style_reference,
+            style_notes=style_notes,
+        )
         generated_markdown = await _route_writer_call(writer_prompt)
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)

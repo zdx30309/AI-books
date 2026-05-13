@@ -111,6 +111,39 @@ def test_web_short_story_style_reference_keeps_history_prompt_sync(
         )
     )
 
-    assert writer_prompts[0] == get_prompts("history_culture")["full_book_writer"].format(raw_text=raw_text)
+    assert writer_prompts[0].startswith(
+        get_prompts("history_culture")["full_book_writer"].format(raw_text=raw_text)
+    )
+    assert "笔锋参考要求" in writer_prompts[0]
+    assert "参考对象：冷峻悬疑作家" in writer_prompts[0]
+    assert "补充要求：第一人称，反转更密。" in writer_prompts[0]
+    assert "不要复刻、改写或搬运任何现成作品句子" in writer_prompts[0]
+
+
+def test_style_reference_only_applies_to_history_test(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "普通社会议题素材。"
+    writer_prompts: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="social_science",
+            output_dir=tmp_path / "social_science",
+            style_reference="冷峻悬疑作家",
+            style_notes="第一人称，反转更密。",
+        )
+    )
+
     assert "笔锋参考要求" not in writer_prompts[0]
-    assert "参考对象：冷峻悬疑作家" not in writer_prompts[0]

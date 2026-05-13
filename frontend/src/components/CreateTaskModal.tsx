@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpenCheck, ListPlus, Loader2, X } from "lucide-react";
+import { BookOpenCheck, ListPlus, Loader2, PencilLine, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { TaskCategoryOption } from "@/api/types";
@@ -47,6 +47,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [rawText, setRawText] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
   const [category, setCategory] = useState("social_science");
+  const [styleReference, setStyleReference] = useState("");
+  const [styleNotes, setStyleNotes] = useState("");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const isClassicalChinese = category === "classical_chinese";
+  const isHistoryTest = category === "web_short_story";
 
   useEffect(() => {
     if (!open) {
@@ -62,6 +65,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setRawText("");
       setCandidateLinks("");
       setCategory("social_science");
+      setStyleReference("");
+      setStyleNotes("");
       setCategories(DEFAULT_CATEGORIES);
       setError(null);
       setSubmitting(false);
@@ -94,6 +99,13 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   }, [isClassicalChinese]);
 
   useEffect(() => {
+    if (!isHistoryTest) {
+      setStyleReference("");
+      setStyleNotes("");
+    }
+  }, [isHistoryTest]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -123,6 +135,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setSubmitting(true);
       try {
         const config: Record<string, unknown> = { category };
+        if (isHistoryTest) {
+          if (styleReference.trim()) config.style_reference = styleReference.trim();
+          if (styleNotes.trim()) config.style_notes = styleNotes.trim();
+        }
         const res = await api.createTaskBatch({ urls, config });
         const first = res.created.find((item) => item.task_id)?.task_id;
         if (!first) {
@@ -163,6 +179,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
+      if (isHistoryTest) {
+        if (styleReference.trim()) config.style_reference = styleReference.trim();
+        if (styleNotes.trim()) config.style_notes = styleNotes.trim();
+      }
       if (rawText.trim()) config.raw_text = rawText.trim();
       const res = await api.createTask({
         url: isClassicalChinese ? "manual://classical_chinese" : url.trim() || "manual://raw_text",
@@ -263,6 +283,34 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               {selectedCategory.core_feature} · {selectedCategory.directions}
             </p>
           </div>
+
+          {isHistoryTest && (
+            <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
+              <label className="mb-3 flex items-center gap-2 text-[11px] tracking-widest text-warm-300">
+                <PencilLine className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />
+                笔锋参考
+              </label>
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={styleReference}
+                  onChange={(e) => setStyleReference(e.target.value)}
+                  placeholder="输入想参考的作者、作品气质或类型笔法"
+                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+                <textarea
+                  value={styleNotes}
+                  onChange={(e) => setStyleNotes(e.target.value)}
+                  placeholder="可补充节奏、叙事视角、人物关系、爽点密度等要求"
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+                <p className="text-xs leading-relaxed text-warm-500">
+                  系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。
+                </p>
+              </div>
+            </div>
+          )}
 
           {mode === "single" ? (
             <>
