@@ -178,6 +178,44 @@ _CONTINUATION_PREFIXES = (
 )
 
 
+_WISDOM_STORY_INLINE_STARTERS = (
+    "清晨",
+    "凌晨",
+    "早晨",
+    "上午",
+    "中午",
+    "午后",
+    "傍晚",
+    "黄昏",
+    "夜里",
+    "半夜",
+    "第二天",
+    "第二日",
+    "那天",
+    "这天",
+    "有一天",
+    "很久以前",
+    "传说",
+    "民间",
+    "县城",
+    "城里",
+    "村里",
+    "山里",
+    "街口",
+    "巷子",
+    "巷子里",
+    "寺庙",
+    "老",
+    "小",
+    "许",
+    "罗",
+    "陈",
+    "王",
+    "李",
+    "张",
+)
+
+
 def _is_structural_markdown_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
@@ -187,6 +225,49 @@ def _is_structural_markdown_line(line: str) -> bool:
     if re.match(r"^(?:[-*+]\s+|\d+[.．、]\s+)", stripped):
         return True
     return False
+
+
+def _looks_like_wisdom_story_subheading(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _is_structural_markdown_line(stripped):
+        return False
+    if len(stripped) > 18:
+        return False
+    if re.search(r"[。！？；，、,.!?;：:]", stripped):
+        return False
+    if stripped.startswith(_CONTINUATION_PREFIXES):
+        return False
+    return True
+
+
+def _split_wisdom_story_inline_subheading(line: str) -> list[str]:
+    stripped = line.strip()
+    if len(stripped) < 18 or _is_structural_markdown_line(stripped):
+        return [line]
+
+    for starter in _WISDOM_STORY_INLINE_STARTERS:
+        idx = stripped.find(starter)
+        if idx < 2 or idx > 16:
+            continue
+        title = stripped[:idx].strip()
+        body = stripped[idx:].strip()
+        if _looks_like_wisdom_story_subheading(title) and len(body) >= 12:
+            return [title, body]
+    return [line]
+
+
+def _split_wisdom_story_body_subheadings(lines: list[str]) -> list[str]:
+    split_lines: list[str] = []
+    previous_was_chapter_heading = False
+    for line in lines:
+        stripped = line.strip()
+        is_chapter_heading = bool(re.match(r"^@?\s*\d+[.．、]\s+.+$", stripped))
+        if previous_was_chapter_heading:
+            split_lines.extend(_split_wisdom_story_inline_subheading(line))
+        else:
+            split_lines.append(line)
+        previous_was_chapter_heading = is_chapter_heading
+    return split_lines
 
 
 def _looks_like_continuation_fragment(line: str) -> bool:
@@ -201,7 +282,7 @@ def _looks_like_continuation_fragment(line: str) -> bool:
     return len(core) <= 28 and core.endswith(("等", "等等", "之类", "一类", "这类"))
 
 
-def _join_broken_body_lines(lines: list[str]) -> list[str]:
+def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: bool = False) -> list[str]:
     """Repair obvious model-introduced line breaks inside one sentence."""
     repaired: list[str] = []
     for line in lines:
@@ -214,6 +295,12 @@ def _join_broken_body_lines(lines: list[str]) -> list[str]:
 
         previous = repaired[-1]
         if _is_structural_markdown_line(previous):
+            repaired.append(current)
+            continue
+        if preserve_short_subheadings and (
+            _looks_like_wisdom_story_subheading(previous)
+            or _looks_like_wisdom_story_subheading(current)
+        ):
             repaired.append(current)
             continue
 
@@ -246,7 +333,7 @@ def _join_broken_body_lines(lines: list[str]) -> list[str]:
     return repaired
 
 
-def normalize_final_markdown(markdown: str) -> str:
+def normalize_final_markdown(markdown: str, *, category: str | None = None) -> str:
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
     text = _repair_blank_catalog_titles(text)
@@ -260,7 +347,13 @@ def normalize_final_markdown(markdown: str) -> str:
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
-    body_lines = _join_broken_body_lines(body_lines)
+    is_wisdom_story = normalize_category(category or "") == "wisdom_stories"
+    if is_wisdom_story:
+        body_lines = _split_wisdom_story_body_subheadings(body_lines)
+    body_lines = _join_broken_body_lines(
+        body_lines,
+        preserve_short_subheadings=is_wisdom_story,
+    )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
     return result + ("\n" if result else "")
@@ -329,8 +422,8 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
         parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
     if proxy:
         parts.append(
-            "请确认北京 ECS 的 video-plan-jp-proxy-tunnel.service 正常，"
-            "且容器可访问当前 OPENAI_HTTPS_PROXY；生产链路应走日本代理服务器，不能依赖个人电脑代理。"
+            "请确认北京 ECS 到日本代理服务器的 video-plan-jp-proxy-tunnel.service 正常，"
+            "且容器可访问当前 OPENAI_HTTPS_PROXY；生产链路固定为北京 ECS 到日本代理服务器。"
         )
     return "；".join(parts)
 
@@ -440,6 +533,17 @@ def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_t
     return "".join(chunks).strip(), final_response
 
 
+def _create_openai_writer_response(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> Any:
+    client = _get_openai_writer_client()
+    return client.responses.create(
+        model=settings.OPENAI_WRITER_MODEL,
+        input=rendered_prompt,
+        reasoning={"effort": effort},
+        text={"verbosity": verb},
+        max_output_tokens=max_tok,
+    )
+
+
 def _openai_writer_call(
     rendered_prompt: str,
     *,
@@ -459,19 +563,26 @@ def _openai_writer_call(
 
     for attempt in range(1, attempts + 1):
         try:
-            try:
-                text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
-            except Exception as stream_exc:
-                if first_stream_exc is None:
-                    first_stream_exc = stream_exc
-                _reset_openai_writer_client()
-                client = _get_openai_writer_client()
-                response = client.responses.create(
-                    model=settings.OPENAI_WRITER_MODEL,
-                    input=rendered_prompt,
-                    reasoning={"effort": effort},
-                    text={"verbosity": verb},
-                    max_output_tokens=max_tok,
+            if settings.OPENAI_WRITER_STREAM:
+                try:
+                    text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
+                except Exception as stream_exc:
+                    if first_stream_exc is None:
+                        first_stream_exc = stream_exc
+                    _reset_openai_writer_client()
+                    response = _create_openai_writer_response(
+                        rendered_prompt,
+                        effort=effort,
+                        verb=verb,
+                        max_tok=max_tok,
+                    )
+                    text = _extract_openai_response_text(response)
+            else:
+                response = _create_openai_writer_response(
+                    rendered_prompt,
+                    effort=effort,
+                    verb=verb,
+                    max_tok=max_tok,
                 )
                 text = _extract_openai_response_text(response)
             break
@@ -502,12 +613,11 @@ def _openai_writer_call(
         for retry_effort in _openai_writer_retry_efforts(effort):
             logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
             try:
-                response = client.responses.create(
-                    model=settings.OPENAI_WRITER_MODEL,
-                    input=rendered_prompt,
-                    reasoning={"effort": retry_effort},
-                    text={"verbosity": verb},
-                    max_output_tokens=max_tok,
+                response = _create_openai_writer_response(
+                    rendered_prompt,
+                    effort=retry_effort,
+                    verb=verb,
+                    max_tok=max_tok,
                 )
             except Exception as exc:
                 _reset_openai_writer_client()

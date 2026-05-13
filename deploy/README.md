@@ -6,7 +6,7 @@ This app is deployed as:
 - `backend`: FastAPI on port 8000.
 - `worker`: Celery worker using the same backend image.
 - `backend_output`: shared volume for generated covers and intermediate outputs, mounted by both `backend` and `worker`.
-- `video-plan-jp-proxy-tunnel.service`: Beijing ECS local tunnel to the Japan HTTP proxy for OpenAI/Gemini calls. This is a server-side production dependency and must not rely on a developer laptop proxy.
+- `video-plan-jp-proxy-tunnel.service`: server-side Beijing ECS to Japan HTTP proxy relay for OpenAI/Gemini calls. This production dependency never uses a developer laptop proxy.
 
 ## Server Commands
 
@@ -19,7 +19,7 @@ docker compose up -d --build
 
 ## OpenAI/Gemini Proxy
 
-OpenAI and Gemini traffic should leave through the Japan proxy server. On the Beijing ECS, install the systemd unit in `deploy/video-plan-jp-proxy-tunnel.service` and keep `.env` pointed at `172.18.0.1:7896`:
+OpenAI and Gemini traffic must leave through the Japan proxy server. On the Beijing ECS, install the systemd unit in `deploy/video-plan-jp-proxy-tunnel.service` and keep `.env` pointed at `172.18.0.1:7896`:
 
 ```bash
 cp deploy/video-plan-jp-proxy-tunnel.service /etc/systemd/system/video-plan-jp-proxy-tunnel.service

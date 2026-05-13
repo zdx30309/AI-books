@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import PROJECT_ROOT, settings
@@ -37,6 +38,10 @@ _BOOK_TITLE_SECTION_RE = re.compile(
 _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
 
 
+class StaleTaskRun(RuntimeError):
+    pass
+
+
 # ============================================================
 # 内部工具
 # ============================================================
@@ -49,8 +54,11 @@ def _update_progress(
     progress: int,
     step: str,
     status: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """统一的进度回写入口。每次都 commit 以保证 API 端 GET 立即可见。"""
+    if run_id is not None:
+        _ensure_active_run(db, task, run_id)
     task.progress = max(0, min(100, int(progress)))
     task.current_step = step[:255]
     if status is not None:
@@ -60,6 +68,25 @@ def _update_progress(
         "[task %s] progress=%d step=%s status=%s",
         task.id, task.progress, task.current_step, task.status,
     )
+
+
+def _read_task_run_state(db: Session, task: Task) -> tuple[str, dict[str, Any]]:
+    with db.no_autoflush:
+        row = db.execute(
+            select(Task.status, Task.config).where(Task.id == task.id)
+        ).one()
+    return str(row[0]), dict(row[1] or {})
+
+
+def _ensure_active_run(db: Session, task: Task, run_id: str) -> None:
+    current_status, current_config = _read_task_run_state(db, task)
+    if current_status == TaskStatus.COMPLETED:
+        raise StaleTaskRun(f"task {task.id} already completed")
+    active_run_id = current_config.get("active_run_id")
+    if active_run_id and active_run_id != run_id:
+        raise StaleTaskRun(
+            f"task {task.id} owned by newer run {active_run_id}, current run {run_id} is stale"
+        )
 
 
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
@@ -144,6 +171,9 @@ def _generate_cover_safely(title: str, markdown: str, output_dir: Path, task: Ta
 
 def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
+    db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
+    db.flush()
+
     body_match = _BODY_SECTION_RE.search(markdown or "")
     body_offset = body_match.end() if body_match else 0
     body_text = markdown[body_offset:] if body_match else markdown
@@ -186,21 +216,26 @@ def process_video(_self, task_id: str) -> dict:
     """主流水线 - 由 POST /api/v1/tasks 触发，task_id 为已建好的 Task.id。"""
     db: Session = SessionLocal()
     task: Task | None = None
+    run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
 
     try:
         task = db.get(Task, uuid.UUID(task_id))
         if task is None:
             raise RuntimeError(f"Task {task_id} 不存在 (可能在入队前被删除)")
 
+        if task.status == TaskStatus.COMPLETED:
+            return {"task_id": str(task.id), "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
+
+        _patch_config(task, active_run_id=run_id)
         task.status = TaskStatus.PROCESSING
         task.error_message = None
-        _update_progress(db, task, progress=1, step="任务启动")
+        _update_progress(db, task, progress=1, step="任务启动", run_id=run_id)
 
-        _update_progress(db, task, progress=8, step="正在获取视频文案")
+        _update_progress(db, task, progress=8, step="正在获取视频文案", run_id=run_id)
         db.flush()
         video_text = _fetch_video_text(task.source_url, task.config or {})
         _patch_config(task, raw_text_chars=len(video_text))
-        _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)")
+        _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)", run_id=run_id)
 
         category = normalize_category(str((task.config or {}).get("category") or "social_science"))
         category_meta = get_category_meta(category)
@@ -214,7 +249,7 @@ def process_video(_self, task_id: str) -> dict:
         output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _update_progress(db, task, progress=25, step="即将启动主模型")
+        _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
@@ -237,6 +272,7 @@ def process_video(_self, task_id: str) -> dict:
                         db, task,
                         progress=min(prog, 70),
                         step=f"Gemini 一润 {idx}/{total} 块",
+                        run_id=run_id,
                     )
                     return
                 mapped = _STAGE_TO_PROGRESS.get(stage)
@@ -246,11 +282,14 @@ def process_video(_self, task_id: str) -> dict:
                 chars = info.get("chars")
                 if chars:
                     step = f"{step} ({chars:,} 字)"
-                _update_progress(db, task, progress=prog, step=step)
+                _update_progress(db, task, progress=prog, step=step, run_id=run_id)
+            except StaleTaskRun:
+                raise
             except Exception:
                 logger.exception("on_stage 回调写库失败 stage=%s", stage)
 
         db.flush()
+        _ensure_active_run(db, task, run_id)
         markdown = asyncio.run(
             generate_full_book(
                 video_text,
@@ -261,15 +300,17 @@ def process_video(_self, task_id: str) -> dict:
                 style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
             )
         )
-        markdown = normalize_final_markdown(markdown)
+        _ensure_active_run(db, task, run_id)
+        markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))
-        _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节")
+        _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节", run_id=run_id)
 
         book_title = _extract_book_title(markdown)
+        _ensure_active_run(db, task, run_id)
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown, title=book_title)
 
-        _update_progress(db, task, progress=94, step="正在写入质量报告")
+        _update_progress(db, task, progress=94, step="正在写入质量报告", run_id=run_id)
         _generate_cover_safely(book_title, markdown, output_dir, task)
 
         report = measure_quality(markdown)
@@ -284,12 +325,23 @@ def process_video(_self, task_id: str) -> dict:
             progress=100,
             step=f"全部完成: {chapter_count} 章已入库",
             status=TaskStatus.COMPLETED,
+            run_id=run_id,
         )
 
         return {
             "task_id": str(task.id),
             "status": TaskStatus.COMPLETED,
             "chapters": chapter_count,
+        }
+
+    except StaleTaskRun as e:
+        logger.warning("[task %s] stale run skipped: %s", task_id, e)
+        db.rollback()
+        latest = db.get(Task, uuid.UUID(task_id))
+        return {
+            "task_id": task_id,
+            "status": latest.status if latest is not None else "stale",
+            "chapters": len(latest.chapters) if latest is not None else 0,
         }
 
     except Exception as e:
