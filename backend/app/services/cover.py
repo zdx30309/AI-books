@@ -50,7 +50,15 @@ _CRAYON_ILLUSTRATION_STYLE_RULE = (
     "带呼吸感与情绪感，而不是设计字体或商业排版。"
     "整体松弛、有人味、像一本被年轻女生长期收藏的治愈系绘本。"
     "避免心理学商业封面、避免得到系大标题、避免信息图、避免PPT感、避免门和小路构图、"
-    "避免UI插画风、避免过度工整与AI感。再增加一两句金句增加氛围，但不要真正拍太多文案。"
+    "避免UI插画风、避免过度工整与AI感。"
+)
+_CRAYON_QUALITY_CONTROL_RULE = (
+    "治愈插画（蜡笔）的质量硬约束：必须把“私人日记”理解为情绪气质，而不是每张都画书桌、"
+    "摊开的日记本、杯子、台灯、便签、碎纸和窗边静物；除非书名/简介强相关，禁止使用这一整套桌面日记模板。"
+    "画面必须是明亮通透的自然高饱和绘画色，主色至少包含三种清晰亮色，禁止灰紫、灰褐、灰蓝、脏米色、夜景暗色大面积铺底，"
+    "深暗色面积应低于10%。除书名和作者外，必须有1到3句很短的氛围金句写在封面上，每句不超过10个中文字符，"
+    "像轻轻写在画面角落或留白里的手写旁注；金句要来自书名和简介的情绪，不抢书名，不做商业副标题。"
+    "禁止清单、段落、整页日记文字和多个便签文案。"
 )
 
 
@@ -215,8 +223,8 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
         "colors": ("明亮通透自然高饱和绘画色", "温暖高级色", "纸质纹理色", "干净亮色"),
         "composition": "精致温暖、有真实手绘触感，题材与画面意象可自由变化，整体松弛有人味；避免门和小路构图",
         "typography": "书名非常大、极具视觉存在感，像巨大手写字写在画上，与插画融合，不像设计字体或商业排版",
-        "white_space": "50%-70%",
-        "metaphors": ("私人日记", "真实手绘触感", "纸质纹理", "巨大手写书名", "呼吸感", "情绪感", "短金句"),
+        "white_space": "35%-60%",
+        "metaphors": ("私人日记气质但非字面日记本", "真实手绘触感", "纸质纹理", "巨大手写书名", "呼吸感", "情绪感", "明亮高饱和自然色"),
         "addendum": _CRAYON_ILLUSTRATION_STYLE_RULE,
     },
     "suspense_micro_reasoning": {
@@ -295,9 +303,12 @@ _CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration"] = _CATEGORY_COVER_PROMPT_ADJU
     "psychology_self_help"
 ]
 _CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration_crayon"] = {
-    "style_brief_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),
-    "draft_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),
-    "refine_rules": (f"继续保持并强化：{_CRAYON_ILLUSTRATION_STYLE_RULE}",),
+    "style_brief_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE, _CRAYON_QUALITY_CONTROL_RULE),
+    "draft_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE, _CRAYON_QUALITY_CONTROL_RULE),
+    "refine_rules": (
+        f"继续保持并强化：{_CRAYON_ILLUSTRATION_STYLE_RULE}",
+        _CRAYON_QUALITY_CONTROL_RULE,
+    ),
 }
 
 
@@ -335,58 +346,20 @@ def _crayon_title_author_rule(cover_input: CoverInput) -> str:
     return f"{title_rule}\n{_author_presence_rule(cover_input, handwritten=True)}"
 
 
-_CRAYON_VISUAL_MOTIF_VARIANTS = (
-    "室内私密一角：书桌、窗台、灯、织物、手写纸页或杯子等日常物件承载情绪，不出现门。",
-    "自然片段特写：花枝、叶片、云、水面、风吹纸页或光斑成为主体，不出现道路或小路。",
-    "小人物背影与大面积环境：人物只能小而非写实，用天空、植物、房间角落或季节气息放大情绪。",
-    "静物日记叙事：摊开的日记、便签、铅笔、果子、玻璃杯、布料或旧票根构成画面核心。",
-    "猫或陪伴物件：猫、靠垫、毛毯、盆栽、夜灯等只做温柔陪伴元素，不能抢走书名。",
-    "抽象情绪物件：线团、漂浮纸片、星点、波纹、花影、云朵或柔软几何表达心理状态，避免信息图。",
-    "季节日常片段：清晨、午后、雨后、夜晚或微风中的一个瞬间，像私人日记里被夹住的一页。",
-    "近景植物与手写字融合：植物、花瓣、叶影或纸张纹理绕着巨大书名生长，避免模板化边框。",
-)
-_CRAYON_COMPOSITION_VARIANTS = (
-    "书名占据上半部到中部，插画从字缝和边缘自然长出来。",
-    "书名以不规则手写行距横跨画面中央，主体意象从一侧轻轻穿过。",
-    "书名像写在日记页或天空上的大字，插画围绕文字呼吸，不做工整网格。",
-    "书名可略微倾斜或错落，留下一个明确的情绪留白区给主意象。",
-    "书名占画面约一半面积，主意象只保留一到三个，避免满版堆元素。",
-    "画面用近景裁切制造私人感，不使用通用的远景小人站立构图。",
-)
-_CRAYON_PALETTE_VARIANTS = (
-    "亮天空蓝、珊瑚橙、草叶绿与奶白留白，整体通透清爽。",
-    "柠檬黄、浅紫、苹果绿与暖白纸色，轻快但不幼稚。",
-    "薄荷绿、番茄红、海盐蓝与浅粉，颜色干净有手绘温度。",
-    "橙花色、云白、嫩草绿与少量明亮深色线条，温暖但不发灰。",
-    "樱桃红、晴空蓝、柔黄与纸张米白，像被阳光照亮的蜡笔画。",
-    "薰衣草紫、青绿色、杏橙与奶油白，柔软但保持高饱和。",
-)
-_CRAYON_GOLDEN_LINE_VARIANTS = (
-    "只加一句像日记旁注的短金句，8到14个中文字符左右。",
-    "可加两句极短碎片句，像铅笔写在角落的心情，不超过两行。",
-    "金句像日期或便签一样很小，服务氛围，不形成商业副标题。",
-    "如果画面已经足够有情绪，只保留一句非常轻的小字，不额外堆文案。",
-)
-
-
-def _stable_crayon_pick(options: tuple[str, ...], seed: bytes, offset: int) -> str:
-    return options[seed[offset % len(seed)] % len(options)]
-
-
 def _crayon_fallback_visual_plan(cover_input: CoverInput) -> str:
     seed_text = "|".join((cover_input.title, cover_input.author, cover_input.intro))
-    seed = hashlib.sha256(seed_text.encode("utf-8")).digest()
-    motif = _stable_crayon_pick(_CRAYON_VISUAL_MOTIF_VARIANTS, seed, 0)
-    composition = _stable_crayon_pick(_CRAYON_COMPOSITION_VARIANTS, seed, 7)
-    palette = _stable_crayon_pick(_CRAYON_PALETTE_VARIANTS, seed, 14)
-    golden_line = _stable_crayon_pick(_CRAYON_GOLDEN_LINE_VARIANTS, seed, 21)
+    seed = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:10]
+    intro = cover_input.intro[:220]
     return (
-        f"主体意象：{motif}\n"
-        f"构图方式：{composition}\n"
-        "季节/空间/视角/画面叙事：根据书名和简介自行判断，选择一个具体日常瞬间或情绪场景，"
-        "不要使用默认治愈模板。\n"
-        f"色彩主轴：{palette}\n"
-        f"氛围金句：{golden_line}"
+        f"本书语义锚点：书名《{cover_input.title}》；作者：{cover_input.author}；简介线索：{intro}；差异化种子：{seed}。\n"
+        "创作方式：不要从固定备选主体里挑选，也不要照搬任何预设模板；请像插画师读完这本书后，"
+        "重新发明一个只属于这本书的治愈意象、空间和画面叙事。\n"
+        "生成前必须在内部自行决定：主体意象、构图方式、季节、空间、视角、画面叙事、色彩主轴；"
+        "这些决定要来自书名和简介，而不是来自通用治愈素材库。\n"
+        "色彩方向必须明亮通透、高饱和、不灰暗；可自由组合草绿、橙花、天空蓝、珊瑚橙、柠檬黄、薄荷绿、玫瑰粉等亮色，"
+        "但不要被这些颜色限制，核心是干净、透亮、温暖、有收藏感。\n"
+        "金句策略：除书名和作者外，必须在封面上写1到3句很短的氛围金句，每句不超过10个中文字符，"
+        "像手写在角落、植物旁、光影里或留白处的轻旁注；金句内容要从本书情绪里来，不能变成清单、段落或商业副标题。"
     )
 
 
@@ -394,10 +367,13 @@ def _crayon_visual_variation_directive(cover_input: CoverInput, ai_visual_plan: 
     visual_plan = (ai_visual_plan or "").strip() or _crayon_fallback_visual_plan(cover_input)
     return (
         "本书差异化视觉判断（核心专属prompt原文不变；以下内容只决定这本书如何与其他蜡笔封面不同）：\n"
+        "- 这不是固定备选库，也不是让模型在几个模板里抽签；必须给模型保留想象空间，先根据书名、简介、作者自行发明这本书专属方案。\n"
         "- 生成前必须先根据书名和简介自行判断：主体意象、构图方式、季节、空间、视角、画面叙事、色彩主轴。\n"
         f"{visual_plan}\n"
+        "- 如果上面的视觉方案仍显得普通、像桌面日记模板或与书名关系弱，必须二次改造，换成更贴合本书的原创治愈意象和构图。\n"
         "- 必须从本书书名和简介里提炼一个专属物件、场景或情绪动作来替换通用模板；"
         "不要默认套用孤独小人、蓝天色块、植物边框、居中工整大字或同一种治愈系安全构图。"
+        "尤其不要把不同书都画成桌面、摊开日记本、杯子、台灯、便签、碎纸和窗边静物。"
     )
 
 
@@ -543,7 +519,7 @@ Excel 分类：{cover_input.category_label}
   "category_label": "最适合用于检索同类封面的中文分类名，优先贴近 Excel 分类",
   "search_keywords": "用于当当网与微信读书女性治愈系封面检索的中文关键词，80字以内",
   "analysis": "用120字以内总结女性治愈系封面的手绘触感、纸质纹理、明亮通透配色、巨大手写书名和收藏感；必须强调参考微信读书女性治愈系，避免心理学商业封面、得到系大标题、信息图、PPT感、门和小路构图、UI插画风、过度工整与AI感",
-  "visual_plan": "用160字以内先为这本书单独判断主体意象、构图方式、季节、空间、视角、画面叙事、色彩主轴和一两句短金句策略；必须来自书名和简介，不要套用孤独小人、蓝天色块、植物边框或同一种治愈模板"
+  "visual_plan": "用160字以内先为这本书单独判断主体意象、构图方式、季节、空间、视角、画面叙事、色彩主轴和1到3句短金句策略；必须来自书名和简介，不要套用孤独小人、蓝天色块、植物边框、桌面日记本、杯子、台灯、便签或同一种治愈模板；色彩必须明亮通透、高饱和、不灰暗；金句必须上封面但只能做手写旁注"
 }}"""
     else:
         prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类畅销书封面，再给当当/微信读书/得到风格检索提供关键词。
@@ -711,6 +687,8 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
             "不要得到系大标题、信息图、PPT感、门和小路构图、UI插画风。",
             "不要把同一批书做成同一种孤独小人、蓝天色块、植物边框或居中模板；每本都必须有自己的主意象和构图。",
+            "不要把“私人日记感”字面化成同一种书桌、摊开的日记本、杯子、台灯、便签、碎纸和窗边静物。",
+            "不要大面积灰紫、灰褐、灰蓝、脏米色、夜景暗色或昏暗灯光；深暗色只允许做少量文字和阴影。",
             _NO_REAL_PORTRAIT_RULE,
             *style_brief_rules,
         )
@@ -720,6 +698,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             "优先参考微信读书女性治愈系封面的抽象审美规律：情绪绘本、私人日记感、"
             "精致温暖的真实手绘触感、轻微纸质纹理、明亮通透色彩与收藏感；"
             "同时每本书必须根据书名和简介生成不同主意象、构图和配色，禁止得到系商业大标题和心理学爆款封面。"
+            "私人日记只是情绪气质，不能每张都落成桌面日记静物；必须避免同批封面的道具和视角重复。"
         )
         title_hierarchy = (
             "书名字像巨大手写字写在画上，与插画融合，但必须是封面最大、最显眼的文字，"
@@ -733,7 +712,8 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             f"{style_brief_addendum}"
             f"{crayon_title_author_rule}\n"
             "必须强化微信读书女性治愈系封面风格、情绪绘本与私人日记感，保持画面精致、温暖、有高级感。"
-            "必须优先执行本书差异化视觉方案，避免同质化、过度工整与AI感。"
+            "必须优先执行本书差异化视觉方案，避免同质化、过度工整与AI感；"
+            "必须保持明亮通透高饱和，避免桌面日记模板和低饱和灰暗画面。"
         )
     else:
         avoid_rules = (
@@ -806,9 +786,11 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         )
         color_and_type_rules = (
             "- 使用油画棒、蜡笔、水粉质感，粗颗粒笔触，带轻微纸质纹理与真实手绘触感；颜色明亮通透，不灰、不脏、不暗。\n"
+            "- 色彩硬要求：整张画必须是白天般明亮、自然高饱和、通透干净；主色至少选择三种清晰亮色，如草绿、橙花、天空蓝、珊瑚橙、柠檬黄、樱桃红、薄荷绿、玫瑰粉；禁止灰紫、灰褐、灰蓝、脏米色、夜景暗色大面积铺底，深暗色面积低于10%。\n"
             "- 整体松弛、有人味、像被年轻女生长期收藏的治愈系绘本；不要把画面做得过度工整、模板化或AI感太强。\n"
             "- 书名像巨大手写字写在画上，与插画自然融合，带呼吸感与情绪感；书名必须明显放大，成为第一视觉焦点。\n"
-            "- 可以增加一两句很短的金句来增加氛围，但不要真的排太多文案，不能抢走书名。\n"
+            "- 私人日记是气质，不是道具清单；不要把每本都画成桌面、摊开的日记本、杯子、台灯、便签、碎纸和窗边静物。除非书名/简介强相关，禁止使用这一整套组合。\n"
+            "- 除书名和作者外，必须有1到3句很短的氛围金句写在封面上，每句不超过10个中文字符，像轻轻写在画面角落或留白里的手写旁注；金句要来自书名和简介的情绪，不抢书名，不做商业副标题；禁止清单、段落、整页日记文字和多个便签文案。\n"
         )
         text_rule = "- 中文书名和作者署名都要尽量准确清晰，但必须像随手写进画面里的手写字；不要乱码中文、伪中文、英文占位符。\n"
     else:
@@ -867,7 +849,9 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
             "- 强化微信读书女性治愈系封面风格：日韩治愈手绘插画、轻微纸质纹理、真实手绘触感、"
             "油画棒/蜡笔/水粉质感、粗颗粒笔触、明亮通透自然高饱和绘画色。"
             "避免心理学商业封面、得到系大标题、信息图、PPT感、门和小路构图、UI插画风、过度工整与AI感。"
-            "可保留一两句很短金句增加氛围，但不要增加过多文案；不要统一生成孤独小人、蓝天色块或植物边框。"
+            "不要统一生成孤独小人、蓝天色块、植物边框、桌面日记本、杯子、台灯、便签或碎纸。"
+            "除书名和作者外，必须保留或补上1到3句很短的氛围金句，每句不超过10个中文字符，"
+            "只能作为手写旁注融入画面，不抢书名，不做商业副标题；禁止清单、段落和整页日记文字。"
         )
     else:
         title_author_rule_section = ""
@@ -888,7 +872,8 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 {visual_variation_section.rstrip()}
 - 继续遵循：{style_brief.generation_prompt_addendum[:1400]}
 {category_rule_section.rstrip()}
-{title_author_rule_section}- 如果画面偏暗，必须提亮并提升饱和度；大面积黑色、深蓝、暗红、深灰应减少到 20% 以下。
+{title_author_rule_section}- 如果画面偏暗，必须提亮并提升饱和度；灰紫、灰褐、灰蓝、脏米色、夜景暗色、大面积黑色/深蓝/暗红/深灰必须减少到 10% 以下，并改成明亮通透自然高饱和绘画色。
+- 如果草稿是桌面、摊开的日记本、杯子、台灯、便签、碎纸和窗边静物的通用组合，必须重构为本书专属主意象、空间、视角和色彩主轴；私人日记只保留为情绪气质。
 {market_rule}
 - 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如已有此类内容，改成抽象剪影、背影、符号化小人或非写实插画。

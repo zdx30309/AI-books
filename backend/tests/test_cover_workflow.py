@@ -28,7 +28,7 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "带呼吸感与情绪感，而不是设计字体或商业排版。"
     "整体松弛、有人味、像一本被年轻女生长期收藏的治愈系绘本。"
     "避免心理学商业封面、避免得到系大标题、避免信息图、避免PPT感、避免门和小路构图、"
-    "避免UI插画风、避免过度工整与AI感。再增加一两句金句增加氛围，但不要真正拍太多文案。"
+    "避免UI插画风、避免过度工整与AI感。"
 )
 
 
@@ -109,13 +109,18 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     assert CRAYON_ILLUSTRATION_PROMPT in brief.generation_prompt_addendum
     assert CRAYON_ILLUSTRATION_PROMPT in prompt
     assert CRAYON_ILLUSTRATION_PROMPT in refine_prompt
-    assert adjustment["style_brief_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
-    assert adjustment["draft_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
-    assert adjustment["refine_rules"] == (f"继续保持并强化：{CRAYON_ILLUSTRATION_PROMPT}",)
+    assert adjustment["style_brief_rules"][0] == CRAYON_ILLUSTRATION_PROMPT
+    assert adjustment["draft_rules"][0] == CRAYON_ILLUSTRATION_PROMPT
+    assert adjustment["refine_rules"][0] == f"继续保持并强化：{CRAYON_ILLUSTRATION_PROMPT}"
     assert "微信读书女性治愈系封面风格" in prompt
     assert "画面精致、温暖、有高级感" in prompt
-    assert "再增加一两句金句增加氛围" in prompt
-    assert "草绿、橙花、天空蓝" not in prompt
+    assert "再增加一两句金句增加氛围" not in prompt
+    assert "必须有1到3句很短的氛围金句写在封面上" in prompt
+    assert "不抢书名，不做商业副标题" in prompt
+    assert "禁止清单、段落、整页日记文字和多个便签文案" in prompt
+    assert "私人日记是气质，不是道具清单" in prompt
+    assert "灰紫、灰褐、灰蓝、脏米色、夜景暗色" in prompt
+    assert "草绿、橙花、天空蓝" in prompt
     assert "花朵、植物、风、云、猫" not in prompt
     assert "避免得到系大标题" in prompt
     assert "微信读书/得到系爆款风" not in prompt
@@ -148,7 +153,7 @@ def test_crayon_illustration_keeps_large_title_and_author_on_cover() -> None:
 def test_crayon_illustration_uses_ai_visual_plan_before_generation(monkeypatch) -> None:
     ai_plan = (
         "主体意象：雨后窗台上的橙色纸船；构图方式：巨大手写书名绕过纸船；"
-        "季节：初夏雨后；空间：私人书桌；视角：近景俯视；"
+        "季节：初夏雨后；空间：明亮窗边花影；视角：近景俯视；"
         "画面叙事：纸船像把情绪送走；色彩主轴：天空蓝、橙花色、嫩草绿。"
     )
 
@@ -177,6 +182,8 @@ def test_crayon_illustration_uses_ai_visual_plan_before_generation(monkeypatch) 
     assert ai_plan in prompt
     assert ai_plan in refine_prompt
     assert "不要把画面拉回通用治愈模板" in refine_prompt
+    assert "如果草稿是桌面、摊开的日记本、杯子、台灯、便签、碎纸和窗边静物的通用组合" in refine_prompt
+    assert "必须保留或补上1到3句很短的氛围金句" in refine_prompt
 
 
 def test_crayon_illustration_fallback_visual_plan_differs_by_book() -> None:
@@ -199,7 +206,9 @@ def test_crayon_illustration_fallback_visual_plan_differs_by_book() -> None:
     assert "主体意象" in prompt_a
     assert "构图方式" in prompt_a
     assert "季节、空间、视角、画面叙事、色彩主轴" in prompt_a
+    assert "必须在封面上写1到3句很短的氛围金句" in prompt_a
     assert "不要默认套用孤独小人、蓝天色块、植物边框" in prompt_a
+    assert "尤其不要把不同书都画成桌面、摊开日记本、杯子、台灯、便签、碎纸和窗边静物" in prompt_a
     assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
 
 
