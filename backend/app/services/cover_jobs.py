@@ -115,12 +115,18 @@ def normalize_cover_category(category: str | None, fallback: str | None = None) 
     return normalized, str(meta["label"])
 
 
-def _with_common_keys(row: dict[str, str], default_category: str | None = None) -> dict[str, str]:
+def _with_common_keys(
+    row: dict[str, str],
+    default_category: str | None = None,
+    *,
+    force_default_category: bool = False,
+) -> dict[str, str]:
     next_row = dict(row)
     title = row_title(row)
     author = row_author(row)
     intro = row_intro(row)
-    category, category_label = normalize_cover_category(row_category(row), default_category)
+    row_category_value = "" if force_default_category else row_category(row)
+    category, category_label = normalize_cover_category(row_category_value, default_category)
     if title:
         next_row.setdefault("title", title)
     if author:
@@ -132,18 +138,34 @@ def _with_common_keys(row: dict[str, str], default_category: str | None = None) 
     return next_row
 
 
-def _parse_csv(content: bytes, default_category: str | None = None) -> list[dict[str, str]]:
+def _parse_csv(
+    content: bytes,
+    default_category: str | None = None,
+    *,
+    force_default_category: bool = False,
+) -> list[dict[str, str]]:
     text = content.decode("utf-8-sig")
     reader = csv.DictReader(StringIO(text))
     rows: list[dict[str, str]] = []
     for raw in reader:
         row = {str(k).strip(): _clean_cell(v) for k, v in raw.items() if k and str(k).strip()}
         if any(row.values()):
-            rows.append(_with_common_keys(row, default_category))
+            rows.append(
+                _with_common_keys(
+                    row,
+                    default_category,
+                    force_default_category=force_default_category,
+                )
+            )
     return rows
 
 
-def _parse_xlsx(content: bytes, default_category: str | None = None) -> list[dict[str, str]]:
+def _parse_xlsx(
+    content: bytes,
+    default_category: str | None = None,
+    *,
+    force_default_category: bool = False,
+) -> list[dict[str, str]]:
     workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     sheet = workbook.active
     iterator = sheet.iter_rows(values_only=True)
@@ -160,7 +182,13 @@ def _parse_xlsx(content: bytes, default_category: str | None = None) -> list[dic
             if headers[idx]
         }
         if any(row.values()):
-            rows.append(_with_common_keys(row, default_category))
+            rows.append(
+                _with_common_keys(
+                    row,
+                    default_category,
+                    force_default_category=force_default_category,
+                )
+            )
     workbook.close()
     return rows
 
@@ -172,11 +200,20 @@ def parse_cover_spreadsheet(
     default_category: str | None = None,
 ) -> list[dict[str, str]]:
     normalized_default, _ = normalize_cover_category(default_category)
+    # The upload-time bookshelf selection is the source of truth for cover prompts.
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
-        rows = _parse_csv(content, normalized_default)
+        rows = _parse_csv(
+            content,
+            normalized_default,
+            force_default_category=True,
+        )
     elif suffix in {".xlsx", ".xlsm"}:
-        rows = _parse_xlsx(content, normalized_default)
+        rows = _parse_xlsx(
+            content,
+            normalized_default,
+            force_default_category=True,
+        )
     else:
         raise ValueError("请上传 .xlsx、.xlsm 或 .csv 文件")
 

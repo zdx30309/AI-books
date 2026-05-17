@@ -145,6 +145,41 @@ def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
         assert CRAYON_ILLUSTRATION_PROMPT in prompt
 
 
+def test_crayon_default_category_overrides_spreadsheet_row_category_for_prompt() -> None:
+    rows = cover_jobs.parse_cover_spreadsheet(
+        "covers.csv",
+        "书名,作者,分类,简介\n慢慢好起来,作者A,心理自助,一本写给成年人情绪困境的温柔书\n".encode(
+            "utf-8"
+        ),
+        default_category="治愈插画（蜡笔）",
+    )
+    row = rows[0]
+    prompt = cover.build_cover_prompt(
+        str(row["title"]),
+        f"@最终简介\n{row['intro']}",
+        author=str(row["author"]),
+        category=str(row["category"]),
+    )
+
+    assert row["category"] == "illustration_crayon"
+    assert row["category_label"] == "治愈插画（蜡笔）"
+    assert CRAYON_ILLUSTRATION_PROMPT in prompt
+    assert "做成时代华语式心理自助书封面" not in prompt
+
+
+def test_selected_cover_category_overrides_spreadsheet_row_category() -> None:
+    rows = cover_jobs.parse_cover_spreadsheet(
+        "covers.csv",
+        "书名,作者,分类,简介\n醒来以后,作者A,心理自助,一本帮助普通人处理焦虑和内耗的书\n".encode(
+            "utf-8"
+        ),
+        default_category="social_science",
+    )
+
+    assert rows[0]["category"] == "social_science"
+    assert rows[0]["category_label"] == "社会痛点"
+
+
 def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() -> None:
     for item in list_cover_categories():
         if item["id"] == "illustration_crayon":
