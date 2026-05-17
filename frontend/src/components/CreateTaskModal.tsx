@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpenCheck, ListPlus, Loader2, PencilLine, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import { DEFAULT_CATEGORIES } from "@/constants/categories";
+import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { TaskCategoryOption } from "@/api/types";
 
 interface Props {
@@ -49,7 +49,9 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [category, setCategory] = useState("social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
-  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(
+    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedCategory =
@@ -68,7 +70,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setCategory("social_science");
       setStyleReference("");
       setStyleNotes("");
-      setCategories(DEFAULT_CATEGORIES);
+      setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
       setError(null);
       setSubmitting(false);
     }
@@ -81,14 +83,15 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       .getTaskCategories()
       .then((res) => {
         if (!cancelled && res.items.length > 0) {
-          setCategories(res.items);
+          const normalizedItems = normalizeCategoryOptions(res.items);
+          setCategories(normalizedItems);
           setCategory((prev) =>
-            res.items.some((item) => item.id === prev) ? prev : res.items[0].id,
+            normalizedItems.some((item) => item.id === prev) ? prev : normalizedItems[0].id,
           );
         }
       })
       .catch(() => {
-        if (!cancelled) setCategories(DEFAULT_CATEGORIES);
+        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
       });
     return () => {
       cancelled = true;

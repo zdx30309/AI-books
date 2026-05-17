@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { CheckSquare, ChevronRight, Loader2, Pencil, Save, Square, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
-import { categoryIdForLabel, categoryLabelFor } from "@/constants/categories";
+import { categoryIdForLabel, categoryLabelFor, normalizeCategoryLabel } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
 interface Props {
@@ -46,7 +46,7 @@ function deriveTitle(task: TaskListItem): string {
 
 function deriveSubtitle(task: TaskListItem): string {
   if (task.status === "completed") {
-    const shelf = task.bookshelf || task.category_label;
+    const shelf = normalizeCategoryLabel(task.bookshelf || task.category_label);
     if (shelf && task.word_count) {
       return `${shelf} · 共 ${task.word_count.toLocaleString()} 字`;
     }
@@ -85,9 +85,9 @@ export function BookCard({
   const displayTask = {
     ...task,
     title: localTitle,
-    bookshelf: localBookshelf,
+    bookshelf: normalizeCategoryLabel(localBookshelf),
     category: localCategory,
-    category_label: localCategoryLabel,
+    category_label: normalizeCategoryLabel(localCategoryLabel),
   };
   const title = deriveTitle(displayTask);
   const subtitle = deriveSubtitle(displayTask);

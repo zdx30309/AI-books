@@ -197,7 +197,7 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
     "illustration_crayon": {
         "brand": "果麦文化",
         "style": "日韩治愈系手绘插画，油画棒与蜡笔质感，温柔松弛但仍有出版封面完成度",
-        "cover_type": "分类插画（蜡笔） / 成年人温柔情绪日记封面",
+        "cover_type": "治愈插画（蜡笔） / 成年人温柔情绪日记封面",
         "colors": ("高饱和自然色", "暖黄", "草绿", "天蓝", "粉橙", "米白"),
         "composition": "大面积留白与情绪感背景，一个孤独但温柔的人物作为主视觉，画面松弛有呼吸感",
         "typography": "手写感书名，大字自由排版，不工整但清晰可读，避免商业促销感",
@@ -384,7 +384,7 @@ def _category_options_for_market_prompt() -> str:
 
 
 def cover_categories_fallback() -> str:
-    return "social_science=社会痛点；social_science_test=社会痛点测试版；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助；illustration_crayon=分类插画（蜡笔）"
+    return "social_science=社会痛点；social_science_test=社会痛点测试版；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助；illustration=治愈插画；illustration_crayon=治愈插画（蜡笔）"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:

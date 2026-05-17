@@ -1,5 +1,11 @@
 import type { TaskCategoryOption } from "@/api/types";
 
+const CATEGORY_LABEL_RENAMES: Record<string, string> = {
+  "分类插画": "治愈插画",
+  "分类插画（蜡笔）": "治愈插画（蜡笔）",
+  "分类插画(蜡笔)": "治愈插画（蜡笔）",
+};
+
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "social_science",
@@ -105,26 +111,44 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   ...DEFAULT_CATEGORIES,
   {
     id: "illustration",
-    label: "分类插画",
+    label: "治愈插画",
     core_feature: "插画封面入口，默认复用心理自助封面 prompt",
     directions: "心理自助、情绪疗愈、插画风封面",
     prompt_status: "ready",
   },
   {
     id: "illustration_crayon",
-    label: "分类插画（蜡笔）",
+    label: "治愈插画（蜡笔）",
     core_feature: "温柔情绪插画封面，强调蜡笔质感与治愈氛围",
     directions: "情绪日记、心理自助、孤独感、成年人治愈读物",
     prompt_status: "ready",
   },
 ];
 
+export function normalizeCategoryLabel(label: string | null | undefined) {
+  if (!label) return label ?? null;
+  return CATEGORY_LABEL_RENAMES[label] ?? label;
+}
+
+export function normalizeCategoryOption(
+  category: TaskCategoryOption,
+): TaskCategoryOption {
+  return {
+    ...category,
+    label: normalizeCategoryLabel(category.label) ?? category.label,
+  };
+}
+
+export function normalizeCategoryOptions(categories: TaskCategoryOption[]) {
+  return categories.map(normalizeCategoryOption);
+}
+
 export function categoryLabelFor(
   categoryId: string | null | undefined,
   categories: TaskCategoryOption[] = DEFAULT_CATEGORIES,
 ) {
   if (!categoryId) return null;
-  return categories.find((item) => item.id === categoryId)?.label ?? null;
+  return normalizeCategoryLabel(categories.find((item) => item.id === categoryId)?.label) ?? null;
 }
 
 export function categoryIdForLabel(
@@ -132,5 +156,9 @@ export function categoryIdForLabel(
   categories: TaskCategoryOption[] = DEFAULT_CATEGORIES,
 ) {
   if (!label) return null;
-  return categories.find((item) => item.label === label)?.id ?? null;
+  const normalizedLabel = normalizeCategoryLabel(label);
+  return (
+    categories.find((item) => normalizeCategoryLabel(item.label) === normalizedLabel)?.id ??
+    null
+  );
 }

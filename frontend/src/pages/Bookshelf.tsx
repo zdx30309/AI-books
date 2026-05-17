@@ -1,11 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckSquare, FileArchive, FileText, Loader2, Plus, RefreshCcw, Trash2, X } from "lucide-react";
 import { BookCard } from "@/components/BookCard";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { EmptyState } from "@/components/EmptyState";
 import { api, ApiError } from "@/api/client";
-import { DEFAULT_CATEGORIES } from "@/constants/categories";
+import {
+  DEFAULT_CATEGORIES,
+  normalizeCategoryLabel,
+  normalizeCategoryOptions,
+} from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem, TaskStatus } from "@/api/types";
 
 const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
@@ -24,10 +29,41 @@ const DATE_FILTERS = [
 ] as const;
 
 type DateFilter = (typeof DATE_FILTERS)[number]["value"];
+type CategoryChip =
+  | { id: string; label: string; filterValue: "all"; type: "all" }
+  | { id: string; label: string; filterValue: string; type: "category" }
+  | { id: string; label: string; filterValue: "uncategorized"; type: "uncategorized" };
+
+const CATEGORY_ORDER_STORAGE_KEY = "scriptbook.bookshelf.categoryOrder";
+
+function readStoredCategoryOrder() {
+  try {
+    const raw = localStorage.getItem(CATEGORY_ORDER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? parsed
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function orderCategoryChips(chips: CategoryChip[], order: string[]) {
+  if (order.length === 0) return chips;
+  const sourceIndex = new Map(chips.map((chip, index) => [chip.id, index]));
+  const orderedIds = order.filter((id) => sourceIndex.has(id));
+  const missingIds = chips
+    .map((chip) => chip.id)
+    .filter((id) => !orderedIds.includes(id));
+  return [...orderedIds, ...missingIds]
+    .map((id) => chips[sourceIndex.get(id)!])
+    .filter((chip): chip is CategoryChip => Boolean(chip));
+}
 
 function categoryValue(task: TaskListItem, categories: TaskCategoryOption[]) {
   if (task.category) return task.category;
-  const match = categories.find((item) => item.label === task.bookshelf);
+  const taskBookshelf = normalizeCategoryLabel(task.bookshelf);
+  const match = categories.find((item) => item.label === taskBookshelf);
   return match?.id ?? "uncategorized";
 }
 
@@ -80,7 +116,9 @@ function inDateFilter(task: TaskListItem, filter: DateFilter) {
 export function Bookshelf() {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
-  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(
+    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+  );
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["value"]>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -91,6 +129,8 @@ export function Bookshelf() {
   const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | null>(null);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
+  const [categoryOrder, setCategoryOrder] = useState<string[]>(readStoredCategoryOrder);
+  const [draggingCategoryId, setDraggingCategoryId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,15 +154,40 @@ export function Bookshelf() {
     api
       .getTaskCategories()
       .then((res) => {
-        if (!cancelled && res.items.length > 0) setCategories(res.items);
+        if (!cancelled && res.items.length > 0) {
+          setCategories(normalizeCategoryOptions(res.items));
+        }
       })
       .catch(() => {
-        if (!cancelled) setCategories(DEFAULT_CATEGORIES);
+        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(CATEGORY_ORDER_STORAGE_KEY, JSON.stringify(categoryOrder));
+  }, [categoryOrder]);
+
+  const categoryChips = useMemo<CategoryChip[]>(() => {
+    const chips: CategoryChip[] = [
+      { id: "filter:all", label: "全部分类", filterValue: "all", type: "all" },
+      ...categories.map((item) => ({
+        id: `category:${item.id}`,
+        label: item.label,
+        filterValue: item.id,
+        type: "category" as const,
+      })),
+      {
+        id: "filter:uncategorized",
+        label: "未分类",
+        filterValue: "uncategorized",
+        type: "uncategorized",
+      },
+    ];
+    return orderCategoryChips(chips, categoryOrder);
+  }, [categories, categoryOrder]);
 
   const statusFiltered =
     filter === "all"
@@ -206,6 +271,29 @@ export function Bookshelf() {
   };
 
   const clearSelection = () => setSelectedTaskIds(new Set());
+
+  const handleCategoryDragStart = (event: DragEvent<HTMLButtonElement>, chipId: string) => {
+    setDraggingCategoryId(chipId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", chipId);
+  };
+
+  const handleCategoryDrop = (event: DragEvent<HTMLButtonElement>, targetId: string) => {
+    event.preventDefault();
+    const sourceId = draggingCategoryId || event.dataTransfer.getData("text/plain");
+    setDraggingCategoryId(null);
+    if (!sourceId || sourceId === targetId) return;
+
+    const ids = categoryChips.map((chip) => chip.id);
+    const from = ids.indexOf(sourceId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+
+    const next = [...ids];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setCategoryOrder(next);
+  };
 
   const handleBatchDownload = async (fmt: "md" | "docx") => {
     if (selectedCompletedTaskIds.length === 0) {
@@ -410,42 +498,26 @@ export function Bookshelf() {
           书架分类
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setCategoryFilter("all")}
-            className={`rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-              categoryFilter === "all"
-                ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-            }`}
-          >
-            全部分类
-          </button>
-          {categories.map((item) => (
+          {categoryChips.map((item) => (
             <button
               key={item.id}
               type="button"
-              onClick={() => setCategoryFilter(item.id)}
-              className={`rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                categoryFilter === item.id
+              draggable
+              onClick={() => setCategoryFilter(item.filterValue)}
+              onDragStart={(event) => handleCategoryDragStart(event, item.id)}
+              onDragEnd={() => setDraggingCategoryId(null)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => handleCategoryDrop(event, item.id)}
+              title="拖动调整分类位置"
+              className={`cursor-grab rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors active:cursor-grabbing ${
+                categoryFilter === item.filterValue
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
                   : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-              }`}
+              } ${draggingCategoryId === item.id ? "opacity-45" : ""}`}
             >
               {item.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setCategoryFilter("uncategorized")}
-            className={`rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-              categoryFilter === "uncategorized"
-                ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-            }`}
-          >
-            未分类
-          </button>
         </div>
       </div>
 

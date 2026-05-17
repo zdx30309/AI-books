@@ -22,7 +22,12 @@ import {
   RefreshCcw,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import { DEFAULT_CATEGORIES, categoryIdForLabel } from "@/constants/categories";
+import {
+  DEFAULT_CATEGORIES,
+  categoryIdForLabel,
+  normalizeCategoryLabel,
+  normalizeCategoryOptions,
+} from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
 import type {
@@ -89,7 +94,9 @@ export function BookDetail() {
   const [metaTitle, setMetaTitle] = useState("");
   const [metaBookshelf, setMetaBookshelf] = useState("");
   const [metaCategory, setMetaCategory] = useState("");
-  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(
+    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+  );
   const [metaDirty, setMetaDirty] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
 
@@ -152,10 +159,12 @@ export function BookDetail() {
     api
       .getTaskCategories()
       .then((res) => {
-        if (!cancelled && res.items.length > 0) setCategories(res.items);
+        if (!cancelled && res.items.length > 0) {
+          setCategories(normalizeCategoryOptions(res.items));
+        }
       })
       .catch(() => {
-        if (!cancelled) setCategories(DEFAULT_CATEGORIES);
+        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
       });
     return () => {
       cancelled = true;
@@ -175,7 +184,7 @@ export function BookDetail() {
   useEffect(() => {
     if (!task || metaDirty) return;
     setMetaTitle(task.title || chapters[0]?.title || "");
-    setMetaBookshelf(task.bookshelf || "");
+    setMetaBookshelf(normalizeCategoryLabel(task.bookshelf) || "");
     setMetaCategory(task.category || categoryIdForLabel(task.bookshelf, categories) || "");
   }, [task, chapters, metaDirty, categories]);
 
@@ -344,7 +353,7 @@ export function BookDetail() {
         category: metaCategory,
       });
       setTask(next);
-      setMetaBookshelf(next.bookshelf || "");
+      setMetaBookshelf(normalizeCategoryLabel(next.bookshelf) || "");
       setMetaCategory(next.category || "");
       setMetaDirty(false);
     } catch (e) {
@@ -600,7 +609,7 @@ export function BookDetail() {
                       ))}
                     </select>
                     <p className="mt-1 text-[10px] tracking-widest text-warm-500">
-                      当前书架：{metaBookshelf || "未分类"}
+                      当前书架：{normalizeCategoryLabel(metaBookshelf) || "未分类"}
                     </p>
                   </div>
                   <div className="flex items-end">
