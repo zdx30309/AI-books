@@ -32,7 +32,7 @@ celery_app = Celery(
     "gravity_singularity",
     broker=broker_url,
     backend=backend_url,
-    include=["app.tasks.tasks", "app.tasks.system_tasks"],
+    include=["app.tasks.tasks", "app.tasks.cover_tasks", "app.tasks.system_tasks"],
 )
 
 import ssl

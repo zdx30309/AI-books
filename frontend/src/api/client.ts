@@ -8,6 +8,7 @@ import type {
   ChapterResponse,
   ChapterUpdateRequest,
   ChaptersListResponse,
+  CoverJobResponse,
   CreateTaskRequest,
   CreateTaskResponse,
   LoginRequest,
@@ -163,6 +164,32 @@ async function fetchBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+async function uploadFile<T>(path: string, file: File): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      detail = errorBody?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -252,6 +279,16 @@ export const api = {
     openHiddenDownload(`${BASE}/tasks/download-batch/direct?${params.toString()}`);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
+
+  // Excel 独立封面生成
+  createCoverJob: (file: File) => uploadFile<CoverJobResponse>("/covers/jobs", file),
+  getCoverJob: (id: string) => request<CoverJobResponse>(`/covers/jobs/${id}`),
+  getCoverJobImageBlob: (jobId: string, index: number) =>
+    fetchBlob(`/covers/jobs/${jobId}/items/${index}/image`),
+  downloadCoverJob: async (jobId: string) => {
+    const { blob, filename } = await download(`/covers/jobs/${jobId}/download`);
+    saveBlob(blob, filename);
+  },
 
   // 段落润色
   polishParagraph: (body: PolishParagraphRequest) =>

@@ -28,6 +28,8 @@ pydantic-settings>=2.7.0
 
 # --- 工具 ---
 tenacity>=9.0.0
+openpyxl>=3.1.5
+python-multipart>=0.0.20
 
 # --- 鉴权 (JWT + 密码哈希) ---
 PyJWT>=2.10.0

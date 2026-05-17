@@ -45,6 +45,30 @@ export interface BatchDownloadRequest {
   fmt: "md" | "docx";
 }
 
+export interface CoverJobItem {
+  index: number;
+  title: string;
+  author: string | null;
+  status: "pending" | "processing" | "completed" | "failed";
+  image_url: string | null;
+  error: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CoverJobResponse {
+  job_id: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  progress: number;
+  total: number;
+  completed: number;
+  failed: number;
+  current_step: string;
+  source_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  items: CoverJobItem[];
+}
+
 export interface TaskCategoryOption {
   id: string;
   label: string;
