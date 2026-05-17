@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from app.core.config import settings
 from app.services.cover import (
+    CoverGenerationCancelled,
     ImageApiPermanentError,
     ImageApiTransientError,
     generate_cover_file_from_metadata,
@@ -178,7 +179,11 @@ def _mark_retryable(
     status_lock: Lock,
 ) -> CoverItemResult:
     with status_lock:
-        latest = read_status(job_id)
+        try:
+            latest = read_status(job_id)
+        except FileNotFoundError:
+            logger.info("[cover job %s] item %s skipped because job was deleted", job_id, index)
+            return "skipped"
         items = list(latest.get("items") or [])
         if index > len(items):
             return "skipped"
@@ -217,7 +222,11 @@ def _mark_failed(
     status_lock: Lock,
 ) -> CoverItemResult:
     with status_lock:
-        latest = read_status(job_id)
+        try:
+            latest = read_status(job_id)
+        except FileNotFoundError:
+            logger.info("[cover job %s] item %s skipped because job was deleted", job_id, index)
+            return "skipped"
         items = list(latest.get("items") or [])
         if index > len(items):
             return "skipped"
@@ -250,7 +259,11 @@ def _mark_completed_or_deleted(
     status_lock: Lock,
 ) -> CoverItemResult:
     with status_lock:
-        latest = read_status(job_id)
+        try:
+            latest = read_status(job_id)
+        except FileNotFoundError:
+            logger.info("[cover job %s] item %s completed late after job deletion; skipping", job_id, index)
+            return "skipped"
         if latest.get("active_run_id") != run_id:
             return "superseded"
         latest_items = list(latest.get("items") or [])
@@ -282,6 +295,27 @@ def _mark_completed_or_deleted(
         return "completed"
 
 
+def _should_abort_cover_item(job_id: str, *, index: int, run_id: str, status_lock: Lock) -> bool:
+    with status_lock:
+        try:
+            latest = read_status(job_id)
+        except FileNotFoundError:
+            return True
+        if latest.get("active_run_id") != run_id:
+            return True
+        if latest.get("status") == "paused":
+            return True
+        items = list(latest.get("items") or [])
+        if index > len(items):
+            return True
+        item = items[index - 1]
+        if item.get("status") == "deleted":
+            return True
+        if item.get("run_id") != run_id:
+            return True
+        return item.get("status") != "processing"
+
+
 def _generate_one_cover(
     job_id: str,
     *,
@@ -303,7 +337,19 @@ def _generate_one_cover(
         return result
 
     try:
-        generate_cover_file_from_metadata(row, path)
+        generate_cover_file_from_metadata(
+            row,
+            path,
+            should_abort=lambda: _should_abort_cover_item(
+                job_id,
+                index=index,
+                run_id=run_id,
+                status_lock=status_lock,
+            ),
+        )
+    except CoverGenerationCancelled as exc:
+        logger.info("[cover job %s] item %s cancelled: %s", job_id, index, exc)
+        return "paused" if "暂停" in str(exc) else "skipped"
     except (DistributedLimitError, ImageApiTransientError) as exc:
         logger.warning("[cover job %s] item %s will retry: %s", job_id, index, exc)
         return _mark_retryable(job_id, index=index, run_id=run_id, exc=exc, status_lock=status_lock)
@@ -415,7 +461,10 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
                 paused = True
 
     with status_lock:
-        status = read_status(job_id)
+        try:
+            status = read_status(job_id)
+        except FileNotFoundError:
+            return {"job_id": job_id, "status": "deleted"}
         if status.get("active_run_id") == run_id:
             status["active_run_id"] = None
         for item in status.get("items") or []:

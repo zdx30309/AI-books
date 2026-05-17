@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +34,9 @@ _LI_RE = re.compile(r"<li\b[\s\S]*?</li>", re.I)
 _TITLE_ATTR_RE = re.compile(r"<a\b[^>]*\btitle=[\"']([^\"']+)[\"'][^>]*>", re.I)
 _NAME_BLOCK_RE = re.compile(r"<p\b[^>]*class=[\"'][^\"']*name[^\"']*[\"'][^>]*>([\s\S]*?)</p>", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
+_LIVE_SEARCH_CACHE_TTL_SECONDS = 1800
+_LIVE_SEARCH_CACHE_LOCK = threading.Lock()
+_LIVE_SEARCH_CACHE: dict[tuple[str, str, int, bool], tuple[float, tuple["DangdangCoverReference", ...]]] = {}
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,11 @@ class DangdangCoverCrawler:
         if brand not in DANGDANG_REFERENCE_BRANDS:
             return []
 
+        cache_key = (brand, category_label, int(limit or 0), bool(download_images and cache_enabled))
+        cached = _live_search_cache_get(cache_key)
+        if cached is not None:
+            return list(cached)
+
         results: list[DangdangCoverReference] = []
         seen_product_ids: set[str] = set()
         queries = _brand_queries(brand, category_label)
@@ -162,8 +171,10 @@ class DangdangCoverCrawler:
                     self._append_to_metadata_cache(item)
                 results.append(item)
                 if len(results) >= limit:
+                    _live_search_cache_set(cache_key, results)
                     return results
             time.sleep(0.3)
+        _live_search_cache_set(cache_key, results)
         return results
 
     def _fetch_search_page(self, url: str) -> str:
@@ -349,6 +360,26 @@ def collect_dangdang_reference_covers(
 def _dangdang_search_url(keyword: str) -> str:
     encoded = quote_from_bytes(keyword.encode("gbk", errors="ignore"))
     return f"https://search.dangdang.com/?key={encoded}&act=input"
+
+
+def _live_search_cache_get(
+    key: tuple[str, str, int, bool],
+) -> tuple[DangdangCoverReference, ...] | None:
+    now = time.monotonic()
+    with _LIVE_SEARCH_CACHE_LOCK:
+        cached = _LIVE_SEARCH_CACHE.get(key)
+        if cached is None:
+            return None
+        created_at, items = cached
+        if now - created_at > _LIVE_SEARCH_CACHE_TTL_SECONDS:
+            _LIVE_SEARCH_CACHE.pop(key, None)
+            return None
+        return items
+
+
+def _live_search_cache_set(key: tuple[str, str, int, bool], items: list[DangdangCoverReference]) -> None:
+    with _LIVE_SEARCH_CACHE_LOCK:
+        _LIVE_SEARCH_CACHE[key] = (time.monotonic(), tuple(items))
 
 
 def _brand_queries(brand: str, category_label: str) -> tuple[str, ...]:

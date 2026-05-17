@@ -5,10 +5,12 @@ import base64
 import hashlib
 import json
 import logging
+import queue
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -62,6 +64,10 @@ class ImageApiTransientError(ImageApiError):
 
 class ImageApiPermanentError(ImageApiError):
     """Image API failure that should be surfaced without automatic retry."""
+
+
+class CoverGenerationCancelled(RuntimeError):
+    """Raised when a cover item was deleted, paused, or superseded mid-generation."""
 
 
 @dataclass(frozen=True)
@@ -910,7 +916,68 @@ def build_cover_prompt(
     return build_draft_cover_prompt(cover_input, build_cover_style_brief(cover_input))
 
 
-def _request_image_generation(prompt: str) -> bytes:
+def _cover_cancelled(stage: str) -> CoverGenerationCancelled:
+    return CoverGenerationCancelled(f"封面生成已取消：{stage}")
+
+
+def _post_image_request_with_cancellation(
+    http: httpx.Client,
+    endpoint: str,
+    api_key: str,
+    *,
+    should_abort: Callable[[], bool] | None = None,
+    stage: str,
+    json_payload: dict[str, Any] | None = None,
+    data: dict[str, str] | None = None,
+    files: dict[str, tuple[str, bytes, str]] | None = None,
+) -> Any:
+    if should_abort is None:
+        return _post_image_request(
+            http,
+            endpoint,
+            api_key,
+            json_payload=json_payload,
+            data=data,
+            files=files,
+        )
+
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def _send() -> None:
+        try:
+            result_queue.put(
+                (
+                    "ok",
+                    _post_image_request(
+                        http,
+                        endpoint,
+                        api_key,
+                        json_payload=json_payload,
+                        data=data,
+                        files=files,
+                    ),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - surfaced through result_queue
+            result_queue.put(("error", exc))
+
+    worker = threading.Thread(target=_send, name=f"cover-image-{stage}", daemon=True)
+    worker.start()
+    while True:
+        try:
+            kind, payload = result_queue.get(timeout=0.5)
+        except queue.Empty:
+            if should_abort():
+                logger.info("取消封面图片请求并释放本地闸口: stage=%s", stage)
+                http.close()
+                raise _cover_cancelled(stage)
+            continue
+        if kind == "ok":
+            return payload
+        raise payload
+
+
+def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | None = None) -> bytes:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/generations"
     payload: dict[str, Any] = {
@@ -931,12 +998,26 @@ def _request_image_generation(prompt: str) -> bytes:
             "image-cover",
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
             wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
+            should_abort=should_abort,
+            abort_exception_factory=lambda: _cover_cancelled("wait draft image gate"),
         ):
-            response_data = _post_image_request(http, endpoint, api_key, json_payload=payload)
+            response_data = _post_image_request_with_cancellation(
+                http,
+                endpoint,
+                api_key,
+                json_payload=payload,
+                should_abort=should_abort,
+                stage="draft image request",
+            )
+    _abort_cover_generation_if_requested(should_abort, stage="after draft image request")
     return _decode_image_response(response_data)
 
 
-def _request_image_edit(image_path: Path, prompt: str) -> bytes:
+def _request_image_edit(
+    image_path: Path,
+    prompt: str,
+    should_abort: Callable[[], bool] | None = None,
+) -> bytes:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/edits"
     data: dict[str, str] = {
@@ -964,8 +1045,19 @@ def _request_image_edit(image_path: Path, prompt: str) -> bytes:
             "image-cover",
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
             wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
+            should_abort=should_abort,
+            abort_exception_factory=lambda: _cover_cancelled("wait refine image gate"),
         ):
-            response_data = _post_image_request(http, endpoint, api_key, data=data, files=files)
+            response_data = _post_image_request_with_cancellation(
+                http,
+                endpoint,
+                api_key,
+                data=data,
+                files=files,
+                should_abort=should_abort,
+                stage="refine image request",
+            )
+    _abort_cover_generation_if_requested(should_abort, stage="after refine image request")
     return _decode_image_response(response_data)
 
 
@@ -1051,6 +1143,32 @@ def _download_image_result(url: str) -> bytes:
     raise ImageApiTransientError(f"图像结果下载失败: {last_error}")
 
 
+def _abort_cover_generation_if_requested(
+    should_abort: Callable[[], bool] | None,
+    *,
+    stage: str,
+) -> None:
+    if should_abort is not None and should_abort():
+        raise CoverGenerationCancelled(f"封面生成已取消：{stage}")
+
+
+def _write_cover_text_file(path: Path, text: str, should_abort: Callable[[], bool] | None = None) -> None:
+    _abort_cover_generation_if_requested(should_abort, stage=f"write {path.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_cover_bytes_file(path: Path, data: bytes, should_abort: Callable[[], bool] | None = None) -> None:
+    _abort_cover_generation_if_requested(should_abort, stage=f"write {path.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_bytes(data)
+    except FileNotFoundError as exc:
+        if should_abort is not None and should_abort():
+            raise CoverGenerationCancelled(f"封面生成已取消：write {path.name}") from exc
+        raise
+
+
 def generate_cover_file(
     title: str,
     markdown: str,
@@ -1060,9 +1178,11 @@ def generate_cover_file(
     author: str | None = None,
     intro: str | None = None,
     force: bool = False,
+    should_abort: Callable[[], bool] | None = None,
 ) -> Path:
     """Generate draft and refined cover images under the task output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    _abort_cover_generation_if_requested(should_abort, stage="start")
     existing_cover_path = output_dir / "cover.png"
     if existing_cover_path.exists() and existing_cover_path.stat().st_size > 0 and not force:
         logger.info("复用已存在封面: %s", existing_cover_path)
@@ -1087,37 +1207,44 @@ def generate_cover_file(
         logger.info("复用已存在封面: %s", cover_path)
         return cover_path
 
-    style_brief_path.write_text(_brief_json(style_brief), encoding="utf-8")
+    _write_cover_text_file(style_brief_path, _brief_json(style_brief), should_abort)
 
     draft_prompt = build_draft_cover_prompt(cover_input, style_brief)
-    draft_prompt_path.write_text(draft_prompt, encoding="utf-8")
+    _write_cover_text_file(draft_prompt_path, draft_prompt, should_abort)
     if force or not draft_path.exists() or draft_path.stat().st_size <= 0:
         logger.info("开始生成封面初稿: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
-        draft_path.write_bytes(_request_image_generation(draft_prompt))
+        _abort_cover_generation_if_requested(should_abort, stage="before draft image request")
+        draft_bytes = _request_image_generation(draft_prompt, should_abort=should_abort)
+        _write_cover_bytes_file(draft_path, draft_bytes, should_abort)
     else:
         logger.info("复用已存在封面初稿，直接进入精修: %s", draft_path)
 
     refine_prompt = build_refine_cover_prompt(cover_input, style_brief)
-    refine_prompt_path.write_text(refine_prompt, encoding="utf-8")
+    _write_cover_text_file(refine_prompt_path, refine_prompt, should_abort)
     logger.info("开始精修封面: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
     try:
-        cover_path.write_bytes(_request_image_edit(draft_path, refine_prompt))
+        _abort_cover_generation_if_requested(should_abort, stage="before refine image request")
+        cover_bytes = _request_image_edit(draft_path, refine_prompt, should_abort=should_abort)
+        _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
+    except CoverGenerationCancelled:
+        raise
     except DistributedLimitError:
         raise
     except ImageApiTransientError as exc:
         logger.warning("封面精修遇到临时错误，保留初稿等待自动重试: %s", exc)
-        (output_dir / "cover_refine_error.txt").write_text(
+        _write_cover_text_file(
+            output_dir / "cover_refine_error.txt",
             f"临时错误，等待自动重试：{exc}",
-            encoding="utf-8",
+            should_abort,
         )
         raise
     except ImageApiPermanentError as exc:
         logger.warning("封面精修遇到永久错误，保留初稿但不降级为最终封面: %s", exc)
-        (output_dir / "cover_refine_error.txt").write_text(str(exc), encoding="utf-8")
+        _write_cover_text_file(output_dir / "cover_refine_error.txt", str(exc), should_abort)
         raise
     except Exception as exc:
         logger.warning("封面精修失败，保留初稿但不降级为最终封面: %s", exc)
-        (output_dir / "cover_refine_error.txt").write_text(str(exc), encoding="utf-8")
+        _write_cover_text_file(output_dir / "cover_refine_error.txt", str(exc), should_abort)
         raise RuntimeError(
             f"封面精修失败：{exc}。已保留 draft_cover.png 供排查，未生成最终 cover.png"
         ) from exc
@@ -1201,13 +1328,19 @@ def _metadata_category(value: str) -> str:
         return "social_science"
 
 
-def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Path) -> Path:
+def generate_cover_file_from_metadata(
+    metadata: dict[str, Any],
+    output_path: Path,
+    *,
+    should_abort: Callable[[], bool] | None = None,
+) -> Path:
     """Generate one standalone cover from spreadsheet metadata.
 
     The standalone Excel entry intentionally reuses the same high-quality
     draft + refine cover workflow used by manuscript tasks. It writes to a
     per-item work directory first, then copies the final cover to output_path.
     """
+    _abort_cover_generation_if_requested(should_abort, stage="metadata start")
     if output_path.exists() and output_path.stat().st_size > 0:
         logger.info("复用已存在独立封面: %s", output_path)
         return output_path
@@ -1219,9 +1352,11 @@ def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Pat
     markdown = f"@最终书名\n{title}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir = output_path.parent / f".{output_path.stem}_work"
     markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
+    _abort_cover_generation_if_requested(should_abort, stage="prepare work dir")
     work_dir.mkdir(parents=True, exist_ok=True)
     category_meta = get_cover_category_meta(category)
-    (work_dir / "metadata_used.json").write_text(
+    _write_cover_text_file(
+        work_dir / "metadata_used.json",
         json.dumps(
             {
                 "title": title,
@@ -1234,7 +1369,7 @@ def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Pat
             ensure_ascii=False,
             indent=2,
         ),
-        encoding="utf-8",
+        should_abort,
     )
     generated_path = generate_cover_file(
         title=title,
@@ -1244,9 +1379,11 @@ def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Pat
         author=author,
         intro=intro,
         force=False,
+        should_abort=should_abort,
     )
+    _abort_cover_generation_if_requested(should_abort, stage="copy final cover")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(generated_path.read_bytes())
+    _write_cover_bytes_file(output_path, generated_path.read_bytes(), should_abort)
     return output_path
 
 
@@ -1254,6 +1391,7 @@ __all__ = [
     "ALLOWED_REFERENCE_BRANDS",
     "ALLOWED_REFERENCE_SITE",
     "CoverInput",
+    "CoverGenerationCancelled",
     "CoverMarketMatch",
     "CoverStyleBrief",
     "ImageApiError",

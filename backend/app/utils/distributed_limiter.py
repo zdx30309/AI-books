@@ -8,7 +8,7 @@ import uuid
 from contextlib import contextmanager
 from functools import lru_cache
 from ssl import CERT_NONE
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import redis
 
@@ -48,6 +48,8 @@ def distributed_semaphore(
     ttl_seconds: int | None = None,
     wait_timeout_seconds: int | None = None,
     poll_seconds: float = 2.0,
+    should_abort: Callable[[], bool] | None = None,
+    abort_exception_factory: Callable[[], BaseException] | None = None,
 ) -> Iterator[None]:
     """Acquire a Redis zset slot, failing closed if Redis is unavailable."""
     max_active = max(1, int(limit or 1))
@@ -71,7 +73,14 @@ def distributed_semaphore(
     return 0
     """
 
+    def _raise_if_aborted() -> None:
+        if should_abort is not None and should_abort():
+            if abort_exception_factory is not None:
+                raise abort_exception_factory()
+            raise DistributedLimitError(f"paid API concurrency limiter wait aborted for {name}")
+
     while time.monotonic() < deadline:
+        _raise_if_aborted()
         now = time.time()
         expire_before = now - ttl
         try:
@@ -95,7 +104,10 @@ def distributed_semaphore(
         except Exception as exc:
             raise DistributedLimitError(f"paid API concurrency limiter unavailable for {name}: {exc}") from exc
 
-        time.sleep(max(poll_seconds, 0.2))
+        sleep_until = time.monotonic() + max(poll_seconds, 0.2)
+        while time.monotonic() < sleep_until:
+            _raise_if_aborted()
+            time.sleep(min(0.2, max(0.0, sleep_until - time.monotonic())))
 
     if not acquired:
         raise DistributedLimitError(f"paid API concurrency limiter wait timeout for {name}, limit={max_active}")

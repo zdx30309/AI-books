@@ -309,11 +309,11 @@ def test_generate_cover_file_writes_three_stage_artifacts(
 ) -> None:
     calls: list[tuple[str, str, str | None]] = []
 
-    def fake_generation(prompt: str) -> bytes:
+    def fake_generation(prompt: str, **kwargs) -> bytes:
         calls.append(("generation", prompt, None))
         return PNG_BYTES
 
-    def fake_edit(image_path: Path, prompt: str) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
         assert image_path.name == "draft_cover.png"
         assert image_path.exists()
         calls.append(("edit", prompt, image_path.name))
@@ -354,10 +354,10 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fake_generation(prompt: str) -> bytes:
+    def fake_generation(prompt: str, **kwargs) -> bytes:
         return PNG_BYTES
 
-    def fake_edit(image_path: Path, prompt: str) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
         raise RuntimeError("edit failed")
 
     monkeypatch.setattr(cover, "_request_image_generation", fake_generation)
@@ -379,6 +379,69 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     assert (tmp_path / "draft_cover.png").exists()
     assert not (tmp_path / "cover.png").exists()
     assert (tmp_path / "cover_refine_error.txt").exists()
+
+
+def test_generate_cover_file_cancels_before_refine_without_extra_image_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cancelled = False
+    edit_called = False
+
+    def fake_generation(prompt: str, **kwargs) -> bytes:
+        nonlocal cancelled
+        cancelled = True
+        return PNG_BYTES
+
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+        nonlocal edit_called
+        edit_called = True
+        return PNG_BYTES
+
+    monkeypatch.setattr(cover, "_request_image_generation", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+
+    with pytest.raises(cover.CoverGenerationCancelled):
+        cover.generate_cover_file(
+            "醒来以后",
+            "@最终简介\n一本心理自助书。",
+            tmp_path,
+            category="psychology_self_help",
+            author="测试作者",
+            should_abort=lambda: cancelled,
+        )
+
+    assert not edit_called
+    assert not (tmp_path / "cover.png").exists()
+
+
+def test_cancellable_image_request_closes_client_and_releases_wait(monkeypatch) -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeHttp()
+
+    def slow_post(*args, **kwargs):
+        time.sleep(5)
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_post_image_request", slow_post)
+
+    with pytest.raises(cover.CoverGenerationCancelled):
+        cover._post_image_request_with_cancellation(  # noqa: SLF001
+            fake,
+            "https://api.example.test/images/generations",
+            "key",
+            json_payload={"prompt": "x"},
+            should_abort=lambda: True,
+            stage="unit-test",
+        )
+
+    assert fake.closed
 
 
 def test_image_request_retries_transient_520(monkeypatch) -> None:
@@ -492,7 +555,7 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
     peak = 0
     lock = Lock()
 
-    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path) -> Path:
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
         nonlocal active, peak
         with lock:
             active += 1
@@ -519,6 +582,40 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
     assert final["completed"] == 6
     assert final["failed"] == 0
     assert peak == 3
+
+
+def test_cover_job_deleted_item_cancels_without_requeue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": "第一本书", "author": "作者A", "category": "illustration_crayon", "category_label": "治愈插画（蜡笔）"}
+        ],
+        default_category="illustration_crayon",
+    )
+    job_id = status["job_id"]
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
+        cover_jobs.delete_cover_job_items(job_id, [1])
+        raise cover.CoverGenerationCancelled("deleted during generation")
+
+    monkeypatch.setattr(
+        cover_tasks,
+        "generate_cover_file_from_metadata",
+        fake_generate_cover_file_from_metadata,
+    )
+
+    result = cover_tasks.generate_cover_job.run(job_id)
+    final = cover_jobs.read_status(job_id)
+
+    assert result["status"] == "completed"
+    assert final["items"][0]["status"] == "deleted"
+    assert final["total"] == 0
+    assert final["failed"] == 0
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:
