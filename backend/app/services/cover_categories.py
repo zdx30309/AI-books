@@ -31,12 +31,24 @@ COVER_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
 )
 
 _COVER_CATEGORY_ALIASES: dict[str, str] = {}
-_COVER_CATEGORY_ALIASES["分类插画"] = "illustration"
-_COVER_CATEGORY_ALIASES["分类插画（蜡笔）"] = "illustration_crayon"
-_COVER_CATEGORY_ALIASES["分类插画(蜡笔)"] = "illustration_crayon"
+
+
+def _alias_key(value: str) -> str:
+    return "".join(value.strip().split()).replace("(", "（").replace(")", "）")
+
+
+def _register_alias(alias: str, category_id: str) -> None:
+    _COVER_CATEGORY_ALIASES[alias] = category_id
+    _COVER_CATEGORY_ALIASES[_alias_key(alias)] = category_id
+
+
+_register_alias("分类插画", "illustration")
+_register_alias("分类插画（蜡笔）", "illustration_crayon")
+_register_alias("治愈插画", "illustration")
+_register_alias("治愈插画（蜡笔）", "illustration_crayon")
 for _category in COVER_CATEGORY_OPTIONS:
-    _COVER_CATEGORY_ALIASES[_category["id"]] = _category["id"]
-    _COVER_CATEGORY_ALIASES[_category["label"]] = _category["id"]
+    _register_alias(_category["id"], _category["id"])
+    _register_alias(_category["label"], _category["id"])
 
 
 def list_cover_categories() -> list[dict[str, str]]:
@@ -45,7 +57,7 @@ def list_cover_categories() -> list[dict[str, str]]:
 
 def normalize_cover_category_id(category: str | None, fallback: str | None = None) -> str:
     raw = (category or fallback or "social_science").strip() or "social_science"
-    normalized = _COVER_CATEGORY_ALIASES.get(raw)
+    normalized = _COVER_CATEGORY_ALIASES.get(raw) or _COVER_CATEGORY_ALIASES.get(_alias_key(raw))
     if normalized:
         return normalized
     return normalize_category(raw)

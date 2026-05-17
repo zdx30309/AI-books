@@ -19,6 +19,12 @@ from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCov
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+CRAYON_ILLUSTRATION_PROMPT = (
+    "日韩治愈系手绘插画风，油画棒与蜡笔质感，高饱和自然配色，柔软颗粒笔触，"
+    "大面积留白与情绪感背景。画面以孤独但温柔的人物为主，强调情绪氛围。"
+    "手写感书名，大字自由排版，不工整但有呼吸感。整体像一本写给成年人的温柔情绪日记，"
+    "温暖、松弛、治愈，避免商业感、3D感、AI感与过度设计。"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -83,19 +89,66 @@ def test_healing_handdrawn_prompt_only_applies_to_psychology_cover_category() ->
 
 
 def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
-    prompt = cover.build_cover_prompt(
+    cover_input = cover.prepare_cover_input(
         "清醒地活",
         "@最终简介\n一本写给成年人情绪困境的温柔心理自助书。",
         author="测试作者",
         category="illustration_crayon",
     )
+    brief = cover.build_cover_style_brief(cover_input)
+    prompt = cover.build_draft_cover_prompt(cover_input, brief)
+    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
+    adjustment = cover.get_cover_category_prompt_adjustment("illustration_crayon")
 
     assert "治愈插画（蜡笔）" in prompt
-    assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" in prompt
-    assert "手写感书名，大字自由排版，不工整但有呼吸感" in prompt
-    assert "避免商业感、3D感、AI感与过度设计" in prompt
+    assert CRAYON_ILLUSTRATION_PROMPT in brief.generation_prompt_addendum
+    assert CRAYON_ILLUSTRATION_PROMPT in prompt
+    assert CRAYON_ILLUSTRATION_PROMPT in refine_prompt
+    assert adjustment["style_brief_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
+    assert adjustment["draft_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
+    assert adjustment["refine_rules"] == (f"继续保持并强化：{CRAYON_ILLUSTRATION_PROMPT}",)
     assert get_cover_category_meta("illustration_crayon")["label"] == "治愈插画（蜡笔）"
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
+
+
+def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
+    aliases = [
+        "illustration_crayon",
+        "治愈插画（蜡笔）",
+        "治愈插画(蜡笔)",
+        "治愈插画（蜡笔)",
+        "分类插画（蜡笔）",
+        "分类插画(蜡笔)",
+    ]
+    for alias in aliases:
+        cover_input = cover.prepare_cover_input(
+            "慢慢好起来",
+            "@最终简介\n一本写给成年人情绪困境的温柔心理自助书。",
+            author="测试作者",
+            category=alias,
+        )
+        prompt = cover.build_cover_prompt(
+            "慢慢好起来",
+            "@最终简介\n一本写给成年人情绪困境的温柔心理自助书。",
+            author="测试作者",
+            category=alias,
+        )
+        assert cover_input.category == "illustration_crayon"
+        assert cover_input.category_label == "治愈插画（蜡笔）"
+        assert CRAYON_ILLUSTRATION_PROMPT in prompt
+
+
+def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() -> None:
+    for item in list_cover_categories():
+        if item["id"] == "illustration_crayon":
+            continue
+        prompt = cover.build_cover_prompt(
+            "普通封面",
+            "@最终简介\n一本普通测试书。",
+            author="测试作者",
+            category=item["id"],
+        )
+        assert CRAYON_ILLUSTRATION_PROMPT not in prompt
 
 
 def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:

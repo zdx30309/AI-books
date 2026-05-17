@@ -4,6 +4,8 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
   "分类插画": "治愈插画",
   "分类插画（蜡笔）": "治愈插画（蜡笔）",
   "分类插画(蜡笔)": "治愈插画（蜡笔）",
+  "治愈插画(蜡笔)": "治愈插画（蜡笔）",
+  "治愈插画（蜡笔)": "治愈插画（蜡笔）",
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
