@@ -13,6 +13,8 @@ import type {
   CreateTaskRequest,
   CreateTaskResponse,
   CoverJobListResponse,
+  CoverJobBatchRequest,
+  CoverJobBatchResponse,
   CoverJobResponse,
   LoginRequest,
   MarkdownResponse,
@@ -303,6 +305,17 @@ export const api = {
   listCoverJobs: (limit = 50) =>
     request<CoverJobListResponse>(`/covers/jobs?limit=${limit}`),
   getCoverJob: (jobId: string) => request<CoverJobResponse>(`/covers/jobs/${jobId}`),
+  pauseCoverJob: (jobId: string) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/pause`, { method: "POST" }),
+  resumeCoverJob: (jobId: string) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/resume`, { method: "POST" }),
+  deleteCoverJob: (jobId: string) =>
+    request<void>(`/covers/jobs/${jobId}`, { method: "DELETE" }),
+  batchCoverJobs: (body: CoverJobBatchRequest) =>
+    request<CoverJobBatchResponse>("/covers/jobs/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   getCoverJobImageBlob: (jobId: string, index: number) =>
     fetchBlob(`/covers/jobs/${jobId}/items/${index}/image`),
   downloadCoverJob: async (jobId: string) => {

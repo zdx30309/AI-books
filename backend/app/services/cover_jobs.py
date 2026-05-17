@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import shutil
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -186,6 +187,39 @@ def write_status(job_id: str, data: dict[str, Any]) -> None:
     tmp.replace(status_path(job_id))
 
 
+def pause_cover_job(job_id: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = dict(status or read_status(job_id))
+    if data.get("status") in {"completed", "deleted"}:
+        return data
+    for item in data.get("items") or []:
+        if item.get("status") == "processing":
+            item["status"] = "pending"
+            item["error"] = None
+    data["status"] = "paused"
+    data["current_step"] = "已暂停"
+    write_status(job_id, data)
+    return data
+
+
+def resume_cover_job(job_id: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = dict(status or read_status(job_id))
+    if data.get("status") == "completed":
+        return data
+    if data.get("status") == "deleted":
+        raise FileNotFoundError(job_id)
+    data["status"] = "pending"
+    data["current_step"] = "等待继续生成"
+    write_status(job_id, data)
+    return data
+
+
+def delete_cover_job(job_id: str) -> None:
+    directory = job_dir(job_id)
+    if not directory.exists():
+        raise FileNotFoundError(job_id)
+    shutil.rmtree(directory)
+
+
 def list_cover_jobs(owner_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
     if not COVER_JOBS_ROOT.exists():
         return []
@@ -271,12 +305,15 @@ def build_zip(job_id: str, status: dict[str, Any]) -> bytes:
 __all__ = [
     "build_zip",
     "create_cover_job",
+    "delete_cover_job",
     "image_path",
     "list_cover_jobs",
     "normalize_cover_category",
     "parse_cover_spreadsheet",
     "read_rows",
     "read_status",
+    "pause_cover_job",
+    "resume_cover_job",
     "row_author",
     "row_category",
     "row_title",

@@ -94,6 +94,22 @@ export interface CoverJobListResponse {
   items: CoverJobResponse[];
 }
 
+export interface CoverJobBatchRequest {
+  job_ids: string[];
+  action: "pause" | "resume" | "delete";
+}
+
+export interface CoverJobBatchItem {
+  job_id: string;
+  status: string;
+  reason: string | null;
+}
+
+export interface CoverJobBatchResponse {
+  items: CoverJobBatchItem[];
+  total: number;
+}
+
 export interface TaskCategoryOption {
   id: string;
   label: string;

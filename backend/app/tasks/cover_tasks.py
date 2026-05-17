@@ -45,6 +45,20 @@ def _finish_status(status: dict[str, Any]) -> None:
         status["current_step"] = f"全部完成：{completed} 张封面"
 
 
+def _stop_if_paused(job_id: str) -> dict[str, Any] | None:
+    latest = read_status(job_id)
+    if latest.get("status") != "paused":
+        return None
+    for item in latest.get("items") or []:
+        if item.get("status") == "processing":
+            item["status"] = "pending"
+            item["error"] = None
+    latest["current_step"] = "已暂停"
+    _recount(latest)
+    write_status(job_id, latest)
+    return {"job_id": job_id, "status": "paused"}
+
+
 @celery_app.task(
     bind=True,
     name="tasks.generate_cover_job",
@@ -55,18 +69,26 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
 
     Paid image API failures are recorded on the item and are not retried here.
     Queue/concurrency-limit waits are retried before a paid request is sent.
+    A paused job stops before the next paid call.
     """
     status = read_status(job_id)
     rows = read_rows(job_id)
-    items = list(status.get("items") or [])
     if status.get("status") == "completed":
         return {"job_id": job_id, "status": "completed"}
+    if status.get("status") == "paused":
+        return {"job_id": job_id, "status": "paused"}
 
     status["status"] = "processing"
     status["current_step"] = "开始生成封面"
     write_status(job_id, status)
 
     for index, row in enumerate(rows, start=1):
+        paused_result = _stop_if_paused(job_id)
+        if paused_result is not None:
+            return paused_result
+
+        status = read_status(job_id)
+        items = list(status.get("items") or [])
         if index > len(items):
             break
         item = items[index - 1]
@@ -89,6 +111,10 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
         status["current_step"] = f"正在生成第 {index}/{len(rows)} 张：{title}"
         _recount(status)
         write_status(job_id, status)
+
+        paused_result = _stop_if_paused(job_id)
+        if paused_result is not None:
+            return paused_result
 
         try:
             generate_cover_file_from_metadata(row, path)
@@ -122,17 +148,30 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
             write_status(job_id, status)
             continue
 
-        item.update(
-            status="completed",
-            error=None,
-            completed_at=_now_iso(),
-            image_url=f"/api/v1/covers/jobs/{job_id}/items/{index}/image",
-        )
-        status["items"] = items
-        status["current_step"] = f"第 {index}/{len(rows)} 张已完成"
-        _recount(status)
-        write_status(job_id, status)
+        latest = read_status(job_id)
+        latest_items = list(latest.get("items") or [])
+        target_items = latest_items if latest_items else items
+        if index <= len(target_items):
+            target_items[index - 1].update(
+                status="completed",
+                error=None,
+                completed_at=_now_iso(),
+                image_url=f"/api/v1/covers/jobs/{job_id}/items/{index}/image",
+            )
+        latest["items"] = target_items
+        if latest.get("status") == "paused":
+            latest["current_step"] = "已暂停"
+            _recount(latest)
+            write_status(job_id, latest)
+            return {"job_id": job_id, "status": "paused", "completed_current_item": True}
 
+        latest["current_step"] = f"第 {index}/{len(rows)} 张已完成"
+        _recount(latest)
+        write_status(job_id, latest)
+
+    status = read_status(job_id)
+    if status.get("status") == "paused":
+        return {"job_id": job_id, "status": "paused"}
     _finish_status(status)
     write_status(job_id, status)
     return {

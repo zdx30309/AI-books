@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  CheckSquare,
   Download,
   FileSpreadsheet,
   ImageIcon,
   Loader2,
+  PauseCircle,
+  PlayCircle,
   RefreshCcw,
+  Square,
+  Trash2,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
@@ -16,6 +22,19 @@ const CURRENT_COVER_JOB_KEY = "scriptbook.cover.current_job_id";
 
 function isActiveJob(job: CoverJobResponse | null | undefined) {
   return job?.status === "pending" || job?.status === "processing";
+}
+
+function isPausedJob(job: CoverJobResponse | null | undefined) {
+  return job?.status === "paused";
+}
+
+function statusLabel(status: string) {
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "paused") return "已暂停";
+  if (status === "processing") return "生成中";
+  if (status === "pending") return "排队中";
+  return status || "空闲";
 }
 
 function CoverPreview({ jobId, item }: { jobId: string; item: CoverJobItem }) {
@@ -84,32 +103,49 @@ function CoverPreview({ jobId, item }: { jobId: string; item: CoverJobItem }) {
 function JobButton({
   job,
   active,
-  onClick,
+  selected,
+  selectionMode,
+  onOpen,
+  onSelect,
 }: {
   job: CoverJobResponse;
   active: boolean;
-  onClick: () => void;
+  selected: boolean;
+  selectionMode: boolean;
+  onOpen: () => void;
+  onSelect: () => void;
 }) {
+  const click = selectionMode ? onSelect : onOpen;
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={click}
       className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
-        active
-          ? "border-gold-400/50 bg-gold-500/10"
-          : "border-gold-500/10 bg-base-800/45 hover:border-gold-400/30"
+        selected
+          ? "border-gold-300/70 bg-gold-500/15"
+          : active
+            ? "border-gold-400/50 bg-gold-500/10"
+            : "border-gold-500/10 bg-base-800/45 hover:border-gold-400/30"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-sm text-warm-100">{job.source_filename || job.job_id}</span>
-        <span className="shrink-0 text-[10px] uppercase tracking-widest text-gold-300">
-          {job.progress}%
-        </span>
+        {selectionMode ? (
+          selected ? (
+            <CheckSquare className="h-4 w-4 shrink-0 text-gold-200" strokeWidth={1.7} />
+          ) : (
+            <Square className="h-4 w-4 shrink-0 text-warm-500" strokeWidth={1.7} />
+          )
+        ) : (
+          <span className="shrink-0 text-[10px] uppercase tracking-widest text-gold-300">
+            {job.progress}%
+          </span>
+        )}
       </div>
       <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-warm-500">
         <span>{job.default_category_label || "未分类"}</span>
         <span>
-          {job.completed}/{job.total}
+          {statusLabel(job.status)} · {job.completed}/{job.total}
         </span>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-base-900">
@@ -128,11 +164,14 @@ export function CoverGeneratorPanel() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(() =>
     localStorage.getItem(CURRENT_COVER_JOB_KEY),
   );
+  const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
   const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
   const [category, setCategory] = useState("social_science");
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [working, setWorking] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,14 +181,20 @@ export function CoverGeneratorPanel() {
   }, [jobs, selectedJobId]);
 
   const active = isActiveJob(job);
+  const selectedCount = selectedJobIds.size;
   const progressText = useMemo(() => {
     if (!job) return "等待上传";
     return `${job.completed}/${job.total} 完成，${job.failed} 失败`;
   }, [job]);
 
-  const loadJobs = async (selectJobId?: string) => {
-    const res = await api.listCoverJobs(80);
+  const loadJobs = async (selectJobId?: string | null) => {
+    const res = await api.listCoverJobs(120);
     setJobs(res.items);
+    setSelectedJobIds((prev) => {
+      const valid = new Set(res.items.map((item) => item.job_id));
+      const next = new Set([...prev].filter((id) => valid.has(id)));
+      return next;
+    });
     const nextId = selectJobId ?? selectedJobId ?? res.items[0]?.job_id ?? null;
     const exists = nextId && res.items.some((item) => item.job_id === nextId);
     const finalId = exists ? nextId : (res.items[0]?.job_id ?? null);
@@ -206,6 +251,15 @@ export function CoverGeneratorPanel() {
     localStorage.setItem(CURRENT_COVER_JOB_KEY, jobId);
   };
 
+  const toggleJobSelection = (jobId: string) => {
+    setSelectedJobIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  };
+
   const refresh = async () => {
     setRefreshing(true);
     setError(null);
@@ -249,6 +303,78 @@ export function CoverGeneratorPanel() {
       setError(e instanceof ApiError ? e.detail : "下载失败");
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const batchAction = async (
+    action: "pause" | "resume" | "delete",
+    ids = [...selectedJobIds],
+  ) => {
+    if (ids.length === 0) return;
+    const actionText = action === "pause" ? "暂停" : action === "resume" ? "继续" : "删除";
+    if (action === "delete") {
+      const ok = window.confirm(`确定删除选中的 ${ids.length} 个封面任务吗？`);
+      if (!ok) return;
+    }
+    setWorking(action);
+    setError(null);
+    try {
+      await api.batchCoverJobs({ job_ids: ids, action });
+      setSelectedJobIds(new Set());
+      if (action === "delete" && job && ids.includes(job.job_id)) {
+        await loadJobs(null);
+      } else {
+        await loadJobs(job?.job_id ?? undefined);
+      }
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : `${actionText}失败`;
+      setError(msg);
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const pauseCurrent = async () => {
+    if (!job) return;
+    setWorking("pause-current");
+    setError(null);
+    try {
+      await api.pauseCoverJob(job.job_id);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "暂停失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const resumeCurrent = async () => {
+    if (!job) return;
+    setWorking("resume-current");
+    setError(null);
+    try {
+      await api.resumeCoverJob(job.job_id);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "继续失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const deleteCurrent = async () => {
+    if (!job) return;
+    const ok = window.confirm("确定删除当前封面任务吗？");
+    if (!ok) return;
+    setWorking("delete-current");
+    setError(null);
+    try {
+      await api.deleteCoverJob(job.job_id);
+      await loadJobs(null);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "删除失败");
+    } finally {
+      setWorking(null);
     }
   };
 
@@ -296,21 +422,6 @@ export function CoverGeneratorPanel() {
             )}
             <span className="tracking-widest">刷新进度</span>
           </button>
-          {job && job.completed > 0 && (
-            <button
-              type="button"
-              onClick={download}
-              disabled={downloading}
-              className="btn-ghost"
-            >
-              {downloading ? (
-                <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.7} />
-              ) : (
-                <Download className="h-4 w-4" strokeWidth={1.7} />
-              )}
-              <span className="tracking-widest">下载封面</span>
-            </button>
-          )}
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
@@ -327,11 +438,75 @@ export function CoverGeneratorPanel() {
         </div>
       </div>
 
-      <div className="grid gap-8 xl:grid-cols-[320px_1fr]">
+      <div className="grid gap-8 xl:grid-cols-[340px_1fr]">
         <aside className="space-y-3">
-          <div className="text-[10px] tracking-widest text-warm-500">
-            封面任务
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] tracking-widest text-warm-500">
+              封面任务
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectionMode((prev) => !prev);
+                setSelectedJobIds(new Set());
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-gold-500/15 px-3 py-1.5 text-[10px] tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
+            >
+              {selectionMode ? <X className="h-3 w-3" /> : <CheckSquare className="h-3 w-3" />}
+              {selectionMode ? "退出" : "多选"}
+            </button>
           </div>
+
+          {selectionMode && (
+            <div className="rounded-lg border border-gold-500/10 bg-base-800/45 p-3">
+              <div className="mb-3 text-xs text-warm-400">
+                已选择 {selectedCount} 个
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedJobIds(new Set(jobs.map((item) => item.job_id)))}
+                  disabled={jobs.length === 0}
+                  className="rounded-full border border-gold-500/15 px-3 py-1.5 text-[10px] tracking-widest text-warm-300 disabled:opacity-50"
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedJobIds(new Set())}
+                  disabled={selectedCount === 0}
+                  className="rounded-full border border-gold-500/15 px-3 py-1.5 text-[10px] tracking-widest text-warm-300 disabled:opacity-50"
+                >
+                  清空
+                </button>
+                <button
+                  type="button"
+                  onClick={() => batchAction("pause")}
+                  disabled={selectedCount === 0 || working !== null}
+                  className="rounded-full border border-gold-500/15 px-3 py-1.5 text-[10px] tracking-widest text-warm-300 disabled:opacity-50"
+                >
+                  批量暂停
+                </button>
+                <button
+                  type="button"
+                  onClick={() => batchAction("resume")}
+                  disabled={selectedCount === 0 || working !== null}
+                  className="rounded-full border border-gold-500/15 px-3 py-1.5 text-[10px] tracking-widest text-warm-300 disabled:opacity-50"
+                >
+                  批量继续
+                </button>
+                <button
+                  type="button"
+                  onClick={() => batchAction("delete")}
+                  disabled={selectedCount === 0 || working !== null}
+                  className="rounded-full border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-[10px] tracking-widest text-red-100 disabled:opacity-50"
+                >
+                  批量删除
+                </button>
+              </div>
+            </div>
+          )}
+
           {loadingJobs ? (
             <div className="rounded-lg border border-gold-500/10 bg-base-800/45 p-4 text-xs text-warm-500">
               加载中
@@ -346,7 +521,10 @@ export function CoverGeneratorPanel() {
                 key={item.job_id}
                 job={item}
                 active={item.job_id === job?.job_id}
-                onClick={() => selectJob(item.job_id)}
+                selected={selectedJobIds.has(item.job_id)}
+                selectionMode={selectionMode}
+                onOpen={() => selectJob(item.job_id)}
+                onSelect={() => toggleJobSelection(item.job_id)}
               />
             ))
           )}
@@ -354,26 +532,78 @@ export function CoverGeneratorPanel() {
 
         <div>
           <div className="rounded-lg border border-gold-500/10 bg-base-800/45 p-5">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="min-w-0">
                 <div className="truncate text-sm tracking-widest text-warm-100">
                   {job ? job.current_step : "封面队列空闲"}
                 </div>
                 <div className="mt-1 text-xs text-warm-500">{progressText}</div>
               </div>
-              <div className="min-w-[220px]">
-                <div className="mb-2 flex items-center justify-between text-xs text-warm-400">
-                  <span>{job?.default_category_label || job?.status || "idle"}</span>
-                  <span className="text-gold-300">{job?.progress ?? 0}%</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-base-900">
-                  <div
-                    className="h-full rounded-full bg-gold-400 transition-all duration-500"
-                    style={{ width: `${job?.progress ?? 0}%` }}
-                  />
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {job && isActiveJob(job) && (
+                  <button
+                    type="button"
+                    onClick={pauseCurrent}
+                    disabled={working !== null}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    <PauseCircle className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    暂停
+                  </button>
+                )}
+                {job && isPausedJob(job) && (
+                  <button
+                    type="button"
+                    onClick={resumeCurrent}
+                    disabled={working !== null}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    <PlayCircle className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    继续
+                  </button>
+                )}
+                {job && job.completed > 0 && (
+                  <button
+                    type="button"
+                    onClick={download}
+                    disabled={downloading}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    {downloading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.6} />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    )}
+                    下载
+                  </button>
+                )}
+                {job && (
+                  <button
+                    type="button"
+                    onClick={deleteCurrent}
+                    disabled={working !== null}
+                    className="btn-ghost text-red-100 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    删除
+                  </button>
+                )}
               </div>
             </div>
+
+            <div className="mt-5">
+              <div className="mb-2 flex items-center justify-between text-xs text-warm-400">
+                <span>{job?.default_category_label || statusLabel(job?.status || "")}</span>
+                <span className="text-gold-300">{job?.progress ?? 0}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-base-900">
+                <div
+                  className="h-full rounded-full bg-gold-400 transition-all duration-500"
+                  style={{ width: `${job?.progress ?? 0}%` }}
+                />
+              </div>
+            </div>
+
             {error && (
               <div className="mt-4 rounded-lg border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
                 {error}

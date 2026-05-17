@@ -10,14 +10,23 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import User
-from app.schemas.cover_job import CoverJobListResponse, CoverJobResponse
+from app.schemas.cover_job import (
+    CoverJobBatchItem,
+    CoverJobBatchRequest,
+    CoverJobBatchResponse,
+    CoverJobListResponse,
+    CoverJobResponse,
+)
 from app.services.cover_jobs import (
     build_zip,
     create_cover_job,
+    delete_cover_job,
     image_path,
     list_cover_jobs,
+    pause_cover_job,
     parse_cover_spreadsheet,
     read_status,
+    resume_cover_job,
     write_status,
 )
 from app.tasks.cover_tasks import generate_cover_job
@@ -90,6 +99,84 @@ def list_my_cover_jobs(
     user: User = Depends(get_current_user),
 ) -> CoverJobListResponse:
     return CoverJobListResponse(items=[_response(status) for status in list_cover_jobs(str(user.id), limit=limit)])
+
+
+@router.post(
+    "/jobs/batch",
+    response_model=CoverJobBatchResponse,
+    summary="批量暂停、继续或删除独立封面任务",
+)
+def batch_cover_jobs(
+    req: CoverJobBatchRequest,
+    user: User = Depends(get_current_user),
+) -> CoverJobBatchResponse:
+    items: list[CoverJobBatchItem] = []
+    for job_id in list(dict.fromkeys(req.job_ids)):
+        try:
+            status = _owned_status(job_id, user)
+            if req.action == "pause":
+                pause_cover_job(job_id, status)
+                items.append(CoverJobBatchItem(job_id=job_id, status="paused"))
+            elif req.action == "resume":
+                next_status = resume_cover_job(job_id, status)
+                generate_cover_job.delay(next_status["job_id"])
+                items.append(CoverJobBatchItem(job_id=job_id, status="pending"))
+            elif req.action == "delete":
+                pause_cover_job(job_id, status)
+                delete_cover_job(job_id)
+                items.append(CoverJobBatchItem(job_id=job_id, status="deleted"))
+        except Exception as exc:
+            items.append(
+                CoverJobBatchItem(job_id=job_id, status="skipped", reason=str(exc)[:300])
+            )
+    return CoverJobBatchResponse(items=items, total=len(items))
+
+
+@router.post(
+    "/jobs/{job_id}/pause",
+    response_model=CoverJobResponse,
+    summary="暂停独立封面任务",
+)
+def pause_my_cover_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    return _response(pause_cover_job(job_id, _owned_status(job_id, user)))
+
+
+@router.post(
+    "/jobs/{job_id}/resume",
+    response_model=CoverJobResponse,
+    summary="继续独立封面任务",
+)
+def resume_my_cover_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    status = resume_cover_job(job_id, _owned_status(job_id, user))
+    try:
+        generate_cover_job.delay(status["job_id"])
+    except Exception as exc:
+        status["status"] = "failed"
+        status["current_step"] = f"Celery 投递失败：{exc}"
+        write_status(status["job_id"], status)
+        raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+    return _response(status)
+
+
+@router.delete(
+    "/jobs/{job_id}",
+    status_code=204,
+    summary="删除独立封面任务",
+)
+def delete_my_cover_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> Response:
+    status = _owned_status(job_id, user)
+    pause_cover_job(job_id, status)
+    delete_cover_job(job_id)
+    return Response(status_code=204)
 
 
 @router.get(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -37,3 +38,19 @@ class CoverJobResponse(BaseModel):
 
 class CoverJobListResponse(BaseModel):
     items: list[CoverJobResponse]
+
+
+class CoverJobBatchRequest(BaseModel):
+    job_ids: list[str]
+    action: Literal["pause", "resume", "delete"]
+
+
+class CoverJobBatchItem(BaseModel):
+    job_id: str
+    status: str
+    reason: str | None = None
+
+
+class CoverJobBatchResponse(BaseModel):
+    items: list[CoverJobBatchItem]
+    total: int
