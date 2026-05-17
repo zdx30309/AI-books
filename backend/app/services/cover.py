@@ -33,6 +33,7 @@ _NO_REAL_PORTRAIT_RULE = (
 _WECHAT_DEDAO_STYLE_RULE = (
     "参考畅销书的配色与版式趋势，但只学习抽象规律：高饱和色块、明确标题层级、少而准的视觉隐喻、强留白或强对比；不得复刻任何真实封面。"
 )
+_HEALING_HANDDRAWN_STYLE_RULE = "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。"
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,53 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 _CATEGORY_STYLE_PROFILES["web_short_story"] = _CATEGORY_STYLE_PROFILES["history_culture"]
+_CATEGORY_STYLE_PROFILES["social_science_test"] = _CATEGORY_STYLE_PROFILES["social_science"]
+
+_COVER_PROMPT_ADJUSTMENT_KEYS = ("style_brief_rules", "draft_rules", "refine_rules")
+
+
+def _empty_cover_prompt_adjustment() -> dict[str, tuple[str, ...]]:
+    return {key: () for key in _COVER_PROMPT_ADJUSTMENT_KEYS}
+
+
+def _cover_category_ids() -> tuple[str, ...]:
+    try:
+        return tuple(str(item["id"]) for item in list_categories())
+    except Exception:
+        return tuple(_CATEGORY_STYLE_PROFILES.keys())
+
+
+_CATEGORY_COVER_PROMPT_ADJUSTMENTS: dict[str, dict[str, tuple[str, ...]]] = {
+    category_id: _empty_cover_prompt_adjustment() for category_id in _cover_category_ids()
+}
+_CATEGORY_COVER_PROMPT_ADJUSTMENTS["psychology_self_help"] = {
+    "style_brief_rules": (_HEALING_HANDDRAWN_STYLE_RULE,),
+    "draft_rules": (_HEALING_HANDDRAWN_STYLE_RULE,),
+    "refine_rules": (f"继续保持：{_HEALING_HANDDRAWN_STYLE_RULE}",),
+}
+
+
+def get_cover_category_prompt_adjustment(category: str | None) -> dict[str, tuple[str, ...]]:
+    """Return per-category cover prompt addenda.
+
+    Every current category has an entry. Empty tuples intentionally mean the
+    original three-step cover workflow and base prompt remain unchanged.
+    """
+    normalized = normalize_category(category or "social_science")
+    adjustment = _CATEGORY_COVER_PROMPT_ADJUSTMENTS.get(normalized)
+    if adjustment is None:
+        adjustment = _empty_cover_prompt_adjustment()
+    return {
+        key: tuple(adjustment.get(key, ()))
+        for key in _COVER_PROMPT_ADJUSTMENT_KEYS
+    }
+
+
+def _prompt_rule_section(rules: tuple[str, ...]) -> str:
+    if not rules:
+        return ""
+    return "".join(f"- {rule}\n" for rule in rules)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
@@ -294,7 +342,7 @@ def _category_options_for_market_prompt() -> str:
 
 
 def cover_categories_fallback() -> str:
-    return "social_science=社会痛点；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助"
+    return "social_science=社会痛点；social_science_test=社会痛点测试版；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
@@ -453,6 +501,11 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     )
     market_match = analyze_cover_market_match(cover_input)
     references = collect_reference_covers(cover_input, market_match=market_match)
+    category_prompt_adjustment = get_cover_category_prompt_adjustment(cover_input.category)
+    style_brief_rules = category_prompt_adjustment["style_brief_rules"]
+    style_brief_addendum = "\n".join(style_brief_rules)
+    if style_brief_addendum:
+        style_brief_addendum += "\n"
     avoid_rules = (
         "只学习当当网、微信读书、得到畅销书封面的抽象设计规律，不复刻、不拼贴、不近似复制任何真实封面。",
         "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
@@ -460,6 +513,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
         _NO_REAL_PORTRAIT_RULE,
         _WECHAT_DEDAO_STYLE_RULE,
+        *style_brief_rules,
         *_SATURATED_COLOR_DIRECTION,
     )
     color_palette = tuple(profile["colors"]) + _SATURATED_COLOR_DIRECTION
@@ -481,6 +535,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         generation_prompt_addendum=(
             f"{profile['addendum']}\n"
             f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
+            f"{style_brief_addendum}"
             "必须强化微信读书/得到系爆款风：高饱和、强识别、清晰标题层级、少量精准隐喻。"
             "避免大面积深色，禁真实人物肖像，不复制真实封面。"
         ),
@@ -501,6 +556,9 @@ def _brief_json(brief: CoverStyleBrief) -> str:
 
 def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBrief) -> str:
     style_report = _brief_json(style_brief)[:3200]
+    category_rule_section = _prompt_rule_section(
+        get_cover_category_prompt_adjustment(cover_input.category)["draft_rules"]
+    )
     return f"""你是资深中文出版封面设计师。请严格根据 Excel 提供的书名、作者、简介、分类，生成一张竖版中文图书正面封面。
 
 书籍信息：
@@ -512,6 +570,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 必须优先遵守的硬规则：
 - 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网同类畅销书，同时叠加微信读书/得到系爆款风格。你只学习抽象规律，不复刻、不拼贴、不近似复制任何真实封面。
 - 微信读书/得到系爆款风：高饱和、强识别、标题大而清晰、色块干净、手机端缩略图也醒目，排版要像成熟商业出版物。
+{category_rule_section.rstrip()}
 - 配色要明亮且饱和，优先电光蓝、亮青绿、柠檬黄、珊瑚橙、玫红、亮紫、奶白留白等组合；不要大面积黑色、深蓝、暗红、深灰，深色面积尽量低于 20%。
 - 书名最大，作者名次之；简介只能提炼成一句很短副标题或封面文案，不要整段上封面。
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如需人物，只能使用抽象剪影、背影、符号化小人或非写实插画。
@@ -527,6 +586,9 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 
 
 def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBrief) -> str:
+    category_rule_section = _prompt_rule_section(
+        get_cover_category_prompt_adjustment(cover_input.category)["refine_rules"]
+    )
     return f"""请精修这张封面，让它成为可直接商用、具有成熟出版质感的中文图书封面。
 
 书籍信息：
@@ -538,6 +600,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 精修硬规则：
 - 保留草稿的核心视觉和书籍气质，但让构图更稳、标题更清晰、字体层级更专业。
 - 继续遵循：{style_brief.generation_prompt_addendum[:1400]}
+{category_rule_section.rstrip()}
 - 如果画面偏暗，必须提亮并提升饱和度；大面积黑色、深蓝、暗红、深灰应减少到 20% 以下。
 - 强化微信读书/得到系爆款风：高饱和色块、强标题识别、明确留白、少量精准视觉隐喻，手机端缩略图也醒目。
 - 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
@@ -875,5 +938,6 @@ __all__ = [
     "build_refine_cover_prompt",
     "generate_cover_file",
     "generate_cover_file_from_metadata",
+    "get_cover_category_prompt_adjustment",
     "prepare_cover_input",
 ]

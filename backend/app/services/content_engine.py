@@ -1022,14 +1022,27 @@ async def _to_thread_with_optional_timeout(
     return await coro
 
 
-def _append_history_test_style_prompt(
+_STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
+    "web_short_story": (
+        "这是历史测试版专用的文风控制项，只影响叙事笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
+        "仍要严格遵守历史测试版当前 prompt，不要改成网文爽文、不要偏离历史叙事。",
+    ),
+    "social_science_test": (
+        "这是社会痛点测试版专用的文风控制项，只影响论述笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
+        "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
+    ),
+}
+
+
+def _append_style_reference_prompt(
     writer_prompt: str,
     *,
     category: str,
     style_reference: str | None,
     style_notes: str | None,
 ) -> str:
-    if normalize_category(category) != "web_short_story":
+    style_copy = _STYLE_REFERENCE_CATEGORY_COPY.get(normalize_category(category))
+    if style_copy is None:
         return writer_prompt
 
     reference = (style_reference or "").strip()
@@ -1037,9 +1050,10 @@ def _append_history_test_style_prompt(
     if not reference and not notes:
         return writer_prompt
 
+    intro, boundary = style_copy
     parts = [
         "\n【笔锋参考要求】",
-        "这是历史测试版专用的文风控制项，只影响叙事笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
+        intro,
     ]
     if reference:
         parts.append(f"- 参考对象：{reference}")
@@ -1049,7 +1063,7 @@ def _append_history_test_style_prompt(
         [
             "- 请提炼参考对象的叙事节奏、镜头感、人物推进、信息密度、段落呼吸和语言锋利度。",
             "- 只能学习气质和技法，必须生成原创书稿；不要复刻、改写或搬运任何现成作品句子。",
-            "- 仍要严格遵守历史测试版当前 prompt，不要改成网文爽文、不要偏离历史叙事。",
+            f"- {boundary}",
         ]
     )
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
@@ -1105,7 +1119,7 @@ async def generate_full_book(
         if on_stage:
             on_stage("writer_start", {})
         writer_prompt = full_book_writer_prompt.format(raw_text=raw_text.strip())
-        writer_prompt = _append_history_test_style_prompt(
+        writer_prompt = _append_style_reference_prompt(
             writer_prompt,
             category=normalized_category,
             style_reference=style_reference,

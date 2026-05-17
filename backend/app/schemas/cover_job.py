@@ -54,3 +54,7 @@ class CoverJobBatchItem(BaseModel):
 class CoverJobBatchResponse(BaseModel):
     items: list[CoverJobBatchItem]
     total: int
+
+
+class CoverJobItemBatchDeleteRequest(BaseModel):
+    indexes: list[int] = Field(default_factory=list)

@@ -4,7 +4,8 @@ import base64
 import json
 from pathlib import Path
 
-from app.services import cover
+from app.services import cover, cover_jobs
+from app.prompts.goal_driven_templates import list_categories
 from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCoverCrawler
 
 
@@ -23,11 +24,11 @@ def test_style_brief_locks_reference_site_and_brands() -> None:
 
     brief = cover.build_cover_style_brief(cover_input)
 
-    assert brief.reference_site == "当当网"
+    assert brief.reference_site.startswith("当当网")
     assert brief.reference_brands == ("酷威文化", "果麦文化", "时代华语")
     assert "历史" in brief.matched_category_style
     assert "果麦文化" in brief.brand_style_direction
-    assert "不要做成当当商品主图" in " ".join(brief.avoid_rules)
+    assert "不要做成电商商品主图" in " ".join(brief.avoid_rules)
     assert {item["brand"] for item in brief.reference_samples} <= {"酷威文化", "果麦文化", "时代华语"}
 
 
@@ -39,12 +40,32 @@ def test_draft_and_refine_prompts_enforce_publication_cover_not_ecommerce() -> N
         category="psychology_self_help",
     )
 
-    assert "酷威文化、果麦文化、时代华语" in prompt
-    assert "完整的正面封面本体" in prompt
+    assert "酷威文化" in prompt
+    assert "果麦文化" in prompt
+    assert "时代华语" in prompt
+    assert "完整正面封面本体" in prompt
     assert "不要 3D 书模" in prompt
-    assert "不要出版社 logo" in prompt
-    assert "不要出版品牌 logo" in prompt
-    assert "不要乱码文字" in prompt
+    assert "不要出现出版社 logo" in prompt
+    assert "出版品牌 logo" in prompt
+    assert "不要生成乱码中文" in prompt
+    assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in prompt
+
+
+def test_all_cover_categories_have_prompt_adjustment_interface() -> None:
+    for item in list_categories():
+        adjustment = cover.get_cover_category_prompt_adjustment(item["id"])
+        assert set(adjustment) == {"style_brief_rules", "draft_rules", "refine_rules"}
+
+
+def test_healing_handdrawn_prompt_only_applies_to_psychology_cover_category() -> None:
+    prompt = cover.build_cover_prompt(
+        "沉默的账单",
+        "@最终简介\n一本讨论普通人现实压力的社会痛点书。",
+        author="测试作者",
+        category="social_science",
+    )
+
+    assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" not in prompt
 
 
 def test_generate_cover_file_writes_three_stage_artifacts(
@@ -81,14 +102,17 @@ def test_generate_cover_file_writes_three_stage_artifacts(
     assert (tmp_path / "cover_refine_prompt.txt").exists()
 
     brief = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
-    assert brief["reference_site"] == "当当网"
+    assert brief["reference_site"].startswith("当当网")
     assert brief["reference_brands"] == ["酷威文化", "果麦文化", "时代华语"]
     assert {item["brand"] for item in brief["reference_samples"]} <= {"酷威文化", "果麦文化", "时代华语"}
     assert "时代华语" in brief["brand_style_direction"]
+    assert "做成时代华语式心理自助书封面" in brief["generation_prompt_addendum"]
+    assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in brief["generation_prompt_addendum"]
     assert calls[0][0] == "generation"
     assert calls[1][0] == "edit"
-    assert "可直接商用，具有出版质感" in calls[1][1]
-    assert "删除或避免所有出版社 logo" in calls[1][1]
+    assert "可直接商用、具有成熟出版质感" in calls[1][1]
+    assert "删除所有出版社 logo" in calls[1][1]
+    assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in calls[1][1]
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
@@ -120,6 +144,35 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     assert (tmp_path / "draft_cover.png").exists()
     assert not (tmp_path / "cover.png").exists()
     assert (tmp_path / "cover_refine_error.txt").exists()
+
+
+def test_delete_cover_job_items_marks_single_cover_deleted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
+            {"title": "第二本书", "author": "作者B", "category": "life_philosophy", "category_label": "人生哲学"},
+        ],
+        default_category="social_science",
+    )
+    job_id = status["job_id"]
+    image = cover_jobs.image_path(job_id, 1, "第一本书")
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(PNG_BYTES)
+
+    updated = cover_jobs.delete_cover_job_items(job_id, [1])
+    public = cover_jobs.public_cover_job_status(updated)
+    raw = cover_jobs.read_status(job_id)
+
+    assert not image.exists()
+    assert raw["items"][0]["status"] == "deleted"
+    assert [item["title"] for item in public["items"]] == ["第二本书"]
+    assert public["total"] == 1
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:

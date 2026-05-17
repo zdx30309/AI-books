@@ -15,6 +15,7 @@ import type {
   CoverJobListResponse,
   CoverJobBatchRequest,
   CoverJobBatchResponse,
+  CoverJobItemBatchDeleteRequest,
   CoverJobResponse,
   LoginRequest,
   MarkdownResponse,
@@ -318,6 +319,13 @@ export const api = {
     }),
   getCoverJobImageBlob: (jobId: string, index: number) =>
     fetchBlob(`/covers/jobs/${jobId}/items/${index}/image`),
+  deleteCoverJobItem: (jobId: string, index: number) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/${index}`, { method: "DELETE" }),
+  deleteCoverJobItems: (jobId: string, body: CoverJobItemBatchDeleteRequest) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/batch-delete`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   downloadCoverJob: async (jobId: string) => {
     const { blob, filename } = await download(`/covers/jobs/${jobId}/download`);
     saveBlob(blob, filename);

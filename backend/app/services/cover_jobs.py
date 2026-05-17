@@ -314,6 +314,90 @@ def write_status(job_id: str, data: dict[str, Any]) -> None:
     tmp.replace(status_path(job_id))
 
 
+def recount_status(status: dict[str, Any]) -> None:
+    items = [item for item in status.get("items") or [] if item.get("status") != "deleted"]
+    total = len(items)
+    completed = sum(1 for item in items if item.get("status") == "completed")
+    failed = sum(1 for item in items if item.get("status") == "failed")
+    processed = completed + failed
+    status["total"] = total
+    status["completed"] = completed
+    status["failed"] = failed
+    status["progress"] = 100 if total <= 0 else min(100, int(processed * 100 / total))
+
+
+def public_cover_job_status(status: dict[str, Any]) -> dict[str, Any]:
+    public = dict(status)
+    public["items"] = [
+        dict(item) for item in status.get("items") or [] if item.get("status") != "deleted"
+    ]
+    public.pop("owner_id", None)
+    recount_status(public)
+    return public
+
+
+def _delete_item_artifacts(job_id: str, item: dict[str, Any]) -> None:
+    try:
+        index = int(item.get("index") or 0)
+    except (TypeError, ValueError):
+        return
+    if index <= 0:
+        return
+    title = str(item.get("title") or f"cover_{index}")
+    path = image_path(job_id, index, title)
+    if path.exists():
+        path.unlink()
+    work_dir = path.parent / f".{path.stem}_work"
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+
+
+def delete_cover_job_items(
+    job_id: str,
+    indexes: list[int],
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = dict(status or read_status(job_id))
+    requested: set[int] = set()
+    for raw_index in indexes:
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if index > 0:
+            requested.add(index)
+    if not requested:
+        return data
+    items = list(data.get("items") or [])
+    deleted = 0
+    for item in items:
+        try:
+            index = int(item.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        if index not in requested or item.get("status") == "deleted":
+            continue
+        _delete_item_artifacts(job_id, item)
+        item.update(
+            status="deleted",
+            image_url=None,
+            error=None,
+            deleted_at=now_iso(),
+        )
+        deleted += 1
+
+    if deleted:
+        data["items"] = items
+        recount_status(data)
+        if data["total"] <= 0:
+            data["status"] = "completed"
+            data["current_step"] = "封面已全部删除"
+        else:
+            data["current_step"] = f"已删除 {deleted} 张封面"
+        write_status(job_id, data)
+    return data
+
+
 def pause_cover_job(job_id: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
     data = dict(status or read_status(job_id))
     if data.get("status") in {"completed", "deleted"}:
@@ -443,13 +527,16 @@ __all__ = [
     "cover_fingerprint",
     "create_cover_job",
     "delete_cover_job",
+    "delete_cover_job_items",
     "find_recent_duplicate_covers",
     "image_path",
     "list_cover_jobs",
     "normalize_cover_category",
     "parse_cover_spreadsheet",
+    "public_cover_job_status",
     "read_rows",
     "read_status",
+    "recount_status",
     "pause_cover_job",
     "resume_cover_job",
     "row_author",

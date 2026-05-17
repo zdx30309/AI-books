@@ -217,6 +217,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "social_science_test",
+        "label": "社会痛点测试版",
+        "core_feature": "与社会痛点端口同步，用于现实议题测试",
+        "directions": "教育、婚姻、住房、职场压力、养老",
+        "prompt_status": "ready",
+    },
+    {
         "id": "life_philosophy",
         "label": "人生哲学",
         "core_feature": "提供认知升级或心灵慰藉",
@@ -1162,13 +1169,18 @@ def _prompt_set(
     }
 
 
+SOCIAL_SCIENCE_PROMPT_SET = _prompt_set(SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT)
+
+
 HISTORY_CULTURE_PROMPT_SET = _prompt_set(
     HISTORY_CULTURE_FULL_BOOK_WRITER_PROMPT,
 )
 
 
 PROMPT_REGISTRY: dict[str, dict[str, str]] = {
-    "social_science": _prompt_set(SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT),
+    "social_science": SOCIAL_SCIENCE_PROMPT_SET,
+    # 社会痛点测试版：保留独立入口；prompt 与社会痛点端口严格同步，前端可追加笔锋参考。
+    "social_science_test": SOCIAL_SCIENCE_PROMPT_SET,
     "life_philosophy": _prompt_set(
         LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
         polish=LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT,

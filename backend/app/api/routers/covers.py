@@ -14,6 +14,7 @@ from app.schemas.cover_job import (
     CoverJobBatchItem,
     CoverJobBatchRequest,
     CoverJobBatchResponse,
+    CoverJobItemBatchDeleteRequest,
     CoverJobListResponse,
     CoverJobResponse,
 )
@@ -22,10 +23,12 @@ from app.services.cover_jobs import (
     CoverDuplicateError,
     create_cover_job,
     delete_cover_job,
+    delete_cover_job_items,
     image_path,
     list_cover_jobs,
     pause_cover_job,
     parse_cover_spreadsheet,
+    public_cover_job_status,
     read_status,
     resume_cover_job,
     write_status,
@@ -46,9 +49,7 @@ def _owned_status(job_id: str, user: User) -> dict:
 
 
 def _response(status: dict) -> CoverJobResponse:
-    public = dict(status)
-    public.pop("owner_id", None)
-    return CoverJobResponse.model_validate(public)
+    return CoverJobResponse.model_validate(public_cover_job_status(status))
 
 
 @router.post(
@@ -186,6 +187,36 @@ def delete_my_cover_job(
     return Response(status_code=204)
 
 
+@router.post(
+    "/jobs/{job_id}/items/batch-delete",
+    response_model=CoverJobResponse,
+    summary="批量删除独立封面任务中的单张封面",
+)
+def delete_my_cover_job_items(
+    job_id: str,
+    req: CoverJobItemBatchDeleteRequest,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    if not req.indexes:
+        raise HTTPException(status_code=400, detail="请选择要删除的封面")
+    status = _owned_status(job_id, user)
+    return _response(delete_cover_job_items(job_id, req.indexes, status))
+
+
+@router.delete(
+    "/jobs/{job_id}/items/{index}",
+    response_model=CoverJobResponse,
+    summary="删除独立封面任务中的单张封面",
+)
+def delete_my_cover_job_item(
+    job_id: str,
+    index: int,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    status = _owned_status(job_id, user)
+    return _response(delete_cover_job_items(job_id, [index], status))
+
+
 @router.get(
     "/jobs/{job_id}",
     response_model=CoverJobResponse,
@@ -212,6 +243,8 @@ def get_cover_job_image(
     if index < 1 or index > len(items):
         raise HTTPException(status_code=404, detail="cover item not found")
     item = items[index - 1]
+    if item.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="cover image not found")
     path = image_path(job_id, index, str(item.get("title") or f"cover_{index}"))
     if not path.exists():
         raise HTTPException(status_code=404, detail="cover image not found")

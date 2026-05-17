@@ -85,6 +85,14 @@ def test_web_short_story_is_history_test_prompt_sync() -> None:
     assert get_category_meta("web_short_story")["label"] == "历史测试版"
 
 
+def test_social_science_test_prompt_sync() -> None:
+    social_prompts = get_prompts("social_science")
+    social_test_prompts = get_prompts("social_science_test")
+
+    assert social_test_prompts == social_prompts
+    assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
+
+
 def test_web_short_story_style_reference_keeps_history_prompt_sync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -120,7 +128,42 @@ def test_web_short_story_style_reference_keeps_history_prompt_sync(
     assert "不要复刻、改写或搬运任何现成作品句子" in writer_prompts[0]
 
 
-def test_style_reference_only_applies_to_history_test(
+def test_social_science_test_style_reference_keeps_social_prompt_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "普通社会议题素材。"
+    writer_prompts: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="social_science_test",
+            output_dir=tmp_path / "social_science_test",
+            style_reference="冷峻非虚构笔法",
+            style_notes="多一点现实细节和判断锋利度。",
+        )
+    )
+
+    assert writer_prompts[0].startswith(
+        get_prompts("social_science")["full_book_writer"].format(raw_text=raw_text)
+    )
+    assert "笔锋参考要求" in writer_prompts[0]
+    assert "参考对象：冷峻非虚构笔法" in writer_prompts[0]
+    assert "补充要求：多一点现实细节和判断锋利度。" in writer_prompts[0]
+    assert "仍要严格遵守社会痛点类当前 prompt" in writer_prompts[0]
+
+
+def test_style_reference_only_applies_to_test_categories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

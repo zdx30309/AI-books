@@ -139,7 +139,7 @@ def _normalize_task_config(config: dict | None) -> dict:
     )
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
-    if category == "web_short_story":
+    if category in {"web_short_story", "social_science_test"}:
         style_reference = str(cfg.get("style_reference") or "").strip()[:200]
         style_notes = str(cfg.get("style_notes") or "").strip()[:1000]
         if style_reference:

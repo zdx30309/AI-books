@@ -56,7 +56,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const isClassicalChinese = category === "classical_chinese";
-  const isHistoryTest = category === "web_short_story";
+  const supportsStyleReference =
+    category === "web_short_story" || category === "social_science_test";
 
   useEffect(() => {
     if (!open) {
@@ -99,11 +100,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   }, [isClassicalChinese]);
 
   useEffect(() => {
-    if (!isHistoryTest) {
+    if (!supportsStyleReference) {
       setStyleReference("");
       setStyleNotes("");
     }
-  }, [isHistoryTest]);
+  }, [supportsStyleReference]);
 
   useEffect(() => {
     if (!open) return;
@@ -135,7 +136,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setSubmitting(true);
       try {
         const config: Record<string, unknown> = { category };
-        if (isHistoryTest) {
+        if (supportsStyleReference) {
           if (styleReference.trim()) config.style_reference = styleReference.trim();
           if (styleNotes.trim()) config.style_notes = styleNotes.trim();
         }
@@ -179,7 +180,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
-      if (isHistoryTest) {
+      if (supportsStyleReference) {
         if (styleReference.trim()) config.style_reference = styleReference.trim();
         if (styleNotes.trim()) config.style_notes = styleNotes.trim();
       }
@@ -284,7 +285,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             </p>
           </div>
 
-          {isHistoryTest && (
+          {supportsStyleReference && (
             <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
               <label className="mb-3 flex items-center gap-2 text-[11px] tracking-widest text-warm-300">
                 <PencilLine className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />

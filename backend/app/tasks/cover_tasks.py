@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import settings
 from app.services.cover import generate_cover_file_from_metadata
-from app.services.cover_jobs import image_path, read_rows, read_status, write_status
+from app.services.cover_jobs import image_path, read_rows, read_status, recount_status, write_status
 from app.utils.distributed_limiter import DistributedLimitError
 from celery_app import celery_app
 
@@ -19,14 +20,7 @@ def _now_iso() -> str:
 
 
 def _recount(status: dict[str, Any]) -> None:
-    items = list(status.get("items") or [])
-    total = int(status.get("total") or len(items) or 0)
-    completed = sum(1 for item in items if item.get("status") == "completed")
-    failed = sum(1 for item in items if item.get("status") == "failed")
-    processed = completed + failed
-    status["completed"] = completed
-    status["failed"] = failed
-    status["progress"] = 100 if total <= 0 else min(100, int(processed * 100 / total))
+    recount_status(status)
 
 
 def _finish_status(status: dict[str, Any]) -> None:
@@ -34,6 +28,11 @@ def _finish_status(status: dict[str, Any]) -> None:
     total = int(status.get("total") or 0)
     completed = int(status.get("completed") or 0)
     failed = int(status.get("failed") or 0)
+    if total <= 0:
+        status["progress"] = 100
+        status["status"] = "completed"
+        status["current_step"] = "没有待生成封面"
+        return
     if completed + failed < total:
         status["status"] = "processing"
         return
@@ -95,6 +94,8 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
         title = str(item.get("title") or row.get("title") or f"cover_{index}")
         path = image_path(job_id, index, title)
 
+        if item.get("status") == "deleted":
+            continue
         if item.get("status") == "completed" and path.exists() and path.stat().st_size > 0:
             continue
         if item.get("status") == "failed":
@@ -152,12 +153,19 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
         latest_items = list(latest.get("items") or [])
         target_items = latest_items if latest_items else items
         if index <= len(target_items):
-            target_items[index - 1].update(
-                status="completed",
-                error=None,
-                completed_at=_now_iso(),
-                image_url=f"/api/v1/covers/jobs/{job_id}/items/{index}/image",
-            )
+            if target_items[index - 1].get("status") == "deleted":
+                if path.exists():
+                    path.unlink()
+                work_dir = path.parent / f".{path.stem}_work"
+                if work_dir.exists():
+                    shutil.rmtree(work_dir)
+            else:
+                target_items[index - 1].update(
+                    status="completed",
+                    error=None,
+                    completed_at=_now_iso(),
+                    image_url=f"/api/v1/covers/jobs/{job_id}/items/{index}/image",
+                )
         latest["items"] = target_items
         if latest.get("status") == "paused":
             latest["current_step"] = "已暂停"
