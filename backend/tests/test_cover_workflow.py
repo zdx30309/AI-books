@@ -585,6 +585,52 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
     assert peak == 3
 
 
+def test_cover_job_processes_large_uploads_in_bounded_batches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_CONCURRENT_ITEMS", 2)
+    monkeypatch.setattr(cover_tasks.settings, "IMAGE_MAX_CONCURRENT_CALLS", 2)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_ITEMS_PER_RUN", 2)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {
+                "title": f"批量书 {i}",
+                "author": "作者A",
+                "category": "illustration_crayon",
+                "category_label": "治愈插画（蜡笔）",
+            }
+            for i in range(1, 6)
+        ],
+        default_category="illustration_crayon",
+    )
+    dispatched: list[str] = []
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_BYTES)
+        return output_path
+
+    monkeypatch.setattr(
+        cover_tasks,
+        "generate_cover_file_from_metadata",
+        fake_generate_cover_file_from_metadata,
+    )
+    monkeypatch.setattr(cover_tasks.generate_cover_job, "delay", dispatched.append)
+
+    result = cover_tasks.generate_cover_job.run(status["job_id"])
+    final = cover_jobs.read_status(status["job_id"])
+
+    assert result["reason"] == "next_batch_dispatched"
+    assert dispatched == [status["job_id"]]
+    assert final["status"] == "pending"
+    assert final["completed"] == 2
+    assert sum(1 for item in final["items"] if item["status"] == "pending") == 3
+
+
 def test_cover_job_deleted_item_cancels_without_requeue(
     tmp_path: Path,
     monkeypatch,

@@ -453,6 +453,12 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
                 write_status(job_id, status)
         return {"job_id": job_id, "status": read_status(job_id).get("status")}
 
+    max_items_per_run = max(
+        max_workers,
+        int(settings.COVER_JOB_MAX_ITEMS_PER_RUN or max_workers),
+    )
+    work = work[:max_items_per_run]
+
     retry_needed = False
     paused = False
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"cover-{job_id[:6]}") as executor:
@@ -508,6 +514,15 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
         else:
             _finish_status(status)
             write_status(job_id, status)
+
+    if read_status(job_id).get("status") == "pending" and not retry_needed:
+        generate_cover_job.delay(job_id)
+        return {
+            "job_id": job_id,
+            "status": read_status(job_id).get("status"),
+            "incomplete": True,
+            "reason": "next_batch_dispatched",
+        }
 
     if retry_needed or read_status(job_id).get("status") == "pending":
         current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
