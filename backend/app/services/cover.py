@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import get_category_meta, normalize_category
+from app.prompts.goal_driven_templates import get_category_meta, list_categories, normalize_category
 from app.services.dangdang_crawler import collect_dangdang_reference_covers
 from app.utils.distributed_limiter import DistributedLimitError, distributed_semaphore
 
@@ -22,6 +22,17 @@ ALLOWED_REFERENCE_SITE = "当当网"
 ALLOWED_REFERENCE_BRANDS: tuple[str, ...] = ("酷威文化", "果麦文化", "时代华语")
 _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
 _IMAGE_PROMPT_LIMIT = 5000
+_SATURATED_COLOR_DIRECTION = (
+    "以高饱和、明亮、强识别的出版色彩为主：电光蓝、亮青绿、柠檬黄、珊瑚橙、玫红、亮紫、奶白留白可组合使用。",
+    "深色只能作为文字、线条、阴影或小面积压重，不允许大面积黑色、深蓝、暗红、深灰铺底。",
+    "整体接近微信读书/得到系知识爆款封面：手机端缩略图也醒目，标题强、色块干净、排版有商业出版感。",
+)
+_NO_REAL_PORTRAIT_RULE = (
+    "禁止真实人物肖像、名人脸、写实人像、可识别照片脸；人物只能用抽象剪影、背影、符号化小人或非写实插画表达。"
+)
+_WECHAT_DEDAO_STYLE_RULE = (
+    "参考畅销书的配色与版式趋势，但只学习抽象规律：高饱和色块、明确标题层级、少而准的视觉隐喻、强留白或强对比；不得复刻任何真实封面。"
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +57,7 @@ class CoverStyleBrief:
     white_space_ratio: str
     visual_metaphors: tuple[str, ...]
     reference_samples: tuple[dict[str, str], ...]
+    market_style_analysis: str
     title_hierarchy: str
     avoid_rules: tuple[str, ...]
     generation_prompt_addendum: str
@@ -61,6 +73,13 @@ class ReferenceCover:
     product_id: str = ""
     source_page: str = ""
     local_image_path: str = ""
+
+
+@dataclass(frozen=True)
+class CoverMarketMatch:
+    category_label: str
+    search_keywords: str
+    analysis: str
 
 
 _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
@@ -204,13 +223,25 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def collect_reference_covers(cover_input: CoverInput, limit: int = 12) -> tuple[ReferenceCover, ...]:
+def collect_reference_covers(
+    cover_input: CoverInput,
+    limit: int = 12,
+    *,
+    market_match: CoverMarketMatch | None = None,
+) -> tuple[ReferenceCover, ...]:
     """Collect stable reference metadata from the three approved Dangdang brand pools."""
     cache_dir = _cover_reference_cache_dir()
+    reference_intro = cover_input.intro
+    reference_category_label = cover_input.category_label
+    if market_match is not None:
+        reference_category_label = market_match.category_label or reference_category_label
+        reference_intro = " ".join(
+            item for item in (cover_input.intro, market_match.search_keywords) if item
+        )
     references = collect_dangdang_reference_covers(
         title=cover_input.title,
-        intro=cover_input.intro,
-        category_label=cover_input.category_label,
+        intro=reference_intro,
+        category_label=reference_category_label,
         allowed_brands=ALLOWED_REFERENCE_BRANDS,
         cache_dir=cache_dir,
         limit=limit,
@@ -232,6 +263,88 @@ def collect_reference_covers(cover_input: CoverInput, limit: int = 12) -> tuple[
         )
         for item in references
     )
+
+
+def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
+    keywords = " ".join(
+        item
+        for item in (
+            cover_input.title,
+            cover_input.category_label,
+            cover_input.intro[:120],
+        )
+        if item
+    )
+    return CoverMarketMatch(
+        category_label=cover_input.category_label,
+        search_keywords=keywords[:240],
+        analysis=(
+            f"按 Excel 分类「{cover_input.category_label}」检索同类畅销书。"
+            "采用微信读书/得到系爆款风：高饱和明亮配色、标题强识别、少量精准隐喻、成熟出版排版。"
+            "禁止真实人物肖像，不复刻真实封面。"
+        ),
+    )
+
+
+def _category_options_for_market_prompt() -> str:
+    try:
+        return "；".join(f"{item['id']}={item['label']}" for item in list_categories())
+    except Exception:
+        return cover_categories_fallback()
+
+
+def cover_categories_fallback() -> str:
+    return "social_science=社会痛点；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助"
+
+
+def _json_object_from_text(text: str) -> dict[str, Any]:
+    stripped = (text or "").strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        stripped = stripped[start : end + 1]
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        raise ValueError("DeepSeek market analysis did not return a JSON object")
+    return data
+
+
+def analyze_cover_market_match(cover_input: CoverInput) -> CoverMarketMatch:
+    if not settings.COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED or not (settings.DEEPSEEK_API_KEY or "").strip():
+        return _fallback_market_match(cover_input)
+
+    prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类畅销书封面，再给当当/微信读书/得到风格检索提供关键词。
+
+书名：{cover_input.title}
+作者：{cover_input.author}
+简介：{cover_input.intro}
+Excel 分类：{cover_input.category_label}
+可选分类：{_category_options_for_market_prompt()}
+
+只输出 JSON，不要输出解释文字：
+{{
+  "category_label": "最适合用于检索同类封面的中文分类名，优先贴近 Excel 分类",
+  "search_keywords": "用于当当网同类畅销书封面检索的中文关键词，80字以内",
+  "analysis": "用120字以内总结微信读书/得到系爆款封面的配色、排版、视觉隐喻方向；必须强调高饱和、少大面积深色、禁真实人物肖像、不得抄袭真实封面"
+}}"""
+    try:
+        from app.services.deepseek import generate_text
+
+        raw = generate_text(
+            prompt,
+            temperature=0.0,
+            max_output_tokens=settings.COVER_DEEPSEEK_STYLE_ANALYSIS_MAX_TOKENS,
+            system_instruction="你只做分类匹配和市场风格分析，不写封面生成提示词，不生成图片。",
+        )
+        data = _json_object_from_text(raw)
+        return CoverMarketMatch(
+            category_label=str(data.get("category_label") or cover_input.category_label)[:80],
+            search_keywords=str(data.get("search_keywords") or cover_input.title)[:240],
+            analysis=str(data.get("analysis") or raw)[:900],
+        )
+    except Exception as exc:
+        logger.warning("DeepSeek cover market analysis fallback: %s", exc)
+        return _fallback_market_match(cover_input)
 
 
 def _cover_reference_cache_dir() -> Path:
@@ -331,32 +444,46 @@ def prepare_cover_input(
     )
 
 
+
+
 def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     profile = _CATEGORY_STYLE_PROFILES.get(
         cover_input.category,
         _CATEGORY_STYLE_PROFILES["social_science"],
     )
+    market_match = analyze_cover_market_match(cover_input)
+    references = collect_reference_covers(cover_input, market_match=market_match)
     avoid_rules = (
-        "只借鉴酷威文化、果麦文化、时代华语的抽象设计规律，不复刻任何真实封面",
-        "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印",
-        "不要做成当当商品主图、3D 书模、白底商品照、赠品图或促销海报",
-        "不要生成真实品牌背书、原书名残影、乱码中文或英文乱码",
+        "只学习当当网、微信读书、得到畅销书封面的抽象设计规律，不复刻、不拼贴、不近似复制任何真实封面。",
+        "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
+        "不要做成电商商品主图、3D 书模、白底商品照、赠品图、促销海报或电影海报。",
+        "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
+        _NO_REAL_PORTRAIT_RULE,
+        _WECHAT_DEDAO_STYLE_RULE,
+        *_SATURATED_COLOR_DIRECTION,
     )
+    color_palette = tuple(profile["colors"]) + _SATURATED_COLOR_DIRECTION
     return CoverStyleBrief(
-        reference_site=ALLOWED_REFERENCE_SITE,
+        reference_site="当当网 + 微信读书/得到爆款风格分析",
         reference_brands=ALLOWED_REFERENCE_BRANDS,
-        matched_category_style=f"{cover_input.category_label}：{profile['style']}",
-        brand_style_direction=f"优先参考 {profile['brand']} 在当当网同类书中的抽象审美规律",
+        matched_category_style=f"{cover_input.category_label}: {profile['style']}",
+        brand_style_direction=f"优先参考 {profile['brand']} 在当当网同类畅销书中的抽象审美规律，并叠加微信读书/得到系知识爆款风。",
         cover_type=str(profile["cover_type"]),
-        color_palette=tuple(profile["colors"]),
+        color_palette=color_palette,
         composition=str(profile["composition"]),
         typography_direction=str(profile["typography"]),
         white_space_ratio=str(profile["white_space"]),
         visual_metaphors=tuple(profile["metaphors"]),
-        reference_samples=tuple(asdict(item) for item in collect_reference_covers(cover_input)),
-        title_hierarchy="书名最大，作者名次之，副标题或极短封面文案更小；整体像正式出版物装帧",
+        reference_samples=tuple(asdict(item) for item in references),
+        market_style_analysis=market_match.analysis,
+        title_hierarchy="书名最大，作者名次之，副标题或极短封面文案更小；手机端缩略图也必须一眼读清书名。",
         avoid_rules=avoid_rules,
-        generation_prompt_addendum=str(profile["addendum"]),
+        generation_prompt_addendum=(
+            f"{profile['addendum']}\n"
+            f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
+            "必须强化微信读书/得到系爆款风：高饱和、强识别、清晰标题层级、少量精准隐喻。"
+            "避免大面积深色，禁真实人物肖像，不复制真实封面。"
+        ),
     )
 
 
@@ -364,8 +491,17 @@ def _brief_json(brief: CoverStyleBrief) -> str:
     return json.dumps(asdict(brief), ensure_ascii=False, indent=2)
 
 
+
+
+
+
+
+
+
+
 def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBrief) -> str:
-    return f"""你是一名资深中国出版封面设计师。请根据书籍信息和参考风格报告，生成一张可以直接作为图书封面的竖版正面封面设计图。
+    style_report = _brief_json(style_brief)[:3200]
+    return f"""你是资深中文出版封面设计师。请严格根据 Excel 提供的书名、作者、简介、分类，生成一张竖版中文图书正面封面。
 
 书籍信息：
 - 书名：{cover_input.title}
@@ -373,40 +509,43 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 - 简介：{cover_input.intro}
 - 分类：{cover_input.category_label}
 
+必须优先遵守的硬规则：
+- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网同类畅销书，同时叠加微信读书/得到系爆款风格。你只学习抽象规律，不复刻、不拼贴、不近似复制任何真实封面。
+- 微信读书/得到系爆款风：高饱和、强识别、标题大而清晰、色块干净、手机端缩略图也醒目，排版要像成熟商业出版物。
+- 配色要明亮且饱和，优先电光蓝、亮青绿、柠檬黄、珊瑚橙、玫红、亮紫、奶白留白等组合；不要大面积黑色、深蓝、暗红、深灰，深色面积尽量低于 20%。
+- 书名最大，作者名次之；简介只能提炼成一句很短副标题或封面文案，不要整段上封面。
+- 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如需人物，只能使用抽象剪影、背影、符号化小人或非写实插画。
+- 中文文字尽量准确清晰，像真实出版封面排版；不要乱码中文、伪中文、英文占位符。
+- 不要出现出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、二维码、价格、水印、真实品牌背书、真实书名残影。
+- 不要 3D 书模、书脊、白底商品照、赠品、贴纸角标、促销条、电影海报风、电商主图风。
+
 参考风格报告：
-{_brief_json(style_brief)}
+{style_report}
 
-生成目标：
-生成完整的正面封面本体，画面铺满整张竖版画布，推荐 2:3 或 3:4。它必须是一张可直接商用、具有出版质感的中文图书封面，而不是电商商品主图。
-
-设计要求：
-- 只学习当当网中酷威文化、果麦文化、时代华语三家品牌的抽象规律：配色、构图、标题层级、留白、视觉隐喻和出版气质。
-- 不得复刻、拼贴、改写或近似复制任何真实封面。
-- 书名是最大视觉层级，作者名次之；简介只可提炼成一句很短的副标题或封面文案，不要整段上封面。
-- 封面应有成熟出版设计：构图稳定、色彩克制、字体高级、视觉隐喻准确、印刷质感自然。
-- 中文文字必须尽量准确、清晰，像真实出版封面排版；不要生成乱码中文、伪中文、英文占位符或真实出版信息。
-
-硬性禁止：
-不要 3D 书模、不要书脊、不要白底商品照、不要赠品、不要贴纸角标、不要促销条、不要二维码、不要出版社 logo、不要出版品牌 logo、不要原出版信息、不要价格、不要水印、不要真实品牌背书、不要乱码文字、不要电影海报风。"""
+输出：
+完整正面封面本体，画面铺满整张竖版画布，推荐 2:3 或 3:4，可直接作为中文图书封面使用。"""
 
 
 def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBrief) -> str:
-    return f"""请精修这张封面，使它成为可直接商用，具有出版质感的中文图书封面。
+    return f"""请精修这张封面，让它成为可直接商用、具有成熟出版质感的中文图书封面。
 
 书籍信息：
 - 书名：{cover_input.title}
 - 作者：{cover_input.author}
+- 简介：{cover_input.intro}
 - 分类：{cover_input.category_label}
 
-精修方向：
-- 保留第二步封面的核心视觉、主色、中文标题层级和分类气质，但让构图更稳、字体区更清晰、画面更像正式出版物。
-- 继续遵循参考风格：{style_brief.generation_prompt_addendum}
-- 删除或避免所有出版社 logo、出版品牌 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
-- 不要把画面改成电商商品图，不要出现 3D 书本样机、书脊、赠品、白底商品展示。
-- 最终保留：书名、作者、可选短副标题、封面主体视觉、成熟出版排版。
+精修硬规则：
+- 保留草稿的核心视觉和书籍气质，但让构图更稳、标题更清晰、字体层级更专业。
+- 继续遵循：{style_brief.generation_prompt_addendum[:1400]}
+- 如果画面偏暗，必须提亮并提升饱和度；大面积黑色、深蓝、暗红、深灰应减少到 20% 以下。
+- 强化微信读书/得到系爆款风：高饱和色块、强标题识别、明确留白、少量精准视觉隐喻，手机端缩略图也醒目。
+- 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
+- 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如已有此类内容，改成抽象剪影、背影、符号化小人或非写实插画。
+- 不要改成电商商品图，不要出现 3D 书本样机、书脊、赠品、白底商品展示。
 
-输出要求：
-竖版正面封面本体，高清，干净，有纸张或印刷质感，适合直接作为图书封面使用。"""
+最终输出：
+竖版正面封面本体，高清干净，有纸张或印刷质感。"""
 
 
 def build_cover_prompt(
@@ -549,6 +688,11 @@ def generate_cover_file(
 ) -> Path:
     """Generate draft and refined cover images under the task output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    existing_cover_path = output_dir / "cover.png"
+    if existing_cover_path.exists() and existing_cover_path.stat().st_size > 0 and not force:
+        logger.info("复用已存在封面: %s", existing_cover_path)
+        return existing_cover_path
+
     cover_input = prepare_cover_input(
         title,
         markdown,
@@ -625,6 +769,27 @@ _METADATA_CATEGORY_KEYS = (
 )
 
 
+_METADATA_TITLE_KEYS = tuple(dict.fromkeys((*_METADATA_TITLE_KEYS, "书名", "标题", "图书名", "作品名")))
+_METADATA_AUTHOR_KEYS = tuple(dict.fromkeys((*_METADATA_AUTHOR_KEYS, "作者", "作家", "笔名")))
+_METADATA_INTRO_KEYS = tuple(
+    dict.fromkeys(
+        (
+            *_METADATA_INTRO_KEYS,
+            "简介",
+            "内容简介",
+            "书籍简介",
+            "图书简介",
+            "短简介",
+            "卖点",
+            "副标题",
+            "brief",
+            "book_intro",
+        )
+    )
+)
+_METADATA_CATEGORY_KEYS = tuple(dict.fromkeys((*_METADATA_CATEGORY_KEYS, "分类", "书架", "题材", "类型")))
+
+
 def _metadata_lookup(metadata: dict[str, Any], keys: tuple[str, ...]) -> str:
     lowered = {
         str(key).strip().lower().replace(" ", "_"): str(value).strip()
@@ -655,12 +820,34 @@ def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Pat
     draft + refine cover workflow used by manuscript tasks. It writes to a
     per-item work directory first, then copies the final cover to output_path.
     """
+    if output_path.exists() and output_path.stat().st_size > 0:
+        logger.info("复用已存在独立封面: %s", output_path)
+        return output_path
+
     title = _metadata_lookup(metadata, _METADATA_TITLE_KEYS) or output_path.stem
     author = _metadata_lookup(metadata, _METADATA_AUTHOR_KEYS) or None
     intro = _metadata_lookup(metadata, _METADATA_INTRO_KEYS) or title
     category = _metadata_category(_metadata_lookup(metadata, _METADATA_CATEGORY_KEYS))
     markdown = f"@最终书名\n{title}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir = output_path.parent / f".{output_path.stem}_work"
+    markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    category_meta = get_category_meta(category)
+    (work_dir / "metadata_used.json").write_text(
+        json.dumps(
+            {
+                "title": title,
+                "author": author or "",
+                "intro": intro,
+                "category": category,
+                "category_label": category_meta["label"],
+                "source_metadata": metadata,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     generated_path = generate_cover_file(
         title=title,
         markdown=markdown,
@@ -679,7 +866,9 @@ __all__ = [
     "ALLOWED_REFERENCE_BRANDS",
     "ALLOWED_REFERENCE_SITE",
     "CoverInput",
+    "CoverMarketMatch",
     "CoverStyleBrief",
+    "analyze_cover_market_match",
     "build_cover_prompt",
     "build_cover_style_brief",
     "build_draft_cover_prompt",

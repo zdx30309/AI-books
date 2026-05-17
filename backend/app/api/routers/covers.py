@@ -19,6 +19,7 @@ from app.schemas.cover_job import (
 )
 from app.services.cover_jobs import (
     build_zip,
+    CoverDuplicateError,
     create_cover_job,
     delete_cover_job,
     image_path,
@@ -73,12 +74,18 @@ async def create_cover_job_from_excel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    status = create_cover_job(
-        str(user.id),
-        file.filename or "covers.xlsx",
-        rows,
-        default_category=category,
-    )
+    try:
+        status = create_cover_job(
+            str(user.id),
+            file.filename or "covers.xlsx",
+            rows,
+            default_category=category,
+        )
+    except CoverDuplicateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
     try:
         generate_cover_job.delay(status["job_id"])
     except Exception as exc:
