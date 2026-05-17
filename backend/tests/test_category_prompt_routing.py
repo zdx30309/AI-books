@@ -93,6 +93,12 @@ def test_social_science_test_prompt_sync() -> None:
     assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
 
 
+def test_crayon_illustration_is_not_a_body_writing_category() -> None:
+    assert "illustration_crayon" not in SUPPORTED_CATEGORIES
+    with pytest.raises(ValueError):
+        get_category_meta("illustration_crayon")
+
+
 def test_web_short_story_style_reference_keeps_history_prompt_sync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

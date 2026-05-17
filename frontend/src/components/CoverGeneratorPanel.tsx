@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import { DEFAULT_CATEGORIES } from "@/constants/categories";
+import { DEFAULT_COVER_CATEGORIES } from "@/constants/categories";
 import type { CoverJobItem, CoverJobResponse, TaskCategoryOption } from "@/api/types";
 
 const CURRENT_COVER_JOB_KEY = "scriptbook.cover.current_job_id";
@@ -281,7 +281,7 @@ export function CoverGeneratorPanel() {
   const [selectedItemIndexes, setSelectedItemIndexes] = useState<Set<number>>(() => new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [itemSelectionMode, setItemSelectionMode] = useState(false);
-  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_COVER_CATEGORIES);
   const [category, setCategory] = useState("social_science");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [loadingJobs, setLoadingJobs] = useState(true);
@@ -343,12 +343,12 @@ export function CoverGeneratorPanel() {
   useEffect(() => {
     let cancelled = false;
     api
-      .getTaskCategories()
+      .getCoverCategories()
       .then((res) => {
         if (!cancelled && res.items.length > 0) setCategories(res.items);
       })
       .catch(() => {
-        if (!cancelled) setCategories(DEFAULT_CATEGORIES);
+        if (!cancelled) setCategories(DEFAULT_COVER_CATEGORIES);
       });
     return () => {
       cancelled = true;

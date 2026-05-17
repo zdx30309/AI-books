@@ -12,7 +12,11 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import get_category_meta, list_categories, normalize_category
+from app.services.cover_categories import (
+    get_cover_category_meta,
+    list_cover_categories,
+    normalize_cover_category_id,
+)
 from app.services.dangdang_crawler import collect_dangdang_reference_covers
 from app.utils.distributed_limiter import DistributedLimitError, distributed_semaphore
 
@@ -34,6 +38,12 @@ _WECHAT_DEDAO_STYLE_RULE = (
     "参考畅销书的配色与版式趋势，但只学习抽象规律：高饱和色块、明确标题层级、少而准的视觉隐喻、强留白或强对比；不得复刻任何真实封面。"
 )
 _HEALING_HANDDRAWN_STYLE_RULE = "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。"
+_CRAYON_ILLUSTRATION_STYLE_RULE = (
+    "日韩治愈系手绘插画风，油画棒与蜡笔质感，高饱和自然配色，柔软颗粒笔触，"
+    "大面积留白与情绪感背景。画面以孤独但温柔的人物为主，强调情绪氛围。"
+    "手写感书名，大字自由排版，不工整但有呼吸感。整体像一本写给成年人的温柔情绪日记，"
+    "温暖、松弛、治愈，避免商业感、3D感、AI感与过度设计。"
+)
 
 
 class ImageApiError(RuntimeError):
@@ -184,6 +194,17 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
         "metaphors": ("脑袋轮廓", "线团", "阶梯", "开门", "睡眠元素", "几何符号"),
         "addendum": "做成时代华语式心理自助书封面，可信、清楚、有方法感。",
     },
+    "illustration_crayon": {
+        "brand": "果麦文化",
+        "style": "日韩治愈系手绘插画，油画棒与蜡笔质感，温柔松弛但仍有出版封面完成度",
+        "cover_type": "分类插画（蜡笔） / 成年人温柔情绪日记封面",
+        "colors": ("高饱和自然色", "暖黄", "草绿", "天蓝", "粉橙", "米白"),
+        "composition": "大面积留白与情绪感背景，一个孤独但温柔的人物作为主视觉，画面松弛有呼吸感",
+        "typography": "手写感书名，大字自由排版，不工整但清晰可读，避免商业促销感",
+        "white_space": "50%-70%",
+        "metaphors": ("孤独人物", "窗边", "日记本", "柔软颗粒背景", "暖光", "植物", "云朵"),
+        "addendum": _CRAYON_ILLUSTRATION_STYLE_RULE,
+    },
     "suspense_micro_reasoning": {
         "brand": "酷威文化",
         "style": "类型小说张力强，悬念明确，但不血腥低俗",
@@ -242,7 +263,7 @@ def _empty_cover_prompt_adjustment() -> dict[str, tuple[str, ...]]:
 
 def _cover_category_ids() -> tuple[str, ...]:
     try:
-        return tuple(str(item["id"]) for item in list_categories())
+        return tuple(str(item["id"]) for item in list_cover_categories())
     except Exception:
         return tuple(_CATEGORY_STYLE_PROFILES.keys())
 
@@ -255,6 +276,11 @@ _CATEGORY_COVER_PROMPT_ADJUSTMENTS["psychology_self_help"] = {
     "draft_rules": (_HEALING_HANDDRAWN_STYLE_RULE,),
     "refine_rules": (f"继续保持：{_HEALING_HANDDRAWN_STYLE_RULE}",),
 }
+_CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration_crayon"] = {
+    "style_brief_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),
+    "draft_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),
+    "refine_rules": (f"继续保持并强化：{_CRAYON_ILLUSTRATION_STYLE_RULE}",),
+}
 
 
 def get_cover_category_prompt_adjustment(category: str | None) -> dict[str, tuple[str, ...]]:
@@ -263,7 +289,7 @@ def get_cover_category_prompt_adjustment(category: str | None) -> dict[str, tupl
     Every current category has an entry. Empty tuples intentionally mean the
     original three-step cover workflow and base prompt remain unchanged.
     """
-    normalized = normalize_category(category or "social_science")
+    normalized = normalize_cover_category_id(category or "social_science")
     adjustment = _CATEGORY_COVER_PROMPT_ADJUSTMENTS.get(normalized)
     if adjustment is None:
         adjustment = _empty_cover_prompt_adjustment()
@@ -348,13 +374,13 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
 
 def _category_options_for_market_prompt() -> str:
     try:
-        return "；".join(f"{item['id']}={item['label']}" for item in list_categories())
+        return "；".join(f"{item['id']}={item['label']}" for item in list_cover_categories())
     except Exception:
         return cover_categories_fallback()
 
 
 def cover_categories_fallback() -> str:
-    return "social_science=社会痛点；social_science_test=社会痛点测试版；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助"
+    return "social_science=社会痛点；social_science_test=社会痛点测试版；life_philosophy=人生哲学；popular_science=科普商业；psychology_self_help=心理自助；illustration_crayon=分类插画（蜡笔）"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
@@ -493,8 +519,8 @@ def prepare_cover_input(
     intro: str | None = None,
     category: str | None = None,
 ) -> CoverInput:
-    normalized_category = normalize_category(category or "social_science")
-    category_meta = get_category_meta(normalized_category)
+    normalized_category = normalize_cover_category_id(category or "social_science")
+    category_meta = get_cover_category_meta(normalized_category)
     return CoverInput(
         title=_normalize_text(title, "未命名书稿")[:120],
         author=_normalize_text(author or _extract_author(markdown), "作者名留白")[:80],
@@ -926,7 +952,7 @@ def _metadata_category(value: str) -> str:
     if not value:
         return "social_science"
     try:
-        return normalize_category(value)
+        return normalize_cover_category_id(value)
     except ValueError:
         logger.warning("unknown cover category %r, fallback to social_science", value)
         return "social_science"
@@ -951,7 +977,7 @@ def generate_cover_file_from_metadata(metadata: dict[str, Any], output_path: Pat
     work_dir = output_path.parent / f".{output_path.stem}_work"
     markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir.mkdir(parents=True, exist_ok=True)
-    category_meta = get_category_meta(category)
+    category_meta = get_cover_category_meta(category)
     (work_dir / "metadata_used.json").write_text(
         json.dumps(
             {

@@ -15,7 +15,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from app.core.config import PROJECT_ROOT, settings
-from app.prompts.goal_driven_templates import get_category_meta, normalize_category
+from app.services.cover_categories import get_cover_category_meta, normalize_cover_category_id
 
 COVER_JOBS_ROOT = PROJECT_ROOT / "backend" / "output" / "cover_jobs"
 
@@ -108,10 +108,10 @@ def row_intro(row: dict[str, str]) -> str:
 def normalize_cover_category(category: str | None, fallback: str | None = None) -> tuple[str, str]:
     raw = (category or fallback or "social_science").strip() or "social_science"
     try:
-        normalized = normalize_category(raw)
+        normalized = normalize_cover_category_id(raw)
     except ValueError:
-        normalized = normalize_category(fallback or "social_science")
-    meta = get_category_meta(normalized)
+        normalized = normalize_cover_category_id(fallback or "social_science")
+    meta = get_cover_category_meta(normalized)
     return normalized, str(meta["label"])
 
 

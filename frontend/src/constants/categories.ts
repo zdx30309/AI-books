@@ -101,6 +101,17 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   },
 ];
 
+export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
+  ...DEFAULT_CATEGORIES,
+  {
+    id: "illustration_crayon",
+    label: "分类插画（蜡笔）",
+    core_feature: "温柔情绪插画封面，强调蜡笔质感与治愈氛围",
+    directions: "情绪日记、心理自助、孤独感、成年人治愈读物",
+    prompt_status: "ready",
+  },
+];
+
 export function categoryLabelFor(
   categoryId: string | null | undefined,
   categories: TaskCategoryOption[] = DEFAULT_CATEGORIES,

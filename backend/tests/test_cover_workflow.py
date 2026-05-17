@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from pathlib import Path
+from threading import Lock
 
 import httpx
 
 from app.services import cover, cover_jobs
+from app.services.cover_categories import get_cover_category_meta, list_cover_categories
+from app.tasks import cover_tasks
 from app.prompts.goal_driven_templates import list_categories
 from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCoverCrawler
 
@@ -68,6 +72,22 @@ def test_healing_handdrawn_prompt_only_applies_to_psychology_cover_category() ->
     )
 
     assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" not in prompt
+
+
+def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
+    prompt = cover.build_cover_prompt(
+        "清醒地活",
+        "@最终简介\n一本写给成年人情绪困境的温柔心理自助书。",
+        author="测试作者",
+        category="illustration_crayon",
+    )
+
+    assert "分类插画（蜡笔）" in prompt
+    assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" in prompt
+    assert "手写感书名，大字自由排版，不工整但有呼吸感" in prompt
+    assert "避免商业感、3D感、AI感与过度设计" in prompt
+    assert get_cover_category_meta("illustration_crayon")["label"] == "分类插画（蜡笔）"
+    assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
 
 def test_generate_cover_file_writes_three_stage_artifacts(
@@ -236,6 +256,56 @@ def test_retry_cover_job_items_preserves_draft_and_requeues_failed_cover(
     assert updated["items"][0]["auto_retry_count"] == 0
     assert not image.exists()
     assert draft.exists()
+
+
+def test_cover_job_advances_multiple_items_concurrently_without_image_api(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_CONCURRENT_ITEMS", 3)
+    monkeypatch.setattr(cover_tasks.settings, "IMAGE_MAX_CONCURRENT_CALLS", 3)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": f"第{i}本书", "author": "作者A", "category": "illustration_crayon", "category_label": "分类插画（蜡笔）"}
+            for i in range(1, 7)
+        ],
+        default_category="illustration_crayon",
+    )
+
+    active = 0
+    peak = 0
+    lock = Lock()
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path) -> Path:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(PNG_BYTES)
+            return output_path
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(
+        cover_tasks,
+        "generate_cover_file_from_metadata",
+        fake_generate_cover_file_from_metadata,
+    )
+
+    result = cover_tasks.generate_cover_job.run(status["job_id"])
+    final = cover_jobs.read_status(status["job_id"])
+
+    assert result["status"] == "completed"
+    assert final["completed"] == 6
+    assert final["failed"] == 0
+    assert peak == 3
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import User
+from app.schemas.task import TaskCategoryListResponse
 from app.schemas.cover_job import (
     CoverJobBatchItem,
     CoverJobBatchRequest,
@@ -19,6 +20,7 @@ from app.schemas.cover_job import (
     CoverJobListResponse,
     CoverJobResponse,
 )
+from app.services.cover_categories import list_cover_categories
 from app.services.cover_jobs import (
     build_zip,
     CoverDuplicateError,
@@ -111,6 +113,15 @@ async def create_cover_job_from_excel(
         ) from exc
     _enqueue_cover_job(status)
     return _response(status)
+
+
+@router.get(
+    "/categories",
+    response_model=TaskCategoryListResponse,
+    summary="获取封面书架专用分类",
+)
+def get_cover_categories() -> TaskCategoryListResponse:
+    return TaskCategoryListResponse(items=list_cover_categories())
 
 
 @router.get(
