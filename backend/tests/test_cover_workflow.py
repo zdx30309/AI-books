@@ -20,10 +20,12 @@ PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
 CRAYON_ILLUSTRATION_PROMPT = (
-    "日韩治愈系手绘插画风，油画棒与蜡笔质感，高饱和自然配色，柔软颗粒笔触，"
-    "大面积留白与情绪感背景。画面以孤独但温柔的人物为主，强调情绪氛围。"
-    "手写感书名，大字自由排版，不工整但有呼吸感。整体像一本写给成年人的温柔情绪日记，"
-    "温暖、松弛、治愈，避免商业感、3D感、AI感与过度设计。"
+    "微信读书女性治愈系封面风格，日韩手绘插画，像情绪绘本与私人日记。"
+    "油画棒、蜡笔、水粉质感，粗颗粒笔触，自然高饱和绘画色彩（草绿、橙花、天空蓝）。"
+    "人物安静、脆弱、温柔，带一点孤独感。花朵、植物、风、云、猫等自然元素。"
+    "书名字像手写在画上，与插画融合。避免心理学商业封面、避免得到系大标题、"
+    "避免信息图、避免PPT感、避免门和小路构图、避免UI插画风。"
+    "整体像一本被很多年轻女生收藏的治愈系绘本。"
 )
 
 
@@ -107,6 +109,11 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     assert adjustment["style_brief_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
     assert adjustment["draft_rules"] == (CRAYON_ILLUSTRATION_PROMPT,)
     assert adjustment["refine_rules"] == (f"继续保持并强化：{CRAYON_ILLUSTRATION_PROMPT}",)
+    assert "微信读书女性治愈系封面风格" in prompt
+    assert "避免得到系大标题" in prompt
+    assert "微信读书/得到系爆款风" not in prompt
+    assert "排版要像成熟商业出版物" not in prompt
+    assert "微信读书/得到系爆款风" not in refine_prompt
     assert get_cover_category_meta("illustration_crayon")["label"] == "治愈插画（蜡笔）"
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
@@ -168,7 +175,7 @@ def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:
     assert "分类：治愈插画" in prompt
     assert "做成时代华语式心理自助书封面" in prompt
     assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in prompt
-    assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" not in prompt
+    assert CRAYON_ILLUSTRATION_PROMPT not in prompt
     assert get_cover_category_meta("illustration")["label"] == "治愈插画"
     assert any(item["id"] == "illustration" for item in list_cover_categories())
     assert "做成时代华语式心理自助书封面" in psychology_prompt
