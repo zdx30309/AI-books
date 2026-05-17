@@ -66,6 +66,8 @@ export interface CoverJobItem {
   index: number;
   title: string;
   author: string | null;
+  category: string | null;
+  category_label: string | null;
   status: string;
   image_url: string | null;
   error: string | null;
@@ -81,9 +83,15 @@ export interface CoverJobResponse {
   failed: number;
   current_step: string;
   source_filename: string | null;
+  default_category: string | null;
+  default_category_label: string | null;
   created_at: string;
   updated_at: string;
   items: CoverJobItem[];
+}
+
+export interface CoverJobListResponse {
+  items: CoverJobResponse[];
 }
 
 export interface TaskCategoryOption {

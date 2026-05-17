@@ -3,18 +3,19 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import User
-from app.schemas.cover_job import CoverJobResponse
+from app.schemas.cover_job import CoverJobListResponse, CoverJobResponse
 from app.services.cover_jobs import (
     build_zip,
     create_cover_job,
     image_path,
+    list_cover_jobs,
     parse_cover_spreadsheet,
     read_status,
     write_status,
@@ -47,6 +48,7 @@ def _response(status: dict) -> CoverJobResponse:
 )
 async def create_cover_job_from_excel(
     file: UploadFile = File(...),
+    category: str = Form("social_science"),
     _db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
@@ -54,11 +56,20 @@ async def create_cover_job_from_excel(
     if not content:
         raise HTTPException(status_code=400, detail="上传文件为空")
     try:
-        rows = parse_cover_spreadsheet(file.filename or "covers.xlsx", content)
+        rows = parse_cover_spreadsheet(
+            file.filename or "covers.xlsx",
+            content,
+            default_category=category,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    status = create_cover_job(str(user.id), file.filename or "covers.xlsx", rows)
+    status = create_cover_job(
+        str(user.id),
+        file.filename or "covers.xlsx",
+        rows,
+        default_category=category,
+    )
     try:
         generate_cover_job.delay(status["job_id"])
     except Exception as exc:
@@ -67,6 +78,18 @@ async def create_cover_job_from_excel(
         write_status(status["job_id"], status)
         raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
     return _response(status)
+
+
+@router.get(
+    "/jobs",
+    response_model=CoverJobListResponse,
+    summary="查询当前用户的独立封面任务列表",
+)
+def list_my_cover_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+) -> CoverJobListResponse:
+    return CoverJobListResponse(items=[_response(status) for status in list_cover_jobs(str(user.id), limit=limit)])
 
 
 @router.get(

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckSquare, FileArchive, FileText, Loader2, Plus, RefreshCcw, Trash2, X } from "lucide-react";
 import { BookCard } from "@/components/BookCard";
-import { CoverGeneratorPanel } from "@/components/CoverGeneratorPanel";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { EmptyState } from "@/components/EmptyState";
 import { api, ApiError } from "@/api/client";
@@ -388,8 +387,6 @@ export function Bookshelf() {
           </button>
         </div>
       </div>
-
-      <CoverGeneratorPanel />
 
       <div className="mb-8 flex flex-wrap gap-2">
         {FILTERS.map((f) => (

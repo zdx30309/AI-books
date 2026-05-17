@@ -7,6 +7,7 @@ import { Workspace } from "./pages/Workspace";
 import { Bookshelf } from "./pages/Bookshelf";
 import { Profile } from "./pages/Profile";
 import { BookDetail } from "./pages/BookDetail";
+import { CoverBookshelf } from "./pages/CoverBookshelf";
 import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { WeReadTool } from "./pages/WeReadTool";
@@ -48,6 +49,16 @@ export default function App() {
             <ProtectedRoute>
               <AppShell>
                 <Bookshelf />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/covers"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <CoverBookshelf />
               </AppShell>
             </ProtectedRoute>
           }

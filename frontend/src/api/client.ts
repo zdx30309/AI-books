@@ -12,6 +12,7 @@ import type {
   ChaptersListResponse,
   CreateTaskRequest,
   CreateTaskResponse,
+  CoverJobListResponse,
   CoverJobResponse,
   LoginRequest,
   MarkdownResponse,
@@ -111,13 +112,20 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   return { blob: await res.blob(), filename };
 }
 
-async function uploadFile<T>(path: string, file: File): Promise<T> {
+async function uploadFile<T>(
+  path: string,
+  file: File,
+  fields?: Record<string, string>,
+): Promise<T> {
   const headers: Record<string, string> = {};
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const form = new FormData();
   form.append("file", file);
+  Object.entries(fields ?? {}).forEach(([key, value]) => {
+    form.append(key, value);
+  });
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers,
@@ -290,7 +298,10 @@ export const api = {
     const { blob, filename } = await download(`/tasks/${id}/cover/download`);
     saveBlob(blob, filename);
   },
-  createCoverJob: (file: File) => uploadFile<CoverJobResponse>("/covers/jobs", file),
+  createCoverJob: (file: File, category = "social_science") =>
+    uploadFile<CoverJobResponse>("/covers/jobs", file, { category }),
+  listCoverJobs: (limit = 50) =>
+    request<CoverJobListResponse>(`/covers/jobs?limit=${limit}`),
   getCoverJob: (jobId: string) => request<CoverJobResponse>(`/covers/jobs/${jobId}`),
   getCoverJobImageBlob: (jobId: string, index: number) =>
     fetchBlob(`/covers/jobs/${jobId}/items/${index}/image`),
