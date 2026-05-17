@@ -144,6 +144,64 @@ def test_crayon_illustration_keeps_large_title_and_author_on_cover() -> None:
     assert "作者名留白" not in prompt
 
 
+def test_crayon_illustration_uses_ai_visual_plan_before_generation(monkeypatch) -> None:
+    ai_plan = (
+        "主体意象：雨后窗台上的橙色纸船；构图方式：巨大手写书名绕过纸船；"
+        "季节：初夏雨后；空间：私人书桌；视角：近景俯视；"
+        "画面叙事：纸船像把情绪送走；色彩主轴：天空蓝、橙花色、嫩草绿。"
+    )
+
+    def fake_market_match(_cover_input: cover.CoverInput) -> cover.CoverMarketMatch:
+        return cover.CoverMarketMatch(
+            category_label="治愈插画（蜡笔）",
+            search_keywords="女性治愈 绘本",
+            analysis="微信读书女性治愈系手绘封面。",
+            visual_plan=ai_plan,
+        )
+
+    monkeypatch.setattr(cover, "analyze_cover_market_match", fake_market_match)
+    cover_input = cover.prepare_cover_input(
+        "雨会停在今天",
+        "@最终简介\n一个关于走出低落、重新感受生活的温柔故事。",
+        author="作者B",
+        category="illustration_crayon",
+    )
+    brief = cover.build_cover_style_brief(cover_input)
+    prompt = cover.build_draft_cover_prompt(cover_input, brief)
+    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
+
+    assert CRAYON_ILLUSTRATION_PROMPT in prompt
+    assert "本书差异化视觉判断" in brief.generation_prompt_addendum
+    assert ai_plan in brief.visual_variation_directive
+    assert ai_plan in prompt
+    assert ai_plan in refine_prompt
+    assert "不要把画面拉回通用治愈模板" in refine_prompt
+
+
+def test_crayon_illustration_fallback_visual_plan_differs_by_book() -> None:
+    cover_input_a = cover.prepare_cover_input(
+        "把春天装进口袋",
+        "@最终简介\n关于重新发现日常小确幸和轻盈关系的温柔绘本。",
+        author="作者A",
+        category="illustration_crayon",
+    )
+    cover_input_b = cover.prepare_cover_input(
+        "雨天里的小事",
+        "@最终简介\n关于孤独时刻、房间、灯光和自我陪伴的私人日记。",
+        author="作者B",
+        category="illustration_crayon",
+    )
+    brief_a = cover.build_cover_style_brief(cover_input_a)
+    brief_b = cover.build_cover_style_brief(cover_input_b)
+    prompt_a = cover.build_draft_cover_prompt(cover_input_a, brief_a)
+
+    assert "主体意象" in prompt_a
+    assert "构图方式" in prompt_a
+    assert "季节、空间、视角、画面叙事、色彩主轴" in prompt_a
+    assert "不要默认套用孤独小人、蓝天色块、植物边框" in prompt_a
+    assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
+
+
 def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
     aliases = [
         "illustration_crayon",
@@ -219,6 +277,7 @@ def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() ->
         assert CRAYON_ILLUSTRATION_PROMPT not in prompt
         assert "封面最大、最显眼的文字" not in prompt
         assert "必须把作者名" not in prompt
+        assert "本书差异化视觉判断" not in prompt
 
 
 def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:
