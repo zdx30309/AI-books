@@ -118,6 +118,26 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
 
+def test_crayon_illustration_keeps_large_title_and_author_on_cover() -> None:
+    cover_input = cover.prepare_cover_input(
+        "慢慢好起来",
+        "@最终简介\n一本写给成年人情绪困境的温柔书。",
+        author="作者A",
+        category="illustration_crayon",
+    )
+    brief = cover.build_cover_style_brief(cover_input)
+    prompt = cover.build_draft_cover_prompt(cover_input, brief)
+    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
+
+    assert CRAYON_ILLUSTRATION_PROMPT in brief.generation_prompt_addendum
+    assert cover._CRAYON_ILLUSTRATION_STYLE_RULE == CRAYON_ILLUSTRATION_PROMPT  # noqa: SLF001
+    assert "书名「慢慢好起来」必须是封面最大、最显眼的文字" in prompt
+    assert "即使保持手写感，也要在手机缩略图里一眼读清" in prompt
+    assert "必须把作者名「作者A」放到封面上，不可省略" in prompt
+    assert "必须把作者名「作者A」放到封面上，不可省略" in refine_prompt
+    assert "作者名留白" not in prompt
+
+
 def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
     aliases = [
         "illustration_crayon",
@@ -191,6 +211,8 @@ def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() ->
             category=item["id"],
         )
         assert CRAYON_ILLUSTRATION_PROMPT not in prompt
+        assert "封面最大、最显眼的文字" not in prompt
+        assert "必须把作者名" not in prompt
 
 
 def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:

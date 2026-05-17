@@ -26,6 +26,7 @@ ALLOWED_REFERENCE_SITE = "当当网"
 ALLOWED_REFERENCE_BRANDS: tuple[str, ...] = ("酷威文化", "果麦文化", "时代华语")
 _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
 _IMAGE_PROMPT_LIMIT = 5000
+_AUTHOR_PLACEHOLDER = "作者名留白"
 _SATURATED_COLOR_DIRECTION = (
     "以高饱和、明亮、强识别的出版色彩为主：电光蓝、亮青绿、柠檬黄、珊瑚橙、玫红、亮紫、奶白留白可组合使用。",
     "深色只能作为文字、线条、阴影或小面积压重，不允许大面积黑色、深蓝、暗红、深灰铺底。",
@@ -296,6 +297,33 @@ def _is_crayon_illustration(category: str | None) -> bool:
         return False
 
 
+def _has_real_author(cover_input: CoverInput) -> bool:
+    author = (cover_input.author or "").strip()
+    return bool(author) and author != _AUTHOR_PLACEHOLDER
+
+
+def _author_presence_rule(cover_input: CoverInput, *, handwritten: bool) -> str:
+    if not _has_real_author(cover_input):
+        return "- Excel 未提供作者名时，不要凭空编造作者名，也不要输出「作者名留白」。"
+    if handwritten:
+        return (
+            f"- 必须把作者名「{cover_input.author}」放到封面上，不可省略；"
+            "作者名作为书名下方或角落的小号手写署名，清晰准确，与插画融合。"
+        )
+    return (
+        f"- 必须把作者名「{cover_input.author}」放到封面上，不可省略；"
+        "作者名次于书名，小号但清晰可读，像真实出版封面署名。"
+    )
+
+
+def _crayon_title_author_rule(cover_input: CoverInput) -> str:
+    title_rule = (
+        f"- 书名「{cover_input.title}」必须是封面最大、最显眼的文字，"
+        "比作者名和任何副标题都大；即使保持手写感，也要在手机缩略图里一眼读清。"
+    )
+    return f"{title_rule}\n{_author_presence_rule(cover_input, handwritten=True)}"
+
+
 def get_cover_category_prompt_adjustment(category: str | None) -> dict[str, tuple[str, ...]]:
     """Return per-category cover prompt addenda.
 
@@ -562,7 +590,7 @@ def prepare_cover_input(
     category_meta = get_cover_category_meta(normalized_category)
     return CoverInput(
         title=_normalize_text(title, "未命名书稿")[:120],
-        author=_normalize_text(author or _extract_author(markdown), "作者名留白")[:80],
+        author=_normalize_text(author or _extract_author(markdown), _AUTHOR_PLACEHOLDER)[:80],
         intro=_normalize_text(intro or _extract_primary_intro(markdown), title)[:600],
         category=normalized_category,
         category_label=category_meta["label"],
@@ -585,6 +613,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     if style_brief_addendum:
         style_brief_addendum += "\n"
     if is_crayon:
+        crayon_title_author_rule = _crayon_title_author_rule(cover_input)
         avoid_rules = (
             "只学习当当网、微信读书女性治愈系封面的抽象审美，不复刻、不拼贴、不近似复制任何真实封面。",
             "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
@@ -600,11 +629,16 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             "优先参考微信读书女性治愈系封面的抽象审美规律：情绪绘本、私人日记感、"
             "手绘颗粒质感、自然元素与温柔孤独人物；禁止得到系商业大标题和心理学爆款封面。"
         )
-        title_hierarchy = "书名字像手写在画上，与插画融合；不要像设计字体，不做得到系大标题。"
+        title_hierarchy = (
+            "书名字像手写在画上，与插画融合，但必须是封面最大、最显眼的文字，"
+            "手机缩略图里也要一眼读清；作者名必须保留为小号手写署名，可放在书名下方或角落；"
+            "不要像设计字体，不做得到系大标题。"
+        )
         generation_prompt_addendum = (
             f"{profile['addendum']}\n"
             f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
             f"{style_brief_addendum}"
+            f"{crayon_title_author_rule}\n"
             "必须强化微信读书女性治愈系封面风格、情绪绘本与私人日记感。"
             "禁止心理学商业封面、得到系大标题、信息图、PPT感、门和小路构图、UI插画风。"
         )
@@ -667,6 +701,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         get_cover_category_prompt_adjustment(cover_input.category)["draft_rules"]
     )
     if _is_crayon_illustration(cover_input.category):
+        title_author_rule_section = f"{_crayon_title_author_rule(cover_input)}\n"
         market_rule_section = (
             "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网与微信读书同类封面。"
             "你只学习微信读书女性治愈系封面的抽象审美，不复刻、不拼贴、不近似复制任何真实封面。\n"
@@ -676,10 +711,11 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         color_and_type_rules = (
             "- 使用油画棒、蜡笔、水粉质感，粗颗粒笔触，自然高饱和绘画色彩，优先草绿、橙花、天空蓝等绘画色。\n"
             "- 人物安静、脆弱、温柔，带一点孤独感；花朵、植物、风、云、猫等自然元素可以进入画面。\n"
-            "- 书名字像手写在画上，与插画融合；不要像设计字体，不要得到系大标题，不要商业书封排版。\n"
+            "- 书名字像手写在画上，与插画融合；但书名必须明显放大，成为第一视觉焦点；不要像设计字体，不要得到系大标题，不要商业书封排版。\n"
         )
-        text_rule = "- 中文书名尽量准确清晰，但必须像随手写进画面里的手写字；不要乱码中文、伪中文、英文占位符。\n"
+        text_rule = "- 中文书名和作者署名都要尽量准确清晰，但必须像随手写进画面里的手写字；不要乱码中文、伪中文、英文占位符。\n"
     else:
+        title_author_rule_section = ""
         market_rule_section = (
             "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网同类畅销书，同时叠加微信读书/得到系爆款风格。"
             "你只学习抽象规律，不复刻、不拼贴、不近似复制任何真实封面。\n"
@@ -703,7 +739,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 {category_rule_section.rstrip()}
 {color_and_type_rules.rstrip()}
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如需人物，只能使用抽象剪影、背影、符号化小人或非写实插画。
-{text_rule.rstrip()}
+{title_author_rule_section}{text_rule.rstrip()}
 - 不要出现出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、二维码、价格、水印、真实品牌背书、真实书名残影。
 - 不要 3D 书模、书脊、白底商品照、赠品、贴纸角标、促销条、电影海报风、电商主图风。
 
@@ -719,10 +755,11 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
         get_cover_category_prompt_adjustment(cover_input.category)["refine_rules"]
     )
     if _is_crayon_illustration(cover_input.category):
+        title_author_rule_section = f"{_crayon_title_author_rule(cover_input)}\n"
         opening = "请精修这张封面，让它成为温柔、私人、安静的微信读书女性治愈系情绪绘本封面。"
         composition_rule = (
             "- 保留草稿的核心情绪和手绘气质，让画面更松弛、更有人味；"
-            "书名字像手写在画上，与插画融合，不像设计字体。"
+            "书名字像手写在画上，与插画融合，不像设计字体；同时把书名放大成第一视觉焦点，作者名保留为小号手写署名。"
         )
         market_rule = (
             "- 强化微信读书女性治愈系封面风格：日韩手绘插画、油画棒/蜡笔/水粉质感、"
@@ -730,6 +767,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
             "避免心理学商业封面、得到系大标题、信息图、PPT感、门和小路构图、UI插画风。"
         )
     else:
+        title_author_rule_section = ""
         opening = "请精修这张封面，让它成为可直接商用、具有成熟出版质感的中文图书封面。"
         composition_rule = "- 保留草稿的核心视觉和书籍气质，但让构图更稳、标题更清晰、字体层级更专业。"
         market_rule = "- 强化微信读书/得到系爆款风：高饱和色块、强标题识别、明确留白、少量精准视觉隐喻，手机端缩略图也醒目。"
@@ -745,7 +783,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 {composition_rule}
 - 继续遵循：{style_brief.generation_prompt_addendum[:1400]}
 {category_rule_section.rstrip()}
-- 如果画面偏暗，必须提亮并提升饱和度；大面积黑色、深蓝、暗红、深灰应减少到 20% 以下。
+{title_author_rule_section}- 如果画面偏暗，必须提亮并提升饱和度；大面积黑色、深蓝、暗红、深灰应减少到 20% 以下。
 {market_rule}
 - 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如已有此类内容，改成抽象剪影、背影、符号化小人或非写实插画。
