@@ -1,5 +1,16 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.zip
+
+.env
+.env.*
+!.env.production.example
+frontend/*.tsbuildinfo
+backend/output/
+models/
+tmp_ytdlp/
 
 .claude/worktrees/
 deployment.local.json
