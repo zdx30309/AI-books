@@ -39,6 +39,9 @@ from app.schemas.task import (
     BatchCreateTaskRequest,
     BatchCreateTaskResponse,
     BatchDownloadRequest,
+    BatchRegenerateTaskItem,
+    BatchRegenerateTaskRequest,
+    BatchRegenerateTaskResponse,
     BatchRetryTaskItem,
     BatchRetryTaskRequest,
     BatchRetryTaskResponse,
@@ -94,6 +97,37 @@ _RETRY_STAGE_PROGRESS: tuple[tuple[str, int, str], ...] = (
     ("02_polish.md", 72, "排队中（断点续跑：从二润继续）"),
     ("01_writer.md", 50, "排队中（断点续跑：从一润继续）"),
 )
+_REGENERATE_CONFIG_DROP_KEYS = {
+    "active_run_id",
+    "active_run_started_at",
+    "active_run_heartbeat_at",
+    "active_run_heartbeat_source",
+    "auto_retry_attempts",
+    "last_auto_retry_error",
+    "auto_retry_not_before",
+    "auto_retry_scheduled_by",
+    "auto_retry_exhausted_at",
+    "auto_requeued_at",
+    "auto_requeue_reason",
+    "failed_auto_recovery_attempts",
+    "failed_auto_recovered_at",
+    "markdown",
+    "markdown_chars",
+    "title",
+    "quality_report",
+    "quality_report_summary",
+    "cover_disabled",
+    "cover_status",
+    "cover_error",
+    "cover_path",
+    "cover_queued_at",
+    "cover_started_at",
+    "cover_completed_at",
+    "cover_isolated",
+    "cover_isolation_reason",
+    "cover_style_brief_path",
+    "draft_cover_path",
+}
 
 
 def _active_generation_count(db: Session) -> int:
@@ -215,6 +249,34 @@ def _prepare_task_for_retry(task: Task) -> None:
     task.progress = progress
     task.current_step = step
     task.error_message = None
+
+
+def _clear_task_output_dir(task_id: UUID) -> None:
+    output_dir = _task_output_dir(task_id)
+    if not output_dir.exists():
+        return
+    import shutil
+
+    shutil.rmtree(output_dir)
+    if output_dir.exists():
+        raise RuntimeError(f"旧阶段产物目录未清理完成: {output_dir}")
+
+
+def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
+    _clear_task_output_dir(task.id)
+    db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
+
+    cfg = dict(task.config or {})
+    for key in _REGENERATE_CONFIG_DROP_KEYS:
+        cfg.pop(key, None)
+    cfg["regenerated_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["regenerated_from_bookshelf"] = True
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.progress = 0
+    task.current_step = "重新生成排队中"
+    task.error_message = None
+    task.cover_url = None
 
 
 def _clean_candidate_url(raw: str) -> str:
@@ -507,6 +569,109 @@ def retry_failed_tasks(
         retried=retried,
         skipped=skipped,
         total_retried=len(retried),
+        total_skipped=len(skipped),
+    )
+
+
+@router.post(
+    "/regenerate",
+    response_model=BatchRegenerateTaskResponse,
+    summary="批量从头重新生成选中书稿",
+)
+def regenerate_tasks(
+    req: BatchRegenerateTaskRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BatchRegenerateTaskResponse:
+    requested_ids = list(dict.fromkeys(req.task_ids))
+    base_query = db.query(Task).filter(Task.owner_id == user.id)
+    locked = (
+        base_query.filter(Task.id.in_(requested_ids))
+        .with_for_update(skip_locked=True)
+        .all()
+    )
+    found_by_id = {task.id: task for task in locked}
+    tasks = [found_by_id[task_id] for task_id in requested_ids if task_id in found_by_id]
+    skipped: list[BatchRegenerateTaskItem] = []
+    for task_id in requested_ids:
+        if task_id not in found_by_id:
+            skipped.append(
+                BatchRegenerateTaskItem(
+                    task_id=task_id,
+                    status="skipped",
+                    reason="任务不存在、无权限或正在被其他操作锁定",
+                )
+            )
+
+    regeneratable: list[Task] = []
+    for task in tasks:
+        if task.status in _ACTIVE_TASK_STATUSES or _has_active_run(task):
+            skipped.append(
+                BatchRegenerateTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason="任务正在排队或生成中，不能重复重新生成",
+                )
+            )
+            continue
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            skipped.append(
+                BatchRegenerateTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason=f"当前状态为 {task.status}，不能从头重新生成",
+                )
+            )
+            continue
+        regeneratable.append(task)
+
+    if regeneratable:
+        _ensure_generation_capacity(db, requested=len(regeneratable))
+
+    regenerated: list[BatchRegenerateTaskItem] = []
+    tasks_to_dispatch: list[Task] = []
+    for task in regeneratable:
+        try:
+            _prepare_task_for_regeneration(db, task)
+        except Exception as exc:
+            logger.exception("[task %s] 批量重新生成清理旧产物失败", task.id)
+            skipped.append(
+                BatchRegenerateTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason=f"旧产物清理失败: {exc}",
+                )
+            )
+            continue
+        tasks_to_dispatch.append(task)
+        regenerated.append(
+            BatchRegenerateTaskItem(
+                task_id=task.id,
+                status=TaskStatus.PENDING,
+                reason=task.current_step,
+            )
+        )
+
+    db.commit()
+
+    for task in tasks_to_dispatch:
+        try:
+            _dispatch_task(task)
+        except Exception as exc:
+            logger.exception("[task %s] 批量重新生成投递失败", task.id)
+            task.status = TaskStatus.FAILED
+            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            db.commit()
+            for item in regenerated:
+                if item.task_id == task.id:
+                    item.status = TaskStatus.FAILED
+                    item.reason = str(exc)[:300]
+                    break
+
+    return BatchRegenerateTaskResponse(
+        regenerated=regenerated,
+        skipped=skipped,
+        total_regenerated=len(regenerated),
         total_skipped=len(skipped),
     )
 

@@ -129,6 +129,7 @@ export function Bookshelf() {
   const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | null>(null);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
+  const [batchRegenerating, setBatchRegenerating] = useState(false);
   const [categoryOrder, setCategoryOrder] = useState<string[]>(readStoredCategoryOrder);
   const [draggingCategoryId, setDraggingCategoryId] = useState<string | null>(null);
 
@@ -220,6 +221,10 @@ export function Bookshelf() {
   const selectedFailedTaskIds = selectedTasks
     .filter((task) => task.status === "failed")
     .map((task) => task.id);
+  const selectedRegeneratableTaskIds = selectedTasks
+    .filter((task) => task.status === "completed" || task.status === "failed")
+    .map((task) => task.id);
+  const batchBusy = batchDownloading !== null || batchDeleting || batchRetrying || batchRegenerating;
 
   const grouped = filtered.reduce<Record<string, TaskListItem[]>>((acc, task) => {
     const key = dateKey(taskDate(task));
@@ -351,6 +356,42 @@ export function Bookshelf() {
       alert(`继续生成失败：${msg}`);
     } finally {
       setBatchRetrying(false);
+    }
+  };
+
+  const handleBatchRegenerate = async () => {
+    const targetIds = selectedRegeneratableTaskIds;
+    if (targetIds.length === 0) {
+      alert("请先选择已完成或失败的书稿");
+      return;
+    }
+    const ok = window.confirm(
+      `将从头重新生成 ${targetIds.length} 本书稿。系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类；失败任务如果只想断点续跑，请使用「继续选中失败」。`,
+    );
+    if (!ok) return;
+
+    setBatchRegenerating(true);
+    try {
+      const res = await api.regenerateTasks({ task_ids: targetIds });
+      const refreshed = await api.listTasks(1, 0);
+      const regeneratedIds = new Set(res.regenerated.map((item) => item.task_id));
+      setTasks(refreshed.items);
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev);
+        regeneratedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      alert(`已重新生成入队 ${res.total_regenerated} 本，跳过 ${res.total_skipped} 本。`);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `[${e.status}] ${e.detail}`
+          : e instanceof Error
+            ? e.message
+            : "重新生成失败";
+      alert(`重新生成失败：${msg}`);
+    } finally {
+      setBatchRegenerating(false);
     }
   };
 
@@ -550,14 +591,14 @@ export function Bookshelf() {
               已选择 {selectedTaskIds.size} 本
             </div>
             <p className="mt-1 text-xs leading-relaxed text-warm-500">
-              当前筛选下有 {filtered.length} 本书稿，其中 {downloadableFiltered.length} 本已完成可下载、{visibleFailedTaskIds.length} 本失败可继续。批量删除会移除所有选中的书稿。
+              当前筛选下有 {filtered.length} 本书稿，其中 {downloadableFiltered.length} 本已完成可下载、{visibleFailedTaskIds.length} 本失败可继续；已选中 {selectedRegeneratableTaskIds.length} 本可从头重新生成。批量删除会移除所有选中的书稿。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={selectAllVisible}
-              disabled={filtered.length === 0 || batchDeleting}
+              disabled={filtered.length === 0 || batchBusy}
               className="rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               全选当前筛选
@@ -565,15 +606,28 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={clearSelection}
-              disabled={selectedTaskIds.size === 0 || batchDeleting}
+              disabled={selectedTaskIds.size === 0 || batchBusy}
               className="rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               清空选择
             </button>
             <button
               type="button"
+              onClick={handleBatchRegenerate}
+              disabled={selectedRegeneratableTaskIds.length === 0 || batchBusy}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-400/45 bg-gold-500/10 px-4 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchRegenerating ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+              ) : (
+                <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
+              )}
+              重新生成
+            </button>
+            <button
+              type="button"
               onClick={() => handleRetryFailed(selectedFailedTaskIds)}
-              disabled={selectedFailedTaskIds.length === 0 || batchRetrying}
+              disabled={selectedFailedTaskIds.length === 0 || batchBusy}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-400/45 bg-gold-500/10 px-4 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchRetrying ? (
@@ -586,7 +640,7 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={() => handleBatchDownload("docx")}
-              disabled={selectedCompletedTaskIds.length === 0 || batchDownloading !== null || batchDeleting}
+              disabled={selectedCompletedTaskIds.length === 0 || batchBusy}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-400/45 bg-gold-500/10 px-4 py-2 text-xs tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchDownloading === "docx" ? (
@@ -599,7 +653,7 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={() => handleBatchDownload("md")}
-              disabled={selectedCompletedTaskIds.length === 0 || batchDownloading !== null || batchDeleting}
+              disabled={selectedCompletedTaskIds.length === 0 || batchBusy}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchDownloading === "md" ? (
@@ -612,7 +666,7 @@ export function Bookshelf() {
             <button
               type="button"
               onClick={handleBatchDelete}
-              disabled={selectedTaskIds.size === 0 || batchDeleting}
+              disabled={selectedTaskIds.size === 0 || batchBusy}
               className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-400/35 bg-red-500/10 px-4 py-2 text-xs tracking-widest text-red-100 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchDeleting ? (

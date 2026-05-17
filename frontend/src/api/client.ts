@@ -5,6 +5,8 @@ import type {
   BatchCreateTaskRequest,
   BatchCreateTaskResponse,
   BatchDownloadRequest,
+  BatchRegenerateTaskRequest,
+  BatchRegenerateTaskResponse,
   BatchRetryTaskRequest,
   BatchRetryTaskResponse,
   ChapterResponse,
@@ -247,6 +249,11 @@ export const api = {
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
   retryFailedTasks: (body: BatchRetryTaskRequest = {}) =>
     request<BatchRetryTaskResponse>("/tasks/retry-failed", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  regenerateTasks: (body: BatchRegenerateTaskRequest) =>
+    request<BatchRegenerateTaskResponse>("/tasks/regenerate", {
       method: "POST",
       body: JSON.stringify(body),
     }),

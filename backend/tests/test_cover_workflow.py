@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Lock
 
 import httpx
+import pytest
 
 from app.services import cover, cover_jobs
 from app.services.cover_categories import get_cover_category_meta, list_cover_categories
@@ -18,6 +19,13 @@ from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCov
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+
+
+@pytest.fixture(autouse=True)
+def disable_external_cover_reference_calls(monkeypatch) -> None:
+    monkeypatch.setattr(cover.settings, "COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED", False)
+    monkeypatch.setattr(cover.settings, "COVER_REFERENCE_FETCH_ENABLED", False)
+    monkeypatch.setattr(cover.settings, "COVER_REFERENCE_DOWNLOAD_IMAGES", False)
 
 
 def test_style_brief_locks_reference_site_and_brands() -> None:
@@ -82,11 +90,11 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
         category="illustration_crayon",
     )
 
-    assert "分类插画（蜡笔）" in prompt
+    assert "治愈插画（蜡笔）" in prompt
     assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" in prompt
     assert "手写感书名，大字自由排版，不工整但有呼吸感" in prompt
     assert "避免商业感、3D感、AI感与过度设计" in prompt
-    assert get_cover_category_meta("illustration_crayon")["label"] == "分类插画（蜡笔）"
+    assert get_cover_category_meta("illustration_crayon")["label"] == "治愈插画（蜡笔）"
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
 
@@ -104,11 +112,11 @@ def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:
         category="psychology_self_help",
     )
 
-    assert "分类：分类插画" in prompt
+    assert "分类：治愈插画" in prompt
     assert "做成时代华语式心理自助书封面" in prompt
     assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in prompt
     assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" not in prompt
-    assert get_cover_category_meta("illustration")["label"] == "分类插画"
+    assert get_cover_category_meta("illustration")["label"] == "治愈插画"
     assert any(item["id"] == "illustration" for item in list_cover_categories())
     assert "做成时代华语式心理自助书封面" in psychology_prompt
 
@@ -292,7 +300,7 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
         "user-1",
         "covers.csv",
         [
-            {"title": f"第{i}本书", "author": "作者A", "category": "illustration_crayon", "category_label": "分类插画（蜡笔）"}
+            {"title": f"第{i}本书", "author": "作者A", "category": "illustration_crayon", "category_label": "治愈插画（蜡笔）"}
             for i in range(1, 7)
         ],
         default_category="illustration_crayon",

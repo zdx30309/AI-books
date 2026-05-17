@@ -66,6 +66,23 @@ class BatchRetryTaskResponse(BaseModel):
     total_skipped: int
 
 
+class BatchRegenerateTaskRequest(BaseModel):
+    task_ids: list[UUID] = Field(..., min_length=1, max_length=500, description="指定要从头重新生成的任务")
+
+
+class BatchRegenerateTaskItem(BaseModel):
+    task_id: UUID
+    status: str
+    reason: str | None = None
+
+
+class BatchRegenerateTaskResponse(BaseModel):
+    regenerated: list[BatchRegenerateTaskItem]
+    skipped: list[BatchRegenerateTaskItem]
+    total_regenerated: int
+    total_skipped: int
+
+
 class BatchDownloadRequest(BaseModel):
     task_ids: list[UUID] = Field(..., min_length=1, max_length=500, description="要打包下载的任务 ID")
     fmt: str = Field(default="docx", pattern="^(md|docx)$", description="下载格式")

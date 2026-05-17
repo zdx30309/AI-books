@@ -57,6 +57,23 @@ export interface BatchRetryTaskResponse {
   total_skipped: number;
 }
 
+export interface BatchRegenerateTaskRequest {
+  task_ids: string[];
+}
+
+export interface BatchRegenerateTaskItem {
+  task_id: string;
+  status: string;
+  reason?: string | null;
+}
+
+export interface BatchRegenerateTaskResponse {
+  regenerated: BatchRegenerateTaskItem[];
+  skipped: BatchRegenerateTaskItem[];
+  total_regenerated: number;
+  total_skipped: number;
+}
+
 export interface BatchDownloadRequest {
   task_ids: string[];
   fmt: "md" | "docx";
