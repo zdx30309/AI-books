@@ -123,6 +123,9 @@ def _stop_if_paused(job_id: str, status_lock: Lock) -> dict[str, Any] | None:
                 item["status"] = "pending"
                 item["error"] = None
                 item.pop("run_id", None)
+                item.pop("current_stage", None)
+                item.pop("stage_started_at", None)
+                item.pop("last_heartbeat_at", None)
         latest["active_run_id"] = None
         latest["current_step"] = "已暂停"
         _recount(latest)
@@ -140,6 +143,9 @@ def _prepare_job_run(job_id: str, run_id: str, total: int, status_lock: Lock) ->
                 item["status"] = "pending"
                 item["error"] = None
                 item.pop("run_id", None)
+                item.pop("current_stage", None)
+                item.pop("stage_started_at", None)
+                item.pop("last_heartbeat_at", None)
         status["active_run_id"] = run_id
         status["status"] = "processing"
         status["current_step"] = f"开始并发生成封面（最多 {total} 张同时进行）"
@@ -179,6 +185,9 @@ def _mark_processing(
             status="processing",
             error=None,
             started_at=_now_iso(),
+            stage_started_at=_now_iso(),
+            last_heartbeat_at=_now_iso(),
+            current_stage="preparing",
             image_url=None,
             run_id=run_id,
         )
@@ -187,6 +196,42 @@ def _mark_processing(
         _summarize_processing(latest, note=f"正在并发生成第 {index}/{total} 张《{title}》")
         write_status(job_id, latest)
         return None, title, path
+
+
+def _mark_item_progress(
+    job_id: str,
+    *,
+    index: int,
+    run_id: str,
+    stage: str,
+    status_lock: Lock,
+) -> None:
+    with status_lock:
+        try:
+            latest = read_status(job_id)
+        except FileNotFoundError:
+            return
+        if latest.get("active_run_id") != run_id:
+            return
+        items = list(latest.get("items") or [])
+        if index > len(items):
+            return
+        item = items[index - 1]
+        if item.get("status") != "processing" or item.get("run_id") != run_id:
+            return
+        now = _now_iso()
+        item["current_stage"] = stage
+        item["stage_started_at"] = now
+        item["last_heartbeat_at"] = now
+        latest["items"] = items
+        stage_label = {
+            "preparing": "准备封面参考与提示词",
+            "draft": "OpenAI 生成初稿",
+            "refine": "OpenAI 精修封面",
+            "copy": "保存最终封面",
+        }.get(stage, stage)
+        _summarize_processing(latest, note=f"第 {index} 张正在{stage_label}")
+        write_status(job_id, latest)
 
 
 def _mark_retryable(
@@ -214,6 +259,9 @@ def _mark_retryable(
         item["completed_at"] = None
         item["image_url"] = None
         item.pop("run_id", None)
+        item.pop("current_stage", None)
+        item.pop("stage_started_at", None)
+        item.pop("last_heartbeat_at", None)
         if retry_count > _auto_retry_limit():
             item["status"] = "failed"
             item["error"] = f"自动重试已达上限：{_short_error(exc)}"
@@ -259,6 +307,9 @@ def _mark_failed(
             image_url=None,
         )
         item.pop("run_id", None)
+        item.pop("current_stage", None)
+        item.pop("stage_started_at", None)
+        item.pop("last_heartbeat_at", None)
         latest["items"] = items
         if latest.get("active_run_id") == run_id and latest.get("status") != "paused":
             latest["status"] = "processing"
@@ -303,6 +354,9 @@ def _mark_completed_or_deleted(
             image_url=f"/api/v1/covers/jobs/{job_id}/items/{index}/image",
         )
         item.pop("run_id", None)
+        item.pop("current_stage", None)
+        item.pop("stage_started_at", None)
+        item.pop("last_heartbeat_at", None)
         latest["items"] = latest_items
         if latest.get("status") == "paused":
             _summarize_processing(latest, note="已暂停")
@@ -363,6 +417,13 @@ def _generate_one_cover(
                 job_id,
                 index=index,
                 run_id=run_id,
+                status_lock=status_lock,
+            ),
+            on_progress=lambda stage: _mark_item_progress(
+                job_id,
+                index=index,
+                run_id=run_id,
+                stage=stage,
                 status_lock=status_lock,
             ),
         )
@@ -496,6 +557,9 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
             if item.get("status") == "processing":
                 item["status"] = "pending"
                 item.pop("run_id", None)
+                item.pop("current_stage", None)
+                item.pop("stage_started_at", None)
+                item.pop("last_heartbeat_at", None)
         if status.get("status") == "paused" or paused:
             status["status"] = "paused"
             status["current_step"] = "已暂停"
@@ -586,7 +650,12 @@ def requeue_stale_cover_jobs(*, limit: int = 200) -> int:
         for item in items:
             if item.get("status") != "processing":
                 continue
-            started_at = _parse_iso_datetime(item.get("started_at")) or fallback_started
+            started_at = (
+                _parse_iso_datetime(item.get("last_heartbeat_at"))
+                or _parse_iso_datetime(item.get("stage_started_at"))
+                or _parse_iso_datetime(item.get("started_at"))
+                or fallback_started
+            )
             if started_at is None or started_at <= cutoff:
                 stale_items.append(item)
         if not stale_items:
@@ -602,6 +671,9 @@ def requeue_stale_cover_jobs(*, limit: int = 200) -> int:
                 image_url=None,
             )
             item.pop("run_id", None)
+            item.pop("current_stage", None)
+            item.pop("stage_started_at", None)
+            item.pop("last_heartbeat_at", None)
         status["items"] = items
         status["status"] = "pending"
         status["active_run_id"] = None

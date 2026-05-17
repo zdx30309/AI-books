@@ -454,6 +454,35 @@ def test_cancellable_image_request_closes_client_and_releases_wait(monkeypatch) 
     assert fake.closed
 
 
+def test_image_request_hard_timeout_closes_client(monkeypatch) -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeHttp()
+
+    def slow_post(*args, **kwargs):
+        time.sleep(3)
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover.settings, "IMAGE_API_HARD_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(cover, "_post_image_request", slow_post)
+
+    with pytest.raises(cover.ImageApiTransientError, match="hard timeout"):
+        cover._post_image_request_with_cancellation(  # noqa: SLF001
+            fake,
+            "https://api.example.test/images/generations",
+            "key",
+            json_payload={"prompt": "x"},
+            stage="unit-test",
+        )
+
+    assert fake.closed
+
+
 def test_image_request_retries_transient_520(monkeypatch) -> None:
     class FakeHttp:
         def __init__(self) -> None:
@@ -479,6 +508,67 @@ def test_image_request_retries_transient_520(monkeypatch) -> None:
 
     assert result == PNG_BYTES
     assert fake.calls == 2
+
+
+def test_image_generation_sends_full_gpt_image_prompt_limit(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class DummyGate:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_gate(*args, **kwargs):
+        return DummyGate()
+
+    def fake_credentials():
+        return "key", "https://api.example.test/v1", ""
+
+    def fake_post(_http, _endpoint, _api_key, *, json_payload=None, **_kwargs):
+        captured["prompt"] = json_payload["prompt"]
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "distributed_semaphore", fake_gate)
+    monkeypatch.setattr(cover, "_resolve_image_api_credentials", fake_credentials)
+    monkeypatch.setattr(cover, "_post_image_request", fake_post)
+
+    cover._request_image_generation("x" * 40000)  # noqa: SLF001
+
+    assert len(captured["prompt"]) == 32000
+
+
+def test_generate_cover_file_retries_refine_from_existing_draft_without_rebuilding_brief(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    draft = tmp_path / "draft_cover.png"
+    refine_prompt = tmp_path / "cover_refine_prompt.txt"
+    draft.write_bytes(PNG_BYTES)
+    refine_prompt.write_text("existing refine prompt", encoding="utf-8")
+
+    def fail_style_brief(*args, **kwargs):
+        raise AssertionError("style brief should not be rebuilt when retrying refine")
+
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+        assert image_path == draft
+        assert prompt == "existing refine prompt"
+        return PNG_BYTES
+
+    monkeypatch.setattr(cover, "build_cover_style_brief", fail_style_brief)
+    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+
+    result = cover.generate_cover_file(
+        "测试书名",
+        "@最终简介\n测试简介",
+        tmp_path,
+        category="illustration_crayon",
+        author="测试作者",
+    )
+
+    assert result == tmp_path / "cover.png"
+    assert result.read_bytes() == PNG_BYTES
 
 
 def test_delete_cover_job_items_marks_single_cover_deleted(
@@ -551,6 +641,7 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
     monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
     monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_CONCURRENT_ITEMS", 3)
     monkeypatch.setattr(cover_tasks.settings, "IMAGE_MAX_CONCURRENT_CALLS", 3)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_ITEMS_PER_RUN", 6)
     status = cover_jobs.create_cover_job(
         "user-1",
         "covers.csv",
@@ -717,6 +808,51 @@ def test_stale_cover_job_returns_processing_items_to_queue(
     assert final["active_run_id"] is None
     assert final["items"][0]["status"] == "pending"
     assert "run_id" not in final["items"][0]
+
+
+def test_stale_cover_job_keeps_active_item_with_recent_heartbeat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_PROCESSING_STALE_SECONDS", 900)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {
+                "title": "姝ｅ湪绮句慨鐨勪功",
+                "author": "浣滆€匒",
+                "category": "illustration_crayon",
+                "category_label": "娌绘剤鎻掔敾锛堣湣绗旓級",
+            }
+        ],
+        default_category="illustration_crayon",
+    )
+    job_id = status["job_id"]
+    run_id = "active-run"
+    now = datetime.now(timezone.utc).isoformat()
+    status["status"] = "processing"
+    status["active_run_id"] = run_id
+    status["items"][0].update(
+        status="processing",
+        run_id=run_id,
+        started_at=(datetime.now(timezone.utc) - timedelta(seconds=2400)).isoformat(),
+        stage_started_at=now,
+        last_heartbeat_at=now,
+        current_stage="refine",
+        error=None,
+    )
+    cover_jobs.write_status(job_id, status)
+
+    recovered = cover_tasks.requeue_stale_cover_jobs()
+    final = cover_jobs.read_status(job_id)
+
+    assert recovered == 0
+    assert final["status"] == "processing"
+    assert final["active_run_id"] == run_id
+    assert final["items"][0]["status"] == "processing"
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_REFERENCE_SITE = "当当网"
 ALLOWED_REFERENCE_BRANDS: tuple[str, ...] = ("酷威文化", "果麦文化", "时代华语")
 _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
-_IMAGE_PROMPT_LIMIT = 5000
+_IMAGE_PROMPT_LIMIT = 32000
 _AUTHOR_PLACEHOLDER = "作者名留白"
 _SATURATED_COLOR_DIRECTION = (
     "以高饱和、明亮、强识别的出版色彩为主：电光蓝、亮青绿、柠檬黄、珊瑚橙、玫红、亮紫、奶白留白可组合使用。",
@@ -916,17 +916,9 @@ def _post_image_request_with_cancellation(
     data: dict[str, str] | None = None,
     files: dict[str, tuple[str, bytes, str]] | None = None,
 ) -> Any:
-    if should_abort is None:
-        return _post_image_request(
-            http,
-            endpoint,
-            api_key,
-            json_payload=json_payload,
-            data=data,
-            files=files,
-        )
-
     result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+    hard_timeout = max(0, int(getattr(settings, "IMAGE_API_HARD_TIMEOUT_SECONDS", 0) or 0))
+    hard_deadline = time.monotonic() + hard_timeout if hard_timeout > 0 else None
 
     def _send() -> None:
         try:
@@ -952,10 +944,19 @@ def _post_image_request_with_cancellation(
         try:
             kind, payload = result_queue.get(timeout=0.5)
         except queue.Empty:
-            if should_abort():
+            if should_abort is not None and should_abort():
                 logger.info("取消封面图片请求并释放本地闸口: stage=%s", stage)
                 http.close()
                 raise _cover_cancelled(stage)
+            if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                logger.warning(
+                    "image API hard timeout stage=%s timeout=%ss endpoint=%s",
+                    stage,
+                    hard_timeout,
+                    endpoint.rstrip("/").rsplit("/", 1)[-1],
+                )
+                http.close()
+                raise ImageApiTransientError(f"image API hard timeout after {hard_timeout}s: {stage}")
             continue
         if kind == "ok":
             return payload
@@ -1193,14 +1194,34 @@ def generate_cover_file(
     intro: str | None = None,
     force: bool = False,
     should_abort: Callable[[], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Generate draft and refined cover images under the task output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
     _abort_cover_generation_if_requested(should_abort, stage="start")
+    _notify_cover_progress(on_progress, "preparing")
     existing_cover_path = output_dir / "cover.png"
     if existing_cover_path.exists() and existing_cover_path.stat().st_size > 0 and not force:
         logger.info("复用已存在封面: %s", existing_cover_path)
         return existing_cover_path
+
+    draft_path = output_dir / "draft_cover.png"
+    refine_prompt_path = output_dir / "cover_refine_prompt.txt"
+    cover_path = output_dir / "cover.png"
+    if (
+        not force
+        and draft_path.exists()
+        and draft_path.stat().st_size > 0
+        and refine_prompt_path.exists()
+        and refine_prompt_path.stat().st_size > 0
+    ):
+        refine_prompt = refine_prompt_path.read_text(encoding="utf-8")
+        logger.info("reusing existing draft and refine prompt for cover retry: %s", draft_path)
+        _notify_cover_progress(on_progress, "refine")
+        _abort_cover_generation_if_requested(should_abort, stage="before refine image request")
+        cover_bytes = _request_image_edit(draft_path, refine_prompt, should_abort=should_abort)
+        _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
+        return cover_path
 
     cover_input = prepare_cover_input(
         title,
@@ -1227,6 +1248,7 @@ def generate_cover_file(
     _write_cover_text_file(draft_prompt_path, draft_prompt, should_abort)
     if force or not draft_path.exists() or draft_path.stat().st_size <= 0:
         logger.info("开始生成封面初稿: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
+        _notify_cover_progress(on_progress, "draft")
         _abort_cover_generation_if_requested(should_abort, stage="before draft image request")
         draft_bytes = _request_image_generation(draft_prompt, should_abort=should_abort)
         _write_cover_bytes_file(draft_path, draft_bytes, should_abort)
@@ -1237,6 +1259,7 @@ def generate_cover_file(
     _write_cover_text_file(refine_prompt_path, refine_prompt, should_abort)
     logger.info("开始精修封面: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
     try:
+        _notify_cover_progress(on_progress, "refine")
         _abort_cover_generation_if_requested(should_abort, stage="before refine image request")
         cover_bytes = _request_image_edit(draft_path, refine_prompt, should_abort=should_abort)
         _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
@@ -1264,6 +1287,15 @@ def generate_cover_file(
         ) from exc
 
     return cover_path
+
+
+def _notify_cover_progress(on_progress: Callable[[str], None] | None, stage: str) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(stage)
+    except Exception:
+        logger.warning("cover progress callback failed stage=%s", stage, exc_info=True)
 
 
 _METADATA_TITLE_KEYS = (
@@ -1347,6 +1379,7 @@ def generate_cover_file_from_metadata(
     output_path: Path,
     *,
     should_abort: Callable[[], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Generate one standalone cover from spreadsheet metadata.
 
@@ -1394,7 +1427,9 @@ def generate_cover_file_from_metadata(
         intro=intro,
         force=False,
         should_abort=should_abort,
+        on_progress=on_progress,
     )
+    _notify_cover_progress(on_progress, "copy")
     _abort_cover_generation_if_requested(should_abort, stage="copy final cover")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _write_cover_bytes_file(output_path, generated_path.read_bytes(), should_abort)

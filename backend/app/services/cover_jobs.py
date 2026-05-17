@@ -483,6 +483,9 @@ def retry_cover_job_items(
             retry_requested_at=now_iso(),
         )
         item.pop("run_id", None)
+        item.pop("current_stage", None)
+        item.pop("stage_started_at", None)
+        item.pop("last_heartbeat_at", None)
         retried += 1
 
     if retried:
@@ -505,6 +508,10 @@ def pause_cover_job(job_id: str, status: dict[str, Any] | None = None) -> dict[s
         if item.get("status") == "processing":
             item["status"] = "pending"
             item["error"] = None
+            item.pop("run_id", None)
+            item.pop("current_stage", None)
+            item.pop("stage_started_at", None)
+            item.pop("last_heartbeat_at", None)
     data["status"] = "paused"
     data["current_step"] = "已暂停"
     write_status(job_id, data)
