@@ -1010,7 +1010,7 @@ def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | No
                 stage="draft image request",
             )
     _abort_cover_generation_if_requested(should_abort, stage="after draft image request")
-    return _decode_image_response(response_data)
+    return _decode_image_response(response_data, should_abort=should_abort)
 
 
 def _request_image_edit(
@@ -1058,7 +1058,7 @@ def _request_image_edit(
                 stage="refine image request",
             )
     _abort_cover_generation_if_requested(should_abort, stage="after refine image request")
-    return _decode_image_response(response_data)
+    return _decode_image_response(response_data, should_abort=should_abort)
 
 
 def _post_image_request(
@@ -1104,7 +1104,8 @@ def _post_image_request(
     raise ImageApiTransientError(f"图像 API 请求失败: {last_error}")
 
 
-def _decode_image_response(data: Any) -> bytes:
+def _decode_image_response(data: Any, should_abort: Callable[[], bool] | None = None) -> bytes:
+    _abort_cover_generation_if_requested(should_abort, stage="decode image response")
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list) or not items:
         raise RuntimeError(f"图像 API 返回缺少 data: {str(data)[:1000]}")
@@ -1115,15 +1116,23 @@ def _decode_image_response(data: Any) -> bytes:
 
     url = item.get("url") if isinstance(item, dict) else None
     if url:
-        return _download_image_result(url)
+        return _download_image_result(url, should_abort=should_abort)
     raise RuntimeError("图像 API 返回值既无 b64_json 也无 url")
 
 
-def _download_image_result(url: str) -> bytes:
+def _download_image_result(url: str, should_abort: Callable[[], bool] | None = None) -> bytes:
     last_error: Exception | None = None
-    max_attempts = max(1, int(settings.IMAGE_API_MAX_RETRIES or 1))
-    timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0, pool=30.0)
+    max_attempts = max(1, int(settings.IMAGE_RESULT_DOWNLOAD_MAX_RETRIES or settings.IMAGE_API_MAX_RETRIES or 1))
+    read_timeout = max(15, int(settings.IMAGE_RESULT_DOWNLOAD_TIMEOUT_SECONDS or 60))
+    timeout = httpx.Timeout(
+        float(read_timeout),
+        connect=min(20.0, float(read_timeout)),
+        read=float(read_timeout),
+        write=20.0,
+        pool=20.0,
+    )
     for attempt in range(1, max_attempts + 1):
+        _abort_cover_generation_if_requested(should_abort, stage="download image result")
         try:
             with httpx.Client(
                 timeout=timeout,
@@ -1134,12 +1143,16 @@ def _download_image_result(url: str) -> bytes:
                 img.raise_for_status()
                 if not img.content:
                     raise RuntimeError("图像结果下载为空")
+                _abort_cover_generation_if_requested(should_abort, stage="after download image result")
                 return img.content
         except (httpx.HTTPError, RuntimeError) as exc:
             last_error = exc
             if attempt >= max_attempts:
                 raise ImageApiTransientError(f"图像结果下载失败: {exc}，已重试 {attempt} 次") from exc
-            time.sleep(min(20, 2 * attempt))
+            sleep_until = time.monotonic() + min(10, 2 * attempt)
+            while time.monotonic() < sleep_until:
+                _abort_cover_generation_if_requested(should_abort, stage="wait retry image result download")
+                time.sleep(min(0.2, max(0.0, sleep_until - time.monotonic())))
     raise ImageApiTransientError(f"图像结果下载失败: {last_error}")
 
 
