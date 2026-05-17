@@ -15,6 +15,7 @@ from app.schemas.cover_job import (
     CoverJobBatchRequest,
     CoverJobBatchResponse,
     CoverJobItemBatchDeleteRequest,
+    CoverJobItemBatchRetryRequest,
     CoverJobListResponse,
     CoverJobResponse,
 )
@@ -30,6 +31,7 @@ from app.services.cover_jobs import (
     parse_cover_spreadsheet,
     public_cover_job_status,
     read_status,
+    retry_cover_job_items,
     resume_cover_job,
     write_status,
 )
@@ -50,6 +52,26 @@ def _owned_status(job_id: str, user: User) -> dict:
 
 def _response(status: dict) -> CoverJobResponse:
     return CoverJobResponse.model_validate(public_cover_job_status(status))
+
+
+def _enqueue_cover_job(status: dict) -> None:
+    try:
+        generate_cover_job.delay(status["job_id"])
+    except Exception as exc:
+        status["status"] = "failed"
+        status["current_step"] = f"Celery 投递失败：{exc}"
+        write_status(status["job_id"], status)
+        raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+
+
+def _enqueue_retry_if_needed(job_id: str, status: dict) -> dict:
+    if not any(item.get("status") == "pending" for item in status.get("items") or []):
+        return status
+    if status.get("status") == "paused":
+        status = resume_cover_job(job_id, status)
+    if status.get("status") != "processing" and not status.get("active_run_id"):
+        _enqueue_cover_job(status)
+    return status
 
 
 @router.post(
@@ -87,13 +109,7 @@ async def create_cover_job_from_excel(
             status_code=409,
             detail=str(exc),
         ) from exc
-    try:
-        generate_cover_job.delay(status["job_id"])
-    except Exception as exc:
-        status["status"] = "failed"
-        status["current_step"] = f"Celery 投递失败：{exc}"
-        write_status(status["job_id"], status)
-        raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+    _enqueue_cover_job(status)
     return _response(status)
 
 
@@ -127,7 +143,7 @@ def batch_cover_jobs(
                 items.append(CoverJobBatchItem(job_id=job_id, status="paused"))
             elif req.action == "resume":
                 next_status = resume_cover_job(job_id, status)
-                generate_cover_job.delay(next_status["job_id"])
+                _enqueue_cover_job(next_status)
                 items.append(CoverJobBatchItem(job_id=job_id, status="pending"))
             elif req.action == "delete":
                 pause_cover_job(job_id, status)
@@ -162,13 +178,7 @@ def resume_my_cover_job(
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     status = resume_cover_job(job_id, _owned_status(job_id, user))
-    try:
-        generate_cover_job.delay(status["job_id"])
-    except Exception as exc:
-        status["status"] = "failed"
-        status["current_step"] = f"Celery 投递失败：{exc}"
-        write_status(status["job_id"], status)
-        raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+    _enqueue_cover_job(status)
     return _response(status)
 
 
@@ -215,6 +225,49 @@ def delete_my_cover_job_item(
 ) -> CoverJobResponse:
     status = _owned_status(job_id, user)
     return _response(delete_cover_job_items(job_id, [index], status))
+
+
+@router.post(
+    "/jobs/{job_id}/retry",
+    response_model=CoverJobResponse,
+    summary="重试独立封面任务中的全部失败封面",
+)
+def retry_my_failed_cover_job_items(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    status = retry_cover_job_items(job_id, None, _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
+
+
+@router.post(
+    "/jobs/{job_id}/items/batch-retry",
+    response_model=CoverJobResponse,
+    summary="批量重试独立封面任务中的失败封面",
+)
+def retry_my_cover_job_items(
+    job_id: str,
+    req: CoverJobItemBatchRetryRequest,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    if not req.indexes:
+        raise HTTPException(status_code=400, detail="请选择要重试的封面")
+    status = retry_cover_job_items(job_id, req.indexes, _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
+
+
+@router.post(
+    "/jobs/{job_id}/items/{index}/retry",
+    response_model=CoverJobResponse,
+    summary="重试独立封面任务中的单张失败封面",
+)
+def retry_my_cover_job_item(
+    job_id: str,
+    index: int,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    status = retry_cover_job_items(job_id, [index], _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
 
 
 @router.get(

@@ -4,6 +4,8 @@ import base64
 import json
 from pathlib import Path
 
+import httpx
+
 from app.services import cover, cover_jobs
 from app.prompts.goal_driven_templates import list_categories
 from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCoverCrawler
@@ -146,6 +148,32 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     assert (tmp_path / "cover_refine_error.txt").exists()
 
 
+def test_image_request_retries_transient_520(monkeypatch) -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, endpoint: str, **kwargs):
+            self.calls += 1
+            request = httpx.Request("POST", endpoint)
+            if self.calls == 1:
+                return httpx.Response(520, text="temporary edge error", request=request)
+            return httpx.Response(
+                200,
+                json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+                request=request,
+            )
+
+    fake = FakeHttp()
+    monkeypatch.setattr(cover.settings, "IMAGE_API_MAX_RETRIES", 2)
+    monkeypatch.setattr(cover.time, "sleep", lambda _seconds: None)
+
+    result = cover._post_image_request(fake, "https://api.example.test/images/edits", "key")  # noqa: SLF001
+
+    assert result == PNG_BYTES
+    assert fake.calls == 2
+
+
 def test_delete_cover_job_items_marks_single_cover_deleted(
     tmp_path: Path,
     monkeypatch,
@@ -173,6 +201,40 @@ def test_delete_cover_job_items_marks_single_cover_deleted(
     assert raw["items"][0]["status"] == "deleted"
     assert [item["title"] for item in public["items"]] == ["第二本书"]
     assert public["total"] == 1
+
+
+def test_retry_cover_job_items_preserves_draft_and_requeues_failed_cover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
+        ],
+        default_category="social_science",
+    )
+    job_id = status["job_id"]
+    image = cover_jobs.image_path(job_id, 1, "第一本书")
+    work_dir = image.parent / f".{image.stem}_work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    draft = work_dir / "draft_cover.png"
+    draft.write_bytes(PNG_BYTES)
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(PNG_BYTES)
+
+    status["items"][0].update(status="failed", error="temporary 520", auto_retry_count=3)
+    cover_jobs.write_status(job_id, status)
+
+    updated = cover_jobs.retry_cover_job_items(job_id, [1])
+
+    assert updated["items"][0]["status"] == "pending"
+    assert updated["items"][0]["error"] is None
+    assert updated["items"][0]["auto_retry_count"] == 0
+    assert not image.exists()
+    assert draft.exists()
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:

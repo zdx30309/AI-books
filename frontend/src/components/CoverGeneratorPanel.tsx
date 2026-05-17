@@ -67,16 +67,20 @@ function CoverPreview({
   selected,
   selectionMode,
   deleting,
+  retrying,
   onToggle,
   onDelete,
+  onRetry,
 }: {
   jobId: string;
   item: CoverJobItem;
   selected: boolean;
   selectionMode: boolean;
   deleting: boolean;
+  retrying: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onRetry: () => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
 
@@ -133,6 +137,25 @@ function CoverPreview({
             <CheckSquare className="h-4 w-4 text-gold-200" strokeWidth={1.8} />
           ) : (
             <Square className="h-4 w-4 text-warm-300" strokeWidth={1.8} />
+          )}
+        </button>
+      )}
+      {!selectionMode && item.status === "failed" && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRetry();
+          }}
+          disabled={retrying}
+          className="absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-gold-300/35 bg-base-900/80 text-gold-100 shadow transition-colors hover:border-gold-200/70 disabled:opacity-50"
+          aria-label="重试单张封面"
+          title="重试单张封面"
+        >
+          {retrying ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+          ) : (
+            <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
           )}
         </button>
       )}
@@ -286,6 +309,13 @@ export function CoverGeneratorPanel() {
   const active = isActiveJob(job);
   const selectedCount = selectedJobIds.size;
   const selectedItemCount = selectedItemIndexes.size;
+  const selectedFailedItemCount = useMemo(
+    () =>
+      visibleItems.filter(
+        (item) => selectedItemIndexes.has(item.index) && item.status === "failed",
+      ).length,
+    [selectedItemIndexes, visibleItems],
+  );
   const progressText = useMemo(() => {
     if (!job) return "等待上传";
     return `${job.completed}/${job.total} 完成，${job.failed} 失败`;
@@ -545,6 +575,53 @@ export function CoverGeneratorPanel() {
     }
   };
 
+  const retryFailedCurrent = async () => {
+    if (!job || job.failed === 0) return;
+    setWorking("retry-failed");
+    setError(null);
+    try {
+      await api.retryCoverJob(job.job_id);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "重试失败封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const retryItem = async (index: number) => {
+    if (!job) return;
+    setWorking(`retry-item-${index}`);
+    setError(null);
+    try {
+      await api.retryCoverJobItem(job.job_id, index);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "重试单张封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const retrySelectedItems = async () => {
+    if (!job || selectedFailedItemCount === 0) return;
+    const indexes = visibleItems
+      .filter((item) => selectedItemIndexes.has(item.index) && item.status === "failed")
+      .map((item) => item.index);
+    setWorking("retry-items");
+    setError(null);
+    try {
+      await api.retryCoverJobItems(job.job_id, { indexes });
+      setSelectedItemIndexes(new Set());
+      setItemSelectionMode(false);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "批量重试封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
   return (
     <section>
       <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -777,6 +854,21 @@ export function CoverGeneratorPanel() {
                     继续
                   </button>
                 )}
+                {job && job.failed > 0 && (
+                  <button
+                    type="button"
+                    onClick={retryFailedCurrent}
+                    disabled={working !== null}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    {working === "retry-failed" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.6} />
+                    ) : (
+                      <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    )}
+                    重试失败
+                  </button>
+                )}
                 {job && job.completed > 0 && (
                   <button
                     type="button"
@@ -869,6 +961,14 @@ export function CoverGeneratorPanel() {
                     </button>
                     <button
                       type="button"
+                      onClick={retrySelectedItems}
+                      disabled={selectedFailedItemCount === 0 || working !== null}
+                      className="rounded-full border border-gold-400/30 bg-gold-500/10 px-3 py-1.5 text-[10px] tracking-widest text-gold-100 disabled:opacity-50"
+                    >
+                      重试 {selectedFailedItemCount || ""} 张
+                    </button>
+                    <button
+                      type="button"
                       onClick={deleteSelectedItems}
                       disabled={selectedItemCount === 0 || working !== null}
                       className="rounded-full border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-[10px] tracking-widest text-red-100 disabled:opacity-50"
@@ -891,8 +991,14 @@ export function CoverGeneratorPanel() {
                   selected={selectedItemIndexes.has(item.index)}
                   selectionMode={itemSelectionMode}
                   deleting={working === `delete-item-${item.index}` || working === "delete-items"}
+                  retrying={
+                    working === `retry-item-${item.index}` ||
+                    working === "retry-items" ||
+                    working === "retry-failed"
+                  }
                   onToggle={() => toggleItemSelection(item.index)}
                   onDelete={() => deleteItem(item.index)}
+                  onRetry={() => retryItem(item.index)}
                 />
               ))}
             </div>

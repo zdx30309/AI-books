@@ -114,6 +114,10 @@ export interface CoverJobItemBatchDeleteRequest {
   indexes: number[];
 }
 
+export interface CoverJobItemBatchRetryRequest {
+  indexes: number[];
+}
+
 export interface TaskCategoryOption {
   id: string;
   label: string;

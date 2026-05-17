@@ -16,6 +16,7 @@ import type {
   CoverJobBatchRequest,
   CoverJobBatchResponse,
   CoverJobItemBatchDeleteRequest,
+  CoverJobItemBatchRetryRequest,
   CoverJobResponse,
   LoginRequest,
   MarkdownResponse,
@@ -323,6 +324,15 @@ export const api = {
     request<CoverJobResponse>(`/covers/jobs/${jobId}/items/${index}`, { method: "DELETE" }),
   deleteCoverJobItems: (jobId: string, body: CoverJobItemBatchDeleteRequest) =>
     request<CoverJobResponse>(`/covers/jobs/${jobId}/items/batch-delete`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  retryCoverJob: (jobId: string) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/retry`, { method: "POST" }),
+  retryCoverJobItem: (jobId: string, index: number) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/${index}/retry`, { method: "POST" }),
+  retryCoverJobItems: (jobId: string, body: CoverJobItemBatchRetryRequest) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/batch-retry`, {
       method: "POST",
       body: JSON.stringify(body),
     }),

@@ -36,6 +36,18 @@ _WECHAT_DEDAO_STYLE_RULE = (
 _HEALING_HANDDRAWN_STYLE_RULE = "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。"
 
 
+class ImageApiError(RuntimeError):
+    """Base exception for image API failures."""
+
+
+class ImageApiTransientError(ImageApiError):
+    """Image API failure that should be retried by the cover job queue."""
+
+
+class ImageApiPermanentError(ImageApiError):
+    """Image API failure that should be surfaced without automatic retry."""
+
+
 @dataclass(frozen=True)
 class CoverInput:
     title: str
@@ -710,15 +722,23 @@ def _post_image_request(
             return _decode_image_response(response.json())
         except httpx.HTTPStatusError as exc:
             body = exc.response.text[:1000]
-            last_error = RuntimeError(f"图像 API 请求失败 {exc.response.status_code}: {body}")
-            if exc.response.status_code < 500 or attempt >= max_attempts:
-                raise last_error from exc
-        except httpx.HTTPError as exc:
-            last_error = exc
+            status_code = exc.response.status_code
+            message = f"图像 API 请求失败 {status_code}: {body}"
+            if status_code != 429 and status_code < 500:
+                raise ImageApiPermanentError(message) from exc
+            last_error = ImageApiTransientError(message)
             if attempt >= max_attempts:
-                raise RuntimeError(f"图像 API 连接失败: {exc}") from exc
-        time.sleep(2 * attempt)
-    raise RuntimeError(f"图像 API 请求失败: {last_error}")
+                raise ImageApiTransientError(f"{message}，已重试 {attempt} 次") from exc
+        except httpx.HTTPError as exc:
+            last_error = ImageApiTransientError(f"图像 API 连接失败: {exc}")
+            if attempt >= max_attempts:
+                raise ImageApiTransientError(f"图像 API 连接失败: {exc}，已重试 {attempt} 次") from exc
+        except (RuntimeError, ValueError) as exc:
+            last_error = ImageApiTransientError(f"图像 API 返回异常: {exc}")
+            if attempt >= max_attempts:
+                raise ImageApiTransientError(f"图像 API 返回异常: {exc}，已重试 {attempt} 次") from exc
+        time.sleep(min(30, 3 * attempt))
+    raise ImageApiTransientError(f"图像 API 请求失败: {last_error}")
 
 
 def _decode_image_response(data: Any) -> bytes:
@@ -792,10 +812,23 @@ def generate_cover_file(
         cover_path.write_bytes(_request_image_edit(draft_path, refine_prompt))
     except DistributedLimitError:
         raise
+    except ImageApiTransientError as exc:
+        logger.warning("封面精修遇到临时错误，保留初稿等待自动重试: %s", exc)
+        (output_dir / "cover_refine_error.txt").write_text(
+            f"临时错误，等待自动重试：{exc}",
+            encoding="utf-8",
+        )
+        raise
+    except ImageApiPermanentError as exc:
+        logger.warning("封面精修遇到永久错误，保留初稿但不降级为最终封面: %s", exc)
+        (output_dir / "cover_refine_error.txt").write_text(str(exc), encoding="utf-8")
+        raise
     except Exception as exc:
         logger.warning("封面精修失败，保留初稿但不降级为最终封面: %s", exc)
         (output_dir / "cover_refine_error.txt").write_text(str(exc), encoding="utf-8")
-        raise RuntimeError("封面精修失败，已保留 draft_cover.png 供排查，未生成最终 cover.png") from exc
+        raise RuntimeError(
+            f"封面精修失败：{exc}。已保留 draft_cover.png 供排查，未生成最终 cover.png"
+        ) from exc
 
     return cover_path
 
@@ -931,6 +964,9 @@ __all__ = [
     "CoverInput",
     "CoverMarketMatch",
     "CoverStyleBrief",
+    "ImageApiError",
+    "ImageApiPermanentError",
+    "ImageApiTransientError",
     "analyze_cover_market_match",
     "build_cover_prompt",
     "build_cover_style_brief",
