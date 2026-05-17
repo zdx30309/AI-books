@@ -663,7 +663,8 @@ def _request_image_generation(prompt: str) -> bytes:
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
             wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
         ):
-            return _post_image_request(http, endpoint, api_key, json_payload=payload)
+            response_data = _post_image_request(http, endpoint, api_key, json_payload=payload)
+    return _decode_image_response(response_data)
 
 
 def _request_image_edit(image_path: Path, prompt: str) -> bytes:
@@ -695,7 +696,8 @@ def _request_image_edit(image_path: Path, prompt: str) -> bytes:
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
             wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
         ):
-            return _post_image_request(http, endpoint, api_key, data=data, files=files)
+            response_data = _post_image_request(http, endpoint, api_key, data=data, files=files)
+    return _decode_image_response(response_data)
 
 
 def _post_image_request(
@@ -706,7 +708,7 @@ def _post_image_request(
     json_payload: dict[str, Any] | None = None,
     data: dict[str, str] | None = None,
     files: dict[str, tuple[str, bytes, str]] | None = None,
-) -> bytes:
+) -> Any:
     last_error: Exception | None = None
     max_attempts = max(1, int(settings.IMAGE_API_MAX_RETRIES or 1))
     for attempt in range(1, max_attempts + 1):
@@ -719,7 +721,7 @@ def _post_image_request(
                 files=files,
             )
             response.raise_for_status()
-            return _decode_image_response(response.json())
+            return response.json()
         except httpx.HTTPStatusError as exc:
             body = exc.response.text[:1000]
             status_code = exc.response.status_code
@@ -752,11 +754,32 @@ def _decode_image_response(data: Any) -> bytes:
 
     url = item.get("url") if isinstance(item, dict) else None
     if url:
-        with httpx.Client(timeout=120.0, proxy=_proxy_for_base_url(url) or None) as http:
-            img = http.get(url)
-            img.raise_for_status()
-            return img.content
+        return _download_image_result(url)
     raise RuntimeError("图像 API 返回值既无 b64_json 也无 url")
+
+
+def _download_image_result(url: str) -> bytes:
+    last_error: Exception | None = None
+    max_attempts = max(1, int(settings.IMAGE_API_MAX_RETRIES or 1))
+    timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0, pool=30.0)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with httpx.Client(
+                timeout=timeout,
+                proxy=_proxy_for_base_url(url) or None,
+                follow_redirects=True,
+            ) as http:
+                img = http.get(url)
+                img.raise_for_status()
+                if not img.content:
+                    raise RuntimeError("图像结果下载为空")
+                return img.content
+        except (httpx.HTTPError, RuntimeError) as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                raise ImageApiTransientError(f"图像结果下载失败: {exc}，已重试 {attempt} 次") from exc
+            time.sleep(min(20, 2 * attempt))
+    raise ImageApiTransientError(f"图像结果下载失败: {last_error}")
 
 
 def generate_cover_file(

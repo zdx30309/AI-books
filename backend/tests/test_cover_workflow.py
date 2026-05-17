@@ -168,7 +168,8 @@ def test_image_request_retries_transient_520(monkeypatch) -> None:
     monkeypatch.setattr(cover.settings, "IMAGE_API_MAX_RETRIES", 2)
     monkeypatch.setattr(cover.time, "sleep", lambda _seconds: None)
 
-    result = cover._post_image_request(fake, "https://api.example.test/images/edits", "key")  # noqa: SLF001
+    response_data = cover._post_image_request(fake, "https://api.example.test/images/edits", "key")  # noqa: SLF001
+    result = cover._decode_image_response(response_data)  # noqa: SLF001
 
     assert result == PNG_BYTES
     assert fake.calls == 2
