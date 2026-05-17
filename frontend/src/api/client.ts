@@ -279,6 +279,10 @@ export const api = {
     openHiddenDownload(`${BASE}/tasks/download-batch/direct?${params.toString()}`);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
+  downloadCoverFile: async (id: string) => {
+    const blob = await fetchBlob(`/tasks/${id}/cover`);
+    saveBlob(blob, `cover_${id}.png`);
+  },
 
   // Excel 独立封面生成
   createCoverJob: (file: File) => uploadFile<CoverJobResponse>("/covers/jobs", file),

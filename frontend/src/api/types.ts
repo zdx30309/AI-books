@@ -88,6 +88,8 @@ export interface TaskStatusResponse {
   progress: number;
   current_step: string;
   cover_url: string | null;
+  cover_status?: "idle" | "pending" | "processing" | "completed" | "failed" | null;
+  cover_error?: string | null;
   title: string | null;
   bookshelf: string | null;
   category: string | null;
