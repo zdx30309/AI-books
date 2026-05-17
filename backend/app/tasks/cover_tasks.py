@@ -5,7 +5,7 @@ import logging
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Literal
 
@@ -16,7 +16,14 @@ from app.services.cover import (
     ImageApiTransientError,
     generate_cover_file_from_metadata,
 )
-from app.services.cover_jobs import image_path, read_rows, read_status, recount_status, write_status
+from app.services.cover_jobs import (
+    COVER_JOBS_ROOT,
+    image_path,
+    read_rows,
+    read_status,
+    recount_status,
+    write_status,
+)
 from app.utils.distributed_limiter import DistributedLimitError
 from celery_app import celery_app
 
@@ -51,6 +58,18 @@ def _auto_retry_limit() -> int:
 
 def _short_error(exc: BaseException) -> str:
     return str(exc).strip()[:1000] or exc.__class__.__name__
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _summarize_processing(status: dict[str, Any], *, note: str | None = None) -> None:
@@ -518,4 +537,73 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["generate_cover_job"]
+def requeue_stale_cover_jobs(*, limit: int = 200) -> int:
+    if not settings.STALE_TASK_WATCHDOG_ENABLED:
+        return 0
+    if not COVER_JOBS_ROOT.exists():
+        return 0
+
+    stale_after = max(
+        300,
+        int(
+            settings.COVER_PROCESSING_STALE_SECONDS
+            or settings.STALE_PROCESSING_REQUEUE_SECONDS
+            or 900
+        ),
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after)
+    dispatched = 0
+
+    for path in sorted(COVER_JOBS_ROOT.glob("*/status.json")):
+        if dispatched >= max(1, int(limit or 1)):
+            break
+        job_id = path.parent.name
+        try:
+            status = read_status(job_id)
+        except Exception:
+            continue
+        if status.get("status") != "processing" or not status.get("active_run_id"):
+            continue
+
+        fallback_started = _parse_iso_datetime(status.get("updated_at") or status.get("created_at"))
+        items = list(status.get("items") or [])
+        stale_items = []
+        for item in items:
+            if item.get("status") != "processing":
+                continue
+            started_at = _parse_iso_datetime(item.get("started_at")) or fallback_started
+            if started_at is None or started_at <= cutoff:
+                stale_items.append(item)
+        if not stale_items:
+            continue
+
+        old_run_id = status.get("active_run_id")
+        for item in items:
+            if item.get("status") != "processing":
+                continue
+            item.update(
+                status="pending",
+                error="Previous image request timed out and was returned to the queue.",
+                image_url=None,
+            )
+            item.pop("run_id", None)
+        status["items"] = items
+        status["status"] = "pending"
+        status["active_run_id"] = None
+        status["current_step"] = "Timed-out cover requests were returned to the queue."
+        _recount(status)
+        write_status(job_id, status)
+        generate_cover_job.delay(job_id)
+        dispatched += 1
+        logger.warning(
+            "[cover job %s] stale run %s returned to queue after %ss; stale_items=%s",
+            job_id,
+            old_run_id,
+            stale_after,
+            [item.get("index") for item in stale_items],
+        )
+
+    return dispatched
+
+
+__all__ = ["generate_cover_job", "requeue_stale_cover_jobs"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
@@ -616,6 +617,51 @@ def test_cover_job_deleted_item_cancels_without_requeue(
     assert final["items"][0]["status"] == "deleted"
     assert final["total"] == 0
     assert final["failed"] == 0
+
+
+def test_stale_cover_job_returns_processing_items_to_queue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_PROCESSING_STALE_SECONDS", 900)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {
+                "title": "迟迟不结束的书",
+                "author": "作者A",
+                "category": "illustration_crayon",
+                "category_label": "治愈插画（蜡笔）",
+            }
+        ],
+        default_category="illustration_crayon",
+    )
+    job_id = status["job_id"]
+    old_run_id = "old-run"
+    status["status"] = "processing"
+    status["active_run_id"] = old_run_id
+    status["items"][0].update(
+        status="processing",
+        run_id=old_run_id,
+        started_at=(datetime.now(timezone.utc) - timedelta(seconds=1200)).isoformat(),
+        error=None,
+    )
+    cover_jobs.write_status(job_id, status)
+    dispatched: list[str] = []
+    monkeypatch.setattr(cover_tasks.generate_cover_job, "delay", dispatched.append)
+
+    recovered = cover_tasks.requeue_stale_cover_jobs()
+    final = cover_jobs.read_status(job_id)
+
+    assert recovered == 1
+    assert dispatched == [job_id]
+    assert final["status"] == "pending"
+    assert final["active_run_id"] is None
+    assert final["items"][0]["status"] == "pending"
+    assert "run_id" not in final["items"][0]
 
 
 def test_dangdang_crawler_extracts_reference_cover_metadata(tmp_path: Path) -> None:

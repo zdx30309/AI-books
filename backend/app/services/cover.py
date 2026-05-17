@@ -993,7 +993,11 @@ def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | No
     if settings.IMAGE_QUALITY:
         payload["quality"] = settings.IMAGE_QUALITY
 
-    with httpx.Client(timeout=httpx.Timeout(600.0, connect=60.0), proxy=proxy or None) as http:
+    request_timeout = max(60, int(settings.IMAGE_API_REQUEST_TIMEOUT_SECONDS or 300))
+    with httpx.Client(
+        timeout=httpx.Timeout(float(request_timeout), connect=min(60.0, float(request_timeout))),
+        proxy=proxy or None,
+    ) as http:
         with distributed_semaphore(
             "image-cover",
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
@@ -1033,7 +1037,11 @@ def _request_image_edit(
     if settings.IMAGE_QUALITY:
         data["quality"] = settings.IMAGE_QUALITY
 
-    with httpx.Client(timeout=httpx.Timeout(600.0, connect=60.0), proxy=proxy or None) as http:
+    request_timeout = max(60, int(settings.IMAGE_API_REQUEST_TIMEOUT_SECONDS or 300))
+    with httpx.Client(
+        timeout=httpx.Timeout(float(request_timeout), connect=min(60.0, float(request_timeout))),
+        proxy=proxy or None,
+    ) as http:
         files = {
             "image": (
                 image_path.name,
@@ -1073,6 +1081,7 @@ def _post_image_request(
     last_error: Exception | None = None
     max_attempts = max(1, int(settings.IMAGE_API_MAX_RETRIES or 1))
     for attempt in range(1, max_attempts + 1):
+        started = time.monotonic()
         try:
             response = http.post(
                 endpoint,
@@ -1082,7 +1091,14 @@ def _post_image_request(
                 files=files,
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            logger.info(
+                "image API request completed endpoint=%s attempt=%d elapsed=%.1fs",
+                endpoint.rstrip("/").rsplit("/", 1)[-1],
+                attempt,
+                time.monotonic() - started,
+            )
+            return data
         except httpx.HTTPStatusError as exc:
             body = exc.response.text[:1000]
             status_code = exc.response.status_code

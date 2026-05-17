@@ -325,6 +325,7 @@ export function CoverGeneratorPanel() {
 
   const loadJobs = async (selectJobId?: string | null) => {
     const res = await api.listCoverJobs(120);
+    setError(null);
     setJobs(res.items);
     setSelectedJobIds((prev) => {
       const valid = new Set(res.items.map((item) => item.job_id));
