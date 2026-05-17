@@ -1,0 +1,135 @@
+"""Standalone cover generation router."""
+from __future__ import annotations
+
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
+from sqlalchemy.orm import Session
+
+from app.api.routers.auth import get_current_user
+from app.db.session import get_db
+from app.models import User
+from app.schemas.cover_job import CoverJobResponse
+from app.services.cover_jobs import (
+    build_zip,
+    create_cover_job,
+    image_path,
+    parse_cover_spreadsheet,
+    read_status,
+    write_status,
+)
+from app.tasks.cover_tasks import generate_cover_job
+
+router = APIRouter(prefix="/api/v1/covers", tags=["Covers"])
+
+
+def _owned_status(job_id: str, user: User) -> dict:
+    try:
+        status = read_status(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"cover job {job_id} not found") from exc
+    if status.get("owner_id") != str(user.id):
+        raise HTTPException(status_code=404, detail=f"cover job {job_id} not found")
+    return status
+
+
+def _response(status: dict) -> CoverJobResponse:
+    public = dict(status)
+    public.pop("owner_id", None)
+    return CoverJobResponse.model_validate(public)
+
+
+@router.post(
+    "/jobs",
+    response_model=CoverJobResponse,
+    summary="上传 Excel 并创建独立封面生成任务",
+)
+async def create_cover_job_from_excel(
+    file: UploadFile = File(...),
+    _db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    try:
+        rows = parse_cover_spreadsheet(file.filename or "covers.xlsx", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    status = create_cover_job(str(user.id), file.filename or "covers.xlsx", rows)
+    try:
+        generate_cover_job.delay(status["job_id"])
+    except Exception as exc:
+        status["status"] = "failed"
+        status["current_step"] = f"Celery 投递失败：{exc}"
+        write_status(status["job_id"], status)
+        raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+    return _response(status)
+
+
+@router.get(
+    "/jobs/{job_id}",
+    response_model=CoverJobResponse,
+    summary="查询独立封面生成任务进度",
+)
+def get_cover_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    return _response(_owned_status(job_id, user))
+
+
+@router.get(
+    "/jobs/{job_id}/items/{index}/image",
+    summary="返回独立封面任务中的某张图片",
+)
+def get_cover_job_image(
+    job_id: str,
+    index: int,
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    status = _owned_status(job_id, user)
+    items = status.get("items") or []
+    if index < 1 or index > len(items):
+        raise HTTPException(status_code=404, detail="cover item not found")
+    item = items[index - 1]
+    path = image_path(job_id, index, str(item.get("title") or f"cover_{index}"))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="cover image not found")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Vary": "Authorization",
+        },
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/download",
+    summary="下载独立封面任务产出的全部封面",
+)
+def download_cover_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+) -> Response:
+    status = _owned_status(job_id, user)
+    try:
+        content = build_zip(job_id, status)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="还没有可下载的封面") from exc
+    filename = f"covers_{job_id[:8]}.zip"
+    encoded = quote(filename)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{encoded}"; '
+                f"filename*=UTF-8''{encoded}"
+            )
+        },
+    )

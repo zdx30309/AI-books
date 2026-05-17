@@ -28,11 +28,31 @@ services:
         "celery_app.celery_app",
         "worker",
         "--pool=threads",
-        "--concurrency=10",
+        "--concurrency=${CELERY_WORKER_CONCURRENCY:-12}",
         "--loglevel=info",
         "--without-gossip",
         "--without-mingle",
         "--without-heartbeat"
+      ]
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - backend_output:/app/backend/output
+    command:
+      [
+        "python",
+        "-m",
+        "celery",
+        "-A",
+        "celery_app.celery_app",
+        "beat",
+        "--loglevel=info"
       ]
 
   web:

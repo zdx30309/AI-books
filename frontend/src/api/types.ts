@@ -40,9 +40,50 @@ export interface BatchCreateTaskResponse {
   total_skipped: number;
 }
 
+export interface BatchRetryTaskRequest {
+  task_ids?: string[];
+}
+
+export interface BatchRetryTaskItem {
+  task_id: string;
+  status: string;
+  reason: string | null;
+}
+
+export interface BatchRetryTaskResponse {
+  retried: BatchRetryTaskItem[];
+  skipped: BatchRetryTaskItem[];
+  total_retried: number;
+  total_skipped: number;
+}
+
 export interface BatchDownloadRequest {
   task_ids: string[];
   fmt: "md" | "docx";
+}
+
+export interface CoverJobItem {
+  index: number;
+  title: string;
+  author: string | null;
+  status: string;
+  image_url: string | null;
+  error: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CoverJobResponse {
+  job_id: string;
+  status: string;
+  progress: number;
+  total: number;
+  completed: number;
+  failed: number;
+  current_step: string;
+  source_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  items: CoverJobItem[];
 }
 
 export interface TaskCategoryOption {
@@ -64,6 +105,8 @@ export interface TaskStatusResponse {
   progress: number;
   current_step: string;
   cover_url: string | null;
+  cover_status: string | null;
+  cover_error: string | null;
   title: string | null;
   bookshelf: string | null;
   category: string | null;

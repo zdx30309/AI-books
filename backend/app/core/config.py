@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = (
         "postgresql+psycopg2://postgres:postgres@localhost:5432/postgres?sslmode=require"
     )
+    DATABASE_POOL_SIZE: int = 60
+    DATABASE_MAX_OVERFLOW: int = 140
+    DATABASE_POOL_TIMEOUT: int = 120
 
     # --- Redis / Celery (Upstash 兼容) ---
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -41,6 +44,19 @@ class Settings(BaseSettings):
     CELERY_REDIS_HEALTH_CHECK_INTERVAL: int = 10
     CELERY_REDIS_MAX_RETRIES: int = 20
     CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS: bool = False
+    CELERY_WORKER_CONCURRENCY: int = 200
+    MAX_ACTIVE_GENERATION_TASKS: int = 250
+    GENERATION_TASK_MAX_RETRIES: int = 5
+    GENERATION_TASK_RETRY_BACKOFF_SECONDS: int = 60
+    STALE_TASK_WATCHDOG_ENABLED: bool = True
+    STALE_TASK_WATCHDOG_INTERVAL_SECONDS: int = 120
+    TASK_RUN_HEARTBEAT_INTERVAL_SECONDS: int = 60
+    STALE_PROCESSING_REQUEUE_SECONDS: int = 900
+    FAILED_TASK_AUTO_RECOVERY_ENABLED: bool = True
+    FAILED_TASK_AUTO_RECOVERY_SECONDS: int = 600
+    FAILED_TASK_AUTO_RECOVERY_MAX_ATTEMPTS: int = 24
+    PAID_API_GATE_WAIT_TIMEOUT_SECONDS: int = 14400
+    PAID_API_GATE_TTL_SECONDS: int = 600
 
     # --- 主笔模型路由 ---
     WRITER_PROVIDER: str = "openai"  # 可选 "openai" / "deepseek" / "gemini"
@@ -56,6 +72,7 @@ class Settings(BaseSettings):
     OPENAI_WRITER_MAX_RETRIES: int = 3
     OPENAI_WRITER_RETRY_BACKOFF_SECONDS: float = 8.0
     OPENAI_WRITER_STREAM: bool = False
+    OPENAI_WRITER_MAX_CONCURRENT_CALLS: int = 16
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
@@ -67,8 +84,9 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 20000
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
-    DEEPSEEK_MAX_RETRIES: int = 1
+    DEEPSEEK_MAX_RETRIES: int = 4
     DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800
+    DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS: int = 16
 
     # --- Gemini / Google Gen AI ---
     GOOGLE_API_KEY: str = ""
@@ -79,12 +97,14 @@ class Settings(BaseSettings):
     GOOGLE_HTTPS_PROXY: str = ""
     GEMINI_MODEL: str = "gemini-3-flash-preview"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
-    GEMINI_REQUEST_TIMEOUT: int = 75
+    GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
-    GEMINI_MAX_RETRIES: int = 3
+    GEMINI_MAX_RETRIES: int = 5
     GEMINI_THINKING_BUDGET: int = 0
-    GEMINI_POLISH_CALL_TIMEOUT: int = 240
-    GEMINI_REFINE_CALL_TIMEOUT: int = 960
+    GEMINI_MAX_CONCURRENT_CALLS: int = 8
+    GEMINI_POLISH_CONCURRENCY: int = 1
+    GEMINI_POLISH_CALL_TIMEOUT: int = 0
+    GEMINI_REFINE_CALL_TIMEOUT: int = 0
     GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 4096
     GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 60000
 
@@ -96,6 +116,19 @@ class Settings(BaseSettings):
     IMAGE_QUALITY: str = ""
     IMAGE_RESPONSE_FORMAT: str = ""
     IMAGE_OUTPUT_FORMAT: str = ""
+    IMAGE_MAX_CONCURRENT_CALLS: int = 4
+    IMAGE_API_MAX_RETRIES: int = 1
+    IMAGE_GATE_WAIT_TIMEOUT_SECONDS: int = 30
+    COVER_WORKFLOW_ENABLED: bool = True
+    COVER_BOOK_TASK_GENERATION_ENABLED: bool = False
+    COVER_TASK_MAX_RETRIES: int = 360
+    COVER_TASK_RETRY_SECONDS: int = 60
+    COVER_JOB_MAX_ROWS: int = 500
+    COVER_REFERENCE_FETCH_ENABLED: bool = True
+    COVER_REFERENCE_CACHE_ENABLED: bool = False
+    COVER_REFERENCE_DOWNLOAD_IMAGES: bool = False
+    COVER_REFERENCE_CACHE_DIR: str = "dangdang_book_covers"
+    COVER_REFERENCE_TIMEOUT_SECONDS: int = 12
 
     # --- 轻抖 API (视频文案提取) ---
     QINGDOU_API_KEY: str = ""
@@ -103,12 +136,25 @@ class Settings(BaseSettings):
     QINGDOU_MAX_VIDEO_DURATION: int = 0
     QINGDOU_POLL_INTERVAL_SECONDS: float = 3.0
     QINGDOU_POLL_TIMEOUT_SECONDS: int = 300
-    QINGDOU_MAX_CONCURRENT_TASKS: int = 10
+    QINGDOU_MAX_CONCURRENT_TASKS: int = 30
     QINGDOU_SERIAL_LOCK_ENABLED: bool = False
     QINGDOU_LOCK_WAIT_TIMEOUT_SECONDS: int = 1800
     QINGDOU_LOCK_TTL_SECONDS: int = 900
     QINGDOU_BUSY_RETRY_SECONDS: float = 10.0
     QINGDOU_BUSY_MAX_ATTEMPTS: int = 30
+    QINGDOU_HTTP_MAX_RETRIES: int = 4
+    QINGDOU_HTTP_RETRY_BACKOFF_SECONDS: float = 2.0
+
+    # --- YouTube transcript extraction (free providers, no paid model API) ---
+    YOUTUBE_TRANSCRIPT_ENABLED: bool = True
+    YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,yt_dlp"
+    YOUTUBE_TRANSCRIPT_LANGUAGES: str = "zh-Hans,zh-Hant,zh,en,en-US,en-GB"
+    YOUTUBE_TRANSCRIPT_TOTAL_TIMEOUT_SECONDS: int = 10
+    YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS: int = 20
+    YOUTUBE_TRANSCRIPT_MIN_CHARS: int = 80
+    YOUTUBE_HTTPS_PROXY: str = ""
+    YOUTUBE_COOKIES_FILE: str = ""
+    YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
 
     # --- 5000字章节墙 (业务硬性指标) ---
     CHAPTER_TARGET_WORDS: int = 5000

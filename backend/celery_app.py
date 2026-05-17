@@ -32,7 +32,7 @@ celery_app = Celery(
     "gravity_singularity",
     broker=broker_url,
     backend=backend_url,
-    include=["app.tasks.tasks", "app.tasks.system_tasks"],
+    include=["app.tasks.tasks", "app.tasks.system_tasks", "app.tasks.cover_tasks"],
 )
 
 import ssl
@@ -91,10 +91,24 @@ celery_app.conf.update(
     # --- 时间限制 (5000字章节循环最长场景) ---
     task_time_limit=60 * 60,        # 1 小时硬超时 (KILL)
     task_soft_time_limit=55 * 60,   # 55 分钟软超时 (raise SoftTimeLimitExceeded)
+    task_annotations={
+        "tasks.requeue_stale_processing": {
+            "rate_limit": "1/m",
+            "expires": 60,
+        },
+    },
 
     # --- 结果保留 ---
     result_expires=60 * 60 * 24,    # 24h
 )
+
+if settings.STALE_TASK_WATCHDOG_ENABLED:
+    celery_app.conf.beat_schedule = {
+        "requeue-stale-processing-tasks": {
+            "task": "tasks.requeue_stale_processing",
+            "schedule": max(60, int(settings.STALE_TASK_WATCHDOG_INTERVAL_SECONDS or 120)),
+        },
+    }
 
 # 让 `from celery_app import celery_app` 与 `celery -A celery_app worker` 都能识别
 __all__ = ["celery_app"]

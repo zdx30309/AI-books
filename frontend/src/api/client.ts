@@ -5,11 +5,14 @@ import type {
   BatchCreateTaskRequest,
   BatchCreateTaskResponse,
   BatchDownloadRequest,
+  BatchRetryTaskRequest,
+  BatchRetryTaskResponse,
   ChapterResponse,
   ChapterUpdateRequest,
   ChaptersListResponse,
   CreateTaskRequest,
   CreateTaskResponse,
+  CoverJobResponse,
   LoginRequest,
   MarkdownResponse,
   PolishParagraphRequest,
@@ -108,6 +111,32 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   return { blob: await res.blob(), filename };
 }
 
+async function uploadFile<T>(path: string, file: File): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
 async function downloadWithBody(
   path: string,
   body: unknown,
@@ -203,6 +232,11 @@ export const api = {
     request<void>(`/tasks/${id}`, { method: "DELETE" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
+  retryFailedTasks: (body: BatchRetryTaskRequest = {}) =>
+    request<BatchRetryTaskResponse>("/tasks/retry-failed", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   updateTaskMetadata: (id: string, body: TaskMetadataUpdateRequest) =>
     request<TaskStatusResponse>(`/tasks/${id}/metadata`, {
       method: "PATCH",
@@ -252,6 +286,18 @@ export const api = {
     openHiddenDownload(`${BASE}/tasks/download-batch/direct?${params.toString()}`);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
+  downloadCoverFile: async (id: string) => {
+    const { blob, filename } = await download(`/tasks/${id}/cover/download`);
+    saveBlob(blob, filename);
+  },
+  createCoverJob: (file: File) => uploadFile<CoverJobResponse>("/covers/jobs", file),
+  getCoverJob: (jobId: string) => request<CoverJobResponse>(`/covers/jobs/${jobId}`),
+  getCoverJobImageBlob: (jobId: string, index: number) =>
+    fetchBlob(`/covers/jobs/${jobId}/items/${index}/image`),
+  downloadCoverJob: async (jobId: string) => {
+    const { blob, filename } = await download(`/covers/jobs/${jobId}/download`);
+    saveBlob(blob, filename);
+  },
 
   // 段落润色
   polishParagraph: (body: PolishParagraphRequest) =>

@@ -104,3 +104,15 @@ class Task(Base):
         cfg = self.config or {}
         category_label = cfg.get("category_label")
         return category_label if isinstance(category_label, str) and category_label.strip() else None
+
+    @property
+    def cover_status(self) -> str | None:
+        cfg = self.config or {}
+        status = cfg.get("cover_status")
+        return status if isinstance(status, str) and status.strip() else None
+
+    @property
+    def cover_error(self) -> str | None:
+        cfg = self.config or {}
+        error = cfg.get("cover_error")
+        return error if isinstance(error, str) and error.strip() else None

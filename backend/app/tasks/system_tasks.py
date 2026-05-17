@@ -3,3 +3,10 @@ from celery_app import celery_app
 @celery_app.task(name="test_ping_task")
 def ping_task(word: str):
     return f"Pong! Received: {word}"
+
+
+@celery_app.task(name="tasks.requeue_stale_processing")
+def requeue_stale_processing_task() -> int:
+    from app.tasks.tasks import recover_retryable_failed_tasks, requeue_stale_processing_tasks
+
+    return requeue_stale_processing_tasks() + recover_retryable_failed_tasks()

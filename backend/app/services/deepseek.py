@@ -11,6 +11,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT
+from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,18 @@ def generate_text(
 
     chunks: list[str] = []
     try:
-        stream = client.chat.completions.create(**kwargs, stream=True)
-        for event in stream:
-            if not event.choices:
-                continue
-            delta = event.choices[0].delta
-            piece = getattr(delta, "content", None)
-            if piece:
-                chunks.append(piece)
+        with distributed_semaphore(
+            "deepseek-format",
+            limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS,
+        ):
+            stream = client.chat.completions.create(**kwargs, stream=True)
+            for event in stream:
+                if not event.choices:
+                    continue
+                delta = event.choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    chunks.append(piece)
     except (httpx.RemoteProtocolError, httpx.ReadError, OpenAIError) as exc:
         partial = "".join(chunks).strip()
         if _looks_like_complete_format_output(partial):
@@ -77,6 +82,7 @@ def generate_text(
                 exc,
             )
             return partial
+        get_deepseek_client.cache_clear()
         raise
     content = "".join(chunks).strip()
     if not content:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts, normalize_category
 from app.services.deepseek import format_book_text
 from app.services.gemini import polish_book_text, refine_book_text
+from app.utils.distributed_limiter import distributed_semaphore
 
 # 进度上报回调：(stage_name, info_dict)
 # stage_name 取值：
@@ -400,12 +402,27 @@ def _is_retryable_openai_error(exc: Exception) -> bool:
         "readtimeout",
         "read timeout",
         "timeout",
+        "模型调用超时",
+        "上游接口连接中断",
+        "openai 初稿生成连接失败",
+        "distributedlimiterror",
+        "paid api concurrency limiter",
+        "concurrency limiter",
         "temporarily unavailable",
         "service unavailable",
         "gateway timeout",
+        "rate limit",
+        "ratelimit",
+        "internalservererror",
+        "429",
+        "500",
         "502",
         "503",
         "504",
+        "520",
+        "521",
+        "522",
+        "524",
     )
     return any(signature in msg for signature in retryable_signatures)
 
@@ -563,13 +580,25 @@ def _openai_writer_call(
 
     for attempt in range(1, attempts + 1):
         try:
-            if settings.OPENAI_WRITER_STREAM:
-                try:
-                    text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
-                except Exception as stream_exc:
-                    if first_stream_exc is None:
-                        first_stream_exc = stream_exc
-                    _reset_openai_writer_client()
+            with distributed_semaphore(
+                "openai-writer",
+                limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
+            ):
+                if settings.OPENAI_WRITER_STREAM:
+                    try:
+                        text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
+                    except Exception as stream_exc:
+                        if first_stream_exc is None:
+                            first_stream_exc = stream_exc
+                        _reset_openai_writer_client()
+                        response = _create_openai_writer_response(
+                            rendered_prompt,
+                            effort=effort,
+                            verb=verb,
+                            max_tok=max_tok,
+                        )
+                        text = _extract_openai_response_text(response)
+                else:
                     response = _create_openai_writer_response(
                         rendered_prompt,
                         effort=effort,
@@ -577,14 +606,6 @@ def _openai_writer_call(
                         max_tok=max_tok,
                     )
                     text = _extract_openai_response_text(response)
-            else:
-                response = _create_openai_writer_response(
-                    rendered_prompt,
-                    effort=effort,
-                    verb=verb,
-                    max_tok=max_tok,
-                )
-                text = _extract_openai_response_text(response)
             break
         except Exception as exc:
             _reset_openai_writer_client()
@@ -708,38 +729,68 @@ async def _polish_by_paragraph_chunks(
         return text
 
     total = len(chunks)
-    polished: list[str] = []
+    polished: list[str | None] = [None] * total
     fallback_count = 0
+    completed_count = 0
+    concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
+    semaphore = asyncio.Semaphore(concurrency)
+    progress_lock = asyncio.Lock()
 
     async def _polish_once(chunk: str) -> str:
-        return await asyncio.wait_for(
-            asyncio.to_thread(
-                polish_book_text,
-                chunk,
-                system_instruction=system_instruction,
-            ),
-            timeout=settings.GEMINI_POLISH_CALL_TIMEOUT,
+        return await _to_thread_with_optional_timeout(
+            polish_book_text,
+            chunk,
+            system_instruction=system_instruction,
+            timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
         )
 
-    for idx, chunk in enumerate(chunks, 1):
-        logger.info("Gemini 一润 块 %d/%d (%d 字)", idx, total, len(chunk))
-        if on_stage:
-            on_stage("polish_chunk", {"idx": idx, "total": total, "chars": len(chunk)})
+    async def _mark_completed(chunk_idx: int, chunk: str) -> None:
+        nonlocal completed_count
+        if not on_stage:
+            return
+        async with progress_lock:
+            completed_count += 1
+            on_stage(
+                "polish_chunk",
+                {
+                    "idx": completed_count,
+                    "total": total,
+                    "chars": len(chunk),
+                    "chunk_idx": chunk_idx,
+                },
+            )
 
-        try:
-            polished.append(await _polish_once(chunk))
-            continue
-        except asyncio.TimeoutError as exc:
-            first_err = f"超时（{exc.__class__.__name__}）"
-        except Exception as exc:
-            first_err = f"{exc.__class__.__name__}: {exc}"
+    async def _polish_chunk(idx: int, chunk: str) -> None:
+        nonlocal fallback_count
+        async with semaphore:
+            logger.info(
+                "Gemini 一润 块 %d/%d (%d 字) concurrency=%d",
+                idx + 1,
+                total,
+                len(chunk),
+                concurrency,
+            )
+            try:
+                polished[idx] = await _polish_once(chunk)
+            except asyncio.TimeoutError as exc:
+                first_err = f"超时（{exc.__class__.__name__}）"
+                fallback_count += 1
+                logger.error(
+                    "Gemini 一润 块 %d/%d 失败 [%s]，回退到原文继续",
+                    idx + 1, total, first_err,
+                )
+                polished[idx] = chunk
+            except Exception as exc:
+                first_err = f"{exc.__class__.__name__}: {exc}"
+                fallback_count += 1
+                logger.error(
+                    "Gemini 一润 块 %d/%d 失败 [%s]，回退到原文继续",
+                    idx + 1, total, first_err,
+                )
+                polished[idx] = chunk
+            await _mark_completed(idx + 1, chunk)
 
-        fallback_count += 1
-        logger.error(
-            "Gemini 一润 块 %d/%d 失败 [%s]，回退到原文继续",
-            idx, total, first_err,
-        )
-        polished.append(chunk)
+    await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
 
     if fallback_count:
         logger.warning(
@@ -747,7 +798,155 @@ async def _polish_by_paragraph_chunks(
             total - fallback_count, total, fallback_count,
         )
 
-    return "\n\n".join(p.strip() for p in polished if p and p.strip())
+    return "\n\n".join(
+        (item or chunks[idx]).strip()
+        for idx, item in enumerate(polished)
+        if (item or chunks[idx]).strip()
+    )
+
+
+async def _polish_by_paragraph_chunks_strict(
+    text: str,
+    *,
+    target_chars: int = 1000,
+    system_instruction: str | None = None,
+    on_stage: StageCallback | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    """Quality-safe Gemini polish with per-chunk resume cache.
+
+    The old path allowed failed chunks to fall back to raw text. That keeps tasks
+    moving, but it can quietly lower manuscript quality under high concurrency.
+    This path caches successful chunks and raises a retryable error when any
+    chunk fails, so Celery can retry only the missing pieces on the next run.
+    """
+    if not text or not text.strip():
+        return text
+    chunks = _split_text_by_paragraph(text, target_chars=target_chars)
+    if not chunks:
+        return text
+
+    total = len(chunks)
+    polished: list[str | None] = [None] * total
+    errors: list[str] = []
+    completed_count = 0
+    concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
+    semaphore = asyncio.Semaphore(concurrency)
+    progress_lock = asyncio.Lock()
+    error_lock = asyncio.Lock()
+    abort_event = asyncio.Event()
+    cache_dir = output_dir / "02_polish_chunks" if output_dir is not None else None
+
+    def _cache_path(idx: int, chunk: str) -> Path | None:
+        if cache_dir is None:
+            return None
+        digest = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:16]
+        return cache_dir / f"{idx + 1:03d}_{digest}.md"
+
+    def _read_cache(idx: int, chunk: str) -> str | None:
+        path = _cache_path(idx, chunk)
+        if path is None or not path.exists():
+            return None
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+            return content or None
+        except Exception as exc:
+            logger.warning("Gemini polish cache read failed chunk=%d: %s", idx + 1, exc)
+            return None
+
+    def _write_cache(idx: int, chunk: str, content: str) -> None:
+        path = _cache_path(idx, chunk)
+        if path is None or not content.strip():
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content.strip(), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Gemini polish cache write failed chunk=%d: %s", idx + 1, exc)
+
+    async def _polish_once(chunk: str) -> str:
+        return await _to_thread_with_optional_timeout(
+            polish_book_text,
+            chunk,
+            system_instruction=system_instruction,
+            timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
+        )
+
+    async def _mark_completed(chunk_idx: int, chunk: str) -> None:
+        nonlocal completed_count
+        if not on_stage:
+            return
+        async with progress_lock:
+            completed_count += 1
+            on_stage(
+                "polish_chunk",
+                {
+                    "idx": completed_count,
+                    "total": total,
+                    "chars": len(chunk),
+                    "chunk_idx": chunk_idx,
+                },
+            )
+
+    async def _polish_chunk(idx: int, chunk: str) -> None:
+        if abort_event.is_set():
+            return
+
+        cached = _read_cache(idx, chunk)
+        if cached:
+            polished[idx] = cached
+            logger.info("Gemini polish chunk %d/%d reused from cache", idx + 1, total)
+            await _mark_completed(idx + 1, cached)
+            return
+
+        async with semaphore:
+            if abort_event.is_set():
+                return
+
+            logger.info(
+                "Gemini polish chunk %d/%d (%d chars) concurrency=%d",
+                idx + 1,
+                total,
+                len(chunk),
+                concurrency,
+            )
+            try:
+                result = await _polish_once(chunk)
+                polished[idx] = result
+                _write_cache(idx, chunk, result)
+                await _mark_completed(idx + 1, result)
+            except asyncio.TimeoutError as exc:
+                message = f"TimeoutError: {exc}"
+                async with error_lock:
+                    errors.append(f"chunk {idx + 1}/{total}: {message}")
+                    abort_event.set()
+                logger.error(
+                    "Gemini polish chunk %d/%d failed [%s]; task will retry",
+                    idx + 1,
+                    total,
+                    message,
+                )
+            except Exception as exc:
+                message = f"{exc.__class__.__name__}: {exc}"
+                async with error_lock:
+                    errors.append(f"chunk {idx + 1}/{total}: {message}")
+                    abort_event.set()
+                logger.error(
+                    "Gemini polish chunk %d/%d failed [%s]; task will retry",
+                    idx + 1,
+                    total,
+                    message,
+                )
+
+    await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
+
+    if errors:
+        first = errors[0][:500]
+        raise RuntimeError(
+            f"retryable Gemini polish quality gate: {len(errors)}/{total} chunks failed; first={first}"
+        )
+
+    return "\n\n".join(item.strip() for item in polished if item and item.strip())
 
 
 def _front_matter_missing(text: str) -> bool:
@@ -803,6 +1002,24 @@ def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
             )
     else:
         logger.info("[stage %s] %d 字", stage, n)
+
+
+async def _to_thread_with_optional_timeout(
+    func,
+    *args,
+    timeout_seconds: int | float | None = None,
+    **kwargs,
+):
+    """Run blocking SDK calls without cancelling live API work by default.
+
+    A positive timeout is still honored for local/dev overrides, but production
+    should normally rely on the SDK request timeouts and retry budget.
+    """
+    coro = asyncio.to_thread(func, *args, **kwargs)
+    timeout = float(timeout_seconds or 0)
+    if timeout > 0:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    return await coro
 
 
 def _append_history_test_style_prompt(
@@ -869,6 +1086,14 @@ async def generate_full_book(
             logger.warning("读取中间产物 %s 失败: %s", filename, exc)
             return None
 
+    final_resume_markdown = _read_stage("04_format.md")
+    if final_resume_markdown:
+        logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
+        _log_stage("4/4 format (resume fast)", final_resume_markdown)
+        if on_stage:
+            on_stage("format_done", {"chars": len(final_resume_markdown)})
+        return final_resume_markdown
+
     # ---- 第 1 层: OpenAI Writer ----
     generated_markdown = _read_stage("01_writer.md")
     if generated_markdown:
@@ -913,11 +1138,12 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("polish_start", {})
-        polished_markdown = await _polish_by_paragraph_chunks(
+        polished_markdown = await _polish_by_paragraph_chunks_strict(
             generated_markdown,
             target_chars=1000,
             system_instruction=gemini_fast_polish_prompt,
             on_stage=on_stage,
+            output_dir=output_dir,
         )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
@@ -937,17 +1163,16 @@ async def generate_full_book(
         if on_stage:
             on_stage("refine_start", {})
         try:
-            refined_markdown = await asyncio.wait_for(
-                asyncio.to_thread(
-                    refine_book_text,
-                    polished_markdown,
-                    system_instruction=gemini_fast_refine_prompt,
-                ),
-                timeout=settings.GEMINI_REFINE_CALL_TIMEOUT,
+            refined_markdown = await _to_thread_with_optional_timeout(
+                refine_book_text,
+                polished_markdown,
+                system_instruction=gemini_fast_refine_prompt,
+                timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
         except Exception as exc:
             logger.error("Gemini 二润失败，回退到一润结果继续: %s", exc)
-            refined_markdown = polished_markdown
+            logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
+            raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
         _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)

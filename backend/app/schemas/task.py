@@ -31,7 +31,7 @@ class CreateTaskResponse(BaseModel):
 
 
 class BatchCreateTaskRequest(BaseModel):
-    urls: list[str] = Field(..., min_length=1, max_length=100, description="候选链接列表，最多 100 条")
+    urls: list[str] = Field(..., min_length=1, max_length=500, description="候选链接列表，最多 500 条")
     config: dict[str, Any] = Field(default_factory=dict, description="批量任务共享配置")
 
 
@@ -49,8 +49,25 @@ class BatchCreateTaskResponse(BaseModel):
     total_skipped: int
 
 
+class BatchRetryTaskRequest(BaseModel):
+    task_ids: list[UUID] | None = Field(default=None, max_length=1000, description="指定要继续生成的失败任务；为空时继续全部失败任务")
+
+
+class BatchRetryTaskItem(BaseModel):
+    task_id: UUID
+    status: str
+    reason: str | None = None
+
+
+class BatchRetryTaskResponse(BaseModel):
+    retried: list[BatchRetryTaskItem]
+    skipped: list[BatchRetryTaskItem]
+    total_retried: int
+    total_skipped: int
+
+
 class BatchDownloadRequest(BaseModel):
-    task_ids: list[UUID] = Field(..., min_length=1, max_length=100, description="要打包下载的任务 ID")
+    task_ids: list[UUID] = Field(..., min_length=1, max_length=500, description="要打包下载的任务 ID")
     fmt: str = Field(default="docx", pattern="^(md|docx)$", description="下载格式")
 
 
@@ -75,6 +92,8 @@ class TaskStatusResponse(BaseModel):
     progress: int                  # 0-100
     current_step: str
     cover_url: str | None = None
+    cover_status: str | None = None
+    cover_error: str | None = None
     title: str | None = None
     bookshelf: str | None = None
     category: str | None = None

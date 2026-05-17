@@ -5,20 +5,20 @@ import asyncio
 import logging
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 from xml.sax.saxutils import escape
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.config import PROJECT_ROOT
+from app.core.config import PROJECT_ROOT, settings
 from app.api.routers.auth import get_current_user
 from app.core.security import JWTDecodeError, decode_token
 from app.db.session import get_db
@@ -39,6 +39,9 @@ from app.schemas.task import (
     BatchCreateTaskRequest,
     BatchCreateTaskResponse,
     BatchDownloadRequest,
+    BatchRetryTaskItem,
+    BatchRetryTaskRequest,
+    BatchRetryTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
     MarkdownResponse,
@@ -52,7 +55,8 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
-from app.tasks.tasks import process_video
+from app.tasks.tasks import enqueue_cover_generation, process_video
+from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
     "writer": "01_writer.md",
@@ -73,6 +77,52 @@ _FINAL_TITLE_SECTION_RE = re.compile(
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["Tasks"])
+
+_ACTIVE_TASK_STATUSES = (
+    TaskStatus.PENDING,
+    TaskStatus.FETCHING_TOPICS,
+    TaskStatus.FILTERING_TOPICS,
+    TaskStatus.GENERATING_OUTLINE,
+    TaskStatus.WRITING_CHAPTERS,
+    TaskStatus.FACT_CHECKING,
+    TaskStatus.PROCESSING,
+)
+_TASK_RETENTION_DAYS = 7
+_RETRY_STAGE_PROGRESS: tuple[tuple[str, int, str], ...] = (
+    ("04_format.md", 90, "排队中（断点续跑：终稿已生成，准备入库）"),
+    ("03_refine.md", 87, "排队中（断点续跑：从终稿格式化继续）"),
+    ("02_polish.md", 72, "排队中（断点续跑：从二润继续）"),
+    ("01_writer.md", 50, "排队中（断点续跑：从一润继续）"),
+)
+
+
+def _active_generation_count(db: Session) -> int:
+    return int(
+        db.query(func.count(Task.id))
+        .filter(Task.status.in_(_ACTIVE_TASK_STATUSES))
+        .scalar()
+        or 0
+    )
+
+
+def _generation_capacity(db: Session) -> tuple[int, int, int | None]:
+    limit = max(0, int(settings.MAX_ACTIVE_GENERATION_TASKS or 0))
+    active = _active_generation_count(db)
+    if limit <= 0:
+        return limit, active, None
+    return limit, active, max(limit - active, 0)
+
+
+def _ensure_generation_capacity(db: Session, *, requested: int = 1) -> None:
+    limit, active, remaining = _generation_capacity(db)
+    if limit > 0 and (remaining or 0) < max(1, requested):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"当前已有 {active} 本书稿正在生成或排队，系统已开启费用保护，"
+                f"最多同时允许 {limit} 本，本次还需要 {requested} 个名额。"
+            ),
+        )
 
 
 def _normalize_task_config(config: dict | None) -> dict:
@@ -108,10 +158,63 @@ def _normalize_task_config(config: dict | None) -> dict:
 
 def _dispatch_task(task: Task) -> None:
     try:
+        if not acquire_task_dispatch_guard(str(task.id)):
+            return
         process_video.delay(str(task.id))
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
         raise RuntimeError(f"Celery dispatch failed: {e}") from e
+
+
+def _task_output_dir(task_id: UUID) -> Path:
+    return PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+
+
+def _retry_resume_state(task_id: UUID) -> tuple[int, str]:
+    output_dir = _task_output_dir(task_id)
+    for filename, progress, step in _RETRY_STAGE_PROGRESS:
+        path = output_dir / filename
+        if path.exists() and path.stat().st_size > 0:
+            return progress, step
+    return 0, "排队中（重试）"
+
+
+def _parse_config_datetime(raw: object) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = str(raw).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _auto_retry_not_before(task: Task) -> datetime | None:
+    return _parse_config_datetime((task.config or {}).get("auto_retry_not_before"))
+
+
+def _has_active_run(task: Task) -> bool:
+    return bool(str((task.config or {}).get("active_run_id") or "").strip())
+
+
+def _prepare_task_for_retry(task: Task) -> None:
+    cfg = dict(task.config or {})
+    cfg.pop("active_run_id", None)
+    cfg.pop("active_run_started_at", None)
+    cfg.pop("active_run_heartbeat_at", None)
+    cfg.pop("auto_retry_attempts", None)
+    cfg.pop("last_auto_retry_error", None)
+    cfg.pop("auto_retry_not_before", None)
+    cfg.pop("auto_retry_scheduled_by", None)
+    task.config = cfg
+    progress, step = _retry_resume_state(task.id)
+    task.status = TaskStatus.PENDING
+    task.progress = progress
+    task.current_step = step
+    task.error_message = None
 
 
 def _clean_candidate_url(raw: str) -> str:
@@ -194,6 +297,7 @@ def create_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
+    _ensure_generation_capacity(db)
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") == "classical_chinese" and not str(cfg.get("raw_text") or "").strip():
         raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
@@ -248,8 +352,8 @@ def create_task_batch(
     urls, duplicate_urls = _normalize_candidate_urls(req.urls)
     if not urls:
         raise HTTPException(status_code=400, detail="候选链接不能为空")
-    if len(urls) > 100:
-        raise HTTPException(status_code=400, detail="一次最多放入 100 个链接")
+    if len(urls) > 500:
+        raise HTTPException(status_code=400, detail="一次最多放入 500 个链接")
 
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") == "classical_chinese":
@@ -260,6 +364,9 @@ def create_task_batch(
         .filter(Task.owner_id == user.id, Task.source_url.in_(urls))
         .all()
     }
+    createable_count = sum(1 for url in urls if url not in existing_urls)
+    if createable_count:
+        _ensure_generation_capacity(db, requested=createable_count)
 
     created: list[BatchCreateTaskItem] = []
     skipped: list[BatchCreateTaskItem] = [
@@ -267,10 +374,20 @@ def create_task_batch(
         for url in duplicate_urls
     ]
     tasks_to_dispatch: list[Task] = []
+    batch_capacity = createable_count
 
     for url in urls:
         if url in existing_urls:
             skipped.append(BatchCreateTaskItem(url=url, status="skipped", reason="已存在任务"))
+            continue
+        if len(tasks_to_dispatch) >= batch_capacity:
+            skipped.append(
+                BatchCreateTaskItem(
+                    url=url,
+                    status="skipped",
+                    reason="已达到当前并发保护上限，未入队",
+                )
+            )
             continue
         task = Task(
             source_url=url,
@@ -304,6 +421,92 @@ def create_task_batch(
         created=created,
         skipped=skipped,
         total_created=len(created),
+        total_skipped=len(skipped),
+    )
+
+
+@router.post(
+    "/retry-failed",
+    response_model=BatchRetryTaskResponse,
+    summary="一键继续生成失败任务（断点续跑）",
+)
+def retry_failed_tasks(
+    req: BatchRetryTaskRequest = Body(default_factory=BatchRetryTaskRequest),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BatchRetryTaskResponse:
+    _ensure_generation_capacity(db)
+    requested_ids = list(dict.fromkeys(req.task_ids or []))
+
+    base_query = db.query(Task).filter(Task.owner_id == user.id)
+    skipped: list[BatchRetryTaskItem] = []
+    if requested_ids:
+        locked = (
+            base_query.filter(Task.id.in_(requested_ids), Task.status == TaskStatus.FAILED)
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        found_by_id = {task.id: task for task in locked}
+        tasks = [found_by_id[task_id] for task_id in requested_ids if task_id in found_by_id]
+        for task_id in requested_ids:
+            if task_id not in found_by_id:
+                skipped.append(
+                    BatchRetryTaskItem(
+                        task_id=task_id,
+                        status="skipped",
+                        reason="任务不存在、无权限、已在继续生成或不是失败状态",
+                    )
+                )
+    else:
+        tasks = (
+            base_query.filter(Task.status == TaskStatus.FAILED)
+            .with_for_update(skip_locked=True)
+            .order_by(Task.created_at.desc())
+            .all()
+        )
+
+    retried: list[BatchRetryTaskItem] = []
+    tasks_to_dispatch: list[Task] = []
+    for task in tasks:
+        if task.status != TaskStatus.FAILED:
+            skipped.append(
+                BatchRetryTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason=f"当前状态为 {task.status}，无需继续生成",
+                )
+            )
+            continue
+        _prepare_task_for_retry(task)
+        tasks_to_dispatch.append(task)
+        retried.append(
+            BatchRetryTaskItem(
+                task_id=task.id,
+                status=TaskStatus.PENDING,
+                reason=task.current_step,
+            )
+        )
+
+    db.commit()
+
+    for task in tasks_to_dispatch:
+        try:
+            _dispatch_task(task)
+        except Exception as exc:
+            logger.exception("[task %s] Celery 批量重试投递失败", task.id)
+            task.status = TaskStatus.FAILED
+            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            db.commit()
+            for item in retried:
+                if item.task_id == task.id:
+                    item.status = TaskStatus.FAILED
+                    item.reason = str(exc)[:300]
+                    break
+
+    return BatchRetryTaskResponse(
+        retried=retried,
+        skipped=skipped,
+        total_retried=len(retried),
         total_skipped=len(skipped),
     )
 
@@ -350,15 +553,24 @@ def retry_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
+    _ensure_generation_capacity(db)
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-    # 重置状态
-    task.status = TaskStatus.PENDING
-    task.progress = 0
-    task.current_step = "排队中（重试）"
-    task.error_message = None
+    if task.status == TaskStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="任务已完成，不能重新投递，避免重复消耗 API。")
+    if task.status == TaskStatus.PROCESSING or _has_active_run(task):
+        raise HTTPException(status_code=409, detail="任务正在生成中，系统会自动续跑，请勿重复投递。")
+    not_before = _auto_retry_not_before(task)
+    if task.status == TaskStatus.PENDING:
+        if not_before and not_before > datetime.now(timezone.utc):
+            return CreateTaskResponse(task_id=task.id, status=task.status)
+        return CreateTaskResponse(task_id=task.id, status=task.status)
+    if task.status != TaskStatus.FAILED:
+        raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
+
+    _prepare_task_for_retry(task)
     db.commit()
     db.refresh(task)
 
@@ -426,6 +638,88 @@ def _build_list_item(db: Session, task: Task) -> TaskListItem:
         word_count=int(word_count),
         chapter_count=int(chapter_count),
     )
+
+
+_LIST_CONFIG_DROP_KEYS = ("markdown", "raw_text", "video_text", "transcript")
+
+
+def _task_list_config_expr():
+    expr = Task.config
+    for key in _LIST_CONFIG_DROP_KEYS:
+        expr = expr.op("-")(key)
+    return expr.label("config")
+
+
+def _build_list_item_from_row(row) -> TaskListItem:
+    """Build a bookshelf card without loading full manuscript JSON."""
+    cfg = dict(row.config or {})
+    raw_category = str(cfg.get("category") or "").strip() or None
+    category = None
+    category_label = str(cfg.get("category_label") or "").strip() or None
+    if raw_category:
+        try:
+            category = normalize_category(raw_category)
+            category_meta = get_category_meta(category)
+            category_label = category_label or category_meta["label"]
+        except ValueError:
+            category = raw_category
+
+    chapter_count = int(row.chapter_count or 0)
+    word_count = int(cfg.get("markdown_chars") or row.chapter_words or 0)
+    title = cfg.get("title") or row.first_chapter_title
+    bookshelf = str(cfg.get("bookshelf")).strip() if cfg.get("bookshelf") else category_label
+
+    return TaskListItem(
+        id=row.id,
+        source_url=row.source_url,
+        status=row.status,
+        progress=row.progress,
+        current_step=row.current_step,
+        cover_url=row.cover_url,
+        created_at=row.created_at,
+        title=title,
+        bookshelf=bookshelf,
+        category=category,
+        category_label=category_label,
+        word_count=word_count,
+        chapter_count=chapter_count,
+    )
+
+
+def _cleanup_expired_tasks(db: Session, user: User) -> int:
+    """Delete terminal tasks older than the retention window without touching active runs."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_TASK_RETENTION_DAYS)
+    expired = (
+        db.query(Task)
+        .filter(
+            Task.owner_id == user.id,
+            Task.created_at < cutoff,
+            ~Task.status.in_(_ACTIVE_TASK_STATUSES),
+        )
+        .all()
+    )
+    if not expired:
+        return 0
+
+    expired_ids = [task.id for task in expired]
+    try:
+        for task in expired:
+            db.delete(task)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("自动清理超过 %d 天的书籍失败", _TASK_RETENTION_DAYS)
+        return 0
+
+    import shutil
+
+    for task_id in expired_ids:
+        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+        if output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    logger.info("自动清理超过 %d 天的书籍 %d 本", _TASK_RETENTION_DAYS, len(expired_ids))
+    return len(expired_ids)
 
 
 def _read_task_markdown(db: Session, task: Task) -> str:
@@ -519,23 +813,59 @@ def _markdown_to_docx(markdown: str) -> bytes:
 )
 def list_tasks(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=0),
     status_filter: str | None = Query(None, alias="status"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TaskListResponse:
-    base = db.query(Task).filter(Task.owner_id == user.id)
-    if status_filter:
-        base = base.filter(Task.status == status_filter)
-
-    total = base.with_entities(func.count(Task.id)).scalar() or 0
-    rows = (
-        base.order_by(Task.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
+    chapter_stats = (
+        db.query(
+            Chapter.task_id.label("task_id"),
+            func.count(Chapter.id).label("chapter_count"),
+            func.coalesce(func.sum(Chapter.word_count), 0).label("chapter_words"),
+        )
+        .group_by(Chapter.task_id)
+        .subquery()
     )
-    items = [_build_list_item(db, task) for task in rows]
+    first_chapter = (
+        db.query(
+            Chapter.task_id.label("task_id"),
+            Chapter.title.label("first_chapter_title"),
+            func.row_number()
+            .over(partition_by=Chapter.task_id, order_by=Chapter.chapter_num.asc())
+            .label("rn"),
+        )
+        .subquery()
+    )
+
+    filters = [Task.owner_id == user.id]
+    if status_filter:
+        filters.append(Task.status == status_filter)
+
+    total = db.query(func.count(Task.id)).filter(*filters).scalar() or 0
+    query = (
+        db.query(
+            Task.id.label("id"),
+            Task.source_url.label("source_url"),
+            Task.status.label("status"),
+            Task.progress.label("progress"),
+            Task.current_step.label("current_step"),
+            Task.cover_url.label("cover_url"),
+            Task.created_at.label("created_at"),
+            _task_list_config_expr(),
+            func.coalesce(chapter_stats.c.chapter_count, 0).label("chapter_count"),
+            func.coalesce(chapter_stats.c.chapter_words, 0).label("chapter_words"),
+            first_chapter.c.first_chapter_title.label("first_chapter_title"),
+        )
+        .outerjoin(chapter_stats, chapter_stats.c.task_id == Task.id)
+        .outerjoin(first_chapter, and_(first_chapter.c.task_id == Task.id, first_chapter.c.rn == 1))
+        .filter(*filters)
+        .order_by(Task.created_at.desc())
+    )
+    if page_size > 0:
+        query = query.offset((page - 1) * page_size).limit(page_size)
+    rows = query.all()
+    items = [_build_list_item_from_row(row) for row in rows]
     return TaskListResponse(total=int(total), page=page, page_size=page_size, items=items)
 
 
@@ -672,19 +1002,82 @@ def get_cover(
     )
 
 
+@router.get(
+    "/{task_id}/cover/download",
+    summary="下载任务封面图 (png)",
+)
+def download_cover(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    cover_path = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}" / "cover.png"
+    if not cover_path.exists():
+        raise HTTPException(status_code=404, detail=f"cover of task {task_id} not found")
+    return FileResponse(
+        cover_path,
+        media_type="image/png",
+        filename=_safe_download_name(task, "png"),
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Vary": "Authorization",
+        },
+    )
+
+
 @router.post(
     "/{task_id}/cover/regenerate",
-    summary="封面生成已暂时停用",
+    response_model=TaskStatusResponse,
+    summary="重新生成三段式出版封面",
 )
 def regenerate_cover(
     task_id: UUID,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> Response:
-    task = db.get(Task, task_id)
+) -> TaskStatusResponse:
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id, Task.owner_id == user.id)
+        .with_for_update()
+        .one_or_none()
+    )
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    raise HTTPException(status_code=410, detail="封面生成已暂时停用")
+    markdown = _read_task_markdown(db, task)
+    if not markdown:
+        raise HTTPException(status_code=404, detail="任务尚未产出可用书稿，无法生成封面")
+
+    cfg = dict(task.config or {})
+    if not settings.COVER_WORKFLOW_ENABLED:
+        cfg.update(
+            cover_disabled=True,
+            cover_isolated=True,
+            cover_isolation_reason="COVER_WORKFLOW_ENABLED=false",
+            cover_error=None,
+        )
+        task.config = cfg
+        task.cover_url = None
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="封面 workflow 已暂时隔离：COVER_WORKFLOW_ENABLED=false",
+        )
+
+    if not settings.COVER_BOOK_TASK_GENERATION_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="封面生成已迁移到书架下的 Excel 独立入口",
+        )
+
+    if cfg.get("cover_status") in {"queued", "generating"}:
+        return TaskStatusResponse.model_validate(task)
+
+    enqueue_cover_generation(db, task, force=True)
+    db.refresh(task)
+    return TaskStatusResponse.model_validate(task)
 
 
 @router.get(
@@ -880,8 +1273,8 @@ def download_batch_direct(
         raise HTTPException(status_code=400, detail="task_ids 参数格式不正确") from exc
     if not ids:
         raise HTTPException(status_code=400, detail="请选择要下载的书稿")
-    if len(ids) > 100:
-        raise HTTPException(status_code=400, detail="一次最多下载 100 本书稿")
+    if len(ids) > 500:
+        raise HTTPException(status_code=400, detail="一次最多下载 500 本书稿")
     return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 

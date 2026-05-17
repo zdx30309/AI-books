@@ -200,6 +200,39 @@ class QingdouClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def _request_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        max_attempts = max(1, int(settings.QINGDOU_HTTP_MAX_RETRIES or 1))
+        backoff = max(0.1, float(settings.QINGDOU_HTTP_RETRY_BACKOFF_SECONDS or 0.1))
+        retry_statuses = {408, 429, 500, 502, 503, 504}
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self._client.request(method, url, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response.status_code not in retry_statuses or attempt >= max_attempts:
+                    raise
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                last_exc = exc
+                if attempt >= max_attempts:
+                    raise
+
+            sleep_seconds = min(30.0, backoff * (2 ** (attempt - 1)))
+            logger.warning(
+                "轻抖 HTTP 调用失败，自动重试 %d/%d: %s",
+                attempt,
+                max_attempts,
+                last_exc,
+            )
+            time.sleep(sleep_seconds)
+
+        if last_exc:
+            raise last_exc
+        raise QingdouError("轻抖 HTTP 调用失败")
+
     def commit_get_text_task(self, source_url: str) -> int:
         payload = {
             "userInputList": [
@@ -209,8 +242,7 @@ class QingdouClient:
                 }
             ]
         }
-        resp = self._client.post(self.base_url, json=payload)
-        resp.raise_for_status()
+        resp = self._request_with_retry("POST", self.base_url, json=payload)
         data = resp.json()
         self._assert_ok(data, endpoint="commitGetTextTask")
         batch_id = self._extract_batch_id(data)
@@ -220,8 +252,7 @@ class QingdouClient:
 
     def get_task_result(self, batch_id: int) -> QingdouTaskResult:
         url = self._result_url()
-        resp = self._client.get(url, params={"batchId": batch_id})
-        resp.raise_for_status()
+        resp = self._request_with_retry("GET", url, params={"batchId": batch_id})
         data = resp.json()
         self._assert_ok(data, endpoint="getTaskResult")
         result = data.get("result") or {}

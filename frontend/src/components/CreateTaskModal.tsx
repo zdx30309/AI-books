@@ -128,8 +128,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
         setError("请放入至少 1 个候选链接");
         return;
       }
-      if (urls.length > 100) {
-        setError("候选链接一次最多 100 个");
+      if (urls.length > 500) {
+        setError("候选链接一次最多 500 个");
         return;
       }
       setSubmitting(true);
@@ -372,14 +372,14 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   候选链接
                 </label>
                 <span className="text-[10px] tracking-widest text-warm-500">
-                  {candidateLinkStats.urls.length}/100
+                  {candidateLinkStats.urls.length}/500
                 </span>
               </div>
               <textarea
                 id="candidate-links"
                 value={candidateLinks}
                 onChange={(e) => setCandidateLinks(e.target.value)}
-                placeholder="可以直接粘贴整段文字、评论、表格或多平台分享文本；系统会自动识别其中完整链接，最多 100 个"
+                placeholder="可以直接粘贴整段文字、评论、表格或多平台分享文本；系统会自动识别其中完整链接，最多 500 个"
                 rows={10}
                 className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
               />

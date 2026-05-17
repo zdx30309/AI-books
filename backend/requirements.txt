@@ -20,6 +20,9 @@ httpx>=0.28.0
 openai>=1.59.0
 google-genai>=0.8.0
 gevent>=24.10.3
+youtube-transcript-api>=1.1.1
+yt-dlp>=2025.7.21
+pytubefix>=8.12.0
 
 # --- 配置 / 校验 ---
 python-dotenv>=1.0.1
@@ -28,6 +31,8 @@ pydantic-settings>=2.7.0
 
 # --- 工具 ---
 tenacity>=9.0.0
+openpyxl>=3.1.5
+python-multipart>=0.0.20
 
 # --- 鉴权 (JWT + 密码哈希) ---
 PyJWT>=2.10.0

@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,9 @@ from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
+from app.services.youtube import extract_youtube_text, is_youtube_url
+from app.utils.distributed_limiter import DistributedLimitError
+from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
 from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,70 @@ _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
 
 class StaleTaskRun(RuntimeError):
     pass
+
+
+_ACTIVE_RUN_STATUSES = {
+    TaskStatus.PENDING,
+    TaskStatus.FETCHING_TOPICS,
+    TaskStatus.FILTERING_TOPICS,
+    TaskStatus.GENERATING_OUTLINE,
+    TaskStatus.WRITING_CHAPTERS,
+    TaskStatus.FACT_CHECKING,
+    TaskStatus.PROCESSING,
+}
+_RESUME_STAGE_FILES = (
+    "04_format.md",
+    "03_refine.md",
+    "02_polish.md",
+    "01_writer.md",
+)
+_RETRYABLE_ERROR_TOKENS = (
+    "connection",
+    "connecterror",
+    "apiconnectionerror",
+    "remoteprotocol",
+    "readerror",
+    "ssl",
+    "eof",
+    "timeout",
+    "timed out",
+    "模型调用超时",
+    "上游接口连接中断",
+    "openai 初稿生成连接失败",
+    "distributedlimiterror",
+    "paid api concurrency limiter",
+    "concurrency limiter",
+    "retryable gemini",
+    "quality gate",
+    "rate_limit",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "520",
+    "521",
+    "522",
+    "524",
+    "internalservererror",
+    "server error",
+    "temporar",
+    "qingdouerror",
+    "轻抖任务失败",
+    "未返回 videocontent",
+    "youtubetranscripterror",
+    "youtube transcript",
+    "youtube 字幕",
+)
+_NON_RETRYABLE_ERROR_TOKENS = (
+    "insufficient_quota",
+    "exceeded your current quota",
+    "unauthorized",
+    "401",
+    "api key",
+    "duration exceeded",
+    "超过限制",
+)
 
 
 # ============================================================
@@ -59,6 +128,10 @@ def _update_progress(
     """统一的进度回写入口。每次都 commit 以保证 API 端 GET 立即可见。"""
     if run_id is not None:
         _ensure_active_run(db, task, run_id)
+        cfg = dict(task.config or {})
+        if str(cfg.get("active_run_id") or "") == run_id:
+            cfg["active_run_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+            task.config = cfg
     task.progress = max(0, min(100, int(progress)))
     task.current_step = step[:255]
     if status is not None:
@@ -89,6 +162,101 @@ def _ensure_active_run(db: Session, task: Task, run_id: str) -> None:
         )
 
 
+def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
+    task_uuid = uuid.UUID(task_id)
+    task = db.execute(
+        select(Task).where(Task.id == task_uuid).with_for_update()
+    ).scalar_one_or_none()
+    if task is None:
+        raise RuntimeError(f"Task {task_id} 不存在(可能在入队前被删除)")
+
+    if task.status == TaskStatus.COMPLETED:
+        return task
+
+    cfg = dict(task.config or {})
+    if cfg.get("generation_hold"):
+        task.status = TaskStatus.FAILED
+        task.error_message = str(
+            cfg.get("generation_hold_reason") or "generation is held by cost protection"
+        )[:2000]
+        task.current_step = str(cfg.get("generation_hold_step") or "费用保护暂停，未投递模型调用")[:255]
+        db.commit()
+        raise StaleTaskRun(f"task {task.id} held by cost protection")
+
+    active_run_id = str(cfg.get("active_run_id") or "").strip()
+    if task.status == TaskStatus.PROCESSING and active_run_id and active_run_id != run_id:
+        raise StaleTaskRun(
+            f"task {task.id} already owned by active run {active_run_id}, current run {run_id} is duplicate"
+        )
+
+    cfg["active_run_id"] = run_id
+    cfg["active_run_started_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["active_run_heartbeat_at"] = cfg["active_run_started_at"]
+    cfg.pop("auto_retry_not_before", None)
+    cfg.pop("auto_retry_scheduled_by", None)
+    task.config = cfg
+    task.status = TaskStatus.PROCESSING
+    task.error_message = None
+    db.commit()
+    clear_task_dispatch_guard(str(task.id))
+    db.refresh(task)
+    return task
+
+
+def _clear_task_run(task: Task, run_id: str) -> None:
+    cfg = dict(task.config or {})
+    if str(cfg.get("active_run_id") or "") != run_id:
+        return
+    cfg.pop("active_run_id", None)
+    cfg.pop("active_run_started_at", None)
+    cfg.pop("active_run_heartbeat_at", None)
+    task.config = cfg
+
+
+def _touch_active_run_heartbeat(task_id: str, run_id: str) -> bool:
+    db: Session = SessionLocal()
+    try:
+        task = db.execute(
+            select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
+        ).scalar_one_or_none()
+        if task is None or task.status == TaskStatus.COMPLETED:
+            return False
+
+        cfg = dict(task.config or {})
+        if str(cfg.get("active_run_id") or "") != run_id:
+            return False
+
+        cfg["active_run_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        cfg["active_run_heartbeat_source"] = "worker"
+        task.config = cfg
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        logger.warning("[task %s] active run heartbeat failed", task_id, exc_info=True)
+        return True
+    finally:
+        db.close()
+
+
+def _start_active_run_heartbeat(task_id: str, run_id: str) -> tuple[threading.Event, threading.Thread]:
+    interval = max(15, int(settings.TASK_RUN_HEARTBEAT_INTERVAL_SECONDS or 60))
+    stop_event = threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval):
+            if not _touch_active_run_heartbeat(task_id, run_id):
+                break
+
+    thread = threading.Thread(
+        target=_loop,
+        name=f"task-heartbeat-{task_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
     category = str(config.get("category") or "").strip()
@@ -109,6 +277,19 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     poll_interval = float(config.get("poll_interval_seconds") or settings.QINGDOU_POLL_INTERVAL_SECONDS)
     poll_timeout = int(config.get("poll_timeout_seconds") or settings.QINGDOU_POLL_TIMEOUT_SECONDS)
 
+    if settings.YOUTUBE_TRANSCRIPT_ENABLED and is_youtube_url(source_url):
+        logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)
+        result = extract_youtube_text(source_url, config=config)
+        logger.info(
+            "YouTube 字幕解析完成: video_id=%s provider=%s language=%s generated=%s chars=%d",
+            result.video_id,
+            result.provider,
+            result.language,
+            result.is_generated,
+            len(result.text),
+        )
+        return result.text
+
     logger.info("调用轻抖 API 解析视频: source_url=%s max_duration=%s", source_url, max_duration_arg or "unlimited")
     text, duration, result = extract_video_text_with_qingdou(
         source_url,
@@ -121,6 +302,206 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
         result.batch_id, result.task_id, duration,
     )
     return text
+
+
+def _has_resume_artifact(output_dir: Path) -> bool:
+    return any(
+        (output_dir / name).exists() and (output_dir / name).stat().st_size > 0
+        for name in _RESUME_STAGE_FILES
+    )
+
+
+def _resolve_video_text_for_run(task: Task, output_dir: Path) -> str:
+    config = dict(task.config or {})
+    for key in ("raw_text", "video_text", "transcript"):
+        val = config.get(key)
+        if val and isinstance(val, str) and val.strip():
+            logger.info("[task %s] resume with cached config['%s'] (%d chars)", task.id, key, len(val))
+            return val.strip()
+
+    if _has_resume_artifact(output_dir):
+        logger.info("[task %s] stage artifact exists; skip video text fetch and resume from disk", task.id)
+        return ""
+
+    return _fetch_video_text(task.source_url, config)
+
+
+def _is_retryable_generation_error(exc: Exception) -> bool:
+    normalized = f"{type(exc).__name__}: {exc}".lower()
+    if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
+        return False
+    return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
+
+
+def _retry_delay_seconds(retries: int) -> int:
+    base = max(1, int(settings.GENERATION_TASK_RETRY_BACKOFF_SECONDS or 60))
+    return min(900, base * (2 ** max(0, retries)))
+
+
+def _is_retryable_error_message(message: str | None) -> bool:
+    normalized = (message or "").lower()
+    if not normalized:
+        return False
+    if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
+        return False
+    return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _resume_progress_from_artifacts(output_dir: Path) -> tuple[int, str]:
+    stage_states = (
+        ("04_format.md", 90, "自动检测到卡住，断点续跑：终稿入库"),
+        ("03_refine.md", 87, "自动检测到卡住，断点续跑：终稿格式化"),
+        ("02_polish.md", 72, "自动检测到卡住，断点续跑：二润"),
+        ("01_writer.md", 50, "自动检测到卡住，断点续跑：一润"),
+    )
+    for filename, progress, step in stage_states:
+        path = output_dir / filename
+        if path.exists() and path.stat().st_size > 0:
+            return progress, step
+    return 0, "自动检测到卡住，重新排队"
+
+
+def _mark_task_pending_for_resume(task: Task, *, reason: str) -> None:
+    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+    progress, step = _resume_progress_from_artifacts(output_dir)
+    cfg = dict(task.config or {})
+    cfg.pop("active_run_id", None)
+    cfg.pop("active_run_started_at", None)
+    cfg.pop("active_run_heartbeat_at", None)
+    cfg.pop("auto_retry_not_before", None)
+    cfg.pop("auto_retry_scheduled_by", None)
+    cfg["auto_requeued_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["auto_requeue_reason"] = reason
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.progress = progress
+    task.current_step = step
+    task.error_message = None
+
+
+def _dispatch_task_ids(task_ids: list[str], *, label: str) -> None:
+    for task_id in task_ids:
+        try:
+            if not acquire_task_dispatch_guard(task_id):
+                continue
+            process_video.delay(task_id)
+        except Exception:
+            logger.exception("[task %s] %s dispatch failed", task_id, label)
+    if task_ids:
+        logger.warning("%s requeued %d tasks", label, len(task_ids))
+
+
+def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
+    if not settings.STALE_TASK_WATCHDOG_ENABLED:
+        return 0
+
+    stale_after = max(60, int(settings.STALE_PROCESSING_REQUEUE_SECONDS or 14400))
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after)
+    db: Session = SessionLocal()
+    tasks_to_dispatch: list[str] = []
+    try:
+        rows = (
+            db.execute(
+                select(Task)
+                .where(Task.status == TaskStatus.PROCESSING)
+                .with_for_update(skip_locked=True)
+                .limit(max(1, limit))
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            cfg = dict(task.config or {})
+            if cfg.get("generation_hold"):
+                continue
+            heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at")) or _parse_iso_datetime(
+                cfg.get("active_run_started_at")
+            )
+            if heartbeat is not None and heartbeat > cutoff:
+                continue
+            _mark_task_pending_for_resume(
+                task,
+                reason=f"stale heartbeat_before={heartbeat.isoformat() if heartbeat else 'missing'}",
+            )
+            tasks_to_dispatch.append(str(task.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("stale task watchdog failed")
+        return 0
+    finally:
+        db.close()
+
+    _dispatch_task_ids(tasks_to_dispatch, label="stale task watchdog")
+    return len(tasks_to_dispatch)
+
+
+def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
+    if not settings.FAILED_TASK_AUTO_RECOVERY_ENABLED:
+        return 0
+
+    retry_after = max(60, int(settings.FAILED_TASK_AUTO_RECOVERY_SECONDS or 600))
+    max_attempts = max(1, int(settings.FAILED_TASK_AUTO_RECOVERY_MAX_ATTEMPTS or 24))
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=retry_after)
+    db: Session = SessionLocal()
+    tasks_to_dispatch: list[str] = []
+    try:
+        rows = (
+            db.execute(
+                select(Task)
+                .where(Task.status == TaskStatus.FAILED)
+                .with_for_update(skip_locked=True)
+                .limit(max(1, limit))
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            cfg = dict(task.config or {})
+            if cfg.get("generation_hold"):
+                continue
+            attempts = int(cfg.get("failed_auto_recovery_attempts") or 0)
+            last_recovered_at = _parse_iso_datetime(cfg.get("failed_auto_recovered_at"))
+            if attempts >= max_attempts:
+                continue
+            if last_recovered_at is not None and last_recovered_at > cutoff:
+                continue
+            message = task.error_message or cfg.get("last_auto_retry_error")
+            if not _is_retryable_error_message(str(message or "")):
+                continue
+            cfg["failed_auto_recovery_attempts"] = attempts + 1
+            cfg["failed_auto_recovered_at"] = datetime.now(timezone.utc).isoformat()
+            task.config = cfg
+            _mark_task_pending_for_resume(
+                task,
+                reason=f"retryable failed auto recovery attempt={attempts + 1}/{max_attempts}",
+            )
+            tasks_to_dispatch.append(str(task.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("failed task auto recovery failed")
+        return 0
+    finally:
+        db.close()
+
+    _dispatch_task_ids(tasks_to_dispatch, label="failed task auto recovery")
+    return len(tasks_to_dispatch)
 
 
 def _patch_config(task: Task, **kv: Any) -> None:
@@ -136,6 +517,8 @@ def _user_facing_generation_error(exc: Exception) -> str:
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
     if "rate_limit" in normalized or "429" in normalized:
         return "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
+    if any(token in normalized for token in ("connection", "connecterror", "apiconnectionerror", "ssl", "eof", "remoteprotocol", "readerror")):
+        return "上游接口连接中断，系统会自动断点重试；若重试耗尽仍失败，请稍后继续生成。"
     if "timeout" in normalized or "timed out" in normalized:
         return "模型调用超时，任务已停止。可以稍后点击继续生成重试。"
     if "api key" in normalized or "unauthorized" in normalized or "401" in normalized:
@@ -163,10 +546,78 @@ def _extract_book_title(markdown: str) -> str:
     return "未命名书稿"
 
 
-def _generate_cover_safely(title: str, markdown: str, output_dir: Path, task: Task) -> None:
-    """Cover generation is temporarily disabled by product request."""
-    task.cover_url = None
-    _patch_config(task, cover_disabled=True, cover_error=None)
+def _cover_dispatch_guard_id(task_id: str) -> str:
+    return f"cover:{task_id}"
+
+
+def enqueue_cover_generation(db: Session, task: Task, *, force: bool = False) -> bool:
+    """Queue cover generation without blocking the completed manuscript."""
+    cfg = dict(task.config or {})
+    if not settings.COVER_WORKFLOW_ENABLED:
+        task.cover_url = None
+        cfg.update(
+            cover_disabled=True,
+            cover_status="disabled",
+            cover_isolated=True,
+            cover_isolation_reason="COVER_WORKFLOW_ENABLED=false",
+            cover_error=None,
+        )
+        task.config = cfg
+        db.commit()
+        logger.info("[task %s] cover workflow isolated by COVER_WORKFLOW_ENABLED=false", task.id)
+        return False
+
+    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+    cover_path = output_dir / "cover.png"
+    if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
+        task.cover_url = f"/api/v1/tasks/{task.id}/cover"
+        cfg.update(
+            cover_disabled=False,
+            cover_status="completed",
+            cover_error=None,
+            cover_path=str(cover_path),
+            draft_cover_path=str(output_dir / "draft_cover.png"),
+            cover_style_brief_path=str(output_dir / "cover_style_brief.json"),
+        )
+        task.config = cfg
+        db.commit()
+        return False
+
+    if cfg.get("cover_status") in {"queued", "generating"} and not force:
+        return False
+
+    cfg.update(
+        cover_disabled=False,
+        cover_status="queued",
+        cover_error=None,
+        cover_queued_at=datetime.now(timezone.utc).isoformat(),
+    )
+    task.config = cfg
+    if force:
+        task.cover_url = None
+    db.commit()
+
+    guard_id = _cover_dispatch_guard_id(str(task.id))
+    try:
+        if not acquire_task_dispatch_guard(guard_id, ttl_seconds=86400):
+            return False
+        generate_cover.delay(str(task.id), force=force)
+        return True
+    except Exception as exc:
+        clear_task_dispatch_guard(guard_id)
+        cfg = dict(task.config or {})
+        cfg.update(
+            cover_status="failed",
+            cover_error=f"cover dispatch failed: {exc}"[:2000],
+        )
+        task.config = cfg
+        db.commit()
+        logger.exception("[task %s] cover dispatch failed", task.id)
+        return False
+
+
+def _cover_retry_countdown() -> int:
+    return max(30, int(settings.COVER_TASK_RETRY_SECONDS or 60))
 
 
 def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
@@ -178,6 +629,16 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
     body_offset = body_match.end() if body_match else 0
     body_text = markdown[body_offset:] if body_match else markdown
     matches = list(_CHAPTER_HEADING_RE.finditer(body_text))
+    if matches:
+        seen_chapter_nums: set[int] = set()
+        deduped_matches = []
+        for match in reversed(matches):
+            chapter_num = int(match.group(1))
+            if chapter_num in seen_chapter_nums:
+                continue
+            seen_chapter_nums.add(chapter_num)
+            deduped_matches.append(match)
+        matches = list(reversed(deduped_matches))
     if not matches:
         chapter = Chapter(task_id=task.id, chapter_num=1, title="全文", content=markdown, word_count=len(markdown))
         db.add(chapter)
@@ -210,32 +671,38 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
 @celery_app.task(
     bind=True,
     name="tasks.process_video",
-    max_retries=0,
+    max_retries=settings.GENERATION_TASK_MAX_RETRIES,
 )
 def process_video(_self, task_id: str) -> dict:
     """主流水线 - 由 POST /api/v1/tasks 触发，task_id 为已建好的 Task.id。"""
     db: Session = SessionLocal()
     task: Task | None = None
     run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
 
     try:
-        task = db.get(Task, uuid.UUID(task_id))
-        if task is None:
-            raise RuntimeError(f"Task {task_id} 不存在 (可能在入队前被删除)")
+        task = _claim_task_run(db, task_id, run_id)
 
         if task.status == TaskStatus.COMPLETED:
             return {"task_id": str(task.id), "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
 
-        _patch_config(task, active_run_id=run_id)
-        task.status = TaskStatus.PROCESSING
-        task.error_message = None
+        heartbeat_stop, heartbeat_thread = _start_active_run_heartbeat(task_id, run_id)
+
         _update_progress(db, task, progress=1, step="任务启动", run_id=run_id)
+
+        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         _update_progress(db, task, progress=8, step="正在获取视频文案", run_id=run_id)
         db.flush()
-        video_text = _fetch_video_text(task.source_url, task.config or {})
-        _patch_config(task, raw_text_chars=len(video_text))
-        _update_progress(db, task, progress=15, step=f"文案就绪 ({len(video_text)} 字符)", run_id=run_id)
+        video_text = _resolve_video_text_for_run(task, output_dir)
+        if video_text:
+            _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text))
+            fetch_step = f"文案就绪 ({len(video_text)} 字符)"
+        else:
+            fetch_step = "检测到阶段产物，跳过文案抓取，准备断点续跑"
+        _update_progress(db, task, progress=15, step=fetch_step, run_id=run_id)
 
         category = normalize_category(str((task.config or {}).get("category") or "social_science"))
         category_meta = get_category_meta(category)
@@ -245,9 +712,6 @@ def process_video(_self, task_id: str) -> dict:
             category_label=category_meta["label"],
             category_prompt_status=category_meta["prompt_status"],
         )
-
-        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
-        output_dir.mkdir(parents=True, exist_ok=True)
 
         _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
 
@@ -290,6 +754,7 @@ def process_video(_self, task_id: str) -> dict:
 
         db.flush()
         _ensure_active_run(db, task, run_id)
+        db.commit()
         markdown = asyncio.run(
             generate_full_book(
                 video_text,
@@ -311,8 +776,6 @@ def process_video(_self, task_id: str) -> dict:
         _patch_config(task, markdown=markdown, title=book_title)
 
         _update_progress(db, task, progress=94, step="正在写入质量报告", run_id=run_id)
-        _generate_cover_safely(book_title, markdown, output_dir, task)
-
         report = measure_quality(markdown)
         report_text = format_report(report)
         report_path = output_dir / "quality_report.txt"
@@ -327,6 +790,10 @@ def process_video(_self, task_id: str) -> dict:
             status=TaskStatus.COMPLETED,
             run_id=run_id,
         )
+        _clear_task_run(task, run_id)
+        db.commit()
+        if settings.COVER_BOOK_TASK_GENERATION_ENABLED:
+            enqueue_cover_generation(db, task, force=False)
 
         return {
             "task_id": str(task.id),
@@ -346,17 +813,238 @@ def process_video(_self, task_id: str) -> dict:
 
     except Exception as e:
         logger.exception("[task %s] 流水线失败", task_id)
+        retry_countdown: int | None = None
         try:
+            db.rollback()
             if task is None:
                 task = db.get(Task, uuid.UUID(task_id))
             if task is not None:
                 message = _user_facing_generation_error(e)
-                task.status = TaskStatus.FAILED
-                task.error_message = message[:2000]
-                task.current_step = f"失败：{message}"[:255]
+                _clear_task_run(task, run_id)
+                current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
+                max_retries = max(0, int(settings.GENERATION_TASK_MAX_RETRIES or 0))
+                if _is_retryable_generation_error(e) and current_retries < max_retries:
+                    retry_countdown = _retry_delay_seconds(current_retries)
+                    cfg = dict(task.config or {})
+                    cfg["last_auto_retry_error"] = message[:1000]
+                    cfg["auto_retry_attempts"] = current_retries + 1
+                    cfg["auto_retry_not_before"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=retry_countdown)
+                    ).isoformat()
+                    cfg["auto_retry_scheduled_by"] = run_id
+                    task.config = cfg
+                    task.status = TaskStatus.PENDING
+                    task.error_message = message[:2000]
+                    task.current_step = f"自动重试中（{current_retries + 1}/{max_retries}）：{message}"[:255]
+                    task.progress = max(0, int(task.progress or 0))
+                else:
+                    if _is_retryable_generation_error(e):
+                        cfg = dict(task.config or {})
+                        cfg["last_auto_retry_error"] = message[:1000]
+                        cfg["auto_retry_exhausted_at"] = datetime.now(timezone.utc).isoformat()
+                        task.config = cfg
+                    task.status = TaskStatus.FAILED
+                    task.error_message = message[:2000]
+                    task.current_step = (
+                        f"等待自动恢复：{message}" if _is_retryable_generation_error(e) else f"失败：{message}"
+                    )[:255]
                 db.commit()
         except Exception:
             logger.exception("[task %s] 写入失败状态时再次出错", task_id)
+        if retry_countdown is not None:
+            try:
+                acquire_task_dispatch_guard(task_id, ttl_seconds=retry_countdown + 600)
+            except Exception:
+                logger.warning("[task %s] retry dispatch guard failed", task_id, exc_info=True)
+            logger.warning(
+                "[task %s] transient failure, auto retry in %ss (%s)",
+                task_id,
+                retry_countdown,
+                e,
+            )
+            raise _self.retry(exc=e, countdown=retry_countdown)
         raise
+    finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=2)
+        db.close()
+
+
+def _cover_markdown(task: Task, output_dir: Path) -> str:
+    cfg = dict(task.config or {})
+    markdown = str(cfg.get("markdown") or "").strip()
+    if markdown:
+        return markdown
+    for filename in ("04_format.md", "03_refine.md", "02_polish.md", "01_writer.md"):
+        path = output_dir / filename
+        if path.exists() and path.stat().st_size > 0:
+            return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _mark_cover_failed(db: Session, task_id: str, message: str) -> None:
+    task = db.get(Task, uuid.UUID(task_id))
+    if task is None:
+        return
+    cfg = dict(task.config or {})
+    cfg.update(
+        cover_disabled=False,
+        cover_status="failed",
+        cover_error=message[:2000],
+    )
+    task.config = cfg
+    task.cover_url = None
+    db.commit()
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.generate_cover",
+    max_retries=settings.COVER_TASK_MAX_RETRIES,
+)
+def generate_cover(_self, task_id: str, force: bool = False) -> dict:
+    """Generate covers in the background so manuscripts can complete first."""
+    db: Session = SessionLocal()
+    guard_id = _cover_dispatch_guard_id(task_id)
+    try:
+        task_uuid = uuid.UUID(task_id)
+        task = db.execute(
+            select(Task).where(Task.id == task_uuid).with_for_update()
+        ).scalar_one_or_none()
+        if task is None:
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "missing"}
+
+        cfg = dict(task.config or {})
+        if not settings.COVER_WORKFLOW_ENABLED:
+            task.cover_url = None
+            cfg.update(
+                cover_disabled=True,
+                cover_status="disabled",
+                cover_isolated=True,
+                cover_isolation_reason="COVER_WORKFLOW_ENABLED=false",
+                cover_error=None,
+            )
+            task.config = cfg
+            db.commit()
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "disabled"}
+
+        if task.status != TaskStatus.COMPLETED:
+            cfg.update(cover_status="queued", cover_error=None)
+            task.config = cfg
+            db.commit()
+            current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
+            max_retries = max(0, int(settings.COVER_TASK_MAX_RETRIES or 0))
+            if current_retries >= max_retries:
+                _mark_cover_failed(db, task_id, "封面生成排队超时：书稿尚未完成")
+                clear_task_dispatch_guard(guard_id)
+                return {"task_id": task_id, "status": "failed", "reason": "book_not_completed"}
+            raise _self.retry(exc=RuntimeError("book manuscript is not completed yet"), countdown=60)
+
+        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+        cover_path = output_dir / "cover.png"
+        if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
+            task.cover_url = f"/api/v1/tasks/{task.id}/cover"
+            cfg.update(
+                cover_disabled=False,
+                cover_status="completed",
+                cover_error=None,
+                cover_path=str(cover_path),
+                draft_cover_path=str(output_dir / "draft_cover.png"),
+                cover_style_brief_path=str(output_dir / "cover_style_brief.json"),
+            )
+            task.config = cfg
+            db.commit()
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "completed", "reused": True}
+
+        markdown = _cover_markdown(task, output_dir)
+        if not markdown:
+            cfg.update(
+                cover_disabled=False,
+                cover_status="failed",
+                cover_error="封面生成失败：未找到可用书稿内容",
+            )
+            task.config = cfg
+            task.cover_url = None
+            db.commit()
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "failed", "reason": "missing_markdown"}
+
+        title = str(cfg.get("title") or task.title or _extract_book_title(markdown)).strip() or "未命名书稿"
+        category = str(cfg.get("category") or "social_science").strip()
+        author = str(cfg.get("author") or cfg.get("book_author") or "").strip() or None
+        intro = str(cfg.get("intro") or cfg.get("synopsis") or "").strip() or None
+        cfg.update(
+            cover_disabled=False,
+            cover_status="generating",
+            cover_error=None,
+            cover_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        task.config = cfg
+        db.commit()
+
+        from app.services.cover import generate_cover_file
+
+        try:
+            generated_path = generate_cover_file(
+                title,
+                markdown,
+                output_dir,
+                category=category,
+                author=author,
+                intro=intro,
+                force=force,
+            )
+        except DistributedLimitError as exc:
+            db.rollback()
+            task = db.get(Task, task_uuid)
+            if task is not None:
+                cfg = dict(task.config or {})
+                cfg.update(
+                    cover_status="queued",
+                    cover_error=None,
+                    cover_last_queue_wait_at=datetime.now(timezone.utc).isoformat(),
+                )
+                task.config = cfg
+                db.commit()
+            current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
+            max_retries = max(0, int(settings.COVER_TASK_MAX_RETRIES or 0))
+            if current_retries >= max_retries:
+                _mark_cover_failed(db, task_id, f"封面排队超时：{exc}")
+                clear_task_dispatch_guard(guard_id)
+                return {"task_id": task_id, "status": "failed", "reason": "queue_exhausted"}
+            raise _self.retry(exc=exc, countdown=_cover_retry_countdown())
+        except Exception as exc:
+            db.rollback()
+            logger.exception("[task %s] background cover generation failed", task_id)
+            _mark_cover_failed(db, task_id, str(exc))
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "failed", "reason": str(exc)[:500]}
+
+        task = db.execute(
+            select(Task).where(Task.id == task_uuid).with_for_update()
+        ).scalar_one_or_none()
+        if task is None:
+            clear_task_dispatch_guard(guard_id)
+            return {"task_id": task_id, "status": "missing_after_generation"}
+        cfg = dict(task.config or {})
+        cfg.update(
+            cover_disabled=False,
+            cover_status="completed",
+            cover_error=None,
+            cover_path=str(generated_path),
+            draft_cover_path=str(output_dir / "draft_cover.png"),
+            cover_style_brief_path=str(output_dir / "cover_style_brief.json"),
+            cover_completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        task.config = cfg
+        task.cover_url = f"/api/v1/tasks/{task.id}/cover"
+        db.commit()
+        clear_task_dispatch_guard(guard_id)
+        return {"task_id": task_id, "status": "completed"}
     finally:
         db.close()

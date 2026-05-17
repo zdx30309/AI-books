@@ -9,7 +9,9 @@ import {
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  Download,
   FileText,
+  Image as ImageIcon,
   Loader2,
   Pencil,
   Eye,
@@ -105,6 +107,7 @@ export function BookDetail() {
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
 
@@ -162,7 +165,9 @@ export function BookDetail() {
   // 任务完成或失败：停止轮询
   useEffect(() => {
     if (!task) return;
-    if (task.status === "completed" || task.status === "failed") {
+    const coverInFlight =
+      task.cover_status === "queued" || task.cover_status === "generating";
+    if ((task.status === "completed" || task.status === "failed") && !coverInFlight) {
       if (pollRef.current) window.clearInterval(pollRef.current);
     }
   }, [task]);
@@ -173,6 +178,29 @@ export function BookDetail() {
     setMetaBookshelf(task.bookshelf || "");
     setMetaCategory(task.category || categoryIdForLabel(task.bookshelf, categories) || "");
   }, [task, chapters, metaDirty, categories]);
+
+  useEffect(() => {
+    let alive = true;
+    let objectUrl: string | null = null;
+    setCoverSrc(null);
+    if (!id || !task?.cover_url) return undefined;
+
+    api
+      .getCoverBlob(id)
+      .then((blob) => {
+        if (!alive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setCoverSrc(objectUrl);
+      })
+      .catch(() => {
+        if (alive) setCoverSrc(null);
+      });
+
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [id, task?.cover_url]);
 
   // 切到中间产物 tab：拉对应文件
   useEffect(() => {
@@ -426,6 +454,19 @@ export function BookDetail() {
     [id],
   );
 
+  const handleDownloadCover = useCallback(async () => {
+    if (!id) return;
+    try {
+      await api.downloadCoverFile(id);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `[${e.status}] ${e.detail}`
+          : "下载失败";
+      alert(`下载封面失败：${msg}`);
+    }
+  }, [id]);
+
   if (loading) {
     return (
       <div className="flex items-center gap-3 text-warm-300">
@@ -451,13 +492,21 @@ export function BookDetail() {
   const isActive = ACTIVE_STATUSES.has(task.status);
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
+  const coverInFlight =
+    task.cover_status === "queued" || task.cover_status === "generating";
   const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
       ? "生成失败"
       : titleCandidate || "书稿生成中";
-  const coverTitle = isFailed ? "生成失败" : isCompleted ? displayTitle : "书稿生成中";
+  const coverTitle = coverInFlight
+    ? "封面生成中"
+    : isFailed
+      ? "生成失败"
+      : isCompleted
+        ? displayTitle
+        : "书稿生成中";
   const failureMessage = friendlyTaskError(task.error_message);
 
   return (
@@ -486,9 +535,18 @@ export function BookDetail() {
         <div className="flex items-start justify-between gap-6">
           <div className="flex flex-1 gap-5">
             <div className="hidden h-36 w-28 shrink-0 overflow-hidden rounded-lg border border-gold-500/15 bg-base-700/50 sm:block">
-              <div className="flex h-full w-full items-center justify-center px-3 text-center font-serif text-sm leading-tight text-warm-300">
-                {coverTitle}
-              </div>
+              {coverSrc ? (
+                <img
+                  src={coverSrc}
+                  alt="书籍封面"
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-3 text-center font-serif text-sm leading-tight text-warm-300">
+                  <ImageIcon className="h-4 w-4 text-gold-300/70" strokeWidth={1.5} />
+                  <span>{coverTitle}</span>
+                </div>
+              )}
             </div>
             <div className="min-w-0 flex-1">
               <h1 className="font-serif text-2xl tracking-wide text-warm-100">
@@ -568,6 +626,12 @@ export function BookDetail() {
                   {failureMessage}
                 </div>
               )}
+              {isCompleted && task.cover_status === "failed" && task.cover_error && (
+                <div className="mt-4 rounded-lg border border-gold-500/20 bg-gold-500/8 px-4 py-2.5 text-xs leading-relaxed text-warm-300">
+                  <span className="font-medium text-warm-100">封面未生成：</span>
+                  {task.cover_error}
+                </div>
+              )}
               </div>
           </div>
 
@@ -604,6 +668,15 @@ export function BookDetail() {
                 >
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Word
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadCover}
+                  disabled={!task.cover_url || coverInFlight}
+                  className="btn-ghost disabled:opacity-50"
+                >
+                  <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  下载封面
                 </button>
               </>
             )}

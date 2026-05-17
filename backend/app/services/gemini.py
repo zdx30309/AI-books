@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from time import sleep
 from typing import Any, Iterator
@@ -15,12 +16,19 @@ from app.prompts.goal_driven_templates import (
     GEMINI_FAST_POLISH_PROMPT,
     GEMINI_FAST_REFINE_PROMPT,
 )
+from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
 
 _vertex_clients: dict[int, genai.Client] = {}
 _api_key_clients: dict[int, genai.Client] = {}
+_proxy_env_lock = threading.RLock()
+_gemini_gate_lock = threading.Lock()
+_gemini_gate_limit = 0
+_gemini_gate: threading.BoundedSemaphore | None = None
+_proxy_env_active_count = 0
+_proxy_env_previous: dict[str, str | None] = {}
 
 
 def _configure_google_runtime() -> None:
@@ -39,24 +47,34 @@ def _google_proxy_env() -> Iterator[None]:
         return
 
     keys = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy")
-    previous = {key: os.environ.get(key) for key in keys}
+    global _proxy_env_active_count, _proxy_env_previous
+    with _proxy_env_lock:
+        if _proxy_env_active_count == 0:
+            _proxy_env_previous = {key: os.environ.get(key) for key in keys}
+            os.environ["HTTPS_PROXY"] = proxy
+            os.environ["https_proxy"] = proxy
+            if proxy.startswith("http://"):
+                os.environ["HTTP_PROXY"] = proxy
+                os.environ["http_proxy"] = proxy
+            no_proxy = _proxy_env_previous.get("NO_PROXY") or _proxy_env_previous.get("no_proxy") or ""
+            additions = "localhost,127.0.0.1,backend,web,worker,*.supabase.co,*.pooler.supabase.com,*.upstash.io"
+            os.environ["NO_PROXY"] = ",".join(part for part in (no_proxy, additions) if part)
+            os.environ["no_proxy"] = os.environ["NO_PROXY"]
+        _proxy_env_active_count += 1
+
     try:
-        os.environ["HTTPS_PROXY"] = proxy
-        os.environ["https_proxy"] = proxy
-        if proxy.startswith("http://"):
-            os.environ["HTTP_PROXY"] = proxy
-            os.environ["http_proxy"] = proxy
-        no_proxy = previous.get("NO_PROXY") or previous.get("no_proxy") or ""
-        additions = "localhost,127.0.0.1,backend,web,worker,*.supabase.co,*.pooler.supabase.com,*.upstash.io"
-        os.environ["NO_PROXY"] = ",".join(part for part in (no_proxy, additions) if part)
-        os.environ["no_proxy"] = os.environ["NO_PROXY"]
         yield
     finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        with _proxy_env_lock:
+            _proxy_env_active_count = max(0, _proxy_env_active_count - 1)
+            if _proxy_env_active_count == 0:
+                previous = _proxy_env_previous
+                _proxy_env_previous = {}
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
 
 def _resolve_google_api_key() -> str | None:
@@ -115,6 +133,28 @@ def get_gemini_client() -> genai.Client:
     if settings.GOOGLE_GENAI_USE_VERTEXAI:
         return _get_vertex_client()
     return _get_api_key_client()
+
+
+@contextmanager
+def _gemini_call_gate() -> Iterator[None]:
+    """Process-wide Gemini concurrency gate.
+
+    The proxy env manager is now reference-counted, so Gemini calls do not need
+    a single global lock. This gate keeps high concurrency explicit and tunable.
+    """
+    global _gemini_gate, _gemini_gate_limit
+    limit = max(1, int(settings.GEMINI_MAX_CONCURRENT_CALLS or 1))
+    with _gemini_gate_lock:
+        if _gemini_gate is None or _gemini_gate_limit != limit:
+            _gemini_gate = threading.BoundedSemaphore(limit)
+            _gemini_gate_limit = limit
+    gate = _gemini_gate
+    gate.acquire()
+    try:
+        with distributed_semaphore("gemini", limit=settings.GEMINI_MAX_CONCURRENT_CALLS):
+            yield
+    finally:
+        gate.release()
 
 
 # 代理打断类错误的特征字符串：识别这些后立刻 fail-fast，不再内部 retry，
@@ -208,12 +248,13 @@ def generate_text(
         client = _get_vertex_client(timeout) if backend == "vertex" else _get_api_key_client(timeout)
         for attempt in range(1, attempts + 1):
             try:
-                with _google_proxy_env():
-                    response = client.models.generate_content(
-                        model=model or settings.GEMINI_MODEL,
-                        contents=contents,
-                        config=config,
-                    )
+                with _gemini_call_gate():
+                    with _google_proxy_env():
+                        response = client.models.generate_content(
+                            model=model or settings.GEMINI_MODEL,
+                            contents=contents,
+                            config=config,
+                        )
                 text = (response.text or "").strip()
                 if text:
                     if backend != primary_backend:

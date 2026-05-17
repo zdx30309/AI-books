@@ -6,22 +6,17 @@ from typing import Generator
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
-from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
 
 engine_kwargs = {
     "pool_pre_ping": True,
-    "pool_size": 5,
-    "max_overflow": 10,
+    "pool_size": max(1, int(settings.DATABASE_POOL_SIZE or 30)),
+    "max_overflow": max(0, int(settings.DATABASE_MAX_OVERFLOW or 20)),
+    "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT or 120)),
     "future": True,
 }
-
-if "pooler.supabase.com:6543" in settings.DATABASE_URL:
-    engine_kwargs.pop("pool_size", None)
-    engine_kwargs.pop("max_overflow", None)
-    engine_kwargs["poolclass"] = NullPool
 
 engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
 
