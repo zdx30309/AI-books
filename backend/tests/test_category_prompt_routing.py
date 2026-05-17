@@ -94,7 +94,10 @@ def test_social_science_test_prompt_sync() -> None:
 
 
 def test_crayon_illustration_is_not_a_body_writing_category() -> None:
+    assert "illustration" not in SUPPORTED_CATEGORIES
     assert "illustration_crayon" not in SUPPORTED_CATEGORIES
+    with pytest.raises(ValueError):
+        get_category_meta("illustration")
     with pytest.raises(ValueError):
         get_category_meta("illustration_crayon")
 

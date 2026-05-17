@@ -253,6 +253,7 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
 
 _CATEGORY_STYLE_PROFILES["web_short_story"] = _CATEGORY_STYLE_PROFILES["history_culture"]
 _CATEGORY_STYLE_PROFILES["social_science_test"] = _CATEGORY_STYLE_PROFILES["social_science"]
+_CATEGORY_STYLE_PROFILES["illustration"] = _CATEGORY_STYLE_PROFILES["psychology_self_help"]
 
 _COVER_PROMPT_ADJUSTMENT_KEYS = ("style_brief_rules", "draft_rules", "refine_rules")
 
@@ -276,6 +277,9 @@ _CATEGORY_COVER_PROMPT_ADJUSTMENTS["psychology_self_help"] = {
     "draft_rules": (_HEALING_HANDDRAWN_STYLE_RULE,),
     "refine_rules": (f"继续保持：{_HEALING_HANDDRAWN_STYLE_RULE}",),
 }
+_CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration"] = _CATEGORY_COVER_PROMPT_ADJUSTMENTS[
+    "psychology_self_help"
+]
 _CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration_crayon"] = {
     "style_brief_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),
     "draft_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE,),

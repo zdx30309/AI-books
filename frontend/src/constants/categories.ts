@@ -104,6 +104,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   ...DEFAULT_CATEGORIES,
   {
+    id: "illustration",
+    label: "分类插画",
+    core_feature: "插画封面入口，默认复用心理自助封面 prompt",
+    directions: "心理自助、情绪疗愈、插画风封面",
+    prompt_status: "ready",
+  },
+  {
     id: "illustration_crayon",
     label: "分类插画（蜡笔）",
     core_feature: "温柔情绪插画封面，强调蜡笔质感与治愈氛围",

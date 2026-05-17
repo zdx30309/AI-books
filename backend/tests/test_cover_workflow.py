@@ -90,6 +90,29 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
 
+def test_illustration_cover_category_reuses_psychology_cover_prompt() -> None:
+    prompt = cover.build_cover_prompt(
+        "松弛地活",
+        "@最终简介\n一本帮助普通人处理焦虑和内耗的心理自助书。",
+        author="测试作者",
+        category="illustration",
+    )
+    psychology_prompt = cover.build_cover_prompt(
+        "松弛地活",
+        "@最终简介\n一本帮助普通人处理焦虑和内耗的心理自助书。",
+        author="测试作者",
+        category="psychology_self_help",
+    )
+
+    assert "分类：分类插画" in prompt
+    assert "做成时代华语式心理自助书封面" in prompt
+    assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" in prompt
+    assert "日韩治愈系手绘插画风，油画棒与蜡笔质感" not in prompt
+    assert get_cover_category_meta("illustration")["label"] == "分类插画"
+    assert any(item["id"] == "illustration" for item in list_cover_categories())
+    assert "做成时代华语式心理自助书封面" in psychology_prompt
+
+
 def test_generate_cover_file_writes_three_stage_artifacts(
     tmp_path: Path,
     monkeypatch,
