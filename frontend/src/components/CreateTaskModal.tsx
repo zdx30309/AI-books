@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpenCheck, ListPlus, Loader2, PencilLine, X } from "lucide-react";
+import { BookOpenCheck, ListPlus, Loader2, PencilLine, UploadCloud, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { TaskCategoryOption } from "@/api/types";
@@ -45,6 +45,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
+  const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
+  const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [candidateLinks, setCandidateLinks] = useState("");
   const [category, setCategory] = useState("social_science");
   const [styleReference, setStyleReference] = useState("");
@@ -66,6 +68,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setMode("single");
       setUrl("");
       setRawText("");
+      setClassicalInputMode("text");
+      setClassicalDocxFile(null);
       setCandidateLinks("");
       setCategory("social_science");
       setStyleReference("");
@@ -100,6 +104,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   useEffect(() => {
     if (isClassicalChinese) setMode("single");
+    else {
+      setClassicalInputMode("text");
+      setClassicalDocxFile(null);
+    }
   }, [isClassicalChinese]);
 
   useEffect(() => {
@@ -158,6 +166,29 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           window.alert(`${parts.join("，")}。`);
         }
         onCreated(first);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建任务失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    if (isClassicalChinese && classicalInputMode === "docx") {
+      if (!classicalDocxFile) {
+        setError("请上传 .docx 格式的 Word 文件");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await api.createClassicalChineseTaskFromDocx(classicalDocxFile);
+        onCreated(res.task_id);
       } catch (e) {
         const msg =
           e instanceof ApiError
@@ -345,7 +376,66 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 </>
               )}
 
-              <div>
+              {isClassicalChinese && (
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-gold-500/15 bg-base-700/35 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setClassicalInputMode("text")}
+                    className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
+                      classicalInputMode === "text"
+                        ? "bg-gold-500/15 text-warm-100"
+                        : "text-warm-500 hover:text-warm-200"
+                    }`}
+                  >
+                    粘贴文本
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClassicalInputMode("docx")}
+                    className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
+                      classicalInputMode === "docx"
+                        ? "bg-gold-500/15 text-warm-100"
+                        : "text-warm-500 hover:text-warm-200"
+                    }`}
+                  >
+                    上传 Word
+                  </button>
+                </div>
+              )}
+
+              {isClassicalChinese && classicalInputMode === "docx" ? (
+                <div>
+                  <label
+                    htmlFor="classical-docx"
+                    className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                  >
+                    Word 文档
+                  </label>
+                  <label
+                    htmlFor="classical-docx"
+                    className="flex min-h-[150px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gold-500/30 bg-base-700/40 px-4 py-6 text-center transition-colors hover:border-gold-400/60 hover:bg-gold-500/5"
+                  >
+                    <UploadCloud className="mb-3 h-7 w-7 text-gold-300" strokeWidth={1.5} />
+                    <span className="text-sm text-warm-100">
+                      {classicalDocxFile?.name || "选择 .docx 文件"}
+                    </span>
+                    <span className="mt-2 text-xs leading-relaxed text-warm-500">
+                      系统会读取 Word 正文，并按古文白话流程生成
+                    </span>
+                  </label>
+                  <input
+                    id="classical-docx"
+                    type="file"
+                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="sr-only"
+                    onChange={(event) => {
+                      setClassicalDocxFile(event.target.files?.[0] ?? null);
+                      setError(null);
+                    }}
+                  />
+                </div>
+              ) : (
+                <div>
                 <label
                   htmlFor="task-raw-text"
                   className="mb-2 block text-[11px] tracking-widest text-warm-300"
@@ -364,7 +454,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   rows={isClassicalChinese ? 9 : 5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
-              </div>
+                </div>
+              )}
             </>
           ) : (
             <div>

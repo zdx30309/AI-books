@@ -12,7 +12,7 @@ from urllib.parse import quote
 from uuid import UUID
 from xml.sax.saxutils import escape
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
@@ -59,6 +59,7 @@ from app.schemas.task import (
 )
 from app.services.gemini import regenerate_selected_text
 from app.tasks.tasks import enqueue_cover_generation, process_video
+from app.utils.docx_text import DocxTextError, extract_docx_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
@@ -188,6 +189,41 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
     return cfg
+
+
+def _create_and_dispatch_task(
+    *,
+    source_url: str,
+    config: dict,
+    db: Session,
+    user: User,
+) -> CreateTaskResponse:
+    task = Task(
+        source_url=source_url,
+        owner_id=user.id,
+        config=config,
+        status=TaskStatus.PENDING,
+        progress=0,
+        current_step="排队中",
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    logger.info("[task %s] 建库完成, 准备投 Celery", task.id)
+
+    try:
+        _dispatch_task(task)
+    except Exception as e:
+        logger.exception("[task %s] Celery 投递失败", task.id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Celery dispatch failed: {e}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"任务已建库但 Celery 投递失败 (task_id={task.id}): {e}",
+        ) from e
+
+    return CreateTaskResponse(task_id=task.id, status=task.status.value)
 
 
 def _dispatch_task(task: Task) -> None:
@@ -363,32 +399,43 @@ def create_task(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") == "classical_chinese" and not str(cfg.get("raw_text") or "").strip():
         raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
-    task = Task(
-        source_url=req.url,
-        owner_id=user.id,
-        config=cfg,
-        status=TaskStatus.PENDING,
-        progress=0,
-        current_step="排队中",
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    logger.info("[task %s] 建库完成, 准备投 Celery", task.id)
+    return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
 
+
+@router.post(
+    "/classical-chinese/docx",
+    response_model=CreateTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="上传 Word 并创建古文白话任务",
+)
+async def create_classical_chinese_from_docx(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CreateTaskResponse:
+    _ensure_generation_capacity(db)
+    filename = file.filename or "classical_chinese.docx"
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="请上传 .docx 格式的 Word 文件")
+    content = await file.read()
     try:
-        _dispatch_task(task)
-    except Exception as e:
-        logger.exception("[task %s] Celery 投递失败", task.id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"Celery dispatch failed: {e}"[:2000]
-        db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail=f"任务已建库但 Celery 投递失败 (task_id={task.id}): {e}",
-        )
-
-    return CreateTaskResponse(task_id=task.id, status=task.status)
+        raw_text = extract_docx_text(content)
+    except DocxTextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    cfg = _normalize_task_config(
+        {
+            "category": "classical_chinese",
+            "raw_text": raw_text,
+            "source_filename": filename[:255],
+            "input_source": "docx_upload",
+        }
+    )
+    return _create_and_dispatch_task(
+        source_url=f"manual://classical_chinese_docx/{filename[:120]}",
+        config=cfg,
+        db=db,
+        user=user,
+    )
 
 
 @router.get(
