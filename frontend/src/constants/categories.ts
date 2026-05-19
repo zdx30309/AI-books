@@ -10,7 +10,6 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
   "治愈插画（蜡笔)": "萌系治愈",
   "文学": "正统出版",
   "文学类": "正统出版",
-  "社会痛点": "视觉冲击",
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [

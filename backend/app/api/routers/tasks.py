@@ -223,7 +223,7 @@ def _create_and_dispatch_task(
             detail=f"任务已建库但 Celery 投递失败 (task_id={task.id}): {e}",
         ) from e
 
-    return CreateTaskResponse(task_id=task.id, status=task.status.value)
+    return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
 def _dispatch_task(task: Task) -> None:

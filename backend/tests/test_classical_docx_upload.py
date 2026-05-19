@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from uuid import uuid4
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
+from app.api.routers import tasks as task_router
+from app.models import TaskStatus
 from app.utils.docx_text import DocxTextError, extract_docx_text
 
 
@@ -35,3 +38,27 @@ def test_extract_docx_text_rejects_invalid_file() -> None:
         extract_docx_text(b"not a docx")
 
     assert exc_info.value.status_code == 400
+
+
+def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
+    class FakeDb:
+        def add(self, task):
+            self.task = task
+
+        def commit(self):
+            pass
+
+        def refresh(self, task):
+            task.id = uuid4()
+
+    user = type("User", (), {"id": uuid4()})()
+    monkeypatch.setattr(task_router, "_dispatch_task", lambda task: None)
+
+    response = task_router._create_and_dispatch_task(
+        source_url="manual://classical_chinese_docx/test.docx",
+        config={"category": "classical_chinese", "raw_text": "子曰：学而时习之。"},
+        db=FakeDb(),
+        user=user,
+    )
+
+    assert response.status == TaskStatus.PENDING
