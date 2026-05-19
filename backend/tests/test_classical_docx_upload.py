@@ -8,6 +8,7 @@ import pytest
 
 from app.api.routers import tasks as task_router
 from app.models import TaskStatus
+from app.tasks import tasks as task_tasks
 from app.utils.docx_text import DocxTextError, extract_docx_text
 
 
@@ -31,6 +32,14 @@ def test_extract_docx_text_reads_paragraphs() -> None:
     text = extract_docx_text(_docx_bytes(["子曰：学而时习之。", "有朋自远方来。"]))
 
     assert text == "子曰：学而时习之。\n有朋自远方来。"
+
+
+def test_extract_docx_text_does_not_reject_long_classical_text() -> None:
+    long_paragraph = "天地玄黄，宇宙洪荒。" * 30_000
+    text = extract_docx_text(_docx_bytes([long_paragraph]))
+
+    assert text == long_paragraph
+    assert len(text) > 200_000
 
 
 def test_extract_docx_text_rejects_invalid_file() -> None:
@@ -62,3 +71,17 @@ def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
     )
 
     assert response.status == TaskStatus.PENDING
+
+
+def test_source_text_path_can_feed_long_docx_text(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "source.txt"
+    text = "古文白话测试。" * 50_000
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(task_tasks, "PROJECT_ROOT", tmp_path)
+
+    loaded = task_tasks._source_text_from_config(  # noqa: SLF001
+        {"source_text_path": "source.txt"},
+        task_label="test",
+    )
+
+    assert loaded == text

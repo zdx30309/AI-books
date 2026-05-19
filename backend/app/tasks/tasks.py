@@ -260,11 +260,9 @@ def _start_active_run_heartbeat(task_id: str, run_id: str) -> tuple[threading.Ev
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
     category = str(config.get("category") or "").strip()
-    for key in ("raw_text", "video_text", "transcript"):
-        val = config.get(key)
-        if val and isinstance(val, str) and val.strip():
-            logger.info("使用 config['%s'] 提供的预解析文案 (%d 字)", key, len(val))
-            return val.strip()
+    cached_text = _source_text_from_config(config, task_label="fetch")
+    if cached_text:
+        return cached_text
 
     if category == "classical_chinese":
         raise ValueError("古文白话题材请直接粘贴文言文原文，不需要填写视频链接")
@@ -313,17 +311,38 @@ def _has_resume_artifact(output_dir: Path) -> bool:
 
 def _resolve_video_text_for_run(task: Task, output_dir: Path) -> str:
     config = dict(task.config or {})
-    for key in ("raw_text", "video_text", "transcript"):
-        val = config.get(key)
-        if val and isinstance(val, str) and val.strip():
-            logger.info("[task %s] resume with cached config['%s'] (%d chars)", task.id, key, len(val))
-            return val.strip()
+    cached_text = _source_text_from_config(config, task_label=str(task.id))
+    if cached_text:
+        return cached_text
 
     if _has_resume_artifact(output_dir):
         logger.info("[task %s] stage artifact exists; skip video text fetch and resume from disk", task.id)
         return ""
 
     return _fetch_video_text(task.source_url, config)
+
+
+def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
+    for key in ("raw_text", "video_text", "transcript"):
+        val = config.get(key)
+        if val and isinstance(val, str) and val.strip():
+            logger.info("[%s] 使用 config['%s'] 提供的预解析文案 (%d 字)", task_label, key, len(val))
+            return val.strip()
+
+    source_text_path = str(config.get("source_text_path") or "").strip()
+    if not source_text_path:
+        return ""
+    path = Path(source_text_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise ValueError(f"上传的 Word 正文文件不存在，请重新上传：{source_text_path}") from exc
+    if not text:
+        raise ValueError("上传的 Word 正文文件为空，请重新上传")
+    logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
+    return text
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
@@ -698,7 +717,10 @@ def process_video(_self, task_id: str) -> dict:
         db.flush()
         video_text = _resolve_video_text_for_run(task, output_dir)
         if video_text:
-            _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text))
+            if str((task.config or {}).get("source_text_path") or "").strip():
+                _patch_config(task, raw_text_chars=len(video_text))
+            else:
+                _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text))
             fetch_step = f"文案就绪 ({len(video_text)} 字符)"
         else:
             fetch_step = "检测到阶段产物，跳过文案抓取，准备断点续跑"

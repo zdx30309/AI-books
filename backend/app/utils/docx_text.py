@@ -5,7 +5,6 @@ import xml.etree.ElementTree as ET
 import zipfile
 from io import BytesIO
 
-DOCX_TEXT_LIMIT = 200_000
 DOCX_XML_FILES = ("word/document.xml", "word/footnotes.xml", "word/endnotes.xml")
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -51,9 +50,4 @@ def extract_docx_text(content: bytes) -> str:
     text = "\n".join(paragraphs).strip()
     if not text:
         raise DocxTextError("未能从 Word 文件中读取到正文")
-    if len(text) > DOCX_TEXT_LIMIT:
-        raise DocxTextError(
-            f"Word 正文过长，请控制在 {DOCX_TEXT_LIMIT} 字符以内",
-            status_code=413,
-        )
     return text

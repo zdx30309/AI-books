@@ -197,6 +197,7 @@ def _create_and_dispatch_task(
     config: dict,
     db: Session,
     user: User,
+    dispatch: bool = True,
 ) -> CreateTaskResponse:
     task = Task(
         source_url=source_url,
@@ -211,6 +212,9 @@ def _create_and_dispatch_task(
     db.refresh(task)
     logger.info("[task %s] 建库完成, 准备投 Celery", task.id)
 
+    if not dispatch:
+        return CreateTaskResponse(task_id=task.id, status=task.status)
+
     try:
         _dispatch_task(task)
     except Exception as e:
@@ -224,6 +228,14 @@ def _create_and_dispatch_task(
         ) from e
 
     return CreateTaskResponse(task_id=task.id, status=task.status)
+
+
+def _persist_uploaded_source_text(task_id: UUID, text: str) -> str:
+    input_dir = PROJECT_ROOT / "backend" / "output" / "task_inputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / f"{task_id}.txt"
+    path.write_text(text, encoding="utf-8")
+    return str(path.relative_to(PROJECT_ROOT))
 
 
 def _dispatch_task(task: Task) -> None:
@@ -425,17 +437,38 @@ async def create_classical_chinese_from_docx(
     cfg = _normalize_task_config(
         {
             "category": "classical_chinese",
-            "raw_text": raw_text,
+            "raw_text_chars": len(raw_text),
             "source_filename": filename[:255],
             "input_source": "docx_upload",
         }
     )
-    return _create_and_dispatch_task(
+    response = _create_and_dispatch_task(
         source_url=f"manual://classical_chinese_docx/{filename[:120]}",
         config=cfg,
         db=db,
         user=user,
+        dispatch=False,
     )
+    task = db.query(Task).filter(Task.id == response.task_id, Task.owner_id == user.id).first()
+    if task is None:
+        raise HTTPException(status_code=500, detail="任务创建后未能写入 Word 正文")
+    try:
+        source_text_path = _persist_uploaded_source_text(response.task_id, raw_text)
+        cfg = dict(task.config or {})
+        cfg.update(source_text_path=source_text_path, raw_text_chars=len(raw_text))
+        task.config = cfg
+        db.commit()
+        _dispatch_task(task)
+    except Exception as exc:
+        logger.exception("[task %s] Word 正文落盘或 Celery 投递失败", response.task_id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Word upload dispatch failed: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"Word 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
+        ) from exc
+    return response
 
 
 @router.get(
