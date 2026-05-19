@@ -86,6 +86,10 @@ class ImageApiPermanentError(ImageApiError):
     """Image API failure that should be surfaced without automatic retry."""
 
 
+class ImageApiUncertainError(ImageApiPermanentError):
+    """Image API request may have been accepted, so auto retry would risk double billing."""
+
+
 class CoverGenerationCancelled(RuntimeError):
     """Raised when a cover item was deleted, paused, or superseded mid-generation."""
 
@@ -1167,14 +1171,14 @@ def _post_image_request_with_cancellation(
                     endpoint.rstrip("/").rsplit("/", 1)[-1],
                 )
                 http.close()
-                raise ImageApiTransientError(f"image API hard timeout after {hard_timeout}s: {stage}")
+                raise ImageApiUncertainError(f"image API hard timeout after {hard_timeout}s: {stage}")
             continue
         if kind == "ok":
             return payload
         raise payload
 
 
-def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | None = None) -> bytes:
+def _request_image_generation_response(prompt: str, should_abort: Callable[[], bool] | None = None) -> Any:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/generations"
     payload: dict[str, Any] = {
@@ -1211,14 +1215,19 @@ def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | No
                 stage="draft image request",
             )
     _abort_cover_generation_if_requested(should_abort, stage="after draft image request")
+    return response_data
+
+
+def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | None = None) -> bytes:
+    response_data = _request_image_generation_response(prompt, should_abort=should_abort)
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
-def _request_image_edit(
+def _request_image_edit_response(
     image_path: Path,
     prompt: str,
     should_abort: Callable[[], bool] | None = None,
-) -> bytes:
+) -> Any:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/edits"
     data: dict[str, str] = {
@@ -1263,6 +1272,15 @@ def _request_image_edit(
                 stage="refine image request",
             )
     _abort_cover_generation_if_requested(should_abort, stage="after refine image request")
+    return response_data
+
+
+def _request_image_edit(
+    image_path: Path,
+    prompt: str,
+    should_abort: Callable[[], bool] | None = None,
+) -> bytes:
+    response_data = _request_image_edit_response(image_path, prompt, should_abort=should_abort)
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
@@ -1305,14 +1323,18 @@ def _post_image_request(
             last_error = ImageApiTransientError(message)
             if attempt >= max_attempts:
                 raise ImageApiTransientError(f"{message}，已重试 {attempt} 次") from exc
+        except (httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            raise ImageApiUncertainError(
+                f"image API request result is uncertain; automatic retry stopped to avoid duplicate billing: {exc}"
+            ) from exc
         except httpx.HTTPError as exc:
             last_error = ImageApiTransientError(f"图像 API 连接失败: {exc}")
             if attempt >= max_attempts:
                 raise ImageApiTransientError(f"图像 API 连接失败: {exc}，已重试 {attempt} 次") from exc
         except (RuntimeError, ValueError) as exc:
-            last_error = ImageApiTransientError(f"图像 API 返回异常: {exc}")
-            if attempt >= max_attempts:
-                raise ImageApiTransientError(f"图像 API 返回异常: {exc}，已重试 {attempt} 次") from exc
+            raise ImageApiUncertainError(
+                f"image API returned an unreadable response; automatic retry stopped to avoid duplicate billing: {exc}"
+            ) from exc
         sleep_for = min(45.0, (3.0 * attempt) + random.uniform(0.0, 2.0))
         logger.warning(
             "image API request retrying endpoint=%s attempt=%d/%d sleep=%.1fs error=%s",
@@ -1330,16 +1352,21 @@ def _decode_image_response(data: Any, should_abort: Callable[[], bool] | None = 
     _abort_cover_generation_if_requested(should_abort, stage="decode image response")
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list) or not items:
-        raise RuntimeError(f"图像 API 返回缺少 data: {str(data)[:1000]}")
+        raise ImageApiPermanentError(
+            f"image API returned no image data; automatic retry stopped to avoid duplicate billing: {str(data)[:1000]}"
+        )
     item = items[0]
     b64 = item.get("b64_json") if isinstance(item, dict) else None
     if b64:
-        return base64.b64decode(b64)
+        try:
+            return base64.b64decode(b64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ImageApiPermanentError("image API returned invalid base64 image data") from exc
 
     url = item.get("url") if isinstance(item, dict) else None
     if url:
         return _download_image_result(url, should_abort=should_abort)
-    raise RuntimeError("图像 API 返回值既无 b64_json 也无 url")
+    raise ImageApiPermanentError("image API returned neither b64_json nor url; automatic retry stopped")
 
 
 def _download_image_result(url: str, should_abort: Callable[[], bool] | None = None) -> bytes:
@@ -1404,6 +1431,41 @@ def _write_cover_bytes_file(path: Path, data: bytes, should_abort: Callable[[], 
         raise
 
 
+def _read_image_response_cache(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ImageApiPermanentError(f"cached image API response is unreadable: {path.name}") from exc
+
+
+def _write_image_response_cache(
+    path: Path,
+    response_data: Any,
+    should_abort: Callable[[], bool] | None = None,
+) -> None:
+    try:
+        payload = json.dumps(response_data, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ImageApiPermanentError("image API response could not be cached safely") from exc
+    _write_cover_text_file(path, payload, should_abort)
+
+
+def _request_or_reuse_image_response(
+    response_path: Path,
+    request_response: Callable[[], Any],
+    *,
+    should_abort: Callable[[], bool] | None = None,
+    force: bool = False,
+) -> bytes:
+    if not force and response_path.exists() and response_path.stat().st_size > 0:
+        logger.info("reusing cached image API response: %s", response_path)
+        response_data = _read_image_response_cache(response_path)
+    else:
+        response_data = request_response()
+        _write_image_response_cache(response_path, response_data, should_abort)
+    return _decode_image_response(response_data, should_abort=should_abort)
+
+
 def generate_cover_file(
     title: str,
     markdown: str,
@@ -1428,6 +1490,8 @@ def generate_cover_file(
     draft_path = output_dir / "draft_cover.png"
     refine_prompt_path = output_dir / "cover_refine_prompt.txt"
     cover_path = output_dir / "cover.png"
+    draft_response_path = output_dir / "cover_draft_response.json"
+    refine_response_path = output_dir / "cover_refine_response.json"
     if (
         not force
         and draft_path.exists()
@@ -1439,7 +1503,11 @@ def generate_cover_file(
         logger.info("reusing existing draft and refine prompt for cover retry: %s", draft_path)
         _notify_cover_progress(on_progress, "refine")
         _abort_cover_generation_if_requested(should_abort, stage="before refine image request")
-        cover_bytes = _request_image_edit(draft_path, refine_prompt, should_abort=should_abort)
+        cover_bytes = _request_or_reuse_image_response(
+            refine_response_path,
+            lambda: _request_image_edit_response(draft_path, refine_prompt, should_abort=should_abort),
+            should_abort=should_abort,
+        )
         _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
         return cover_path
 
@@ -1470,7 +1538,12 @@ def generate_cover_file(
         logger.info("开始生成封面初稿: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
         _notify_cover_progress(on_progress, "draft")
         _abort_cover_generation_if_requested(should_abort, stage="before draft image request")
-        draft_bytes = _request_image_generation(draft_prompt, should_abort=should_abort)
+        draft_bytes = _request_or_reuse_image_response(
+            draft_response_path,
+            lambda: _request_image_generation_response(draft_prompt, should_abort=should_abort),
+            should_abort=should_abort,
+            force=force,
+        )
         _write_cover_bytes_file(draft_path, draft_bytes, should_abort)
     else:
         logger.info("复用已存在封面初稿，直接进入精修: %s", draft_path)
@@ -1481,7 +1554,12 @@ def generate_cover_file(
     try:
         _notify_cover_progress(on_progress, "refine")
         _abort_cover_generation_if_requested(should_abort, stage="before refine image request")
-        cover_bytes = _request_image_edit(draft_path, refine_prompt, should_abort=should_abort)
+        cover_bytes = _request_or_reuse_image_response(
+            refine_response_path,
+            lambda: _request_image_edit_response(draft_path, refine_prompt, should_abort=should_abort),
+            should_abort=should_abort,
+            force=force,
+        )
         _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
     except CoverGenerationCancelled:
         raise
@@ -1666,6 +1744,7 @@ __all__ = [
     "ImageApiError",
     "ImageApiPermanentError",
     "ImageApiTransientError",
+    "ImageApiUncertainError",
     "analyze_cover_market_match",
     "build_cover_prompt",
     "build_cover_style_brief",

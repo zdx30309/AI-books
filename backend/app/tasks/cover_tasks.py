@@ -48,6 +48,43 @@ def _has_pending_work(status: dict[str, Any]) -> bool:
     return any(item.get("status") in {"pending", "processing"} for item in _visible_items(status))
 
 
+def _retry_delay_seconds() -> int:
+    return max(10, int(settings.COVER_TASK_RETRY_SECONDS or 60))
+
+
+def _retry_after(item: dict[str, Any]) -> datetime | None:
+    return _parse_iso_datetime(item.get("retry_after"))
+
+
+def _is_retry_waiting(item: dict[str, Any], now: datetime) -> bool:
+    retry_after = _retry_after(item)
+    return item.get("status") == "pending" and retry_after is not None and retry_after > now
+
+
+def _has_ready_pending_work(status: dict[str, Any], now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    for item in _visible_items(status):
+        if item.get("status") == "processing":
+            return True
+        if item.get("status") == "pending" and not _is_retry_waiting(item, now):
+            return True
+    return False
+
+
+def _next_retry_countdown(status: dict[str, Any], now: datetime | None = None) -> int | None:
+    now = now or datetime.now(timezone.utc)
+    retry_times = [
+        retry_after
+        for item in _visible_items(status)
+        if item.get("status") == "pending"
+        for retry_after in [_retry_after(item)]
+        if retry_after is not None and retry_after > now
+    ]
+    if not retry_times:
+        return None
+    return max(10, int((min(retry_times) - now).total_seconds()))
+
+
 def _has_incomplete_work(status: dict[str, Any]) -> bool:
     return any(item.get("status") in {"pending", "processing", "failed"} for item in _visible_items(status))
 
@@ -181,6 +218,7 @@ def _mark_processing(
             return "skipped", title, path
         if item.get("status") == "completed" and path.exists() and path.stat().st_size > 0:
             return "skipped", title, path
+        item.pop("retry_after", None)
         item.update(
             status="processing",
             error=None,
@@ -265,10 +303,12 @@ def _mark_retryable(
         if retry_count > _auto_retry_limit():
             item["status"] = "failed"
             item["error"] = f"自动重试已达上限：{_short_error(exc)}"
+            item.pop("retry_after", None)
             result: CoverItemResult = "failed"
             note = f"第 {index} 张自动重试达到上限"
         else:
             item["status"] = "pending"
+            item["retry_after"] = (datetime.now(timezone.utc) + timedelta(seconds=_retry_delay_seconds())).isoformat()
             item["error"] = f"临时错误，等待自动重试（第 {retry_count} 次）：{_short_error(exc)}"
             result = "retry"
             note = f"第 {index} 张遇到临时错误，已回队列"
@@ -310,6 +350,7 @@ def _mark_failed(
         item.pop("current_stage", None)
         item.pop("stage_started_at", None)
         item.pop("last_heartbeat_at", None)
+        item.pop("retry_after", None)
         latest["items"] = items
         if latest.get("active_run_id") == run_id and latest.get("status") != "paused":
             latest["status"] = "processing"
@@ -357,6 +398,7 @@ def _mark_completed_or_deleted(
         item.pop("current_stage", None)
         item.pop("stage_started_at", None)
         item.pop("last_heartbeat_at", None)
+        item.pop("retry_after", None)
         latest["items"] = latest_items
         if latest.get("status") == "paused":
             _summarize_processing(latest, note="已暂停")
@@ -491,6 +533,7 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
     with status_lock:
         status = read_status(job_id)
         items = list(status.get("items") or [])
+        now = datetime.now(timezone.utc)
         for index, row in enumerate(rows, start=1):
             if index > len(items):
                 break
@@ -503,15 +546,32 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
                 continue
             if item.get("status") == "completed" and path.exists() and path.stat().st_size > 0:
                 continue
+            if _is_retry_waiting(item, now):
+                continue
             work.append((index, row))
 
     if not work:
+        schedule_countdown: int | None = None
         with status_lock:
             status = read_status(job_id)
             if status.get("active_run_id") == run_id:
                 status["active_run_id"] = None
-                _finish_status(status)
+                if _has_pending_work(status) and not _has_ready_pending_work(status):
+                    schedule_countdown = _next_retry_countdown(status) or _retry_delay_seconds()
+                    status["status"] = "pending"
+                    _summarize_processing(status, note="临时错误封面等待自动重试")
+                else:
+                    _finish_status(status)
                 write_status(job_id, status)
+        if schedule_countdown is not None:
+            generate_cover_job.apply_async(args=(job_id,), countdown=schedule_countdown)
+            return {
+                "job_id": job_id,
+                "status": read_status(job_id).get("status"),
+                "incomplete": True,
+                "reason": "retry_wait_scheduled",
+                "countdown": schedule_countdown,
+            }
         return {"job_id": job_id, "status": read_status(job_id).get("status")}
 
     max_items_per_run = max(
@@ -520,7 +580,6 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
     )
     work = work[:max_items_per_run]
 
-    retry_needed = False
     paused = False
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"cover-{job_id[:6]}") as executor:
         futures = [
@@ -541,9 +600,7 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
             except Exception as exc:
                 logger.exception("[cover job %s] worker thread failed", job_id)
                 result = "retry" if isinstance(exc, (DistributedLimitError, ImageApiTransientError)) else "failed"
-            if result == "retry":
-                retry_needed = True
-            elif result == "paused":
+            if result == "paused":
                 paused = True
 
     with status_lock:
@@ -579,32 +636,25 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
             _finish_status(status)
             write_status(job_id, status)
 
-    if read_status(job_id).get("status") == "pending" and not retry_needed:
-        generate_cover_job.delay(job_id)
+    latest = read_status(job_id)
+    if latest.get("status") == "pending":
+        if _has_ready_pending_work(latest):
+            generate_cover_job.delay(job_id)
+            return {
+                "job_id": job_id,
+                "status": read_status(job_id).get("status"),
+                "incomplete": True,
+                "reason": "next_batch_dispatched",
+            }
+        schedule_countdown = _next_retry_countdown(latest) or _retry_delay_seconds()
+        generate_cover_job.apply_async(args=(job_id,), countdown=schedule_countdown)
         return {
             "job_id": job_id,
-            "status": read_status(job_id).get("status"),
+            "status": latest.get("status"),
             "incomplete": True,
-            "reason": "next_batch_dispatched",
+            "reason": "retry_wait_scheduled",
+            "countdown": schedule_countdown,
         }
-
-    if retry_needed or read_status(job_id).get("status") == "pending":
-        current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
-        max_retries = max(0, int(settings.COVER_TASK_MAX_RETRIES or 0))
-        if current_retries >= max_retries:
-            with status_lock:
-                status = read_status(job_id)
-                for item in status.get("items") or []:
-                    if item.get("status") == "pending":
-                        item["status"] = "failed"
-                        item["error"] = "封面自动重试达到任务上限，请手动重试失败项"
-                _finish_status(status)
-                write_status(job_id, status)
-            return {"job_id": job_id, "status": read_status(job_id).get("status"), "reason": "retry_exhausted"}
-        raise _self.retry(
-            countdown=max(10, int(settings.COVER_TASK_RETRY_SECONDS or 60)),
-            exc=RuntimeError("cover job has pending retry items"),
-        )
 
     final = read_status(job_id)
     return {

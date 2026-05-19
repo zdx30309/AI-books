@@ -426,6 +426,7 @@ def retry_cover_job_items(
         item.pop("current_stage", None)
         item.pop("stage_started_at", None)
         item.pop("last_heartbeat_at", None)
+        item.pop("retry_after", None)
         retried += 1
 
     if retried:

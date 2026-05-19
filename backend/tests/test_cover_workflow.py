@@ -418,18 +418,18 @@ def test_generate_cover_file_writes_three_stage_artifacts(
 ) -> None:
     calls: list[tuple[str, str, str | None]] = []
 
-    def fake_generation(prompt: str, **kwargs) -> bytes:
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
         calls.append(("generation", prompt, None))
-        return PNG_BYTES
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
         assert image_path.name == "draft_cover.png"
         assert image_path.exists()
         calls.append(("edit", prompt, image_path.name))
-        return PNG_BYTES
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    monkeypatch.setattr(cover, "_request_image_generation", fake_generation)
-    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
     result = cover.generate_cover_file(
         "醒来以后",
@@ -463,14 +463,14 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fake_generation(prompt: str, **kwargs) -> bytes:
-        return PNG_BYTES
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
         raise RuntimeError("edit failed")
 
-    monkeypatch.setattr(cover, "_request_image_generation", fake_generation)
-    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
     try:
         cover.generate_cover_file(
@@ -497,18 +497,18 @@ def test_generate_cover_file_cancels_before_refine_without_extra_image_call(
     cancelled = False
     edit_called = False
 
-    def fake_generation(prompt: str, **kwargs) -> bytes:
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
         nonlocal cancelled
         cancelled = True
-        return PNG_BYTES
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
         nonlocal edit_called
         edit_called = True
-        return PNG_BYTES
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    monkeypatch.setattr(cover, "_request_image_generation", fake_generation)
-    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
     with pytest.raises(cover.CoverGenerationCancelled):
         cover.generate_cover_file(
@@ -570,7 +570,7 @@ def test_image_request_hard_timeout_closes_client(monkeypatch) -> None:
     monkeypatch.setattr(cover.settings, "IMAGE_API_HARD_TIMEOUT_SECONDS", 1)
     monkeypatch.setattr(cover, "_post_image_request", slow_post)
 
-    with pytest.raises(cover.ImageApiTransientError, match="hard timeout"):
+    with pytest.raises(cover.ImageApiUncertainError, match="hard timeout"):
         cover._post_image_request_with_cancellation(  # noqa: SLF001
             fake,
             "https://api.example.test/images/generations",
@@ -607,6 +607,14 @@ def test_image_request_retries_transient_520(monkeypatch) -> None:
 
     assert result == PNG_BYTES
     assert fake.calls == 2
+
+
+def test_decode_image_response_without_image_is_permanent() -> None:
+    with pytest.raises(cover.ImageApiPermanentError, match="neither b64_json nor url"):
+        cover._decode_image_response({"data": [{}]})  # noqa: SLF001
+
+    with pytest.raises(cover.ImageApiPermanentError, match="no image data"):
+        cover._decode_image_response({"data": []})  # noqa: SLF001
 
 
 def test_image_generation_sends_full_gpt_image_prompt_limit(monkeypatch) -> None:
@@ -650,13 +658,13 @@ def test_generate_cover_file_retries_refine_from_existing_draft_without_rebuildi
     def fail_style_brief(*args, **kwargs):
         raise AssertionError("style brief should not be rebuilt when retrying refine")
 
-    def fake_edit(image_path: Path, prompt: str, **kwargs) -> bytes:
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
         assert image_path == draft
         assert prompt == "existing refine prompt"
-        return PNG_BYTES
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
     monkeypatch.setattr(cover, "build_cover_style_brief", fail_style_brief)
-    monkeypatch.setattr(cover, "_request_image_edit", fake_edit)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
     result = cover.generate_cover_file(
         "测试书名",
@@ -668,6 +676,66 @@ def test_generate_cover_file_retries_refine_from_existing_draft_without_rebuildi
 
     assert result == tmp_path / "cover.png"
     assert result.read_bytes() == PNG_BYTES
+
+
+def test_generate_cover_file_reuses_cached_refine_url_without_new_image_api(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    generation_calls = 0
+    edit_calls = 0
+    download_calls = 0
+
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
+        nonlocal generation_calls
+        generation_calls += 1
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
+        nonlocal edit_calls
+        edit_calls += 1
+        return {"data": [{"url": "https://cdn.example.test/cover.png"}]}
+
+    def fake_download(url: str, **kwargs) -> bytes:
+        nonlocal download_calls
+        assert url == "https://cdn.example.test/cover.png"
+        download_calls += 1
+        if download_calls == 1:
+            raise cover.ImageApiTransientError("cdn not ready")
+        return PNG_BYTES
+
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+    monkeypatch.setattr(cover, "_download_image_result", fake_download)
+
+    with pytest.raises(cover.ImageApiTransientError, match="cdn not ready"):
+        cover.generate_cover_file(
+            "cached retry cover",
+            "@final intro\ncached retry intro",
+            tmp_path,
+            category="illustration_crayon",
+            author="test author",
+        )
+
+    assert generation_calls == 1
+    assert edit_calls == 1
+    assert download_calls == 1
+    assert (tmp_path / "cover_refine_response.json").exists()
+    assert not (tmp_path / "cover.png").exists()
+
+    result = cover.generate_cover_file(
+        "cached retry cover",
+        "@final intro\ncached retry intro",
+        tmp_path,
+        category="illustration_crayon",
+        author="test author",
+    )
+
+    assert result == tmp_path / "cover.png"
+    assert result.read_bytes() == PNG_BYTES
+    assert generation_calls == 1
+    assert edit_calls == 1
+    assert download_calls == 2
 
 
 def test_delete_cover_job_items_marks_single_cover_deleted(
@@ -853,6 +921,84 @@ def test_cover_job_processes_large_uploads_in_bounded_batches(
     assert final["status"] == "pending"
     assert final["completed"] == 2
     assert sum(1 for item in final["items"] if item["status"] == "pending") == 3
+
+
+def test_cover_job_continues_ready_items_when_one_item_waits_to_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_CONCURRENT_ITEMS", 2)
+    monkeypatch.setattr(cover_tasks.settings, "IMAGE_MAX_CONCURRENT_CALLS", 2)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_ITEMS_PER_RUN", 2)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": f"retry book {i}", "author": "A", "category": "illustration_crayon", "category_label": "萌系治愈"}
+            for i in range(1, 5)
+        ],
+        default_category="illustration_crayon",
+    )
+    dispatched: list[str] = []
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
+        if metadata["title"] == "retry book 1":
+            raise cover.ImageApiTransientError("cdn not ready")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_BYTES)
+        return output_path
+
+    monkeypatch.setattr(cover_tasks, "generate_cover_file_from_metadata", fake_generate_cover_file_from_metadata)
+    monkeypatch.setattr(cover_tasks.generate_cover_job, "delay", dispatched.append)
+
+    result = cover_tasks.generate_cover_job.run(status["job_id"])
+    final = cover_jobs.read_status(status["job_id"])
+
+    assert result["reason"] == "next_batch_dispatched"
+    assert dispatched == [status["job_id"]]
+    assert final["items"][0]["status"] == "pending"
+    assert final["items"][0]["retry_after"]
+    assert final["items"][1]["status"] == "completed"
+    assert final["items"][2]["status"] == "pending"
+    assert final["items"][3]["status"] == "pending"
+
+
+def test_cover_job_schedules_waiting_retry_without_celery_task_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_JOB_MAX_CONCURRENT_ITEMS", 1)
+    monkeypatch.setattr(cover_tasks.settings, "IMAGE_MAX_CONCURRENT_CALLS", 1)
+    monkeypatch.setattr(cover_tasks.settings, "COVER_TASK_RETRY_SECONDS", 12)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [{"title": "retry only", "author": "A", "category": "illustration_crayon", "category_label": "萌系治愈"}],
+        default_category="illustration_crayon",
+    )
+    scheduled: list[dict[str, object]] = []
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
+        raise cover.ImageApiTransientError("cdn not ready")
+
+    def fake_apply_async(*args, **kwargs):
+        scheduled.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(cover_tasks, "generate_cover_file_from_metadata", fake_generate_cover_file_from_metadata)
+    monkeypatch.setattr(cover_tasks.generate_cover_job, "apply_async", fake_apply_async)
+
+    result = cover_tasks.generate_cover_job.run(status["job_id"])
+    final = cover_jobs.read_status(status["job_id"])
+
+    assert result["reason"] == "retry_wait_scheduled"
+    assert 10 <= result["countdown"] <= 12
+    assert scheduled
+    assert scheduled[0]["kwargs"]["args"] == (status["job_id"],)
+    assert 10 <= scheduled[0]["kwargs"]["countdown"] <= 12
+    assert final["items"][0]["status"] == "pending"
+    assert final["items"][0]["retry_after"]
 
 
 def test_cover_job_deleted_item_cancels_without_requeue(
