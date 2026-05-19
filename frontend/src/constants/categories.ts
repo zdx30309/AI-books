@@ -91,6 +91,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "comic_series",
+    label: "漫画系列",
+    core_feature: "五或六辑治愈漫画绘本，短语、配图、故事成套生成",
+    directions: "文前、第一辑至第六辑、萌系动物配图、双语对话绘本",
+    prompt_status: "ready",
+  },
+  {
     id: "health_wellness",
     label: "健康·养生",
     core_feature: "轻科普，可立即行动",

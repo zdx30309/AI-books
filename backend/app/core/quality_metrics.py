@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-ELLIPSIS_RE = r"(?:……|…|\.{3})"
+ELLIPSIS_RE = r"(?:…+|\.{3,})"
 SENTENCE_BREAKS = "。！？；\n"
 
 
@@ -53,15 +53,15 @@ A1_PATTERN_RULES: dict[str, str] = {
     "像是在X更像是Y": r"像是在.{1,30}?更像是",
     "常常会先被人...": r"常常会先被人.{0,20}",
     "真正使X进入Y": r"真正使.{1,20}?进入",
-    "X长出来": rf".{{1,15}}{ELLIPSIS_RE}长出来",
-    "X接住": rf".{{1,15}}{ELLIPSIS_RE}接住",
-    "X压下来": rf".{{1,15}}{ELLIPSIS_RE}压下来",
-    "往X压": rf"往.{{1,15}}{ELLIPSIS_RE}压",
-    "把X送过去": rf"把.{{1,15}}{ELLIPSIS_RE}送过去",
+    "X长出来": rf".{{1,15}}(?:{ELLIPSIS_RE})?长出来",
+    "X接住": rf".{{1,15}}(?:{ELLIPSIS_RE})?接住",
+    "X压下来": rf".{{1,15}}(?:{ELLIPSIS_RE})?压下来",
+    "往X压": rf"往.{{1,15}}(?:{ELLIPSIS_RE})?压",
+    "把X送过去": rf"把.{{1,15}}(?:{ELLIPSIS_RE})?送过去",
     "如果只X分量就轻了": r"如果只.{1,30}?分量就轻了",
     "一步步把X拉直": r"一步步把.{1,20}?拉直",
     "把这条链条慢慢展开": r"把这条链条慢慢展开",
-    "在X沉下去": rf"在.{{1,15}}{ELLIPSIS_RE}沉下去",
+    "在X沉下去": rf"在.{{1,15}}(?:{ELLIPSIS_RE})?沉下去",
     "后来之所以总被反复提起": r"后来之所以总被反复提起",
 }
 
@@ -286,7 +286,12 @@ def _detect(text: str, pattern: str) -> list[str]:
 
 
 def _detect_chicken_soup(text: str) -> dict[str, list[str]]:
-    tail = text[-200:] if len(text) > 200 else text
+    paragraphs = [p.strip() for p in text.replace("\r\n", "\n").replace("\r", "\n").split("\n") if p.strip()]
+    if not paragraphs:
+        return {}
+    tail = paragraphs[-1]
+    if len(tail) > 200:
+        return {}
     results: dict[str, list[str]] = {}
     for name, pattern in A2_CHICKEN_SOUP.items():
         hits = _detect(tail, pattern)

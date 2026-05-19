@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { BookOpenCheck, ListPlus, Loader2, PencilLine, UploadCloud, X } from "lucide-react";
+import {
+  BookOpenCheck,
+  ListPlus,
+  Loader2,
+  PencilLine,
+  Sparkles,
+  UploadCloud,
+  X,
+} from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { TaskCategoryOption } from "@/api/types";
@@ -41,13 +49,28 @@ function normalizeCandidateLinks(text: string) {
   };
 }
 
+function parseComicPhrases(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s*(?:[-*+•]|\d+[.、)]|第[一二三四五六]辑[：:、.)]?|[一二三四五六][、.)])\s*/, "")
+        .trim(),
+    )
+    .filter(Boolean)
+    .map((line) => line.slice(0, 120));
+}
+
 export function CreateTaskModal({ open, onClose, onCreated }: Props) {
-  const [mode, setMode] = useState<"single" | "batch">("single");
+  const [mode, setMode] = useState<"single" | "batch" | "comic">("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [candidateLinks, setCandidateLinks] = useState("");
+  const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [category, setCategory] = useState("social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
@@ -59,7 +82,9 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const selectedCategory =
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
+  const comicPhrases = parseComicPhrases(comicPhraseInput);
   const isClassicalChinese = category === "classical_chinese";
+  const isComicSeries = mode === "comic" || category === "comic_series";
   const supportsStyleReference =
     category === "web_short_story" || category === "social_science_test";
 
@@ -71,6 +96,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setCandidateLinks("");
+      setComicPhraseInput("");
       setCategory("social_science");
       setStyleReference("");
       setStyleNotes("");
@@ -103,12 +129,16 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   }, [open]);
 
   useEffect(() => {
+    if (category === "comic_series") {
+      setMode("comic");
+      return;
+    }
     if (isClassicalChinese) setMode("single");
     else {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
     }
-  }, [isClassicalChinese]);
+  }, [category, isClassicalChinese]);
 
   useEffect(() => {
     if (!supportsStyleReference) {
@@ -128,11 +158,51 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
+  const switchMode = (nextMode: "single" | "batch" | "comic") => {
+    setMode(nextMode);
+    if (nextMode === "comic") {
+      setCategory("comic_series");
+    } else if (category === "comic_series") {
+      setCategory("social_science");
+    }
+  };
+
   const submit = async () => {
     setError(null);
+    if (mode === "comic") {
+      if (comicPhrases.length !== 5 && comicPhrases.length !== 6) {
+        setError(`漫画系列需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const config: Record<string, unknown> = {
+          category: "comic_series",
+          comic_phrases: comicPhrases,
+          raw_text: comicPhrases.join("\n"),
+        };
+        const res = await api.createTask({
+          url: "manual://comic_series",
+          config,
+        });
+        onCreated(res.task_id);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建任务失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (mode === "batch") {
-      if (isClassicalChinese) {
-        setError("古文白话请单条粘贴文言文原文，不使用候选链接库");
+      if (isClassicalChinese || isComicSeries) {
+        setError(isComicSeries ? "漫画系列请使用漫画系列入口输入短语" : "古文白话请单条粘贴文言文原文，不使用候选链接库");
         return;
       }
       const { urls, duplicateCount } = candidateLinkStats;
@@ -268,7 +338,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => setMode("single")}
+              onClick={() => switchMode("single")}
               className={`rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "single"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
@@ -279,18 +349,30 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => setMode("batch")}
-              disabled={isClassicalChinese}
+              onClick={() => switchMode("batch")}
+              disabled={isClassicalChinese || isComicSeries}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "batch"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : isClassicalChinese
+                  : isClassicalChinese || isComicSeries
                     ? "cursor-not-allowed border-gold-500/10 text-warm-600"
                     : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
             >
               <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
               候选库
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              漫画系列
             </button>
           </div>
 
@@ -305,7 +387,15 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             <select
               id="task-category"
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={(e) => {
+                const nextCategory = e.target.value;
+                setCategory(nextCategory);
+                if (nextCategory === "comic_series") {
+                  setMode("comic");
+                } else if (mode === "comic") {
+                  setMode("single");
+                }
+              }}
               className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
             >
               {categories.map((item) => (
@@ -457,6 +547,43 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 </div>
               )}
             </>
+          ) : mode === "comic" ? (
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="comic-phrases"
+                  className="block text-[11px] tracking-widest text-warm-300"
+                >
+                  漫画短语
+                </label>
+                <span
+                  className={`text-[10px] tracking-widest ${
+                    comicPhrases.length === 5 || comicPhrases.length === 6
+                      ? "text-gold-300"
+                      : "text-warm-500"
+                  }`}
+                >
+                  {comicPhrases.length}/6
+                </span>
+              </div>
+              <textarea
+                id="comic-phrases"
+                value={comicPhraseInput}
+                onChange={(e) => setComicPhraseInput(e.target.value)}
+                placeholder={"每行一条短语，输入 5 或 6 条\n今晚，月亮放下了手里的活。\n我们也把心事晾在窗台。\n什么都不必赶。"}
+                rows={8}
+                className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+              />
+              <p
+                className={`mt-2 text-xs leading-relaxed ${
+                  comicPhrases.length === 5 || comicPhrases.length === 6
+                    ? "text-warm-500"
+                    : "text-gold-200"
+                }`}
+              >
+                系统会按短语生成第一辑至第六辑；当前识别到 {comicPhrases.length} 条。
+              </p>
+            </div>
           ) : (
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -514,7 +641,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               </>
             ) : (
               <span className="tracking-widest">
-                {mode === "batch" ? "加入候选库" : "立即生成"}
+                {mode === "batch"
+                  ? "加入候选库"
+                  : mode === "comic"
+                    ? "生成漫画系列"
+                    : "立即生成"}
               </span>
             )}
           </button>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import logging
 import re
@@ -68,16 +69,17 @@ async def _rewrite_single_sentence(
     retry: bool = False,
 ) -> str | None:
     """把违规句喂给低温 LLM 重写。返回 None 表示重写失败。"""
-    from app.services.content_engine import _chat
+    from app.services.services import _chat
 
     temperature = 0.0 if retry else 0.1
     prompt = _build_prompt(bad_sentence, rule)
     logger.info("[%s] 发送单句重写请求 [retry=%s]", rule.rule_id, retry)
-    rewritten = await _chat(
+    rewritten = await asyncio.to_thread(
+        _chat,
+        "你是中文改写工具。只返回改写后的句子。",
         prompt,
         json_mode=False,
         temperature=temperature,
-        stream=False,
     )
     rewritten = _normalize_sentence(rewritten)
 

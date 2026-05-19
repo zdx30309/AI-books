@@ -738,6 +738,8 @@ def process_video(_self, task_id: str) -> dict:
         _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
+            "comic_images_start": (25, "漫画系列配图启动"),
+            "comic_image": (34, "漫画系列配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
             "polish_start": (50, "Gemini 一润启动"),
@@ -761,11 +763,25 @@ def process_video(_self, task_id: str) -> dict:
                         run_id=run_id,
                     )
                     return
+                if stage == "comic_image":
+                    idx = int(info.get("idx", 0))
+                    total = max(int(info.get("total", 1)), 1)
+                    prog = 25 + int(18 * idx / total)
+                    _update_progress(
+                        db,
+                        task,
+                        progress=min(prog, 43),
+                        step=f"漫画系列配图 {idx}/{total} 张",
+                        run_id=run_id,
+                    )
+                    return
                 mapped = _STAGE_TO_PROGRESS.get(stage)
                 if mapped is None:
                     return
                 prog, step = mapped
                 chars = info.get("chars")
+                if stage == "format_done" and info.get("skipped_deepseek"):
+                    step = "漫画系列终稿就绪"
                 if chars:
                     step = f"{step} ({chars:,} 字)"
                 _update_progress(db, task, progress=prog, step=step, run_id=run_id)
@@ -813,8 +829,20 @@ def process_video(_self, task_id: str) -> dict:
             run_id=run_id,
         )
         _clear_task_run(task, run_id)
+        if category == "comic_series":
+            first_comic_image = output_dir / "comic_images" / "comic_section_01.png"
+            if first_comic_image.exists():
+                _patch_config(
+                    task,
+                    cover_disabled=False,
+                    cover_status="completed",
+                    cover_error=None,
+                    cover_path=str(first_comic_image),
+                    cover_completed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                task.cover_url = f"/api/v1/tasks/{task.id}/cover"
         db.commit()
-        if settings.COVER_BOOK_TASK_GENERATION_ENABLED:
+        if category != "comic_series" and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
             enqueue_cover_generation(db, task, force=False)
 
         return {

@@ -54,6 +54,8 @@ const ACTIVE_STATUSES = new Set([
   "fact_checking",
 ]);
 
+const COMIC_IMAGE_RE = /^\s*!\[([^\]]*)\]\((?:comic_images\/)?(comic_section_\d{2}\.png)\)\s*$/;
+
 function friendlyTaskError(message: string | null | undefined) {
   if (!message) return null;
   const normalized = message.toLowerCase();
@@ -781,6 +783,7 @@ export function BookDetail() {
               {chapters.map((c) => (
                 <ChapterCard
                   key={c.id}
+                  taskId={task.id}
                   chapter={c}
                   editing={editing}
                   isDirty={dirty[c.id] === true}
@@ -863,7 +866,54 @@ function ViewTab({
   );
 }
 
+function TaskInlineImage({
+  taskId,
+  filename,
+  alt,
+}: {
+  taskId: string;
+  filename: string;
+  alt: string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    let objectUrl: string | null = null;
+    setSrc(null);
+    api
+      .getTaskImageBlob(taskId, filename)
+      .then((blob) => {
+        if (!alive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch(() => {
+        if (alive) setSrc(null);
+      });
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [taskId, filename]);
+
+  if (!src) {
+    return (
+      <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-gold-500/10 bg-base-700/35 text-xs tracking-widest text-warm-500">
+        配图加载中
+      </div>
+    );
+  }
+
+  return (
+    <figure className="overflow-hidden rounded-lg border border-gold-500/10 bg-base-700/30">
+      <img src={src} alt={alt} className="w-full object-cover" />
+    </figure>
+  );
+}
+
 interface ChapterCardProps {
+  taskId: string;
   chapter: ChapterResponse;
   editing: boolean;
   isDirty: boolean;
@@ -876,6 +926,7 @@ interface ChapterCardProps {
 }
 
 function ChapterCard({
+  taskId,
   chapter,
   editing,
   isDirty,
@@ -934,8 +985,27 @@ function ChapterCard({
           spellCheck={false}
         />
       ) : (
-        <div className="space-y-3 whitespace-pre-wrap text-sm leading-relaxed text-warm-200">
-          {chapter.content}
+        <div className="space-y-3 text-sm leading-relaxed text-warm-200">
+          {chapter.content.split("\n").map((line, index) => {
+            const imageMatch = COMIC_IMAGE_RE.exec(line);
+            if (imageMatch) {
+              return (
+                <TaskInlineImage
+                  key={`${imageMatch[2]}-${index}`}
+                  taskId={taskId}
+                  filename={imageMatch[2]}
+                  alt={imageMatch[1] || "章节配图"}
+                />
+              );
+            }
+            return line ? (
+              <p key={index} className="whitespace-pre-wrap">
+                {line}
+              </p>
+            ) : (
+              <br key={index} />
+            );
+          })}
         </div>
       )}
 

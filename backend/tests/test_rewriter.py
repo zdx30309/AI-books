@@ -39,7 +39,7 @@ def test_rewrite_keeps_meaning_manual_review_case() -> None:
 
 
 async def _smoke_force_rewrite() -> None:
-    from app.core.rewriter import force_rewrite_all
+    from app.core import rewriter
 
     draft = (
         "这不是简单的问题，而是结构性的问题。"
@@ -48,7 +48,24 @@ async def _smoke_force_rewrite() -> None:
         "也就是说，这只是开始。"
         "真正使项目进入正轨的是执行。"
     )
-    rewritten, stats = await force_rewrite_all(draft)
+    async def fake_rewrite_single_sentence(
+        bad_sentence: str,
+        rule,
+        *,
+        retry: bool = False,
+    ) -> str | None:
+        rewritten = bad_sentence
+        for forbidden in rule.forbidden_substrings:
+            rewritten = rewritten.replace(forbidden, "")
+        rewritten = rewritten.strip("，。； ")
+        return rewritten or "这句话已重写"
+
+    original = rewriter._rewrite_single_sentence
+    rewriter._rewrite_single_sentence = fake_rewrite_single_sentence
+    try:
+        rewritten, stats = await rewriter.force_rewrite_all(draft)
+    finally:
+        rewriter._rewrite_single_sentence = original
     assert isinstance(rewritten, str)
     assert stats.total_hits >= 1
 

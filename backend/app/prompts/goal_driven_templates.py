@@ -1,5 +1,12 @@
 """Minimal prompt templates for the current workflow."""
 
+from app.services.comic_prompts import (
+    COMIC_COPYRIGHT_RULE,
+    COMIC_IMAGE_PROMPT,
+    COMIC_SERIES_STYLE_BIBLE,
+    COMIC_STORY_PROMPT,
+)
+
 BOOK_TITLE_AND_DESCRIPTION_PROMPT = """【书名与简介专项要求】
 - 最终书名和最终简介要带一点新媒体短视频博眼球的感觉，但不能失去图书书名和图书简介的质感。
 - 拟书名前，必须先判断本书类别，并以“当当网同类型畅销书榜”的命名气质作为商业参考：模拟其长度、节奏、封面感、销售包装感和读者购买冲动，再生成原创书名。
@@ -284,6 +291,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "古文白话",
         "core_feature": "文言文直译与意译并重",
         "directions": "古文、家书、碑铭、史传、经典段落白话化",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "comic_series",
+        "label": "漫画系列",
+        "core_feature": "五或六辑治愈漫画绘本，短语、配图、故事成套生成",
+        "directions": "文前、第一辑至第六辑、萌系动物配图、双语对话绘本",
         "prompt_status": "ready",
     },
     {
@@ -1169,6 +1183,96 @@ def _prompt_set(
     }
 
 
+COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘本主编，负责把创作者提供的 5 或 6 条短语，扩写成一本文前 + 多辑短篇漫画绘本书稿。
+
+这不是普通长文书稿。输入里已经包含每一辑的短语、图片占位符和封面主体设定。你必须围绕这些信息创作，不要新增目录，不要改动占位符。
+
+【强制输出结构】
+严格按以下顺序输出：
+1. @最终书名
+2. @最终简介
+3. @文前
+4. @正文
+
+禁止输出 @目录、目录页、章节目录或任何目录说明。
+
+【文前要求】
+- @文前 下写 4 行短句，像样例里的文前页：轻、空、温柔，有一点诗意和留白感。
+- 每行 8 到 18 个字左右，不能写成长段，不能写成说明书。
+- 文前要服务整本漫画系列的气质，不要总结每一辑剧情。
+
+【正文结构】
+- @正文 下必须只有 5 或 6 个大章节，与输入短语数量完全一致。
+- 每个大章节标题统一为：@1. 第一辑、@2. 第二辑、@3. 第三辑……最多到 @6. 第六辑。
+- 每一辑标题下面必须按顺序包含：
+  1. 短语：原样保留创作者短语
+  2. 对应图像占位符：原样保留 {{{{COMIC_IMAGE_1}}}} 这类占位符
+  3. 本辑故事正文
+- 短语和图像占位符之间、图像占位符和故事之间可以留空行。
+
+【故事创作要求】
+{COMIC_STORY_PROMPT}
+
+【图像与系列一致性要求】
+- 故事必须根据输入里的“封面主体设定”创作，默认那就是本辑封面里的主体动物或人物。
+- 每一辑故事的角色、情绪切口、互动逻辑和结尾方式必须明显不同，不能套同一个模板。
+- 整本书要像同一套绘本系列，语言、角色可爱度、画面感和排版密度统一。
+- 图像生成使用以下统一方向，你要让故事口吻与它保持一致：
+{COMIC_IMAGE_PROMPT}
+{COMIC_SERIES_STYLE_BIBLE}
+
+【原创与版权约束】
+{COMIC_COPYRIGHT_RULE}
+- 不要提及任何现成 IP、动漫角色、绘本人物、游戏角色、影视角色、品牌名、平台名或画师名。
+- 不要模仿具体在世作者、画师或商业 IP 的标志性表达，只能保持原创治愈绘本气质。
+
+【语言与排版】
+- 故事正文以短句和对话为主，适合漫画分镜和绘本排版。
+- 可加入少量中英双语短句，但不要变成英语课本。
+- 不要鸡汤，不要大道理，不要低龄幼教口吻，不要网络段子感，不要 AI 重复套路感。
+- 不要使用中文冒号或英文冒号作为章节标题的一部分；“短语：”这一固定标签可以保留。
+- 只输出成稿，不要解释，不要代码块，不要元信息。
+
+输入：
+[漫画系列短语与封面主体设定]
+{{raw_text}}
+
+请直接输出完整漫画系列书稿。"""
+
+
+COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的漫画系列书稿润色得更自然、温柔、短句化，像日韩治愈漫画与文创绘本的正文。
+
+【结构保护】
+- 必须保留 @最终书名、@最终简介、@文前、@正文 四个部分，顺序不变。
+- 严禁新增 @目录，也不要生成目录内容。
+- 必须保留每一辑标题：@1. 第一辑、@2. 第二辑……不得合并、删除或改序。
+- 必须原样保留每一条“短语：...”和每一个 {{COMIC_IMAGE_N}} 占位符。
+
+【润色目标】
+- 让对白更口语、更短、更适合漫画气泡。
+- 让每一辑的互动逻辑、情绪切口、小反转更清楚，但不要改成鸡汤。
+- 保留原文内容，不要大幅删减，不要把不同辑写成同一种结尾。
+
+直接输出润色后的全文，不要解释。"""
+
+
+COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT = """二次润色漫画系列书稿。只做微调，不要重写成普通散文。
+
+【硬性要求】
+- 保留 @最终书名、@最终简介、@文前、@正文。
+- 不得新增 @目录。
+- 保留 5 或 6 个大章节，章节标题仍为 @1. 第一辑、@2. 第二辑……。
+- 原样保留每一条“短语：...”和每一个 {{COMIC_IMAGE_N}} 占位符。
+- 不得删除任一辑，不得合并任一辑，不得改变图像占位符顺序。
+
+【微调方向】
+- 去掉明显重复的安慰、陪伴、夸奖套路。
+- 让每辑结尾更有余味，不强行升华。
+- 短句化、口语化、轻微双语可以保留，但不要幼稚化。
+
+直接输出最终可交付全文，不要解释。"""
+
+
 SOCIAL_SCIENCE_PROMPT_SET = _prompt_set(SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT)
 
 
@@ -1208,6 +1312,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         SUSPENSE_MICRO_REASONING_FULL_BOOK_WRITER_PROMPT,
     ),
     "classical_chinese": _prompt_set(CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT),
+    "comic_series": _prompt_set(
+        COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
+        polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
+        refine=COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT,
+        formatter="",
+    ),
     "health_wellness": _prompt_set(
         HEALTH_WELLNESS_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -1227,6 +1337,11 @@ CATEGORY_ALIASES: dict[str, str] = {
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",
+    "comic": "comic_series",
+    "comic_bookshelf": "comic_series",
+    "漫画": "comic_series",
+    "漫画书架": "comic_series",
+    "漫画系列": "comic_series",
     "历史·文化": "history_culture",
     "历史文化": "history_culture",
 }

@@ -31,8 +31,12 @@ MINIMAL_MANUSCRIPT = """@最终书名
 测试正文。
 """
 
+WRITER_ROUTING_CATEGORIES = [
+    category for category in SUPPORTED_CATEGORIES if category != "comic_series"
+]
 
-@pytest.mark.parametrize("category", SUPPORTED_CATEGORIES)
+
+@pytest.mark.parametrize("category", WRITER_ROUTING_CATEGORIES)
 def test_generate_full_book_routes_writer_prompt_by_category(
     category: str,
     tmp_path: Path,

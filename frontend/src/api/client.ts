@@ -374,6 +374,8 @@ export const api = {
     openHiddenDownload(`${BASE}/tasks/download-batch/direct?${params.toString()}`);
   },
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
+  getTaskImageBlob: (id: string, filename: string) =>
+    fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}`),
   downloadCoverFile: async (id: string) => {
     const { blob, filename } = await download(`/tasks/${id}/cover/download`);
     saveBlob(blob, filename);

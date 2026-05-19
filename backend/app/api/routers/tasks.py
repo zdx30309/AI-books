@@ -29,6 +29,7 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
+from app.services.comic_series import image_filename_from_markdown, parse_comic_phrases, validate_comic_phrases
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -188,6 +189,15 @@ def _normalize_task_config(config: dict | None) -> dict:
     else:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
+    if category == "comic_series":
+        phrases = parse_comic_phrases(cfg.get("comic_phrases") or cfg.get("raw_text") or "")
+        try:
+            validate_comic_phrases(phrases)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cfg["comic_phrases"] = phrases
+        cfg["raw_text"] = "\n".join(phrases)
+        cfg["raw_text_chars"] = len(cfg["raw_text"])
     return cfg
 
 
@@ -250,6 +260,40 @@ def _dispatch_task(task: Task) -> None:
 
 def _task_output_dir(task_id: UUID) -> Path:
     return PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+
+
+def _safe_task_output_file(task_id: UUID, raw_path: object) -> Path | None:
+    if not raw_path:
+        return None
+    output_dir = _task_output_dir(task_id).resolve()
+    candidate = Path(str(raw_path))
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if resolved != output_dir and output_dir not in resolved.parents:
+        return None
+    return resolved
+
+
+def _task_cover_path(task: Task) -> Path | None:
+    configured = _safe_task_output_file(task.id, (task.config or {}).get("cover_path"))
+    if configured and configured.exists():
+        return configured
+    fallback = _task_output_dir(task.id) / "cover.png"
+    return fallback if fallback.exists() else None
+
+
+def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:
+    if not re.fullmatch(r"comic_section_\d{2}\.png", filename):
+        return None
+    path = (_task_output_dir(task_id) / "comic_images" / filename).resolve()
+    output_dir = _task_output_dir(task_id).resolve()
+    if output_dir not in path.parents:
+        return None
+    return path if path.exists() else None
 
 
 def _retry_resume_state(task_id: UUID) -> tuple[int, str]:
@@ -500,6 +544,8 @@ def create_task_batch(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") == "classical_chinese":
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
+    if cfg.get("category") == "comic_series":
+        raise HTTPException(status_code=400, detail="漫画系列不支持候选链接库，请使用漫画系列入口输入 5 或 6 条短语")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
@@ -971,7 +1017,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     md = cfg.get("markdown")
     if md:
-        return normalize_final_markdown(str(md))
+        return normalize_final_markdown(str(md), category=str(cfg.get("category") or ""))
 
     chapters = (
         db.query(Chapter)
@@ -979,7 +1025,10 @@ def _read_task_markdown(db: Session, task: Task) -> str:
         .order_by(Chapter.chapter_num.asc())
         .all()
     )
-    return normalize_final_markdown("\n".join(f"@{c.title}\n{c.content}" for c in chapters))
+    return normalize_final_markdown(
+        "\n".join(f"@{c.title}\n{c.content}" for c in chapters),
+        category=str(cfg.get("category") or ""),
+    )
 
 
 def _safe_download_name(task: Task, fmt: str) -> str:
@@ -1006,19 +1055,76 @@ def _unique_zip_name(filename: str, used: set[str]) -> str:
         idx += 1
 
 
-def _markdown_to_docx(markdown: str) -> bytes:
-    """Build a minimal .docx while preserving the Markdown delivery text verbatim."""
-    paragraphs = []
+def _docx_text_paragraph(line: str) -> str:
+    text = escape(line, {'"': "&quot;"})
+    return (
+        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" "
+        "w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
+        f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_image_paragraph(*, rel_id: str, filename: str, alt: str, doc_pr_id: int) -> str:
+    safe_filename = escape(filename, {'"': "&quot;"})
+    safe_alt = escape(alt or filename, {'"': "&quot;"})
+    # 6.0in x 3.6in in EMUs, fitting the comic landscape images inside Word margins.
+    cx = 5486400
+    cy = 3291840
+    return (
+        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:drawing>"
+        "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
+        f"<wp:extent cx=\"{cx}\" cy=\"{cy}\"/>"
+        "<wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
+        f"<wp:docPr id=\"{doc_pr_id}\" name=\"Picture {doc_pr_id}\" descr=\"{safe_alt}\"/>"
+        "<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/>"
+        "</wp:cNvGraphicFramePr>"
+        "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">"
+        "<pic:pic>"
+        f"<pic:nvPicPr><pic:cNvPr id=\"{doc_pr_id}\" name=\"{safe_filename}\" descr=\"{safe_alt}\"/>"
+        "<pic:cNvPicPr/></pic:nvPicPr>"
+        f"<pic:blipFill><a:blip r:embed=\"{rel_id}\"/>"
+        "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+        f"<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/>"
+        "</a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>"
+        "</pic:pic></a:graphicData></a:graphic>"
+        "</wp:inline></w:drawing></w:r></w:p>"
+    )
+
+
+def _markdown_to_docx(markdown: str, *, image_base_dir: Path | None = None) -> bytes:
+    """Build a minimal .docx, embedding comic images when markdown references them."""
+    paragraphs: list[str] = []
+    image_entries: list[tuple[str, Path]] = []
     for line in normalize_final_markdown(markdown).splitlines():
-        text = escape(line, {'"': "&quot;"})
-        paragraphs.append(
-            "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" "
-            "w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
-            f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>"
-        )
+        image_filename = image_filename_from_markdown(line)
+        image_path = None
+        if image_filename and image_base_dir is not None:
+            candidate = image_base_dir / "comic_images" / image_filename
+            if candidate.exists():
+                image_path = candidate
+        if image_filename and image_path is not None:
+            rel_id = f"rIdImage{len(image_entries) + 1}"
+            alt_match = re.match(r"\s*!\[([^\]]*)\]", line)
+            alt = alt_match.group(1).strip() if alt_match else image_filename
+            image_entries.append((image_filename, image_path))
+            paragraphs.append(
+                _docx_image_paragraph(
+                    rel_id=rel_id,
+                    filename=image_filename,
+                    alt=alt,
+                    doc_pr_id=len(image_entries),
+                )
+            )
+            continue
+        paragraphs.append(_docx_text_paragraph(line))
+
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
         "<w:body>"
         + "".join(paragraphs)
         + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
@@ -1031,6 +1137,7 @@ def _markdown_to_docx(markdown: str) -> bytes:
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Default Extension="png" ContentType="image/png"/>'
         '<Override PartName="/word/document.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         "</Types>"
@@ -1043,11 +1150,26 @@ def _markdown_to_docx(markdown: str) -> bytes:
         'Target="word/document.xml"/>'
         "</Relationships>"
     )
+    document_rels = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ]
+    for idx, (filename, _) in enumerate(image_entries, start=1):
+        document_rels.append(
+            f'<Relationship Id="rIdImage{idx}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            f'Target="media/image{idx}.png"/>'
+        )
+    document_rels.append("</Relationships>")
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as docx:
         docx.writestr("[Content_Types].xml", content_types)
         docx.writestr("_rels/.rels", rels)
         docx.writestr("word/document.xml", document_xml)
+        if image_entries:
+            docx.writestr("word/_rels/document.xml.rels", "".join(document_rels))
+        for idx, (_, path) in enumerate(image_entries, start=1):
+            docx.writestr(f"word/media/image{idx}.png", path.read_bytes())
     return buffer.getvalue()
 
 
@@ -1234,8 +1356,8 @@ def get_cover(
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    cover_path = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}" / "cover.png"
-    if not cover_path.exists():
+    cover_path = _task_cover_path(task)
+    if cover_path is None:
         raise HTTPException(status_code=404, detail=f"cover of task {task_id} not found")
     return FileResponse(
         cover_path,
@@ -1259,13 +1381,39 @@ def download_cover(
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    cover_path = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}" / "cover.png"
-    if not cover_path.exists():
+    cover_path = _task_cover_path(task)
+    if cover_path is None:
         raise HTTPException(status_code=404, detail=f"cover of task {task_id} not found")
     return FileResponse(
         cover_path,
         media_type="image/png",
         filename=_safe_download_name(task, "png"),
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Vary": "Authorization",
+        },
+    )
+
+
+@router.get(
+    "/{task_id}/images/{filename}",
+    summary="返回漫画系列章节配图",
+)
+def get_task_image(
+    task_id: UUID,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    image_path = _task_comic_image_path(task_id, filename)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail=f"image {filename} of task {task_id} not found")
+    return FileResponse(
+        image_path,
+        media_type="image/png",
         headers={
             "Cache-Control": "private, max-age=3600",
             "Vary": "Authorization",
@@ -1432,7 +1580,7 @@ def _build_batch_download_response(
             if not md:
                 continue
             if fmt == "docx":
-                content = _markdown_to_docx(md)
+                content = _markdown_to_docx(md, image_base_dir=_task_output_dir(task.id))
                 filename = _safe_download_name(task, "docx")
             else:
                 content = normalize_final_markdown(md)
@@ -1542,7 +1690,7 @@ def download_markdown(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     if fmt == "docx" or fmt == "txt":
-        content = _markdown_to_docx(md)
+        content = _markdown_to_docx(md, image_base_dir=_task_output_dir(task.id))
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(task, "docx")
     else:

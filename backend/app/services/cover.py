@@ -1466,6 +1466,29 @@ def _request_or_reuse_image_response(
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
+def generate_image_file_from_prompt(
+    prompt: str,
+    output_path: Path,
+    *,
+    response_cache_path: Path | None = None,
+    force: bool = False,
+    should_abort: Callable[[], bool] | None = None,
+) -> Path:
+    """Generate one image from a caller-supplied prompt with response caching."""
+    if output_path.exists() and output_path.stat().st_size > 0 and not force:
+        return output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    response_path = response_cache_path or output_path.with_suffix(".response.json")
+    image_bytes = _request_or_reuse_image_response(
+        response_path,
+        lambda: _request_image_generation_response(prompt, should_abort=should_abort),
+        should_abort=should_abort,
+        force=force,
+    )
+    _write_cover_bytes_file(output_path, image_bytes, should_abort)
+    return output_path
+
+
 def generate_cover_file(
     title: str,
     markdown: str,
@@ -1752,6 +1775,7 @@ __all__ = [
     "build_refine_cover_prompt",
     "generate_cover_file",
     "generate_cover_file_from_metadata",
+    "generate_image_file_from_prompt",
     "get_cover_category_prompt_adjustment",
     "prepare_cover_input",
 ]
