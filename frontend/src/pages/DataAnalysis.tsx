@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   BarChart3,
   Download,
   FileSpreadsheet,
   Loader2,
+  RefreshCcw,
+  Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { DataAnalysisResponse, DataAnalysisRow } from "@/api/types";
@@ -28,7 +31,7 @@ const columns = [
 
 function formatInteger(value: number | null) {
   if (value === null || Number.isNaN(value)) return "";
-  return Math.round(value).toLocaleString("zh-CN");
+  return String(Math.round(value));
 }
 
 function formatPercent(value: number | null) {
@@ -46,14 +49,23 @@ function cellValue(row: DataAnalysisRow, key: keyof DataAnalysisRow) {
 
 function groupClass(group: string, isHeader = false) {
   const base = isHeader ? "font-semibold text-base-900" : "text-black";
-  if (group === "date" || group === "total") return `${base} bg-[#fff200]`;
+  if (isHeader && (group === "date" || group === "total")) return `${base} bg-[#fff200]`;
+  if (isHeader && group === "company") return `${base} bg-[#9db45f]`;
   if (group === "ai") return `${base} bg-[#f3dcdf]`;
   if (group === "public") return `${base} bg-[#dceaf5]`;
-  if (group === "company") return `${base} bg-[#9db45f]`;
-  return base;
+  return `${base} bg-white`;
+}
+
+function averageNumber(rows: DataAnalysisRow[], key: keyof DataAnalysisRow) {
+  const values = rows
+    .map((row) => row[key])
+    .filter((value): value is number => typeof value === "number" && !Number.isNaN(value));
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 export function DataAnalysis() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [result, setResult] = useState<DataAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -68,6 +80,46 @@ export function DataAnalysis() {
     () => files.reduce((sum, item) => sum + item.size, 0),
     [files],
   );
+  const averageRow = useMemo<DataAnalysisRow | null>(() => {
+    if (!result) return null;
+    return {
+      date_key: "日均",
+      weekday: "",
+      ai_duration: averageNumber(result.rows, "ai_duration"),
+      ai_mom: averageNumber(result.rows, "ai_mom"),
+      public_duration: averageNumber(result.rows, "public_duration"),
+      public_mom: averageNumber(result.rows, "public_mom"),
+      total_duration: averageNumber(result.rows, "total_duration"),
+      total_mom: averageNumber(result.rows, "total_mom"),
+      huian_ai: averageNumber(result.rows, "huian_ai"),
+      huian_public: averageNumber(result.rows, "huian_public"),
+      wutu_ai: averageNumber(result.rows, "wutu_ai"),
+      wutu_public: averageNumber(result.rows, "wutu_public"),
+      suite_duration: averageNumber(result.rows, "suite_duration"),
+    };
+  }, [result]);
+
+  const resetSelection = () => {
+    setFiles([]);
+    setResult(null);
+    setError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeFile = (target: File) => {
+    setFiles((current) =>
+      current.filter(
+        (item) =>
+          !(
+            item.name === target.name &&
+            item.lastModified === target.lastModified &&
+            item.size === target.size
+          ),
+      ),
+    );
+    setResult(null);
+    setError(null);
+  };
 
   const analyze = async () => {
     if (files.length === 0) {
@@ -163,6 +215,7 @@ export function DataAnalysis() {
               字段包含今日在读人数、人均时长、分类、出品/非出品时效果最佳
             </span>
             <input
+              ref={fileInputRef}
               type="file"
               accept=".xlsx,.xlsm"
               multiple
@@ -179,7 +232,25 @@ export function DataAnalysis() {
             <div className="mt-4 rounded-2xl border border-gold-500/10 bg-base-800/50 p-3">
               <div className="mb-2 flex items-center justify-between text-xs tracking-widest text-warm-500">
                 <span>待分析文件</span>
-                <span>{(totalSize / 1024 / 1024).toFixed(2)} MB</span>
+                <div className="flex items-center gap-2">
+                  <span>{(totalSize / 1024 / 1024).toFixed(2)} MB</span>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1 rounded-full border border-gold-500/20 px-2 py-1 text-warm-300 transition-colors hover:border-gold-400/50 hover:text-warm-100"
+                  >
+                    <RefreshCcw className="h-3 w-3" strokeWidth={1.7} />
+                    更换
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetSelection}
+                    className="inline-flex items-center gap-1 rounded-full border border-red-400/20 px-2 py-1 text-red-100 transition-colors hover:border-red-300/50"
+                  >
+                    <Trash2 className="h-3 w-3" strokeWidth={1.7} />
+                    清空
+                  </button>
+                </div>
               </div>
               <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
                 {files.map((item) => (
@@ -190,6 +261,14 @@ export function DataAnalysis() {
                     <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-gold-300" strokeWidth={1.7} />
                     <span className="min-w-0 flex-1 truncate">{item.name}</span>
                     <span className="shrink-0 text-warm-500">{(item.size / 1024).toFixed(0)} KB</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(item)}
+                      className="shrink-0 rounded-full p-1 text-warm-500 transition-colors hover:bg-red-500/10 hover:text-red-100"
+                      aria-label={`删除 ${item.name}`}
+                    >
+                      <X className="h-3.5 w-3.5" strokeWidth={1.8} />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -291,6 +370,30 @@ export function DataAnalysis() {
                     })}
                   </tr>
                 ))}
+                {averageRow && (
+                  <tr>
+                    {columns.map((column) => {
+                      const value = cellValue(averageRow, column.key);
+                      const isMom = column.key === "ai_mom" || column.key === "public_mom" || column.key === "total_mom";
+                      const numberValue = averageRow[column.key as keyof DataAnalysisRow];
+                      const tone =
+                        isMom && typeof numberValue === "number"
+                          ? numberValue >= 0
+                            ? "text-red-700"
+                            : "text-emerald-700"
+                          : "";
+                      const avgBg = column.group === "company" ? "bg-[#9db45f]" : "bg-[#fff200]";
+                      return (
+                        <td
+                          key={column.key}
+                          className={`h-8 border border-black px-3 py-0.5 font-semibold text-black ${avgBg} ${tone}`}
+                        >
+                          {value}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

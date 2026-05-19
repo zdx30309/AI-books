@@ -36,6 +36,35 @@ COMPANY_ALIASES = {
     "悟图": ("悟图", "梧图"),
 }
 COMPANY_COLUMNS = ("公司", "机构", "供应商", "版权方", "出品方", "项目", "归属")
+REPORT_HEADER_ALIASES = {
+    "时间": "date_key",
+    "日期": "date_key",
+    "星期": "weekday",
+    "AI类时长": "ai_duration",
+    "AI类阅读时长": "ai_duration",
+    "AI类": "ai_duration",
+    "AI 类": "ai_duration",
+    "公版类时长": "public_duration",
+    "公版类": "public_duration",
+    "公版": "public_duration",
+    "今日总时长": "total_duration",
+    "总阅读时长": "total_duration",
+    "总时长": "total_duration",
+    "汇安AI": "huian_ai",
+    "汇安 AI": "huian_ai",
+    "汇安公版": "huian_public",
+    "悟图AI": "wutu_ai",
+    "悟图 AI": "wutu_ai",
+    "悟图公版": "wutu_public",
+    "精选集/套装书": "suite_duration",
+    "精选集": "suite_duration",
+    "套装书": "suite_duration",
+    "套装类": "suite_duration",
+    "精选集套装书": "suite_duration",
+}
+PUBLIC_BOOK_RE = re.compile(
+    r"古典文学|四大名著|古代诗词|历史典籍|佛教|道教|中医|国学|古籍|经史子集|经典著作"
+)
 
 
 @dataclass
@@ -82,7 +111,7 @@ def analyze_book_spreadsheets(files: list[tuple[str, bytes]]) -> dict[str, Any]:
 
     snapshots = [_analyze_snapshot(filename, content) for filename, content in files]
     dates = [snapshot["report_date"] for snapshot in snapshots]
-    report_rows = _blank_date_range(min(dates), max(dates))
+    report_rows = _blank_month(max(dates)) if _same_month(dates) else _blank_date_range(min(dates), max(dates))
     row_lookup = {row.date_key: row for row in report_rows}
     source_files = []
     total_book_count = 0
@@ -90,9 +119,10 @@ def analyze_book_spreadsheets(files: list[tuple[str, bytes]]) -> dict[str, Any]:
     detected_fields = set()
 
     for snapshot in snapshots:
-        key = snapshot["report_date"].strftime("%Y%m%d")
-        target = row_lookup[key]
-        _merge_metrics(target, snapshot["metrics"])
+        for metric_date, metrics in snapshot["metrics_by_date"].items():
+            key = metric_date.strftime("%Y%m%d")
+            target = row_lookup[key]
+            _merge_metrics(target, metrics)
         source_files.append(snapshot["source_filename"])
         total_book_count += snapshot["metrics"]["book_count"]
         total_matched_count += snapshot["metrics"]["matched_book_count"]
@@ -135,6 +165,16 @@ def _analyze_snapshot(filename: str, content: bytes) -> dict[str, Any]:
 
     headers = [_clean_header(value) for value in rows[0]]
     index = {header: idx for idx, header in enumerate(headers) if header}
+
+    report_metrics = _parse_report_rows(rows, headers, filename)
+    if report_metrics:
+        return {
+            "source_filename": filename,
+            "report_date": max(report_metrics),
+            "metrics_by_date": report_metrics,
+            "metrics": _combine_metrics(report_metrics.values()),
+        }
+
     required = ("今日在读人数", "人均时长（分）")
     missing = [name for name in required if name not in index]
     if missing:
@@ -148,6 +188,7 @@ def _analyze_snapshot(filename: str, content: bytes) -> dict[str, Any]:
     return {
         "source_filename": filename,
         "report_date": report_date,
+        "metrics_by_date": {report_date: current},
         "metrics": current,
     }
 
@@ -233,6 +274,11 @@ def _parse_date(value: Any) -> date | None:
     return None
 
 
+def _same_month(dates: list[date]) -> bool:
+    first = dates[0]
+    return all(day.year == first.year and day.month == first.month for day in dates)
+
+
 def _blank_month(report_date: date) -> list[AnalysisRow]:
     first = report_date.replace(day=1)
     next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -298,6 +344,143 @@ def _aggregate_rows(rows: list[tuple[Any, ...]], index: dict[str, int]) -> dict[
     }
 
 
+def _parse_report_rows(
+    rows: list[tuple[Any, ...]],
+    headers: list[str],
+    filename: str,
+) -> dict[date, dict[str, Any]]:
+    mapped: dict[str, int] = {}
+    company_idx: int | None = None
+    for idx, header in enumerate(headers):
+        compact = re.sub(r"\s+", "", header)
+        field = REPORT_HEADER_ALIASES.get(compact) or REPORT_HEADER_ALIASES.get(header)
+        if field:
+            mapped[field] = idx
+        elif compact in COMPANY_COLUMNS:
+            company_idx = idx
+        elif any(alias == compact for alias in COMPANY_COLUMNS):
+            company_idx = idx
+
+    if "date_key" not in mapped or "total_duration" not in mapped:
+        return {}
+
+    # The three 环比 columns sit immediately after AI类、公版类、总时长.
+    for field, ring_field in (
+        ("ai_duration", "ai_mom"),
+        ("public_duration", "public_mom"),
+        ("total_duration", "total_mom"),
+    ):
+        col = mapped.get(field)
+        if col is not None and col + 1 < len(headers) and re.sub(r"\s+", "", headers[col + 1]) == "环比":
+            mapped[ring_field] = col + 1
+
+    parsed: dict[date, dict[str, Any]] = {}
+    for raw in rows[1:]:
+        report_date = _parse_date(_cell(raw, mapped.get("date_key")))
+        if not report_date:
+            continue
+        row_metrics = {
+            "ai_duration": _int_or_none(_cell(raw, mapped.get("ai_duration"))),
+            "ai_mom": _percent_or_none(_cell(raw, mapped.get("ai_mom"))),
+            "public_duration": _int_or_none(_cell(raw, mapped.get("public_duration"))),
+            "public_mom": _percent_or_none(_cell(raw, mapped.get("public_mom"))),
+            "total_duration": _int_or_none(_cell(raw, mapped.get("total_duration"))),
+            "total_mom": _percent_or_none(_cell(raw, mapped.get("total_mom"))),
+            "huian_ai": _int_or_none(_cell(raw, mapped.get("huian_ai"))),
+            "huian_public": _int_or_none(_cell(raw, mapped.get("huian_public"))),
+            "wutu_ai": _int_or_none(_cell(raw, mapped.get("wutu_ai"))),
+            "wutu_public": _int_or_none(_cell(raw, mapped.get("wutu_public"))),
+            "suite_duration": _int_or_none(_cell(raw, mapped.get("suite_duration"))),
+            "book_count": 0,
+            "matched_book_count": 0,
+            "company_field_detected": "日报表",
+        }
+        if not any(row_metrics.get(key) is not None for key in ("ai_duration", "public_duration", "total_duration")):
+            continue
+
+        metrics = parsed.setdefault(
+            report_date,
+            {
+                "book_count": 0,
+                "matched_book_count": 0,
+                "company_field_detected": "日报表",
+            },
+        )
+        _merge_report_metrics(metrics, row_metrics, str(_cell(raw, company_idx) or ""))
+    if parsed:
+        for metrics in parsed.values():
+            if metrics.get("total_duration") is None:
+                total = int(metrics.get("ai_duration") or 0) + int(metrics.get("public_duration") or 0)
+                metrics["total_duration"] = total or None
+    return parsed
+
+
+def _merge_report_metrics(target: dict[str, Any], row_metrics: dict[str, Any], company: str) -> None:
+    company_key = _company_key(company)
+    for field in ("ai_duration", "public_duration", "total_duration", "suite_duration"):
+        target[field] = _merge_raw_optional(target.get(field), row_metrics.get(field))
+    for field in ("huian_ai", "huian_public", "wutu_ai", "wutu_public"):
+        target[field] = _merge_raw_optional(target.get(field), row_metrics.get(field))
+
+    if company_key:
+        target[f"{company_key}_ai"] = _merge_raw_optional(
+            target.get(f"{company_key}_ai"),
+            row_metrics.get("ai_duration"),
+        )
+        target[f"{company_key}_public"] = _merge_raw_optional(
+            target.get(f"{company_key}_public"),
+            row_metrics.get("public_duration"),
+        )
+
+
+def _merge_raw_optional(current: Any, next_value: Any) -> int | None:
+    if next_value is None:
+        return current
+    return int(current or 0) + int(next_value or 0)
+
+
+def _cell(row: tuple[Any, ...], idx: int | None) -> Any:
+    if idx is None:
+        return None
+    return row[idx] if len(row) > idx else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    number = _to_number(value)
+    return int(round(number)) if number else None
+
+
+def _percent_or_none(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    number = _to_number(text)
+    return number / 100 if "%" in text else number
+
+
+def _combine_metrics(metrics_list: Any) -> dict[str, Any]:
+    combined: defaultdict[str, int] = defaultdict(int)
+    company_field_detected = None
+    for metrics in metrics_list:
+        for field in (
+            "ai_duration",
+            "public_duration",
+            "total_duration",
+            "huian_ai",
+            "huian_public",
+            "wutu_ai",
+            "wutu_public",
+            "suite_duration",
+            "book_count",
+            "matched_book_count",
+        ):
+            combined[field] += int(metrics.get(field) or 0)
+        company_field_detected = company_field_detected or metrics.get("company_field_detected")
+    return {**combined, "company_field_detected": company_field_detected}
+
+
 def _value(row: tuple[Any, ...], index: dict[str, int], name: str | None) -> Any:
     if not name or name not in index:
         return None
@@ -314,12 +497,12 @@ def _to_number(value: Any) -> float:
 
 
 def _book_bucket(title: str, category: str, ownership: str) -> str:
-    text = f"{title} {category} {ownership}".lower()
-    if "非出品" in ownership or "公版" in text:
+    text = f"{title} {category} {ownership}"
+    if "公版" in text or PUBLIC_BOOK_RE.search(text):
         return "public"
     if "出品" in ownership or "ai" in text or "人工智能" in text:
         return "ai"
-    return "public"
+    return "ai"
 
 
 def _is_suite(title: str, category: str) -> bool:
@@ -384,12 +567,12 @@ def _apply_mom(rows: list[AnalysisRow]) -> None:
 
 def _notes(metrics: dict[str, Any]) -> list[str]:
     file_count = int(metrics.get("file_count") or 1)
-    notes = ["总时长按「今日在读人数 × 人均时长（分）」汇总。"]
+    notes = ["书籍明细按「今日在读人数 × 人均时长（分）」汇总；日报格式会优先读取已有时长列。"]
     if file_count > 1:
         notes.append(f"已合并 {file_count} 个 Excel 文件；同一天的数据会自动累加。")
     if not metrics.get("company_field_detected"):
         notes.append("未检测到公司/机构字段，汇安与悟图拆分列暂为空。")
-    notes.append("AI/公版按「出品/非出品」与分类关键词判断；套装列按书名/分类中的套装、全集、合集、精选集等关键词判断。")
+    notes.append("AI/公版按公版特征关键词识别，未命中的阅读时长归入 AI 类；套装列按书名/分类中的套装、全集、合集、精选集等关键词判断。")
     return notes
 
 
