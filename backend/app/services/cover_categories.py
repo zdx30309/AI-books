@@ -6,14 +6,19 @@ them to the book-writing category list.
 """
 from __future__ import annotations
 
-from app.prompts.goal_driven_templates import get_category_meta, list_categories, normalize_category
+from app.prompts.goal_driven_templates import get_category_meta
+
+BASE_COVER_CATEGORY_IDS: tuple[str, ...] = (
+    "social_science",
+    "psychology_self_help",
+)
 
 COVER_ONLY_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "illustration",
         "label": "治愈插画",
-        "core_feature": "插画封面入口，默认复用心理自助封面 prompt",
-        "directions": "心理自助、情绪疗愈、插画风封面",
+        "core_feature": "治愈感插画封面入口",
+        "directions": "情绪疗愈、插画风封面、温柔生活感",
         "prompt_status": "ready",
     },
     {
@@ -23,10 +28,17 @@ COVER_ONLY_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "directions": "情绪日记、心理自助、孤独感、成年人治愈读物",
         "prompt_status": "ready",
     },
+    {
+        "id": "literature",
+        "label": "文学类",
+        "core_feature": "文艺治愈系插画书封，强调诗意与生活气息",
+        "directions": "文学、文艺治愈、城市、自然、房间、旅行、生活切片",
+        "prompt_status": "ready",
+    },
 )
 
 COVER_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
-    *(dict(item) for item in list_categories()),
+    *(get_category_meta(category_id) for category_id in BASE_COVER_CATEGORY_IDS),
     *COVER_ONLY_CATEGORY_OPTIONS,
 )
 
@@ -46,6 +58,10 @@ _register_alias("分类插画", "illustration")
 _register_alias("分类插画（蜡笔）", "illustration_crayon")
 _register_alias("治愈插画", "illustration")
 _register_alias("治愈插画（蜡笔）", "illustration_crayon")
+_register_alias("文学", "literature")
+_register_alias("文学类", "literature")
+_register_alias("文学题材", "literature")
+_register_alias("文艺治愈", "literature")
 for _category in COVER_CATEGORY_OPTIONS:
     _register_alias(_category["id"], _category["id"])
     _register_alias(_category["label"], _category["id"])
@@ -60,7 +76,7 @@ def normalize_cover_category_id(category: str | None, fallback: str | None = Non
     normalized = _COVER_CATEGORY_ALIASES.get(raw) or _COVER_CATEGORY_ALIASES.get(_alias_key(raw))
     if normalized:
         return normalized
-    return normalize_category(raw)
+    raise ValueError(f"未支持的封面分类: {category!r}")
 
 
 def get_cover_category_meta(category: str | None) -> dict[str, str]:
@@ -74,6 +90,7 @@ def get_cover_category_meta(category: str | None) -> dict[str, str]:
 __all__ = [
     "COVER_CATEGORY_OPTIONS",
     "COVER_ONLY_CATEGORY_OPTIONS",
+    "BASE_COVER_CATEGORY_IDS",
     "get_cover_category_meta",
     "list_cover_categories",
     "normalize_cover_category_id",

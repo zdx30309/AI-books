@@ -7,7 +7,7 @@ import re
 import shutil
 import uuid
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -31,19 +31,6 @@ _INTRO_KEYS = {
     "subtitle",
     "brief",
 }
-_DUPLICATE_STATUSES = {"pending", "processing", "paused", "completed", "failed"}
-
-
-class CoverDuplicateError(ValueError):
-    def __init__(self, duplicates: list[dict[str, Any]], *, window_days: int) -> None:
-        self.duplicates = duplicates
-        self.window_days = window_days
-        names = "、".join(str(item.get("title") or "未命名") for item in duplicates[:6])
-        suffix = "等" if len(duplicates) > 6 else ""
-        super().__init__(
-            f"{window_days} 天内已投喂过相同封面：{names}{suffix}。"
-            "请使用已有任务继续生成，或半个月后再投喂。"
-        )
 
 _TITLE_KEYS = {"书名", "标题", "图书名", "title", "book_title", "book title", "name"}
 _AUTHOR_KEYS = {"作者", "作家", "author", "writer"}
@@ -226,103 +213,32 @@ def parse_cover_spreadsheet(
     return valid
 
 
-def _string_row(row: dict[str, Any]) -> dict[str, str]:
-    return {str(k): str(v) for k, v in row.items() if v is not None}
-
-
-def _fingerprint_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip().lower())
-
-
-def cover_fingerprint(row: dict[str, Any]) -> str:
-    normalized_row = _string_row(row)
-    title = row_title(normalized_row)
-    author = row_author(normalized_row)
-    return "|".join((_fingerprint_text(title), _fingerprint_text(author)))
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _duplicate_summary(row: dict[str, Any], *, source: str, job_id: str | None = None) -> dict[str, Any]:
-    normalized_row = _string_row(row)
-    return {
-        "title": row_title(normalized_row) or str(row.get("title") or ""),
-        "author": row_author(normalized_row) or str(row.get("author") or ""),
-        "category": str(row.get("category") or row_category(normalized_row) or ""),
-        "category_label": str(row.get("category_label") or ""),
-        "source": source,
-        "job_id": job_id,
-    }
-
-
-def find_recent_duplicate_covers(
-    owner_id: str,
-    rows: list[dict[str, str]],
-    *,
-    window_days: int | None = None,
-) -> list[dict[str, Any]]:
-    days = max(0, int(window_days if window_days is not None else settings.COVER_DUPLICATE_WINDOW_DAYS or 0))
-    if days <= 0:
-        return []
-
-    duplicates: list[dict[str, Any]] = []
-    seen: dict[str, dict[str, str]] = {}
-    incoming: dict[str, dict[str, str]] = {}
-    for row in rows:
-        key = cover_fingerprint(row)
-        if not key.strip("|"):
-            continue
-        if key in seen:
-            duplicates.append(_duplicate_summary(row, source="current_upload"))
-            continue
-        seen[key] = row
-        incoming[key] = row
-
-    if not COVER_JOBS_ROOT.exists() or not incoming:
-        return duplicates
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    for path in COVER_JOBS_ROOT.glob("*/status.json"):
-        try:
-            status = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if status.get("owner_id") != owner_id:
-            continue
-        if str(status.get("status") or "") not in _DUPLICATE_STATUSES:
-            continue
-        created_at = _parse_iso_datetime(status.get("created_at") or status.get("updated_at"))
-        if created_at is not None and created_at < cutoff:
-            continue
-
-        job_id = str(status.get("job_id") or path.parent.name)
-        for item in status.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else item
-            key = cover_fingerprint(metadata)
-            if key in incoming:
-                duplicates.append(_duplicate_summary(incoming[key], source="recent_job", job_id=job_id))
-
-    deduped: dict[tuple[str, str | None], dict[str, Any]] = {}
-    for item in duplicates:
-        deduped[(str(item.get("title") or ""), item.get("job_id"))] = item
-    return list(deduped.values())
-
-
 def safe_image_name(index: int, title: str) -> str:
     safe = re.sub(r'[\\/:*?"<>|\r\n]+', "_", title).strip(" ._") or f"cover_{index}"
     return f"{index:03d}_{safe[:60]}.png"
+
+
+def safe_archive_image_name(title: str, index: int) -> str:
+    safe = re.sub(r'[\\/:*?"<>|\r\n]+', "_", title).strip(" ._") or f"cover_{index}"
+    return f"{safe[:60]}.png"
+
+
+def _unique_archive_name(filename: str, used: set[str]) -> str:
+    if filename not in used:
+        used.add(filename)
+        return filename
+    if "." in filename:
+        stem, ext = filename.rsplit(".", 1)
+        suffix = f".{ext}"
+    else:
+        stem, suffix = filename, ""
+    counter = 2
+    while True:
+        candidate = f"{stem}_{counter}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        counter += 1
 
 
 def read_rows(job_id: str) -> list[dict[str, str]]:
@@ -559,14 +475,6 @@ def create_cover_job(
     *,
     default_category: str | None = None,
 ) -> dict[str, Any]:
-    duplicates = find_recent_duplicate_covers(
-        owner_id,
-        rows,
-        window_days=settings.COVER_DUPLICATE_WINDOW_DAYS,
-    )
-    if duplicates:
-        raise CoverDuplicateError(duplicates, window_days=settings.COVER_DUPLICATE_WINDOW_DAYS)
-
     job_id = create_job_id()
     directory = job_dir(job_id)
     directory.mkdir(parents=True, exist_ok=True)
@@ -615,12 +523,18 @@ def build_zip(job_id: str, status: dict[str, Any]) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         written = 0
+        used_names: set[str] = set()
         for item in status.get("items") or []:
             if item.get("status") != "completed":
                 continue
-            path = image_path(job_id, int(item["index"]), str(item.get("title") or "cover"))
+            index = int(item["index"])
+            title = str(item.get("title") or "cover")
+            path = image_path(job_id, index, title)
             if path.exists() and path.stat().st_size > 0:
-                archive.write(path, arcname=path.name)
+                archive.write(
+                    path,
+                    arcname=_unique_archive_name(safe_archive_image_name(title, index), used_names),
+                )
                 written += 1
         if written == 0:
             raise FileNotFoundError("没有可下载的封面")
@@ -629,12 +543,9 @@ def build_zip(job_id: str, status: dict[str, Any]) -> bytes:
 
 __all__ = [
     "build_zip",
-    "CoverDuplicateError",
-    "cover_fingerprint",
     "create_cover_job",
     "delete_cover_job",
     "delete_cover_job_items",
-    "find_recent_duplicate_covers",
     "image_path",
     "list_cover_jobs",
     "normalize_cover_category",
@@ -650,5 +561,6 @@ __all__ = [
     "row_category",
     "row_intro",
     "row_title",
+    "safe_archive_image_name",
     "write_status",
 ]

@@ -23,7 +23,6 @@ from app.schemas.cover_job import (
 from app.services.cover_categories import list_cover_categories
 from app.services.cover_jobs import (
     build_zip,
-    CoverDuplicateError,
     create_cover_job,
     delete_cover_job,
     delete_cover_job_items,
@@ -99,18 +98,12 @@ async def create_cover_job_from_excel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    try:
-        status = create_cover_job(
-            str(user.id),
-            file.filename or "covers.xlsx",
-            rows,
-            default_category=category,
-        )
-    except CoverDuplicateError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        ) from exc
+    status = create_cover_job(
+        str(user.id),
+        file.filename or "covers.xlsx",
+        rows,
+        default_category=category,
+    )
     _enqueue_cover_job(status)
     return _response(status)
 

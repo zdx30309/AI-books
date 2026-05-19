@@ -110,12 +110,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
 ];
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
-  ...DEFAULT_CATEGORIES,
+  DEFAULT_CATEGORIES.find((item) => item.id === "social_science")!,
+  DEFAULT_CATEGORIES.find((item) => item.id === "psychology_self_help")!,
   {
     id: "illustration",
     label: "治愈插画",
-    core_feature: "插画封面入口，默认复用心理自助封面 prompt",
-    directions: "心理自助、情绪疗愈、插画风封面",
+    core_feature: "治愈感插画封面入口",
+    directions: "情绪疗愈、插画风封面、温柔生活感",
     prompt_status: "ready",
   },
   {
@@ -123,6 +124,13 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
     label: "治愈插画（蜡笔）",
     core_feature: "温柔情绪插画封面，强调蜡笔质感与治愈氛围",
     directions: "情绪日记、心理自助、孤独感、成年人治愈读物",
+    prompt_status: "ready",
+  },
+  {
+    id: "literature",
+    label: "文学类",
+    core_feature: "文艺治愈系插画书封，强调诗意与生活气息",
+    directions: "文学、文艺治愈、城市、自然、房间、旅行、生活切片",
     prompt_status: "ready",
   },
 ];
