@@ -363,11 +363,35 @@ def recount_status(status: dict[str, Any]) -> None:
     status["progress"] = 100 if total <= 0 else min(100, int(processed * 100 / total))
 
 
+def _public_category_label(category: Any, current_label: Any) -> str:
+    category_text = str(category or "").strip()
+    current_text = str(current_label or "").strip()
+    try:
+        if category_text:
+            return str(get_cover_category_meta(category_text)["label"])
+        if current_text:
+            normalized, label = normalize_cover_category(current_text)
+            if normalized:
+                return label
+    except Exception:
+        return current_text
+    return current_text
+
+
 def public_cover_job_status(status: dict[str, Any]) -> dict[str, Any]:
     public = dict(status)
     public["items"] = [
         dict(item) for item in status.get("items") or [] if item.get("status") != "deleted"
     ]
+    public["default_category_label"] = _public_category_label(
+        public.get("default_category"),
+        public.get("default_category_label"),
+    )
+    for item in public["items"]:
+        item["category_label"] = _public_category_label(
+            item.get("category"),
+            item.get("category_label"),
+        )
     public.pop("owner_id", None)
     recount_status(public)
     return public

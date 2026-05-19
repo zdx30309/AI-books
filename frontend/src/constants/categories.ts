@@ -1,11 +1,14 @@
 import type { TaskCategoryOption } from "@/api/types";
 
 const CATEGORY_LABEL_RENAMES: Record<string, string> = {
-  "分类插画": "治愈插画",
-  "分类插画（蜡笔）": "治愈插画（蜡笔）",
-  "分类插画(蜡笔)": "治愈插画（蜡笔）",
-  "治愈插画(蜡笔)": "治愈插画（蜡笔）",
-  "治愈插画（蜡笔)": "治愈插画（蜡笔）",
+  "分类插画": "饱和插画",
+  "治愈插画": "饱和插画",
+  "分类插画（蜡笔）": "萌系治愈",
+  "分类插画(蜡笔)": "萌系治愈",
+  "治愈插画（蜡笔）": "萌系治愈",
+  "治愈插画(蜡笔)": "萌系治愈",
+  "治愈插画（蜡笔)": "萌系治愈",
+  "文学": "正统出版",
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
@@ -110,17 +113,26 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
 ];
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
-  ...DEFAULT_CATEGORIES,
+  ...DEFAULT_CATEGORIES.map((category) =>
+    category.id === "social_science" ? { ...category, label: "视觉冲击" } : category,
+  ),
+  {
+    id: "literature",
+    label: "正统出版",
+    core_feature: "文艺文学感出版封面，克制留白、现代书籍气质",
+    directions: "文学、散文、小说、诗意叙事、现代出版设计",
+    prompt_status: "ready",
+  },
   {
     id: "illustration",
-    label: "治愈插画",
+    label: "饱和插画",
     core_feature: "插画封面入口，默认复用心理自助封面 prompt",
     directions: "心理自助、情绪疗愈、插画风封面",
     prompt_status: "ready",
   },
   {
     id: "illustration_crayon",
-    label: "治愈插画（蜡笔）",
+    label: "萌系治愈",
     core_feature: "温柔情绪插画封面，强调蜡笔质感与治愈氛围",
     directions: "情绪日记、心理自助、孤独感、成年人治愈读物",
     prompt_status: "ready",
