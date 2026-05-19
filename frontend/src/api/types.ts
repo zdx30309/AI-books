@@ -337,3 +337,38 @@ export interface WeReadAnalyzeResponse {
   matched: number;
   items: WeReadBookRow[];
 }
+
+
+// 数据分析工具
+
+export interface DataAnalysisSummary {
+  source_filename: string;
+  source_filenames: string[];
+  report_date: string;
+  book_count: number;
+  matched_book_count: number;
+  company_field_detected: string | null;
+  file_count: number;
+  notes: string[];
+}
+
+export interface DataAnalysisRow {
+  date_key: string;
+  weekday: string;
+  ai_duration: number | null;
+  ai_mom: number | null;
+  public_duration: number | null;
+  public_mom: number | null;
+  total_duration: number | null;
+  total_mom: number | null;
+  huian_ai: number | null;
+  huian_public: number | null;
+  wutu_ai: number | null;
+  wutu_public: number | null;
+  suite_duration: number | null;
+}
+
+export interface DataAnalysisResponse {
+  summary: DataAnalysisSummary;
+  rows: DataAnalysisRow[];
+}

@@ -10,35 +10,47 @@ from app.prompts.goal_driven_templates import get_category_meta
 
 BASE_COVER_CATEGORY_IDS: tuple[str, ...] = (
     "social_science",
-    "psychology_self_help",
 )
+
+_COVER_CATEGORY_LABEL_OVERRIDES: dict[str, str] = {
+    "social_science": "视觉冲击",
+}
+
+
+def _cover_category_item(item: dict[str, str]) -> dict[str, str]:
+    next_item = dict(item)
+    label = _COVER_CATEGORY_LABEL_OVERRIDES.get(next_item.get("id", ""))
+    if label:
+        next_item["label"] = label
+    return next_item
+
 
 COVER_ONLY_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "illustration",
-        "label": "治愈插画",
-        "core_feature": "治愈感插画封面入口",
-        "directions": "情绪疗愈、插画风封面、温柔生活感",
+        "label": "饱和插画",
+        "core_feature": "高饱和插画封面入口，默认复用心理自助封面 prompt",
+        "directions": "高饱和、情绪疗愈、插画风封面",
         "prompt_status": "ready",
     },
     {
         "id": "illustration_crayon",
-        "label": "治愈插画（蜡笔）",
+        "label": "萌系治愈",
         "core_feature": "温柔情绪插画封面，强调蜡笔质感与治愈氛围",
         "directions": "情绪日记、心理自助、孤独感、成年人治愈读物",
         "prompt_status": "ready",
     },
     {
         "id": "literature",
-        "label": "文学类",
-        "core_feature": "文艺治愈系插画书封，强调诗意与生活气息",
-        "directions": "文学、文艺治愈、城市、自然、房间、旅行、生活切片",
+        "label": "正统出版",
+        "core_feature": "文艺文学感出版封面，克制留白、现代书籍气质",
+        "directions": "文学、散文、小说、诗意叙事、现代出版设计",
         "prompt_status": "ready",
     },
 )
 
 COVER_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
-    *(get_category_meta(category_id) for category_id in BASE_COVER_CATEGORY_IDS),
+    *(_cover_category_item(get_category_meta(category_id)) for category_id in BASE_COVER_CATEGORY_IDS),
     *COVER_ONLY_CATEGORY_OPTIONS,
 )
 
@@ -56,12 +68,17 @@ def _register_alias(alias: str, category_id: str) -> None:
 
 _register_alias("分类插画", "illustration")
 _register_alias("分类插画（蜡笔）", "illustration_crayon")
+_register_alias("文学", "literature")
+_register_alias("正统出版", "literature")
 _register_alias("治愈插画", "illustration")
 _register_alias("治愈插画（蜡笔）", "illustration_crayon")
-_register_alias("文学", "literature")
 _register_alias("文学类", "literature")
 _register_alias("文学题材", "literature")
 _register_alias("文艺治愈", "literature")
+_register_alias("饱和插画", "illustration")
+_register_alias("萌系治愈", "illustration_crayon")
+_register_alias("社会痛点", "social_science")
+_register_alias("视觉冲击", "social_science")
 for _category in COVER_CATEGORY_OPTIONS:
     _register_alias(_category["id"], _category["id"])
     _register_alias(_category["label"], _category["id"])
@@ -84,7 +101,7 @@ def get_cover_category_meta(category: str | None) -> dict[str, str]:
     for item in COVER_CATEGORY_OPTIONS:
         if item["id"] == normalized:
             return dict(item)
-    return get_category_meta(normalized)
+    return _cover_category_item(get_category_meta(normalized))
 
 
 __all__ = [

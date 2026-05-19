@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import queue
+import random
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -41,6 +42,11 @@ _NO_REAL_PORTRAIT_RULE = (
 _WECHAT_DEDAO_STYLE_RULE = (
     "参考畅销书的配色与版式趋势，但只学习抽象规律：高饱和色块、明确标题层级、少而准的视觉隐喻、强留白或强对比；不得复刻任何真实封面。"
 )
+_VISUAL_IMPACT_STYLE_RULE = (
+    "视觉冲击类封面：回到早期封面 workflow 的强视觉方案，先用一个强主视觉或强隐喻抓住现实痛点，"
+    "再用巨大清晰标题压住画面。颜色必须高饱和、鲜艳、强对比，优先亮黄、玫红、电光蓝、亮青绿、珊瑚橙与干净白色留白。"
+    "构图要像手机端第一眼能点开的出版封面：大色块、少元素、强图形，不做灰暗社科封面、PPT信息图、电商主图或电影海报。"
+)
 _CRAYON_ILLUSTRATION_STYLE_RULE = (
     "治愈蜡笔：日韩治愈系绘本封面，手绘感，像私人日记。"
     "高饱和纯色背景，背景颜色不要渐变，简洁构图，大留白。"
@@ -50,19 +56,21 @@ _CRAYON_ILLUSTRATION_STYLE_RULE = (
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
 _CRAYON_QUALITY_CONTROL_RULE = (
-    "治愈插画（蜡笔）硬约束：私人日记是情绪气质，不是书桌、日记本、杯子、台灯、便签的固定道具组合。"
+    "萌系治愈硬约束：私人日记是情绪气质，不是书桌、日记本、杯子、台灯、便签的固定道具组合。"
     "背景必须是高饱和纯色，不要渐变背景、光效渐变、网格渐变或多色晕染；深暗色面积低于10%。"
     "金句每句不超过10个中文字符，只能像手写旁注放在角落或留白处；"
     "禁止清单、段落、整页日记文字和多个便签文案。"
 )
-_LITERATURE_ILLUSTRATION_STYLE_RULE = (
-    "文学类题材封面：文艺治愈系插画书封，像豆瓣高分文学与微信读书精选封面。"
-    "画面简洁，有留白与安静氛围。"
-    "可使用自然、城市、房间、旅行、人物、动物、植物、天空、海边等意象元素，不要堆砌。"
-    "平面插画风，轻微颗粒与纸张质感，色彩克制但有层次。"
-    "整体带一点孤独感、自由感、诗意与生活气息。"
-    "书名字体大而高级，偏文学感排版。"
-    "避免商业励志感、PPT感、信息图、廉价AI插画感。"
+_LITERATURE_PUBLISHING_STYLE_RULE = (
+    "文艺文学感书封，像豆瓣高分文学与微信读书精选封面。"
+    "现代出版设计风格，简洁、克制、有留白，不要古风小说海报感。"
+    "弱化剧情感与人物主体，强化氛围、平面构成与书籍气质。"
+    "可使用自然、城市、旅行、人物、植物、建筑、光影等意象元素，少而精。"
+    "平面插画或轻水彩质感，轻微颗粒与纸张肌理。"
+    "配色不要灰蒙蒙与做旧感，使用更有识别度和情绪感的颜色，颜色克制但能第一眼吸引人。"
+    "标题排版高级、稀疏、克制，像真正出版社的文学书设计，而不是AI书法字。"
+    "整体安静、诗意、有孤独感与呼吸感，同时保留现代感与视觉吸引力。"
+    "避免古风模板、避免影视海报感、避免晋江小说封面、避免厚重书法字、避免PPT感、避免廉价AI插画感。"
 )
 
 
@@ -134,14 +142,14 @@ class CoverMarketMatch:
 _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
     "social_science": {
         "brand": "时代华语",
-        "style": "现实议题社科书，冷静、有判断力、有压迫感但不煽动",
-        "cover_type": "社会痛点 / 现实议题出版封面",
-        "colors": ("白灰黑", "深蓝", "暗红", "橙色点缀"),
-        "composition": "中央强标题或上标题下隐喻物件，视觉主体克制，空间秩序清楚",
-        "typography": "大号现代黑体或稳重宋黑混排，字距从容，标题必须可读",
-        "white_space": "35%-55%",
-        "metaphors": ("城市边界", "文件与表格", "阶梯", "房屋轮廓", "裂缝", "人物背影"),
-        "addendum": "做成冷静的现实社科封面，像时代华语同类议题书的市场气质。",
+        "style": "视觉冲击类现实议题书，强主视觉、高饱和、强标题、第一眼抓人",
+        "cover_type": "视觉冲击 / 高饱和现实议题出版封面",
+        "colors": ("亮黄", "玫红", "电光蓝", "亮青绿", "珊瑚橙", "干净白色留白"),
+        "composition": "一个强主视觉或强隐喻居中，大色块和强对比铺陈，标题巨大清晰，少元素但冲击力强",
+        "typography": "超大现代黑体或强识别标题字，字重足、对比强，手机缩略图也必须可读",
+        "white_space": "25%-45%",
+        "metaphors": ("巨大标题", "强色块", "城市压力", "裂缝", "阶梯", "被挤压的空间", "人物剪影", "现实痛点符号"),
+        "addendum": _VISUAL_IMPACT_STYLE_RULE,
     },
     "life_philosophy": {
         "brand": "果麦文化",
@@ -153,6 +161,17 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
         "white_space": "45%-65%",
         "metaphors": ("窗", "路", "树", "月光", "手写线条", "孤独人物", "小物件"),
         "addendum": "借鉴果麦文化的克制文学感，封面要安静、耐看、有复读价值。",
+    },
+    "literature": {
+        "brand": "果麦文化",
+        "style": "现代文学出版封面，安静、诗意、克制，有留白和呼吸感",
+        "cover_type": "正统出版 / 文艺文学书封",
+        "colors": ("高识别克制色", "清透蓝绿", "暖橙或玫红点睛", "奶白留白", "轻水彩纸色"),
+        "composition": "少而精的自然、城市、旅行、人物、植物、建筑或光影意象，弱剧情、强氛围与平面构成",
+        "typography": "高级、稀疏、克制的现代出版标题排版，避免AI书法字和厚重书法字",
+        "white_space": "45%-70%",
+        "metaphors": ("自然意象", "城市角落", "旅行片段", "植物", "建筑光影", "孤独背影", "留白"),
+        "addendum": _LITERATURE_PUBLISHING_STYLE_RULE,
     },
     "popular_science": {
         "brand": "时代华语",
@@ -223,24 +242,13 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
     "illustration_crayon": {
         "brand": "果麦文化",
         "style": "日韩治愈系绘本封面，手绘感，私人日记气质，高饱和纯色背景，温柔孤独可爱",
-        "cover_type": "治愈插画（蜡笔） / 治愈系绘本封面",
+        "cover_type": "萌系治愈 / 治愈系绘本封面",
         "colors": ("高饱和纯色背景", "明亮通透绘画色", "纸张颗粒色", "温柔亮色"),
         "composition": "简洁构图，大留白，动物或人物插画，线条松弛笨拙，避免渐变背景和桌面日记模板",
         "typography": "超大手写标题，像随手写在画面上，但书名必须清晰可读",
         "white_space": "45%-65%",
         "metaphors": ("真实手绘颗粒感", "高饱和纯色背景", "超大手写标题", "动物或人物插画", "大留白", "陪伴感"),
         "addendum": _CRAYON_ILLUSTRATION_STYLE_RULE,
-    },
-    "literature": {
-        "brand": "果麦文化",
-        "style": "文艺治愈系插画书封，安静留白，诗意、自由、孤独和生活气息",
-        "cover_type": "文学类 / 文艺治愈插画书封",
-        "colors": ("克制色彩", "纸张质感色", "自然色", "城市生活色", "海边天空色"),
-        "composition": "简洁画面，大留白，一个自然、城市、房间、旅行、人物、动物、植物、天空或海边意象即可，不堆砌",
-        "typography": "书名字体大而高级，偏文学感排版，安静但有识别度",
-        "white_space": "45%-70%",
-        "metaphors": ("自然", "城市", "房间", "旅行", "人物", "动物", "植物", "天空", "海边"),
-        "addendum": _LITERATURE_ILLUSTRATION_STYLE_RULE,
     },
     "suspense_micro_reasoning": {
         "brand": "酷威文化",
@@ -309,6 +317,15 @@ def _cover_category_ids() -> tuple[str, ...]:
 _CATEGORY_COVER_PROMPT_ADJUSTMENTS: dict[str, dict[str, tuple[str, ...]]] = {
     category_id: _empty_cover_prompt_adjustment() for category_id in _cover_category_ids()
 }
+_CATEGORY_COVER_PROMPT_ADJUSTMENTS["social_science"] = {
+    "style_brief_rules": (_VISUAL_IMPACT_STYLE_RULE, *_SATURATED_COLOR_DIRECTION, _WECHAT_DEDAO_STYLE_RULE),
+    "draft_rules": (_VISUAL_IMPACT_STYLE_RULE, *_SATURATED_COLOR_DIRECTION, _WECHAT_DEDAO_STYLE_RULE),
+    "refine_rules": (
+        f"继续保持并强化：{_VISUAL_IMPACT_STYLE_RULE}",
+        *_SATURATED_COLOR_DIRECTION,
+        _WECHAT_DEDAO_STYLE_RULE,
+    ),
+}
 _CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration_crayon"] = {
     "style_brief_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE, _CRAYON_QUALITY_CONTROL_RULE),
     "draft_rules": (_CRAYON_ILLUSTRATION_STYLE_RULE, _CRAYON_QUALITY_CONTROL_RULE),
@@ -318,9 +335,9 @@ _CATEGORY_COVER_PROMPT_ADJUSTMENTS["illustration_crayon"] = {
     ),
 }
 _CATEGORY_COVER_PROMPT_ADJUSTMENTS["literature"] = {
-    "style_brief_rules": (_LITERATURE_ILLUSTRATION_STYLE_RULE,),
-    "draft_rules": (_LITERATURE_ILLUSTRATION_STYLE_RULE,),
-    "refine_rules": (f"继续保持并强化：{_LITERATURE_ILLUSTRATION_STYLE_RULE}",),
+    "style_brief_rules": (_LITERATURE_PUBLISHING_STYLE_RULE,),
+    "draft_rules": (_LITERATURE_PUBLISHING_STYLE_RULE,),
+    "refine_rules": (f"继续保持并强化：{_LITERATURE_PUBLISHING_STYLE_RULE}",),
 }
 
 
@@ -331,7 +348,14 @@ def _is_crayon_illustration(category: str | None) -> bool:
         return False
 
 
-def _is_literature_cover(category: str | None) -> bool:
+def _is_visual_impact(category: str | None) -> bool:
+    try:
+        return normalize_cover_category_id(category or "") == "social_science"
+    except ValueError:
+        return False
+
+
+def _is_literature_publishing(category: str | None) -> bool:
     try:
         return normalize_cover_category_id(category or "") == "literature"
     except ValueError:
@@ -474,6 +498,16 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
         )
         if item
     )
+    if _is_visual_impact(cover_input.category):
+        return CoverMarketMatch(
+            category_label=cover_input.category_label,
+            search_keywords=keywords[:240],
+            analysis=(
+                "参考早期封面 workflow 与微信读书/得到系爆款封面：高饱和鲜艳配色、强对比大色块、"
+                "巨大清晰标题、少而准的现实痛点视觉隐喻，手机端缩略图第一眼抓人。"
+                "避免灰暗社科感、PPT信息图、电商主图、电影海报和真实人物肖像。"
+            ),
+        )
     if _is_crayon_illustration(cover_input.category):
         return CoverMarketMatch(
             category_label=cover_input.category_label,
@@ -486,15 +520,14 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
             ),
             visual_plan=_crayon_fallback_visual_plan(cover_input),
         )
-    if _is_literature_cover(cover_input.category):
+    if _is_literature_publishing(cover_input.category):
         return CoverMarketMatch(
             category_label=cover_input.category_label,
             search_keywords=keywords[:240],
             analysis=(
-                "参考豆瓣高分文学与微信读书精选封面：文艺治愈系插画书封，画面简洁，"
-                "有留白与安静氛围，少量自然、城市、房间、旅行、人物、动物、植物、天空或海边意象。"
-                "平面插画风，轻微颗粒与纸张质感，色彩克制但有层次，书名字体大而高级。"
-                "避免商业励志感、PPT感、信息图、廉价AI插画感。"
+                "参考豆瓣高分文学与微信读书精选封面：现代出版设计、简洁克制、有留白，"
+                "弱化剧情与人物主体，强化氛围、平面构成、纸张肌理和书籍气质。"
+                "配色克制但有识别度，避免灰蒙蒙做旧、古风模板、影视海报感、晋江小说封面和厚重书法字。"
             ),
         )
     return CoverMarketMatch(
@@ -516,7 +549,7 @@ def _category_options_for_market_prompt() -> str:
 
 
 def cover_categories_fallback() -> str:
-    return "social_science=社会痛点；psychology_self_help=心理自助；illustration=治愈插画；illustration_crayon=治愈插画（蜡笔）；literature=文学类"
+    return "social_science=视觉冲击；illustration=饱和插画；illustration_crayon=萌系治愈；literature=正统出版"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
@@ -535,7 +568,23 @@ def analyze_cover_market_match(cover_input: CoverInput) -> CoverMarketMatch:
     if not settings.COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED or not (settings.DEEPSEEK_API_KEY or "").strip():
         return _fallback_market_match(cover_input)
 
-    if _is_crayon_illustration(cover_input.category):
+    if _is_visual_impact(cover_input.category):
+        prompt = f"""你是中文出版封面市场分析师。请根据 Excel 中的书名、简介、作者、分类判断这本书的现实痛点和第一眼主视觉，再给当当/微信读书/得到系强视觉封面检索提供关键词。
+
+书名：{cover_input.title}
+作者：{cover_input.author}
+简介：{cover_input.intro}
+Excel 分类：{cover_input.category_label}
+可选分类：{_category_options_for_market_prompt()}
+
+只输出 JSON，不要输出解释文字：
+{{
+  "category_label": "最适合用于检索同类封面的中文分类名，优先贴近 Excel 分类",
+  "search_keywords": "用于当当网、微信读书和得到系高饱和视觉冲击封面检索的中文关键词，80字以内",
+  "analysis": "用120字以内总结早期封面 workflow 的强视觉方向：高饱和鲜艳、强对比、大色块、巨大标题、少而准的现实痛点隐喻，避免灰暗社科封面、PPT信息图、电商主图、电影海报和真实人物肖像",
+  "visual_plan": "用160字以内为这本书单独判断一个强主视觉或强隐喻、主色组合、构图焦点和标题压版方式；必须来自书名和简介，颜色必须高饱和鲜艳，画面少元素但冲击力强"
+}}"""
+    elif _is_crayon_illustration(cover_input.category):
         prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类日韩治愈系绘本封面，再给当当/微信读书同类封面检索提供关键词。
 
 书名：{cover_input.title}
@@ -551,8 +600,8 @@ Excel 分类：{cover_input.category_label}
   "analysis": "用120字以内总结日韩治愈系绘本封面的私人日记感、高饱和纯色背景、简洁构图、大留白、松弛笨拙线条、真实手绘颗粒感和超大手写标题；必须强调背景不要渐变，避免商业心理书、PPT感、UI插画风、过度精致和AI感",
   "visual_plan": "用160字以内先为这本书单独判断动物或人物主体、构图方式、纯色背景颜色、季节、空间、视角、画面叙事和1到2句短金句策略；必须来自书名和简介，不要套用孤独小人、蓝天色块、植物边框、桌面日记本、杯子、台灯、便签或同一种治愈模板；背景必须高饱和纯色且不要渐变；线条要松弛笨拙，留白要多；金句只能做手写旁注"
 }}"""
-    elif _is_literature_cover(cover_input.category):
-        prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类文学插画书封，再给当当/豆瓣高分文学/微信读书精选同类封面检索提供关键词。
+    elif _is_literature_publishing(cover_input.category):
+        prompt = f"""你是中文出版封面市场分析师。请根据 Excel 中的书名、简介、作者、分类判断这本文学书应参考哪类现代出版封面，再给当当/微信读书/豆瓣高分文学封面检索提供关键词。
 
 书名：{cover_input.title}
 作者：{cover_input.author}
@@ -563,9 +612,8 @@ Excel 分类：{cover_input.category_label}
 只输出 JSON，不要输出解释文字：
 {{
   "category_label": "最适合用于检索同类封面的中文分类名，优先贴近 Excel 分类",
-  "search_keywords": "用于当当网、豆瓣高分文学与微信读书精选封面检索的中文关键词，80字以内",
-  "analysis": "用120字以内总结文艺治愈系插画书封的简洁画面、留白、安静氛围、自然/城市/房间/旅行/人物/动物/植物/天空/海边等少量意象、平面插画、轻微颗粒纸张质感、克制但有层次的色彩、文学感大标题；避免商业励志感、PPT感、信息图、廉价AI插画感",
-  "visual_plan": "用160字以内为这本书单独判断一个少而准的文学意象、构图、空间、视角、色彩层次和字体气质；必须来自书名和简介，不要堆砌元素，不要商业励志和信息图"
+  "search_keywords": "用于当当网、微信读书和豆瓣高分文学同类封面检索的中文关键词，80字以内",
+  "analysis": "用120字以内总结现代文学出版封面的气质：简洁克制、有留白，弱化剧情和人物主体，强化氛围、平面构成、纸张肌理和书籍气质；配色克制但有识别度；避免灰蒙蒙做旧、古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感和廉价AI插画感"
 }}"""
     else:
         prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类畅销书封面，再给当当/微信读书/得到风格检索提供关键词。
@@ -707,8 +755,9 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         cover_input.category,
         _CATEGORY_STYLE_PROFILES["social_science"],
     )
+    is_visual = _is_visual_impact(cover_input.category)
     is_crayon = _is_crayon_illustration(cover_input.category)
-    is_literature = _is_literature_cover(cover_input.category)
+    is_literature = _is_literature_publishing(cover_input.category)
     market_match = analyze_cover_market_match(cover_input)
     references = collect_reference_covers(
         cover_input,
@@ -721,7 +770,37 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     if style_brief_addendum:
         style_brief_addendum += "\n"
     visual_variation_directive = ""
-    if is_crayon:
+    if is_visual:
+        avoid_rules = (
+            "只学习早期封面 workflow、当当网、微信读书和得到系强视觉封面的抽象设计规律，不复刻、不拼贴、不近似复制任何真实封面。",
+            "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
+            "不要做成电商商品主图、灰暗社科封面、PPT信息图、3D书模、白底商品照、赠品图、促销海报或电影海报。",
+            "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
+            "视觉主体必须少而准：一个强主视觉或强隐喻即可，不要堆砌社会痛点符号。",
+            _NO_REAL_PORTRAIT_RULE,
+            _WECHAT_DEDAO_STYLE_RULE,
+            *style_brief_rules,
+            *_SATURATED_COLOR_DIRECTION,
+        )
+        color_palette = tuple(profile["colors"]) + _SATURATED_COLOR_DIRECTION
+        reference_site = "当当网 + 早期封面 workflow + 微信读书/得到强视觉封面分析"
+        brand_style_direction = (
+            "以时代华语现实议题出版气质为底，回到早期封面 workflow 的强视觉策略：先判断本书最有冲突感的现实痛点，"
+            "再做一个高饱和鲜艳、强对比、大色块、巨大标题的主视觉封面。"
+        )
+        title_hierarchy = (
+            "书名必须是第一视觉焦点，巨大、清晰、强对比；作者名次之，副标题或封面文案只保留一句很短内容。"
+        )
+        visual_variation_directive = market_match.visual_plan.strip()
+        generation_prompt_addendum = (
+            f"{profile['addendum']}\n"
+            f"{visual_variation_directive}\n"
+            f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
+            f"{style_brief_addendum}"
+            "必须使用高饱和鲜艳颜色、强对比大色块和强主视觉；标题必须巨大可读；"
+            "不要灰暗社科封面、不要PPT信息图、不要商业模板感，画面少元素但冲击力强。"
+        )
+    elif is_crayon:
         crayon_title_author_rule = _crayon_title_author_rule(cover_input)
         visual_variation_directive = _crayon_visual_variation_directive(
             cover_input,
@@ -763,28 +842,29 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
     elif is_literature:
         avoid_rules = (
-            "只学习豆瓣高分文学、微信读书精选与当当文学类封面的抽象审美，不复刻、不拼贴、不近似复制任何真实封面。",
+            "只学习豆瓣高分文学、微信读书精选和当当文学书封面的抽象出版规律，不复刻、不拼贴、不近似复制任何真实封面。",
             "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
-            "不要商业励志感、PPT感、信息图、廉价AI插画感、促销海报、电商商品主图或电影海报。",
-            "不要堆砌自然、城市、房间、旅行、人物、动物、植物、天空、海边等意象；只保留少而准的画面线索。",
+            "不要古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感、廉价AI插画感、电商商品主图或3D书模。",
             "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
-            "参考出版社版本时也不能做得过黑过暗；色彩克制但要有层次，避免大面积黑色、深蓝、暗红或脏灰。",
+            "不要灰蒙蒙与做旧感；颜色要克制但有识别度和情绪感，第一眼能吸引人。",
             _NO_REAL_PORTRAIT_RULE,
             *style_brief_rules,
         )
         color_palette = tuple(profile["colors"])
-        reference_site = "当当网 + 豆瓣高分文学/微信读书精选封面分析"
+        reference_site = "当当网 + 微信读书精选 + 豆瓣高分文学封面分析"
         brand_style_direction = (
-            "优先参考豆瓣高分文学与微信读书精选封面的抽象审美：简洁画面、留白、安静氛围、"
-            "平面插画、轻微颗粒与纸张质感，整体有孤独感、自由感、诗意与生活气息。"
+            "优先参考现代文学出版封面的抽象审美：简洁、克制、有留白，"
+            "弱剧情、弱人物主体，强化氛围、平面构成、纸张肌理和书籍气质。"
         )
-        title_hierarchy = "书名字体大而高级，偏文学感排版，作者名次之，少量副标题或封面文案更小且克制。"
+        title_hierarchy = (
+            "标题排版高级、稀疏、克制，像真正出版社的文学书设计；"
+            "不要AI书法字、厚重书法字或网文感大字。"
+        )
         generation_prompt_addendum = (
             f"{profile['addendum']}\n"
             f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
             f"{style_brief_addendum}"
-            "必须强化文学类题材封面气质：画面简洁、有留白与安静氛围，意象元素少而准，"
-            "色彩克制但有层次，避免商业励志感、PPT感、信息图和廉价AI插画感。"
+            "整体安静、诗意、有孤独感与呼吸感，同时保留现代感与视觉吸引力。"
         )
     else:
         avoid_rules = (
@@ -841,14 +921,30 @@ def _brief_json(brief: CoverStyleBrief) -> str:
 
 
 def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBrief) -> str:
+    is_visual = _is_visual_impact(cover_input.category)
     is_crayon = _is_crayon_illustration(cover_input.category)
-    is_literature = _is_literature_cover(cover_input.category)
+    is_literature = _is_literature_publishing(cover_input.category)
     style_report = _brief_json(style_brief)[:2600 if is_crayon else 3200]
     category_rule_section = _prompt_rule_section(
         get_cover_category_prompt_adjustment(cover_input.category)["draft_rules"]
     )
     style_addendum_section = style_brief.generation_prompt_addendum[:1400].rstrip()
-    if is_crayon:
+    if is_visual:
+        title_author_rule_section = ""
+        visual_variation_section = f"{style_brief.visual_variation_directive}\n"
+        market_rule_section = (
+            "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网同类畅销书，同时接回早期封面 workflow 的强视觉路线。"
+            "你只学习抽象规律，不复刻、不拼贴、不近似复制任何真实封面。\n"
+            "- 最高优先级：视觉冲击类封面，高饱和鲜艳、强对比、大色块、巨大标题、少而准的现实痛点隐喻，手机端第一眼抓人。\n"
+        )
+        color_and_type_rules = (
+            "- 配色必须高饱和、鲜艳、强识别，优先亮黄、玫红、电光蓝、亮青绿、珊瑚橙、干净白色留白；不要灰蒙蒙、做旧或大面积黑暗铺底。\n"
+            "- 主视觉只能少而准：一个强图形、一个现实痛点隐喻或一个符号化人物/物件即可，不要堆砌元素或做信息图。\n"
+            "- 书名必须巨大、清晰、强对比，是第一视觉焦点；副标题或封面文案最多一句，很短。\n"
+            "- 不要灰暗社科封面、PPT信息图、电商主图或电影海报。\n"
+        )
+        text_rule = "- 中文文字尽量准确清晰，像真实出版封面的强标题排版；不要乱码中文、伪中文、英文占位符。\n"
+    elif is_crayon:
         title_author_rule_section = f"{_crayon_title_author_rule(cover_input)}\n"
         visual_variation_section = f"{style_brief.visual_variation_directive}\n"
         market_rule_section = (
@@ -869,17 +965,16 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         title_author_rule_section = ""
         visual_variation_section = ""
         market_rule_section = (
-            "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网、豆瓣高分文学与微信读书精选同类封面。"
-            "你只学习抽象审美，不复刻、不拼贴、不近似复制任何真实封面。\n"
-            "- 最高优先级：文艺治愈系插画书封，像豆瓣高分文学与微信读书精选封面；"
-            "画面安静、简洁、有留白，有诗意与生活气息。\n"
+            "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网、微信读书精选与豆瓣高分文学同类封面。"
+            "你只学习现代文学出版封面的抽象规律，不复刻、不拼贴、不近似复制任何真实封面。\n"
+            "- 文艺文学感书封：现代出版设计风格，简洁、克制、有留白；弱化剧情感与人物主体，强化氛围、平面构成与书籍气质。\n"
         )
         color_and_type_rules = (
-            "- 可使用自然、城市、房间、旅行、人物、动物、植物、天空、海边等意象元素，但只能少而准，不要堆砌。\n"
-            "- 平面插画风，轻微颗粒与纸张质感；色彩克制但有层次，不能过黑过暗。\n"
-            "- 书名字体大而高级，偏文学感排版；作者名次之，其他文字保持克制。\n"
+            "- 可使用自然、城市、旅行、人物、植物、建筑、光影等意象元素，少而精；平面插画或轻水彩质感，轻微颗粒与纸张肌理。\n"
+            "- 配色不要灰蒙蒙与做旧感，使用更有识别度和情绪感的颜色；颜色克制但能第一眼吸引人。\n"
+            "- 标题排版高级、稀疏、克制，像真正出版社的文学书设计，而不是AI书法字或厚重书法字。\n"
         )
-        text_rule = "- 中文文字尽量准确清晰，像高级文学书封排版；不要乱码中文、伪中文、英文占位符。\n"
+        text_rule = "- 中文文字尽量准确清晰，排版安静、有呼吸感、有现代文学书籍气质；不要乱码中文、伪中文、英文占位符。\n"
     else:
         title_author_rule_section = ""
         visual_variation_section = ""
@@ -924,7 +1019,20 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
     category_rule_section = _prompt_rule_section(
         get_cover_category_prompt_adjustment(cover_input.category)["refine_rules"]
     )
-    if _is_crayon_illustration(cover_input.category):
+    if _is_visual_impact(cover_input.category):
+        title_author_rule_section = ""
+        visual_variation_section = f"{style_brief.visual_variation_directive}\n"
+        opening = "请精修这张封面，让它成为高饱和鲜艳、第一眼抓人的视觉冲击类中文图书封面。"
+        composition_rule = (
+            "- 保留草稿中最强的现实痛点主视觉或隐喻，但进一步压缩元素、放大标题、提升色块对比；"
+            "画面必须少而准，不要变成信息图、PPT页面或灰暗社科封面。"
+        )
+        market_rule = (
+            "- 强化早期封面 workflow 的高饱和强视觉路线：鲜艳主色、强对比、大色块、巨大清晰标题、少量精准隐喻，"
+            "手机端缩略图也要一眼抓人。"
+            "避免灰暗、做旧、大面积黑底、真实人物肖像、电影海报感、电商主图感和廉价AI模板感。"
+        )
+    elif _is_crayon_illustration(cover_input.category):
         title_author_rule_section = f"{_crayon_title_author_rule(cover_input)}\n"
         visual_variation_section = f"{style_brief.visual_variation_directive}\n"
         opening = "请精修这张封面，让它成为有独特视觉叙事的日韩治愈系绘本封面。"
@@ -941,19 +1049,18 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
             "元素少而准，避免商业心理书、PPT感、UI插画风、门和小路构图、桌面日记模板、过度精致和AI感。"
             "除书名和作者外，只保留或补上1到2句很短的氛围金句，作为手写旁注融入画面。"
         )
-    elif _is_literature_cover(cover_input.category):
+    elif _is_literature_publishing(cover_input.category):
         title_author_rule_section = ""
         visual_variation_section = ""
-        opening = "请精修这张封面，让它成为文艺治愈系文学插画书封。"
+        opening = "请精修这张封面，让它成为真正出版社质感的现代文艺文学书封。"
         composition_rule = (
-            "- 保留草稿的文学气质和核心意象，但让画面更简洁、更安静，留白更自然；"
-            "不要堆砌自然、城市、房间、旅行、人物、动物、植物、天空、海边等元素。"
+            "- 保留草稿的现代文学气质，但进一步弱化剧情感与人物主体，强化氛围、平面构成、留白、纸张肌理和书籍气质；"
+            "让画面安静、诗意、有孤独感与呼吸感，同时第一眼有视觉吸引力。"
         )
         market_rule = (
-            "- 强化豆瓣高分文学与微信读书精选封面气质：平面插画风、轻微颗粒与纸张质感、"
-            "色彩克制但有层次，整体有一点孤独感、自由感、诗意与生活气息。"
-            "书名字体要大而高级，偏文学感排版。"
-            "避免商业励志感、PPT感、信息图、廉价AI插画感。"
+            "- 强化豆瓣高分文学与微信读书精选封面的抽象气质：简洁克制、有留白、少而精的自然/城市/旅行/植物/建筑/光影意象，"
+            "平面插画或轻水彩质感，轻微颗粒与纸张肌理。"
+            "避免古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感和廉价AI插画感。"
         )
     else:
         title_author_rule_section = ""
@@ -1206,7 +1313,16 @@ def _post_image_request(
             last_error = ImageApiTransientError(f"图像 API 返回异常: {exc}")
             if attempt >= max_attempts:
                 raise ImageApiTransientError(f"图像 API 返回异常: {exc}，已重试 {attempt} 次") from exc
-        time.sleep(min(30, 3 * attempt))
+        sleep_for = min(45.0, (3.0 * attempt) + random.uniform(0.0, 2.0))
+        logger.warning(
+            "image API request retrying endpoint=%s attempt=%d/%d sleep=%.1fs error=%s",
+            endpoint.rstrip("/").rsplit("/", 1)[-1],
+            attempt,
+            max_attempts,
+            sleep_for,
+            last_error,
+        )
+        time.sleep(sleep_for)
     raise ImageApiTransientError(f"图像 API 请求失败: {last_error}")
 
 

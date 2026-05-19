@@ -20,6 +20,7 @@ import type {
   CoverJobItemBatchDeleteRequest,
   CoverJobItemBatchRetryRequest,
   CoverJobResponse,
+  DataAnalysisResponse,
   LoginRequest,
   MarkdownResponse,
   PolishParagraphRequest,
@@ -206,6 +207,71 @@ async function fetchBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+async function uploadFiles<T>(
+  path: string,
+  files: File[],
+  fieldName = "files",
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body = new FormData();
+  files.forEach((file) => body.append(fieldName, file));
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      detail = errorBody?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
+async function uploadFilesForDownload(
+  path: string,
+  files: File[],
+  fieldName = "files",
+): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body = new FormData();
+  files.forEach((file) => body.append(fieldName, file));
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      detail = errorBody?.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "data-analysis.xlsx";
+  return { blob: await res.blob(), filename: decodeURIComponent(rawName) };
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -369,6 +435,14 @@ export const api = {
     }),
   downloadWeReadExcel: async (rows: WeReadBookRow[]) => {
     const { blob, filename } = await downloadWithBody("/weread/export", { rows });
+    saveBlob(blob, filename);
+  },
+
+  // 数据分析
+  analyzeDataFiles: (files: File[]) =>
+    uploadFiles<DataAnalysisResponse>("/data-analysis/analyze", files),
+  downloadDataAnalysisExcelBatch: async (files: File[]) => {
+    const { blob, filename } = await uploadFilesForDownload("/data-analysis/export", files);
     saveBlob(blob, filename);
   },
 

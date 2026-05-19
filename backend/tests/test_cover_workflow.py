@@ -29,14 +29,16 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "整体温柔、孤独、可爱、有陪伴感。"
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
-LITERATURE_ILLUSTRATION_PROMPT = (
-    "文学类题材封面：文艺治愈系插画书封，像豆瓣高分文学与微信读书精选封面。"
-    "画面简洁，有留白与安静氛围。"
-    "可使用自然、城市、房间、旅行、人物、动物、植物、天空、海边等意象元素，不要堆砌。"
-    "平面插画风，轻微颗粒与纸张质感，色彩克制但有层次。"
-    "整体带一点孤独感、自由感、诗意与生活气息。"
-    "书名字体大而高级，偏文学感排版。"
-    "避免商业励志感、PPT感、信息图、廉价AI插画感。"
+LITERATURE_PUBLISHING_PROMPT = (
+    "文艺文学感书封，像豆瓣高分文学与微信读书精选封面。"
+    "现代出版设计风格，简洁、克制、有留白，不要古风小说海报感。"
+    "弱化剧情感与人物主体，强化氛围、平面构成与书籍气质。"
+    "可使用自然、城市、旅行、人物、植物、建筑、光影等意象元素，少而精。"
+    "平面插画或轻水彩质感，轻微颗粒与纸张肌理。"
+    "配色不要灰蒙蒙与做旧感，使用更有识别度和情绪感的颜色，颜色克制但能第一眼吸引人。"
+    "标题排版高级、稀疏、克制，像真正出版社的文学书设计，而不是AI书法字。"
+    "整体安静、诗意、有孤独感与呼吸感，同时保留现代感与视觉吸引力。"
+    "避免古风模板、避免影视海报感、避免晋江小说封面、避免厚重书法字、避免PPT感、避免廉价AI插画感。"
 )
 
 
@@ -59,7 +61,8 @@ def test_style_brief_locks_reference_site_and_brands() -> None:
 
     assert brief.reference_site.startswith("当当网")
     assert brief.reference_brands == ("酷威文化", "果麦文化", "时代华语")
-    assert "社会痛点" in brief.matched_category_style
+    assert "视觉冲击" in brief.matched_category_style
+    assert "高饱和" in brief.generation_prompt_addendum
     assert "时代华语" in brief.brand_style_direction
     assert "不要做成电商商品主图" in " ".join(brief.avoid_rules)
     assert {item["brand"] for item in brief.reference_samples} <= {"酷威文化", "果麦文化", "时代华语"}
@@ -68,9 +71,9 @@ def test_style_brief_locks_reference_site_and_brands() -> None:
 def test_draft_and_refine_prompts_enforce_publication_cover_not_ecommerce() -> None:
     prompt = cover.build_cover_prompt(
         "醒来以后",
-        "@最终简介\n一本帮助普通人处理焦虑和内耗的心理自助书。",
+        "@最终简介\n一本帮助普通人处理焦虑和内耗的高饱和插画封面测试书。",
         author="测试作者",
-        category="psychology_self_help",
+        category="illustration",
     )
 
     assert "酷威文化" in prompt
@@ -84,24 +87,44 @@ def test_draft_and_refine_prompts_enforce_publication_cover_not_ecommerce() -> N
     assert "参考出版社版本时也不能做得过黑过暗" in prompt
 
 
+def test_visual_impact_cover_uses_early_high_saturation_workflow() -> None:
+    cover_input = cover.prepare_cover_input(
+        "沉默的账单",
+        "@最终简介\n一本讨论普通人现实压力的社会痛点书。",
+        author="测试作者",
+        category="社会痛点",
+    )
+    brief = cover.build_cover_style_brief(cover_input)
+    prompt = cover.build_draft_cover_prompt(cover_input, brief)
+    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
+
+    assert cover_input.category == "social_science"
+    assert cover_input.category_label == "视觉冲击"
+    assert "早期封面 workflow" in brief.generation_prompt_addendum
+    assert "视觉冲击类封面" in prompt
+    assert "高饱和鲜艳" in prompt
+    assert "强对比、大色块、巨大标题" in prompt
+    assert "不要灰暗社科封面" in prompt
+    assert "高饱和鲜艳、第一眼抓人的视觉冲击类" in refine_prompt
+
+
 def test_all_cover_categories_have_prompt_adjustment_interface() -> None:
     for item in list_cover_categories():
         adjustment = cover.get_cover_category_prompt_adjustment(item["id"])
         assert set(adjustment) == {"style_brief_rules", "draft_rules", "refine_rules"}
 
 
-def test_cover_category_registry_only_exposes_requested_five_categories() -> None:
+def test_cover_category_registry_only_exposes_requested_four_categories() -> None:
     assert [(item["id"], item["label"]) for item in list_cover_categories()] == [
-        ("social_science", "社会痛点"),
-        ("psychology_self_help", "心理自助"),
-        ("illustration", "治愈插画"),
-        ("illustration_crayon", "治愈插画（蜡笔）"),
-        ("literature", "文学类"),
+        ("social_science", "视觉冲击"),
+        ("illustration", "饱和插画"),
+        ("illustration_crayon", "萌系治愈"),
+        ("literature", "正统出版"),
     ]
 
 
-def test_only_crayon_and_literature_have_dedicated_cover_prompts() -> None:
-    for category in ("social_science", "psychology_self_help", "illustration"):
+def test_saturated_illustration_reuses_generic_cover_prompt() -> None:
+    for category in ("illustration",):
         prompt = cover.build_cover_prompt(
             "普通封面",
             "@最终简介\n一本普通测试书。",
@@ -110,7 +133,8 @@ def test_only_crayon_and_literature_have_dedicated_cover_prompts() -> None:
         )
 
         assert CRAYON_ILLUSTRATION_PROMPT not in prompt
-        assert LITERATURE_ILLUSTRATION_PROMPT not in prompt
+        assert LITERATURE_PUBLISHING_PROMPT not in prompt
+        assert "视觉冲击类封面" not in prompt
 
 
 def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
@@ -125,7 +149,7 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
     adjustment = cover.get_cover_category_prompt_adjustment("illustration_crayon")
 
-    assert "治愈插画（蜡笔）" in prompt
+    assert "萌系治愈" in prompt
     assert CRAYON_ILLUSTRATION_PROMPT in brief.generation_prompt_addendum
     assert CRAYON_ILLUSTRATION_PROMPT in prompt
     assert CRAYON_ILLUSTRATION_PROMPT in refine_prompt
@@ -145,7 +169,7 @@ def test_crayon_illustration_category_has_dedicated_cover_prompt() -> None:
     assert "微信读书/得到系爆款风" not in prompt
     assert "排版要像成熟商业出版物" not in prompt
     assert "微信读书/得到系爆款风" not in refine_prompt
-    assert get_cover_category_meta("illustration_crayon")["label"] == "治愈插画（蜡笔）"
+    assert get_cover_category_meta("illustration_crayon")["label"] == "萌系治愈"
     assert any(item["id"] == "illustration_crayon" for item in list_cover_categories())
 
 
@@ -178,7 +202,7 @@ def test_crayon_illustration_uses_ai_visual_plan_before_generation(monkeypatch) 
 
     def fake_market_match(_cover_input: cover.CoverInput) -> cover.CoverMarketMatch:
         return cover.CoverMarketMatch(
-            category_label="治愈插画（蜡笔）",
+            category_label="萌系治愈",
             search_keywords="女性治愈 绘本",
             analysis="日韩治愈系绘本封面。",
             visual_plan=ai_plan,
@@ -235,6 +259,7 @@ def test_crayon_illustration_fallback_visual_plan_differs_by_book() -> None:
 def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
     aliases = [
         "illustration_crayon",
+        "萌系治愈",
         "治愈插画（蜡笔）",
         "治愈插画(蜡笔)",
         "治愈插画（蜡笔)",
@@ -255,7 +280,7 @@ def test_crayon_illustration_label_aliases_route_to_dedicated_prompt() -> None:
             category=alias,
         )
         assert cover_input.category == "illustration_crayon"
-        assert cover_input.category_label == "治愈插画（蜡笔）"
+        assert cover_input.category_label == "萌系治愈"
         assert CRAYON_ILLUSTRATION_PROMPT in prompt
 
 
@@ -265,7 +290,7 @@ def test_crayon_default_category_overrides_spreadsheet_row_category_for_prompt()
         "书名,作者,分类,简介\n慢慢好起来,作者A,心理自助,一本写给成年人情绪困境的温柔书\n".encode(
             "utf-8"
         ),
-        default_category="治愈插画（蜡笔）",
+        default_category="萌系治愈",
     )
     row = rows[0]
     prompt = cover.build_cover_prompt(
@@ -276,7 +301,7 @@ def test_crayon_default_category_overrides_spreadsheet_row_category_for_prompt()
     )
 
     assert row["category"] == "illustration_crayon"
-    assert row["category_label"] == "治愈插画（蜡笔）"
+    assert row["category_label"] == "萌系治愈"
     assert CRAYON_ILLUSTRATION_PROMPT in prompt
     assert "做成时代华语式心理自助书封面" not in prompt
 
@@ -291,13 +316,13 @@ def test_selected_cover_category_overrides_spreadsheet_row_category() -> None:
     )
 
     assert rows[0]["category"] == "social_science"
-    assert rows[0]["category_label"] == "社会痛点"
+    assert rows[0]["category_label"] == "视觉冲击"
 
 
 def test_cover_job_allows_same_title_and_author_reupload(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
     rows = [
-        {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"}
+        {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "视觉冲击"}
     ]
 
     first = cover_jobs.create_cover_job("user-1", "covers.csv", rows, default_category="social_science")
@@ -320,19 +345,19 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     adjustment = cover.get_cover_category_prompt_adjustment("literature")
 
     assert cover_input.category == "literature"
-    assert cover_input.category_label == "文学类"
-    assert LITERATURE_ILLUSTRATION_PROMPT in brief.generation_prompt_addendum
-    assert LITERATURE_ILLUSTRATION_PROMPT in prompt
-    assert LITERATURE_ILLUSTRATION_PROMPT in refine_prompt
-    assert adjustment["style_brief_rules"][0] == LITERATURE_ILLUSTRATION_PROMPT
-    assert adjustment["draft_rules"][0] == LITERATURE_ILLUSTRATION_PROMPT
-    assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_ILLUSTRATION_PROMPT}"
+    assert cover_input.category_label == "正统出版"
+    assert LITERATURE_PUBLISHING_PROMPT in brief.generation_prompt_addendum
+    assert LITERATURE_PUBLISHING_PROMPT in prompt
+    assert LITERATURE_PUBLISHING_PROMPT in refine_prompt
+    assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
+    assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
+    assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
     assert "豆瓣高分文学与微信读书精选封面" in prompt
-    assert "色彩克制但有层次" in prompt
-    assert "商业励志感" in prompt
+    assert "现代出版设计风格，简洁、克制、有留白" in prompt
+    assert "避免古风模板" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "高饱和、强识别" not in prompt
-    assert get_cover_category_meta("literature")["label"] == "文学类"
+    assert get_cover_category_meta("literature")["label"] == "正统出版"
 
 
 def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() -> None:
@@ -358,21 +383,33 @@ def test_illustration_cover_category_has_no_dedicated_prompt() -> None:
         author="测试作者",
         category="illustration",
     )
-    psychology_prompt = cover.build_cover_prompt(
-        "松弛地活",
-        "@最终简介\n一本帮助普通人处理焦虑和内耗的心理自助书。",
-        author="测试作者",
-        category="psychology_self_help",
-    )
 
-    assert "分类：治愈插画" in prompt
+    assert "分类：饱和插画" in prompt
     assert "做成时代华语式心理自助书封面" in prompt
     assert "治愈系手绘封面，日韩治愈插画风，图片避免抄袭和侵权。" not in prompt
     assert CRAYON_ILLUSTRATION_PROMPT not in prompt
-    assert LITERATURE_ILLUSTRATION_PROMPT not in prompt
-    assert get_cover_category_meta("illustration")["label"] == "治愈插画"
+    assert LITERATURE_PUBLISHING_PROMPT not in prompt
+    assert get_cover_category_meta("illustration")["label"] == "饱和插画"
     assert any(item["id"] == "illustration" for item in list_cover_categories())
-    assert "做成时代华语式心理自助书封面" in psychology_prompt
+
+
+def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
+    prompt = cover.build_cover_prompt(
+        "远方的光",
+        "@最终简介\n一本关于城市、旅行与孤独感的现代文学作品。",
+        author="测试作者",
+        category="文学",
+    )
+
+    assert get_cover_category_meta("literature")["label"] == "正统出版"
+    assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
+    assert "分类：正统出版" in prompt
+    assert "文艺文学感书封，像豆瓣高分文学与微信读书精选封面" in prompt
+    assert "现代出版设计风格，简洁、克制、有留白" in prompt
+    assert "弱化剧情感与人物主体" in prompt
+    assert "标题排版高级、稀疏、克制" in prompt
+    assert "避免古风模板、避免影视海报感、避免晋江小说封面" in prompt
+    assert "微信读书/得到系爆款风" not in prompt
 
 
 def test_generate_cover_file_writes_three_stage_artifacts(
@@ -398,7 +435,7 @@ def test_generate_cover_file_writes_three_stage_artifacts(
         "醒来以后",
         "@最终简介\n一本帮助普通人处理焦虑和内耗的心理自助书。",
         tmp_path,
-        category="psychology_self_help",
+        category="illustration",
         author="测试作者",
     )
 
@@ -440,7 +477,7 @@ def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
             "醒来以后",
             "@最终简介\n一本心理自助书。",
             tmp_path,
-            category="psychology_self_help",
+            category="illustration",
             author="测试作者",
         )
     except RuntimeError as exc:
@@ -478,7 +515,7 @@ def test_generate_cover_file_cancels_before_refine_without_extra_image_call(
             "醒来以后",
             "@最终简介\n一本心理自助书。",
             tmp_path,
-            category="psychology_self_help",
+            category="illustration",
             author="测试作者",
             should_abort=lambda: cancelled,
         )
@@ -642,7 +679,7 @@ def test_delete_cover_job_items_marks_single_cover_deleted(
         "user-1",
         "covers.csv",
         [
-            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "视觉冲击"},
             {"title": "第二本书", "author": "作者B", "category": "life_philosophy", "category_label": "人生哲学"},
         ],
         default_category="social_science",
@@ -671,7 +708,7 @@ def test_retry_cover_job_items_preserves_draft_and_requeues_failed_cover(
         "user-1",
         "covers.csv",
         [
-            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "视觉冲击"},
         ],
         default_category="social_science",
     )
@@ -702,8 +739,8 @@ def test_cover_job_zip_uses_title_names_without_leading_index(tmp_path: Path, mo
         "user-1",
         "covers.csv",
         [
-            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
-            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "社会痛点"},
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "视觉冲击"},
+            {"title": "第一本书", "author": "作者A", "category": "social_science", "category_label": "视觉冲击"},
         ],
         default_category="social_science",
     )
@@ -733,7 +770,7 @@ def test_cover_job_advances_multiple_items_concurrently_without_image_api(
         "user-1",
         "covers.csv",
         [
-            {"title": f"第{i}本书", "author": "作者A", "category": "illustration_crayon", "category_label": "治愈插画（蜡笔）"}
+            {"title": f"第{i}本书", "author": "作者A", "category": "illustration_crayon", "category_label": "萌系治愈"}
             for i in range(1, 7)
         ],
         default_category="illustration_crayon",
@@ -788,7 +825,7 @@ def test_cover_job_processes_large_uploads_in_bounded_batches(
                 "title": f"批量书 {i}",
                 "author": "作者A",
                 "category": "illustration_crayon",
-                "category_label": "治愈插画（蜡笔）",
+                "category_label": "萌系治愈",
             }
             for i in range(1, 6)
         ],
@@ -827,7 +864,7 @@ def test_cover_job_deleted_item_cancels_without_requeue(
         "user-1",
         "covers.csv",
         [
-            {"title": "第一本书", "author": "作者A", "category": "illustration_crayon", "category_label": "治愈插画（蜡笔）"}
+            {"title": "第一本书", "author": "作者A", "category": "illustration_crayon", "category_label": "萌系治愈"}
         ],
         default_category="illustration_crayon",
     )
@@ -867,7 +904,7 @@ def test_stale_cover_job_returns_processing_items_to_queue(
                 "title": "迟迟不结束的书",
                 "author": "作者A",
                 "category": "illustration_crayon",
-                "category_label": "治愈插画（蜡笔）",
+                "category_label": "萌系治愈",
             }
         ],
         default_category="illustration_crayon",

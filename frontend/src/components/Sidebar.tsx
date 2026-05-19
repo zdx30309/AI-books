@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { LayoutGrid, BookMarked, FileSpreadsheet, User, LogOut, Images } from "lucide-react";
+import { LayoutGrid, BookMarked, FileSpreadsheet, BarChart3, User, LogOut, Images } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
 
 const navItems = [
@@ -7,6 +7,7 @@ const navItems = [
   { to: "/bookshelf", label: "书架", icon: BookMarked, end: false },
   { to: "/covers", label: "封面书架", icon: Images, end: false },
   { to: "/weread", label: "推荐值工具", icon: FileSpreadsheet, end: false },
+  { to: "/data-analysis", label: "数据分析", icon: BarChart3, end: false },
   { to: "/profile", label: "个人中心", icon: User, end: false },
 ];
 
