@@ -11,6 +11,7 @@ import { CoverBookshelf } from "./pages/CoverBookshelf";
 import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { WeReadTool } from "./pages/WeReadTool";
+import { DataAnalysis } from "./pages/DataAnalysis";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -79,6 +80,16 @@ export default function App() {
             <ProtectedRoute>
               <AppShell>
                 <WeReadTool />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-analysis"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <DataAnalysis />
               </AppShell>
             </ProtectedRoute>
           }
