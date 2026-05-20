@@ -189,6 +189,11 @@ def generate_comic_section_images(
     image_dir = output_dir / "comic_images"
     results = plan_comic_section_images(phrases, output_dir, title=title)
     total = len(results)
+
+    def _mark_remaining_pending(start: int, reason: str) -> None:
+        for rest in range(start, total):
+            results[rest] = replace(results[rest], status="pending", error=reason)
+
     for offset, image in enumerate(results):
         response_path = image_dir / f"comic_section_{image.index:02d}_response.json"
         uncertain_path = image_dir / f"comic_section_{image.index:02d}_uncertain.json"
@@ -205,7 +210,11 @@ def generate_comic_section_images(
             if not allow_uncertain:
                 _write_manifest(image_dir, results)
                 raise ImageApiUncertainError(message)
-            continue
+            _mark_remaining_pending(
+                offset + 1,
+                "Skipped after an uncertain image request to avoid duplicate billing.",
+            )
+            break
         try:
             generate_image_file_from_prompt(
                 image.prompt,
@@ -237,6 +246,13 @@ def generate_comic_section_images(
             if not allow_uncertain:
                 _write_manifest(image_dir, results)
                 raise
+            if on_progress is not None:
+                on_progress(image.index, total)
+            _mark_remaining_pending(
+                offset + 1,
+                "Skipped after an uncertain image request to avoid duplicate billing.",
+            )
+            break
         results[offset] = image
         if on_progress is not None:
             on_progress(image.index, total)
