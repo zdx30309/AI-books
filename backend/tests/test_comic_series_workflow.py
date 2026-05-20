@@ -49,6 +49,10 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "第一辑 / 共" not in prompt
     assert "画面中绝对不要出现" in prompt
     assert "章节顺序" in prompt
+    assert "日本成年人绘本" in prompt
+    assert "成人治愈出版气质" in prompt
+    assert "儿童绘本封面" not in prompt
+    assert "原创 Q 版" not in prompt
     assert "其他图片和书架封面保持统一画风" in prompt
     assert "全系列图片" in prompt
     assert "同一视觉系统" in prompt
