@@ -70,6 +70,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [candidateLinks, setCandidateLinks] = useState("");
+  const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [category, setCategory] = useState("social_science");
   const [styleReference, setStyleReference] = useState("");
@@ -96,6 +97,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setCandidateLinks("");
+      setComicPrefacePhrase("");
       setComicPhraseInput("");
       setCategory("social_science");
       setStyleReference("");
@@ -170,6 +172,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const submit = async () => {
     setError(null);
     if (mode === "comic") {
+      const cleanedPrefacePhrase = comicPrefacePhrase.trim().slice(0, 120);
+      if (!cleanedPrefacePhrase) {
+        setError("漫画系列需要输入 1 条文前短语");
+        return;
+      }
       if (comicPhrases.length !== 5 && comicPhrases.length !== 6) {
         setError(`漫画系列需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
         return;
@@ -178,6 +185,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       try {
         const config: Record<string, unknown> = {
           category: "comic_series",
+          comic_preface_phrase: cleanedPrefacePhrase,
           comic_phrases: comicPhrases,
           raw_text: comicPhrases.join("\n"),
         };
@@ -548,41 +556,70 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               )}
             </>
           ) : mode === "comic" ? (
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <label
-                  htmlFor="comic-phrases"
-                  className="block text-[11px] tracking-widest text-warm-300"
-                >
-                  漫画短语
-                </label>
-                <span
-                  className={`text-[10px] tracking-widest ${
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="comic-preface-phrase"
+                    className="block text-[11px] tracking-widest text-warm-300"
+                  >
+                    文前短语
+                  </label>
+                  <span
+                    className={`text-[10px] tracking-widest ${
+                      comicPrefacePhrase.trim() ? "text-gold-300" : "text-warm-500"
+                    }`}
+                  >
+                    {Math.min(comicPrefacePhrase.trim().length, 120)}/120
+                  </span>
+                </div>
+                <input
+                  id="comic-preface-phrase"
+                  value={comicPrefacePhrase}
+                  onChange={(e) => setComicPrefacePhrase(e.target.value.slice(0, 120))}
+                  placeholder="今晚，月亮把安静放在窗边。"
+                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+                <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                  文前短语会先生成一张同系列横图，随后进入文前正文。
+                </p>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="comic-phrases"
+                    className="block text-[11px] tracking-widest text-warm-300"
+                  >
+                    正文短语
+                  </label>
+                  <span
+                    className={`text-[10px] tracking-widest ${
+                      comicPhrases.length === 5 || comicPhrases.length === 6
+                        ? "text-gold-300"
+                        : "text-warm-500"
+                    }`}
+                  >
+                    {comicPhrases.length}/6
+                  </span>
+                </div>
+                <textarea
+                  id="comic-phrases"
+                  value={comicPhraseInput}
+                  onChange={(e) => setComicPhraseInput(e.target.value)}
+                  placeholder={"每行一条正文短语，输入 5 或 6 条\n今晚，月亮放下了手里的活。\n我们也把心事晾在窗台。\n什么都不必赶。"}
+                  rows={7}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+                <p
+                  className={`mt-2 text-xs leading-relaxed ${
                     comicPhrases.length === 5 || comicPhrases.length === 6
-                      ? "text-gold-300"
-                      : "text-warm-500"
+                      ? "text-warm-500"
+                      : "text-gold-200"
                   }`}
                 >
-                  {comicPhrases.length}/6
-                </span>
+                  文前 1 条，正文 5 或 6 条；当前正文识别到 {comicPhrases.length} 条。
+                </p>
               </div>
-              <textarea
-                id="comic-phrases"
-                value={comicPhraseInput}
-                onChange={(e) => setComicPhraseInput(e.target.value)}
-                placeholder={"每行一条短语，输入 5 或 6 条\n今晚，月亮放下了手里的活。\n我们也把心事晾在窗台。\n什么都不必赶。"}
-                rows={8}
-                className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
-              />
-              <p
-                className={`mt-2 text-xs leading-relaxed ${
-                  comicPhrases.length === 5 || comicPhrases.length === 6
-                    ? "text-warm-500"
-                    : "text-gold-200"
-                }`}
-              >
-                系统会按短语生成第一辑至第六辑；当前识别到 {comicPhrases.length} 条。
-              </p>
             </div>
           ) : (
             <div>

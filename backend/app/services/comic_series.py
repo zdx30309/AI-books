@@ -49,9 +49,16 @@ from app.services.comic_prompts import (  # noqa: E402
 )
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.、．)]|第[一二三四五六]辑[：:、.]?)\s*")
-_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\((?:comic_images/)?(comic_section_\d{2}\.png)\)")
+COMIC_PREFACE_IMAGE_PLACEHOLDER = "{{COMIC_PREFACE_IMAGE}}"
+COMIC_PREFACE_IMAGE_FILENAME = "comic_preface.png"
+
+_IMAGE_MARKDOWN_RE = re.compile(
+    r"!\[([^\]]*)\]\((?:comic_images/)?(comic_preface\.png|comic_section_\d{2}\.png)\)"
+)
 _PLACEHOLDER_RE = re.compile(r"\{\{COMIC_IMAGE_(\d{1,2})\}\}")
+_PREFACE_PLACEHOLDER_RE = re.compile(r"\{\{COMIC_PREFACE_IMAGE\}\}")
 _SECTION_RE = re.compile(r"(?m)^@\s*(\d+)\.\s*(.+?)\s*$")
+_PREFACE_SECTION_RE = re.compile(r"(?m)^@\s*文前\s*$")
 
 _ANIMALS = (
     ("小熊", "圆滚滚的小熊，背影和正面都很憨，适合表达慢慢来和陪伴感"),
@@ -101,13 +108,42 @@ def validate_comic_phrases(phrases: list[str]) -> None:
         raise ValueError(f"漫画系列需要输入 5 或 6 条短语，当前识别到 {len(phrases)} 条")
 
 
+def parse_comic_preface_phrase(value: object) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    first = raw.split("\n", 1)[0]
+    first = re.sub(r"^\s*(?:文前|前言|序言|开场)\s*[：:、.．)]\s*", "", first).strip()
+    return first.strip(" \t，,。；;")[:120]
+
+
+def parse_comic_input(value: object) -> tuple[str, list[str]]:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    preface = ""
+    body_lines: list[str] = []
+    for raw in text.split("\n"):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        preface_match = re.match(r"^(?:文前|前言|序言|开场)\s*(?:短语)?\s*[：:]\s*(.+?)\s*$", stripped)
+        if preface_match and not preface:
+            preface = parse_comic_preface_phrase(preface_match.group(1))
+            continue
+        body_lines.append(raw)
+    return preface, parse_comic_phrases(body_lines)
+
+
 def comic_section_title(index: int) -> str:
     names = ("第一辑", "第二辑", "第三辑", "第四辑", "第五辑", "第六辑")
     return names[index - 1] if 1 <= index <= len(names) else f"第{index}辑"
 
 
-def comic_raw_text_from_phrases(phrases: list[str]) -> str:
-    return "\n".join(f"{comic_section_title(index)}：{phrase}" for index, phrase in enumerate(phrases, start=1))
+def comic_raw_text_from_phrases(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+    lines: list[str] = []
+    if preface_phrase:
+        lines.append(f"文前短语：{preface_phrase.strip()[:120]}")
+    lines.extend(f"{comic_section_title(index)}：{phrase}" for index, phrase in enumerate(phrases, start=1))
+    return "\n".join(lines)
 
 
 def _animal_for(index: int) -> tuple[str, str]:
@@ -142,17 +178,65 @@ def build_comic_image_prompt(
     return prompt.strip(), animal, subject
 
 
+def build_comic_preface_image_prompt(
+    *,
+    phrase: str,
+    title: str | None = None,
+) -> tuple[str, str, str]:
+    animal = "小熊和小猫"
+    subject = "原创 Q 版动物伙伴坐在窗边或安静房间里，适合作为整本漫画系列的开场画面"
+    display_title = (title or phrase).strip()[:18]
+    prompt = f"""{COMIC_IMAGE_PROMPT}
+
+【文前开场信息】
+- 本图用途：同一漫画系列的文前横图，也可作为书架封面候选；用途信息只供内部生成参考，不得写进画面。
+- 创作者文前短语：{phrase}
+- 画面标题文字：{display_title}
+- 画面主体：原创 Q 版{animal}。{subject}。
+
+【统一系列要求】
+{COMIC_SERIES_STYLE_BIBLE}
+请让这张文前横图与正文图片和书架封面保持同一视觉系统：统一画风、统一线条、统一颗粒质感、统一角色比例和统一童趣出版气质。
+画面中绝对不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
+
+【版权与安全】
+{COMIC_COPYRIGHT_RULE}
+"""
+    return prompt.strip(), animal, subject
+
+
 def plan_comic_section_images(
     phrases: list[str],
     output_dir: Path,
     *,
     title: str | None = None,
+    preface_phrase: str | None = None,
 ) -> list[ComicSectionImage]:
     validate_comic_phrases(phrases)
     image_dir = output_dir / "comic_images"
     image_dir.mkdir(parents=True, exist_ok=True)
     total = len(phrases)
     results: list[ComicSectionImage] = []
+    cleaned_preface = parse_comic_preface_phrase(preface_phrase)
+    if cleaned_preface:
+        prompt, animal, subject = build_comic_preface_image_prompt(
+            phrase=cleaned_preface,
+            title=title,
+        )
+        path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
+        (image_dir / "comic_preface_prompt.txt").write_text(prompt, encoding="utf-8")
+        results.append(
+            ComicSectionImage(
+                index=0,
+                phrase=cleaned_preface,
+                title="文前",
+                animal=animal,
+                subject=subject,
+                prompt=prompt,
+                filename=COMIC_PREFACE_IMAGE_FILENAME,
+                path=path,
+            )
+        )
     for index, phrase in enumerate(phrases, start=1):
         prompt, animal, subject = build_comic_image_prompt(
             phrase=phrase,
@@ -186,10 +270,16 @@ def generate_comic_section_images(
     title: str | None = None,
     force: bool = False,
     allow_uncertain: bool = False,
+    preface_phrase: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ComicSectionImage]:
     image_dir = output_dir / "comic_images"
-    results = plan_comic_section_images(phrases, output_dir, title=title)
+    results = plan_comic_section_images(
+        phrases,
+        output_dir,
+        title=title,
+        preface_phrase=preface_phrase,
+    )
     total = len(results)
 
     def _mark_remaining_pending(start: int, reason: str) -> None:
@@ -197,8 +287,9 @@ def generate_comic_section_images(
             results[rest] = replace(results[rest], status="pending", error=reason)
 
     for offset, image in enumerate(results):
-        response_path = image_dir / f"comic_section_{image.index:02d}_response.json"
-        uncertain_path = image_dir / f"comic_section_{image.index:02d}_uncertain.json"
+        stem = "comic_preface" if image.index == 0 else f"comic_section_{image.index:02d}"
+        response_path = image_dir / f"{stem}_response.json"
+        uncertain_path = image_dir / f"{stem}_uncertain.json"
         if uncertain_path.exists() and not image.path.exists() and not force:
             try:
                 marker = json.loads(uncertain_path.read_text(encoding="utf-8"))
@@ -208,7 +299,7 @@ def generate_comic_section_images(
             image = replace(image, status="uncertain", error=message)
             results[offset] = image
             if on_progress is not None:
-                on_progress(image.index, total)
+                on_progress(offset + 1, total)
             if not allow_uncertain:
                 _write_manifest(image_dir, results)
                 raise ImageApiUncertainError(message)
@@ -235,7 +326,7 @@ def generate_comic_section_images(
                         "index": image.index,
                         "phrase": image.phrase,
                         "filename": image.filename,
-                        "prompt_path": f"comic_section_{image.index:02d}_prompt.txt",
+                        "prompt_path": f"{stem}_prompt.txt",
                         "error": message,
                     },
                     ensure_ascii=False,
@@ -249,7 +340,7 @@ def generate_comic_section_images(
                 _write_manifest(image_dir, results)
                 raise
             if on_progress is not None:
-                on_progress(image.index, total)
+                on_progress(offset + 1, total)
             _mark_remaining_pending(
                 offset + 1,
                 "Skipped after an uncertain image request to avoid duplicate billing.",
@@ -257,7 +348,7 @@ def generate_comic_section_images(
             break
         results[offset] = image
         if on_progress is not None:
-            on_progress(image.index, total)
+            on_progress(offset + 1, total)
     _write_manifest(image_dir, results)
     return results
 
@@ -278,6 +369,8 @@ def _manifest_item(image: ComicSectionImage) -> dict[str, object]:
 
 
 def build_comic_writer_input(phrases: list[str], images: list[ComicSectionImage]) -> str:
+    preface_image = next((image for image in images if image.index == 0), None)
+    section_images = [image for image in images if image.index > 0]
     lines = [
         f"本漫画系列共 {len(phrases)} 辑。",
         "请严格保留下列每一辑的短语、图像占位符和封面主体设定。",
@@ -285,7 +378,17 @@ def build_comic_writer_input(phrases: list[str], images: list[ComicSectionImage]
         "故事内容要默认正文配图和书架封面都属于同一套绘本系列，角色比例、线条、颗粒质感和温柔童趣气质保持一致。",
         "",
     ]
-    for image in images:
+    if preface_image is not None:
+        lines.extend(
+            [
+                "文前",
+                f"文前短语：{preface_image.phrase}",
+                f"文前图像占位符：{COMIC_PREFACE_IMAGE_PLACEHOLDER}",
+                f"文前画面主体设定：原创 Q 版{preface_image.animal}，{preface_image.subject}",
+                "",
+            ]
+        )
+    for image in section_images:
         lines.extend(
             [
                 f"{image.title}",
@@ -301,6 +404,10 @@ def build_comic_writer_input(phrases: list[str], images: list[ComicSectionImage]
 def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
     result = markdown
     image_by_index = {image.index: image for image in images}
+    preface_image = image_by_index.get(0)
+
+    if preface_image is not None:
+        result = _PREFACE_PLACEHOLDER_RE.sub(preface_image.markdown, result)
 
     def _replace_placeholder(match: re.Match[str]) -> str:
         index = int(match.group(1))
@@ -312,8 +419,29 @@ def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
     for image in images:
         if image.filename in result:
             continue
-        result = _insert_image_after_section_phrase(result, image)
+        if image.index == 0:
+            result = _insert_preface_image(result, image)
+        else:
+            result = _insert_image_after_section_phrase(result, image)
     return result
+
+
+def _insert_preface_image(markdown: str, image: ComicSectionImage) -> str:
+    match = _PREFACE_SECTION_RE.search(markdown)
+    if not match:
+        return markdown.rstrip() + f"\n\n{image.markdown}\n"
+    start = match.end()
+    body_match = re.search(r"(?m)^@\s*正文\s*$", markdown[start:])
+    end = start + body_match.start() if body_match else len(markdown)
+    block = markdown[start:end]
+    lines = block.splitlines()
+    insert_at = 1
+    for idx, line in enumerate(lines):
+        if "短语" in line or image.phrase in line:
+            insert_at = idx + 1
+            break
+    lines.insert(insert_at, image.markdown)
+    return markdown[:start] + "\n".join(lines) + markdown[end:]
 
 
 def _insert_image_after_section_phrase(markdown: str, image: ComicSectionImage) -> str:
@@ -345,16 +473,21 @@ def image_filename_from_markdown(line: str) -> str | None:
 __all__ = [
     "COMIC_COPYRIGHT_RULE",
     "COMIC_IMAGE_PROMPT",
+    "COMIC_PREFACE_IMAGE_FILENAME",
+    "COMIC_PREFACE_IMAGE_PLACEHOLDER",
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
     "ComicSectionImage",
     "build_comic_image_prompt",
+    "build_comic_preface_image_prompt",
     "build_comic_writer_input",
     "comic_raw_text_from_phrases",
     "generate_comic_section_images",
     "image_filename_from_markdown",
     "inject_comic_images",
+    "parse_comic_input",
     "parse_comic_phrases",
+    "parse_comic_preface_phrase",
     "plan_comic_section_images",
     "validate_comic_phrases",
 ]

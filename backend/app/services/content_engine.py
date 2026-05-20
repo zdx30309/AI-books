@@ -1061,23 +1061,37 @@ async def _generate_comic_series_book(
         build_comic_writer_input,
         generate_comic_section_images,
         inject_comic_images,
+        parse_comic_input,
         parse_comic_phrases,
         plan_comic_section_images,
         validate_comic_phrases,
     )
 
-    phrases = parse_comic_phrases(raw_text)
+    preface_phrase, phrases = parse_comic_input(raw_text)
+    if not phrases:
+        phrases = parse_comic_phrases(raw_text)
     validate_comic_phrases(phrases)
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "00_comic_phrases.json").write_text(
-            json.dumps(phrases, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "preface_phrase": preface_phrase,
+                    "phrases": phrases,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
     if output_dir is None:
         raise ValueError("漫画系列需要 output_dir 以保存每一辑配图")
-    images = plan_comic_section_images(phrases, output_dir)
+    images = plan_comic_section_images(
+        phrases,
+        output_dir,
+        preface_phrase=preface_phrase,
+    )
     writer_input = build_comic_writer_input(phrases, images)
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
@@ -1158,7 +1172,7 @@ async def _generate_comic_series_book(
             on_stage("refine_done", {"chars": len(refined_markdown)})
 
     if on_stage:
-        on_stage("comic_images_start", {"total": len(phrases)})
+        on_stage("comic_images_start", {"total": len(images)})
 
     def _image_progress(index: int, total: int) -> None:
         if on_stage:
@@ -1169,6 +1183,7 @@ async def _generate_comic_series_book(
         phrases,
         output_dir,
         allow_uncertain=True,
+        preface_phrase=preface_phrase,
         on_progress=_image_progress,
     )
 

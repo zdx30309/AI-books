@@ -27,6 +27,11 @@ def test_comic_series_requires_five_or_six_phrases() -> None:
         "今晚月亮很忙",
         "云路过窗外",
     ]
+    preface, phrases = comic_series.parse_comic_input(
+        "文前短语：想和你一起发会儿呆。\n第一辑：今晚月亮很忙\n第二辑：云路过窗外"
+    )
+    assert preface == "想和你一起发会儿呆"
+    assert phrases == ["今晚月亮很忙", "云路过窗外"]
     with pytest.raises(ValueError):
         comic_series.validate_comic_phrases(["只有一条"])
 
@@ -62,13 +67,16 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
             "明天会从杯底发芽。",
         ]
     )
+    preface_phrase = "想和你一起发会儿呆。"
     writer_prompts: list[str] = []
+    image_prompts: list[str] = []
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
         assert "避免" in prompt
         assert "系列进度" not in prompt
         assert "第一辑 / 共" not in prompt
         assert "画面中绝对不要出现" in prompt
+        image_prompts.append(prompt)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
         return output_path
@@ -80,6 +88,8 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
 @最终简介
 五辑治愈漫画绘本。
 @文前
+文前短语：想和你一起发会儿呆。
+{{COMIC_PREFACE_IMAGE}}
 想和你一起发会儿呆。
 @正文
 @1. 第一辑
@@ -119,18 +129,27 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     output_dir = tmp_path / "comic_series"
     result = asyncio.run(
         content_engine.generate_full_book(
-            raw_text,
+            comic_series.comic_raw_text_from_phrases(
+                comic_series.parse_comic_phrases(raw_text),
+                preface_phrase=preface_phrase,
+            ),
             category="comic_series",
             output_dir=output_dir,
         )
     )
 
     assert writer_prompts and "{{COMIC_IMAGE_1}}" in writer_prompts[0]
+    assert "{{COMIC_PREFACE_IMAGE}}" in writer_prompts[0]
+    assert len(image_prompts) == 6
     assert "@目录" not in result
+    assert "{{COMIC_PREFACE_IMAGE}}" not in result
     assert "{{COMIC_IMAGE_1}}" not in result
     assert "![第一辑配图]" not in result
+    assert "![配图](comic_images/comic_preface.png)" in result
     assert "![配图](comic_images/comic_section_01.png)" in result
+    assert "comic_images/comic_preface.png" in result
     assert "comic_images/comic_section_01.png" in result
+    assert (output_dir / "comic_images" / "comic_preface.png").exists()
     assert (output_dir / "comic_images" / "comic_section_01.png").exists()
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
 
@@ -206,9 +225,12 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
 def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:
     image_dir = tmp_path / "comic_images"
     image_dir.mkdir()
+    (image_dir / "comic_preface.png").write_bytes(PNG_1X1)
     (image_dir / "comic_section_01.png").write_bytes(PNG_1X1)
 
     data = _markdown_to_docx(
+        "@文前\n文前短语：想和你一起发会儿呆。\n"
+        "![配图](comic_images/comic_preface.png)\n想和你一起发会儿呆。\n"
         "@正文\n@1. 第一辑\n短语：今晚月亮放下了手里的活。\n"
         "![配图](comic_images/comic_section_01.png)\n小熊说：No rush.\n",
         image_base_dir=tmp_path,
@@ -216,7 +238,9 @@ def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(BytesIO(data)) as docx:
         assert "word/media/image1.png" in docx.namelist()
+        assert "word/media/image2.png" in docx.namelist()
         assert "word/_rels/document.xml.rels" in docx.namelist()
         document_xml = docx.read("word/document.xml")
         assert b"rIdImage1" in document_xml
+        assert b"rIdImage2" in document_xml
         assert b"![" not in document_xml

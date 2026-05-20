@@ -844,14 +844,16 @@ def process_video(_self, task_id: str) -> dict:
         )
         _clear_task_run(task, run_id)
         if category == "comic_series":
-            first_comic_image = output_dir / "comic_images" / "comic_section_01.png"
-            if first_comic_image.exists():
+            comic_cover_image = output_dir / "comic_images" / "comic_preface.png"
+            if not comic_cover_image.exists():
+                comic_cover_image = output_dir / "comic_images" / "comic_section_01.png"
+            if comic_cover_image.exists():
                 _patch_config(
                     task,
                     cover_disabled=False,
                     cover_status="completed",
                     cover_error=None,
-                    cover_path=str(first_comic_image),
+                    cover_path=str(comic_cover_image),
                     cover_completed_at=datetime.now(timezone.utc).isoformat(),
                 )
                 task.cover_url = f"/api/v1/tasks/{task.id}/cover"

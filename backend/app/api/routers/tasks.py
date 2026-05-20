@@ -29,7 +29,13 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
-from app.services.comic_series import image_filename_from_markdown, parse_comic_phrases, validate_comic_phrases
+from app.services.comic_series import (
+    comic_raw_text_from_phrases,
+    image_filename_from_markdown,
+    parse_comic_phrases,
+    parse_comic_preface_phrase,
+    validate_comic_phrases,
+)
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -191,12 +197,21 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("style_notes", None)
     if category == "comic_series":
         phrases = parse_comic_phrases(cfg.get("comic_phrases") or cfg.get("raw_text") or "")
+        preface_phrase = parse_comic_preface_phrase(
+            cfg.get("comic_preface_phrase") or cfg.get("preface_phrase") or ""
+        )
+        if not preface_phrase:
+            raise HTTPException(status_code=400, detail="漫画系列需要输入 1 条文前短语")
         try:
             validate_comic_phrases(phrases)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cfg["comic_preface_phrase"] = preface_phrase
         cfg["comic_phrases"] = phrases
-        cfg["raw_text"] = "\n".join(phrases)
+        cfg["raw_text"] = comic_raw_text_from_phrases(
+            phrases,
+            preface_phrase=preface_phrase,
+        )
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     return cfg
 
@@ -287,7 +302,7 @@ def _task_cover_path(task: Task) -> Path | None:
 
 
 def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:
-    if not re.fullmatch(r"comic_section_\d{2}\.png", filename):
+    if not re.fullmatch(r"(?:comic_preface|comic_section_\d{2})\.png", filename):
         return None
     path = (_task_output_dir(task_id) / "comic_images" / filename).resolve()
     output_dir = _task_output_dir(task_id).resolve()
