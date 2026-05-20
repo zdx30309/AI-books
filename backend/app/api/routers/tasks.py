@@ -1091,11 +1091,58 @@ def _docx_image_paragraph(*, rel_id: str, filename: str, alt: str, doc_pr_id: in
     )
 
 
-def _markdown_to_docx(markdown: str, *, image_base_dir: Path | None = None) -> bytes:
+_DOCX_FRONT_SECTION_RE = re.compile(
+    r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|正文)\s*$"
+)
+_DOCX_NUMBERED_LINE_RE = re.compile(r"^(@?\s*)?\d+[.．、]\s*(.+?)\s*$")
+
+
+def _docx_category(markdown_category: str | None) -> str:
+    try:
+        return normalize_category(str(markdown_category or ""))
+    except ValueError:
+        return ""
+
+
+def _classical_chinese_docx_lines(markdown: str) -> list[str]:
+    lines: list[str] = []
+    skipping_intro = False
+    for raw_line in normalize_final_markdown(markdown, category="classical_chinese").splitlines():
+        stripped = raw_line.strip()
+        section = _DOCX_FRONT_SECTION_RE.match(stripped)
+        if section:
+            section_name = section.group(1)
+            if section_name == "导言":
+                skipping_intro = True
+                continue
+            skipping_intro = False
+            lines.append(raw_line)
+            continue
+        if skipping_intro:
+            continue
+        numbered = _DOCX_NUMBERED_LINE_RE.match(raw_line)
+        if numbered:
+            raw_line = (numbered.group(2) or "").strip()
+            if not raw_line:
+                continue
+        lines.append(raw_line)
+    return lines
+
+
+def _markdown_to_docx(
+    markdown: str,
+    *,
+    image_base_dir: Path | None = None,
+    category: str | None = None,
+) -> bytes:
     """Build a minimal .docx, embedding comic images when markdown references them."""
     paragraphs: list[str] = []
     image_entries: list[tuple[str, Path]] = []
-    for line in normalize_final_markdown(markdown).splitlines():
+    if _docx_category(category) == "classical_chinese":
+        docx_lines = _classical_chinese_docx_lines(markdown)
+    else:
+        docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
+    for line in docx_lines:
         image_filename = image_filename_from_markdown(line)
         image_path = None
         if image_filename and image_base_dir is not None:
@@ -1579,11 +1626,16 @@ def _build_batch_download_response(
             md = _read_task_markdown(db, task)
             if not md:
                 continue
+            category = str((task.config or {}).get("category") or "")
             if fmt == "docx":
-                content = _markdown_to_docx(md, image_base_dir=_task_output_dir(task.id))
+                content = _markdown_to_docx(
+                    md,
+                    image_base_dir=_task_output_dir(task.id),
+                    category=category,
+                )
                 filename = _safe_download_name(task, "docx")
             else:
-                content = normalize_final_markdown(md)
+                content = normalize_final_markdown(md, category=category)
                 filename = _safe_download_name(task, "md")
             archive.writestr(_unique_zip_name(filename, used_names), content)
             written += 1
@@ -1689,12 +1741,17 @@ def download_markdown(
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
+    category = str((task.config or {}).get("category") or "")
     if fmt == "docx" or fmt == "txt":
-        content = _markdown_to_docx(md, image_base_dir=_task_output_dir(task.id))
+        content = _markdown_to_docx(
+            md,
+            image_base_dir=_task_output_dir(task.id),
+            category=category,
+        )
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(task, "docx")
     else:
-        content = normalize_final_markdown(md)
+        content = normalize_final_markdown(md, category=category)
         media_type = "text/markdown; charset=utf-8"
         filename = _safe_download_name(task, "md")
     encoded_filename = quote(filename)

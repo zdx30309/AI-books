@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from html import unescape
+from io import BytesIO
+from pathlib import Path
+import re
+import sys
+import zipfile
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.api.routers.tasks import _markdown_to_docx
+
+
+def _docx_text(content: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(content)) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+    parts = re.findall(r"<w:t[^>]*>(.*?)</w:t>", document_xml)
+    return "\n".join(unescape(part) for part in parts)
+
+
+def test_classical_docx_download_removes_intro_and_number_prefixes() -> None:
+    markdown = """@最终书名
+盐铁论白话
+@最终简介
+一本文言白话稿。
+@目录
+1. 本议起处
+2、群臣之辩
+@导言
+这段导言不应进入下载 Word。
+它的第二段也不应进入。
+@正文
+@1. 本议起处
+这里是第一章正文。
+@2、群臣之辩
+这里是第二章正文。
+"""
+
+    text = _docx_text(_markdown_to_docx(markdown, category="classical_chinese"))
+
+    assert "导言" not in text
+    assert "这段导言不应进入下载 Word" not in text
+    assert "1. 本议起处" not in text
+    assert "2、群臣之辩" not in text
+    assert "@1." not in text
+    assert "@2、" not in text
+    assert "本议起处" in text
+    assert "群臣之辩" in text
+    assert "这里是第一章正文" in text
+    assert "这里是第二章正文" in text
+
+
+def test_non_classical_docx_download_keeps_intro_and_number_prefixes() -> None:
+    markdown = """@最终书名
+测试书名
+@目录
+1. 第一章
+@导言
+普通分类导言保留。
+@正文
+@1. 第一章
+正文。
+"""
+
+    text = _docx_text(_markdown_to_docx(markdown, category="social_science"))
+
+    assert "导言" in text
+    assert "普通分类导言保留" in text
+    assert "@1. 第一章" in text
