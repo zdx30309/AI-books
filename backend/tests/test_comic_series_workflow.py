@@ -31,6 +31,24 @@ def test_comic_series_requires_five_or_six_phrases() -> None:
         comic_series.validate_comic_phrases(["只有一条"])
 
 
+def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> None:
+    prompt, animal, subject = comic_series.build_comic_image_prompt(
+        phrase="今晚月亮放下了手里的活。",
+        index=1,
+        total=5,
+    )
+
+    assert animal and subject
+    assert "系列进度" not in prompt
+    assert "第一辑" not in prompt
+    assert "第一辑 / 共" not in prompt
+    assert "画面中绝对不要出现" in prompt
+    assert "章节顺序" in prompt
+    assert "其他图片和书架封面保持统一画风" in prompt
+    assert "全系列图片" in prompt
+    assert "同一视觉系统" in prompt
+
+
 def test_comic_series_generates_images_and_skips_deepseek_format(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -48,6 +66,9 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
         assert "避免" in prompt
+        assert "系列进度" not in prompt
+        assert "第一辑 / 共" not in prompt
+        assert "画面中绝对不要出现" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
         return output_path
@@ -107,6 +128,8 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert writer_prompts and "{{COMIC_IMAGE_1}}" in writer_prompts[0]
     assert "@目录" not in result
     assert "{{COMIC_IMAGE_1}}" not in result
+    assert "![第一辑配图]" not in result
+    assert "![配图](comic_images/comic_section_01.png)" in result
     assert "comic_images/comic_section_01.png" in result
     assert (output_dir / "comic_images" / "comic_section_01.png").exists()
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
@@ -187,7 +210,7 @@ def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:
 
     data = _markdown_to_docx(
         "@正文\n@1. 第一辑\n短语：今晚月亮放下了手里的活。\n"
-        "![第一辑配图](comic_images/comic_section_01.png)\n小熊说：No rush.\n",
+        "![配图](comic_images/comic_section_01.png)\n小熊说：No rush.\n",
         image_base_dir=tmp_path,
     )
 

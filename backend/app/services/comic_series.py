@@ -15,6 +15,7 @@ COMIC_IMAGE_PROMPT = """日韩治愈系儿童绘本封面，超简洁构图，�
 书名使用简洁大字与留白排版，整体轻松、温暖、童趣。
 配色明亮鲜艳，以高识别度颜色为主。
 整体像日本儿童绘本、LOFT文创、微信读书治愈系封面。
+画面中不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
 避免复杂背景、避免商业海报感、避免厚重设计、避免AI精致感。"""
 
 COMIC_STORY_PROMPT = """根据封面主体动物或人物，创作简短温柔的治愈系小故事 / 双语对话绘本。
@@ -34,9 +35,10 @@ COMIC_COPYRIGHT_RULE = (
 )
 
 COMIC_SERIES_STYLE_BIBLE = (
-    "统一系列风格：同一套日韩治愈系儿童绘本 / LOFT 文创贴纸气质，"
-    "每张图都使用高饱和纯色背景、简洁留白、干净线条、轻微蜡笔颗粒、柔软阴影和原创 Q 版动物角色。"
-    "角色可以每辑不同，但必须像同一套绘本系列里的伙伴：圆润比例、低复杂度、表情温柔、没有真实品牌元素。"
+    "统一系列风格：全系列图片（含书架封面）必须像同一套日韩治愈系儿童绘本 / LOFT 文创贴纸系列；"
+    "所有图片共享同一视觉系统：高饱和纯色背景、简洁留白、干净手绘线条、轻微蜡笔颗粒、柔软阴影、纸张肌理、原创 Q 版动物角色。"
+    "角色可以每张不同，但必须像同一套绘本里的伙伴：圆润比例一致、五官复杂度一致、线条粗细一致、光影柔和度一致、表情温柔、没有真实品牌元素。"
+    "只允许背景主色、少量小道具和情绪细节随短语变化；不要改变画风、质感、角色比例、排版密度和出版气质。"
 )
 
 from app.services.comic_prompts import (  # noqa: E402
@@ -76,7 +78,7 @@ class ComicSectionImage:
 
     @property
     def markdown(self) -> str:
-        return f"![{self.title}配图](comic_images/{self.filename})"
+        return f"![配图](comic_images/{self.filename})"
 
 
 def parse_comic_phrases(value: object) -> list[str]:
@@ -119,20 +121,20 @@ def build_comic_image_prompt(
     total: int,
     title: str | None = None,
 ) -> tuple[str, str, str]:
-    section_title = comic_section_title(index)
     animal, subject = _animal_for(index)
     display_title = (title or phrase).strip()[:18]
     prompt = f"""{COMIC_IMAGE_PROMPT}
 
 【本辑信息】
-- 系列进度：{section_title} / 共 {total} 辑
+- 本图用途：同一漫画系列中的一张画面，也可作为书架封面候选；用途信息只供内部生成参考，不得写进画面。
 - 创作者短语：{phrase}
 - 画面标题文字：{display_title}
 - 封面主体：原创 Q 版{animal}。{subject}。
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
-请让这张图与同系列其他分辑保持统一画风、统一线条、统一颗粒质感和统一童趣出版气质，但背景主色与小道具可根据短语变化。
+请让这张图与同系列其他图片和书架封面保持统一画风、统一线条、统一颗粒质感、统一角色比例和统一童趣出版气质，但背景主色与小道具可根据短语变化。
+画面中绝对不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
@@ -279,6 +281,8 @@ def build_comic_writer_input(phrases: list[str], images: list[ComicSectionImage]
     lines = [
         f"本漫画系列共 {len(phrases)} 辑。",
         "请严格保留下列每一辑的短语、图像占位符和封面主体设定。",
+        "图像占位符必须独立成行；占位符前后不要添加“第一辑配图”“第几辑插画”“第几辑封面”“共几辑”等任何图片说明文字。",
+        "故事内容要默认正文配图和书架封面都属于同一套绘本系列，角色比例、线条、颗粒质感和温柔童趣气质保持一致。",
         "",
     ]
     for image in images:
