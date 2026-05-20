@@ -21,6 +21,10 @@ from app.utils.distributed_limiter import distributed_semaphore
 logger = logging.getLogger(__name__)
 
 
+class GeminiMaxTokensError(RuntimeError):
+    """Raised when Gemini returns no text because the output hit MAX_TOKENS."""
+
+
 _vertex_clients: dict[int, genai.Client] = {}
 _api_key_clients: dict[int, genai.Client] = {}
 _proxy_env_lock = threading.RLock()
@@ -273,10 +277,13 @@ def generate_text(
                     thoughts_tokens = getattr(usage, "thoughts_token_count", None)
                 except Exception:
                     pass
-                raise ValueError(
+                message = (
                     "Gemini 返回空响应"
                     f" finish_reason={finish_reason} thoughts_tokens={thoughts_tokens}"
                 )
+                if "MAX_TOKENS" in str(finish_reason or "").upper():
+                    raise GeminiMaxTokensError(message)
+                raise ValueError(message)
             except Exception as exc:
                 last_exc = exc
                 retryable = _is_retryable_error(exc)

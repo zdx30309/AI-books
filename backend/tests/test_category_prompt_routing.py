@@ -16,6 +16,7 @@ from app.prompts.goal_driven_templates import (
     get_prompts,
 )
 from app.services import content_engine
+from app.services.gemini import GeminiMaxTokensError
 
 
 MINIMAL_MANUSCRIPT = """@最终书名
@@ -203,3 +204,43 @@ def test_style_reference_only_applies_to_test_categories(
     )
 
     assert "笔锋参考要求" not in writer_prompts[0]
+
+
+def test_gemini_refine_max_tokens_falls_back_to_chunked_refine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "用于测试长文二润 MAX_TOKENS 兜底。"
+    calls: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        calls.append("writer")
+        return MINIMAL_MANUSCRIPT
+
+    async def fake_chunk_processor(text: str, **kwargs: object) -> str:
+        if kwargs.get("progress_stage") == "refine_chunk":
+            calls.append("chunked_refine")
+            return text + "\n分块二润完成。"
+        calls.append("polish")
+        return text
+
+    def max_tokens_refine(*_: object, **__: object) -> str:
+        raise GeminiMaxTokensError(
+            "Gemini 返回空响应 finish_reason=FinishReason.MAX_TOKENS thoughts_tokens=None"
+        )
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_chunk_processor)
+    monkeypatch.setattr(content_engine, "refine_book_text", max_tokens_refine)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="social_science",
+            output_dir=tmp_path / "max_tokens",
+        )
+    )
+
+    assert "分块二润完成。" in result
+    assert calls == ["writer", "polish", "chunked_refine"]

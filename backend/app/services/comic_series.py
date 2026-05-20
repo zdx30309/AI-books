@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from app.services.cover import generate_image_file_from_prompt
+from app.services.cover import ImageApiUncertainError, generate_image_file_from_prompt
 
 COMIC_IMAGE_PROMPT = """日韩治愈系儿童绘本封面，超简洁构图，大面积高饱和纯色背景。
 可爱动物主角，Q版手绘插画，线条干净简单，带轻微蜡笔与颗粒感。
@@ -71,6 +71,8 @@ class ComicSectionImage:
     prompt: str
     filename: str
     path: Path
+    status: str = "planned"
+    error: str | None = None
 
     @property
     def markdown(self) -> str:
@@ -138,13 +140,11 @@ def build_comic_image_prompt(
     return prompt.strip(), animal, subject
 
 
-def generate_comic_section_images(
+def plan_comic_section_images(
     phrases: list[str],
     output_dir: Path,
     *,
     title: str | None = None,
-    force: bool = False,
-    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ComicSectionImage]:
     validate_comic_phrases(phrases)
     image_dir = output_dir / "comic_images"
@@ -161,14 +161,7 @@ def generate_comic_section_images(
         filename = f"comic_section_{index:02d}.png"
         path = image_dir / filename
         prompt_path = image_dir / f"comic_section_{index:02d}_prompt.txt"
-        response_path = image_dir / f"comic_section_{index:02d}_response.json"
         prompt_path.write_text(prompt, encoding="utf-8")
-        generate_image_file_from_prompt(
-            prompt,
-            path,
-            response_cache_path=response_path,
-            force=force,
-        )
         image = ComicSectionImage(
             index=index,
             phrase=phrase,
@@ -180,19 +173,89 @@ def generate_comic_section_images(
             path=path,
         )
         results.append(image)
+    _write_manifest(image_dir, results)
+    return results
+
+
+def generate_comic_section_images(
+    phrases: list[str],
+    output_dir: Path,
+    *,
+    title: str | None = None,
+    force: bool = False,
+    allow_uncertain: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[ComicSectionImage]:
+    image_dir = output_dir / "comic_images"
+    results = plan_comic_section_images(phrases, output_dir, title=title)
+    total = len(results)
+    for offset, image in enumerate(results):
+        response_path = image_dir / f"comic_section_{image.index:02d}_response.json"
+        uncertain_path = image_dir / f"comic_section_{image.index:02d}_uncertain.json"
+        if uncertain_path.exists() and not image.path.exists() and not force:
+            try:
+                marker = json.loads(uncertain_path.read_text(encoding="utf-8"))
+                message = str(marker.get("error") or "previous uncertain image request")
+            except Exception:
+                message = "previous uncertain image request"
+            image = replace(image, status="uncertain", error=message)
+            results[offset] = image
+            if on_progress is not None:
+                on_progress(image.index, total)
+            if not allow_uncertain:
+                _write_manifest(image_dir, results)
+                raise ImageApiUncertainError(message)
+            continue
+        try:
+            generate_image_file_from_prompt(
+                image.prompt,
+                image.path,
+                response_cache_path=response_path,
+                force=force,
+            )
+            if uncertain_path.exists():
+                uncertain_path.unlink()
+            image = replace(image, status="completed", error=None)
+        except ImageApiUncertainError as exc:
+            message = str(exc)
+            uncertain_path.write_text(
+                json.dumps(
+                    {
+                        "index": image.index,
+                        "phrase": image.phrase,
+                        "filename": image.filename,
+                        "prompt_path": f"comic_section_{image.index:02d}_prompt.txt",
+                        "error": message,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            image = replace(image, status="uncertain", error=message)
+            results[offset] = image
+            if not allow_uncertain:
+                _write_manifest(image_dir, results)
+                raise
+        results[offset] = image
         if on_progress is not None:
-            on_progress(index, total)
+            on_progress(image.index, total)
+    _write_manifest(image_dir, results)
+    return results
+
+
+def _write_manifest(image_dir: Path, results: list[ComicSectionImage]) -> None:
     (image_dir / "comic_images_manifest.json").write_text(
         json.dumps([_manifest_item(item) for item in results], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return results
 
 
 def _manifest_item(image: ComicSectionImage) -> dict[str, object]:
     data = asdict(image)
     data["path"] = str(image.path)
     data["markdown"] = image.markdown
+    data["exists"] = image.path.exists()
     return data
 
 
@@ -272,5 +335,6 @@ __all__ = [
     "image_filename_from_markdown",
     "inject_comic_images",
     "parse_comic_phrases",
+    "plan_comic_section_images",
     "validate_comic_phrases",
 ]

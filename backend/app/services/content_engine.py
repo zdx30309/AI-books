@@ -17,7 +17,7 @@ from openai import OpenAI
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts, normalize_category
 from app.services.deepseek import format_book_text
-from app.services.gemini import polish_book_text, refine_book_text
+from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
 
 # 进度上报回调：(stage_name, info_dict)
@@ -820,6 +820,12 @@ async def _polish_by_paragraph_chunks_strict(
     system_instruction: str | None = None,
     on_stage: StageCallback | None = None,
     output_dir: Path | None = None,
+    chunk_func: Callable[..., str] | None = None,
+    call_timeout_seconds: int | float | None = None,
+    cache_subdir: str = "02_polish_chunks",
+    progress_stage: str = "polish_chunk",
+    log_label: str = "Gemini polish",
+    quality_gate_name: str = "Gemini polish",
 ) -> str:
     """Quality-safe Gemini polish with per-chunk resume cache.
 
@@ -843,7 +849,13 @@ async def _polish_by_paragraph_chunks_strict(
     progress_lock = asyncio.Lock()
     error_lock = asyncio.Lock()
     abort_event = asyncio.Event()
-    cache_dir = output_dir / "02_polish_chunks" if output_dir is not None else None
+    cache_dir = output_dir / cache_subdir if output_dir is not None else None
+    call = chunk_func or polish_book_text
+    timeout = (
+        settings.GEMINI_POLISH_CALL_TIMEOUT
+        if call_timeout_seconds is None
+        else call_timeout_seconds
+    )
 
     def _cache_path(idx: int, chunk: str) -> Path | None:
         if cache_dir is None:
@@ -859,7 +871,7 @@ async def _polish_by_paragraph_chunks_strict(
             content = path.read_text(encoding="utf-8").strip()
             return content or None
         except Exception as exc:
-            logger.warning("Gemini polish cache read failed chunk=%d: %s", idx + 1, exc)
+            logger.warning("%s cache read failed chunk=%d: %s", log_label, idx + 1, exc)
             return None
 
     def _write_cache(idx: int, chunk: str, content: str) -> None:
@@ -870,14 +882,14 @@ async def _polish_by_paragraph_chunks_strict(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content.strip(), encoding="utf-8")
         except Exception as exc:
-            logger.warning("Gemini polish cache write failed chunk=%d: %s", idx + 1, exc)
+            logger.warning("%s cache write failed chunk=%d: %s", log_label, idx + 1, exc)
 
     async def _polish_once(chunk: str) -> str:
         return await _to_thread_with_optional_timeout(
-            polish_book_text,
+            call,
             chunk,
             system_instruction=system_instruction,
-            timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
+            timeout_seconds=timeout,
         )
 
     async def _mark_completed(chunk_idx: int, chunk: str) -> None:
@@ -887,7 +899,7 @@ async def _polish_by_paragraph_chunks_strict(
         async with progress_lock:
             completed_count += 1
             on_stage(
-                "polish_chunk",
+                progress_stage,
                 {
                     "idx": completed_count,
                     "total": total,
@@ -903,7 +915,7 @@ async def _polish_by_paragraph_chunks_strict(
         cached = _read_cache(idx, chunk)
         if cached:
             polished[idx] = cached
-            logger.info("Gemini polish chunk %d/%d reused from cache", idx + 1, total)
+            logger.info("%s chunk %d/%d reused from cache", log_label, idx + 1, total)
             await _mark_completed(idx + 1, cached)
             return
 
@@ -912,7 +924,8 @@ async def _polish_by_paragraph_chunks_strict(
                 return
 
             logger.info(
-                "Gemini polish chunk %d/%d (%d chars) concurrency=%d",
+                "%s chunk %d/%d (%d chars) concurrency=%d",
+                log_label,
                 idx + 1,
                 total,
                 len(chunk),
@@ -929,7 +942,8 @@ async def _polish_by_paragraph_chunks_strict(
                     errors.append(f"chunk {idx + 1}/{total}: {message}")
                     abort_event.set()
                 logger.error(
-                    "Gemini polish chunk %d/%d failed [%s]; task will retry",
+                    "%s chunk %d/%d failed [%s]; task will retry",
+                    log_label,
                     idx + 1,
                     total,
                     message,
@@ -940,7 +954,8 @@ async def _polish_by_paragraph_chunks_strict(
                     errors.append(f"chunk {idx + 1}/{total}: {message}")
                     abort_event.set()
                 logger.error(
-                    "Gemini polish chunk %d/%d failed [%s]; task will retry",
+                    "%s chunk %d/%d failed [%s]; task will retry",
+                    log_label,
                     idx + 1,
                     total,
                     message,
@@ -951,10 +966,33 @@ async def _polish_by_paragraph_chunks_strict(
     if errors:
         first = errors[0][:500]
         raise RuntimeError(
-            f"retryable Gemini polish quality gate: {len(errors)}/{total} chunks failed; first={first}"
+            f"retryable {quality_gate_name} quality gate: {len(errors)}/{total} chunks failed; first={first}"
         )
 
     return "\n\n".join(item.strip() for item in polished if item and item.strip())
+
+
+async def _refine_by_paragraph_chunks_strict(
+    text: str,
+    *,
+    target_chars: int = 1000,
+    system_instruction: str | None = None,
+    on_stage: StageCallback | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    return await _polish_by_paragraph_chunks_strict(
+        text,
+        target_chars=target_chars,
+        system_instruction=system_instruction,
+        on_stage=on_stage,
+        output_dir=output_dir,
+        chunk_func=refine_book_text,
+        call_timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+        cache_subdir="03_refine_chunks",
+        progress_stage="refine_chunk",
+        log_label="Gemini refine",
+        quality_gate_name="Gemini refine",
+    )
 
 
 def _front_matter_missing(text: str) -> bool:
@@ -1024,6 +1062,7 @@ async def _generate_comic_series_book(
         generate_comic_section_images,
         inject_comic_images,
         parse_comic_phrases,
+        plan_comic_section_images,
         validate_comic_phrases,
     )
 
@@ -1036,21 +1075,9 @@ async def _generate_comic_series_book(
             encoding="utf-8",
         )
 
-    if on_stage:
-        on_stage("comic_images_start", {"total": len(phrases)})
-
-    def _image_progress(index: int, total: int) -> None:
-        if on_stage:
-            on_stage("comic_image", {"idx": index, "total": total})
-
     if output_dir is None:
         raise ValueError("漫画系列需要 output_dir 以保存每一辑配图")
-    images = await asyncio.to_thread(
-        generate_comic_section_images,
-        phrases,
-        output_dir,
-        on_progress=_image_progress,
-    )
+    images = plan_comic_section_images(phrases, output_dir)
     writer_input = build_comic_writer_input(phrases, images)
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
@@ -1110,6 +1137,18 @@ async def _generate_comic_series_book(
                 system_instruction=prompts["gemini_fast_refine"],
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
+        except GeminiMaxTokensError as exc:
+            logger.warning(
+                "Gemini 漫画系列二润触发 MAX_TOKENS，切换为分块二润兜底: %s",
+                exc,
+            )
+            refined_markdown = await _refine_by_paragraph_chunks_strict(
+                polished_markdown,
+                target_chars=1000,
+                system_instruction=prompts["gemini_fast_refine"],
+                on_stage=on_stage,
+                output_dir=output_dir,
+            )
         except Exception as exc:
             logger.error("Gemini 漫画系列二润失败，任务重试: %s", exc)
             raise RuntimeError(f"retryable Gemini comic refine quality gate: {exc}") from exc
@@ -1117,6 +1156,21 @@ async def _generate_comic_series_book(
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": len(refined_markdown)})
+
+    if on_stage:
+        on_stage("comic_images_start", {"total": len(phrases)})
+
+    def _image_progress(index: int, total: int) -> None:
+        if on_stage:
+            on_stage("comic_image", {"idx": index, "total": total})
+
+    images = await asyncio.to_thread(
+        generate_comic_section_images,
+        phrases,
+        output_dir,
+        allow_uncertain=True,
+        on_progress=_image_progress,
+    )
 
     final_markdown = inject_comic_images(refined_markdown, images)
     final_markdown = normalize_final_markdown(final_markdown, category="comic_series")
@@ -1326,6 +1380,18 @@ async def generate_full_book(
                 polished_markdown,
                 system_instruction=gemini_fast_refine_prompt,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+            )
+        except GeminiMaxTokensError as exc:
+            logger.warning(
+                "Gemini 二润触发 MAX_TOKENS，切换为分块二润兜底: %s",
+                exc,
+            )
+            refined_markdown = await _refine_by_paragraph_chunks_strict(
+                polished_markdown,
+                target_chars=1000,
+                system_instruction=gemini_fast_refine_prompt,
+                on_stage=on_stage,
+                output_dir=output_dir,
             )
         except Exception as exc:
             logger.error("Gemini 二润失败，回退到一润结果继续: %s", exc)

@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import pytest
 
 from app.api.routers.tasks import _markdown_to_docx
-from app.services import comic_series, content_engine
+from app.services import comic_series, content_engine, cover
 
 PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -110,6 +110,74 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert "comic_images/comic_section_01.png" in result
     assert (output_dir / "comic_images" / "comic_section_01.png").exists()
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
+
+
+def test_comic_series_uncertain_image_does_not_fail_manuscript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "\n".join([f"短语 {index}" for index in range(1, 6)])
+
+    def uncertain_image(*_: object, **__: object) -> Path:
+        raise cover.ImageApiUncertainError("server disconnected")
+
+    async def fake_writer(prompt: str, **_: object) -> str:
+        assert "{{COMIC_IMAGE_1}}" in prompt
+        return """@最终书名
+今天不想当大人
+@最终简介
+五辑治愈漫画绘本。
+@文前
+想和你一起发会儿呆。
+@正文
+@1. 第一辑
+短语：短语 1
+{{COMIC_IMAGE_1}}
+小熊说：No rush.
+@2. 第二辑
+短语：短语 2
+{{COMIC_IMAGE_2}}
+小猫说：Let it dry.
+@3. 第三辑
+短语：短语 3
+{{COMIC_IMAGE_3}}
+小狗说：No hurry.
+@4. 第四辑
+短语：短语 4
+{{COMIC_IMAGE_4}}
+小兔说：It can float.
+@5. 第五辑
+短语：短语 5
+{{COMIC_IMAGE_5}}
+小企鹅说：Maybe tomorrow.
+"""
+
+    async def fake_polish(text: str, **_: object) -> str:
+        return text
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", uncertain_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    output_dir = tmp_path / "comic_uncertain"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="comic_series",
+            output_dir=output_dir,
+        )
+    )
+
+    assert "comic_images/comic_section_01.png" in result
+    assert not (output_dir / "comic_images" / "comic_section_01.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_01_uncertain.json").exists()
+    manifest = (output_dir / "comic_images" / "comic_images_manifest.json").read_text(
+        encoding="utf-8"
+    )
+    assert '"status": "uncertain"' in manifest
+    assert (output_dir / "04_format.md").exists()
 
 
 def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:

@@ -101,6 +101,9 @@ _RETRYABLE_ERROR_TOKENS = (
     "youtube 字幕",
 )
 _NON_RETRYABLE_ERROR_TOKENS = (
+    "imageapiuncertainerror",
+    "automatic retry stopped to avoid duplicate billing",
+    "duplicate billing",
     "insufficient_quota",
     "exceeded your current quota",
     "unauthorized",
@@ -738,8 +741,8 @@ def process_video(_self, task_id: str) -> dict:
         _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
-            "comic_images_start": (25, "漫画系列配图启动"),
-            "comic_image": (34, "漫画系列配图生成中"),
+            "comic_images_start": (86, "漫画系列配图启动"),
+            "comic_image": (88, "漫画系列配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
             "polish_start": (50, "Gemini 一润启动"),
@@ -763,14 +766,25 @@ def process_video(_self, task_id: str) -> dict:
                         run_id=run_id,
                     )
                     return
+                if stage == "refine_chunk":
+                    idx = int(info.get("idx", 0))
+                    total = max(int(info.get("total", 1)), 1)
+                    prog = 72 + int(13 * idx / total)
+                    _update_progress(
+                        db, task,
+                        progress=min(prog, 85),
+                        step=f"Gemini 二润 {idx}/{total} 块",
+                        run_id=run_id,
+                    )
+                    return
                 if stage == "comic_image":
                     idx = int(info.get("idx", 0))
                     total = max(int(info.get("total", 1)), 1)
-                    prog = 25 + int(18 * idx / total)
+                    prog = 86 + int(4 * idx / total)
                     _update_progress(
                         db,
                         task,
-                        progress=min(prog, 43),
+                        progress=min(prog, 90),
                         step=f"漫画系列配图 {idx}/{total} 张",
                         run_id=run_id,
                     )
