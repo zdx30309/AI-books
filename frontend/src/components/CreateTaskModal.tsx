@@ -178,6 +178,33 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const submit = async () => {
     setError(null);
     if (mode === "comic") {
+      const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
+      if (comicCategory === "healing_comic") {
+        const requirement = comicThemeRequirement.trim() || "生成一本成年人治愈系原创短漫画。";
+        setSubmitting(true);
+        try {
+          const res = await api.createTask({
+            url: "manual://healing_comic",
+            config: {
+              category: "healing_comic",
+              comic_requirement: requirement,
+              raw_text: requirement,
+            },
+          });
+          onCreated(res.task_id);
+        } catch (e) {
+          const msg =
+            e instanceof ApiError
+              ? `[${e.status}] ${e.detail}`
+              : e instanceof Error
+                ? e.message
+                : "创建任务失败";
+          setError(msg);
+        } finally {
+          setSubmitting(false);
+        }
+        return;
+      }
       const cleanedTitle = comicTitle.trim();
       if (!cleanedTitle) {
         setError(`${comicCategoryLabel}需要输入书名`);
@@ -194,7 +221,6 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       }
       setSubmitting(true);
       try {
-        const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
         const config: Record<string, unknown> = {
           category: comicCategory,
           comic_title: cleanedTitle,
@@ -203,9 +229,6 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           comic_phrases: comicPhrases,
           raw_text: comicPhrases.join("\n"),
         };
-        if (comicCategory === "healing_comic" && comicThemeRequirement.trim()) {
-          config.comic_theme_requirement = comicThemeRequirement.trim().slice(0, 240);
-        }
         const res = await api.createTask({
           url: `manual://${comicCategory}`,
           config,
@@ -586,6 +609,33 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
+              {category === "healing_comic" ? (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="comic-theme-requirement"
+                      className="block text-[11px] tracking-widest text-warm-300"
+                    >
+                      漫画内容
+                    </label>
+                    <span className="text-[10px] tracking-widest text-warm-500">
+                      {Math.min(comicThemeRequirement.trim().length, 1200)}/1200
+                    </span>
+                  </div>
+                  <textarea
+                    id="comic-theme-requirement"
+                    value={comicThemeRequirement}
+                    onChange={(e) => setComicThemeRequirement(e.target.value.slice(0, 1200))}
+                    placeholder="简单描述想要的漫画内容即可。例如：生成一本成年人治愈漫画，主角是一只原创小熊，讲普通人下班后的疲惫、嘴硬、发呆和被朋友接住。"
+                    rows={9}
+                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    可只写一句话；系统会参考长期治愈漫画规范和微信读书抽象风格，生成约 32 张原创漫画配图与短句内容。
+                  </p>
+                </div>
+              ) : (
+                <>
               <div>
                 <label
                   htmlFor="comic-title"
@@ -693,6 +743,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   文前 1 条，目录 5 或 6 条；当前目录识别到 {comicPhrases.length} 条。
                 </p>
               </div>
+                </>
+              )}
             </div>
           ) : (
             <div>

@@ -192,43 +192,55 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
 
 
-def test_healing_comic_category_uses_comic_pipeline_with_explicit_title(
+def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    phrases = ["短语一", "短语二", "短语三", "短语四", "短语五"]
-    title = "看见你我就笑"
+    requirement = "主角是一只原创小熊，讲下班后的疲惫和被朋友接住。"
+    writer_called: list[str] = []
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
-        assert title in prompt
-        assert "想用一只原创小熊作为主角" in prompt
+        assert "原创小熊" in prompt
         assert "Buddy Gator" in prompt
         assert "禁止复刻" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
         return output_path
 
+    async def fake_writer(prompt: str, **_: object) -> str:
+        writer_called.append(prompt)
+        panels = [
+            {
+                "title": f"第{index}张",
+                "caption": f"今天第{index}次慢下来。",
+                "dialogue": ["先坐一会儿。", "风会等你。"],
+                "visual": f"原创小熊在日常场景 {index} 里发呆，留白，轻幽默。",
+            }
+            for index in range(1, comic_series.HEALING_COMIC_PANEL_COUNT + 1)
+        ]
+        import json
+
+        return json.dumps({"title": "治愈漫画", "intro": "原创短漫画", "panels": panels}, ensure_ascii=False)
+
     monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(content_engine.settings, "DEEPSEEK_API_KEY", "")
 
     output_dir = tmp_path / "healing_comic"
     result = asyncio.run(
         content_engine.generate_full_book(
-            comic_series.comic_raw_text_from_phrases(
-                phrases,
-                title=title,
-                theme_requirement="想用一只原创小熊作为主角",
-                preface_phrase="今天也有一点软",
-            ),
+            requirement,
             category="healing_comic",
             output_dir=output_dir,
         )
     )
 
-    assert f"@最终书名\n{title}" in result
-    assert "comic_images/comic_preface.png" in result
-    writer_input = (output_dir / "00_comic_writer_input.md").read_text(encoding="utf-8")
-    assert "想用一只原创小熊作为主角" in writer_input
-    assert (output_dir / "comic_images" / "comic_cover.png").exists()
+    assert writer_called
+    assert "@最终书名\n治愈漫画" in result
+    assert "comic_images/comic_preface.png" not in result
+    assert "comic_images/comic_section_32.png" in result
+    assert (output_dir / "comic_images" / "comic_section_32.png").exists()
+    assert not (output_dir / "comic_images" / "comic_cover.png").exists()
 
 
 def test_comic_series_uncertain_image_does_not_fail_manuscript(

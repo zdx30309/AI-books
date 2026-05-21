@@ -87,6 +87,7 @@ _ANIMALS = (
     ("小企鹅", "圆肚小企鹅，略笨拙，适合冷笑话、反差和小聪明"),
     ("小水獭", "抱着小物件的小水獭，适合日常哲思、小失落和被生活接住"),
 )
+HEALING_COMIC_PANEL_COUNT = 32
 
 
 def _comic_image_gate_wait_timeout_seconds() -> int:
@@ -152,6 +153,12 @@ def parse_comic_theme_requirement(value: object) -> str:
     first = raw.split("\n", 1)[0]
     first = re.sub(r"^\s*(?:主题要求|动物主题|角色要求|主角要求|用户要求)\s*[：:、.．)]\s*", "", first).strip()
     return first.strip(" \t，,。；;")[:240]
+
+
+def parse_healing_comic_requirement(value: object) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"^\s*(?:漫画要求|内容要求|生成要求|主题要求)\s*[：:]\s*", "", text)
+    return text[:1200]
 
 
 def parse_comic_title(value: object) -> str:
@@ -232,6 +239,259 @@ def comic_theme_from_phrases(phrases: list[str], *, preface_phrase: str | None =
 
 def _animal_for(index: int) -> tuple[str, str]:
     return _ANIMALS[(index - 1) % len(_ANIMALS)]
+
+
+def build_healing_comic_writer_prompt(requirement: str, research_context: str) -> str:
+    user_requirement = parse_healing_comic_requirement(requirement) or "生成一本成年人治愈系原创短漫画。"
+    return f"""你是原创成年人治愈系漫画编剧。请根据用户的一句话要求，创作 {HEALING_COMIC_PANEL_COUNT} 张左右的原创短漫画分镜脚本。
+
+用户要求：
+{user_requirement}
+
+参考方向：
+{research_context}
+
+长期参考规范：
+{HEALING_COMIC_REFERENCE}
+
+硬性要求：
+- 只学习微信读书治愈漫画和用户参考电子书的抽象气质：短句、留白、轻幽默、日常治愈、温柔反差。
+- 禁止复刻、改写、近似模仿或暗示 Buddy Gator、盖朵短尾鳄、任何鳄鱼 IP、微信读书真实漫画、现成角色、现成台词或现成分镜。
+- 不要使用真实 IP 名称、平台名、出版社名、作者名、品牌名。
+- 角色必须原创；如果用户提到动物或 IP，只保留动物类型/情绪方向，改造成不可识别的原创角色。
+- 每张图是一个独立小漫画瞬间，前后可有轻微连续性，但不要复杂剧情。
+- 对白短，每张 1 到 3 句，每句 12 字以内；不要鸡汤、不要说教、不要网络段子合集。
+- 需要正好输出 {HEALING_COMIC_PANEL_COUNT} 条。
+
+只输出 JSON，不要解释，不要代码块。格式如下：
+{{
+  "title": "治愈漫画",
+  "intro": "一句原创简介",
+  "panels": [
+    {{
+      "title": "第1张标题",
+      "caption": "一句短旁白",
+      "dialogue": ["短对白1", "短对白2"],
+      "visual": "画面描述，原创角色、场景、动作、情绪"
+    }}
+  ]
+}}"""
+
+
+def _json_object_from_text(text: str) -> dict[str, object]:
+    stripped = (text or "").strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        stripped = stripped[start : end + 1]
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        raise ValueError("comic writer did not return a JSON object")
+    return data
+
+
+def fallback_healing_comic_panels(requirement: str) -> tuple[str, str, list[dict[str, object]]]:
+    theme = parse_healing_comic_requirement(requirement) or "普通人在日常里慢慢被接住"
+    moments = (
+        "醒来", "出门", "等车", "买早餐", "坐电梯", "回消息", "发呆", "下雨",
+        "加班", "迷路", "便利店", "晾衣服", "找钥匙", "看云", "喝水", "午休",
+        "道歉", "拥抱空气", "收拾桌面", "路过花店", "夜跑", "听歌", "写便签", "停电",
+        "等月亮", "修小灯", "看旧照片", "不赶路", "说晚安", "做梦", "醒来一点", "明天",
+    )
+    panels: list[dict[str, object]] = []
+    for index, moment in enumerate(moments, start=1):
+        animal, subject = _animal_for(index)
+        panels.append(
+            {
+                "title": f"{moment}的时候",
+                "caption": f"{moment}也可以慢一点。",
+                "dialogue": [f"{animal}说：先呼吸一下。", "今天不用很厉害。"],
+                "visual": f"{subject}，在{moment}的日常场景里做一个很小的动作；主题气质：{theme}；留白、轻幽默、温柔反差。",
+            }
+        )
+    return "治愈漫画", "一本原创成年人情绪短漫画，关于日常里的小小松弛。", panels
+
+
+def parse_healing_comic_writer_output(text: str, requirement: str) -> tuple[str, str, list[dict[str, object]]]:
+    try:
+        data = _json_object_from_text(text)
+        raw_panels = data.get("panels")
+        if not isinstance(raw_panels, list):
+            raise ValueError("panels missing")
+        panels: list[dict[str, object]] = []
+        for index, item in enumerate(raw_panels[:HEALING_COMIC_PANEL_COUNT], start=1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or f"第{index}张").strip()[:40]
+            caption = str(item.get("caption") or "").strip()[:80]
+            visual = str(item.get("visual") or caption or title).strip()[:260]
+            dialogue_value = item.get("dialogue")
+            if isinstance(dialogue_value, list):
+                dialogue = [str(line or "").strip()[:30] for line in dialogue_value if str(line or "").strip()]
+            else:
+                dialogue = [line.strip()[:30] for line in str(dialogue_value or "").split("\n") if line.strip()]
+            panels.append(
+                {
+                    "title": title,
+                    "caption": caption,
+                    "dialogue": dialogue[:3],
+                    "visual": visual,
+                }
+            )
+        if len(panels) >= 24:
+            while len(panels) < HEALING_COMIC_PANEL_COUNT:
+                panels.append(fallback_healing_comic_panels(requirement)[2][len(panels)])
+            return (
+                str(data.get("title") or "治愈漫画").strip()[:60] or "治愈漫画",
+                str(data.get("intro") or "一本原创成年人情绪短漫画。").strip()[:160],
+                panels[:HEALING_COMIC_PANEL_COUNT],
+            )
+    except Exception:
+        pass
+    return fallback_healing_comic_panels(requirement)
+
+
+def build_healing_comic_panel_prompt(
+    *,
+    panel: dict[str, object],
+    index: int,
+    total: int = HEALING_COMIC_PANEL_COUNT,
+    series_context: str = "",
+) -> str:
+    dialogue = " / ".join(str(line) for line in panel.get("dialogue", []) if str(line).strip())
+    visual = str(panel.get("visual") or panel.get("caption") or panel.get("title") or "").strip()
+    title = str(panel.get("title") or f"第{index}张").strip()
+    return f"""生成一张原创成年人治愈系短漫画单页图，属于同一组 {total} 张漫画。
+
+【系列方向】
+{series_context}
+
+【本张内容】
+- 标题：{title}
+- 画面：{visual}
+- 对白/旁白参考：{dialogue}
+
+【视觉要求】
+- 简洁线条、清楚留白、低压力阅读节奏，温柔但不幼稚。
+- 可以是原创人物、原创动物、植物、物件、天气、房间、街道、光影等意象。
+- 画面像微信读书治愈漫画书架里会出现的原创成人情绪漫画，不要像儿童绘本或商业鸡汤海报。
+- 尽量不要在图里写文字，避免乱码；对白和旁白会在正文中排版。
+- 全系列保持统一角色气质、线条、配色、颗粒感、留白方式和日常治愈氛围。
+
+【版权与安全】
+{COMIC_COPYRIGHT_RULE}
+{HEALING_COMIC_REFERENCE}
+禁止复刻、近似模仿或暗示 Buddy Gator、盖朵短尾鳄、鳄鱼 IP、微信读书真实漫画、现成角色、现成台词或现成分镜。"""
+
+
+def plan_healing_comic_images(
+    panels: list[dict[str, object]],
+    output_dir: Path,
+    *,
+    series_context: str = "",
+) -> list[ComicSectionImage]:
+    image_dir = output_dir / "comic_images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    results: list[ComicSectionImage] = []
+    total = len(panels)
+    for index, panel in enumerate(panels, start=1):
+        prompt = build_healing_comic_panel_prompt(
+            panel=panel,
+            index=index,
+            total=total,
+            series_context=series_context,
+        )
+        filename = f"comic_section_{index:02d}.png"
+        path = image_dir / filename
+        (image_dir / f"comic_section_{index:02d}_prompt.txt").write_text(prompt, encoding="utf-8")
+        results.append(
+            ComicSectionImage(
+                index=index,
+                phrase=str(panel.get("caption") or panel.get("title") or ""),
+                title=str(panel.get("title") or f"第{index}张"),
+                animal="原创角色",
+                subject=str(panel.get("visual") or ""),
+                prompt=prompt,
+                filename=filename,
+                path=path,
+            )
+        )
+    _write_manifest(image_dir, results)
+    return results
+
+
+def generate_healing_comic_images(
+    panels: list[dict[str, object]],
+    output_dir: Path,
+    *,
+    series_context: str = "",
+    force: bool = False,
+    allow_uncertain: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[ComicSectionImage]:
+    image_dir = output_dir / "comic_images"
+    results = plan_healing_comic_images(panels, output_dir, series_context=series_context)
+    total = len(results)
+    for offset, image in enumerate(results):
+        stem = f"comic_section_{image.index:02d}"
+        response_path = image_dir / f"{stem}_response.json"
+        uncertain_path = image_dir / f"{stem}_uncertain.json"
+        if uncertain_path.exists() and not image.path.exists() and not force:
+            message = "previous uncertain image request"
+            image = replace(image, status="uncertain", error=message)
+            results[offset] = image
+            if on_progress is not None:
+                on_progress(offset + 1, total)
+            if not allow_uncertain:
+                _write_manifest(image_dir, results)
+                raise ImageApiUncertainError(message)
+            break
+        try:
+            generate_image_file_from_prompt(
+                image.prompt,
+                image.path,
+                response_cache_path=response_path,
+                force=force,
+                gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
+            )
+            if uncertain_path.exists():
+                uncertain_path.unlink()
+            results[offset] = replace(image, status="completed", error=None)
+        except ImageApiUncertainError as exc:
+            message = str(exc)
+            uncertain_path.write_text(
+                json.dumps({"index": image.index, "filename": image.filename, "error": message}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            results[offset] = replace(image, status="uncertain", error=message)
+            if not allow_uncertain:
+                _write_manifest(image_dir, results)
+                raise
+            if on_progress is not None:
+                on_progress(offset + 1, total)
+            break
+        if on_progress is not None:
+            on_progress(offset + 1, total)
+    _write_manifest(image_dir, results)
+    return results
+
+
+def assemble_healing_comic_markdown(title: str, intro: str, panels: list[dict[str, object]]) -> str:
+    final_title = (title or "治愈漫画").strip()[:60] or "治愈漫画"
+    final_intro = (intro or "一本原创成年人情绪短漫画。").strip()[:180]
+    lines = ["@最终书名", final_title, "@最终简介", final_intro, "@目录"]
+    for index, panel in enumerate(panels, start=1):
+        lines.append(f"{index}. {str(panel.get('title') or f'第{index}张')}")
+    lines.append("@正文")
+    for index, panel in enumerate(panels, start=1):
+        lines.extend([f"@{index}. {str(panel.get('title') or f'第{index}张')}", f"{{{{COMIC_IMAGE_{index}}}}}"])
+        caption = str(panel.get("caption") or "").strip()
+        if caption:
+            lines.append(caption)
+        dialogue = panel.get("dialogue")
+        if isinstance(dialogue, list):
+            lines.extend(str(item).strip() for item in dialogue if str(item).strip())
+    return "\n".join(lines).strip()
 
 
 def build_comic_image_prompt(
@@ -771,7 +1031,11 @@ __all__ = [
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
     "ComicSectionImage",
+    "HEALING_COMIC_PANEL_COUNT",
+    "assemble_healing_comic_markdown",
     "assemble_comic_series_markdown",
+    "build_healing_comic_panel_prompt",
+    "build_healing_comic_writer_prompt",
     "build_comic_cover_image_prompt",
     "build_comic_image_prompt",
     "build_comic_preface_image_prompt",
@@ -780,7 +1044,9 @@ __all__ = [
     "comic_raw_text_from_phrases",
     "comic_theme_from_phrases",
     "extract_comic_title",
+    "fallback_healing_comic_panels",
     "generate_comic_section_images",
+    "generate_healing_comic_images",
     "image_filename_from_markdown",
     "inject_comic_images",
     "parse_comic_input",
@@ -789,6 +1055,9 @@ __all__ = [
     "parse_comic_preface_phrase",
     "parse_comic_theme_requirement",
     "parse_comic_title",
+    "parse_healing_comic_requirement",
+    "parse_healing_comic_writer_output",
+    "plan_healing_comic_images",
     "plan_comic_section_images",
     "validate_comic_phrases",
 ]

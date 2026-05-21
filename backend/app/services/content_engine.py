@@ -352,6 +352,9 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
+    if normalize_category(category or "") in {"comic_series", "healing_comic"}:
+        result = "\n".join(front_lines + body_lines).strip()
+        return result + ("\n" if result else "")
     is_wisdom_story = normalize_category(category or "") == "wisdom_stories"
     if is_wisdom_story:
         body_lines = _split_wisdom_story_body_subheadings(body_lines)
@@ -1145,6 +1148,105 @@ async def _generate_comic_series_book(
     return final_markdown
 
 
+def _healing_comic_research_context(requirement: str) -> str:
+    fallback = (
+        "微信读书治愈漫画抽象方向：成年人情绪、短句对白、轻幽默、日常小事、"
+        "原创角色、简洁线条、清楚留白、低压力阅读节奏；每张图是一个小瞬间，"
+        "避免儿童绘本、商业鸡汤、网络段子和任何现成 IP。"
+    )
+    if not (settings.DEEPSEEK_API_KEY or "").strip():
+        return fallback
+    try:
+        from app.services.deepseek import generate_text
+
+        prompt = f"""请作为微信读书治愈漫画参考分析器，根据下面用户要求，模拟检索/爬取微信读书治愈漫画书架后的抽象风格结论。
+
+用户要求：
+{requirement or "生成成年人治愈系原创漫画"}
+
+只输出 180 字以内中文风格分析。不要列真实书名、作者名、IP 名、平台数据或可复刻细节；只给抽象规律：画面节奏、角色关系、对白密度、情绪方向、禁忌。"""
+        result = generate_text(
+            prompt,
+            temperature=0.0,
+            max_output_tokens=500,
+            system_instruction="你只做抽象风格分析，不复制任何真实作品。",
+        ).strip()
+        return result or fallback
+    except Exception as exc:
+        logger.warning("DeepSeek healing comic research fallback: %s", exc)
+        return fallback
+
+
+async def _generate_healing_comic_book(
+    raw_text: str,
+    *,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+) -> str:
+    from app.services.comic_series import (
+        assemble_healing_comic_markdown,
+        build_healing_comic_writer_prompt,
+        generate_healing_comic_images,
+        inject_comic_images,
+        parse_healing_comic_writer_output,
+    )
+
+    requirement = (raw_text or "").strip() or "生成一本成年人治愈系原创短漫画。"
+    if output_dir is None:
+        raise ValueError("漫画需要 output_dir 以保存每张配图")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    research_context = await asyncio.to_thread(_healing_comic_research_context, requirement)
+    _dump_stage(output_dir, "00_healing_comic_research.md", research_context)
+    if on_stage:
+        on_stage("comic_structure_done", {"chars": len(research_context), "research_done": True})
+
+    writer_prompt = build_healing_comic_writer_prompt(requirement, research_context)
+    _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
+    try:
+        writer_output = await _route_writer_call(
+            writer_prompt,
+            reasoning_effort="medium",
+            verbosity="low",
+            max_output_tokens=12000,
+        )
+    except Exception as exc:
+        logger.warning("ChatGPT healing comic writer fallback: %s", exc)
+        writer_output = ""
+    _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
+    title, intro, panels = parse_healing_comic_writer_output(writer_output, requirement)
+    script_json = json.dumps(
+        {"title": title, "intro": intro, "panels": panels},
+        ensure_ascii=False,
+        indent=2,
+    )
+    _dump_stage(output_dir, "02_healing_comic_script.json", script_json)
+
+    refined_markdown = assemble_healing_comic_markdown(title, intro, panels)
+    _dump_stage(output_dir, "03_refine.md", refined_markdown)
+    if on_stage:
+        on_stage("comic_images_start", {"total": len(panels)})
+
+    def _image_progress(index: int, total: int) -> None:
+        if on_stage:
+            on_stage("comic_image", {"idx": index, "total": total})
+
+    images = await asyncio.to_thread(
+        generate_healing_comic_images,
+        panels,
+        output_dir,
+        series_context=f"{research_context}\n用户要求：{requirement}",
+        allow_uncertain=True,
+        on_progress=_image_progress,
+    )
+    final_markdown = inject_comic_images(refined_markdown, images)
+    final_markdown = normalize_final_markdown(final_markdown, category="healing_comic")
+    _dump_stage(output_dir, "04_format.md", final_markdown)
+    if on_stage:
+        on_stage("format_done", {"chars": len(final_markdown), "skipped_deepseek": True})
+    return final_markdown
+
+
 def _read_stage_file(output_dir: Path | None, filename: str) -> str | None:
     if output_dir is None:
         return None
@@ -1242,7 +1344,14 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    if normalized_category in {"comic_series", "healing_comic"}:
+    if normalized_category == "healing_comic":
+        return await _generate_healing_comic_book(
+            raw_text,
+            output_dir=output_dir,
+            on_stage=on_stage,
+        )
+
+    if normalized_category == "comic_series":
         return await _generate_comic_series_book(
             raw_text,
             category=normalized_category,
