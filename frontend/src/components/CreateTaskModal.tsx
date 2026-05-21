@@ -174,11 +174,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     if (mode === "comic") {
       const cleanedPrefacePhrase = comicPrefacePhrase.trim().slice(0, 120);
       if (!cleanedPrefacePhrase) {
-        setError("漫画系列需要输入 1 条文前短语");
+        setError("插画需要输入 1 条文前短语");
         return;
       }
       if (comicPhrases.length !== 5 && comicPhrases.length !== 6) {
-        setError(`漫画系列需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
+        setError(`插画需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
         return;
       }
       setSubmitting(true);
@@ -210,7 +210,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
     if (mode === "batch") {
       if (isClassicalChinese || isComicSeries) {
-        setError(isComicSeries ? "漫画系列请使用漫画系列入口输入短语" : "古文白话请单条粘贴文言文原文，不使用候选链接库");
+        setError(isComicSeries ? "插画请使用插画入口输入短语" : "古文白话请单条粘贴文言文原文，不使用候选链接库");
         return;
       }
       const { urls, duplicateCount } = candidateLinkStats;
@@ -380,7 +380,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               }`}
             >
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
-              漫画系列
+              插画
             </button>
           </div>
 
@@ -681,7 +681,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 {mode === "batch"
                   ? "加入候选库"
                   : mode === "comic"
-                    ? "生成漫画系列"
+                    ? "生成插画"
                     : "立即生成"}
               </span>
             )}

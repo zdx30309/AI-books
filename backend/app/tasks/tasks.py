@@ -739,16 +739,16 @@ def process_video(_self, task_id: str) -> dict:
         )
 
         start_step = (
-            "即将生成漫画短语结构"
+            "即将生成插画短语结构"
             if category == "comic_series"
             else "即将启动主模型"
         )
         _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
-            "comic_structure_done": (45, "漫画短语结构已生成"),
-            "comic_images_start": (86, "漫画系列配图启动"),
-            "comic_image": (88, "漫画系列配图生成中"),
+            "comic_structure_done": (45, "插画短语结构已生成"),
+            "comic_images_start": (86, "插画配图启动"),
+            "comic_image": (88, "插画配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
             "polish_start": (50, "Gemini 一润启动"),
@@ -791,7 +791,7 @@ def process_video(_self, task_id: str) -> dict:
                         db,
                         task,
                         progress=min(prog, 90),
-                        step=f"漫画系列配图 {idx}/{total} 张",
+                        step=f"插画配图 {idx}/{total} 张",
                         run_id=run_id,
                     )
                     return
@@ -801,7 +801,7 @@ def process_video(_self, task_id: str) -> dict:
                 prog, step = mapped
                 chars = info.get("chars")
                 if stage == "format_done" and info.get("skipped_deepseek"):
-                    step = "漫画系列终稿就绪"
+                    step = "插画终稿就绪"
                 if chars:
                     step = f"{step} ({chars:,} 字)"
                 _update_progress(db, task, progress=prog, step=step, run_id=run_id)

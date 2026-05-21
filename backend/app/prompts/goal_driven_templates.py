@@ -296,7 +296,7 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     },
     {
         "id": "comic_series",
-        "label": "漫画系列",
+        "label": "插画",
         "core_feature": "目录加文前封面和五或六辑治愈漫画绘本，短语、配图、故事成套生成",
         "directions": "目录短语、出版感封面、章节配图、成人情绪漫画、治愈对话绘本",
         "prompt_status": "ready",
@@ -1359,6 +1359,7 @@ CATEGORY_ALIASES: dict[str, str] = {
     "漫画": "comic_series",
     "漫画书架": "comic_series",
     "漫画系列": "comic_series",
+    "插画": "comic_series",
     "历史·文化": "history_culture",
     "历史文化": "history_culture",
 }

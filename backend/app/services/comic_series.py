@@ -132,7 +132,7 @@ def parse_comic_phrases(value: object) -> list[str]:
 
 def validate_comic_phrases(phrases: list[str]) -> None:
     if len(phrases) not in {5, 6}:
-        raise ValueError(f"漫画系列需要输入 5 或 6 条短语，当前识别到 {len(phrases)} 条")
+        raise ValueError(f"插画需要输入 5 或 6 条短语，当前识别到 {len(phrases)} 条")
 
 
 def parse_comic_preface_phrase(value: object) -> str:

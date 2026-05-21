@@ -201,7 +201,7 @@ def _normalize_task_config(config: dict | None) -> dict:
             cfg.get("comic_preface_phrase") or cfg.get("preface_phrase") or ""
         )
         if not preface_phrase:
-            raise HTTPException(status_code=400, detail="漫画系列需要输入 1 条文前短语")
+            raise HTTPException(status_code=400, detail="插画需要输入 1 条文前短语")
         try:
             validate_comic_phrases(phrases)
         except ValueError as exc:
@@ -560,7 +560,7 @@ def create_task_batch(
     if cfg.get("category") == "classical_chinese":
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
     if cfg.get("category") == "comic_series":
-        raise HTTPException(status_code=400, detail="漫画系列不支持候选链接库，请使用漫画系列入口输入 5 或 6 条短语")
+        raise HTTPException(status_code=400, detail="插画不支持候选链接库，请使用插画入口输入 5 或 6 条短语")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
