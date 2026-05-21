@@ -196,31 +196,52 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requirement = "主角是一只原创小熊，讲下班后的疲惫和被朋友接住。"
+    title = "看你一眼就会笑"
     writer_called: list[str] = []
+    image_prompts: list[tuple[str, str]] = []
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
-        assert "原创小熊" in prompt
+        image_prompts.append((output_path.name, prompt))
         assert "Buddy Gator" in prompt
-        assert "禁止复刻" in prompt
+        assert "禁止" in prompt
+        if output_path.name == "comic_cover.png":
+            assert title in prompt
+            assert "封面" in prompt
+        else:
+            assert "必须写在图上的短句" in prompt
+            assert "微信读书" in prompt
+            assert "白底" in prompt or "留白" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
         return output_path
 
     async def fake_writer(prompt: str, **_: object) -> str:
         writer_called.append(prompt)
+        assert title in prompt
+        assert "服务端参考数据库摘要" in prompt
+        assert "image_text" in prompt
+        assert "正好输出 32" in prompt
         panels = [
             {
                 "title": f"第{index}张",
-                "caption": f"今天第{index}次慢下来。",
-                "dialogue": ["先坐一会儿。", "风会等你。"],
-                "visual": f"原创小熊在日常场景 {index} 里发呆，留白，轻幽默。",
+                "image_text": [f"第{index}次发呆", "也算认真"],
+                "phrases": [f"第{index}次发呆", "也算认真"],
+                "visual": f"原创小角色在白底日常场景 {index} 里停顿，轻幽默，留白。",
             }
             for index in range(1, comic_series.HEALING_COMIC_PANEL_COUNT + 1)
         ]
         import json
 
-        return json.dumps({"title": "治愈漫画", "intro": "原创短漫画", "panels": panels}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "title": title,
+                "intro": "一组成年人也会偷偷点头的治愈短漫画。",
+                "series_style": "白底留白，原创松弛小角色，轻水彩颗粒，短句直接写在画面上。",
+                "cover_visual": "原创小角色站在空白页面边缘，书名像手写标题。",
+                "panels": panels,
+            },
+            ensure_ascii=False,
+        )
 
     monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
@@ -229,18 +250,22 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     output_dir = tmp_path / "healing_comic"
     result = asyncio.run(
         content_engine.generate_full_book(
-            requirement,
+            f"书名：{title}",
             category="healing_comic",
             output_dir=output_dir,
         )
     )
 
     assert writer_called
-    assert "@最终书名\n治愈漫画" in result
+    assert f"@最终书名\n{title}" in result
     assert "comic_images/comic_preface.png" not in result
+    assert "comic_images/comic_cover.png" not in result
     assert "comic_images/comic_section_32.png" in result
+    assert "第1次发呆" in result
+    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT + 1
+    assert image_prompts[0][0] == "comic_cover.png"
+    assert (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_section_32.png").exists()
-    assert not (output_dir / "comic_images" / "comic_cover.png").exists()
 
 
 def test_comic_series_uncertain_image_does_not_fail_manuscript(

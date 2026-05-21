@@ -199,22 +199,22 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
     if category == "healing_comic":
-        requirement = str(
-            cfg.get("comic_requirement")
+        title = parse_comic_title(
+            cfg.get("comic_title")
+            or cfg.get("title")
+            or cfg.get("book_title")
             or cfg.get("raw_text")
-            or cfg.get("theme_requirement")
-            or cfg.get("comic_theme_requirement")
             or ""
-        ).strip()
-        if not requirement:
-            requirement = "生成一本成年人治愈系原创短漫画。"
-        cfg.pop("comic_title", None)
-        cfg.pop("title", None)
+        )
+        if not title:
+            raise HTTPException(status_code=400, detail="漫画需要输入书名")
+        cfg["comic_title"] = title
+        cfg["title"] = title
         cfg.pop("comic_preface_phrase", None)
         cfg.pop("comic_phrases", None)
         cfg.pop("comic_theme_requirement", None)
-        cfg["comic_requirement"] = requirement[:1200]
-        cfg["raw_text"] = cfg["comic_requirement"]
+        cfg.pop("comic_requirement", None)
+        cfg["raw_text"] = f"书名：{title}"
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     if category == "comic_series":
         comic_label = category_meta["label"]

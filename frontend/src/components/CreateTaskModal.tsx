@@ -180,15 +180,20 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
       if (comicCategory === "healing_comic") {
-        const requirement = comicThemeRequirement.trim() || "生成一本成年人治愈系原创短漫画。";
+        const cleanedTitle = comicTitle.trim();
+        if (!cleanedTitle) {
+          setError("漫画需要输入书名");
+          return;
+        }
         setSubmitting(true);
         try {
           const res = await api.createTask({
             url: "manual://healing_comic",
             config: {
               category: "healing_comic",
-              comic_requirement: requirement,
-              raw_text: requirement,
+              comic_title: cleanedTitle,
+              title: cleanedTitle,
+              raw_text: `书名：${cleanedTitle}`,
             },
           });
           onCreated(res.task_id);
@@ -611,27 +616,21 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             <div className="space-y-4">
               {category === "healing_comic" ? (
                 <div>
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <label
-                      htmlFor="comic-theme-requirement"
-                      className="block text-[11px] tracking-widest text-warm-300"
-                    >
-                      漫画内容
-                    </label>
-                    <span className="text-[10px] tracking-widest text-warm-500">
-                      {Math.min(comicThemeRequirement.trim().length, 1200)}/1200
-                    </span>
-                  </div>
-                  <textarea
-                    id="comic-theme-requirement"
-                    value={comicThemeRequirement}
-                    onChange={(e) => setComicThemeRequirement(e.target.value.slice(0, 1200))}
-                    placeholder="简单描述想要的漫画内容即可。例如：生成一本成年人治愈漫画，主角是一只原创小熊，讲普通人下班后的疲惫、嘴硬、发呆和被朋友接住。"
-                    rows={9}
-                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  <label
+                    htmlFor="healing-comic-title"
+                    className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                  >
+                    书名
+                  </label>
+                  <input
+                    id="healing-comic-title"
+                    value={comicTitle}
+                    onChange={(e) => setComicTitle(e.target.value)}
+                    placeholder="看你一眼就会笑"
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    可只写一句话；系统会参考长期治愈漫画规范和微信读书抽象风格，生成约 32 张原创漫画配图与短句内容。
+                    只需要输入书名；系统会参考服务端漫画数据库，自动规划 32 个章节、封面和同系列配图，短句会直接写在图上。
                   </p>
                 </div>
               ) : (
