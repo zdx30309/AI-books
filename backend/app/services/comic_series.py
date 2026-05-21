@@ -91,6 +91,7 @@ _ANIMALS = (
 def _comic_image_gate_wait_timeout_seconds() -> int:
     """Comic series image sets should queue instead of restarting the manuscript."""
     return max(
+        14400,
         int(getattr(settings, "IMAGE_GATE_WAIT_TIMEOUT_SECONDS", 900) or 900),
         int(getattr(settings, "PAID_API_GATE_WAIT_TIMEOUT_SECONDS", 14400) or 14400),
     )
