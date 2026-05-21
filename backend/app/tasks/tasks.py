@@ -741,6 +741,7 @@ def process_video(_self, task_id: str) -> dict:
         _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
+            "comic_structure_done": (45, "漫画短语结构已生成"),
             "comic_images_start": (86, "漫画系列配图启动"),
             "comic_image": (88, "漫画系列配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
@@ -844,7 +845,9 @@ def process_video(_self, task_id: str) -> dict:
         )
         _clear_task_run(task, run_id)
         if category == "comic_series":
-            comic_cover_image = output_dir / "comic_images" / "comic_preface.png"
+            comic_cover_image = output_dir / "comic_images" / "comic_cover.png"
+            if not comic_cover_image.exists():
+                comic_cover_image = output_dir / "comic_images" / "comic_preface.png"
             if not comic_cover_image.exists():
                 comic_cover_image = output_dir / "comic_images" / "comic_section_01.png"
             if comic_cover_image.exists():

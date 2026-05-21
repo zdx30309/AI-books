@@ -58,6 +58,40 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "同一本成年人治愈系情绪绘本" in prompt
 
 
+def test_comic_image_prompts_keep_required_cover_and_series_constraints(
+    tmp_path: Path,
+) -> None:
+    phrases = ["今晚月亮很忙", "云路过窗外", "心事晾在窗台", "什么都不必赶", "明天会发芽"]
+    images = comic_series.plan_comic_section_images(
+        phrases,
+        tmp_path,
+        title="今天不想当大人",
+        preface_phrase="想和你一起发会儿呆",
+    )
+    by_name = {image.filename: image.prompt for image in images}
+
+    cover_prompt = by_name["comic_cover.png"]
+    assert "根据主题与书名，先生成一张具有出版感的治愈系封面" in cover_prompt
+    assert "整体偏日韩治愈系与文艺插画风格，简洁、有留白、有情绪氛围" in cover_prompt
+    assert "可使用人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象等元素" in cover_prompt
+    assert "重点是“情绪感”与“意境”，而不是复杂剧情" in cover_prompt
+    assert "色彩有统一的情绪基调与高级感，可适当使用高识别度配色" in cover_prompt
+    assert "整体像豆瓣高分绘本、微信读书情绪封面、LOFT文创、ins治愈插画" in cover_prompt
+    assert "避免低龄儿童绘本感、避免商业鸡汤海报感、避免AI模板化插画感" in cover_prompt
+
+    for filename in ["comic_preface.png", "comic_section_01.png"]:
+        prompt = by_name[filename]
+        assert "生成封面后，再根据目录中的5-6个章节短语，分别创作对应的配图" in prompt
+        for constraint in ["配色体系", "笔触质感", "构图语言", "情绪氛围", "留白方式", "光影风格", "插画颗粒感"]:
+            assert constraint in prompt
+        assert "每张配图根据章节短语表达不同情绪与意境，但仍属于同一本书的视觉体系" in prompt
+        assert "画面不必重复角色，也不必强行出现人物，可根据短语自由选择意象" in prompt
+        assert "重点是“短句的情绪可视化”，像一本成年人阅读的治愈系情绪绘本" in prompt
+        assert "避免重复构图、重复元素、重复情绪表达" in prompt
+        assert "整体克制、安静、松弛、有生活感与余味" in prompt
+        assert "已经生成的封面保持同一视觉系统" in prompt
+
+
 def test_comic_series_generates_images_and_skips_deepseek_format(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -72,7 +106,6 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         ]
     )
     preface_phrase = "想和你一起发会儿呆。"
-    writer_prompts: list[str] = []
     image_prompts: list[str] = []
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
@@ -80,9 +113,12 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         assert "系列进度" not in prompt
         assert "第一辑 / 共" not in prompt
         assert "画面中绝对不要出现" in prompt
-        if output_path.name == "comic_preface.png":
+        if output_path.name == "comic_cover.png":
             assert "根据主题与书名" in prompt
             assert "具有出版感的治愈系封面" in prompt
+        elif output_path.name == "comic_preface.png":
+            assert "文前短语配图" in prompt
+            assert "所有配图必须与封面保持统一视觉风格" in prompt
         else:
             assert "所有配图必须与封面保持统一视觉风格" in prompt
             assert "短句的情绪可视化" in prompt
@@ -92,46 +128,10 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         return output_path
 
     async def fake_writer(prompt: str, **_: object) -> str:
-        writer_prompts.append(prompt)
-        return """@最终书名
-今天不想当大人
-@最终简介
-五辑治愈漫画绘本。
-@目录
-1. 今晚月亮放下了手里的活
-2. 我们也把心事晾在窗台
-3. 什么都不必赶
-4. 把小失落折成纸船
-5. 明天会从杯底发芽
-@文前
-文前短语：想和你一起发会儿呆。
-{{COMIC_PREFACE_IMAGE}}
-想和你一起发会儿呆。
-@正文
-@1. 第一辑
-短语：今晚月亮放下了手里的活。
-{{COMIC_IMAGE_1}}
-小熊说：Tonight, I am off duty.
-@2. 第二辑
-短语：我们也把心事晾在窗台。
-{{COMIC_IMAGE_2}}
-小猫说：Let it dry by the window.
-@3. 第三辑
-短语：什么都不必赶。
-{{COMIC_IMAGE_3}}
-小狗说：No rush.
-@4. 第四辑
-短语：把小失落折成纸船。
-{{COMIC_IMAGE_4}}
-小兔说：It can float.
-@5. 第五辑
-短语：明天会从杯底发芽。
-{{COMIC_IMAGE_5}}
-小企鹅说：Maybe tomorrow.
-"""
+        raise AssertionError("comic_series must not call OpenAI writer")
 
     async def fake_polish(text: str, **_: object) -> str:
-        return text
+        raise AssertionError("comic_series must not call Gemini polish")
 
     def fail_format(*_: object, **__: object) -> str:
         raise AssertionError("comic_series must not call DeepSeek final formatter")
@@ -154,19 +154,24 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         )
     )
 
-    assert writer_prompts and "{{COMIC_IMAGE_1}}" in writer_prompts[0]
-    assert "{{COMIC_PREFACE_IMAGE}}" in writer_prompts[0]
-    assert "@目录" in writer_prompts[0]
-    assert "封面主体设定" not in writer_prompts[0]
-    assert len(image_prompts) == 6
+    assert len(image_prompts) == 7
+    writer_input = (output_dir / "00_comic_writer_input.md").read_text(encoding="utf-8")
+    assert "{{COMIC_IMAGE_1}}" in writer_input
+    assert "{{COMIC_PREFACE_IMAGE}}" in writer_input
+    assert "封面主体设定" not in writer_input
     assert "@目录" in result
+    assert "@最终书名" in result
     assert "{{COMIC_PREFACE_IMAGE}}" not in result
     assert "{{COMIC_IMAGE_1}}" not in result
     assert "![第一辑配图]" not in result
     assert "![配图](comic_images/comic_preface.png)" in result
     assert "![配图](comic_images/comic_section_01.png)" in result
+    assert "comic_images/comic_cover.png" not in result
     assert "comic_images/comic_preface.png" in result
     assert "comic_images/comic_section_01.png" in result
+    assert "小熊说" not in result
+    assert "Tonight" not in result
+    assert (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_preface.png").exists()
     assert (output_dir / "comic_images" / "comic_section_01.png").exists()
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
@@ -182,41 +187,7 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
         raise cover.ImageApiUncertainError("server disconnected")
 
     async def fake_writer(prompt: str, **_: object) -> str:
-        assert "{{COMIC_IMAGE_1}}" in prompt
-        return """@最终书名
-今天不想当大人
-@最终简介
-五辑治愈漫画绘本。
-@目录
-1. 短语 1
-2. 短语 2
-3. 短语 3
-4. 短语 4
-5. 短语 5
-@文前
-想和你一起发会儿呆。
-@正文
-@1. 第一辑
-短语：短语 1
-{{COMIC_IMAGE_1}}
-小熊说：No rush.
-@2. 第二辑
-短语：短语 2
-{{COMIC_IMAGE_2}}
-小猫说：Let it dry.
-@3. 第三辑
-短语：短语 3
-{{COMIC_IMAGE_3}}
-小狗说：No hurry.
-@4. 第四辑
-短语：短语 4
-{{COMIC_IMAGE_4}}
-小兔说：It can float.
-@5. 第五辑
-短语：短语 5
-{{COMIC_IMAGE_5}}
-小企鹅说：Maybe tomorrow.
-"""
+        raise AssertionError("comic_series must not call OpenAI writer")
 
     async def fake_polish(text: str, **_: object) -> str:
         return text
@@ -238,9 +209,10 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
 
     assert "comic_images/comic_preface.png" in result
     assert "comic_images/comic_section_01.png" in result
+    assert not (output_dir / "comic_images" / "comic_cover.png").exists()
     assert not (output_dir / "comic_images" / "comic_preface.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_01.png").exists()
-    assert (output_dir / "comic_images" / "comic_preface_uncertain.json").exists()
+    assert (output_dir / "comic_images" / "comic_cover_uncertain.json").exists()
     manifest = (output_dir / "comic_images" / "comic_images_manifest.json").read_text(
         encoding="utf-8"
     )

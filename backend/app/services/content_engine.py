@@ -1058,6 +1058,7 @@ async def _generate_comic_series_book(
     on_stage: StageCallback | None,
 ) -> str:
     from app.services.comic_series import (
+        assemble_comic_series_markdown,
         build_comic_writer_input,
         extract_comic_title,
         generate_comic_section_images,
@@ -1090,84 +1091,16 @@ async def _generate_comic_series_book(
     writer_input = build_comic_writer_input(phrases, preface_phrase=preface_phrase)
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
-    generated_markdown = _read_stage_file(output_dir, "01_writer.md")
-    if generated_markdown:
-        logger.info("复用已存在的 01_writer.md")
-        _log_stage("1/3 comic writer (resume)", generated_markdown)
-        if on_stage:
-            on_stage("writer_done", {"chars": len(generated_markdown)})
-    else:
-        if on_stage:
-            on_stage("writer_start", {})
-        writer_prompt = prompts["full_book_writer"].format(raw_text=writer_input)
-        generated_markdown = await _route_writer_call(writer_prompt)
-        _log_stage("1/3 comic writer", generated_markdown)
-        _dump_stage(output_dir, "01_writer.md", generated_markdown)
-        if on_stage:
-            on_stage("writer_done", {"chars": len(generated_markdown)})
-    writer_chars = len(generated_markdown)
-
-    polished_markdown = _read_stage_file(output_dir, "02_polish.md")
-    if polished_markdown:
-        logger.info("复用已存在的 02_polish.md")
-        _log_stage("2/3 comic polish (resume)", polished_markdown, prev_chars=writer_chars)
-        polish_chars = len(polished_markdown)
-        if on_stage:
-            on_stage("polish_done", {"chars": polish_chars})
-    else:
-        if on_stage:
-            on_stage("polish_start", {})
-        polished_markdown = await _polish_by_paragraph_chunks_strict(
-            generated_markdown,
-            target_chars=1000,
-            system_instruction=prompts["gemini_fast_polish"],
-            on_stage=on_stage,
-            output_dir=output_dir,
-        )
-        _log_stage("2/3 comic polish", polished_markdown, prev_chars=writer_chars)
-        _dump_stage(output_dir, "02_polish.md", polished_markdown)
-        polish_chars = len(polished_markdown)
-        if on_stage:
-            on_stage("polish_done", {"chars": polish_chars})
-
-    refined_markdown = _read_stage_file(output_dir, "03_refine.md")
-    if refined_markdown:
-        logger.info("复用已存在的 03_refine.md")
-        _log_stage("3/3 comic refine (resume)", refined_markdown, prev_chars=polish_chars)
-        if on_stage:
-            on_stage("refine_done", {"chars": len(refined_markdown)})
-    else:
-        if on_stage:
-            on_stage("refine_start", {})
-        try:
-            refined_markdown = await _to_thread_with_optional_timeout(
-                refine_book_text,
-                polished_markdown,
-                system_instruction=prompts["gemini_fast_refine"],
-                timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
-            )
-        except GeminiMaxTokensError as exc:
-            logger.warning(
-                "Gemini 漫画系列二润触发 MAX_TOKENS，切换为分块二润兜底: %s",
-                exc,
-            )
-            refined_markdown = await _refine_by_paragraph_chunks_strict(
-                polished_markdown,
-                target_chars=1000,
-                system_instruction=prompts["gemini_fast_refine"],
-                on_stage=on_stage,
-                output_dir=output_dir,
-            )
-        except Exception as exc:
-            logger.error("Gemini 漫画系列二润失败，任务重试: %s", exc)
-            raise RuntimeError(f"retryable Gemini comic refine quality gate: {exc}") from exc
-        _log_stage("3/3 comic refine", refined_markdown, prev_chars=polish_chars)
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
-        if on_stage:
-            on_stage("refine_done", {"chars": len(refined_markdown)})
+    refined_markdown = assemble_comic_series_markdown(phrases, preface_phrase=preface_phrase)
+    _log_stage("comic phrase layout", refined_markdown)
+    _dump_stage(output_dir, "01_writer.md", refined_markdown)
+    _dump_stage(output_dir, "02_polish.md", refined_markdown)
+    _dump_stage(output_dir, "03_refine.md", refined_markdown)
+    if on_stage:
+        on_stage("comic_structure_done", {"chars": len(refined_markdown), "skipped_text_generation": True})
 
     if on_stage:
-        on_stage("comic_images_start", {"total": len(phrases) + 1})
+        on_stage("comic_images_start", {"total": len(phrases) + 2})
 
     def _image_progress(index: int, total: int) -> None:
         if on_stage:

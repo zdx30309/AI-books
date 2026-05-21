@@ -66,6 +66,7 @@ from app.services.comic_prompts import (  # noqa: E402
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.、．)]|第[一二三四五六]辑[：:、.]?)\s*")
 COMIC_PREFACE_IMAGE_PLACEHOLDER = "{{COMIC_PREFACE_IMAGE}}"
+COMIC_COVER_IMAGE_FILENAME = "comic_cover.png"
 COMIC_PREFACE_IMAGE_FILENAME = "comic_preface.png"
 
 _IMAGE_MARKDOWN_RE = re.compile(
@@ -214,7 +215,7 @@ def build_comic_image_prompt(
     return prompt.strip(), visual_focus, subject
 
 
-def build_comic_preface_image_prompt(
+def build_comic_cover_image_prompt(
     *,
     phrase: str,
     title: str | None = None,
@@ -242,6 +243,39 @@ def build_comic_preface_image_prompt(
     return prompt.strip(), visual_focus, subject
 
 
+def build_comic_preface_image_prompt(
+    *,
+    phrase: str,
+    title: str | None = None,
+    cover_theme: str | None = None,
+) -> tuple[str, str, str]:
+    visual_focus = "文前短语配图"
+    subject = "根据文前短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
+    display_title = (title or "未定书名").strip()[:30]
+    theme = (cover_theme or phrase).strip()
+    prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
+
+【本书封面风格锚点】
+- 书名：{display_title}
+- 全书主题与目录短语：
+{theme}
+
+【文前短语配图信息】
+- 本图用途：文前短语配图；用途信息只供内部生成参考，不得写进画面。
+- 文前短语：{phrase}
+- 视觉表达：{subject}。
+
+【统一系列要求】
+{COMIC_SERIES_STYLE_BIBLE}
+请让这张文前短语配图与已经生成的封面保持同一视觉系统，包括配色体系、笔触质感、构图语言、情绪氛围、留白方式、光影风格和插画颗粒感。
+画面中绝对不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
+
+【版权与安全】
+{COMIC_COPYRIGHT_RULE}
+"""
+    return prompt.strip(), visual_focus, subject
+
+
 def plan_comic_section_images(
     phrases: list[str],
     output_dir: Path,
@@ -256,23 +290,41 @@ def plan_comic_section_images(
     results: list[ComicSectionImage] = []
     cleaned_preface = parse_comic_preface_phrase(preface_phrase)
     cover_theme = comic_theme_from_phrases(phrases, preface_phrase=cleaned_preface)
-    cover_prompt, cover_focus, cover_subject = build_comic_preface_image_prompt(
+    cover_prompt, cover_focus, cover_subject = build_comic_cover_image_prompt(
         phrase=cover_theme,
         title=title,
     )
-    cover_path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
-    (image_dir / "comic_preface_prompt.txt").write_text(cover_prompt, encoding="utf-8")
+    cover_path = image_dir / COMIC_COVER_IMAGE_FILENAME
     (image_dir / "comic_cover_prompt.txt").write_text(cover_prompt, encoding="utf-8")
     results.append(
         ComicSectionImage(
-            index=0,
+            index=-1,
             phrase=cleaned_preface or phrases[0],
             title="封面",
             animal=cover_focus,
             subject=cover_subject,
             prompt=cover_prompt,
-            filename=COMIC_PREFACE_IMAGE_FILENAME,
+            filename=COMIC_COVER_IMAGE_FILENAME,
             path=cover_path,
+        )
+    )
+    preface_prompt, preface_focus, preface_subject = build_comic_preface_image_prompt(
+        phrase=cleaned_preface,
+        title=title,
+        cover_theme=cover_theme,
+    )
+    preface_path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
+    (image_dir / "comic_preface_prompt.txt").write_text(preface_prompt, encoding="utf-8")
+    results.append(
+        ComicSectionImage(
+            index=0,
+            phrase=cleaned_preface,
+            title="文前",
+            animal=preface_focus,
+            subject=preface_subject,
+            prompt=preface_prompt,
+            filename=COMIC_PREFACE_IMAGE_FILENAME,
+            path=preface_path,
         )
     )
     for index, phrase in enumerate(phrases, start=1):
@@ -326,7 +378,12 @@ def generate_comic_section_images(
             results[rest] = replace(results[rest], status="pending", error=reason)
 
     for offset, image in enumerate(results):
-        stem = "comic_preface" if image.index == 0 else f"comic_section_{image.index:02d}"
+        if image.index < 0:
+            stem = "comic_cover"
+        elif image.index == 0:
+            stem = "comic_preface"
+        else:
+            stem = f"comic_section_{image.index:02d}"
         response_path = image_dir / f"{stem}_response.json"
         uncertain_path = image_dir / f"{stem}_uncertain.json"
         if uncertain_path.exists() and not image.path.exists() and not force:
@@ -438,6 +495,38 @@ def build_comic_writer_input(phrases: list[str], *, preface_phrase: str | None =
     return "\n".join(lines).strip()
 
 
+def comic_book_title_from_phrases(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+    title = parse_comic_preface_phrase(preface_phrase) or (phrases[0].strip() if phrases else "")
+    title = title.strip(" \t，,。；;")
+    return title[:30] or "治愈漫画系列"
+
+
+def assemble_comic_series_markdown(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+    validate_comic_phrases(phrases)
+    cleaned_preface = parse_comic_preface_phrase(preface_phrase)
+    title = comic_book_title_from_phrases(phrases, preface_phrase=cleaned_preface)
+    lines: list[str] = [
+        "@最终书名",
+        title,
+        "@目录",
+    ]
+    lines.extend(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
+    lines.append("@文前")
+    if cleaned_preface:
+        lines.append(f"文前短语：{cleaned_preface}")
+    lines.append(COMIC_PREFACE_IMAGE_PLACEHOLDER)
+    lines.append("@正文")
+    for index, phrase in enumerate(phrases, start=1):
+        lines.extend(
+            [
+                f"@{index}. {comic_section_title(index)}",
+                f"短语：{phrase}",
+                f"{{{{COMIC_IMAGE_{index}}}}}",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
 def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
     result = markdown
     image_by_index = {image.index: image for image in images}
@@ -455,6 +544,8 @@ def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
 
     for image in images:
         if image.filename in result:
+            continue
+        if image.index < 0:
             continue
         if image.index == 0:
             result = _insert_preface_image(result, image)
@@ -532,9 +623,12 @@ __all__ = [
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
     "ComicSectionImage",
+    "assemble_comic_series_markdown",
+    "build_comic_cover_image_prompt",
     "build_comic_image_prompt",
     "build_comic_preface_image_prompt",
     "build_comic_writer_input",
+    "comic_book_title_from_phrases",
     "comic_raw_text_from_phrases",
     "comic_theme_from_phrases",
     "extract_comic_title",

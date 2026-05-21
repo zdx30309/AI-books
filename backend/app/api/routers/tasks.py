@@ -302,7 +302,7 @@ def _task_cover_path(task: Task) -> Path | None:
 
 
 def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:
-    if not re.fullmatch(r"(?:comic_preface|comic_section_\d{2})\.png", filename):
+    if not re.fullmatch(r"(?:comic_cover|comic_preface|comic_section_\d{2})\.png", filename):
         return None
     path = (_task_output_dir(task_id) / "comic_images" / filename).resolve()
     output_dir = _task_output_dir(task_id).resolve()
