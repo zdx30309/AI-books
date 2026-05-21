@@ -19,6 +19,7 @@ interface Props {
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
+const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
 
 function extractCandidateLinks(text: string) {
   const matches = text.match(URL_RE) ?? [];
@@ -70,6 +71,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [candidateLinks, setCandidateLinks] = useState("");
+  const [comicTitle, setComicTitle] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [category, setCategory] = useState("social_science");
@@ -85,7 +87,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const comicPhrases = parseComicPhrases(comicPhraseInput);
   const isClassicalChinese = category === "classical_chinese";
-  const isComicSeries = mode === "comic" || category === "comic_series";
+  const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
+  const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
     category === "web_short_story" || category === "social_science_test";
 
@@ -97,6 +100,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setCandidateLinks("");
+      setComicTitle("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
       setCategory("social_science");
@@ -131,7 +135,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   }, [open]);
 
   useEffect(() => {
-    if (category === "comic_series") {
+    if (COMIC_CATEGORY_IDS.has(category)) {
       setMode("comic");
       return;
     }
@@ -160,11 +164,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
-  const switchMode = (nextMode: "single" | "batch" | "comic") => {
+  const switchMode = (nextMode: "single" | "batch" | "comic", nextCategory?: string) => {
     setMode(nextMode);
     if (nextMode === "comic") {
-      setCategory("comic_series");
-    } else if (category === "comic_series") {
+      setCategory(nextCategory && COMIC_CATEGORY_IDS.has(nextCategory) ? nextCategory : "comic_series");
+    } else if (COMIC_CATEGORY_IDS.has(category)) {
       setCategory("social_science");
     }
   };
@@ -172,25 +176,33 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const submit = async () => {
     setError(null);
     if (mode === "comic") {
+      const cleanedTitle = comicTitle.trim();
+      if (!cleanedTitle) {
+        setError(`${comicCategoryLabel}需要输入书名`);
+        return;
+      }
       const cleanedPrefacePhrase = comicPrefacePhrase.trim().slice(0, 120);
       if (!cleanedPrefacePhrase) {
-        setError("插画需要输入 1 条文前短语");
+        setError(`${comicCategoryLabel}需要输入 1 条文前短语`);
         return;
       }
       if (comicPhrases.length !== 5 && comicPhrases.length !== 6) {
-        setError(`插画需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
+        setError(`${comicCategoryLabel}需要输入 5 或 6 条短语，当前识别到 ${comicPhrases.length} 条`);
         return;
       }
       setSubmitting(true);
       try {
+        const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
         const config: Record<string, unknown> = {
-          category: "comic_series",
+          category: comicCategory,
+          comic_title: cleanedTitle,
+          title: cleanedTitle,
           comic_preface_phrase: cleanedPrefacePhrase,
           comic_phrases: comicPhrases,
           raw_text: comicPhrases.join("\n"),
         };
         const res = await api.createTask({
-          url: "manual://comic_series",
+          url: `manual://${comicCategory}`,
           config,
         });
         onCreated(res.task_id);
@@ -209,8 +221,8 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     }
 
     if (mode === "batch") {
-      if (isClassicalChinese || isComicSeries) {
-        setError(isComicSeries ? "插画请使用插画入口输入短语" : "古文白话请单条粘贴文言文原文，不使用候选链接库");
+      if (isClassicalChinese || isComicCategory) {
+        setError(isComicCategory ? `${comicCategoryLabel}请使用${comicCategoryLabel}入口输入短语` : "古文白话请单条粘贴文言文原文，不使用候选链接库");
         return;
       }
       const { urls, duplicateCount } = candidateLinkStats;
@@ -358,11 +370,11 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             <button
               type="button"
               onClick={() => switchMode("batch")}
-              disabled={isClassicalChinese || isComicSeries}
+              disabled={isClassicalChinese || isComicCategory}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "batch"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : isClassicalChinese || isComicSeries
+                  : isClassicalChinese || isComicCategory
                     ? "cursor-not-allowed border-gold-500/10 text-warm-600"
                     : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
@@ -372,15 +384,27 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => switchMode("comic")}
+              onClick={() => switchMode("comic", "comic_series")}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                mode === "comic"
+                mode === "comic" && category === "comic_series"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
                   : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
             >
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
               插画
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic", "healing_comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic" && category === "healing_comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              漫画
             </button>
           </div>
 
@@ -398,7 +422,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
-                if (nextCategory === "comic_series") {
+                if (COMIC_CATEGORY_IDS.has(nextCategory)) {
                   setMode("comic");
                 } else if (mode === "comic") {
                   setMode("single");
@@ -558,6 +582,24 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           ) : mode === "comic" ? (
             <div className="space-y-4">
               <div>
+                <label
+                  htmlFor="comic-title"
+                  className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                >
+                  书名
+                </label>
+                <input
+                  id="comic-title"
+                  value={comicTitle}
+                  onChange={(e) => setComicTitle(e.target.value)}
+                  placeholder={category === "healing_comic" ? "看见你，心就软了" : "今晚，月亮替我抱抱你"}
+                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+                <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                  系统会直接使用你输入的书名，不再自动生成或改写书名。
+                </p>
+              </div>
+              <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label
                     htmlFor="comic-preface-phrase"
@@ -581,7 +623,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                  文前短语会参与整本书主题，并生成一张出版感治愈系封面。
+                  文前短语会参与整本书主题，并生成一张出版感治愈系开场图。
                 </p>
               </div>
               <div>
@@ -681,7 +723,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                 {mode === "batch"
                   ? "加入候选库"
                   : mode === "comic"
-                    ? "生成插画"
+                    ? `生成${comicCategoryLabel}`
                     : "立即生成"}
               </span>
             )}

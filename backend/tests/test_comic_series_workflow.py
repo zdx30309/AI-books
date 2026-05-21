@@ -32,6 +32,12 @@ def test_comic_series_requires_five_or_six_phrases() -> None:
     )
     assert preface == "想和你一起发会儿呆"
     assert phrases == ["今晚月亮很忙", "云路过窗外"]
+    title, preface, phrases = comic_series.parse_comic_input_parts(
+        "书名：今晚不用变厉害\n文前短语：想和你一起发会儿呆。\n第一辑：今晚月亮很忙\n第二辑：云路过窗外"
+    )
+    assert title == "今晚不用变厉害"
+    assert preface == "想和你一起发会儿呆"
+    assert phrases == ["今晚月亮很忙", "云路过窗外"]
     with pytest.raises(ValueError):
         comic_series.validate_comic_phrases(["只有一条"])
 
@@ -56,6 +62,8 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "原创 Q 版" not in prompt
     assert "封面主体：" not in prompt
     assert "同一本成年人治愈系情绪绘本" in prompt
+    assert "Buddy Gator" in prompt
+    assert "禁止复刻" in prompt
 
 
 def test_comic_image_prompts_keep_required_cover_and_series_constraints(
@@ -71,6 +79,7 @@ def test_comic_image_prompts_keep_required_cover_and_series_constraints(
     by_name = {image.filename: image.prompt for image in images}
 
     cover_prompt = by_name["comic_cover.png"]
+    assert "书名：今天不想当大人" in cover_prompt
     assert "根据主题与书名，先生成一张具有出版感的治愈系封面" in cover_prompt
     assert "整体偏日韩治愈系与文艺插画风格，简洁、有留白、有情绪氛围" in cover_prompt
     assert "可使用人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象等元素" in cover_prompt
@@ -106,6 +115,7 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         ]
     )
     preface_phrase = "想和你一起发会儿呆。"
+    title = "今晚不用变厉害"
     image_prompts: list[str] = []
     gate_wait_timeouts: list[int] = []
 
@@ -150,6 +160,7 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
             comic_series.comic_raw_text_from_phrases(
                 comic_series.parse_comic_phrases(raw_text),
                 preface_phrase=preface_phrase,
+                title=title,
             ),
             category="comic_series",
             output_dir=output_dir,
@@ -159,11 +170,13 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert len(image_prompts) == 7
     assert gate_wait_timeouts == [comic_series._comic_image_gate_wait_timeout_seconds()] * 7
     writer_input = (output_dir / "00_comic_writer_input.md").read_text(encoding="utf-8")
+    assert title in writer_input
     assert "{{COMIC_IMAGE_1}}" in writer_input
     assert "{{COMIC_PREFACE_IMAGE}}" in writer_input
     assert "封面主体设定" not in writer_input
     assert "@目录" in result
     assert "@最终书名" in result
+    assert f"@最终书名\n{title}" in result
     assert "{{COMIC_PREFACE_IMAGE}}" not in result
     assert "{{COMIC_IMAGE_1}}" not in result
     assert "![第一辑配图]" not in result
@@ -178,6 +191,41 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert (output_dir / "comic_images" / "comic_preface.png").exists()
     assert (output_dir / "comic_images" / "comic_section_01.png").exists()
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
+
+
+def test_healing_comic_category_uses_comic_pipeline_with_explicit_title(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phrases = ["短语一", "短语二", "短语三", "短语四", "短语五"]
+    title = "看见你我就笑"
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        assert title in prompt
+        assert "Buddy Gator" in prompt
+        assert "禁止复刻" in prompt
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+
+    output_dir = tmp_path / "healing_comic"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            comic_series.comic_raw_text_from_phrases(
+                phrases,
+                title=title,
+                preface_phrase="今天也有一点软",
+            ),
+            category="healing_comic",
+            output_dir=output_dir,
+        )
+    )
+
+    assert f"@最终书名\n{title}" in result
+    assert "comic_images/comic_preface.png" in result
+    assert (output_dir / "comic_images" / "comic_cover.png").exists()
 
 
 def test_comic_series_uncertain_image_does_not_fail_manuscript(

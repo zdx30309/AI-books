@@ -98,6 +98,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "healing_comic",
+    label: "漫画",
+    core_feature: "参考长期治愈漫画规范，生成原创成年人情绪漫画绘本",
+    directions: "原创角色、短句对白、轻幽默、日常治愈、系列配图",
+    prompt_status: "ready",
+  },
+  {
     id: "health_wellness",
     label: "健康·养生",
     core_feature: "轻科普，可立即行动",

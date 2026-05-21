@@ -33,7 +33,7 @@ MINIMAL_MANUSCRIPT = """@最终书名
 """
 
 WRITER_ROUTING_CATEGORIES = [
-    category for category in SUPPORTED_CATEGORIES if category != "comic_series"
+    category for category in SUPPORTED_CATEGORIES if category not in {"comic_series", "healing_comic"}
 ]
 
 

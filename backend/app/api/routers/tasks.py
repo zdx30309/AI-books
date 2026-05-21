@@ -32,8 +32,10 @@ from app.services.content_engine import normalize_final_markdown
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
     image_filename_from_markdown,
+    parse_comic_input_parts,
     parse_comic_phrases,
     parse_comic_preface_phrase,
+    parse_comic_title,
     validate_comic_phrases,
 )
 from app.schemas.chapter import (
@@ -195,22 +197,37 @@ def _normalize_task_config(config: dict | None) -> dict:
     else:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
-    if category == "comic_series":
-        phrases = parse_comic_phrases(cfg.get("comic_phrases") or cfg.get("raw_text") or "")
+    if category in {"comic_series", "healing_comic"}:
+        comic_label = category_meta["label"]
+        title = parse_comic_title(cfg.get("comic_title") or cfg.get("title") or cfg.get("book_title") or "")
+        raw_title, raw_preface, raw_phrases = parse_comic_input_parts(cfg.get("raw_text") or "")
+        if not title:
+            title = raw_title
+        if not title:
+            raise HTTPException(status_code=400, detail=f"{comic_label}需要输入书名")
+        phrases = (
+            parse_comic_phrases(cfg.get("comic_phrases"))
+            if cfg.get("comic_phrases")
+            else raw_phrases
+        )
         preface_phrase = parse_comic_preface_phrase(
-            cfg.get("comic_preface_phrase") or cfg.get("preface_phrase") or ""
+            cfg.get("comic_preface_phrase") or cfg.get("preface_phrase") or raw_preface or ""
         )
         if not preface_phrase:
-            raise HTTPException(status_code=400, detail="插画需要输入 1 条文前短语")
+            raise HTTPException(status_code=400, detail=f"{comic_label}需要输入 1 条文前短语")
         try:
             validate_comic_phrases(phrases)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            detail = str(exc).replace("插画", comic_label, 1)
+            raise HTTPException(status_code=400, detail=detail) from exc
+        cfg["comic_title"] = title
+        cfg["title"] = title
         cfg["comic_preface_phrase"] = preface_phrase
         cfg["comic_phrases"] = phrases
         cfg["raw_text"] = comic_raw_text_from_phrases(
             phrases,
             preface_phrase=preface_phrase,
+            title=title,
         )
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     return cfg
@@ -559,8 +576,9 @@ def create_task_batch(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") == "classical_chinese":
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
-    if cfg.get("category") == "comic_series":
-        raise HTTPException(status_code=400, detail="插画不支持候选链接库，请使用插画入口输入 5 或 6 条短语")
+    if cfg.get("category") in {"comic_series", "healing_comic"}:
+        label = str(cfg.get("category_label") or "插画")
+        raise HTTPException(status_code=400, detail=f"{label}不支持候选链接库，请使用{label}入口输入 5 或 6 条短语")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)

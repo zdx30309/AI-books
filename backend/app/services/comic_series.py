@@ -63,6 +63,7 @@ from app.services.comic_prompts import (  # noqa: E402
     COMIC_SECTION_IMAGE_PROMPT,
     COMIC_SERIES_STYLE_BIBLE,
     COMIC_STORY_PROMPT,
+    HEALING_COMIC_REFERENCE,
 )
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.、．)]|第[一二三四五六]辑[：:、.]?)\s*")
@@ -144,20 +145,39 @@ def parse_comic_preface_phrase(value: object) -> str:
     return first.strip(" \t，,。；;")[:120]
 
 
-def parse_comic_input(value: object) -> tuple[str, list[str]]:
+def parse_comic_title(value: object) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    first = raw.split("\n", 1)[0]
+    first = re.sub(r"^\s*(?:书名|标题|漫画名|插画名)\s*[：:、.．)]\s*", "", first).strip()
+    return first.strip(" \t，,。；;")
+
+
+def parse_comic_input_parts(value: object) -> tuple[str, str, list[str]]:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    title = ""
     preface = ""
     body_lines: list[str] = []
     for raw in text.split("\n"):
         stripped = raw.strip()
         if not stripped:
             continue
+        title_match = re.match(r"^(?:书名|标题|漫画名|插画名)\s*[：:]\s*(.+?)\s*$", stripped)
+        if title_match and not title:
+            title = parse_comic_title(title_match.group(1))
+            continue
         preface_match = re.match(r"^(?:文前|前言|序言|开场)\s*(?:短语)?\s*[：:]\s*(.+?)\s*$", stripped)
         if preface_match and not preface:
             preface = parse_comic_preface_phrase(preface_match.group(1))
             continue
         body_lines.append(raw)
-    return preface, parse_comic_phrases(body_lines)
+    return title, preface, parse_comic_phrases(body_lines)
+
+
+def parse_comic_input(value: object) -> tuple[str, list[str]]:
+    _, preface, phrases = parse_comic_input_parts(value)
+    return preface, phrases
 
 
 def comic_section_title(index: int) -> str:
@@ -165,8 +185,16 @@ def comic_section_title(index: int) -> str:
     return names[index - 1] if 1 <= index <= len(names) else f"第{index}辑"
 
 
-def comic_raw_text_from_phrases(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+def comic_raw_text_from_phrases(
+    phrases: list[str],
+    *,
+    preface_phrase: str | None = None,
+    title: str | None = None,
+) -> str:
     lines: list[str] = []
+    cleaned_title = parse_comic_title(title)
+    if cleaned_title:
+        lines.append(f"书名：{cleaned_title}")
     if preface_phrase:
         lines.append(f"文前短语：{preface_phrase.strip()[:120]}")
     lines.extend(f"{comic_section_title(index)}：{phrase}" for index, phrase in enumerate(phrases, start=1))
@@ -200,7 +228,7 @@ def build_comic_image_prompt(
 ) -> tuple[str, str, str]:
     visual_focus = "自由意象"
     subject = "根据章节短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
-    display_title = (title or "未定书名").strip()[:30]
+    display_title = (title or "未定书名").strip()
     theme = (cover_theme or phrase).strip()
     prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
 
@@ -232,7 +260,7 @@ def build_comic_cover_image_prompt(
 ) -> tuple[str, str, str]:
     visual_focus = "出版感治愈封面"
     subject = "根据主题自由选择人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
-    display_title = (title or "未定书名").strip()[:30]
+    display_title = (title or "未定书名").strip()
     prompt = f"""{COMIC_IMAGE_PROMPT}
 
 【封面信息】
@@ -249,6 +277,9 @@ def build_comic_cover_image_prompt(
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
+
+【漫画端口长期参考与防抄袭规范】
+{HEALING_COMIC_REFERENCE}
 """
     return prompt.strip(), visual_focus, subject
 
@@ -261,7 +292,7 @@ def build_comic_preface_image_prompt(
 ) -> tuple[str, str, str]:
     visual_focus = "文前短语配图"
     subject = "根据文前短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
-    display_title = (title or "未定书名").strip()[:30]
+    display_title = (title or "未定书名").strip()
     theme = (cover_theme or phrase).strip()
     prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
 
@@ -475,15 +506,24 @@ def _manifest_item(image: ComicSectionImage) -> dict[str, object]:
     return data
 
 
-def build_comic_writer_input(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+def build_comic_writer_input(
+    phrases: list[str],
+    *,
+    preface_phrase: str | None = None,
+    title: str | None = None,
+) -> str:
+    cleaned_title = parse_comic_title(title)
     cleaned_preface = parse_comic_preface_phrase(preface_phrase)
     lines = [
         f"本漫画系列共 {len(phrases)} 辑。",
+        "请严格使用创作者输入的书名，不要生成、改写或润色书名。",
         "请严格保留文前短语、目录章节短语和图像占位符。",
         "图像占位符必须独立成行；占位符前后不要添加“第一辑配图”“第几辑插画”“第几辑封面”“共几辑”等任何图片说明文字。",
         "文稿内容只根据短语创作，不要根据封面主体生成，也不要假设封面里一定有人物、动物或固定角色。",
         "",
     ]
+    if cleaned_title:
+        lines.extend(["书名", cleaned_title, ""])
     if cleaned_preface:
         lines.extend(
             [
@@ -506,19 +546,32 @@ def build_comic_writer_input(phrases: list[str], *, preface_phrase: str | None =
     return "\n".join(lines).strip()
 
 
-def comic_book_title_from_phrases(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+def comic_book_title_from_phrases(
+    phrases: list[str],
+    *,
+    preface_phrase: str | None = None,
+    title: str | None = None,
+) -> str:
+    explicit_title = parse_comic_title(title)
+    if explicit_title:
+        return explicit_title
     title = parse_comic_preface_phrase(preface_phrase) or (phrases[0].strip() if phrases else "")
     title = title.strip(" \t，,。；;")
     return title[:30] or "治愈漫画系列"
 
 
-def assemble_comic_series_markdown(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+def assemble_comic_series_markdown(
+    phrases: list[str],
+    *,
+    preface_phrase: str | None = None,
+    title: str | None = None,
+) -> str:
     validate_comic_phrases(phrases)
     cleaned_preface = parse_comic_preface_phrase(preface_phrase)
-    title = comic_book_title_from_phrases(phrases, preface_phrase=cleaned_preface)
+    final_title = comic_book_title_from_phrases(phrases, preface_phrase=cleaned_preface, title=title)
     lines: list[str] = [
         "@最终书名",
-        title,
+        final_title,
         "@目录",
     ]
     lines.extend(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
@@ -647,8 +700,10 @@ __all__ = [
     "image_filename_from_markdown",
     "inject_comic_images",
     "parse_comic_input",
+    "parse_comic_input_parts",
     "parse_comic_phrases",
     "parse_comic_preface_phrase",
+    "parse_comic_title",
     "plan_comic_section_images",
     "validate_comic_phrases",
 ]

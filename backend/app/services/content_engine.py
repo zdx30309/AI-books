@@ -77,7 +77,7 @@ def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
     title = _strip_title_colons(title)
     if not title:
         title = "最后一章"
-    sep = "" if prefix.endswith((" ", "\t", "@")) else " "
+    sep = "" if not prefix or prefix.endswith((" ", "\t", "@")) else " "
     return f"{prefix}{sep}{title}".rstrip()
 
 
@@ -1063,12 +1063,12 @@ async def _generate_comic_series_book(
         extract_comic_title,
         generate_comic_section_images,
         inject_comic_images,
-        parse_comic_input,
+        parse_comic_input_parts,
         parse_comic_phrases,
         validate_comic_phrases,
     )
 
-    preface_phrase, phrases = parse_comic_input(raw_text)
+    title, preface_phrase, phrases = parse_comic_input_parts(raw_text)
     if not phrases:
         phrases = parse_comic_phrases(raw_text)
     validate_comic_phrases(phrases)
@@ -1077,6 +1077,7 @@ async def _generate_comic_series_book(
         (output_dir / "00_comic_phrases.json").write_text(
             json.dumps(
                 {
+                    "title": title,
                     "preface_phrase": preface_phrase,
                     "phrases": phrases,
                 },
@@ -1088,10 +1089,10 @@ async def _generate_comic_series_book(
 
     if output_dir is None:
         raise ValueError("漫画系列需要 output_dir 以保存每一辑配图")
-    writer_input = build_comic_writer_input(phrases, preface_phrase=preface_phrase)
+    writer_input = build_comic_writer_input(phrases, preface_phrase=preface_phrase, title=title)
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
-    refined_markdown = assemble_comic_series_markdown(phrases, preface_phrase=preface_phrase)
+    refined_markdown = assemble_comic_series_markdown(phrases, preface_phrase=preface_phrase, title=title)
     _log_stage("comic phrase layout", refined_markdown)
     _dump_stage(output_dir, "01_writer.md", refined_markdown)
     _dump_stage(output_dir, "02_polish.md", refined_markdown)
@@ -1111,7 +1112,7 @@ async def _generate_comic_series_book(
         phrases,
         output_dir,
         allow_uncertain=True,
-        title=extract_comic_title(refined_markdown) or None,
+        title=title or extract_comic_title(refined_markdown) or None,
         preface_phrase=preface_phrase,
         on_progress=_image_progress,
     )
@@ -1221,7 +1222,7 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    if normalized_category == "comic_series":
+    if normalized_category in {"comic_series", "healing_comic"}:
         return await _generate_comic_series_book(
             raw_text,
             prompts=prompts,

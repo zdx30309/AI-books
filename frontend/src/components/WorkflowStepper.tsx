@@ -36,7 +36,7 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
   const isFailed = status === "failed";
   const isCompleted = status === "completed" || (!isFailed && progress >= 100);
   const isComicWorkflow =
-    category === "comic_series" || currentStep.includes("漫画");
+    category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
   const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
 
   return (

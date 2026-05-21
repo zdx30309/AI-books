@@ -1,6 +1,19 @@
 """Prompt constants shared by the comic-series workflow."""
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _load_healing_comic_reference() -> str:
+    path = Path(__file__).with_name("healing_comic_reference.md")
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+HEALING_COMIC_REFERENCE = _load_healing_comic_reference()
+
 COMIC_IMAGE_PROMPT = """根据主题与书名，先生成一张具有出版感的治愈系封面。
 整体偏日韩治愈系与文艺插画风格，简洁、有留白、有情绪氛围。
 可使用人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象等元素，根据主题自由表达。
@@ -39,6 +52,8 @@ COMIC_STORY_PROMPT = """根据文前短语与5-6个目录章节短语，创作�
 COMIC_COPYRIGHT_RULE = (
     "全系列必须为原创角色与原创画面；禁止使用、模仿或暗示任何已有动漫、绘本、游戏、电影、品牌、"
     "文创 IP、商标、logo、角色造型、角色配色、角色名称或知名画师个人风格；不要出现水印、出版社标识、二维码。"
+    "尤其禁止复刻、近似模仿或暗示 Buddy Gator、盖朵短尾鳄、鳄鱼 IP、微信读书真实封面或任何现成治愈漫画；"
+    "不得使用其角色设定、外形轮廓、固定配色、招牌表情、经典姿势、台词结构、分镜节奏或故事梗。"
 )
 
 COMIC_SERIES_STYLE_BIBLE = (
@@ -54,4 +69,5 @@ __all__ = [
     "COMIC_SECTION_IMAGE_PROMPT",
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
+    "HEALING_COMIC_REFERENCE",
 ]

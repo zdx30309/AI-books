@@ -738,17 +738,15 @@ def process_video(_self, task_id: str) -> dict:
             category_prompt_status=category_meta["prompt_status"],
         )
 
-        start_step = (
-            "即将生成插画短语结构"
-            if category == "comic_series"
-            else "即将启动主模型"
-        )
+        is_comic_category = category in {"comic_series", "healing_comic"}
+        comic_label = category_meta["label"]
+        start_step = f"即将生成{comic_label}短语结构" if is_comic_category else "即将启动主模型"
         _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
-            "comic_structure_done": (45, "插画短语结构已生成"),
-            "comic_images_start": (86, "插画配图启动"),
-            "comic_image": (88, "插画配图生成中"),
+            "comic_structure_done": (45, f"{comic_label}短语结构已生成"),
+            "comic_images_start": (86, f"{comic_label}配图启动"),
+            "comic_image": (88, f"{comic_label}配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
             "polish_start": (50, "Gemini 一润启动"),
@@ -791,7 +789,7 @@ def process_video(_self, task_id: str) -> dict:
                         db,
                         task,
                         progress=min(prog, 90),
-                        step=f"插画配图 {idx}/{total} 张",
+                        step=f"{comic_label}配图 {idx}/{total} 张",
                         run_id=run_id,
                     )
                     return
@@ -801,7 +799,7 @@ def process_video(_self, task_id: str) -> dict:
                 prog, step = mapped
                 chars = info.get("chars")
                 if stage == "format_done" and info.get("skipped_deepseek"):
-                    step = "插画终稿就绪"
+                    step = f"{comic_label}终稿就绪"
                 if chars:
                     step = f"{step} ({chars:,} 字)"
                 _update_progress(db, task, progress=prog, step=step, run_id=run_id)
@@ -849,7 +847,7 @@ def process_video(_self, task_id: str) -> dict:
             run_id=run_id,
         )
         _clear_task_run(task, run_id)
-        if category == "comic_series":
+        if is_comic_category:
             comic_cover_image = output_dir / "comic_images" / "comic_cover.png"
             if not comic_cover_image.exists():
                 comic_cover_image = output_dir / "comic_images" / "comic_preface.png"
@@ -866,7 +864,7 @@ def process_video(_self, task_id: str) -> dict:
                 )
                 task.cover_url = f"/api/v1/tasks/{task.id}/cover"
         db.commit()
-        if category != "comic_series" and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
+        if not is_comic_category and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
             enqueue_cover_generation(db, task, force=False)
 
         return {

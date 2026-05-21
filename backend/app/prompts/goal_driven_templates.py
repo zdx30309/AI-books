@@ -6,6 +6,7 @@ from app.services.comic_prompts import (
     COMIC_SECTION_IMAGE_PROMPT,
     COMIC_SERIES_STYLE_BIBLE,
     COMIC_STORY_PROMPT,
+    HEALING_COMIC_REFERENCE,
 )
 
 BOOK_TITLE_AND_DESCRIPTION_PROMPT = """【书名与简介专项要求】
@@ -299,6 +300,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "插画",
         "core_feature": "目录加文前封面和五或六辑治愈漫画绘本，短语、配图、故事成套生成",
         "directions": "目录短语、出版感封面、章节配图、成人情绪漫画、治愈对话绘本",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "healing_comic",
+        "label": "漫画",
+        "core_feature": "参考长期治愈漫画规范，生成原创成年人情绪漫画绘本",
+        "directions": "原创角色、短句对白、轻幽默、日常治愈、系列配图",
         "prompt_status": "ready",
     },
     {
@@ -1186,7 +1194,7 @@ def _prompt_set(
 
 COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘本主编，负责把创作者提供的 1 条文前短语 + 5 或 6 条目录章节短语，扩写成一本有目录、文前和多辑正文的成年人治愈系情绪绘本书稿。
 
-这不是普通长文书稿。输入里已经包含文前短语、每一辑的目录短语和图片占位符。你必须围绕这些短语创作，不要根据封面主体生成内容，不要假设封面里一定有人物或动物，不要改动占位符。
+这不是普通长文书稿。输入里已经包含创作者指定书名、文前短语、每一辑的目录短语和图片占位符。你必须围绕这些短语创作，不要根据封面主体生成内容，不要假设封面里一定有人物或动物，不要改动占位符。
 
 【强制输出结构】
 严格按以下顺序输出：
@@ -1198,6 +1206,7 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 
 必须输出 @目录。目录必须列出 5 或 6 条章节标题，与输入短语数量完全一致。
 目录标题要来自创作者短语，可轻微润色成更像书中目录的短句，但不能脱离原意，不能只写数字。
+- @最终书名必须逐字使用输入中的“书名”，不得生成、改写、扩写、缩短或润色书名。
 
 【文前要求】
 - @文前 下必须先原样保留“文前短语：...”。
@@ -1236,6 +1245,9 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 {COMIC_COPYRIGHT_RULE}
 - 不要提及任何现成 IP、动漫角色、绘本人物、游戏角色、影视角色、品牌名、平台名或画师名。
 - 不要模仿具体在世作者、画师或商业 IP 的标志性表达，只能保持原创治愈绘本气质。
+
+【漫画端口长期参考与防抄袭规范】
+{HEALING_COMIC_REFERENCE}
 
 【语言与排版】
 - 故事正文以短句和对话为主，适合漫画分镜和绘本排版。
@@ -1335,6 +1347,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         refine=COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT,
         formatter="",
     ),
+    "healing_comic": _prompt_set(
+        COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
+        polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
+        refine=COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT,
+        formatter="",
+    ),
     "health_wellness": _prompt_set(
         HEALTH_WELLNESS_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -1354,11 +1372,11 @@ CATEGORY_ALIASES: dict[str, str] = {
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",
-    "comic": "comic_series",
-    "comic_bookshelf": "comic_series",
-    "漫画": "comic_series",
-    "漫画书架": "comic_series",
-    "漫画系列": "comic_series",
+    "comic": "healing_comic",
+    "comic_bookshelf": "healing_comic",
+    "漫画": "healing_comic",
+    "漫画书架": "healing_comic",
+    "漫画系列": "healing_comic",
     "插画": "comic_series",
     "历史·文化": "history_culture",
     "历史文化": "history_culture",
