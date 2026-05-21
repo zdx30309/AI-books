@@ -107,12 +107,14 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     )
     preface_phrase = "想和你一起发会儿呆。"
     image_prompts: list[str] = []
+    gate_wait_timeouts: list[int] = []
 
-    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+    def fake_image(prompt: str, output_path: Path, **kwargs: object) -> Path:
         assert "避免" in prompt
         assert "系列进度" not in prompt
         assert "第一辑 / 共" not in prompt
         assert "画面中绝对不要出现" in prompt
+        gate_wait_timeouts.append(int(kwargs.get("gate_wait_timeout_seconds") or 0))
         if output_path.name == "comic_cover.png":
             assert "根据主题与书名" in prompt
             assert "具有出版感的治愈系封面" in prompt
@@ -155,6 +157,7 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     )
 
     assert len(image_prompts) == 7
+    assert gate_wait_timeouts == [comic_series._comic_image_gate_wait_timeout_seconds()] * 7
     writer_input = (output_dir / "00_comic_writer_input.md").read_text(encoding="utf-8")
     assert "{{COMIC_IMAGE_1}}" in writer_input
     assert "{{COMIC_PREFACE_IMAGE}}" in writer_input

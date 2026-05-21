@@ -718,6 +718,7 @@ export function BookDetail() {
               progress={task.progress}
               currentStep={task.current_step}
               status={task.status}
+              category={task.category}
             />
             {isActive && (
               <p className="mt-4 flex items-center gap-2 text-[10px] tracking-widest text-warm-500">

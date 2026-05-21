@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from app.core.config import settings
 from app.services.cover import ImageApiUncertainError, generate_image_file_from_prompt
 
 COMIC_IMAGE_PROMPT = """根据主题与书名，先生成一张具有出版感的治愈系封面。
@@ -85,6 +86,14 @@ _ANIMALS = (
     ("小企鹅", "圆肚小企鹅，略笨拙，适合冷笑话、反差和小聪明"),
     ("小水獭", "抱着小物件的小水獭，适合日常哲思、小失落和被生活接住"),
 )
+
+
+def _comic_image_gate_wait_timeout_seconds() -> int:
+    """Comic series image sets should queue instead of restarting the manuscript."""
+    return max(
+        int(getattr(settings, "IMAGE_GATE_WAIT_TIMEOUT_SECONDS", 900) or 900),
+        int(getattr(settings, "PAID_API_GATE_WAIT_TIMEOUT_SECONDS", 14400) or 14400),
+    )
 
 
 @dataclass(frozen=True)
@@ -410,6 +419,7 @@ def generate_comic_section_images(
                 image.path,
                 response_cache_path=response_path,
                 force=force,
+                gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
             )
             if uncertain_path.exists():
                 uncertain_path.unlink()

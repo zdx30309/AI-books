@@ -1178,7 +1178,12 @@ def _post_image_request_with_cancellation(
         raise payload
 
 
-def _request_image_generation_response(prompt: str, should_abort: Callable[[], bool] | None = None) -> Any:
+def _request_image_generation_response(
+    prompt: str,
+    should_abort: Callable[[], bool] | None = None,
+    *,
+    gate_wait_timeout_seconds: int | None = None,
+) -> Any:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/generations"
     payload: dict[str, Any] = {
@@ -1202,7 +1207,8 @@ def _request_image_generation_response(prompt: str, should_abort: Callable[[], b
         with distributed_semaphore(
             "image-cover",
             limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
-            wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
+            wait_timeout_seconds=gate_wait_timeout_seconds
+            or settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
             should_abort=should_abort,
             abort_exception_factory=lambda: _cover_cancelled("wait draft image gate"),
         ):
@@ -1218,8 +1224,17 @@ def _request_image_generation_response(prompt: str, should_abort: Callable[[], b
     return response_data
 
 
-def _request_image_generation(prompt: str, should_abort: Callable[[], bool] | None = None) -> bytes:
-    response_data = _request_image_generation_response(prompt, should_abort=should_abort)
+def _request_image_generation(
+    prompt: str,
+    should_abort: Callable[[], bool] | None = None,
+    *,
+    gate_wait_timeout_seconds: int | None = None,
+) -> bytes:
+    response_data = _request_image_generation_response(
+        prompt,
+        should_abort=should_abort,
+        gate_wait_timeout_seconds=gate_wait_timeout_seconds,
+    )
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
@@ -1473,6 +1488,7 @@ def generate_image_file_from_prompt(
     response_cache_path: Path | None = None,
     force: bool = False,
     should_abort: Callable[[], bool] | None = None,
+    gate_wait_timeout_seconds: int | None = None,
 ) -> Path:
     """Generate one image from a caller-supplied prompt with response caching."""
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
@@ -1481,7 +1497,11 @@ def generate_image_file_from_prompt(
     response_path = response_cache_path or output_path.with_suffix(".response.json")
     image_bytes = _request_or_reuse_image_response(
         response_path,
-        lambda: _request_image_generation_response(prompt, should_abort=should_abort),
+        lambda: _request_image_generation_response(
+            prompt,
+            should_abort=should_abort,
+            gate_wait_timeout_seconds=gate_wait_timeout_seconds,
+        ),
         should_abort=should_abort,
         force=force,
     )

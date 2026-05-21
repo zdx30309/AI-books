@@ -738,7 +738,12 @@ def process_video(_self, task_id: str) -> dict:
             category_prompt_status=category_meta["prompt_status"],
         )
 
-        _update_progress(db, task, progress=25, step="即将启动主模型", run_id=run_id)
+        start_step = (
+            "即将生成漫画短语结构"
+            if category == "comic_series"
+            else "即将启动主模型"
+        )
+        _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
             "comic_structure_done": (45, "漫画短语结构已生成"),

@@ -17,20 +17,32 @@ const STEPS: Step[] = [
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
+const COMIC_STEPS: Step[] = [
+  { key: "queue", label: "排队建库", start: 0 },
+  { key: "fetch", label: "接收漫画短语", start: 8 },
+  { key: "structure", label: "生成目录与短语结构", start: 25 },
+  { key: "images", label: "封面与短语配图生成", start: 86 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
+];
+
 interface Props {
   progress: number;
   currentStep: string;
   status: string;
+  category?: string | null;
 }
 
-export function WorkflowStepper({ progress, currentStep, status }: Props) {
+export function WorkflowStepper({ progress, currentStep, status, category }: Props) {
   const isFailed = status === "failed";
   const isCompleted = status === "completed" || (!isFailed && progress >= 100);
+  const isComicWorkflow =
+    category === "comic_series" || currentStep.includes("漫画");
+  const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
 
   return (
     <ol className="space-y-3">
-      {STEPS.map((step, idx) => {
-        const next = STEPS[idx + 1];
+      {steps.map((step, idx) => {
+        const next = steps[idx + 1];
         // 已完成：下一步已经开始 / 整体完成
         const done = isCompleted || (next ? progress >= next.start : false);
         // 进行中：自身已开始但下一步未开始
