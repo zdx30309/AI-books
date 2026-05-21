@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 _openai_writer_client: OpenAI | None = None
 
 
-_FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "正文")
-_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|正文)\s*$")
+_FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
+_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$")
 
 
 def _strip_title_colons(title: str) -> str:
@@ -1059,11 +1059,11 @@ async def _generate_comic_series_book(
 ) -> str:
     from app.services.comic_series import (
         build_comic_writer_input,
+        extract_comic_title,
         generate_comic_section_images,
         inject_comic_images,
         parse_comic_input,
         parse_comic_phrases,
-        plan_comic_section_images,
         validate_comic_phrases,
     )
 
@@ -1087,12 +1087,7 @@ async def _generate_comic_series_book(
 
     if output_dir is None:
         raise ValueError("漫画系列需要 output_dir 以保存每一辑配图")
-    images = plan_comic_section_images(
-        phrases,
-        output_dir,
-        preface_phrase=preface_phrase,
-    )
-    writer_input = build_comic_writer_input(phrases, images)
+    writer_input = build_comic_writer_input(phrases, preface_phrase=preface_phrase)
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
     generated_markdown = _read_stage_file(output_dir, "01_writer.md")
@@ -1172,7 +1167,7 @@ async def _generate_comic_series_book(
             on_stage("refine_done", {"chars": len(refined_markdown)})
 
     if on_stage:
-        on_stage("comic_images_start", {"total": len(images)})
+        on_stage("comic_images_start", {"total": len(phrases) + 1})
 
     def _image_progress(index: int, total: int) -> None:
         if on_stage:
@@ -1183,6 +1178,7 @@ async def _generate_comic_series_book(
         phrases,
         output_dir,
         allow_uncertain=True,
+        title=extract_comic_title(refined_markdown) or None,
         preface_phrase=preface_phrase,
         on_progress=_image_progress,
     )

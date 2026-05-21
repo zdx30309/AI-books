@@ -49,13 +49,13 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "第一辑 / 共" not in prompt
     assert "画面中绝对不要出现" in prompt
     assert "章节顺序" in prompt
-    assert "日本成年人绘本" in prompt
-    assert "成人治愈出版气质" in prompt
+    assert "生成封面后，再根据目录中的5-6个章节短语" in prompt
+    assert "所有配图必须与封面保持统一视觉风格" in prompt
+    assert "已经生成的封面" in prompt
     assert "儿童绘本封面" not in prompt
     assert "原创 Q 版" not in prompt
-    assert "其他图片和书架封面保持统一画风" in prompt
-    assert "全系列图片" in prompt
-    assert "同一视觉系统" in prompt
+    assert "封面主体：" not in prompt
+    assert "同一本成年人治愈系情绪绘本" in prompt
 
 
 def test_comic_series_generates_images_and_skips_deepseek_format(
@@ -80,6 +80,12 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
         assert "系列进度" not in prompt
         assert "第一辑 / 共" not in prompt
         assert "画面中绝对不要出现" in prompt
+        if output_path.name == "comic_preface.png":
+            assert "根据主题与书名" in prompt
+            assert "具有出版感的治愈系封面" in prompt
+        else:
+            assert "所有配图必须与封面保持统一视觉风格" in prompt
+            assert "短句的情绪可视化" in prompt
         image_prompts.append(prompt)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
@@ -91,6 +97,12 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
 今天不想当大人
 @最终简介
 五辑治愈漫画绘本。
+@目录
+1. 今晚月亮放下了手里的活
+2. 我们也把心事晾在窗台
+3. 什么都不必赶
+4. 把小失落折成纸船
+5. 明天会从杯底发芽
 @文前
 文前短语：想和你一起发会儿呆。
 {{COMIC_PREFACE_IMAGE}}
@@ -144,8 +156,10 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
 
     assert writer_prompts and "{{COMIC_IMAGE_1}}" in writer_prompts[0]
     assert "{{COMIC_PREFACE_IMAGE}}" in writer_prompts[0]
+    assert "@目录" in writer_prompts[0]
+    assert "封面主体设定" not in writer_prompts[0]
     assert len(image_prompts) == 6
-    assert "@目录" not in result
+    assert "@目录" in result
     assert "{{COMIC_PREFACE_IMAGE}}" not in result
     assert "{{COMIC_IMAGE_1}}" not in result
     assert "![第一辑配图]" not in result
@@ -173,6 +187,12 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
 今天不想当大人
 @最终简介
 五辑治愈漫画绘本。
+@目录
+1. 短语 1
+2. 短语 2
+3. 短语 3
+4. 短语 4
+5. 短语 5
 @文前
 想和你一起发会儿呆。
 @正文
@@ -216,9 +236,11 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
         )
     )
 
+    assert "comic_images/comic_preface.png" in result
     assert "comic_images/comic_section_01.png" in result
+    assert not (output_dir / "comic_images" / "comic_preface.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_01.png").exists()
-    assert (output_dir / "comic_images" / "comic_section_01_uncertain.json").exists()
+    assert (output_dir / "comic_images" / "comic_preface_uncertain.json").exists()
     manifest = (output_dir / "comic_images" / "comic_images_manifest.json").read_text(
         encoding="utf-8"
     )

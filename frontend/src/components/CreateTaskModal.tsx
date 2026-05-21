@@ -581,7 +581,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                  文前短语会先生成一张同系列横图，随后进入文前正文。
+                  文前短语会参与整本书主题，并生成一张出版感治愈系封面。
                 </p>
               </div>
               <div>
@@ -590,7 +590,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                     htmlFor="comic-phrases"
                     className="block text-[11px] tracking-widest text-warm-300"
                   >
-                    正文短语
+                    目录短语
                   </label>
                   <span
                     className={`text-[10px] tracking-widest ${
@@ -606,7 +606,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   id="comic-phrases"
                   value={comicPhraseInput}
                   onChange={(e) => setComicPhraseInput(e.target.value)}
-                  placeholder={"每行一条正文短语，输入 5 或 6 条\n今晚，月亮放下了手里的活。\n我们也把心事晾在窗台。\n什么都不必赶。"}
+                  placeholder={"每行一条目录短语，输入 5 或 6 条\n今晚，月亮放下了手里的活。\n我们也把心事晾在窗台。\n什么都不必赶。"}
                   rows={7}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
@@ -617,7 +617,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                       : "text-gold-200"
                   }`}
                 >
-                  文前 1 条，正文 5 或 6 条；当前正文识别到 {comicPhrases.length} 条。
+                  文前 1 条，目录 5 或 6 条；当前目录识别到 {comicPhrases.length} 条。
                 </p>
               </div>
             </div>

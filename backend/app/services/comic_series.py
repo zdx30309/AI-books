@@ -9,27 +9,40 @@ from typing import Callable
 
 from app.services.cover import ImageApiUncertainError, generate_image_file_from_prompt
 
-COMIC_IMAGE_PROMPT = """日韩治愈系情绪绘本封面，超简洁构图，大面积高识别度纯色背景。
-动物或人物手绘插画，线条松弛自然，保留轻微颗粒、蜡笔或水彩质感。
-角色不要低幼卡通感，不过度Q版，更像成年人看的治愈漫画与文创插画。
-气质温柔、安静、笨拙、有一点孤独感与陪伴感。
-书名使用简洁大字与留白排版，像豆瓣高分绘本与微信读书治愈系封面。
-配色明亮但克制，使用有情绪感的高识别度颜色。
-整体像日本成年人绘本、LOFT文创、ins治愈漫画。
-画面中不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
-避免儿童绘本感、避免低龄化、避免过度卖萌、避免复杂背景、避免商业海报感、避免AI精致感。"""
+COMIC_IMAGE_PROMPT = """根据主题与书名，先生成一张具有出版感的治愈系封面。
+整体偏日韩治愈系与文艺插画风格，简洁、有留白、有情绪氛围。
+可使用人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象等元素，根据主题自由表达。
+重点是“情绪感”与“意境”，而不是复杂剧情。
+色彩有统一的情绪基调与高级感，可适当使用高识别度配色。
+整体像豆瓣高分绘本、微信读书情绪封面、LOFT文创、ins治愈插画。
+避免低龄儿童绘本感、避免商业鸡汤海报感、避免AI模板化插画感。"""
 
-COMIC_STORY_PROMPT = """根据封面主体动物或人物，创作简短温柔的治愈系小故事 / 对话漫画。
-面向成年人阅读，不要儿童故事感。
-角色像现实中的普通人，只是借动物或小人物表达情绪。
-每篇故事必须有新的互动逻辑、情绪切口或小反转，避免重复固定套路。
+COMIC_SECTION_IMAGE_PROMPT = """生成封面后，再根据目录中的5-6个章节短语，分别创作对应的配图。
+所有配图必须与封面保持统一视觉风格，包括：
+配色体系
+笔触质感
+构图语言
+情绪氛围
+留白方式
+光影风格
+插画颗粒感
+
+每张配图根据章节短语表达不同情绪与意境，但仍属于同一本书的视觉体系。
+画面不必重复角色，也不必强行出现人物，可根据短语自由选择意象。
+重点是“短句的情绪可视化”，像一本成年人阅读的治愈系情绪绘本。
+避免重复构图、重复元素、重复情绪表达。
+整体克制、安静、松弛、有生活感与余味。"""
+
+COMIC_STORY_PROMPT = """根据文前短语与5-6个目录章节短语，创作简短温柔的成年人治愈系情绪绘本 / 对话漫画书稿。
+文稿内容不根据封面主体生成，也不要假设封面里一定有人物或动物。
+每一辑围绕对应短语展开，必须有新的互动逻辑、情绪切口或小反转，避免重复固定套路。
 故事可偏孤独、幽默、误会、社恐、嘴硬、疲惫、笨拙、小聪明、小失落、小幸运等真实成年人情绪。
 对白自然、克制、像朋友聊天，不过度鸡汤，不过度治愈。
-画面聚焦生活小事与情绪瞬间。
+画面感聚焦生活小事与情绪瞬间。
 结尾保留一点余味、反差或轻微情绪回弹，不强行升华。
 整体像日本成年人治愈漫画、LOFT文创插画、小红书高赞情绪漫画。
 避免低龄化、避免儿童寓言感、避免网络段子感、避免AI重复套路感。
-角色形象需原创化处理，避免直接模仿已有IP或现成卡通形象。"""
+角色形象与情节表达需原创化处理，避免直接模仿已有IP或现成卡通形象。"""
 
 COMIC_COPYRIGHT_RULE = (
     "全系列必须为原创角色与原创画面；禁止使用、模仿或暗示任何已有动漫、绘本、游戏、电影、品牌、"
@@ -37,15 +50,16 @@ COMIC_COPYRIGHT_RULE = (
 )
 
 COMIC_SERIES_STYLE_BIBLE = (
-    "统一系列风格：全系列图片（含书架封面）必须像同一套日本成年人治愈漫画 / LOFT 文创插画系列；"
-    "所有图片共享同一视觉系统：高识别度纯色背景、简洁留白、松弛手绘线条、轻微蜡笔或水彩颗粒、柔软阴影、纸张肌理、原创动物或小人物角色。"
-    "角色可以每张不同，但必须像同一套情绪绘本里的伙伴：比例自然、五官复杂度一致、线条粗细一致、光影柔和度一致、表情温柔克制、没有真实品牌元素。"
-    "只允许背景主色、少量小道具和情绪细节随短语变化；不要改变画风、质感、角色比例、排版密度和成人治愈出版气质。"
+    "统一系列风格：封面与所有章节配图必须像同一本成年人治愈系情绪绘本。"
+    "全系列共享统一配色体系、笔触质感、构图语言、情绪氛围、留白方式、光影风格和插画颗粒感。"
+    "每张图可根据短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象。"
+    "不要重复构图、重复元素或重复情绪表达；整体克制、安静、松弛、有生活感与余味。"
 )
 
 from app.services.comic_prompts import (  # noqa: E402
     COMIC_COPYRIGHT_RULE,
     COMIC_IMAGE_PROMPT,
+    COMIC_SECTION_IMAGE_PROMPT,
     COMIC_SERIES_STYLE_BIBLE,
     COMIC_STORY_PROMPT,
 )
@@ -148,6 +162,19 @@ def comic_raw_text_from_phrases(phrases: list[str], *, preface_phrase: str | Non
     return "\n".join(lines)
 
 
+def comic_theme_from_phrases(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+    parts: list[str] = []
+    cleaned_preface = parse_comic_preface_phrase(preface_phrase)
+    if cleaned_preface:
+        parts.append(f"文前主题：{cleaned_preface}")
+    parts.extend(
+        f"{comic_section_title(index)}：{phrase.strip()[:120]}"
+        for index, phrase in enumerate(phrases, start=1)
+        if phrase.strip()
+    )
+    return "\n".join(parts).strip()
+
+
 def _animal_for(index: int) -> tuple[str, str]:
     return _ANIMALS[(index - 1) % len(_ANIMALS)]
 
@@ -158,26 +185,33 @@ def build_comic_image_prompt(
     index: int,
     total: int,
     title: str | None = None,
+    cover_theme: str | None = None,
 ) -> tuple[str, str, str]:
-    animal, subject = _animal_for(index)
-    display_title = (title or phrase).strip()[:18]
-    prompt = f"""{COMIC_IMAGE_PROMPT}
+    visual_focus = "自由意象"
+    subject = "根据章节短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
+    display_title = (title or "未定书名").strip()[:30]
+    theme = (cover_theme or phrase).strip()
+    prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
 
-【本辑信息】
-- 本图用途：同一漫画系列中的一张画面，也可作为书架封面候选；用途信息只供内部生成参考，不得写进画面。
-- 创作者短语：{phrase}
-- 画面标题文字：{display_title}
-- 封面主体：原创手绘{animal}。{subject}。
+【本书封面风格锚点】
+- 书名：{display_title}
+- 全书主题与目录短语：
+{theme}
+
+【本章节配图信息】
+- 本图用途：同一漫画系列中的第 {index} 张章节配图；用途信息只供内部生成参考，不得写进画面。
+- 章节短语：{phrase}
+- 视觉表达：{subject}。
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
-请让这张图与同系列其他图片和书架封面保持统一画风、统一线条、统一颗粒质感、统一角色比例和统一成人治愈出版气质，但背景主色与小道具可根据短语变化。
+请让这张配图与已经生成的封面保持同一视觉系统，包括配色体系、笔触质感、构图语言、情绪氛围、留白方式、光影风格和插画颗粒感。
 画面中绝对不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
 """
-    return prompt.strip(), animal, subject
+    return prompt.strip(), visual_focus, subject
 
 
 def build_comic_preface_image_prompt(
@@ -185,26 +219,27 @@ def build_comic_preface_image_prompt(
     phrase: str,
     title: str | None = None,
 ) -> tuple[str, str, str]:
-    animal = "小熊和小猫"
-    subject = "原创手绘动物伙伴或小人物坐在窗边或安静房间里，适合作为整本漫画系列的开场画面"
-    display_title = (title or phrase).strip()[:18]
+    visual_focus = "出版感治愈封面"
+    subject = "根据主题自由选择人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
+    display_title = (title or "未定书名").strip()[:30]
     prompt = f"""{COMIC_IMAGE_PROMPT}
 
-【文前开场信息】
-- 本图用途：同一漫画系列的文前横图，也可作为书架封面候选；用途信息只供内部生成参考，不得写进画面。
-- 创作者文前短语：{phrase}
-- 画面标题文字：{display_title}
-- 画面主体：原创手绘{animal}。{subject}。
+【封面信息】
+- 本图用途：整本漫画系列的书架封面与文前开场图；用途信息只供内部生成参考，不得写进画面。
+- 书名：{display_title}
+- 主题与目录短语：
+{phrase}
+- 视觉表达范围：{subject}。
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
-请让这张文前横图与正文图片和书架封面保持同一视觉系统：统一画风、统一线条、统一颗粒质感、统一角色比例和统一成人治愈出版气质。
+这张图是后续章节配图的视觉基准：配色体系、笔触质感、构图语言、情绪氛围、留白方式、光影风格和插画颗粒感都要清晰、统一、有出版感。
 画面中绝对不要出现任何章节顺序、系列总数、编号、序号、图片说明或元信息文字。
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
 """
-    return prompt.strip(), animal, subject
+    return prompt.strip(), visual_focus, subject
 
 
 def plan_comic_section_images(
@@ -220,31 +255,33 @@ def plan_comic_section_images(
     total = len(phrases)
     results: list[ComicSectionImage] = []
     cleaned_preface = parse_comic_preface_phrase(preface_phrase)
-    if cleaned_preface:
-        prompt, animal, subject = build_comic_preface_image_prompt(
-            phrase=cleaned_preface,
-            title=title,
+    cover_theme = comic_theme_from_phrases(phrases, preface_phrase=cleaned_preface)
+    cover_prompt, cover_focus, cover_subject = build_comic_preface_image_prompt(
+        phrase=cover_theme,
+        title=title,
+    )
+    cover_path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
+    (image_dir / "comic_preface_prompt.txt").write_text(cover_prompt, encoding="utf-8")
+    (image_dir / "comic_cover_prompt.txt").write_text(cover_prompt, encoding="utf-8")
+    results.append(
+        ComicSectionImage(
+            index=0,
+            phrase=cleaned_preface or phrases[0],
+            title="封面",
+            animal=cover_focus,
+            subject=cover_subject,
+            prompt=cover_prompt,
+            filename=COMIC_PREFACE_IMAGE_FILENAME,
+            path=cover_path,
         )
-        path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
-        (image_dir / "comic_preface_prompt.txt").write_text(prompt, encoding="utf-8")
-        results.append(
-            ComicSectionImage(
-                index=0,
-                phrase=cleaned_preface,
-                title="文前",
-                animal=animal,
-                subject=subject,
-                prompt=prompt,
-                filename=COMIC_PREFACE_IMAGE_FILENAME,
-                path=path,
-            )
-        )
+    )
     for index, phrase in enumerate(phrases, start=1):
         prompt, animal, subject = build_comic_image_prompt(
             phrase=phrase,
             index=index,
             total=total,
             title=title,
+            cover_theme=cover_theme,
         )
         filename = f"comic_section_{index:02d}.png"
         path = image_dir / filename
@@ -370,33 +407,31 @@ def _manifest_item(image: ComicSectionImage) -> dict[str, object]:
     return data
 
 
-def build_comic_writer_input(phrases: list[str], images: list[ComicSectionImage]) -> str:
-    preface_image = next((image for image in images if image.index == 0), None)
-    section_images = [image for image in images if image.index > 0]
+def build_comic_writer_input(phrases: list[str], *, preface_phrase: str | None = None) -> str:
+    cleaned_preface = parse_comic_preface_phrase(preface_phrase)
     lines = [
         f"本漫画系列共 {len(phrases)} 辑。",
-        "请严格保留下列每一辑的短语、图像占位符和封面主体设定。",
+        "请严格保留文前短语、目录章节短语和图像占位符。",
         "图像占位符必须独立成行；占位符前后不要添加“第一辑配图”“第几辑插画”“第几辑封面”“共几辑”等任何图片说明文字。",
-        "故事内容要默认正文配图和书架封面都属于同一套成人治愈绘本系列，角色比例、线条、颗粒质感和温柔克制的情绪气质保持一致。",
+        "文稿内容只根据短语创作，不要根据封面主体生成，也不要假设封面里一定有人物、动物或固定角色。",
         "",
     ]
-    if preface_image is not None:
+    if cleaned_preface:
         lines.extend(
             [
                 "文前",
-                f"文前短语：{preface_image.phrase}",
+                f"文前短语：{cleaned_preface}",
                 f"文前图像占位符：{COMIC_PREFACE_IMAGE_PLACEHOLDER}",
-                f"文前画面主体设定：原创手绘{preface_image.animal}，{preface_image.subject}",
                 "",
             ]
         )
-    for image in section_images:
+    lines.append("目录章节短语")
+    for index, phrase in enumerate(phrases, start=1):
         lines.extend(
             [
-                f"{image.title}",
-                f"短语：{image.phrase}",
-                f"图像占位符：{{{{COMIC_IMAGE_{image.index}}}}}",
-                f"封面主体设定：原创手绘{image.animal}，{image.subject}",
+                f"{comic_section_title(index)}",
+                f"短语：{phrase}",
+                f"图像占位符：{{{{COMIC_IMAGE_{index}}}}}",
                 "",
             ]
         )
@@ -426,6 +461,22 @@ def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
         else:
             result = _insert_image_after_section_phrase(result, image)
     return result
+
+
+def extract_comic_title(markdown: str) -> str:
+    lines = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    in_title = False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        section = re.match(r"^@?\s*(最终书名|最终简介|目录|文前|正文)\s*$", line)
+        if section:
+            in_title = section.group(1) == "最终书名"
+            continue
+        if in_title:
+            return line.lstrip("@").strip()[:60]
+    return ""
 
 
 def _insert_preface_image(markdown: str, image: ComicSectionImage) -> str:
@@ -477,6 +528,7 @@ __all__ = [
     "COMIC_IMAGE_PROMPT",
     "COMIC_PREFACE_IMAGE_FILENAME",
     "COMIC_PREFACE_IMAGE_PLACEHOLDER",
+    "COMIC_SECTION_IMAGE_PROMPT",
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
     "ComicSectionImage",
@@ -484,6 +536,8 @@ __all__ = [
     "build_comic_preface_image_prompt",
     "build_comic_writer_input",
     "comic_raw_text_from_phrases",
+    "comic_theme_from_phrases",
+    "extract_comic_title",
     "generate_comic_section_images",
     "image_filename_from_markdown",
     "inject_comic_images",
