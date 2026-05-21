@@ -62,8 +62,7 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "原创 Q 版" not in prompt
     assert "封面主体：" not in prompt
     assert "同一本成年人治愈系情绪绘本" in prompt
-    assert "Buddy Gator" in prompt
-    assert "禁止复刻" in prompt
+    assert "漫画端口长期参考" not in prompt
 
 
 def test_comic_image_prompts_keep_required_cover_and_series_constraints(
@@ -202,6 +201,7 @@ def test_healing_comic_category_uses_comic_pipeline_with_explicit_title(
 
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
         assert title in prompt
+        assert "想用一只原创小熊作为主角" in prompt
         assert "Buddy Gator" in prompt
         assert "禁止复刻" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +216,7 @@ def test_healing_comic_category_uses_comic_pipeline_with_explicit_title(
             comic_series.comic_raw_text_from_phrases(
                 phrases,
                 title=title,
+                theme_requirement="想用一只原创小熊作为主角",
                 preface_phrase="今天也有一点软",
             ),
             category="healing_comic",
@@ -225,6 +226,8 @@ def test_healing_comic_category_uses_comic_pipeline_with_explicit_title(
 
     assert f"@最终书名\n{title}" in result
     assert "comic_images/comic_preface.png" in result
+    writer_input = (output_dir / "00_comic_writer_input.md").read_text(encoding="utf-8")
+    assert "想用一只原创小熊作为主角" in writer_input
     assert (output_dir / "comic_images" / "comic_cover.png").exists()
 
 

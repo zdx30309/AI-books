@@ -145,6 +145,15 @@ def parse_comic_preface_phrase(value: object) -> str:
     return first.strip(" \t，,。；;")[:120]
 
 
+def parse_comic_theme_requirement(value: object) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    first = raw.split("\n", 1)[0]
+    first = re.sub(r"^\s*(?:主题要求|动物主题|角色要求|主角要求|用户要求)\s*[：:、.．)]\s*", "", first).strip()
+    return first.strip(" \t，,。；;")[:240]
+
+
 def parse_comic_title(value: object) -> str:
     raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not raw:
@@ -166,6 +175,9 @@ def parse_comic_input_parts(value: object) -> tuple[str, str, list[str]]:
         title_match = re.match(r"^(?:书名|标题|漫画名|插画名)\s*[：:]\s*(.+?)\s*$", stripped)
         if title_match and not title:
             title = parse_comic_title(title_match.group(1))
+            continue
+        requirement_match = re.match(r"^(?:主题要求|动物主题|角色要求|主角要求|用户要求)\s*[：:]\s*(.+?)\s*$", stripped)
+        if requirement_match:
             continue
         preface_match = re.match(r"^(?:文前|前言|序言|开场)\s*(?:短语)?\s*[：:]\s*(.+?)\s*$", stripped)
         if preface_match and not preface:
@@ -190,11 +202,15 @@ def comic_raw_text_from_phrases(
     *,
     preface_phrase: str | None = None,
     title: str | None = None,
+    theme_requirement: str | None = None,
 ) -> str:
     lines: list[str] = []
     cleaned_title = parse_comic_title(title)
     if cleaned_title:
         lines.append(f"书名：{cleaned_title}")
+    cleaned_requirement = parse_comic_theme_requirement(theme_requirement)
+    if cleaned_requirement:
+        lines.append(f"主题要求：{cleaned_requirement}")
     if preface_phrase:
         lines.append(f"文前短语：{preface_phrase.strip()[:120]}")
     lines.extend(f"{comic_section_title(index)}：{phrase}" for index, phrase in enumerate(phrases, start=1))
@@ -225,11 +241,25 @@ def build_comic_image_prompt(
     total: int,
     title: str | None = None,
     cover_theme: str | None = None,
+    theme_requirement: str | None = None,
+    include_healing_reference: bool = False,
 ) -> tuple[str, str, str]:
     visual_focus = "自由意象"
     subject = "根据章节短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
     display_title = (title or "未定书名").strip()
     theme = (cover_theme or phrase).strip()
+    requirement = parse_comic_theme_requirement(theme_requirement)
+    requirement_section = (
+        f"\n【用户可选主题要求】\n- {requirement}\n"
+        "- 只能转化为原创角色或原创动物主题；如果用户写了真实 IP、角色名或品牌名，只保留动物/情绪/关系的抽象方向，不能复刻或暗示原 IP。\n"
+        if requirement
+        else ""
+    )
+    reference_section = (
+        f"\n【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n"
+        if include_healing_reference and HEALING_COMIC_REFERENCE
+        else ""
+    )
     prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
 
 【本书封面风格锚点】
@@ -241,6 +271,7 @@ def build_comic_image_prompt(
 - 本图用途：同一漫画系列中的第 {index} 张章节配图；用途信息只供内部生成参考，不得写进画面。
 - 章节短语：{phrase}
 - 视觉表达：{subject}。
+{requirement_section}
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
@@ -249,6 +280,7 @@ def build_comic_image_prompt(
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
+{reference_section}
 """
     return prompt.strip(), visual_focus, subject
 
@@ -257,10 +289,24 @@ def build_comic_cover_image_prompt(
     *,
     phrase: str,
     title: str | None = None,
+    theme_requirement: str | None = None,
+    include_healing_reference: bool = False,
 ) -> tuple[str, str, str]:
     visual_focus = "出版感治愈封面"
     subject = "根据主题自由选择人物、动物、风景、城市、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
     display_title = (title or "未定书名").strip()
+    requirement = parse_comic_theme_requirement(theme_requirement)
+    requirement_section = (
+        f"\n【用户可选主题要求】\n- {requirement}\n"
+        "- 可以使用该动物或主题方向，但必须重新设计成原创角色；禁止使用、近似模仿或暗示任何真实 IP、品牌角色、知名卡通或现成绘本人物。\n"
+        if requirement
+        else ""
+    )
+    reference_section = (
+        f"\n【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n"
+        if include_healing_reference and HEALING_COMIC_REFERENCE
+        else ""
+    )
     prompt = f"""{COMIC_IMAGE_PROMPT}
 
 【封面信息】
@@ -269,6 +315,7 @@ def build_comic_cover_image_prompt(
 - 主题与目录短语：
 {phrase}
 - 视觉表达范围：{subject}。
+{requirement_section}
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
@@ -277,9 +324,7 @@ def build_comic_cover_image_prompt(
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
-
-【漫画端口长期参考与防抄袭规范】
-{HEALING_COMIC_REFERENCE}
+{reference_section}
 """
     return prompt.strip(), visual_focus, subject
 
@@ -289,11 +334,25 @@ def build_comic_preface_image_prompt(
     phrase: str,
     title: str | None = None,
     cover_theme: str | None = None,
+    theme_requirement: str | None = None,
+    include_healing_reference: bool = False,
 ) -> tuple[str, str, str]:
     visual_focus = "文前短语配图"
     subject = "根据文前短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象"
     display_title = (title or "未定书名").strip()
     theme = (cover_theme or phrase).strip()
+    requirement = parse_comic_theme_requirement(theme_requirement)
+    requirement_section = (
+        f"\n【用户可选主题要求】\n- {requirement}\n"
+        "- 只能转化为原创角色或原创动物主题；如果用户写了真实 IP、角色名或品牌名，只保留动物/情绪/关系的抽象方向，不能复刻或暗示原 IP。\n"
+        if requirement
+        else ""
+    )
+    reference_section = (
+        f"\n【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n"
+        if include_healing_reference and HEALING_COMIC_REFERENCE
+        else ""
+    )
     prompt = f"""{COMIC_SECTION_IMAGE_PROMPT}
 
 【本书封面风格锚点】
@@ -305,6 +364,7 @@ def build_comic_preface_image_prompt(
 - 本图用途：文前短语配图；用途信息只供内部生成参考，不得写进画面。
 - 文前短语：{phrase}
 - 视觉表达：{subject}。
+{requirement_section}
 
 【统一系列要求】
 {COMIC_SERIES_STYLE_BIBLE}
@@ -313,6 +373,7 @@ def build_comic_preface_image_prompt(
 
 【版权与安全】
 {COMIC_COPYRIGHT_RULE}
+{reference_section}
 """
     return prompt.strip(), visual_focus, subject
 
@@ -323,6 +384,8 @@ def plan_comic_section_images(
     *,
     title: str | None = None,
     preface_phrase: str | None = None,
+    theme_requirement: str | None = None,
+    include_healing_reference: bool = False,
 ) -> list[ComicSectionImage]:
     validate_comic_phrases(phrases)
     image_dir = output_dir / "comic_images"
@@ -334,6 +397,8 @@ def plan_comic_section_images(
     cover_prompt, cover_focus, cover_subject = build_comic_cover_image_prompt(
         phrase=cover_theme,
         title=title,
+        theme_requirement=theme_requirement,
+        include_healing_reference=include_healing_reference,
     )
     cover_path = image_dir / COMIC_COVER_IMAGE_FILENAME
     (image_dir / "comic_cover_prompt.txt").write_text(cover_prompt, encoding="utf-8")
@@ -353,6 +418,8 @@ def plan_comic_section_images(
         phrase=cleaned_preface,
         title=title,
         cover_theme=cover_theme,
+        theme_requirement=theme_requirement,
+        include_healing_reference=include_healing_reference,
     )
     preface_path = image_dir / COMIC_PREFACE_IMAGE_FILENAME
     (image_dir / "comic_preface_prompt.txt").write_text(preface_prompt, encoding="utf-8")
@@ -375,6 +442,8 @@ def plan_comic_section_images(
             total=total,
             title=title,
             cover_theme=cover_theme,
+            theme_requirement=theme_requirement,
+            include_healing_reference=include_healing_reference,
         )
         filename = f"comic_section_{index:02d}.png"
         path = image_dir / filename
@@ -403,6 +472,8 @@ def generate_comic_section_images(
     force: bool = False,
     allow_uncertain: bool = False,
     preface_phrase: str | None = None,
+    theme_requirement: str | None = None,
+    include_healing_reference: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ComicSectionImage]:
     image_dir = output_dir / "comic_images"
@@ -411,6 +482,8 @@ def generate_comic_section_images(
         output_dir,
         title=title,
         preface_phrase=preface_phrase,
+        theme_requirement=theme_requirement,
+        include_healing_reference=include_healing_reference,
     )
     total = len(results)
 
@@ -511,8 +584,10 @@ def build_comic_writer_input(
     *,
     preface_phrase: str | None = None,
     title: str | None = None,
+    theme_requirement: str | None = None,
 ) -> str:
     cleaned_title = parse_comic_title(title)
+    cleaned_requirement = parse_comic_theme_requirement(theme_requirement)
     cleaned_preface = parse_comic_preface_phrase(preface_phrase)
     lines = [
         f"本漫画系列共 {len(phrases)} 辑。",
@@ -524,6 +599,15 @@ def build_comic_writer_input(
     ]
     if cleaned_title:
         lines.extend(["书名", cleaned_title, ""])
+    if cleaned_requirement:
+        lines.extend(
+            [
+                "用户可选主题要求",
+                cleaned_requirement,
+                "如果这里出现真实 IP、角色名、品牌名或知名卡通，只保留动物类型、情绪方向和关系气质，必须改造成原创角色。",
+                "",
+            ]
+        )
     if cleaned_preface:
         lines.extend(
             [
@@ -703,6 +787,7 @@ __all__ = [
     "parse_comic_input_parts",
     "parse_comic_phrases",
     "parse_comic_preface_phrase",
+    "parse_comic_theme_requirement",
     "parse_comic_title",
     "plan_comic_section_images",
     "validate_comic_phrases",

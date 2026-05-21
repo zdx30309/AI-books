@@ -72,6 +72,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [candidateLinks, setCandidateLinks] = useState("");
   const [comicTitle, setComicTitle] = useState("");
+  const [comicThemeRequirement, setComicThemeRequirement] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [category, setCategory] = useState("social_science");
@@ -101,6 +102,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalDocxFile(null);
       setCandidateLinks("");
       setComicTitle("");
+      setComicThemeRequirement("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
       setCategory("social_science");
@@ -201,6 +203,9 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           comic_phrases: comicPhrases,
           raw_text: comicPhrases.join("\n"),
         };
+        if (comicCategory === "healing_comic" && comicThemeRequirement.trim()) {
+          config.comic_theme_requirement = comicThemeRequirement.trim().slice(0, 240);
+        }
         const res = await api.createTask({
           url: `manual://${comicCategory}`,
           config,
@@ -599,6 +604,32 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                   系统会直接使用你输入的书名，不再自动生成或改写书名。
                 </p>
               </div>
+              {category === "healing_comic" && (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="comic-theme-requirement"
+                      className="block text-[11px] tracking-widest text-warm-300"
+                    >
+                      主题要求（可选）
+                    </label>
+                    <span className="text-[10px] tracking-widest text-warm-500">
+                      {Math.min(comicThemeRequirement.trim().length, 240)}/240
+                    </span>
+                  </div>
+                  <textarea
+                    id="comic-theme-requirement"
+                    value={comicThemeRequirement}
+                    onChange={(e) => setComicThemeRequirement(e.target.value.slice(0, 240))}
+                    placeholder="例如：想用一只原创小熊作为主角。不要填写真实 IP 名称，系统会自动转成原创动物主题。"
+                    rows={3}
+                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    可留空；填写后只作为原创角色方向，不会复刻或暗示现成 IP。
+                  </p>
+                </div>
+              )}
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label

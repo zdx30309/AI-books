@@ -74,6 +74,17 @@ _LITERATURE_PUBLISHING_STYLE_RULE = (
 )
 
 
+def _load_reference_markdown(filename: str) -> str:
+    path = Path(__file__).with_name(filename)
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+_LITERATURE_COVER_REFERENCE = _load_reference_markdown("literature_cover_reference.md")
+
+
 class ImageApiError(RuntimeError):
     """Base exception for image API failures."""
 
@@ -529,7 +540,7 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
             category_label=cover_input.category_label,
             search_keywords=keywords[:240],
             analysis=(
-                "参考豆瓣高分文学与微信读书精选封面：现代出版设计、简洁克制、有留白，"
+                "参考用户提供的正统出版封面长期文件、微信读书精选与豆瓣高分文学封面：现代出版设计、简洁克制、有留白，"
                 "弱化剧情与人物主体，强化氛围、平面构成、纸张肌理和书籍气质。"
                 "配色克制但有识别度，避免灰蒙蒙做旧、古风模板、影视海报感、晋江小说封面和厚重书法字。"
             ),
@@ -569,6 +580,8 @@ def _json_object_from_text(text: str) -> dict[str, Any]:
 
 
 def analyze_cover_market_match(cover_input: CoverInput) -> CoverMarketMatch:
+    if _is_literature_publishing(cover_input.category):
+        return _fallback_market_match(cover_input)
     if not settings.COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED or not (settings.DEEPSEEK_API_KEY or "").strip():
         return _fallback_market_match(cover_input)
 
@@ -603,21 +616,6 @@ Excel 分类：{cover_input.category_label}
   "search_keywords": "用于当当网与微信读书治愈绘本封面检索的中文关键词，80字以内",
   "analysis": "用120字以内总结日韩治愈系绘本封面的私人日记感、高饱和纯色背景、简洁构图、大留白、松弛笨拙线条、真实手绘颗粒感和超大手写标题；必须强调背景不要渐变，避免商业心理书、PPT感、UI插画风、过度精致和AI感",
   "visual_plan": "用160字以内先为这本书单独判断动物或人物主体、构图方式、纯色背景颜色、季节、空间、视角、画面叙事和1到2句短金句策略；必须来自书名和简介，不要套用孤独小人、蓝天色块、植物边框、桌面日记本、杯子、台灯、便签或同一种治愈模板；背景必须高饱和纯色且不要渐变；线条要松弛笨拙，留白要多；金句只能做手写旁注"
-}}"""
-    elif _is_literature_publishing(cover_input.category):
-        prompt = f"""你是中文出版封面市场分析师。请根据 Excel 中的书名、简介、作者、分类判断这本文学书应参考哪类现代出版封面，再给当当/微信读书/豆瓣高分文学封面检索提供关键词。
-
-书名：{cover_input.title}
-作者：{cover_input.author}
-简介：{cover_input.intro}
-Excel 分类：{cover_input.category_label}
-可选分类：{_category_options_for_market_prompt()}
-
-只输出 JSON，不要输出解释文字：
-{{
-  "category_label": "最适合用于检索同类封面的中文分类名，优先贴近 Excel 分类",
-  "search_keywords": "用于当当网、微信读书和豆瓣高分文学同类封面检索的中文关键词，80字以内",
-  "analysis": "用120字以内总结现代文学出版封面的气质：简洁克制、有留白，弱化剧情和人物主体，强化氛围、平面构成、纸张肌理和书籍气质；配色克制但有识别度；避免灰蒙蒙做旧、古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感和廉价AI插画感"
 }}"""
     else:
         prompt = f"""你是中文出版封面市场分析师。请先根据 Excel 中的书名、简介、作者、分类判断这本书应参考哪类畅销书封面，再给当当/微信读书/得到风格检索提供关键词。
@@ -763,10 +761,14 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     is_crayon = _is_crayon_illustration(cover_input.category)
     is_literature = _is_literature_publishing(cover_input.category)
     market_match = analyze_cover_market_match(cover_input)
-    references = collect_reference_covers(
-        cover_input,
-        limit=6 if is_crayon else 12,
-        market_match=market_match,
+    references = (
+        ()
+        if is_literature
+        else collect_reference_covers(
+            cover_input,
+            limit=6 if is_crayon else 12,
+            market_match=market_match,
+        )
     )
     category_prompt_adjustment = get_cover_category_prompt_adjustment(cover_input.category)
     style_brief_rules = category_prompt_adjustment["style_brief_rules"]
@@ -846,7 +848,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
     elif is_literature:
         avoid_rules = (
-            "只学习豆瓣高分文学、微信读书精选和当当文学书封面的抽象出版规律，不复刻、不拼贴、不近似复制任何真实封面。",
+            "只学习用户提供的正统出版封面长期文件、微信读书精选和豆瓣高分文学书封的抽象出版规律，不复刻、不拼贴、不近似复制任何真实封面。",
             "不要出现出版社 logo、出版品牌 logo、原出版信息、二维码、价格、水印、真实品牌背书或真实书名残影。",
             "不要古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感、廉价AI插画感、电商商品主图或3D书模。",
             "不要生成乱码中文、英文占位符、真实人物肖像、名人脸、可识别照片脸。",
@@ -855,9 +857,9 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             *style_brief_rules,
         )
         color_palette = tuple(profile["colors"])
-        reference_site = "当当网 + 微信读书精选 + 豆瓣高分文学封面分析"
+        reference_site = "本地正统出版参考文件 + 微信读书精选 + 豆瓣高分文学封面分析"
         brand_style_direction = (
-            "优先参考现代文学出版封面的抽象审美：简洁、克制、有留白，"
+            "优先参考用户提供的正统出版封面长期文件、微信读书精选和豆瓣高分文学的抽象审美：简洁、克制、有留白，"
             "弱剧情、弱人物主体，强化氛围、平面构成、纸张肌理和书籍气质。"
         )
         title_hierarchy = (
@@ -866,7 +868,8 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
         generation_prompt_addendum = (
             f"{profile['addendum']}\n"
-            f"DeepSeek 分类/市场分析：{market_match.analysis}\n"
+            f"长期参考文件摘要：{_LITERATURE_COVER_REFERENCE[:900]}\n"
+            f"本地分类/市场分析：{market_match.analysis}\n"
             f"{style_brief_addendum}"
             "整体安静、诗意、有孤独感与呼吸感，同时保留现代感与视觉吸引力。"
         )
@@ -894,7 +897,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
     return CoverStyleBrief(
         reference_site=reference_site,
-        reference_brands=ALLOWED_REFERENCE_BRANDS,
+        reference_brands=() if is_literature else ALLOWED_REFERENCE_BRANDS,
         matched_category_style=f"{cover_input.category_label}: {profile['style']}",
         brand_style_direction=brand_style_direction,
         cover_type=str(profile["cover_type"]),
@@ -969,7 +972,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         title_author_rule_section = ""
         visual_variation_section = ""
         market_rule_section = (
-            "- 工作流第一步已经做了 DeepSeek 分类/市场判断，并检索当当网、微信读书精选与豆瓣高分文学同类封面。"
+            "- 工作流第一步已使用本地正统出版长期参考文件，并参考微信读书精选与豆瓣高分文学同类封面的抽象规律。"
             "你只学习现代文学出版封面的抽象规律，不复刻、不拼贴、不近似复制任何真实封面。\n"
             "- 文艺文学感书封：现代出版设计风格，简洁、克制、有留白；弱化剧情感与人物主体，强化氛围、平面构成与书籍气质。\n"
         )
@@ -993,6 +996,11 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
             "- 书名最大，作者名次之；简介只能提炼成一句很短副标题或封面文案，不要整段上封面。\n"
         )
         text_rule = "- 中文文字尽量准确清晰，像真实出版封面排版；不要乱码中文、伪中文、英文占位符。\n"
+    platform_logo_rule = (
+        "- 不要出现出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、二维码、价格、水印、真实品牌背书、真实书名残影。"
+        if is_literature
+        else "- 不要出现出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、二维码、价格、水印、真实品牌背书、真实书名残影。"
+    )
     return f"""你是资深中文出版封面设计师。请严格根据 Excel 提供的书名、作者、简介、分类，生成一张竖版中文图书正面封面。
 
 书籍信息：
@@ -1009,7 +1017,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 {color_and_type_rules.rstrip()}
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如需人物，只能使用抽象剪影、背影、符号化小人或非写实插画。
 {title_author_rule_section}{text_rule.rstrip()}
-- 不要出现出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、二维码、价格、水印、真实品牌背书、真实书名残影。
+{platform_logo_rule}
 - 不要 3D 书模、书脊、白底商品照、赠品、贴纸角标、促销条、电影海报风、电商主图风。
 
 参考风格报告：
@@ -1066,12 +1074,16 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
             "平面插画或轻水彩质感，轻微颗粒与纸张肌理。"
             "避免古风模板、影视海报感、晋江小说封面、厚重书法字、PPT感和廉价AI插画感。"
         )
+        deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
     else:
         title_author_rule_section = ""
         visual_variation_section = ""
         opening = "请精修这张封面，让它成为可直接商用、具有成熟出版质感的中文图书封面。"
         composition_rule = "- 保留草稿的核心视觉和书籍气质，但让构图更稳、标题更清晰、字体层级更专业。"
         market_rule = "- 强化微信读书/得到系爆款风：高饱和色块、强标题识别、明确留白、少量精准视觉隐喻，手机端缩略图也醒目。"
+        deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
+    if _is_visual_impact(cover_input.category) or _is_crayon_illustration(cover_input.category):
+        deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
     return f"""{opening}
 
 书籍信息：
@@ -1090,7 +1102,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 - 如果是蜡笔分类，背景必须是高饱和纯色，不能使用渐变背景、光效渐变、网格渐变或多色晕染。
 - 如果草稿是桌面、摊开的日记本、杯子、台灯、便签、碎纸和窗边静物的通用组合，必须重构为本书专属主意象、空间、视角和纯色背景；私人日记只保留为情绪气质。
 {market_rule}
-- 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。
+{deletion_rule}
 - 禁止真实人物肖像、名人脸、写实人像、可识别照片脸；如已有此类内容，改成抽象剪影、背影、符号化小人或非写实插画。
 - 不要改成电商商品图，不要出现 3D 书本样机、书脊、赠品、白底商品展示。
 

@@ -353,10 +353,15 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
     assert "豆瓣高分文学与微信读书精选封面" in prompt
+    assert brief.reference_site.startswith("本地正统出版参考文件")
+    assert brief.reference_brands == ()
+    assert brief.reference_samples == ()
+    assert "长期参考文件摘要" in brief.generation_prompt_addendum
     assert "现代出版设计风格，简洁、克制、有留白" in prompt
     assert "避免古风模板" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "高饱和、强识别" not in prompt
+    assert "当当网" not in prompt
     assert get_cover_category_meta("literature")["label"] == "正统出版"
 
 
@@ -410,6 +415,7 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "标题排版高级、稀疏、克制" in prompt
     assert "避免古风模板、避免影视海报感、避免晋江小说封面" in prompt
     assert "微信读书/得到系爆款风" not in prompt
+    assert "当当网" not in prompt
 
 
 def test_generate_cover_file_writes_three_stage_artifacts(

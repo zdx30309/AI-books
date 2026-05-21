@@ -35,6 +35,7 @@ from app.services.comic_series import (
     parse_comic_input_parts,
     parse_comic_phrases,
     parse_comic_preface_phrase,
+    parse_comic_theme_requirement,
     parse_comic_title,
     validate_comic_phrases,
 )
@@ -205,6 +206,12 @@ def _normalize_task_config(config: dict | None) -> dict:
             title = raw_title
         if not title:
             raise HTTPException(status_code=400, detail=f"{comic_label}需要输入书名")
+        theme_requirement = parse_comic_theme_requirement(
+            cfg.get("comic_theme_requirement")
+            or cfg.get("theme_requirement")
+            or cfg.get("animal_theme")
+            or ""
+        )
         phrases = (
             parse_comic_phrases(cfg.get("comic_phrases"))
             if cfg.get("comic_phrases")
@@ -222,12 +229,17 @@ def _normalize_task_config(config: dict | None) -> dict:
             raise HTTPException(status_code=400, detail=detail) from exc
         cfg["comic_title"] = title
         cfg["title"] = title
+        if theme_requirement:
+            cfg["comic_theme_requirement"] = theme_requirement
+        else:
+            cfg.pop("comic_theme_requirement", None)
         cfg["comic_preface_phrase"] = preface_phrase
         cfg["comic_phrases"] = phrases
         cfg["raw_text"] = comic_raw_text_from_phrases(
             phrases,
             preface_phrase=preface_phrase,
             title=title,
+            theme_requirement=theme_requirement,
         )
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     return cfg

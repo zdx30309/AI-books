@@ -1246,9 +1246,6 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 - 不要提及任何现成 IP、动漫角色、绘本人物、游戏角色、影视角色、品牌名、平台名或画师名。
 - 不要模仿具体在世作者、画师或商业 IP 的标志性表达，只能保持原创治愈绘本气质。
 
-【漫画端口长期参考与防抄袭规范】
-{HEALING_COMIC_REFERENCE}
-
 【语言与排版】
 - 故事正文以短句和对话为主，适合漫画分镜和绘本排版。
 - 对白自然克制，像成年人朋友聊天，不要写成英语课本或儿童双语绘本。
@@ -1261,6 +1258,12 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 {{raw_text}}
 
 请直接输出完整漫画系列书稿。"""
+
+
+HEALING_COMIC_FULL_BOOK_WRITER_PROMPT = COMIC_SERIES_FULL_BOOK_WRITER_PROMPT.replace(
+    "【语言与排版】",
+    f"【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n\n【语言与排版】",
+)
 
 
 COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的漫画系列书稿润色得更自然、温柔、短句化，像日本成年人治愈漫画与文创绘本的正文。
@@ -1348,7 +1351,7 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         formatter="",
     ),
     "healing_comic": _prompt_set(
-        COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
+        HEALING_COMIC_FULL_BOOK_WRITER_PROMPT,
         polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
         refine=COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT,
         formatter="",

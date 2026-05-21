@@ -1053,6 +1053,7 @@ def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
 async def _generate_comic_series_book(
     raw_text: str,
     *,
+    category: str,
     prompts: dict[str, str],
     output_dir: Path | None,
     on_stage: StageCallback | None,
@@ -1065,10 +1066,21 @@ async def _generate_comic_series_book(
         inject_comic_images,
         parse_comic_input_parts,
         parse_comic_phrases,
+        parse_comic_theme_requirement,
         validate_comic_phrases,
     )
 
     title, preface_phrase, phrases = parse_comic_input_parts(raw_text)
+    theme_requirement = parse_comic_theme_requirement(
+        next(
+            (
+                line
+                for line in raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                if line.strip().startswith(("主题要求", "动物主题", "角色要求", "主角要求", "用户要求"))
+            ),
+            "",
+        )
+    )
     if not phrases:
         phrases = parse_comic_phrases(raw_text)
     validate_comic_phrases(phrases)
@@ -1078,6 +1090,7 @@ async def _generate_comic_series_book(
             json.dumps(
                 {
                     "title": title,
+                    "theme_requirement": theme_requirement,
                     "preface_phrase": preface_phrase,
                     "phrases": phrases,
                 },
@@ -1089,7 +1102,12 @@ async def _generate_comic_series_book(
 
     if output_dir is None:
         raise ValueError("漫画系列需要 output_dir 以保存每一辑配图")
-    writer_input = build_comic_writer_input(phrases, preface_phrase=preface_phrase, title=title)
+    writer_input = build_comic_writer_input(
+        phrases,
+        preface_phrase=preface_phrase,
+        title=title,
+        theme_requirement=theme_requirement,
+    )
     _dump_stage(output_dir, "00_comic_writer_input.md", writer_input)
 
     refined_markdown = assemble_comic_series_markdown(phrases, preface_phrase=preface_phrase, title=title)
@@ -1114,6 +1132,8 @@ async def _generate_comic_series_book(
         allow_uncertain=True,
         title=title or extract_comic_title(refined_markdown) or None,
         preface_phrase=preface_phrase,
+        theme_requirement=theme_requirement,
+        include_healing_reference=category == "healing_comic",
         on_progress=_image_progress,
     )
 
@@ -1225,6 +1245,7 @@ async def generate_full_book(
     if normalized_category in {"comic_series", "healing_comic"}:
         return await _generate_comic_series_book(
             raw_text,
+            category=normalized_category,
             prompts=prompts,
             output_dir=output_dir,
             on_stage=on_stage,
