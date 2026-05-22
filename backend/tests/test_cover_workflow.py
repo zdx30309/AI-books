@@ -31,16 +31,19 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
 LITERATURE_PUBLISHING_PROMPT = (
-    "正统出版强参考：参考用户提供的长期素材库，以及微信读书、得到系列等成熟出版封面的设计规律，尽量贴近真实出版封面的排版质感，而不是随机好看的 AI 图。\n"
-    "可以高相似度参考成熟封面的排版骨架、标题层级、留白比例、文字位置、主视觉占比、背景处理、配色气质和手机书架缩略图识别度；排版和配色可以明显靠近参考图。\n"
-    "生成时必须以当前书名、作者、分类和内容简介为主，至少调整主视觉内容、具体图形、人物或物件关系、标题分行细节、局部装饰方式、背景纹理或画面细节，不能把某一本真实封面简单换书名、换作者、换元素。\n"
-    "主视觉可以参考成熟封面的组织方式和位置关系，但具体视觉内容必须服务于当前书的主题、情绪和读者期待；不要为了追求原创而做得不出版、不好看、不像书。\n"
-    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号；所有装饰必须服务于标题层级、版面结构或主视觉关系。\n"
-    "可以有轻微纸感、纸张纹理或出版印刷质感，但文字和背景必须干净清晰；不要脏、破损、坑洼、发霉、擦烂、旧化到影响阅读或让画面变脏。\n"
-    "版权边界：可以像某一类成熟出版封面，可以明显借鉴某种排版方式，但不要让人一眼认出是在改某一本具体封面；不要复制真实封面的完整构图组合。\n"
-    "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
+    "正统出版版式迁移：生成封面时，以用户当前提供的书名、作者、分类和简介为主；封面的版式结构应优先参考素材库中相近题材、相近气质、相近商业位置的成熟封面，不要绑定任何固定平台系列的气质。\n"
+    "不要只抽象学习“出版感”。生成前必须先从参考图库中选择一张最适合本书的封面作为主要版式参考，不要自行发明新构图；内部可以逐个尝试不同正统出版 prompt 方向，比较后只输出最像真实出版物、最适合本书的一版。\n"
+    "可以高相似度参考：标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置、留白比例、主视觉占比、主视觉与标题的相对关系、背景色块关系、整体版面重心、手机书架缩略图识别度。\n"
+    "允许排版和配色与参考封面接近，尤其标题位置、留白节奏、主视觉比例、色块关系和整体封面气质可以尽量贴近素材库中的成熟案例。\n"
+    "主视觉必须根据当前书名和简介重新选择；可以沿用参考封面的主视觉位置、面积比例和图文关系，但具体内容要与当前书相关，不能为了原创而完全脱离参考图库。\n"
+    "配色可以参考素材库中的成熟封面，允许使用相近的色彩气质、明度关系、冷暖关系和对比方式；但不要完全照搬某一本封面的完整配色比例，主色、辅助色、点缀色中至少调整一处来适配当前书。\n"
+    "标题是第一识别信息，必须清晰、有层级，适合手机书架缩略图识别；不要添加大段简介、营销金句、课程口号或无意义小字。\n"
+    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号；所有装饰元素都必须服务于标题层级、版面结构或主视觉关系，不要为了填补留白或制造高级感而补线、补点、补符号。\n"
+    "允许有纸感，但纸张质感必须干净、平整、细腻；不要让文字和背景变脏、破损、坑洼，不要斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果，文字区域保持纯净清晰，不要让肌理干扰阅读。\n"
+    "版权边界：可以明显借鉴某个参考封面的排版，甚至像同一类封面；但不能让人觉得只是把某一本封面换了书名、换了作者、换了一个相似图案，不能复制真实书名、出版社信息、logo、二维码、价格、水印、已有摄影作品、已有插画作品、可识别真实人物肖像或某一本封面的完整构图组合。\n"
+    "删除所有出版社 logo、出版品牌 logo、第三方平台 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
     "禁止真实品牌背书、真实书名残影。\n"
-    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡；不要知识付费海报感、PPT课程封面感、公众号长图感、电商商品图感、网文封面感、廉价AI插画感、过度3D感或促销广告感。"
+    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡；最终效果应像从素材库中选了一张成熟出版封面作为版式母版，再根据当前书名和简介重新设计出的新封面。"
 )
 
 
@@ -354,21 +357,24 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
-    assert "本地正统出版长期封面库 + 微信读书/得到系列封面搜索分析" in prompt
+    assert "本地正统出版长期封面库 + 成熟出版封面方法探索" in prompt
     assert brief.reference_site.startswith("本地正统出版长期封面库")
     assert brief.reference_brands == ()
     assert brief.reference_samples == ()
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "正统出版强参考" in prompt
-    assert "可以高相似度参考成熟封面的排版骨架、标题层级、留白比例" in prompt
-    assert "排版和配色可以明显靠近参考图" in prompt
-    assert "不能把某一本真实封面简单换书名、换作者、换元素" in prompt
-    assert "主视觉可以参考成熟封面的组织方式和位置关系" in prompt
-    assert "文字和背景必须干净清晰" in prompt
-    assert "不要脏、破损、坑洼、发霉" in prompt
+    assert "正统出版版式迁移" in prompt
+    assert "不要绑定任何固定平台系列的气质" in prompt
+    assert "不要只抽象学习“出版感”" in prompt
+    assert "选择一张最适合本书的封面作为主要版式参考" in prompt
+    assert "不要自行发明新构图" in prompt
+    assert "标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置" in prompt
+    assert "主视觉必须根据当前书名和简介重新选择" in prompt
+    assert "主色、辅助色、点缀色中至少调整一处" in prompt
+    assert "不要让文字和背景变脏、破损、坑洼" in prompt
+    assert "不要斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in prompt
+    assert "像从素材库中选了一张成熟出版封面作为版式母版" in prompt
     assert "不要随意添加无意义的横线、竖线、圆点、印章、编号" in prompt
-    assert "不要知识付费海报感、PPT课程封面感" in prompt
-    assert "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo" in prompt
+    assert "删除所有出版社 logo、出版品牌 logo、第三方平台 logo" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
@@ -419,14 +425,17 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "正统出版强参考" in prompt
-    assert "尽量贴近真实出版封面的排版质感" in prompt
-    assert "排版骨架、标题层级、留白比例、文字位置、主视觉占比" in prompt
-    assert "不要让人一眼认出是在改某一本具体封面" in prompt
+    assert "正统出版版式迁移" in prompt
+    assert "必须先从参考图库中选择一张最适合本书的封面作为主要版式参考" in prompt
+    assert "标题所在区域、标题大小关系、标题分行方式" in prompt
+    assert "内部逐个尝试强标题留白型、色块标题型" in prompt
+    assert "可以明显借鉴某个参考封面的排版" in prompt
     assert "禁止真实品牌背书、真实书名残影" in prompt
-    assert "可以有轻微纸感、纸张纹理或出版印刷质感" in prompt
-    assert "文字和背景必须干净清晰" in prompt
+    assert "纸张质感必须干净、平整、细腻" in prompt
+    assert "文字区域保持纯净清晰" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
+    assert "微信读书" not in prompt
+    assert "得到系列" not in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
 
