@@ -69,9 +69,11 @@ function CoverPreview({
   selectionMode,
   deleting,
   retrying,
+  regenerating,
   onToggle,
   onDelete,
   onRetry,
+  onRegenerate,
 }: {
   jobId: string;
   item: CoverJobItem;
@@ -79,9 +81,11 @@ function CoverPreview({
   selectionMode: boolean;
   deleting: boolean;
   retrying: boolean;
+  regenerating: boolean;
   onToggle: () => void;
   onDelete: () => void;
   onRetry: () => void;
+  onRegenerate: () => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
 
@@ -154,6 +158,25 @@ function CoverPreview({
           title="重试单张封面"
         >
           {retrying ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+          ) : (
+            <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
+          )}
+        </button>
+      )}
+      {!selectionMode && item.status === "completed" && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRegenerate();
+          }}
+          disabled={regenerating}
+          className="absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-gold-300/35 bg-base-900/80 text-gold-100 shadow transition-colors hover:border-gold-200/70 disabled:opacity-50"
+          aria-label="重新生成单张封面"
+          title="重新生成单张封面"
+        >
+          {regenerating ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
           ) : (
             <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
@@ -323,6 +346,16 @@ export function CoverGeneratorPanel() {
         (item) =>
           selectedItemIndexes.has(item.index) &&
           (item.status === "failed" || item.status === "uncertain"),
+      ).length,
+    [selectedItemIndexes, visibleItems],
+  );
+  const selectedRegeneratableItemCount = useMemo(
+    () =>
+      visibleItems.filter(
+        (item) =>
+          selectedItemIndexes.has(item.index) &&
+          item.status !== "deleted" &&
+          item.status !== "processing",
       ).length,
     [selectedItemIndexes, visibleItems],
   );
@@ -639,6 +672,65 @@ export function CoverGeneratorPanel() {
     }
   };
 
+  const regenerateCurrent = async () => {
+    if (!job || job.items.length === 0) return;
+    const ok = window.confirm("确定重新生成当前任务里所有可重新生成的封面吗？已完成图片会被新图替换。");
+    if (!ok) return;
+    setWorking("regenerate-job");
+    setError(null);
+    try {
+      await api.regenerateCoverJob(job.job_id);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "重新生成封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const regenerateItem = async (index: number) => {
+    if (!job) return;
+    const target = job.items.find((item) => item.index === index);
+    const ok = window.confirm(`确定重新生成《${target?.title || "这张封面"}》吗？当前图片会被新图替换。`);
+    if (!ok) return;
+    setWorking(`regenerate-item-${index}`);
+    setError(null);
+    try {
+      await api.regenerateCoverJobItem(job.job_id, index);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "重新生成单张封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const regenerateSelectedItems = async () => {
+    if (!job || selectedRegeneratableItemCount === 0) return;
+    const indexes = visibleItems
+      .filter(
+        (item) =>
+          selectedItemIndexes.has(item.index) &&
+          item.status !== "deleted" &&
+          item.status !== "processing",
+      )
+      .map((item) => item.index);
+    const ok = window.confirm(`确定重新生成选中的 ${indexes.length} 张封面吗？当前图片会被新图替换。`);
+    if (!ok) return;
+    setWorking("regenerate-items");
+    setError(null);
+    try {
+      await api.regenerateCoverJobItems(job.job_id, { indexes });
+      setSelectedItemIndexes(new Set());
+      setItemSelectionMode(false);
+      await loadJobs(job.job_id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "批量重新生成封面失败");
+    } finally {
+      setWorking(null);
+    }
+  };
+
   return (
     <section>
       <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -886,6 +978,21 @@ export function CoverGeneratorPanel() {
                     重试失败
                   </button>
                 )}
+                {job && job.items.some((item) => item.status !== "deleted" && item.status !== "processing") && (
+                  <button
+                    type="button"
+                    onClick={regenerateCurrent}
+                    disabled={working !== null}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    {working === "regenerate-job" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.6} />
+                    ) : (
+                      <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    )}
+                    全部重生
+                  </button>
+                )}
                 {job && job.completed > 0 && (
                   <button
                     type="button"
@@ -986,6 +1093,14 @@ export function CoverGeneratorPanel() {
                     </button>
                     <button
                       type="button"
+                      onClick={regenerateSelectedItems}
+                      disabled={selectedRegeneratableItemCount === 0 || working !== null}
+                      className="rounded-full border border-gold-400/30 bg-gold-500/10 px-3 py-1.5 text-[10px] tracking-widest text-gold-100 disabled:opacity-50"
+                    >
+                      重生 {selectedRegeneratableItemCount || ""} 张
+                    </button>
+                    <button
+                      type="button"
                       onClick={deleteSelectedItems}
                       disabled={selectedItemCount === 0 || working !== null}
                       className="rounded-full border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-[10px] tracking-widest text-red-100 disabled:opacity-50"
@@ -1013,9 +1128,15 @@ export function CoverGeneratorPanel() {
                     working === "retry-items" ||
                     working === "retry-failed"
                   }
+                  regenerating={
+                    working === `regenerate-item-${item.index}` ||
+                    working === "regenerate-items" ||
+                    working === "regenerate-job"
+                  }
                   onToggle={() => toggleItemSelection(item.index)}
                   onDelete={() => deleteItem(item.index)}
                   onRetry={() => retryItem(item.index)}
+                  onRegenerate={() => regenerateItem(item.index)}
                 />
               ))}
             </div>

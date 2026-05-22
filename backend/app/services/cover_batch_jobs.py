@@ -376,6 +376,53 @@ def retry_cover_batch_items(
     return get_cover_batch_job(db, job_id) or job
 
 
+def regenerate_cover_batch_items(
+    db: Session,
+    job_id: str,
+    indexes: list[int] | None = None,
+) -> CoverBatchJob:
+    job = get_cover_batch_job(db, job_id)
+    if job is None:
+        raise FileNotFoundError(job_id)
+    requested = {int(index) for index in indexes or [] if int(index) > 0} if indexes is not None else None
+    regenerated = 0
+    now = now_utc()
+    for item in job.items:
+        if requested is not None and item.item_index not in requested:
+            continue
+        if item.status in {CoverBatchItemStatus.DELETED, CoverBatchItemStatus.PROCESSING}:
+            continue
+        path = Path(item.image_path or image_path(job_id, item.item_index, item.title))
+        if path.exists():
+            path.unlink()
+        work_dir = path.parent / f".{path.stem}_work"
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        for artifact in list(item.artifacts or []):
+            artifact_path = Path(artifact.path or "")
+            if artifact_path.exists():
+                artifact_path.unlink()
+            db.delete(artifact)
+        item.status = CoverBatchItemStatus.PENDING
+        item.error = None
+        item.image_url = None
+        item.current_stage = None
+        item.retry_after = None
+        item.retry_count = 0
+        item.leased_by = None
+        item.lease_expires_at = None
+        item.completed_at = None
+        item.updated_at = now
+        regenerated += 1
+    if regenerated:
+        job.status = CoverBatchStatus.PENDING
+        job.current_step = f"Requeued {regenerated} cover item(s) for regeneration"
+        job.completed_at = None
+    aggregate_cover_batch_job(db, job_id)
+    db.commit()
+    return get_cover_batch_job(db, job_id) or job
+
+
 def claim_ready_cover_items(
     db: Session,
     job_id: str,

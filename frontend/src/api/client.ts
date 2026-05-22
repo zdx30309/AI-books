@@ -414,6 +414,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  regenerateCoverJob: (jobId: string) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/regenerate`, { method: "POST" }),
+  regenerateCoverJobItem: (jobId: string, index: number) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/${index}/regenerate`, {
+      method: "POST",
+    }),
+  regenerateCoverJobItems: (jobId: string, body: CoverJobItemBatchRetryRequest) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/items/batch-regenerate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   downloadCoverJob: async (jobId: string) => {
     const { blob, filename } = await download(`/covers/jobs/${jobId}/download`);
     saveBlob(blob, filename);

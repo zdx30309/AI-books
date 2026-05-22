@@ -441,6 +441,66 @@ def retry_cover_job_items(
     return data
 
 
+def regenerate_cover_job_items(
+    job_id: str,
+    indexes: list[int] | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Force selected cover items back to pending and delete all generated artifacts."""
+    data = dict(status or read_status(job_id))
+    was_active = data.get("status") in {"pending", "processing"}
+    requested: set[int] | None = None
+    if indexes is not None:
+        requested = set()
+        for raw_index in indexes:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if index > 0:
+                requested.add(index)
+    items = list(data.get("items") or [])
+    regenerated = 0
+    for item in items:
+        try:
+            index = int(item.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        if index <= 0:
+            continue
+        if requested is not None and index not in requested:
+            continue
+        if item.get("status") in {"deleted", "processing"}:
+            continue
+
+        _delete_item_artifacts(job_id, item)
+        item.update(
+            status="pending",
+            image_url=None,
+            error=None,
+            auto_retry_count=0,
+            regenerated_at=now_iso(),
+        )
+        item.pop("run_id", None)
+        item.pop("current_stage", None)
+        item.pop("stage_started_at", None)
+        item.pop("last_heartbeat_at", None)
+        item.pop("retry_after", None)
+        item.pop("completed_at", None)
+        regenerated += 1
+
+    if regenerated:
+        data["items"] = items
+        if data.get("status") != "paused" and not was_active:
+            data["status"] = "pending"
+        data["current_step"] = f"已将 {regenerated} 张封面放回重新生成队列"
+        if not was_active:
+            data["active_run_id"] = None
+        recount_status(data)
+        write_status(job_id, data)
+    return data
+
+
 def pause_cover_job(job_id: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
     data = dict(status or read_status(job_id))
     if data.get("status") in {"completed", "deleted"}:

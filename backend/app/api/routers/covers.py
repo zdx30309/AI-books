@@ -34,6 +34,7 @@ from app.services.cover_batch_jobs import (
     pause_cover_batch_job,
     provider_queue_status,
     public_cover_batch_job_status,
+    regenerate_cover_batch_items,
     retry_cover_batch_items,
     resume_cover_batch_job,
 )
@@ -48,6 +49,7 @@ from app.services.cover_jobs import (
     parse_cover_spreadsheet,
     public_cover_job_status,
     read_status,
+    regenerate_cover_job_items,
     retry_cover_job_items,
     resume_cover_job,
     write_status,
@@ -396,6 +398,70 @@ def retry_my_cover_job_item(
             _enqueue_cover_batch_job(job_id)
             return _v2_response(next_job)
     status = retry_cover_job_items(job_id, [index], _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
+
+
+@router.post(
+    "/jobs/{job_id}/regenerate",
+    response_model=CoverJobResponse,
+    summary="重新生成独立封面任务中的全部封面",
+)
+def regenerate_my_cover_job_items(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = regenerate_cover_batch_items(db, job_id, None)
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
+    status = regenerate_cover_job_items(job_id, None, _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
+
+
+@router.post(
+    "/jobs/{job_id}/items/batch-regenerate",
+    response_model=CoverJobResponse,
+    summary="批量重新生成独立封面任务中的单张封面",
+)
+def regenerate_my_cover_job_items_batch(
+    job_id: str,
+    req: CoverJobItemBatchRetryRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    if not req.indexes:
+        raise HTTPException(status_code=400, detail="请选择要重新生成的封面")
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = regenerate_cover_batch_items(db, job_id, req.indexes)
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
+    status = regenerate_cover_job_items(job_id, req.indexes, _owned_status(job_id, user))
+    return _response(_enqueue_retry_if_needed(job_id, status))
+
+
+@router.post(
+    "/jobs/{job_id}/items/{index}/regenerate",
+    response_model=CoverJobResponse,
+    summary="重新生成独立封面任务中的单张封面",
+)
+def regenerate_my_cover_job_item(
+    job_id: str,
+    index: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = regenerate_cover_batch_items(db, job_id, [index])
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
+    status = regenerate_cover_job_items(job_id, [index], _owned_status(job_id, user))
     return _response(_enqueue_retry_if_needed(job_id, status))
 
 
