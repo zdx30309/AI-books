@@ -16,6 +16,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts, normalize_category
+from app.services.classical_chinese import build_classical_prompt_source
 from app.services.deepseek import format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
@@ -1319,6 +1320,7 @@ async def generate_full_book(
     on_stage: StageCallback | None = None,
     style_reference: str | None = None,
     style_notes: str | None = None,
+    classical_variant: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
     prompts = get_prompts(normalized_category)
@@ -1326,6 +1328,12 @@ async def generate_full_book(
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
+    writer_input_text = raw_text.strip()
+    if normalized_category == "classical_chinese":
+        writer_input_text = build_classical_prompt_source(
+            writer_input_text,
+            variant=classical_variant,
+        )
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1377,7 +1385,7 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("writer_start", {})
-        writer_prompt = full_book_writer_prompt.format(raw_text=raw_text.strip())
+        writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
         writer_prompt = _append_style_reference_prompt(
             writer_prompt,
             category=normalized_category,

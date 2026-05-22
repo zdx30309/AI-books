@@ -178,6 +178,11 @@ class Settings(BaseSettings):
     YOUTUBE_COOKIES_FILE: str = ""
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
 
+    # --- 古文白话 ---
+    CLASSICAL_DICTIONARY_PATH: str = "backend/output/classical_dictionary/dict-revised.json.xz"
+    CLASSICAL_DICTIONARY_CONTEXT_MAX_CHARS: int = 4500
+    CLASSICAL_DICTIONARY_MAX_ENTRIES: int = 80
+
     # --- 5000字章节墙 (业务硬性指标) ---
     CHAPTER_TARGET_WORDS: int = 5000
     CHAPTER_MIN_WORDS: int = 4500

@@ -12,7 +12,7 @@ from urllib.parse import quote
 from uuid import UUID
 from xml.sax.saxutils import escape
 
-from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
@@ -39,6 +39,7 @@ from app.services.comic_series import (
     parse_comic_title,
     validate_comic_phrases,
 )
+from app.services.classical_chinese import get_classical_variant_meta
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -198,6 +199,13 @@ def _normalize_task_config(config: dict | None) -> dict:
     else:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
+    if category == "classical_chinese":
+        variant_meta = get_classical_variant_meta(cfg.get("classical_variant"))
+        cfg["classical_variant"] = variant_meta["id"]
+        cfg["classical_variant_label"] = variant_meta["label"]
+    else:
+        cfg.pop("classical_variant", None)
+        cfg.pop("classical_variant_label", None)
     if category == "healing_comic":
         title = parse_comic_title(
             cfg.get("comic_title")
@@ -528,6 +536,7 @@ def create_task(
 )
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
+    classical_variant: str = Form(default="plain"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
@@ -543,6 +552,7 @@ async def create_classical_chinese_from_docx(
     cfg = _normalize_task_config(
         {
             "category": "classical_chinese",
+            "classical_variant": classical_variant,
             "raw_text_chars": len(raw_text),
             "source_filename": filename[:255],
             "input_source": "docx_upload",

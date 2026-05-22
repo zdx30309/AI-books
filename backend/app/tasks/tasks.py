@@ -819,6 +819,7 @@ def process_video(_self, task_id: str) -> dict:
                 on_stage=_on_stage,
                 style_reference=str((task.config or {}).get("style_reference") or "").strip() or None,
                 style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
+                classical_variant=str((task.config or {}).get("classical_variant") or "").strip() or None,
             )
         )
         _ensure_active_run(db, task, run_id)

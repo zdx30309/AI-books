@@ -15,6 +15,10 @@ from app.prompts.goal_driven_templates import (
     get_category_meta,
     get_prompts,
 )
+from app.services.classical_chinese import (
+    build_classical_prompt_source,
+    get_classical_variant_meta,
+)
 from app.services import content_engine
 from app.services.gemini import GeminiMaxTokensError
 
@@ -45,7 +49,12 @@ def test_generate_full_book_routes_writer_prompt_by_category(
 ) -> None:
     raw_text = "这是一段用于本地路由测试的原始文稿。"
     writer_prompts: list[str] = []
-    expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=raw_text)
+    expected_raw_text = (
+        build_classical_prompt_source(raw_text)
+        if category == "classical_chinese"
+        else raw_text
+    )
+    expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
         if prompt == expected_prompt:
@@ -105,6 +114,23 @@ def test_crayon_illustration_is_not_a_body_writing_category() -> None:
         get_category_meta("illustration")
     with pytest.raises(ValueError):
         get_category_meta("illustration_crayon")
+
+
+def test_classical_chinese_has_dedicated_translation_direction() -> None:
+    prompt = get_prompts("classical_chinese")["full_book_writer"]
+    task_source = build_classical_prompt_source(
+        "子曰：学而时习之。",
+        variant="zhiguai_web",
+    )
+    rendered = prompt.format(raw_text=task_source)
+
+    assert "古文白话大板块" in rendered
+    assert "形似神似，活灵活现" in rendered
+    assert "不要脑补剧情，不要跳剧情，不要自己加开头和结尾" in rendered
+    assert "志怪小说爽读版" in rendered
+    assert "以剧情和人物对话为核心" in rendered
+    assert "【古汉语词典摘录】" in rendered
+    assert get_classical_variant_meta("武侠小说爽读版")["id"] == "wuxia_web"
 
 
 def test_web_short_story_style_reference_keeps_history_prompt_sync(

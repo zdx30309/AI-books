@@ -20,6 +20,12 @@ interface Props {
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
 const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
+const CLASSICAL_VARIANTS = [
+  { id: "plain", label: "通俗白话" },
+  { id: "zhiguai_web", label: "志怪小说爽读版" },
+  { id: "wuxia_web", label: "武侠小说爽读版" },
+  { id: "poetry", label: "诗歌翻译" },
+] as const;
 
 function extractCandidateLinks(text: string) {
   const matches = text.match(URL_RE) ?? [];
@@ -70,6 +76,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [rawText, setRawText] = useState("");
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
+  const [classicalVariant, setClassicalVariant] = useState("plain");
   const [candidateLinks, setCandidateLinks] = useState("");
   const [comicTitle, setComicTitle] = useState("");
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
@@ -100,6 +107,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setRawText("");
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
+      setClassicalVariant("plain");
       setCandidateLinks("");
       setComicTitle("");
       setComicThemeRequirement("");
@@ -310,7 +318,10 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       }
       setSubmitting(true);
       try {
-        const res = await api.createClassicalChineseTaskFromDocx(classicalDocxFile);
+        const res = await api.createClassicalChineseTaskFromDocx(
+          classicalDocxFile,
+          classicalVariant,
+        );
         onCreated(res.task_id);
       } catch (e) {
         const msg =
@@ -337,6 +348,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
+      if (isClassicalChinese) config.classical_variant = classicalVariant;
       if (supportsStyleReference) {
         if (styleReference.trim()) config.style_reference = styleReference.trim();
         if (styleNotes.trim()) config.style_notes = styleNotes.trim();
@@ -388,7 +400,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
         </p>
 
         <div className="mt-6 space-y-4">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => switchMode("single")}
@@ -414,6 +426,21 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             >
               <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
               候选库
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("single");
+                setCategory("classical_chinese");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                isClassicalChinese
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+              古文白话
             </button>
             <button
               type="button"
@@ -532,29 +559,51 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
               )}
 
               {isClassicalChinese && (
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-gold-500/15 bg-base-700/35 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setClassicalInputMode("text")}
-                    className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
-                      classicalInputMode === "text"
-                        ? "bg-gold-500/15 text-warm-100"
-                        : "text-warm-500 hover:text-warm-200"
-                    }`}
-                  >
-                    粘贴文本
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setClassicalInputMode("docx")}
-                    className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
-                      classicalInputMode === "docx"
-                        ? "bg-gold-500/15 text-warm-100"
-                        : "text-warm-500 hover:text-warm-200"
-                    }`}
-                  >
-                    上传 Word
-                  </button>
+                <div className="space-y-3 rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
+                  <div>
+                    <label
+                      htmlFor="classical-variant"
+                      className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                    >
+                      古文白话细分方向
+                    </label>
+                    <select
+                      id="classical-variant"
+                      value={classicalVariant}
+                      onChange={(e) => setClassicalVariant(e.target.value)}
+                      className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                    >
+                      {CLASSICAL_VARIANTS.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-gold-500/15 bg-base-700/35 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setClassicalInputMode("text")}
+                      className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
+                        classicalInputMode === "text"
+                          ? "bg-gold-500/15 text-warm-100"
+                          : "text-warm-500 hover:text-warm-200"
+                      }`}
+                    >
+                      粘贴文本
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setClassicalInputMode("docx")}
+                      className={`rounded-md px-3 py-2 text-xs tracking-widest transition-colors ${
+                        classicalInputMode === "docx"
+                          ? "bg-gold-500/15 text-warm-100"
+                          : "text-warm-500 hover:text-warm-200"
+                      }`}
+                    >
+                      上传 Word
+                    </button>
+                  </div>
                 </div>
               )}
 
