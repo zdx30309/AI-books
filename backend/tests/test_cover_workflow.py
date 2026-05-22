@@ -34,10 +34,12 @@ LITERATURE_PUBLISHING_PROMPT = (
     "仿照长期素材库和微信读书、得到系列封面的抽象出版规律，模仿他们的排版逻辑，但必须重新设计，稍微改一下字体结构、字重、字距和标题层级，不能复刻任何真实封面。\n"
     "根据书名、作者、分类和内容简介生成正统出版封面：背景颜色必须重新选择，元素必须与内容简介中的主题、场景、情绪或核心意象相匹配。\n"
     "只学习长期素材库、微信读书和得到系列的抽象版式方法：标题位置、留白比例、文字层级、主视觉和背景关系、手机书架缩略图可读性；不要照搬具体书名、图形、构图、字体或品牌信息。\n"
+    "主视觉必须服务于本书的核心情绪、主题冲突或阅读期待；画面元素少而准，不能套用固定人生隐喻、固定几何空间、固定大标题模板或古风水彩意境。\n"
+    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号；所有装饰必须服务于标题层级、版面结构或主视觉关系。\n"
     "不要侵权。不复刻、不拼贴、不近似复制任何真实封面。\n"
     "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
     "禁止真实品牌背书、真实书名残影。\n"
-    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。"
+    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡；不要知识付费海报感、PPT课程封面感、公众号长图感、电商商品图感、网文封面感、廉价AI插画感、过度3D感或促销广告感。"
 )
 
 
@@ -360,6 +362,9 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert "稍微改一下字体结构、字重、字距和标题层级" in prompt
     assert "背景颜色必须重新选择" in prompt
     assert "元素必须与内容简介中的主题、场景、情绪或核心意象相匹配" in prompt
+    assert "主视觉必须服务于本书的核心情绪、主题冲突或阅读期待" in prompt
+    assert "不要随意添加无意义的横线、竖线、圆点、印章、编号" in prompt
+    assert "不要知识付费海报感、PPT课程封面感" in prompt
     assert "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
     assert "微信读书/得到系爆款风" not in prompt
@@ -441,7 +446,8 @@ def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_templa
     assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
     assert "本书专属差异化方案" in prompt_a
     assert "严格禁止默认使用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡" in prompt_a
-    assert "除非书名或简介明确要求太阳/道路，否则不要出现太阳或道路" in prompt_a
+    assert "几何门洞、光束、人影、蓝黄对比、古风水彩、泛黄纸张" in prompt_a
+    assert "除非书名或简介明确要求对应意象，否则不要出现" in prompt_a
     assert "同批封面不能默认套用太阳" in prompt_a
 
 
