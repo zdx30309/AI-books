@@ -628,6 +628,7 @@ def generate_healing_comic_images(
     series_meta: dict[str, str] | None = None,
     force: bool = False,
     allow_uncertain: bool = False,
+    retry_uncertain: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ComicSectionImage]:
     image_dir = output_dir / "comic_images"
@@ -648,7 +649,7 @@ def generate_healing_comic_images(
         stem = _stem_for(image)
         response_path = image_dir / f"{stem}_response.json"
         uncertain_path = image_dir / f"{stem}_uncertain.json"
-        if uncertain_path.exists() and not image.path.exists() and not force:
+        if uncertain_path.exists() and not image.path.exists() and not force and not retry_uncertain:
             try:
                 marker = json.loads(uncertain_path.read_text(encoding="utf-8"))
                 message = str(marker.get("error") or "previous uncertain image request")

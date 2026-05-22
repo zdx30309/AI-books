@@ -1217,7 +1217,8 @@ async def _generate_healing_comic_book(
         title=title,
         intro=intro,
         series_meta=series_meta,
-        allow_uncertain=False,
+        allow_uncertain=True,
+        retry_uncertain=True,
         on_progress=_image_progress,
     )
     final_markdown = inject_comic_images(refined_markdown, images)

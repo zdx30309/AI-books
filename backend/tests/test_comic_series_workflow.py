@@ -268,6 +268,85 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     assert (output_dir / "comic_images" / "comic_section_32.png").exists()
 
 
+def test_healing_comic_uncertain_image_does_not_fail_manuscript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = "今天，我可以抱你吗"
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        if output_path.name == "comic_cover.png":
+            raise cover.ImageApiUncertainError("image API hard timeout")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    async def fake_writer(prompt: str, **_: object) -> str:
+        panels = [
+            {
+                "title": f"第{index}张",
+                "image_text": [f"第{index}次抱抱", "慢慢来"],
+                "phrases": [f"第{index}次抱抱", "慢慢来"],
+                "visual": f"原创小角色在日常留白场景 {index} 里停顿。",
+            }
+            for index in range(1, comic_series.HEALING_COMIC_PANEL_COUNT + 1)
+        ]
+        import json
+
+        return json.dumps({"title": title, "intro": "治愈短漫画。", "panels": panels}, ensure_ascii=False)
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(content_engine.settings, "DEEPSEEK_API_KEY", "")
+
+    output_dir = tmp_path / "healing_comic_uncertain"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            f"书名：{title}",
+            category="healing_comic",
+            output_dir=output_dir,
+        )
+    )
+
+    assert f"@最终书名\n{title}" in result
+    assert "comic_images/comic_section_32.png" in result
+    assert not (output_dir / "comic_images" / "comic_cover.png").exists()
+    assert (output_dir / "comic_images" / "comic_cover_uncertain.json").exists()
+    assert (output_dir / "comic_images" / "comic_section_32.png").exists()
+    assert (output_dir / "04_format.md").exists()
+
+
+def test_healing_comic_retries_previous_uncertain_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_retry"
+    image_dir = output_dir / "comic_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "comic_cover_uncertain.json").write_text(
+        '{"error": "previous timeout"}',
+        encoding="utf-8",
+    )
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    images = comic_series.generate_healing_comic_images(
+        [{"title": "第1张", "image_text": ["慢慢来"], "visual": "留白日常。"}],
+        output_dir,
+        title="今天也可以",
+        allow_uncertain=True,
+        retry_uncertain=True,
+    )
+
+    assert images[0].status == "completed"
+    assert (image_dir / "comic_cover.png").exists()
+    assert not (image_dir / "comic_cover_uncertain.json").exists()
+
+
 def test_comic_series_uncertain_image_does_not_fail_manuscript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

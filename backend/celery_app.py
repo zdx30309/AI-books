@@ -27,6 +27,9 @@ def _socket_timeout(value: int) -> int | None:
 
 broker_url = _with_redis_ssl_options(settings.CELERY_BROKER_URL)
 backend_url = _with_redis_ssl_options(settings.CELERY_RESULT_BACKEND)
+_task_time_limit = max(60 * 60, int(settings.CELERY_TASK_TIME_LIMIT_SECONDS or 60 * 60))
+_task_soft_time_limit = max(55 * 60, int(settings.CELERY_TASK_SOFT_TIME_LIMIT_SECONDS or 55 * 60))
+_task_soft_time_limit = min(_task_soft_time_limit, _task_time_limit - 60)
 
 celery_app = Celery(
     "gravity_singularity",
@@ -88,9 +91,9 @@ celery_app.conf.update(
         "max_retries": settings.CELERY_REDIS_MAX_RETRIES,
     },
 
-    # --- 时间限制 (5000字章节循环最长场景) ---
-    task_time_limit=60 * 60,        # 1 小时硬超时 (KILL)
-    task_soft_time_limit=55 * 60,   # 55 分钟软超时 (raise SoftTimeLimitExceeded)
+    # --- 时间限制 (长章节/30+ 张漫画图最长场景) ---
+    task_time_limit=_task_time_limit,
+    task_soft_time_limit=_task_soft_time_limit,
     task_annotations={
         "tasks.requeue_stale_processing": {
             "rate_limit": "1/m",
