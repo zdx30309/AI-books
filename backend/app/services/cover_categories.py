@@ -43,8 +43,8 @@ COVER_ONLY_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "literature",
         "label": "正统出版",
-        "core_feature": "现代出版级文学/大众读物书封，大标题清晰、强平面构成、颜色有记忆点",
-        "directions": "现代出版设计、缩略图可读性、单一核心视觉意象、干净克制但有识别度",
+        "core_feature": "成熟出版封面强参考，大标题清晰、版式真实、纸感干净、缩略图可读",
+        "directions": "排版骨架、标题层级、留白比例、配色气质、主视觉占比、干净纸感",
         "prompt_status": "ready",
     },
 )

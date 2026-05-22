@@ -149,8 +149,8 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "literature",
     label: "正统出版",
-    core_feature: "文艺文学感出版封面，克制留白、现代书籍气质",
-    directions: "文学、散文、小说、诗意叙事、现代出版设计",
+    core_feature: "成熟出版封面强参考，版式真实、标题清晰、纸感干净",
+    directions: "排版骨架、标题层级、留白比例、配色气质、主视觉占比",
     prompt_status: "ready",
   },
 ];
