@@ -460,6 +460,51 @@ def _crayon_visual_variation_directive(cover_input: CoverInput, ai_visual_plan: 
     )
 
 
+_LITERATURE_LAYOUT_VARIANTS = (
+    "版式方向A：大标题占据上半区，主视觉只放一个偏下方的原创物件，背景保持整块纯色或轻微纸感。",
+    "版式方向B：标题沿左侧或右侧形成竖向文字秩序，主视觉在另一侧留白中出现，避免居中模板。",
+    "版式方向C：超大标题作为画面主体，元素只做局部穿插或小面积符号，不做风景插画。",
+    "版式方向D：一个清晰现代空间作为主视觉，例如窗、房间角落、楼梯、站台、门框或建筑局部，标题压在干净色面上。",
+    "版式方向E：单一物件特写作为隐喻，例如信封、杯子、钥匙、椅子、纸页、玻璃、时钟、票根或织物纹理。",
+    "版式方向F：抽象但具体的平面构成，用一到两个色块和一个可识别元素形成封面，不使用无意义几何拼图。",
+)
+_LITERATURE_COLOR_VARIANTS = (
+    "背景色方向：明亮暖白加一个高识别点色",
+    "背景色方向：清透蓝、冷白和少量深色文字",
+    "背景色方向：鲜明黄或金色底，但避免太阳意象",
+    "背景色方向：干净玫红、酒红或珊瑚色，配克制深色标题",
+    "背景色方向：薄荷绿、青绿色或孔雀绿，但不能画成绿色山坡和弯路",
+    "背景色方向：黑白高对比加一个小面积亮色",
+    "背景色方向：淡紫、蓝紫或灰粉，但必须清透，不要灰蒙蒙",
+)
+_LITERATURE_ELEMENT_VARIANTS = (
+    "元素方向：从简介里提炼一个室内物件或生活细节，做成原创主视觉。",
+    "元素方向：从简介里提炼一个城市、建筑、窗口、门、楼梯或站台局部，做成原创主视觉。",
+    "元素方向：从简介里提炼一个手势、背影、衣物、票据或纸页等人物相关局部，不使用真实人脸。",
+    "元素方向：从简介里提炼一个植物、花、叶、树影或自然局部，但不能使用太阳、飞鸟、远山和柳枝组合。",
+    "元素方向：从简介里提炼一个抽象关系物，例如线、圆环、裂缝、折痕、玻璃反射或空椅子，必须具体可识别。",
+    "元素方向：从简介里提炼一个旅行或时间物件，例如车窗、站牌、地图折痕、行李牌、钟面或车票，不使用道路通向太阳的模板。",
+)
+
+
+def _stable_variant(options: tuple[str, ...], seed: str, salt: str) -> str:
+    digest = hashlib.sha256(f"{salt}:{seed}".encode("utf-8")).hexdigest()
+    return options[int(digest[:8], 16) % len(options)]
+
+
+def _literature_fallback_visual_plan(cover_input: CoverInput) -> str:
+    seed = f"{cover_input.title}|{cover_input.author}|{cover_input.intro}|{cover_input.category_label}"
+    layout = _stable_variant(_LITERATURE_LAYOUT_VARIANTS, seed, "layout")
+    color = _stable_variant(_LITERATURE_COLOR_VARIANTS, seed, "color")
+    element = _stable_variant(_LITERATURE_ELEMENT_VARIANTS, seed, "element")
+    return (
+        f"本书专属差异化方案：{layout}；{color}；{element} "
+        "元素必须从本书内容简介里重新提炼，不能复用同批封面的默认母题。"
+        "严格禁止默认使用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡、远山、飞鸟、小人走在路上等模板；"
+        "除非书名或简介明确要求太阳/道路，否则不要出现太阳或道路。"
+    )
+
+
 def get_cover_category_prompt_adjustment(category: str | None) -> dict[str, tuple[str, ...]]:
     """Return per-category cover prompt addenda.
 
@@ -568,10 +613,7 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
                 "参考本地正统出版长期封面库，并搜索微信读书与得到系列封面的抽象规律："
                 "高级出版质感、透亮干净光线、清晰大标题、一个明确原创视觉隐喻、手机书架缩略图可读。"
             ),
-            visual_plan=(
-                "根据书名和简介选择一个具体、高冲击、原创的中心隐喻；"
-                "避免模板化斜切色块、泛用几何拼图和昏暗做旧滤镜。"
-            ),
+            visual_plan=_literature_fallback_visual_plan(cover_input),
         )
     return CoverMarketMatch(
         category_label=cover_input.category_label,
@@ -1030,6 +1072,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
             "- 排版：仿照长期素材库和微信读书、得到系列的标题位置、留白比例、文字层级、主视觉和背景关系，但字体结构、字重、字距、标题层级必须重新设计。\n"
             "- 背景：根据本书内容简介重新选择背景颜色；颜色要有出版识别度，不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。\n"
             "- 元素：只使用与内容简介中的主题、场景、情绪或核心意象相匹配的元素；不要照搬长期素材库、微信读书或得到上的具体图形和构图。\n"
+            "- 去雷同：同批封面不能默认套用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡、远山、飞鸟、小人走在路上等模板；除非书名或简介明确要求太阳/道路，否则不要出现太阳或道路。\n"
             "- 版权：不要侵权；不复刻、不拼贴、不近似复制任何真实封面；禁止真实品牌背书、真实书名残影。\n"
             "- 删除：所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
         )

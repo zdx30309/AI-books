@@ -421,6 +421,30 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "当当网" not in prompt
 
 
+def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_template() -> None:
+    cover_input_a = cover.prepare_cover_input(
+        "假如今天是生命的最后一天",
+        "@最终简介\n一本关于临终反思、日常选择和重新整理人生优先级的书。",
+        author="作者A",
+        category="正统出版",
+    )
+    cover_input_b = cover.prepare_cover_input(
+        "允许一切发生",
+        "@最终简介\n一本关于松弛感、关系边界、自我允许和情绪流动的书。",
+        author="作者B",
+        category="正统出版",
+    )
+    brief_a = cover.build_cover_style_brief(cover_input_a)
+    brief_b = cover.build_cover_style_brief(cover_input_b)
+    prompt_a = cover.build_draft_cover_prompt(cover_input_a, brief_a)
+
+    assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
+    assert "本书专属差异化方案" in prompt_a
+    assert "严格禁止默认使用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡" in prompt_a
+    assert "除非书名或简介明确要求太阳/道路，否则不要出现太阳或道路" in prompt_a
+    assert "同批封面不能默认套用太阳" in prompt_a
+
+
 def test_generate_cover_file_writes_three_stage_artifacts(
     tmp_path: Path,
     monkeypatch,
