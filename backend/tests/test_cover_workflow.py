@@ -31,19 +31,13 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
 LITERATURE_PUBLISHING_PROMPT = (
-    "A modern publishing-grade book cover design for a real premium book.\n"
-    "[1. 核心视觉与版式布局]\n"
-    "- Book Title: {书名}, Author: {作者}, Genre: {分类}.\n"
-    "- Composition: A bold, clean, and modern layout. Features ONE distinct, high-impact original visual metaphor based on the description: {简介}.\n"
-    "- Perspective: Avoid repetitive diagonal color-blocking or generic geometric split screens. Use an open-space composition with natural depth, allowing the visual center to breathe.\n\n"
-    "[2. 颜色与光影控制 - 解决不透亮问题]\n"
-    "- Lighting: Bright, translucent, and clean natural light, such as clear morning sunlight or crisp studio lighting. High clarity, vivid colors, and transparent atmosphere.\n"
-    "- Color Palette: Eye-catching and vibrant colors selected based on the book's emotional tone. Pure and solid background colors. No muddy shadows, no heavy vignette, no dim or dusty vintage filters, no overly dark ambient light.\n\n"
-    "[3. 排版与细节 - 解决雷同抽象问题]\n"
-    "- Typography: Large, crisp, elegant, and perfectly structured modern Chinese typography for the title, ensuring high legibility even as a tiny thumbnail on streaming platforms. Subtitles and author names are minimalist and restrained.\n"
-    "- Art Style: Premium publishing design aesthetic. The central metaphor should be highly creative and specific, such as a crisp physical object, a clean modern architectural space, or a vivid natural silhouette, NOT an abstract, meaningless geometric puzzle.\n\n"
-    "[4. 负向限制]\n"
-    "--no template, chaotic layout, messy watercolor, vintage old paper texture, retro dusty filter, low-contrast, muddy colors, heavy shadows, birds, sun, willow branches, mountains, fake logos, barcodes, price tags, gibberish text, watermark."
+    "仿照长期素材库和微信读书、得到系列封面的抽象出版规律，模仿他们的排版逻辑，但必须重新设计，稍微改一下字体结构、字重、字距和标题层级，不能复刻任何真实封面。\n"
+    "根据书名、作者、分类和内容简介生成正统出版封面：背景颜色必须重新选择，元素必须与内容简介中的主题、场景、情绪或核心意象相匹配。\n"
+    "只学习长期素材库、微信读书和得到系列的抽象版式方法：标题位置、留白比例、文字层级、主视觉和背景关系、手机书架缩略图可读性；不要照搬具体书名、图形、构图、字体或品牌信息。\n"
+    "不要侵权。不复刻、不拼贴、不近似复制任何真实封面。\n"
+    "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
+    "禁止真实品牌背书、真实书名残影。\n"
+    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。"
 )
 
 
@@ -362,12 +356,12 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert brief.reference_brands == ()
     assert brief.reference_samples == ()
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "modern publishing-grade book cover design for a real premium book" in prompt
-    assert "ONE distinct, high-impact original visual metaphor" in prompt
-    assert "Bright, translucent, and clean natural light" in prompt
-    assert "Large, crisp, elegant" in prompt
-    assert "NOT an abstract, meaningless geometric puzzle" in prompt
-    assert "muddy colors" in prompt
+    assert "仿照长期素材库和微信读书、得到系列封面的抽象出版规律" in prompt
+    assert "稍微改一下字体结构、字重、字距和标题层级" in prompt
+    assert "背景颜色必须重新选择" in prompt
+    assert "元素必须与内容简介中的主题、场景、情绪或核心意象相匹配" in prompt
+    assert "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo" in prompt
+    assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
     assert get_cover_category_meta("literature")["label"] == "正统出版"
@@ -417,12 +411,12 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "A modern publishing-grade book cover design for a real premium book" in prompt
-    assert "Book Title: {书名}, Author: {作者}, Genre: {分类}" in prompt
-    assert "Pure and solid background colors" in prompt
-    assert "perfectly structured modern Chinese typography" in prompt
-    assert "crisp physical object" in prompt
-    assert "vintage old paper texture" in prompt
+    assert "模仿他们的排版逻辑，但必须重新设计" in prompt
+    assert "不要侵权" in prompt
+    assert "标题位置、留白比例、文字层级、主视觉和背景关系" in prompt
+    assert "不要照搬具体书名、图形、构图、字体或品牌信息" in prompt
+    assert "禁止真实品牌背书、真实书名残影" in prompt
+    assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
 

@@ -69,19 +69,13 @@ _CRAYON_QUALITY_CONTROL_RULE = (
     "禁止清单、段落、整页日记文字和多个便签文案。"
 )
 _LITERATURE_PUBLISHING_STYLE_RULE = (
-    "A modern publishing-grade book cover design for a real premium book.\n"
-    "[1. 核心视觉与版式布局]\n"
-    "- Book Title: {书名}, Author: {作者}, Genre: {分类}.\n"
-    "- Composition: A bold, clean, and modern layout. Features ONE distinct, high-impact original visual metaphor based on the description: {简介}.\n"
-    "- Perspective: Avoid repetitive diagonal color-blocking or generic geometric split screens. Use an open-space composition with natural depth, allowing the visual center to breathe.\n\n"
-    "[2. 颜色与光影控制 - 解决不透亮问题]\n"
-    "- Lighting: Bright, translucent, and clean natural light, such as clear morning sunlight or crisp studio lighting. High clarity, vivid colors, and transparent atmosphere.\n"
-    "- Color Palette: Eye-catching and vibrant colors selected based on the book's emotional tone. Pure and solid background colors. No muddy shadows, no heavy vignette, no dim or dusty vintage filters, no overly dark ambient light.\n\n"
-    "[3. 排版与细节 - 解决雷同抽象问题]\n"
-    "- Typography: Large, crisp, elegant, and perfectly structured modern Chinese typography for the title, ensuring high legibility even as a tiny thumbnail on streaming platforms. Subtitles and author names are minimalist and restrained.\n"
-    "- Art Style: Premium publishing design aesthetic. The central metaphor should be highly creative and specific, such as a crisp physical object, a clean modern architectural space, or a vivid natural silhouette, NOT an abstract, meaningless geometric puzzle.\n\n"
-    "[4. 负向限制]\n"
-    "--no template, chaotic layout, messy watercolor, vintage old paper texture, retro dusty filter, low-contrast, muddy colors, heavy shadows, birds, sun, willow branches, mountains, fake logos, barcodes, price tags, gibberish text, watermark."
+    "仿照长期素材库和微信读书、得到系列封面的抽象出版规律，模仿他们的排版逻辑，但必须重新设计，稍微改一下字体结构、字重、字距和标题层级，不能复刻任何真实封面。\n"
+    "根据书名、作者、分类和内容简介生成正统出版封面：背景颜色必须重新选择，元素必须与内容简介中的主题、场景、情绪或核心意象相匹配。\n"
+    "只学习长期素材库、微信读书和得到系列的抽象版式方法：标题位置、留白比例、文字层级、主视觉和背景关系、手机书架缩略图可读性；不要照搬具体书名、图形、构图、字体或品牌信息。\n"
+    "不要侵权。不复刻、不拼贴、不近似复制任何真实封面。\n"
+    "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
+    "禁止真实品牌背书、真实书名残影。\n"
+    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。"
 )
 
 
@@ -914,7 +908,6 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             f"参考来源：本地正统出版长期封面库 + 微信读书/得到系列封面搜索分析。\n"
             f"长期参考文件摘要：{_LITERATURE_COVER_REFERENCE[:900]}\n"
             f"本书视觉判断：{visual_variation_directive}\n"
-            f"{style_brief_addendum}"
         )
     else:
         avoid_rules = (
@@ -975,9 +968,22 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
     is_crayon = _is_crayon_illustration(cover_input.category)
     is_literature = _is_literature_publishing(cover_input.category)
     style_report = _brief_json(style_brief)[:2600 if is_crayon else 3200]
+    if is_literature:
+        style_report = json.dumps(
+            {
+                "reference_site": style_brief.reference_site,
+                "matched_category_style": style_brief.matched_category_style,
+                "brand_style_direction": style_brief.brand_style_direction,
+                "visual_variation_directive": style_brief.visual_variation_directive,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     category_rule_section = _prompt_rule_section(
         get_cover_category_prompt_adjustment(cover_input.category)["draft_rules"]
     )
+    if is_literature:
+        category_rule_section = ""
     style_addendum_limit = 2200 if is_literature else 1400
     style_addendum_section = style_brief.generation_prompt_addendum[:style_addendum_limit].rstrip()
     if is_visual:
@@ -1016,18 +1022,18 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         title_author_rule_section = ""
         visual_variation_section = f"{style_brief.visual_variation_directive}\n"
         market_rule_section = (
-            "- 工作流只参考本地正统出版长期封面库、微信读书/得到系列封面的抽象规律，以及下面的正统出版短 prompt。"
+            "- 工作流只参考本地正统出版长期素材库、微信读书/得到系列封面的抽象规律，以及下面的正统出版短 prompt。"
             "不复刻、不拼贴、不近似复制任何真实封面。\n"
-            "- 最高优先级：modern publishing-grade book cover design for a real premium book。\n"
+            "- 最高优先级：模仿抽象排版逻辑，但重新设计字体、背景颜色和内容简介匹配元素；不要侵权。\n"
         )
         color_and_type_rules = (
-            "- Composition: bold, clean, modern layout; ONE distinct high-impact original visual metaphor based on the book description; open-space composition with natural depth.\n"
-            "- Lighting and color: bright, translucent, clean natural light; high clarity, vivid colors, transparent atmosphere; pure and solid background colors.\n"
-            "- Typography: large, crisp, elegant, perfectly structured modern Chinese title; high legibility as a tiny thumbnail; subtitles and author names minimalist and restrained.\n"
-            "- Art style: premium publishing design aesthetic; use a specific central metaphor such as a crisp physical object, clean modern architectural space, or vivid natural silhouette; NOT abstract meaningless geometric puzzle.\n"
-            "- Negative: no template, chaotic layout, messy watercolor, vintage old paper texture, retro dusty filter, low-contrast, muddy colors, heavy shadows, birds, sun, willow branches, mountains, fake logos, barcodes, price tags, gibberish text, watermark.\n"
+            "- 排版：仿照长期素材库和微信读书、得到系列的标题位置、留白比例、文字层级、主视觉和背景关系，但字体结构、字重、字距、标题层级必须重新设计。\n"
+            "- 背景：根据本书内容简介重新选择背景颜色；颜色要有出版识别度，不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。\n"
+            "- 元素：只使用与内容简介中的主题、场景、情绪或核心意象相匹配的元素；不要照搬长期素材库、微信读书或得到上的具体图形和构图。\n"
+            "- 版权：不要侵权；不复刻、不拼贴、不近似复制任何真实封面；禁止真实品牌背书、真实书名残影。\n"
+            "- 删除：所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
         )
-        text_rule = "- 中文书名必须准确、清晰、现代、有出版级结构；不要乱码中文、伪中文或英文占位符。\n"
+        text_rule = "- 中文书名必须准确、清晰、现代、有出版级结构；字体可参考但必须重新设计，不要乱码中文、伪中文或英文占位符。\n"
     else:
         title_author_rule_section = ""
         visual_variation_section = ""
@@ -1043,7 +1049,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
         )
         text_rule = "- 中文文字尽量准确清晰，像真实出版封面排版；不要乱码中文、伪中文、英文占位符。\n"
     platform_logo_rule = (
-        "- 不要出现出版社 logo、出版品牌 logo、微信读书/得到 logo、二维码、价格、水印、真实品牌背书、真实书名残影。"
+        "- 不要出现出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实品牌背书、真实书名残影、乱码文字、水印。"
         if is_literature
         else "- 不要出现出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、二维码、价格、水印、真实品牌背书、真实书名残影。"
     )
@@ -1110,17 +1116,18 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
     elif _is_literature_publishing(cover_input.category):
         title_author_rule_section = ""
         visual_variation_section = f"{style_brief.visual_variation_directive}\n"
-        opening = "请精修这张封面，让它成为 modern publishing-grade book cover design for a real premium book。"
+        opening = "请精修这张封面，让它更像长期素材库、微信读书和得到系列的正统出版封面，但必须重新设计，不能侵权。"
         composition_rule = (
-            "- Strengthen a bold, clean, modern layout with ONE distinct high-impact original visual metaphor; "
-            "use open space and natural depth so the visual center can breathe."
+            "- 保留抽象排版规律：标题位置、留白比例、文字层级、主视觉和背景关系；"
+            "但字体结构、字重、字距、标题层级都要重新设计，不能复刻真实封面。"
         )
         market_rule = (
-            "- Use bright, translucent, clean natural light, high clarity, vivid colors and pure solid background colors. "
-            "Make the title large, crisp, elegant and readable as a tiny thumbnail. "
-            "Avoid template, chaotic layout, messy watercolor, vintage old paper texture, retro dusty filter, low contrast, muddy colors, heavy shadows, birds, sun, willow branches and mountains."
+            "- 根据内容简介重新调整背景颜色和元素；元素必须匹配简介里的主题、场景、情绪或核心意象。"
+            "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。"
+            "删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
+            "禁止真实品牌背书、真实书名残影。"
         )
-        deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/得到 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
+        deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/豆瓣 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印；禁止真实品牌背书、真实书名残影。"
     else:
         title_author_rule_section = ""
         visual_variation_section = ""
@@ -1132,9 +1139,9 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
         deletion_rule = "- 删除所有出版社 logo、出版品牌 logo、微信读书/得到/当当 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。"
     if _is_literature_publishing(cover_input.category):
         refinement_quality_rules = (
-            "- If the image looks dim, dusty, muddy, low-contrast or vintage, make it bright, translucent, clean and high-clarity.\n"
-            "- Keep exactly one distinct high-impact original visual metaphor; remove generic geometric puzzles and repetitive split-screen templates.\n"
-            "- Make the Chinese title large, crisp, elegant and readable at thumbnail size.\n"
+            "- 如果画面灰蒙蒙、发黄做旧、低饱和寡淡，必须重新调整背景颜色，让画面更干净、有出版识别度。\n"
+            "- 如果元素和内容简介不匹配，必须替换为与简介主题、场景、情绪或核心意象匹配的原创元素。\n"
+            "- 如果字体、排版或图形过于接近真实封面，必须改变字体结构、字重、字距、标题层级、背景颜色和元素组合。\n"
         )
     else:
         refinement_quality_rules = (
