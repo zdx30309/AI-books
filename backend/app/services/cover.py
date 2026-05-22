@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 import httpx
 
@@ -71,19 +71,28 @@ _CRAYON_QUALITY_CONTROL_RULE = (
     "禁止清单、段落、整页日记文字和多个便签文案。"
 )
 _LITERATURE_PUBLISHING_STYLE_RULE = (
-    "正统出版版式迁移：生成封面时，以用户当前提供的书名、作者、分类和简介为主；封面的版式结构应优先参考素材库中相近题材、相近气质、相近商业位置的成熟封面，不要绑定任何固定平台系列的气质。\n"
-    "不要只抽象学习“出版感”。生成前必须先从参考图库中选择一张最适合本书的封面作为主要版式参考，不要自行发明新构图；内部可以逐个尝试不同正统出版 prompt 方向，比较后只输出最像真实出版物、最适合本书的一版。\n"
-    "可以高相似度参考：标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置、留白比例、主视觉占比、主视觉与标题的相对关系、背景色块关系、整体版面重心、手机书架缩略图识别度。\n"
-    "允许排版和配色与参考封面接近，尤其标题位置、留白节奏、主视觉比例、色块关系和整体封面气质可以尽量贴近素材库中的成熟案例。\n"
-    "主视觉必须根据当前书名和简介重新选择；可以沿用参考封面的主视觉位置、面积比例和图文关系，但具体内容要与当前书相关，不能为了原创而完全脱离参考图库。\n"
-    "配色可以参考素材库中的成熟封面，允许使用相近的色彩气质、明度关系、冷暖关系和对比方式；但不要完全照搬某一本封面的完整配色比例，主色、辅助色、点缀色中至少调整一处来适配当前书。\n"
-    "标题是第一识别信息，必须清晰、有层级，适合手机书架缩略图识别；不要添加大段简介、营销金句、课程口号或无意义小字。\n"
-    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号；所有装饰元素都必须服务于标题层级、版面结构或主视觉关系，不要为了填补留白或制造高级感而补线、补点、补符号。\n"
-    "允许有纸感，但纸张质感必须干净、平整、细腻；不要让文字和背景变脏、破损、坑洼，不要斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果，文字区域保持纯净清晰，不要让肌理干扰阅读。\n"
-    "版权边界：可以明显借鉴某个参考封面的排版，甚至像同一类封面；但不能让人觉得只是把某一本封面换了书名、换了作者、换了一个相似图案，不能复制真实书名、出版社信息、logo、二维码、价格、水印、已有摄影作品、已有插画作品、可识别真实人物肖像或某一本封面的完整构图组合。\n"
-    "删除所有出版社 logo、出版品牌 logo、第三方平台 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
-    "禁止真实品牌背书、真实书名残影。\n"
-    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡；最终效果应像从素材库中选了一张成熟出版封面作为版式母版，再根据当前书名和简介重新设计出的新封面。"
+    "正统出版封面长期参考指令｜高仿安全版\n"
+    "本文件用于“正统出版”封面书架的长期参考。参考来源包括用户提供的正统出版长期素材库，以及微信读书、得到系列等成熟出版封面的设计规律。\n"
+    "目标不是让 AI 自由发挥，也不是只抽象学习所谓“出版感”，而是让 AI 在不直接侵权的前提下，尽量高仿成熟出版封面的真实效果。\n"
+    "生成封面时，应优先参考素材库中的优秀封面，重点高仿其排版骨架、标题位置、标题大小关系、标题分行方式、文字层级、留白比例、主视觉位置、主视觉占比、背景处理方式、配色气质、图文关系、手机书架缩略图识别度。\n"
+    "以用户当前提供的书名、作者、分类和简介为主。长期素材库不是普通灵感参考，而是主要版式参考来源。\n"
+    "AI 应先从素材库中判断当前书更接近哪一类出版封面，哪种排版最适合当前书名，哪种标题层级最适合缩略图识别，哪种色彩关系最适合当前题材和读者期待，然后以素材库中相近封面的排版方式为母版，进行高相似度改写。\n"
+    "允许高仿参考封面的标题所在区域、标题大小关系、标题分行节奏、作者名位置、副标题位置、留白比例、主视觉占比、主视觉与标题的相对关系、背景色块关系、整体版面重心、色彩明度关系、冷暖对比方式、手机书架缩略图效果。\n"
+    "不要为了追求原创而刻意远离参考图库。如果某个参考封面的排版方式适合当前书，可以大胆贴近它。\n"
+    "可以高仿的是版式骨架、标题层级、留白节奏、色彩气质、主视觉位置、图文关系、背景处理方式、整体出版审美。\n"
+    "必须删除或替换真实书名、原作者信息、出版社信息、出版社或平台 logo、二维码、价格、水印、真实品牌元素、已有摄影作品、已有插画作品、可识别人物肖像、独特图形细节。\n"
+    "可以像它的排版和气质，不能留下它的身份信息和具体视觉资产。\n"
+    "优先让封面看起来像真实书架上的成熟出版物。不要生成随机 AI 图、PPT 封面、知识付费课程海报、电商主图或网文封面。\n"
+    "排版可以大胆贴近参考图。标题位置、字号比例、留白关系、主视觉区域、色块比例和配色气质，都可以高相似度参考。\n"
+    "主视觉必须服务于当前书名、简介、题材和读者期待。可以借鉴参考封面的主视觉位置、面积比例、图文关系和整体氛围，但具体视觉元素要根据当前书重新设计。\n"
+    "配色可以接近参考封面。允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式，但不要完全复制某一本封面的完整配色比例。\n"
+    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。\n"
+    "纸张质感可以有，但必须干净、平整、细腻。允许轻微纸张肌理，但不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果。文字区域必须保持纯净清晰，不要让肌理干扰阅读。\n"
+    "标题是封面的第一识别信息。标题必须清晰、有层级，适合手机书架缩略图识别。作者名、副标题、推荐语等信息要克制。除非用户明确要求，不要添加大段简介、营销金句、课程口号或无意义小字。\n"
+    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号。所有装饰元素都必须服务于标题层级、版面结构或主视觉关系。\n"
+    "不要知识付费海报感、PPT 课程封面感、公众号长图感、电商商品图感。不要网文封面感、廉价 AI 插画感、过度 3D 感、促销广告感。\n"
+    "不要为了“原创”而远离参考图库，导致封面不像真实出版物。不要为了“高级感”一律做成冷淡抽象风。不要为了“文学感”一律做成古风水彩、远山、飞鸟、太阳、泛黄纸张。不要为了“现代感”一律做成几何门洞、光束、人影、蓝黄对比、大标题模板。\n"
+    "最终封面应当像以素材库中的成熟出版封面为母版，经过高相似度改写后生成的新书封面。排版像，配色像，出版气质像；真实书名、作者信息、出版社信息、logo、二维码、价格、水印、真实品牌元素、具体摄影作品、具体插画作品、可识别人物肖像、独特图形细节全部删除或替换。"
 )
 
 
@@ -97,6 +106,7 @@ def _load_reference_markdown(filename: str) -> str:
 
 _LITERATURE_COVER_REFERENCE = _load_reference_markdown("literature_cover_reference.md")
 _LITERATURE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+_LITERATURE_REFERENCE_DIRECT_LIMIT = 16
 _LITERATURE_REFERENCE_BOARD_LIMIT = 12
 _LITERATURE_REFERENCE_BOARD_COLUMNS = 4
 _LITERATURE_REFERENCE_CELL_SIZE = (260, 380)
@@ -621,6 +631,100 @@ def collect_literature_reference_covers(
         )
         for member in members
     )
+
+
+def _literature_reference_records(zip_path: Path, members: Sequence[str]) -> tuple[dict[str, str], ...]:
+    return tuple(
+        asdict(
+            ReferenceCover(
+                brand="正统出版ZIP参考封面库",
+                title=Path(member).stem,
+                product_url=f"zip://{zip_path.name}!/{member}",
+                image_url=f"zip://{zip_path.name}!/{member}",
+                source="local_zip",
+                product_id=hashlib.sha1(member.encode("utf-8")).hexdigest()[:12],
+                source_page=zip_path.name,
+                local_image_path=f"{zip_path}!{member}",
+            )
+        )
+        for member in members
+    )
+
+
+def _literature_member_from_reference_record(item: object) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    local_path = item.get("local_image_path")
+    if isinstance(local_path, str) and "!" in local_path:
+        return local_path.split("!", 1)[1].lstrip("/")
+    for key in ("product_url", "image_url"):
+        value = item.get(key)
+        if isinstance(value, str) and "!/" in value:
+            return value.split("!/", 1)[1].lstrip("/")
+    return None
+
+
+def _literature_cached_direct_reference_members(samples_path: Path, available_members: set[str]) -> tuple[str, ...]:
+    if not samples_path.exists() or samples_path.stat().st_size <= 0:
+        return ()
+    try:
+        payload = json.loads(samples_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(payload, list):
+        return ()
+    selected: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        member = _literature_member_from_reference_record(item)
+        if member and member in available_members and member not in seen:
+            selected.append(member)
+            seen.add(member)
+    return tuple(selected)
+
+
+def _selected_literature_direct_reference_members(
+    output_dir: Path,
+    *,
+    force: bool,
+    limit: int = _LITERATURE_REFERENCE_DIRECT_LIMIT,
+) -> tuple[str, ...]:
+    zip_path = _literature_reference_zip_path()
+    members = _literature_reference_members(zip_path)
+    if not zip_path.exists() or not members:
+        raise ImageApiPermanentError(
+            f"正统出版参考封面 ZIP 缺失或为空，无法按素材库样式生成: {zip_path}"
+        )
+    samples_path = output_dir / "orthodox_reference_samples.json"
+    if not force:
+        cached = _literature_cached_direct_reference_members(samples_path, set(members))
+        if cached:
+            return cached[: min(limit, len(cached))]
+    count = min(limit, len(members))
+    return tuple(random.sample(list(members), count))
+
+
+def _extract_literature_reference_inputs(
+    members: Sequence[str],
+    output_dir: Path,
+    should_abort: Callable[[], bool] | None = None,
+) -> tuple[Path, ...]:
+    zip_path = _literature_reference_zip_path()
+    input_dir = output_dir / "orthodox_reference_inputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    extracted: list[Path] = []
+    with zipfile.ZipFile(zip_path) as archive:
+        for index, member in enumerate(members):
+            _abort_cover_generation_if_requested(should_abort, stage="extract orthodox reference image")
+            suffix = Path(member).suffix.lower()
+            if suffix not in _LITERATURE_REFERENCE_IMAGE_EXTENSIONS:
+                suffix = ".png"
+            digest = hashlib.sha1(member.encode("utf-8")).hexdigest()[:12]
+            target = input_dir / f"{index + 1:02d}_{digest}{suffix}"
+            if not target.exists() or target.stat().st_size <= 0:
+                target.write_bytes(archive.read(member))
+            extracted.append(target)
+    return tuple(extracted)
 
 
 def _build_literature_reference_board(
@@ -1396,7 +1500,7 @@ def _post_image_request_with_cancellation(
     stage: str,
     json_payload: dict[str, Any] | None = None,
     data: dict[str, str] | None = None,
-    files: dict[str, tuple[str, bytes, str]] | None = None,
+    files: Any | None = None,
 ) -> Any:
     result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
     hard_timeout = max(0, int(getattr(settings, "IMAGE_API_HARD_TIMEOUT_SECONDS", 0) or 0))
@@ -1526,13 +1630,62 @@ def _request_image_generation(
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
+def _image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _coerce_image_edit_paths(image_path: Path | Sequence[Path]) -> tuple[Path, ...]:
+    if isinstance(image_path, Path):
+        paths = (image_path,)
+    else:
+        paths = tuple(Path(item) for item in image_path)
+    if not paths:
+        raise ImageApiPermanentError("image edit requires at least one input image")
+    if len(paths) > _LITERATURE_REFERENCE_DIRECT_LIMIT:
+        raise ImageApiPermanentError(
+            f"image edit supports at most {_LITERATURE_REFERENCE_DIRECT_LIMIT} input images"
+        )
+    return paths
+
+
+def _image_edit_files(
+    image_paths: Sequence[Path],
+) -> dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]:
+    if len(image_paths) == 1:
+        image_path = image_paths[0]
+        return {
+            "image": (
+                image_path.name,
+                image_path.read_bytes(),
+                _image_mime_type(image_path),
+            )
+        }
+    return [
+        (
+            "image[]",
+            (
+                image_path.name,
+                image_path.read_bytes(),
+                _image_mime_type(image_path),
+            ),
+        )
+        for image_path in image_paths
+    ]
+
+
 def _request_image_edit_response(
-    image_path: Path,
+    image_path: Path | Sequence[Path],
     prompt: str,
     should_abort: Callable[[], bool] | None = None,
     *,
     stage: str = "refine",
 ) -> Any:
+    image_paths = _coerce_image_edit_paths(image_path)
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/edits"
     data: dict[str, str] = {
@@ -1554,19 +1707,14 @@ def _request_image_edit_response(
         "model": settings.IMAGE_MODEL,
         "stage": stage,
         "endpoint": endpoint,
+        "image_count": len(image_paths),
     }
     _emit_image_request_event({"event": "start", **event_base})
     with httpx.Client(
         timeout=httpx.Timeout(float(request_timeout), connect=min(60.0, float(request_timeout))),
         proxy=proxy or None,
     ) as http:
-        files = {
-            "image": (
-                image_path.name,
-                image_path.read_bytes(),
-                "image/png",
-            )
-        }
+        files = _image_edit_files(image_paths)
         try:
             with distributed_semaphore(
                 "image-cover",
@@ -1602,7 +1750,7 @@ def _request_image_edit_response(
 
 
 def _request_image_edit(
-    image_path: Path,
+    image_path: Path | Sequence[Path],
     prompt: str,
     should_abort: Callable[[], bool] | None = None,
 ) -> bytes:
@@ -1617,7 +1765,7 @@ def _post_image_request(
     *,
     json_payload: dict[str, Any] | None = None,
     data: dict[str, str] | None = None,
-    files: dict[str, tuple[str, bytes, str]] | None = None,
+    files: Any | None = None,
 ) -> Any:
     last_error: Exception | None = None
     max_attempts = max(1, int(settings.IMAGE_API_MAX_RETRIES or 1))
@@ -1792,6 +1940,126 @@ def _request_or_reuse_image_response(
     return _decode_image_response(response_data, should_abort=should_abort)
 
 
+def _build_literature_direct_cover_prompt(
+    cover_input: CoverInput,
+    *,
+    reference_count: int,
+) -> str:
+    reference_rules = _LITERATURE_COVER_REFERENCE or _LITERATURE_PUBLISHING_STYLE_RULE
+    return f"""正统出版封面直连生成工作流
+
+当前新书信息：
+- 书名：{cover_input.title}
+- 作者：{cover_input.author}
+- 分类：{cover_input.category_label}
+- 简介：{cover_input.intro}
+
+本次图像输入：
+- 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
+- 这些参考封面是主要版式来源，不是普通灵感参考。
+- 先分析这些参考封面中哪一张或哪一组最适合当前书名、作者和简介，再以其排版骨架、标题层级、留白节奏、主视觉占比、图文关系、背景处理和配色气质为母版，直接生成一张新的正统出版中文图书封面。
+- 不需要沿用传统封面 workflow，不需要生成拼贴板，不需要输出多张候选图，不需要输出分析文字。
+
+长期参考指令：
+{reference_rules}
+
+本书执行要求：
+- 只输出一张竖版中文图书正面封面本体。
+- 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
+- 可以明显贴近参考图的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
+- 具体主视觉必须根据本书简介重新设计，不能复制参考图中的具体摄影、插画、人物肖像、logo、二维码、价格、水印、品牌资产或独特图形细节。
+- 允许轻微纸张肌理，但纸感必须干净、平整、细腻；文字区域必须纯净清晰，不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果。
+- 不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面、3D 书模或促销广告。
+- 不要为了原创而远离参考素材库；最终效果要像成熟出版封面的高相似度改写，而不是抽象地“有出版感”。
+"""
+
+
+def _literature_direct_style_payload(
+    cover_input: CoverInput,
+    reference_records: Sequence[dict[str, str]],
+) -> dict[str, Any]:
+    return {
+        "workflow": "orthodox_direct_reference",
+        "reference_site": "本地正统出版ZIP参考封面库 + 高仿安全版",
+        "reference_brands": ["正统出版ZIP参考封面库"],
+        "matched_category_style": "正统出版封面长期参考指令｜高仿安全版",
+        "brand_style_direction": "直接以参考封面库为主要版式母版，高相似度改写为当前新书封面。",
+        "cover_type": "正统出版 / 高仿安全版成熟出版封面",
+        "reference_samples": list(reference_records),
+        "generation_prompt_addendum": _LITERATURE_COVER_REFERENCE or _LITERATURE_PUBLISHING_STYLE_RULE,
+        "title": cover_input.title,
+        "author": cover_input.author,
+        "intro": cover_input.intro,
+        "category": cover_input.category,
+        "category_label": cover_input.category_label,
+    }
+
+
+def _generate_literature_cover_direct(
+    cover_input: CoverInput,
+    output_dir: Path,
+    *,
+    force: bool = False,
+    should_abort: Callable[[], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> Path:
+    cover_path = output_dir / "cover.png"
+    draft_path = output_dir / "draft_cover.png"
+    draft_response_path = output_dir / "cover_draft_response.json"
+    draft_prompt_path = output_dir / "cover_draft_prompt.txt"
+    samples_path = output_dir / "orthodox_reference_samples.json"
+    style_brief_path = output_dir / "cover_style_brief.json"
+
+    if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
+        logger.info("复用已存在正统出版封面: %s", cover_path)
+        return cover_path
+
+    members = _selected_literature_direct_reference_members(output_dir, force=force)
+    zip_path = _literature_reference_zip_path()
+    reference_records = _literature_reference_records(zip_path, members)
+    _write_cover_text_file(
+        samples_path,
+        json.dumps(reference_records, ensure_ascii=False, indent=2),
+        should_abort,
+    )
+    reference_images = _extract_literature_reference_inputs(members, output_dir, should_abort)
+    direct_prompt = _build_literature_direct_cover_prompt(
+        cover_input,
+        reference_count=len(reference_images),
+    )
+    _write_cover_text_file(draft_prompt_path, direct_prompt, should_abort)
+    _write_cover_text_file(
+        style_brief_path,
+        json.dumps(_literature_direct_style_payload(cover_input, reference_records), ensure_ascii=False, indent=2),
+        should_abort,
+    )
+
+    logger.info(
+        "开始正统出版直连参考封面生成: model=%s size=%s title=%s references=%d",
+        settings.IMAGE_MODEL,
+        settings.IMAGE_SIZE,
+        cover_input.title,
+        len(reference_images),
+    )
+    _notify_cover_progress(on_progress, "draft")
+    _abort_cover_generation_if_requested(should_abort, stage="before orthodox direct image request")
+    cover_bytes = _request_or_reuse_image_response(
+        draft_response_path,
+        lambda: _request_image_edit_response(
+            reference_images,
+            direct_prompt,
+            should_abort=should_abort,
+            stage="draft_reference",
+        ),
+        should_abort=should_abort,
+        force=force,
+    )
+    _write_cover_bytes_file(draft_path, cover_bytes, should_abort)
+    _notify_cover_progress(on_progress, "copy")
+    _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
+    return cover_path
+
+
 def generate_image_file_from_prompt(
     prompt: str,
     output_path: Path,
@@ -1841,6 +2109,22 @@ def generate_cover_file(
         logger.info("复用已存在封面: %s", existing_cover_path)
         return existing_cover_path
 
+    cover_input = prepare_cover_input(
+        title,
+        markdown,
+        author=author,
+        intro=intro,
+        category=category,
+    )
+    if _is_literature_publishing(cover_input.category):
+        return _generate_literature_cover_direct(
+            cover_input,
+            output_dir,
+            force=force,
+            should_abort=should_abort,
+            on_progress=on_progress,
+        )
+
     draft_path = output_dir / "draft_cover.png"
     refine_prompt_path = output_dir / "cover_refine_prompt.txt"
     cover_path = output_dir / "cover.png"
@@ -1865,13 +2149,6 @@ def generate_cover_file(
         _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
         return cover_path
 
-    cover_input = prepare_cover_input(
-        title,
-        markdown,
-        author=author,
-        intro=intro,
-        category=category,
-    )
     style_brief = build_cover_style_brief(cover_input)
 
     style_brief_path = output_dir / "cover_style_brief.json"

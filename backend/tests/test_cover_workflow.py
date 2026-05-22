@@ -30,21 +30,7 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "整体温柔、孤独、可爱、有陪伴感。"
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
-LITERATURE_PUBLISHING_PROMPT = (
-    "正统出版版式迁移：生成封面时，以用户当前提供的书名、作者、分类和简介为主；封面的版式结构应优先参考素材库中相近题材、相近气质、相近商业位置的成熟封面，不要绑定任何固定平台系列的气质。\n"
-    "不要只抽象学习“出版感”。生成前必须先从参考图库中选择一张最适合本书的封面作为主要版式参考，不要自行发明新构图；内部可以逐个尝试不同正统出版 prompt 方向，比较后只输出最像真实出版物、最适合本书的一版。\n"
-    "可以高相似度参考：标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置、留白比例、主视觉占比、主视觉与标题的相对关系、背景色块关系、整体版面重心、手机书架缩略图识别度。\n"
-    "允许排版和配色与参考封面接近，尤其标题位置、留白节奏、主视觉比例、色块关系和整体封面气质可以尽量贴近素材库中的成熟案例。\n"
-    "主视觉必须根据当前书名和简介重新选择；可以沿用参考封面的主视觉位置、面积比例和图文关系，但具体内容要与当前书相关，不能为了原创而完全脱离参考图库。\n"
-    "配色可以参考素材库中的成熟封面，允许使用相近的色彩气质、明度关系、冷暖关系和对比方式；但不要完全照搬某一本封面的完整配色比例，主色、辅助色、点缀色中至少调整一处来适配当前书。\n"
-    "标题是第一识别信息，必须清晰、有层级，适合手机书架缩略图识别；不要添加大段简介、营销金句、课程口号或无意义小字。\n"
-    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号；所有装饰元素都必须服务于标题层级、版面结构或主视觉关系，不要为了填补留白或制造高级感而补线、补点、补符号。\n"
-    "允许有纸感，但纸张质感必须干净、平整、细腻；不要让文字和背景变脏、破损、坑洼，不要斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果，文字区域保持纯净清晰，不要让肌理干扰阅读。\n"
-    "版权边界：可以明显借鉴某个参考封面的排版，甚至像同一类封面；但不能让人觉得只是把某一本封面换了书名、换了作者、换了一个相似图案，不能复制真实书名、出版社信息、logo、二维码、价格、水印、已有摄影作品、已有插画作品、可识别真实人物肖像或某一本封面的完整构图组合。\n"
-    "删除所有出版社 logo、出版品牌 logo、第三方平台 logo、原出版信息、二维码、价格、促销标签、真实书名残影、乱码文字、水印。\n"
-    "禁止真实品牌背书、真实书名残影。\n"
-    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡；最终效果应像从素材库中选了一张成熟出版封面作为版式母版，再根据当前书名和简介重新设计出的新封面。"
-)
+LITERATURE_PUBLISHING_PROMPT = cover._LITERATURE_PUBLISHING_STYLE_RULE  # noqa: SLF001
 
 
 @pytest.fixture(autouse=True)
@@ -364,21 +350,19 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert {item["source"] for item in brief.reference_samples} == {"local_zip"}
     assert all("reference_covers.zip" in item["source_page"] for item in brief.reference_samples)
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "正统出版版式迁移" in prompt
-    assert "不要绑定任何固定平台系列的气质" in prompt
-    assert "不要只抽象学习“出版感”" in prompt
-    assert "选择一张最适合本书的封面作为主要版式参考" in prompt
+    assert "正统出版封面长期参考指令｜高仿安全版" in prompt
+    assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
+    assert "只抽象学习所谓“出版感”" in prompt
+    assert "成熟出版封面的真实效果" in prompt
     assert "不要自行发明新构图" in prompt
     assert "标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置" in prompt
-    assert "主视觉必须根据当前书名和简介重新选择" in prompt
-    assert "主色、辅助色、点缀色中至少调整一处" in prompt
-    assert "不要让文字和背景变脏、破损、坑洼" in prompt
-    assert "不要斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in prompt
-    assert "像从素材库中选了一张成熟出版封面作为版式母版" in prompt
+    assert "主视觉必须服务于当前书名、简介、题材和读者期待" in prompt
+    assert "允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式" in prompt
+    assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in prompt
+    assert "以素材库中的成熟出版封面为母版" in prompt
     assert "不要随意添加无意义的横线、竖线、圆点、印章、编号" in prompt
-    assert "删除所有出版社 logo、出版品牌 logo、第三方平台 logo" in prompt
+    assert "出版社或平台 logo、二维码、价格、水印" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
-    assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
     assert get_cover_category_meta("literature")["label"] == "正统出版"
 
@@ -427,18 +411,15 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "正统出版版式迁移" in prompt
-    assert "必须先从参考图库中选择一张最适合本书的封面作为主要版式参考" in prompt
+    assert "正统出版封面长期参考指令｜高仿安全版" in prompt
+    assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
     assert "标题所在区域、标题大小关系、标题分行方式" in prompt
     assert "内部逐个尝试强标题留白型、色块标题型" in prompt
-    assert "可以明显借鉴某个参考封面的排版" in prompt
-    assert "禁止真实品牌背书、真实书名残影" in prompt
-    assert "纸张质感必须干净、平整、细腻" in prompt
+    assert "可以高仿的是版式骨架、标题层级、留白节奏" in prompt
+    assert "真实品牌元素、已有摄影作品、已有插画作品" in prompt
+    assert "纸张质感可以有，但必须干净、平整、细腻" in prompt
     assert "文字区域保持纯净清晰" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
-    assert "微信读书" not in prompt
-    assert "得到系列" not in prompt
-    assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
 
 
@@ -515,27 +496,30 @@ def test_generate_cover_file_writes_three_stage_artifacts(
     assert "参考出版社版本时也不能做得过黑过暗" in calls[1][1]
 
 
-def test_literature_cover_generation_uses_zip_reference_board(
+def test_literature_cover_generation_uses_direct_multi_image_references(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    calls: list[tuple[str, str, str | None]] = []
-    reference_board = tmp_path / "orthodox_reference_board.png"
-    reference_board.write_bytes(PNG_BYTES)
+    calls: list[tuple[tuple[str, ...], str, str | None]] = []
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(20):
+            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
 
-    def fake_reference_board(cover_input, output_dir: Path, should_abort=None) -> Path:
-        assert cover_input.category == "literature"
-        assert output_dir == tmp_path
-        return reference_board
+    def fail_style_brief(*args, **kwargs):
+        raise AssertionError("literature direct workflow should not build the old style brief")
 
     def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
-        raise AssertionError("literature draft should use ZIP reference board edit, not pure text generation")
+        raise AssertionError("literature direct workflow should use multi-image edit, not pure text generation")
 
-    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
-        calls.append((image_path.name, prompt, kwargs.get("stage")))
+    def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
+        paths = tuple(image_paths)
+        calls.append((tuple(path.name for path in paths), prompt, kwargs.get("stage")))
         return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    monkeypatch.setattr(cover, "_build_literature_reference_board", fake_reference_board)
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(cover, "build_cover_style_brief", fail_style_brief)
+    monkeypatch.setattr(cover, "build_refine_cover_prompt", fail_style_brief)
     monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
     monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
@@ -548,14 +532,94 @@ def test_literature_cover_generation_uses_zip_reference_board(
     )
 
     assert result == tmp_path / "cover.png"
-    assert calls[0][0] == "orthodox_reference_board.png"
+    assert len(calls) == 1
+    assert len(calls[0][0]) == 16
+    assert all(name.endswith(".png") for name in calls[0][0])
     assert calls[0][2] == "draft_reference"
-    assert "ZIP参考封面图像输入规则" in calls[0][1]
+    assert "正统出版封面直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
-    assert "不要输出拼贴板、九宫格、多张小封面" in calls[0][1]
-    assert calls[1][0] == "draft_cover.png"
-    assert calls[1][2] is None
+    assert "高仿安全版" in calls[0][1]
+    assert "微信读书、得到系列等成熟出版封面的设计规律" in calls[0][1]
+    assert "不要生成随机 AI 图、PPT 封面、知识付费课程海报、电商主图或网文封面" in calls[0][1]
+    assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
+    assert (tmp_path / "draft_cover.png").exists()
+    assert (tmp_path / "cover.png").exists()
+    assert not (tmp_path / "cover_refine_prompt.txt").exists()
+
+
+def test_literature_cover_direct_reuses_reference_batch_until_force(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(18):
+            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
+
+    sample_calls = 0
+    edit_calls = 0
+
+    def fake_sample(population, count):
+        nonlocal sample_calls
+        sample_calls += 1
+        items = list(population)
+        return items[:count] if sample_calls == 1 else list(reversed(items))[:count]
+
+    def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
+        nonlocal edit_calls
+        edit_calls += 1
+        if edit_calls == 1:
+            raise cover.ImageApiTransientError("temporary image failure")
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(cover.random, "sample", fake_sample)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+    monkeypatch.setattr(
+        cover,
+        "_request_image_generation_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generation should not run")),
+    )
+
+    with pytest.raises(cover.ImageApiTransientError):
+        cover.generate_cover_file(
+            "风经过房间",
+            "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+            tmp_path,
+            category="正统出版",
+            author="作者L",
+        )
+
+    first_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+    assert sample_calls == 1
+    assert len(first_samples) == 16
+
+    result = cover.generate_cover_file(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+        tmp_path,
+        category="正统出版",
+        author="作者L",
+    )
+
+    second_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+    assert result == tmp_path / "cover.png"
+    assert second_samples == first_samples
+    assert sample_calls == 1
+
+    cover.generate_cover_file(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+        tmp_path,
+        category="正统出版",
+        author="作者L",
+        force=True,
+    )
+
+    forced_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+    assert sample_calls == 2
+    assert forced_samples != first_samples
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
@@ -743,6 +807,45 @@ def test_image_generation_sends_full_gpt_image_prompt_limit(monkeypatch) -> None
     cover._request_image_generation("x" * 40000)  # noqa: SLF001
 
     assert len(captured["prompt"]) == 32000
+
+
+def test_image_edit_sends_multiple_images_as_array_fields(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    image_a = tmp_path / "a.png"
+    image_b = tmp_path / "b.jpg"
+    image_a.write_bytes(PNG_BYTES)
+    image_b.write_bytes(PNG_BYTES)
+
+    class DummyGate:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_gate(*args, **kwargs):
+        return DummyGate()
+
+    def fake_credentials():
+        return "key", "https://api.example.test/v1", ""
+
+    def fake_post(_http, _endpoint, _api_key, *, data=None, files=None, **_kwargs):
+        captured["prompt"] = data["prompt"]
+        captured["files"] = files
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "distributed_semaphore", fake_gate)
+    monkeypatch.setattr(cover, "_resolve_image_api_credentials", fake_credentials)
+    monkeypatch.setattr(cover, "_post_image_request", fake_post)
+
+    result = cover._request_image_edit((image_a, image_b), "x")  # noqa: SLF001
+
+    assert result == PNG_BYTES
+    files = captured["files"]
+    assert isinstance(files, list)
+    assert [field for field, _payload in files] == ["image[]", "image[]"]
+    assert files[0][1][2] == "image/png"
+    assert files[1][1][2] == "image/jpeg"
 
 
 def test_generate_cover_file_retries_refine_from_existing_draft_without_rebuilding_brief(
