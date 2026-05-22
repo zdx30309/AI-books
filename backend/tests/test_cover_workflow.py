@@ -31,15 +31,13 @@ CRAYON_ILLUSTRATION_PROMPT = (
     "避免商业心理书、PPT感、UI插画风、过度精致和AI感。"
 )
 LITERATURE_PUBLISHING_PROMPT = (
-    "文艺文学感书封，像豆瓣高分文学与微信读书精选封面。"
-    "现代出版设计风格，简洁、克制、有留白，不要古风小说海报感。"
-    "弱化剧情感与人物主体，强化氛围、平面构成与书籍气质。"
-    "可使用自然、城市、旅行、人物、植物、建筑、光影等意象元素，少而精。"
-    "平面插画或轻水彩质感，轻微颗粒与纸张肌理。"
-    "配色不要灰蒙蒙与做旧感，使用更有识别度和情绪感的颜色，颜色克制但能第一眼吸引人。"
-    "标题排版高级、稀疏、克制，像真正出版社的文学书设计，而不是AI书法字。"
-    "整体安静、诗意、有孤独感与呼吸感，同时保留现代感与视觉吸引力。"
-    "避免古风模板、避免影视海报感、避免晋江小说封面、避免厚重书法字、避免PPT感、避免廉价AI插画感。"
+    "现代出版级文学书封，参考豆瓣高分文学书、微信读书精选书封的抽象规律："
+    "大标题清晰醒目，平面构成强，颜色干净但有记忆点，适合微信读书缩略图识别。"
+    "画面少而准，只保留一个核心视觉意象，不堆砌山水、飞鸟、太阳、柳枝、古建筑等古风符号。"
+    "可以有纸张或印刷肌理，但不要淡雅水墨感、古风插画感、明信片感。"
+    "整体要像真实出版社的新书封面，而不是古典诗词插画、文创海报、网文封面或 AI 水彩图。"
+    "标题优先使用现代宋体、黑体或出版级字体结构，字要大，有层级，不要厚重书法字，不要过细竖排小字。"
+    "配色可使用高识别度，但保持干净、克制、出版感。"
 )
 
 
@@ -353,15 +351,18 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
-    assert "豆瓣高分文学与微信读书精选封面" in prompt
+    assert "豆瓣高分文学书、微信读书精选书封" in prompt
     assert brief.reference_site.startswith("本地正统出版参考文件")
     assert brief.reference_brands == ()
     assert brief.reference_samples == ()
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "现代出版设计风格，简洁、克制、有留白" in prompt
-    assert "避免古风模板" in prompt
+    assert "现代出版级文学/大众读物书封" in prompt
+    assert "适合微信读书缩略图识别" in prompt
+    assert "只保留一个核心视觉意象" in prompt
+    assert "大标题型、色块型、单意象型、抽象图形型、摄影感平面型、留白型或强对比型" in prompt
+    assert "禁止古风模板、淡雅水墨、明信片感" in prompt
+    assert "太阳 + 飞鸟 + 水面 + 柳枝 + 远山 + 纸张肌理" in prompt
     assert "微信读书/得到系爆款风" not in prompt
-    assert "高饱和、强识别" not in prompt
     assert "当当网" not in prompt
     assert get_cover_category_meta("literature")["label"] == "正统出版"
 
@@ -410,11 +411,12 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "文艺文学感书封，像豆瓣高分文学与微信读书精选封面" in prompt
-    assert "现代出版设计风格，简洁、克制、有留白" in prompt
-    assert "弱化剧情感与人物主体" in prompt
-    assert "标题排版高级、稀疏、克制" in prompt
-    assert "避免古风模板、避免影视海报感、避免晋江小说封面" in prompt
+    assert "现代出版级文学书封，参考豆瓣高分文学书、微信读书精选书封" in prompt
+    assert "大标题清晰醒目，平面构成强，颜色干净但有记忆点" in prompt
+    assert "不要淡雅水墨感、古风插画感、明信片感" in prompt
+    assert "书名要大、清楚、有层级" in prompt
+    assert "颜色可根据内容选择高识别度方案" in prompt
+    assert "影视海报感、晋江小说封面感、PPT感、电商商品主图感" in prompt
     assert "微信读书/得到系爆款风" not in prompt
     assert "当当网" not in prompt
 
