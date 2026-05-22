@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import logging
 import queue
 import random
 import threading
 import time
+import zipfile
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -94,6 +96,10 @@ def _load_reference_markdown(filename: str) -> str:
 
 
 _LITERATURE_COVER_REFERENCE = _load_reference_markdown("literature_cover_reference.md")
+_LITERATURE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+_LITERATURE_REFERENCE_BOARD_LIMIT = 12
+_LITERATURE_REFERENCE_BOARD_COLUMNS = 4
+_LITERATURE_REFERENCE_CELL_SIZE = (260, 380)
 
 
 class ImageApiError(RuntimeError):
@@ -541,6 +547,121 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _literature_reference_zip_path() -> Path:
+    service_dir = Path(__file__).resolve().parent
+    candidates = (
+        service_dir / "reference_assets" / "orthodox_publishing" / "reference_covers.zip",
+        service_dir / "reference_assets" / "healing_comic" / "reference_covers.zip",
+    )
+    for path in candidates:
+        if path.exists() and path.stat().st_size > 0:
+            return path
+    return candidates[0]
+
+
+def _literature_reference_members(zip_path: Path) -> tuple[str, ...]:
+    if not zip_path.exists():
+        return ()
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            return tuple(
+                sorted(
+                    info.filename
+                    for info in archive.infolist()
+                    if not info.is_dir()
+                    and Path(info.filename).suffix.lower() in _LITERATURE_REFERENCE_IMAGE_EXTENSIONS
+                    and info.file_size > 0
+                )
+            )
+    except (OSError, zipfile.BadZipFile) as exc:
+        logger.warning("正统出版参考封面 ZIP 不可读: %s", exc)
+        return ()
+
+
+def _selected_literature_reference_members(
+    cover_input: CoverInput,
+    *,
+    limit: int = _LITERATURE_REFERENCE_BOARD_LIMIT,
+) -> tuple[str, ...]:
+    members = _literature_reference_members(_literature_reference_zip_path())
+    if not members:
+        return ()
+    seed = f"{cover_input.title}|{cover_input.author}|{cover_input.intro}|{cover_input.category_label}"
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    start = int.from_bytes(digest[:4], "big") % len(members)
+    step = (int.from_bytes(digest[4:8], "big") % max(1, len(members) - 1)) + 1
+    selected: list[str] = []
+    seen: set[str] = set()
+    index = start
+    while len(selected) < min(limit, len(members)):
+        item = members[index % len(members)]
+        if item not in seen:
+            selected.append(item)
+            seen.add(item)
+        index += step
+    return tuple(selected)
+
+
+def collect_literature_reference_covers(
+    cover_input: CoverInput,
+    limit: int = _LITERATURE_REFERENCE_BOARD_LIMIT,
+) -> tuple[ReferenceCover, ...]:
+    zip_path = _literature_reference_zip_path()
+    members = _selected_literature_reference_members(cover_input, limit=limit)
+    return tuple(
+        ReferenceCover(
+            brand="正统出版ZIP参考封面库",
+            title=Path(member).stem,
+            product_url=f"zip://{zip_path.name}!/{member}",
+            image_url=f"zip://{zip_path.name}!/{member}",
+            source="local_zip",
+            product_id=hashlib.sha1(member.encode("utf-8")).hexdigest()[:12],
+            source_page=zip_path.name,
+            local_image_path=f"{zip_path}!{member}",
+        )
+        for member in members
+    )
+
+
+def _build_literature_reference_board(
+    cover_input: CoverInput,
+    output_dir: Path,
+    should_abort: Callable[[], bool] | None = None,
+) -> Path:
+    zip_path = _literature_reference_zip_path()
+    members = _selected_literature_reference_members(cover_input)
+    if not zip_path.exists() or not members:
+        raise ImageApiPermanentError(
+            f"正统出版参考封面 ZIP 缺失或为空，无法按素材库样式生成: {zip_path}"
+        )
+
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as exc:  # pragma: no cover - protected by requirements
+        raise ImageApiPermanentError("Pillow is required to build orthodox reference board") from exc
+
+    columns = _LITERATURE_REFERENCE_BOARD_COLUMNS
+    cell_w, cell_h = _LITERATURE_REFERENCE_CELL_SIZE
+    rows = (len(members) + columns - 1) // columns
+    board = Image.new("RGB", (columns * cell_w, rows * cell_h), "white")
+    with zipfile.ZipFile(zip_path) as archive:
+        for index, member in enumerate(members):
+            _abort_cover_generation_if_requested(should_abort, stage="read orthodox reference zip")
+            with archive.open(member) as fp:
+                image = Image.open(io.BytesIO(fp.read()))
+                image.load()
+            thumb = ImageOps.contain(image.convert("RGB"), (cell_w - 16, cell_h - 16))
+            x = (index % columns) * cell_w + (cell_w - thumb.width) // 2
+            y = (index // columns) * cell_h + (cell_h - thumb.height) // 2
+            board.paste(thumb, (x, y))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    board_path = output_dir / "orthodox_reference_board.png"
+    _abort_cover_generation_if_requested(should_abort, stage="write orthodox reference board")
+    board.save(board_path, format="PNG", optimize=True)
+    return board_path
+
+
 def collect_reference_covers(
     cover_input: CoverInput,
     limit: int = 12,
@@ -854,7 +975,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
     is_literature = _is_literature_publishing(cover_input.category)
     market_match = analyze_cover_market_match(cover_input)
     references = (
-        ()
+        collect_literature_reference_covers(cover_input)
         if is_literature
         else collect_reference_covers(
             cover_input,
@@ -950,7 +1071,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
             *style_brief_rules,
         )
         color_palette = tuple(profile["colors"])
-        reference_site = "本地正统出版长期封面库 + 成熟出版封面方法探索"
+        reference_site = "本地正统出版ZIP参考封面库 + 成熟出版版式迁移"
         brand_style_direction = (
             "生成封面只围绕正统出版长期素材库、成熟出版封面方法和版式迁移 prompt 完成："
             "先选择一张最适合本书的素材库封面作为主要版式母版，真实迁移标题层级、稳定留白节奏、主视觉比例、色块关系和干净纸感；最终只输出最佳一版。"
@@ -961,7 +1082,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
         generation_prompt_addendum = (
             f"{profile['addendum']}\n"
-            f"参考来源：本地正统出版长期封面库 + 成熟出版封面方法探索。\n"
+            f"参考来源：本地正统出版ZIP参考封面库 + 成熟出版版式迁移。\n"
             f"长期参考文件摘要：{_LITERATURE_COVER_REFERENCE[:900]}\n"
             f"本书视觉判断：{visual_variation_directive}\n"
         )
@@ -989,7 +1110,7 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         )
     return CoverStyleBrief(
         reference_site=reference_site,
-        reference_brands=() if is_literature else ALLOWED_REFERENCE_BRANDS,
+        reference_brands=("正统出版ZIP参考封面库",) if is_literature else ALLOWED_REFERENCE_BRANDS,
         matched_category_style=f"{cover_input.category_label}: {profile['style']}",
         brand_style_direction=brand_style_direction,
         cover_type=str(profile["cover_type"]),
@@ -1409,6 +1530,8 @@ def _request_image_edit_response(
     image_path: Path,
     prompt: str,
     should_abort: Callable[[], bool] | None = None,
+    *,
+    stage: str = "refine",
 ) -> Any:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/edits"
@@ -1429,7 +1552,7 @@ def _request_image_edit_response(
     event_base = {
         "provider": "openai_image",
         "model": settings.IMAGE_MODEL,
-        "stage": "refine",
+        "stage": stage,
         "endpoint": endpoint,
     }
     _emit_image_request_event({"event": "start", **event_base})
@@ -1450,7 +1573,7 @@ def _request_image_edit_response(
                 limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
                 wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
                 should_abort=should_abort,
-                abort_exception_factory=lambda: _cover_cancelled("wait refine image gate"),
+                abort_exception_factory=lambda: _cover_cancelled(f"wait {stage} image gate"),
             ):
                 response_data = _post_image_request_with_cancellation(
                     http,
@@ -1459,7 +1582,7 @@ def _request_image_edit_response(
                     data=data,
                     files=files,
                     should_abort=should_abort,
-                    stage="refine image request",
+                    stage=f"{stage} image request",
                 )
         except ImageApiUncertainError as exc:
             _emit_image_request_event({"event": "error", "error_type": "timeout_uncertain", "billing_risk": True, "error": str(exc), **event_base})
@@ -1474,7 +1597,7 @@ def _request_image_edit_response(
             _emit_image_request_event({"event": "error", "error_type": exc.__class__.__name__, "billing_risk": False, "error": str(exc), **event_base})
             raise
     _emit_image_request_event({"event": "success", "response_summary": {"data_count": len(response_data.get("data") or []) if isinstance(response_data, dict) else None}, **event_base})
-    _abort_cover_generation_if_requested(should_abort, stage="after refine image request")
+    _abort_cover_generation_if_requested(should_abort, stage=f"after {stage} image request")
     return response_data
 
 
@@ -1764,14 +1887,47 @@ def generate_cover_file(
     _write_cover_text_file(style_brief_path, _brief_json(style_brief), should_abort)
 
     draft_prompt = build_draft_cover_prompt(cover_input, style_brief)
+    literature_reference_board_path: Path | None = None
+    if _is_literature_publishing(cover_input.category):
+        literature_reference_board_path = _build_literature_reference_board(
+            cover_input,
+            output_dir,
+            should_abort=should_abort,
+        )
+        _write_cover_text_file(
+            output_dir / "orthodox_reference_samples.json",
+            json.dumps(style_brief.reference_samples, ensure_ascii=False, indent=2),
+            should_abort,
+        )
+        draft_prompt = (
+            f"{draft_prompt}\n\n"
+            "ZIP参考封面图像输入规则：已随请求附上一张 orthodox_reference_board.png，"
+            "它由参考封面(1).zip 中按本书稳定抽样的真实正统出版封面组成。"
+            "必须把这张图当作最主要的版式和风格参考板，先从其中选择一张最适合本书的封面作为版式母版，"
+            "迁移标题区域、字号层级、留白比例、主视觉占比、图文关系、背景色块关系和整体书架气质。"
+            "最终只生成一张新的竖版中文图书正面封面，不要输出拼贴板、九宫格、多张小封面或参考图合集；"
+            "不要复制参考图中的真实书名、logo、人物、摄影、插画和完整细节组合。"
+        )
     _write_cover_text_file(draft_prompt_path, draft_prompt, should_abort)
     if force or not draft_path.exists() or draft_path.stat().st_size <= 0:
         logger.info("开始生成封面初稿: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, title)
         _notify_cover_progress(on_progress, "draft")
         _abort_cover_generation_if_requested(should_abort, stage="before draft image request")
+        if literature_reference_board_path is not None:
+            draft_request = lambda: _request_image_edit_response(
+                literature_reference_board_path,
+                draft_prompt,
+                should_abort=should_abort,
+                stage="draft_reference",
+            )
+        else:
+            draft_request = lambda: _request_image_generation_response(
+                draft_prompt,
+                should_abort=should_abort,
+            )
         draft_bytes = _request_or_reuse_image_response(
             draft_response_path,
-            lambda: _request_image_generation_response(draft_prompt, should_abort=should_abort),
+            draft_request,
             should_abort=should_abort,
             force=force,
         )

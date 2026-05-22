@@ -357,10 +357,12 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
-    assert "本地正统出版长期封面库 + 成熟出版封面方法探索" in prompt
-    assert brief.reference_site.startswith("本地正统出版长期封面库")
-    assert brief.reference_brands == ()
-    assert brief.reference_samples == ()
+    assert "本地正统出版ZIP参考封面库 + 成熟出版版式迁移" in prompt
+    assert brief.reference_site.startswith("本地正统出版ZIP参考封面库")
+    assert brief.reference_brands == ("正统出版ZIP参考封面库",)
+    assert brief.reference_samples
+    assert {item["source"] for item in brief.reference_samples} == {"local_zip"}
+    assert all("reference_covers.zip" in item["source_page"] for item in brief.reference_samples)
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
     assert "正统出版版式迁移" in prompt
     assert "不要绑定任何固定平台系列的气质" in prompt
@@ -511,6 +513,49 @@ def test_generate_cover_file_writes_three_stage_artifacts(
     assert "可直接商用、具有成熟出版质感" in calls[1][1]
     assert "删除所有出版社 logo" in calls[1][1]
     assert "参考出版社版本时也不能做得过黑过暗" in calls[1][1]
+
+
+def test_literature_cover_generation_uses_zip_reference_board(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+    reference_board = tmp_path / "orthodox_reference_board.png"
+    reference_board.write_bytes(PNG_BYTES)
+
+    def fake_reference_board(cover_input, output_dir: Path, should_abort=None) -> Path:
+        assert cover_input.category == "literature"
+        assert output_dir == tmp_path
+        return reference_board
+
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
+        raise AssertionError("literature draft should use ZIP reference board edit, not pure text generation")
+
+    def fake_edit(image_path: Path, prompt: str, **kwargs) -> dict[str, object]:
+        calls.append((image_path.name, prompt, kwargs.get("stage")))
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_build_literature_reference_board", fake_reference_board)
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+
+    result = cover.generate_cover_file(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+        tmp_path,
+        category="正统出版",
+        author="作者L",
+    )
+
+    assert result == tmp_path / "cover.png"
+    assert calls[0][0] == "orthodox_reference_board.png"
+    assert calls[0][2] == "draft_reference"
+    assert "ZIP参考封面图像输入规则" in calls[0][1]
+    assert "参考封面(1).zip" in calls[0][1]
+    assert "不要输出拼贴板、九宫格、多张小封面" in calls[0][1]
+    assert calls[1][0] == "draft_cover.png"
+    assert calls[1][2] is None
+    assert (tmp_path / "orthodox_reference_samples.json").exists()
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
