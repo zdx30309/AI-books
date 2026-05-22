@@ -19,6 +19,7 @@ from app.prompts.goal_driven_templates import get_prompts, normalize_category
 from app.services.deepseek import format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
+from app.utils.official_api import official_openai_base_url, official_proxy
 
 # 进度上报回调：(stage_name, info_dict)
 # stage_name 取值：
@@ -377,8 +378,11 @@ def _get_openai_writer_client() -> OpenAI:
         return _openai_writer_client
 
     request_timeout = httpx.Timeout(1800.0, connect=30.0)
-    client_kwargs: dict[str, Any] = {"base_url": settings.OPENAI_BASE_URL, "timeout": request_timeout}
-    proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
+    client_kwargs: dict[str, Any] = {
+        "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
+        "timeout": request_timeout,
+    }
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     if proxy:
         logger.info("OpenAI Writer 使用代理: %s", proxy)
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=request_timeout)
@@ -439,7 +443,7 @@ def _is_retryable_openai_error(exc: Exception) -> bool:
 
 
 def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
-    proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     parts = [
         "OpenAI 初稿生成连接失败",
         f"base_url={settings.OPENAI_BASE_URL}",
@@ -450,8 +454,8 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
         parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
     if proxy:
         parts.append(
-            "请确认北京 ECS 到日本代理服务器的 video-plan-jp-proxy-tunnel.service 正常，"
-            "且容器可访问当前 OPENAI_HTTPS_PROXY；生产链路固定为北京 ECS 到日本代理服务器。"
+            "请确认当前 OPENAI_HTTPS_PROXY 可访问 OpenAI 官方地址；"
+            "若 OFFICIAL_API_DIRECT_ONLY=True，代理配置会被忽略。"
         )
     return "；".join(parts)
 

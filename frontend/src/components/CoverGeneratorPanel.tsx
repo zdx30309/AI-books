@@ -31,6 +31,7 @@ function isPausedJob(job: CoverJobResponse | null | undefined) {
 function statusLabel(status: string) {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
+  if (status === "uncertain") return "待确认";
   if (status === "paused") return "已暂停";
   if (status === "processing") return "生成中";
   if (status === "pending") return "排队中";
@@ -140,7 +141,7 @@ function CoverPreview({
           )}
         </button>
       )}
-      {!selectionMode && item.status === "failed" && (
+      {!selectionMode && (item.status === "failed" || item.status === "uncertain") && (
         <button
           type="button"
           onClick={(event) => {
@@ -183,7 +184,7 @@ function CoverPreview({
           <img src={src} alt={item.title} className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-warm-500">
-            {item.status === "failed" ? (
+            {item.status === "failed" || item.status === "uncertain" ? (
               <AlertCircle className="h-6 w-6 text-red-200" strokeWidth={1.6} />
             ) : item.status === "processing" ? (
               <Loader2 className="h-6 w-6 animate-spin text-gold-300" strokeWidth={1.6} />
@@ -206,6 +207,11 @@ function CoverPreview({
         {item.error && (
           <div className="line-clamp-2 text-[11px] leading-relaxed text-red-200">
             {item.error}
+          </div>
+        )}
+        {item.current_stage && item.status === "processing" && (
+          <div className="truncate text-[11px] text-warm-500">
+            {item.current_stage}
           </div>
         )}
       </div>
@@ -314,13 +320,15 @@ export function CoverGeneratorPanel() {
   const selectedFailedItemCount = useMemo(
     () =>
       visibleItems.filter(
-        (item) => selectedItemIndexes.has(item.index) && item.status === "failed",
+        (item) =>
+          selectedItemIndexes.has(item.index) &&
+          (item.status === "failed" || item.status === "uncertain"),
       ).length,
     [selectedItemIndexes, visibleItems],
   );
   const progressText = useMemo(() => {
     if (!job) return "等待上传";
-    return `${job.completed}/${job.total} 完成，${job.failed} 失败`;
+    return `${job.completed}/${job.total} 完成，${job.failed} 失败，${job.uncertain || 0} 待确认`;
   }, [job]);
 
   const loadJobs = async (selectJobId?: string | null) => {
@@ -581,7 +589,7 @@ export function CoverGeneratorPanel() {
   };
 
   const retryFailedCurrent = async () => {
-    if (!job || job.failed === 0) return;
+    if (!job || (job.failed === 0 && (job.uncertain || 0) === 0)) return;
     setWorking("retry-failed");
     setError(null);
     try {
@@ -611,7 +619,11 @@ export function CoverGeneratorPanel() {
   const retrySelectedItems = async () => {
     if (!job || selectedFailedItemCount === 0) return;
     const indexes = visibleItems
-      .filter((item) => selectedItemIndexes.has(item.index) && item.status === "failed")
+      .filter(
+        (item) =>
+          selectedItemIndexes.has(item.index) &&
+          (item.status === "failed" || item.status === "uncertain"),
+      )
       .map((item) => item.index);
     setWorking("retry-items");
     setError(null);
@@ -859,7 +871,7 @@ export function CoverGeneratorPanel() {
                     继续
                   </button>
                 )}
-                {job && job.failed > 0 && (
+                {job && (job.failed > 0 || (job.uncertain || 0) > 0) && (
                   <button
                     type="button"
                     onClick={retryFailedCurrent}

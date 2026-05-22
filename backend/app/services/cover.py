@@ -9,9 +9,11 @@ import queue
 import random
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import httpx
 
@@ -23,8 +25,13 @@ from app.services.cover_categories import (
 )
 from app.services.dangdang_crawler import collect_dangdang_reference_covers
 from app.utils.distributed_limiter import DistributedLimitError, distributed_semaphore
+from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
+_IMAGE_REQUEST_OBSERVER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "cover_image_request_observer",
+    default=None,
+)
 
 ALLOWED_REFERENCE_SITE = "当当网"
 ALLOWED_REFERENCE_BRANDS: tuple[str, ...] = ("酷威文化", "果麦文化", "时代华语")
@@ -103,6 +110,26 @@ class ImageApiUncertainError(ImageApiPermanentError):
 
 class CoverGenerationCancelled(RuntimeError):
     """Raised when a cover item was deleted, paused, or superseded mid-generation."""
+
+
+@contextmanager
+def observe_image_requests(callback: Callable[[dict[str, Any]], None]) -> Iterator[None]:
+    """Expose logical image request events to queue workers without changing prompts."""
+    token = _IMAGE_REQUEST_OBSERVER.set(callback)
+    try:
+        yield
+    finally:
+        _IMAGE_REQUEST_OBSERVER.reset(token)
+
+
+def _emit_image_request_event(event: dict[str, Any]) -> None:
+    observer = _IMAGE_REQUEST_OBSERVER.get()
+    if observer is None:
+        return
+    try:
+        observer(event)
+    except Exception:
+        logger.warning("cover image request observer failed", exc_info=True)
 
 
 @dataclass(frozen=True)
@@ -662,25 +689,34 @@ def _cover_reference_cache_dir() -> Path:
 
 
 def _resolve_image_api_credentials() -> tuple[str, str, str]:
+    if settings.OFFICIAL_API_DIRECT_ONLY:
+        openai_key = (settings.OPENAI_API_KEY or "").strip()
+        image_key = (settings.IMAGE_API_KEY or "").strip()
+        api_key = openai_key or image_key
+        if not api_key:
+            raise ValueError("IMAGE_API_KEY 或 OPENAI_API_KEY 未配置，无法生成封面")
+        base_url = official_openai_base_url(settings.OPENAI_BASE_URL)
+        proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
+        return api_key, base_url, proxy
     image_key = (settings.IMAGE_API_KEY or "").strip()
     if image_key.lower() not in _PLACEHOLDER_KEYS and "xxx" not in image_key.lower():
-        base_url = (settings.IMAGE_BASE_URL or settings.OPENAI_BASE_URL).rstrip("/")
+        base_url = official_openai_base_url(settings.IMAGE_BASE_URL or settings.OPENAI_BASE_URL)
         proxy = _proxy_for_base_url(base_url)
         return image_key, base_url, proxy
     openai_key = (settings.OPENAI_API_KEY or "").strip()
     if not openai_key:
         raise ValueError("IMAGE_API_KEY 未配置，且 OPENAI_API_KEY 也为空，无法生成封面")
-    base_url = (settings.OPENAI_BASE_URL or "https://api.openai.com/v1").rstrip("/")
-    proxy = (settings.OPENAI_HTTPS_PROXY or "").strip()
+    base_url = official_openai_base_url(settings.OPENAI_BASE_URL)
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     return openai_key, base_url, proxy
 
 
 def _proxy_for_base_url(base_url: str) -> str:
     lowered = base_url.lower()
     if "openai.com" in lowered:
-        return (settings.OPENAI_HTTPS_PROXY or "").strip()
+        return official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     if "googleapis.com" in lowered or "google.com" in lowered:
-        return (settings.GOOGLE_HTTPS_PROXY or "").strip()
+        return official_proxy("google", settings.GOOGLE_HTTPS_PROXY)
     return ""
 
 
@@ -1212,26 +1248,47 @@ def _request_image_generation_response(
         payload["quality"] = settings.IMAGE_QUALITY
 
     request_timeout = max(60, int(settings.IMAGE_API_REQUEST_TIMEOUT_SECONDS or 300))
+    event_base = {
+        "provider": "openai_image",
+        "model": settings.IMAGE_MODEL,
+        "stage": "draft",
+        "endpoint": endpoint,
+    }
+    _emit_image_request_event({"event": "start", **event_base})
     with httpx.Client(
         timeout=httpx.Timeout(float(request_timeout), connect=min(60.0, float(request_timeout))),
         proxy=proxy or None,
     ) as http:
-        with distributed_semaphore(
-            "image-cover",
-            limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
-            wait_timeout_seconds=gate_wait_timeout_seconds
-            or settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
-            should_abort=should_abort,
-            abort_exception_factory=lambda: _cover_cancelled("wait draft image gate"),
-        ):
-            response_data = _post_image_request_with_cancellation(
-                http,
-                endpoint,
-                api_key,
-                json_payload=payload,
+        try:
+            with distributed_semaphore(
+                "image-cover",
+                limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
+                wait_timeout_seconds=gate_wait_timeout_seconds
+                or settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
                 should_abort=should_abort,
-                stage="draft image request",
-            )
+                abort_exception_factory=lambda: _cover_cancelled("wait draft image gate"),
+            ):
+                response_data = _post_image_request_with_cancellation(
+                    http,
+                    endpoint,
+                    api_key,
+                    json_payload=payload,
+                    should_abort=should_abort,
+                    stage="draft image request",
+                )
+        except ImageApiUncertainError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "timeout_uncertain", "billing_risk": True, "error": str(exc), **event_base})
+            raise
+        except ImageApiPermanentError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "permanent", "billing_risk": False, "error": str(exc), **event_base})
+            raise
+        except ImageApiTransientError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "transient", "billing_risk": False, "error": str(exc), **event_base})
+            raise
+        except Exception as exc:
+            _emit_image_request_event({"event": "error", "error_type": exc.__class__.__name__, "billing_risk": False, "error": str(exc), **event_base})
+            raise
+    _emit_image_request_event({"event": "success", "response_summary": {"data_count": len(response_data.get("data") or []) if isinstance(response_data, dict) else None}, **event_base})
     _abort_cover_generation_if_requested(should_abort, stage="after draft image request")
     return response_data
 
@@ -1271,6 +1328,13 @@ def _request_image_edit_response(
         data["quality"] = settings.IMAGE_QUALITY
 
     request_timeout = max(60, int(settings.IMAGE_API_REQUEST_TIMEOUT_SECONDS or 300))
+    event_base = {
+        "provider": "openai_image",
+        "model": settings.IMAGE_MODEL,
+        "stage": "refine",
+        "endpoint": endpoint,
+    }
+    _emit_image_request_event({"event": "start", **event_base})
     with httpx.Client(
         timeout=httpx.Timeout(float(request_timeout), connect=min(60.0, float(request_timeout))),
         proxy=proxy or None,
@@ -1282,22 +1346,36 @@ def _request_image_edit_response(
                 "image/png",
             )
         }
-        with distributed_semaphore(
-            "image-cover",
-            limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
-            wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
-            should_abort=should_abort,
-            abort_exception_factory=lambda: _cover_cancelled("wait refine image gate"),
-        ):
-            response_data = _post_image_request_with_cancellation(
-                http,
-                endpoint,
-                api_key,
-                data=data,
-                files=files,
+        try:
+            with distributed_semaphore(
+                "image-cover",
+                limit=settings.IMAGE_MAX_CONCURRENT_CALLS,
+                wait_timeout_seconds=settings.IMAGE_GATE_WAIT_TIMEOUT_SECONDS,
                 should_abort=should_abort,
-                stage="refine image request",
-            )
+                abort_exception_factory=lambda: _cover_cancelled("wait refine image gate"),
+            ):
+                response_data = _post_image_request_with_cancellation(
+                    http,
+                    endpoint,
+                    api_key,
+                    data=data,
+                    files=files,
+                    should_abort=should_abort,
+                    stage="refine image request",
+                )
+        except ImageApiUncertainError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "timeout_uncertain", "billing_risk": True, "error": str(exc), **event_base})
+            raise
+        except ImageApiPermanentError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "permanent", "billing_risk": False, "error": str(exc), **event_base})
+            raise
+        except ImageApiTransientError as exc:
+            _emit_image_request_event({"event": "error", "error_type": "transient", "billing_risk": False, "error": str(exc), **event_base})
+            raise
+        except Exception as exc:
+            _emit_image_request_event({"event": "error", "error_type": exc.__class__.__name__, "billing_risk": False, "error": str(exc), **event_base})
+            raise
+    _emit_image_request_event({"event": "success", "response_summary": {"data_count": len(response_data.get("data") or []) if isinstance(response_data, dict) else None}, **event_base})
     _abort_cover_generation_if_requested(should_abort, stage="after refine image request")
     return response_data
 
@@ -1809,5 +1887,6 @@ __all__ = [
     "generate_cover_file_from_metadata",
     "generate_image_file_from_prompt",
     "get_cover_category_prompt_adjustment",
+    "observe_image_requests",
     "prepare_cover_input",
 ]

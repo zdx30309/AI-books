@@ -17,6 +17,7 @@ from app.prompts.goal_driven_templates import (
     GEMINI_FAST_REFINE_PROMPT,
 )
 from app.utils.distributed_limiter import distributed_semaphore
+from app.utils.official_api import official_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _configure_google_runtime() -> None:
 @contextmanager
 def _google_proxy_env() -> Iterator[None]:
     """Temporarily expose a Google-only proxy during ADC/Gemini calls."""
-    proxy = (settings.GOOGLE_HTTPS_PROXY or "").strip()
+    proxy = official_proxy("google", settings.GOOGLE_HTTPS_PROXY)
     if not proxy:
         yield
         return

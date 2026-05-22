@@ -9,12 +9,33 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Literal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.cover_batch import CoverBatchItem, CoverBatchItemStatus, CoverBatchStatus
 from app.services.cover import (
     CoverGenerationCancelled,
     ImageApiPermanentError,
     ImageApiTransientError,
+    ImageApiUncertainError,
     generate_cover_file_from_metadata,
+    observe_image_requests,
+)
+from app.services import cover_batch_jobs
+from app.services.cover_batch_jobs import (
+    aggregate_cover_batch_job,
+    claim_ready_cover_items,
+    has_ready_cover_items,
+    mark_cover_item_completed,
+    mark_cover_item_failed,
+    mark_cover_item_progress,
+    mark_cover_item_retryable,
+    mark_cover_item_uncertain,
+    next_retry_countdown,
+    record_provider_request_event,
+    release_expired_cover_leases,
+    should_abort_cover_item,
 )
 from app.services.cover_jobs import (
     COVER_JOBS_ROOT,
@@ -666,11 +687,229 @@ def generate_cover_job(_self, job_id: str) -> dict[str, Any]:
     }
 
 
+def _cover_batch_item_path(item: CoverBatchItem) -> Any:
+    return cover_batch_jobs.image_path(item.job_id, int(item.item_index), item.title)
+
+
+def _generate_one_cover_batch_item(job_id: str, item_id: str, worker_id: str) -> CoverItemResult:
+    db = SessionLocal()
+    item_uuid = uuid.UUID(str(item_id))
+    try:
+        item = db.get(CoverBatchItem, item_uuid)
+        if item is None or item.status == CoverBatchItemStatus.DELETED:
+            return "skipped"
+        metadata = dict(item.source_metadata or {})
+        output_path = _cover_batch_item_path(item)
+
+        def _abort() -> bool:
+            check_db = SessionLocal()
+            try:
+                return should_abort_cover_item(check_db, item_uuid, worker_id)
+            finally:
+                check_db.close()
+
+        def _progress(stage: str) -> None:
+            progress_db = SessionLocal()
+            try:
+                mark_cover_item_progress(progress_db, item_uuid, worker_id, stage)
+            finally:
+                progress_db.close()
+
+        def _provider_event(event: dict[str, Any]) -> None:
+            event_db = SessionLocal()
+            try:
+                record_provider_request_event(
+                    event_db,
+                    job_id=job_id,
+                    item_id=item_uuid,
+                    event=event,
+                )
+            finally:
+                event_db.close()
+
+        with observe_image_requests(_provider_event):
+            generate_cover_file_from_metadata(
+                metadata,
+                output_path,
+                should_abort=_abort,
+                on_progress=_progress,
+            )
+    except CoverGenerationCancelled as exc:
+        logger.info("[cover batch %s] item %s cancelled: %s", job_id, item_id, exc)
+        return "paused" if "paused" in str(exc).lower() else "skipped"
+    except ImageApiUncertainError as exc:
+        logger.warning("[cover batch %s] item %s uncertain image result: %s", job_id, item_id, exc)
+        mark_db = SessionLocal()
+        try:
+            mark_cover_item_uncertain(mark_db, item_uuid, exc)
+        finally:
+            mark_db.close()
+        return "failed"
+    except (DistributedLimitError, ImageApiTransientError) as exc:
+        logger.warning("[cover batch %s] item %s will retry: %s", job_id, item_id, exc)
+        mark_db = SessionLocal()
+        try:
+            return mark_cover_item_retryable(mark_db, item_uuid, exc)
+        finally:
+            mark_db.close()
+    except ImageApiPermanentError as exc:
+        logger.exception("[cover batch %s] item %s permanent image error", job_id, item_id)
+        mark_db = SessionLocal()
+        try:
+            mark_cover_item_failed(mark_db, item_uuid, exc)
+        finally:
+            mark_db.close()
+        return "failed"
+    except Exception as exc:
+        logger.exception("[cover batch %s] item %s failed", job_id, item_id)
+        mark_db = SessionLocal()
+        try:
+            mark_cover_item_failed(mark_db, item_uuid, exc)
+        finally:
+            mark_db.close()
+        return "failed"
+    finally:
+        db.close()
+
+    done_db = SessionLocal()
+    try:
+        done_item = done_db.get(CoverBatchItem, item_uuid)
+        if done_item is None:
+            return "skipped"
+        mark_cover_item_completed(done_db, done_item.id, worker_id, _cover_batch_item_path(done_item))
+    finally:
+        done_db.close()
+    return "completed"
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.generate_cover_batch_job",
+    max_retries=settings.COVER_TASK_MAX_RETRIES,
+)
+def generate_cover_batch_job(_self, job_id: str) -> dict[str, Any]:
+    """Advance one DB-backed cover batch in bounded, resumable slices."""
+    db = SessionLocal()
+    try:
+        job = cover_batch_jobs.get_cover_batch_job(db, job_id)
+        if job is None:
+            return {"job_id": job_id, "status": "deleted"}
+        if job.status == CoverBatchStatus.PAUSED:
+            return {"job_id": job_id, "status": "paused"}
+        if job.status == CoverBatchStatus.COMPLETED and not has_ready_cover_items(db, job_id):
+            return {"job_id": job_id, "status": "completed"}
+
+        worker_id = uuid.uuid4().hex
+        max_workers = max(
+            1,
+            min(
+                int(settings.COVER_BATCH_MAX_CONCURRENT_ITEMS or settings.COVER_JOB_MAX_CONCURRENT_ITEMS or 1),
+                int(settings.IMAGE_MAX_CONCURRENT_CALLS or 1),
+            ),
+        )
+        max_items = max(max_workers, int(settings.COVER_BATCH_MAX_ITEMS_PER_RUN or max_workers))
+        items = claim_ready_cover_items(db, job_id, worker_id=worker_id, limit=max_items)
+    finally:
+        db.close()
+
+    if not items:
+        finish_db = SessionLocal()
+        try:
+            job = aggregate_cover_batch_job(finish_db, job_id)
+            countdown = next_retry_countdown(finish_db, job_id)
+            if job is not None and job.status == CoverBatchStatus.PENDING and countdown is not None:
+                generate_cover_batch_job.apply_async(args=(job_id,), countdown=countdown)
+                finish_db.commit()
+                return {
+                    "job_id": job_id,
+                    "status": job.status,
+                    "reason": "retry_wait_scheduled",
+                    "countdown": countdown,
+                }
+            finish_db.commit()
+            return {"job_id": job_id, "status": job.status if job else "deleted"}
+        finally:
+            finish_db.close()
+
+    paused = False
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"cover-db-{job_id[:6]}") as executor:
+        futures = [
+            executor.submit(_generate_one_cover_batch_item, job_id, str(item.id), worker_id)
+            for item in items
+        ]
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+            except Exception:
+                logger.exception("[cover batch %s] worker thread failed", job_id)
+                result = "failed"
+            if result == "paused":
+                paused = True
+
+    db = SessionLocal()
+    try:
+        job = cover_batch_jobs.get_cover_batch_job(db, job_id)
+        if job is None:
+            return {"job_id": job_id, "status": "deleted"}
+        if paused or job.status == CoverBatchStatus.PAUSED:
+            job.status = CoverBatchStatus.PAUSED
+            job.current_step = "Paused"
+            db.commit()
+            return {"job_id": job_id, "status": "paused"}
+        aggregate_cover_batch_job(db, job_id)
+        if has_ready_cover_items(db, job_id):
+            db.commit()
+            generate_cover_batch_job.delay(job_id)
+            return {"job_id": job_id, "status": "pending", "reason": "next_batch_dispatched"}
+        countdown = next_retry_countdown(db, job_id)
+        if countdown is not None:
+            db.commit()
+            generate_cover_batch_job.apply_async(args=(job_id,), countdown=countdown)
+            return {
+                "job_id": job_id,
+                "status": "pending",
+                "reason": "retry_wait_scheduled",
+                "countdown": countdown,
+            }
+        job = aggregate_cover_batch_job(db, job_id)
+        db.commit()
+        return {
+            "job_id": job_id,
+            "status": job.status if job else "deleted",
+            "completed": job.completed if job else 0,
+            "failed": job.failed if job else 0,
+            "uncertain": job.uncertain if job else 0,
+        }
+    finally:
+        db.close()
+
+
 def requeue_stale_cover_jobs(*, limit: int = 200) -> int:
     if not settings.STALE_TASK_WATCHDOG_ENABLED:
         return 0
+    recovered_db = 0
+    if settings.COVER_BATCH_V2_ENABLED:
+        db = SessionLocal()
+        try:
+            try:
+                recovered_db = release_expired_cover_leases(db, limit=limit)
+                if recovered_db:
+                    stale_jobs = (
+                        db.query(CoverBatchItem.job_id)
+                        .filter(CoverBatchItem.status.in_([CoverBatchItemStatus.PENDING, CoverBatchItemStatus.QUEUED]))
+                        .distinct()
+                        .limit(max(1, int(limit or 1)))
+                        .all()
+                    )
+                    for (job_id,) in stale_jobs:
+                        generate_cover_batch_job.delay(job_id)
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.warning("cover batch lease recovery skipped because DB schema is not ready: %s", exc)
+        finally:
+            db.close()
     if not COVER_JOBS_ROOT.exists():
-        return 0
+        return recovered_db
 
     stale_after = max(
         300,
@@ -740,7 +979,7 @@ def requeue_stale_cover_jobs(*, limit: int = 200) -> int:
             [item.get("index") for item in stale_items],
         )
 
-    return dispatched
+    return recovered_db + dispatched
 
 
-__all__ = ["generate_cover_job", "requeue_stale_cover_jobs"]
+__all__ = ["generate_cover_job", "generate_cover_batch_job", "requeue_stale_cover_jobs"]

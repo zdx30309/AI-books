@@ -12,6 +12,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.core.config import settings
 from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT
 from app.utils.distributed_limiter import distributed_semaphore
+from app.utils.official_api import official_deepseek_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def get_deepseek_client() -> OpenAI:
         raise ValueError("DEEPSEEK_API_KEY 未配置")
     return OpenAI(
         api_key=api_key,
-        base_url=settings.DEEPSEEK_BASE_URL,
+        base_url=official_deepseek_base_url(settings.DEEPSEEK_BASE_URL),
         timeout=httpx.Timeout(float(settings.DEEPSEEK_REQUEST_TIMEOUT), connect=60.0),
     )
 

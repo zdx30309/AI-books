@@ -12,7 +12,8 @@ from zipfile import ZipFile
 import httpx
 import pytest
 
-from app.services import cover, cover_jobs
+from app.models.cover_batch import CoverBatchItem, CoverBatchJob
+from app.services import cover, cover_batch_jobs, cover_jobs
 from app.services.cover_categories import get_cover_category_meta, list_cover_categories
 from app.tasks import cover_tasks
 from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCoverCrawler
@@ -830,6 +831,67 @@ def test_cover_job_zip_uses_title_names_without_leading_index(tmp_path: Path, mo
 
     with ZipFile(BytesIO(archive_bytes)) as archive:
         assert archive.namelist() == ["第一本书.png", "第一本书_2.png"]
+
+
+def test_cover_batch_public_status_exposes_uncertain_items_without_auto_completion() -> None:
+    now = datetime.now(timezone.utc)
+    job = CoverBatchJob(
+        id="batch123",
+        status="failed",
+        progress=0,
+        total=3,
+        completed=0,
+        failed=0,
+        uncertain=0,
+        current_step="done with uncertainty",
+        source_filename="covers.csv",
+        default_category="social_science",
+        default_category_label="视觉冲击",
+        created_at=now,
+        updated_at=now,
+    )
+    job.items = [
+        CoverBatchItem(item_index=1, title="完成", status="completed", source_metadata={}),
+        CoverBatchItem(item_index=2, title="待确认", status="uncertain", error="no duplicate billing", source_metadata={}),
+        CoverBatchItem(item_index=3, title="失败", status="failed", source_metadata={}),
+    ]
+
+    public = cover_batch_jobs.public_cover_batch_job_status(job)
+
+    assert public["completed"] == 1
+    assert public["failed"] == 1
+    assert public["uncertain"] == 1
+    assert public["progress"] == 100
+    assert public["items"][1]["status"] == "uncertain"
+    assert public["items"][1]["error"] == "no duplicate billing"
+
+
+def test_cover_batch_zip_uses_title_names_without_leading_index(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(cover_batch_jobs, "COVER_BATCH_ROOT", tmp_path)
+    now = datetime.now(timezone.utc)
+    job_id = "batchzip"
+    job = CoverBatchJob(
+        id=job_id,
+        status="completed",
+        current_step="done",
+        created_at=now,
+        updated_at=now,
+    )
+    job.items = [
+        CoverBatchItem(item_index=1, title="同名书", status="completed", source_metadata={}),
+        CoverBatchItem(item_index=2, title="同名书", status="completed", source_metadata={}),
+        CoverBatchItem(item_index=3, title="失败书", status="failed", source_metadata={}),
+    ]
+    for item in job.items[:2]:
+        image = cover_batch_jobs.image_path(job_id, int(item.item_index), str(item.title))
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(PNG_BYTES)
+        item.image_path = str(image)
+
+    archive_bytes = cover_batch_jobs.build_zip(job_id, job)
+
+    with ZipFile(BytesIO(archive_bytes)) as archive:
+        assert archive.namelist() == ["同名书.png", "同名书_2.png"]
 
 
 def test_cover_job_advances_multiple_items_concurrently_without_image_api(

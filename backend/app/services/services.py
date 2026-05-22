@@ -38,6 +38,7 @@ from app.prompts.goal_driven_templates import (
     SUPPORTED_CATEGORIES,
     get_prompts,
 )
+from app.utils.official_api import official_deepseek_base_url, official_openai_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,19 +52,23 @@ logger = logging.getLogger(__name__)
 
 _text_client = OpenAI(
     api_key=settings.OPENAI_API_KEY or "sk-placeholder",
-    base_url=settings.OPENAI_BASE_URL,
+    base_url=official_openai_base_url(settings.OPENAI_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
 )
 
 _deepseek_client = OpenAI(
     api_key=settings.DEEPSEEK_API_KEY or "sk-placeholder",
-    base_url=settings.DEEPSEEK_BASE_URL,
+    base_url=official_deepseek_base_url(settings.DEEPSEEK_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
 )
 
 _image_client = OpenAI(
-    api_key=settings.IMAGE_API_KEY or "sk-placeholder",
-    base_url=settings.IMAGE_BASE_URL,
+    api_key=(
+        settings.OPENAI_API_KEY
+        if settings.OFFICIAL_API_DIRECT_ONLY and settings.OPENAI_API_KEY
+        else settings.IMAGE_API_KEY or settings.OPENAI_API_KEY or "sk-placeholder"
+    ),
+    base_url=official_openai_base_url(settings.IMAGE_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
 )
 

@@ -18,6 +18,8 @@ class CoverJobItem(BaseModel):
     image_url: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    current_stage: str | None = None
+    retry_count: int | None = None
 
 
 class CoverJobResponse(BaseModel):
@@ -27,6 +29,7 @@ class CoverJobResponse(BaseModel):
     total: int
     completed: int
     failed: int
+    uncertain: int = 0
     current_step: str
     source_filename: str | None = None
     default_category: str | None = None
@@ -34,6 +37,7 @@ class CoverJobResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[CoverJobItem]
+    engine: str | None = None
 
 
 class CoverJobListResponse(BaseModel):

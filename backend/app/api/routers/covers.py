@@ -1,6 +1,7 @@
 """Standalone cover generation router."""
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -8,6 +9,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models import User
 from app.schemas.task import TaskCategoryListResponse
@@ -21,6 +23,20 @@ from app.schemas.cover_job import (
     CoverJobResponse,
 )
 from app.services.cover_categories import list_cover_categories
+from app.services.cover_batch_jobs import (
+    build_zip as build_cover_batch_zip,
+    create_cover_batch_job,
+    delete_cover_batch_items,
+    delete_cover_batch_job,
+    get_owned_cover_batch_job,
+    image_path as cover_batch_image_path,
+    list_cover_batch_jobs,
+    pause_cover_batch_job,
+    provider_queue_status,
+    public_cover_batch_job_status,
+    retry_cover_batch_items,
+    resume_cover_batch_job,
+)
 from app.services.cover_jobs import (
     build_zip,
     create_cover_job,
@@ -36,9 +52,13 @@ from app.services.cover_jobs import (
     resume_cover_job,
     write_status,
 )
-from app.tasks.cover_tasks import generate_cover_job
+from app.tasks.cover_tasks import generate_cover_batch_job, generate_cover_job
 
 router = APIRouter(prefix="/api/v1/covers", tags=["Covers"])
+
+
+def _v2_enabled() -> bool:
+    return bool(settings.COVER_BATCH_V2_ENABLED)
 
 
 def _owned_status(job_id: str, user: User) -> dict:
@@ -55,6 +75,10 @@ def _response(status: dict) -> CoverJobResponse:
     return CoverJobResponse.model_validate(public_cover_job_status(status))
 
 
+def _v2_response(job) -> CoverJobResponse:
+    return CoverJobResponse.model_validate(public_cover_batch_job_status(job))
+
+
 def _enqueue_cover_job(status: dict) -> None:
     try:
         generate_cover_job.delay(status["job_id"])
@@ -63,6 +87,13 @@ def _enqueue_cover_job(status: dict) -> None:
         status["current_step"] = f"Celery 投递失败：{exc}"
         write_status(status["job_id"], status)
         raise HTTPException(status_code=503, detail=f"封面任务投递失败: {exc}") from exc
+
+
+def _enqueue_cover_batch_job(job_id: str) -> None:
+    try:
+        generate_cover_batch_job.delay(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"cover batch dispatch failed: {exc}") from exc
 
 
 def _enqueue_retry_if_needed(job_id: str, status: dict) -> dict:
@@ -83,7 +114,7 @@ def _enqueue_retry_if_needed(job_id: str, status: dict) -> dict:
 async def create_cover_job_from_excel(
     file: UploadFile = File(...),
     category: str = Form("social_science"),
-    _db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     content = await file.read()
@@ -97,6 +128,17 @@ async def create_cover_job_from_excel(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if _v2_enabled():
+        job = create_cover_batch_job(
+            db,
+            str(user.id),
+            file.filename or "covers.xlsx",
+            rows,
+            default_category=category,
+        )
+        _enqueue_cover_batch_job(job.id)
+        return _v2_response(job)
 
     status = create_cover_job(
         str(user.id),
@@ -118,15 +160,34 @@ def get_cover_categories() -> TaskCategoryListResponse:
 
 
 @router.get(
+    "/debug/provider-queue",
+    summary="Inspect DB-backed cover provider queue and rate-limit settings",
+)
+def get_cover_provider_queue_status(
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    return provider_queue_status(db)
+
+
+@router.get(
     "/jobs",
     response_model=CoverJobListResponse,
     summary="查询当前用户的独立封面任务列表",
 )
 def list_my_cover_jobs(
     limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobListResponse:
-    return CoverJobListResponse(items=[_response(status) for status in list_cover_jobs(str(user.id), limit=limit)])
+    items: list[CoverJobResponse] = []
+    if _v2_enabled():
+        items.extend(_v2_response(job) for job in list_cover_batch_jobs(db, str(user.id), limit=limit))
+    remaining = max(0, int(limit) - len(items))
+    if remaining:
+        items.extend(_response(status) for status in list_cover_jobs(str(user.id), limit=remaining))
+    items.sort(key=lambda item: item.updated_at, reverse=True)
+    return CoverJobListResponse(items=items[:limit])
 
 
 @router.post(
@@ -136,11 +197,26 @@ def list_my_cover_jobs(
 )
 def batch_cover_jobs(
     req: CoverJobBatchRequest,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobBatchResponse:
     items: list[CoverJobBatchItem] = []
     for job_id in list(dict.fromkeys(req.job_ids)):
         try:
+            if _v2_enabled():
+                job = get_owned_cover_batch_job(db, job_id, str(user.id))
+                if job is not None:
+                    if req.action == "pause":
+                        pause_cover_batch_job(db, job_id)
+                        items.append(CoverJobBatchItem(job_id=job_id, status="paused"))
+                    elif req.action == "resume":
+                        resume_cover_batch_job(db, job_id)
+                        _enqueue_cover_batch_job(job_id)
+                        items.append(CoverJobBatchItem(job_id=job_id, status="pending"))
+                    elif req.action == "delete":
+                        delete_cover_batch_job(db, job_id)
+                        items.append(CoverJobBatchItem(job_id=job_id, status="deleted"))
+                    continue
             status = _owned_status(job_id, user)
             if req.action == "pause":
                 pause_cover_job(job_id, status)
@@ -167,8 +243,13 @@ def batch_cover_jobs(
 )
 def pause_my_cover_job(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            return _v2_response(pause_cover_batch_job(db, job_id))
     return _response(pause_cover_job(job_id, _owned_status(job_id, user)))
 
 
@@ -179,8 +260,15 @@ def pause_my_cover_job(
 )
 def resume_my_cover_job(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = resume_cover_batch_job(db, job_id)
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
     status = resume_cover_job(job_id, _owned_status(job_id, user))
     _enqueue_cover_job(status)
     return _response(status)
@@ -193,8 +281,14 @@ def resume_my_cover_job(
 )
 def delete_my_cover_job(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            delete_cover_batch_job(db, job_id)
+            return Response(status_code=204)
     status = _owned_status(job_id, user)
     pause_cover_job(job_id, status)
     delete_cover_job(job_id)
@@ -209,10 +303,15 @@ def delete_my_cover_job(
 def delete_my_cover_job_items(
     job_id: str,
     req: CoverJobItemBatchDeleteRequest,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     if not req.indexes:
         raise HTTPException(status_code=400, detail="请选择要删除的封面")
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            return _v2_response(delete_cover_batch_items(db, job_id, req.indexes))
     status = _owned_status(job_id, user)
     return _response(delete_cover_job_items(job_id, req.indexes, status))
 
@@ -225,8 +324,13 @@ def delete_my_cover_job_items(
 def delete_my_cover_job_item(
     job_id: str,
     index: int,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            return _v2_response(delete_cover_batch_items(db, job_id, [index]))
     status = _owned_status(job_id, user)
     return _response(delete_cover_job_items(job_id, [index], status))
 
@@ -238,8 +342,15 @@ def delete_my_cover_job_item(
 )
 def retry_my_failed_cover_job_items(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = retry_cover_batch_items(db, job_id, None)
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
     status = retry_cover_job_items(job_id, None, _owned_status(job_id, user))
     return _response(_enqueue_retry_if_needed(job_id, status))
 
@@ -252,10 +363,17 @@ def retry_my_failed_cover_job_items(
 def retry_my_cover_job_items(
     job_id: str,
     req: CoverJobItemBatchRetryRequest,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     if not req.indexes:
         raise HTTPException(status_code=400, detail="请选择要重试的封面")
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = retry_cover_batch_items(db, job_id, req.indexes)
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
     status = retry_cover_job_items(job_id, req.indexes, _owned_status(job_id, user))
     return _response(_enqueue_retry_if_needed(job_id, status))
 
@@ -268,8 +386,15 @@ def retry_my_cover_job_items(
 def retry_my_cover_job_item(
     job_id: str,
     index: int,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            next_job = retry_cover_batch_items(db, job_id, [index])
+            _enqueue_cover_batch_job(job_id)
+            return _v2_response(next_job)
     status = retry_cover_job_items(job_id, [index], _owned_status(job_id, user))
     return _response(_enqueue_retry_if_needed(job_id, status))
 
@@ -281,8 +406,13 @@ def retry_my_cover_job_item(
 )
 def get_cover_job(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            return _v2_response(job)
     return _response(_owned_status(job_id, user))
 
 
@@ -293,8 +423,27 @@ def get_cover_job(
 def get_cover_job_image(
     job_id: str,
     index: int,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> FileResponse:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            items = [item for item in job.items if item.item_index == index]
+            if not items or items[0].status == "deleted":
+                raise HTTPException(status_code=404, detail="cover image not found")
+            item = items[0]
+            path = Path(item.image_path) if item.image_path else cover_batch_image_path(job_id, index, item.title)
+            if not path.exists():
+                raise HTTPException(status_code=404, detail="cover image not found")
+            return FileResponse(
+                path,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    "Vary": "Authorization",
+                },
+            )
     status = _owned_status(job_id, user)
     items = status.get("items") or []
     if index < 1 or index > len(items):
@@ -321,8 +470,28 @@ def get_cover_job_image(
 )
 def download_cover_job(
     job_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response:
+    if _v2_enabled():
+        job = get_owned_cover_batch_job(db, job_id, str(user.id))
+        if job is not None:
+            try:
+                content = build_cover_batch_zip(job_id, job)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="No completed covers are available for download") from exc
+            filename = f"covers_{job_id[:8]}.zip"
+            encoded = quote(filename)
+            return Response(
+                content=content,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": (
+                        f'attachment; filename="{encoded}"; '
+                        f"filename*=UTF-8''{encoded}"
+                    )
+                },
+            )
     status = _owned_status(job_id, user)
     try:
         content = build_zip(job_id, status)

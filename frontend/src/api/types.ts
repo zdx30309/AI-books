@@ -89,6 +89,8 @@ export interface CoverJobItem {
   image_url: string | null;
   error: string | null;
   metadata: Record<string, unknown>;
+  current_stage?: string | null;
+  retry_count?: number | null;
 }
 
 export interface CoverJobResponse {
@@ -98,6 +100,7 @@ export interface CoverJobResponse {
   total: number;
   completed: number;
   failed: number;
+  uncertain: number;
   current_step: string;
   source_filename: string | null;
   default_category: string | null;
@@ -105,6 +108,7 @@ export interface CoverJobResponse {
   created_at: string;
   updated_at: string;
   items: CoverJobItem[];
+  engine?: string | null;
 }
 
 export interface CoverJobListResponse {

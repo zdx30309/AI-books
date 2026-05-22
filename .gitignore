@@ -10,6 +10,8 @@ __pycache__/
 frontend/*.tsbuildinfo
 backend/output/
 models/
+!backend/app/models/
+!backend/app/models/*.py
 tmp_ytdlp/
 
 .claude/worktrees/

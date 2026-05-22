@@ -6,7 +6,7 @@ This app is deployed as:
 - `backend`: FastAPI on port 8000.
 - `worker`: Celery worker using the same backend image.
 - `backend_output`: shared volume for generated covers and intermediate outputs, mounted by both `backend` and `worker`.
-- `video-plan-jp-proxy-tunnel.service`: server-side Beijing ECS to Japan HTTP proxy relay for OpenAI/Gemini calls. This production dependency never uses a developer laptop proxy.
+- `video-plan-jp-proxy-tunnel.service`: legacy helper for the old proxy relay path. The current production AI path is official direct API access and does not depend on this unit.
 
 ## Server Commands
 
@@ -17,16 +17,17 @@ cp .env.production.example .env
 docker compose up -d --build
 ```
 
-## OpenAI/Gemini Proxy
+## Official Direct AI APIs
 
-OpenAI and Gemini traffic must leave through the Japan proxy server. On the Beijing ECS, install the systemd unit in `deploy/video-plan-jp-proxy-tunnel.service` and keep `.env` pointed at `172.18.0.1:7896`:
+OpenAI, Gemini, and DeepSeek calls should use official endpoints directly. Keep `OFFICIAL_API_DIRECT_ONLY=True` and leave provider proxy variables empty unless you explicitly disable direct-only mode for a separate maintenance test.
 
-```bash
-cp deploy/video-plan-jp-proxy-tunnel.service /etc/systemd/system/video-plan-jp-proxy-tunnel.service
-systemctl daemon-reload
-systemctl enable --now video-plan-jp-proxy-tunnel.service
-systemctl status video-plan-jp-proxy-tunnel.service
-```
+Required endpoint defaults:
+
+- `OPENAI_BASE_URL=https://api.openai.com/v1`
+- `IMAGE_BASE_URL=https://api.openai.com/v1`
+- `DEEPSEEK_BASE_URL=https://api.deepseek.com/v1`
+- `OPENAI_HTTPS_PROXY=`
+- `GOOGLE_HTTPS_PROXY=`
 
 Health checks from the Beijing ECS:
 
@@ -34,7 +35,7 @@ Health checks from the Beijing ECS:
 docker compose exec worker python - <<'PY'
 import httpx
 from app.core.config import settings
-with httpx.Client(proxy=settings.OPENAI_HTTPS_PROXY, timeout=30) as client:
+with httpx.Client(timeout=30) as client:
     print(client.get("https://api.openai.com/v1/models", headers={"Authorization": "Bearer " + settings.OPENAI_API_KEY}).status_code)
 PY
 ```
@@ -48,7 +49,11 @@ Open firewall/security-group ports `80` and `443`.
 
 For cover generation, set:
 
-- `IMAGE_BASE_URL=https://api.tu-zi.com/v1`
-- `IMAGE_API_KEY=<your image provider key>`
+- `OFFICIAL_API_DIRECT_ONLY=True`
+- `COVER_BATCH_V2_ENABLED=True`
+- `OPENAI_API_KEY=<your official OpenAI key>`
+- `IMAGE_BASE_URL=https://api.openai.com/v1`
 - `IMAGE_MODEL=gpt-image-2`
-- Leave `IMAGE_QUALITY`, `IMAGE_RESPONSE_FORMAT`, and `IMAGE_OUTPUT_FORMAT` empty for the tu-zi routing chain unless that provider enables those parameters for your group.
+- `COVER_BATCH_MAX_CONCURRENT_ITEMS=2` initially, then raise only after checking 429/timeout metrics.
+
+New batch cover uploads are stored in the database-backed V2 queue. Old file-backed cover jobs remain readable for compatibility.
