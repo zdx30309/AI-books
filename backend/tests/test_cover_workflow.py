@@ -105,13 +105,88 @@ def test_all_cover_categories_have_prompt_adjustment_interface() -> None:
         assert set(adjustment) == {"style_brief_rules", "draft_rules", "refine_rules"}
 
 
-def test_cover_category_registry_only_exposes_requested_four_categories() -> None:
+def test_cover_category_registry_exposes_reference_zip_categories() -> None:
     assert [(item["id"], item["label"]) for item in list_cover_categories()] == [
         ("social_science", "视觉冲击"),
         ("illustration", "饱和插画"),
         ("illustration_crayon", "萌系治愈"),
         ("literature", "正统出版"),
+        ("psychology_cognition", "心理认知类"),
+        ("literature_simple", "文学类"),
+        ("social_science_simple", "社科类"),
     ]
+
+
+def test_simple_reference_cover_categories_use_basic_prompt() -> None:
+    expected = (
+        ("psychology_cognition", "心理认知类"),
+        ("literature_simple", "文学类"),
+        ("social_science_simple", "社科类"),
+    )
+
+    for category_id, label in expected:
+        prompt = cover.build_cover_prompt(
+            "参考封面测试",
+            "@最终简介\n一本用于测试新封面分类的书。",
+            author="测试作者",
+            category=category_id,
+        )
+
+        assert "基础封面生成 prompt" in prompt
+        assert label in prompt
+        assert "完整参考这些示例封面的整体方向" in prompt
+        assert "构图、标题位置、标题大小关系、标题分行方式、配色" in prompt
+        assert "不要保留示例封面里的原书名、原作者或出版社文字" in prompt
+        assert "正统出版封面长期参考指令" not in prompt
+        assert CRAYON_ILLUSTRATION_PROMPT not in prompt
+
+    assert cover.prepare_cover_input("书名", "", category="文学类").category == "literature_simple"
+    assert cover.prepare_cover_input("书名", "", category="文学").category == "literature"
+    assert cover.prepare_cover_input("书名", "", category="社科类").category == "social_science_simple"
+    assert cover.prepare_cover_input("书名", "", category="心理认知类").category == "psychology_cognition"
+
+
+def test_simple_reference_cover_generation_uses_example_images_directly(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], str, str | None]] = []
+    refs = []
+    for index in range(3):
+        path = tmp_path / f"ref_{index}.jpg"
+        path.write_bytes(PNG_BYTES)
+        refs.append(path)
+
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
+        raise AssertionError("simple reference categories should use image edit, not text generation")
+
+    def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
+        paths = tuple(image_paths)
+        calls.append((tuple(path.name for path in paths), prompt, kwargs.get("stage")))
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_simple_reference_image_paths", lambda category_id: tuple(refs))
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+
+    result = cover.generate_cover_file(
+        "自卑与超越",
+        "@最终简介\n一本关于心理认知与自我成长的书。",
+        tmp_path,
+        category="心理认知类",
+        author="测试作者",
+    )
+
+    assert result == tmp_path / "cover.png"
+    assert len(calls) == 1
+    assert calls[0][0] == ("ref_0.jpg", "ref_1.jpg", "ref_2.jpg")
+    assert calls[0][2] == "draft_reference"
+    assert "基础封面生成 prompt" in calls[0][1]
+    assert "心理认知类" in calls[0][1]
+    assert (tmp_path / "cover_reference_samples.json").exists()
+    assert (tmp_path / "draft_cover.png").exists()
+    assert (tmp_path / "cover.png").exists()
+    assert not (tmp_path / "cover_refine_prompt.txt").exists()
 
 
 def test_saturated_illustration_reuses_generic_cover_prompt() -> None:
@@ -328,7 +403,7 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
         "风经过房间",
         "@最终简介\n一本关于城市、房间、旅行和自我告别的文学随笔。",
         author="作者L",
-        category="文学类",
+        category="正统出版",
     )
     brief = cover.build_cover_style_brief(cover_input)
     prompt = cover.build_draft_cover_prompt(cover_input, brief)

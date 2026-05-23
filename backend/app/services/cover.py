@@ -118,6 +118,45 @@ _LITERATURE_REFERENCE_DIRECT_LIMIT = 16
 _LITERATURE_REFERENCE_BOARD_LIMIT = 12
 _LITERATURE_REFERENCE_BOARD_COLUMNS = 4
 _LITERATURE_REFERENCE_CELL_SIZE = (260, 380)
+_SIMPLE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+_SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
+    "psychology_cognition": {
+        "label": "心理认知类",
+        "asset_dir": "psychology_cognition",
+        "style": "亮色心理认知、自助成长、强标题、简洁插画",
+        "cover_type": "心理认知类参考封面",
+        "colors": ("明黄", "珊瑚红", "青蓝", "白色", "深色标题"),
+        "composition": "亮色纯底或简洁色块，超大标题，少量心理认知相关插画或人物剪影，手机端强识别",
+        "typography": "巨大中文标题，层级清楚，作者名和副标题克制",
+        "white_space": "25%-45%",
+        "metaphors": ("笑脸", "人物剪影", "手掌", "心形", "咖啡杯", "自我成长符号"),
+        "prompt_hint": "参考样例中的亮色底、大标题、心理认知/自助成长气质、简洁插画和强缩略图识别度。",
+    },
+    "literature_simple": {
+        "label": "文学类",
+        "asset_dir": "literature_simple",
+        "style": "文学意象、书法大字、强情绪背景、出版质感",
+        "cover_type": "文学类参考封面",
+        "colors": ("绿色", "朱红", "深红", "米白", "墨黑"),
+        "composition": "书法或手写感大标题压版，配合文学意象背景、纹理或单一主视觉，整体有纸书气质",
+        "typography": "大号书法/手写标题，作者名小而稳，副标题少",
+        "white_space": "20%-45%",
+        "metaphors": ("水纹", "灯笼", "土地纹理", "山水纹理", "文学意象"),
+        "prompt_hint": "参考样例中的书法大标题、文学意象、强色彩背景和真实出版物气质。",
+    },
+    "social_science_simple": {
+        "label": "社科类",
+        "asset_dir": "social_science_simple",
+        "style": "社科经管、大字标题、红黑白、高识别、极简版式",
+        "cover_type": "社科类参考封面",
+        "colors": ("红色", "白色", "黑色", "深红", "少量金色"),
+        "composition": "极简背景，巨大标题占据主要画面，少量符号或图案辅助，严肃社科经管书架感",
+        "typography": "超大粗体中文或数字标题，黑白红强对比，副标题和作者名清楚克制",
+        "white_space": "15%-40%",
+        "metaphors": ("数字", "经济符号", "倒计时", "投资", "中国经济", "趋势图案"),
+        "prompt_hint": "参考样例中的红黑白大字标题、极简社科经管版式和强商业出版识别度。",
+    },
+}
 
 
 class ImageApiError(RuntimeError):
@@ -242,6 +281,39 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
         "white_space": "reference mature cover whitespace rhythm and title-image relationship",
         "metaphors": ("book-specific object", "adapted mature cover structure", "publishing-grade visual relationship", "clean paper texture"),
         "addendum": _LITERATURE_PUBLISHING_STYLE_RULE,
+    },
+    "psychology_cognition": {
+        "brand": "封面分类ZIP参考库",
+        "style": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["style"],
+        "cover_type": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["cover_type"],
+        "colors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["colors"],
+        "composition": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["composition"],
+        "typography": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["typography"],
+        "white_space": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["white_space"],
+        "metaphors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["metaphors"],
+        "addendum": _SIMPLE_REFERENCE_CATEGORY_PROFILES["psychology_cognition"]["prompt_hint"],
+    },
+    "literature_simple": {
+        "brand": "封面分类ZIP参考库",
+        "style": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["style"],
+        "cover_type": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["cover_type"],
+        "colors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["colors"],
+        "composition": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["composition"],
+        "typography": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["typography"],
+        "white_space": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["white_space"],
+        "metaphors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["metaphors"],
+        "addendum": _SIMPLE_REFERENCE_CATEGORY_PROFILES["literature_simple"]["prompt_hint"],
+    },
+    "social_science_simple": {
+        "brand": "封面分类ZIP参考库",
+        "style": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["style"],
+        "cover_type": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["cover_type"],
+        "colors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["colors"],
+        "composition": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["composition"],
+        "typography": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["typography"],
+        "white_space": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["white_space"],
+        "metaphors": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["metaphors"],
+        "addendum": _SIMPLE_REFERENCE_CATEGORY_PROFILES["social_science_simple"]["prompt_hint"],
     },
     "popular_science": {
         "brand": "时代华语",
@@ -430,6 +502,20 @@ def _is_literature_publishing(category: str | None) -> bool:
         return normalize_cover_category_id(category or "") == "literature"
     except ValueError:
         return False
+
+
+def _simple_reference_category_id(category: str | None) -> str | None:
+    try:
+        normalized = normalize_cover_category_id(category or "")
+    except ValueError:
+        return None
+    if normalized in _SIMPLE_REFERENCE_CATEGORY_PROFILES:
+        return normalized
+    return None
+
+
+def _is_simple_reference_category(category: str | None) -> bool:
+    return _simple_reference_category_id(category) is not None
 
 
 def _has_real_author(cover_input: CoverInput) -> bool:
@@ -735,6 +821,46 @@ def _extract_literature_reference_inputs(
     return tuple(extracted)
 
 
+def _simple_reference_asset_dir(category_id: str) -> Path:
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    return (
+        Path(__file__).resolve().parent
+        / "reference_assets"
+        / "simple_cover_categories"
+        / str(profile["asset_dir"])
+    )
+
+
+def _simple_reference_image_paths(category_id: str) -> tuple[Path, ...]:
+    asset_dir = _simple_reference_asset_dir(category_id)
+    if not asset_dir.exists():
+        return ()
+    return tuple(
+        path
+        for path in sorted(asset_dir.iterdir())
+        if path.is_file()
+        and path.suffix.lower() in _SIMPLE_REFERENCE_IMAGE_EXTENSIONS
+        and path.stat().st_size > 0
+    )
+
+
+def _simple_reference_records(category_id: str, image_paths: Sequence[Path]) -> tuple[dict[str, str], ...]:
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    return tuple(
+        {
+            "brand": "封面分类ZIP参考库",
+            "title": path.stem,
+            "product_url": f"local://simple_cover_categories/{profile['asset_dir']}/{path.name}",
+            "image_url": f"local://simple_cover_categories/{profile['asset_dir']}/{path.name}",
+            "source": "local_reference_asset",
+            "product_id": hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12],
+            "source_page": "封面分类.zip",
+            "local_image_path": str(path),
+        }
+        for path in image_paths
+    )
+
+
 def _build_literature_reference_board(
     cover_input: CoverInput,
     output_dir: Path,
@@ -861,6 +987,14 @@ def _fallback_market_match(cover_input: CoverInput) -> CoverMarketMatch:
             ),
             visual_plan=_literature_fallback_visual_plan(cover_input),
         )
+    simple_category_id = _simple_reference_category_id(cover_input.category)
+    if simple_category_id is not None:
+        profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[simple_category_id]
+        return CoverMarketMatch(
+            category_label=cover_input.category_label,
+            search_keywords=keywords[:240],
+            analysis=f"按封面分类.zip 中「{profile['label']}」示例封面的基础方向生成：{profile['prompt_hint']}",
+        )
     return CoverMarketMatch(
         category_label=cover_input.category_label,
         search_keywords=keywords[:240],
@@ -880,7 +1014,10 @@ def _category_options_for_market_prompt() -> str:
 
 
 def cover_categories_fallback() -> str:
-    return "social_science=视觉冲击；illustration=饱和插画；illustration_crayon=萌系治愈；literature=正统出版"
+    return (
+        "social_science=视觉冲击；illustration=饱和插画；illustration_crayon=萌系治愈；"
+        "literature=正统出版；psychology_cognition=心理认知类；literature_simple=文学类；social_science_simple=社科类"
+    )
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
@@ -896,7 +1033,7 @@ def _json_object_from_text(text: str) -> dict[str, Any]:
 
 
 def analyze_cover_market_match(cover_input: CoverInput) -> CoverMarketMatch:
-    if _is_literature_publishing(cover_input.category):
+    if _is_literature_publishing(cover_input.category) or _is_simple_reference_category(cover_input.category):
         return _fallback_market_match(cover_input)
     if not settings.COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED or not (settings.DEEPSEEK_API_KEY or "").strip():
         return _fallback_market_match(cover_input)
@@ -1500,6 +1637,12 @@ def build_cover_prompt(
         intro=intro,
         category=category,
     )
+    if _is_simple_reference_category(cover_input.category):
+        reference_count = len(_simple_reference_image_paths(cover_input.category))
+        return _build_simple_reference_cover_prompt(
+            cover_input,
+            reference_count=reference_count,
+        )
     return build_draft_cover_prompt(cover_input, build_cover_style_brief(cover_input))
 
 
@@ -2080,6 +2223,132 @@ def _generate_literature_cover_direct(
     return cover_path
 
 
+def _build_simple_reference_cover_prompt(
+    cover_input: CoverInput,
+    *,
+    reference_count: int,
+) -> str:
+    category_id = _simple_reference_category_id(cover_input.category)
+    if category_id is None:
+        raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    return f"""基础封面生成 prompt
+
+你是中文图书封面设计师。请根据当前书名、作者和简介，参考随请求附上的 {reference_count} 张「{profile['label']}」示例封面，直接生成一张类似风格的新书封面。
+
+书籍信息：
+- 书名：{cover_input.title}
+- 作者：{cover_input.author}
+- 分类：{cover_input.category_label}
+- 简介：{cover_input.intro}
+
+参考方式：
+- 完整参考这些示例封面的整体方向：{profile['prompt_hint']}
+- 重点学习示例封面的构图、标题位置、标题大小关系、标题分行方式、配色、主视觉位置、图文关系和整体书架气质。
+- 具体书名、作者、画面主体和细节要换成当前这本书；不要保留示例封面里的原书名、原作者或出版社文字。
+
+最终输出：
+只输出一张竖版中文图书正面封面本体，不要输出说明文字、拼贴图或多张候选图。
+"""
+
+
+def _simple_reference_style_payload(
+    cover_input: CoverInput,
+    reference_records: Sequence[dict[str, str]],
+) -> dict[str, Any]:
+    category_id = _simple_reference_category_id(cover_input.category)
+    if category_id is None:
+        raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    return {
+        "workflow": "simple_reference_cover",
+        "reference_site": f"封面分类.zip / {profile['label']}",
+        "reference_brands": ["封面分类ZIP参考库"],
+        "matched_category_style": f"{profile['label']}: {profile['style']}",
+        "brand_style_direction": profile["prompt_hint"],
+        "cover_type": profile["cover_type"],
+        "reference_samples": list(reference_records),
+        "generation_prompt_addendum": profile["prompt_hint"],
+        "title": cover_input.title,
+        "author": cover_input.author,
+        "intro": cover_input.intro,
+        "category": cover_input.category,
+        "category_label": cover_input.category_label,
+    }
+
+
+def _generate_simple_reference_cover_direct(
+    cover_input: CoverInput,
+    output_dir: Path,
+    *,
+    force: bool = False,
+    should_abort: Callable[[], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> Path:
+    category_id = _simple_reference_category_id(cover_input.category)
+    if category_id is None:
+        raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    cover_path = output_dir / "cover.png"
+    draft_path = output_dir / "draft_cover.png"
+    draft_response_path = output_dir / "cover_draft_response.json"
+    draft_prompt_path = output_dir / "cover_draft_prompt.txt"
+    samples_path = output_dir / "cover_reference_samples.json"
+    style_brief_path = output_dir / "cover_style_brief.json"
+
+    if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
+        logger.info("复用已存在%s封面: %s", profile["label"], cover_path)
+        return cover_path
+
+    reference_images = _simple_reference_image_paths(category_id)
+    if not reference_images:
+        raise ImageApiPermanentError(
+            f"{profile['label']}参考封面缺失，无法按封面分类.zip样式生成: {_simple_reference_asset_dir(category_id)}"
+        )
+    reference_records = _simple_reference_records(category_id, reference_images)
+    prompt = _build_simple_reference_cover_prompt(
+        cover_input,
+        reference_count=len(reference_images),
+    )
+    _write_cover_text_file(
+        samples_path,
+        json.dumps(reference_records, ensure_ascii=False, indent=2),
+        should_abort,
+    )
+    _write_cover_text_file(draft_prompt_path, prompt, should_abort)
+    _write_cover_text_file(
+        style_brief_path,
+        json.dumps(_simple_reference_style_payload(cover_input, reference_records), ensure_ascii=False, indent=2),
+        should_abort,
+    )
+
+    logger.info(
+        "开始%s轻量参考封面生成: model=%s size=%s title=%s references=%d",
+        profile["label"],
+        settings.IMAGE_MODEL,
+        settings.IMAGE_SIZE,
+        cover_input.title,
+        len(reference_images),
+    )
+    _notify_cover_progress(on_progress, "draft")
+    _abort_cover_generation_if_requested(should_abort, stage="before simple reference image request")
+    image_bytes = _request_or_reuse_image_response(
+        draft_response_path,
+        lambda: _request_image_edit_response(
+            reference_images,
+            prompt,
+            should_abort=should_abort,
+            stage="draft_reference",
+        ),
+        should_abort=should_abort,
+        force=force,
+    )
+    _write_cover_bytes_file(draft_path, image_bytes, should_abort)
+    _notify_cover_progress(on_progress, "copy")
+    _write_cover_bytes_file(cover_path, image_bytes, should_abort)
+    return cover_path
+
+
 def generate_image_file_from_prompt(
     prompt: str,
     output_path: Path,
@@ -2138,6 +2407,14 @@ def generate_cover_file(
     )
     if _is_literature_publishing(cover_input.category):
         return _generate_literature_cover_direct(
+            cover_input,
+            output_dir,
+            force=force,
+            should_abort=should_abort,
+            on_progress=on_progress,
+        )
+    if _is_simple_reference_category(cover_input.category):
+        return _generate_simple_reference_cover_direct(
             cover_input,
             output_dir,
             force=force,

@@ -9,7 +9,6 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
   "治愈插画(蜡笔)": "萌系治愈",
   "治愈插画（蜡笔)": "萌系治愈",
   "文学": "正统出版",
-  "文学类": "正统出版",
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
@@ -151,6 +150,27 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
     label: "正统出版",
     core_feature: "成熟出版封面强参考，版式真实、标题清晰、纸感干净",
     directions: "排版骨架、标题层级、留白比例、配色气质、主视觉占比",
+    prompt_status: "ready",
+  },
+  {
+    id: "psychology_cognition",
+    label: "心理认知类",
+    core_feature: "参考样例封面生成亮色心理认知书封面",
+    directions: "亮色底、大标题、心理认知、自助成长、简洁插画",
+    prompt_status: "ready",
+  },
+  {
+    id: "literature_simple",
+    label: "文学类",
+    core_feature: "参考样例封面生成文学书封面",
+    directions: "文学意象、书法标题、强情绪背景、出版质感",
+    prompt_status: "ready",
+  },
+  {
+    id: "social_science_simple",
+    label: "社科类",
+    core_feature: "参考样例封面生成社科经管书封面",
+    directions: "红黑白、大字标题、社科经管、简洁强识别",
     prompt_status: "ready",
   },
 ];

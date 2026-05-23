@@ -47,6 +47,27 @@ COVER_ONLY_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "directions": "排版骨架、标题层级、留白比例、配色气质、主视觉占比、干净纸感",
         "prompt_status": "ready",
     },
+    {
+        "id": "psychology_cognition",
+        "label": "心理认知类",
+        "core_feature": "参考样例封面生成亮色心理认知书封面",
+        "directions": "亮色底、大标题、心理认知、自助成长、简洁插画",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "literature_simple",
+        "label": "文学类",
+        "core_feature": "参考样例封面生成文学书封面",
+        "directions": "文学意象、书法标题、强情绪背景、出版质感",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "social_science_simple",
+        "label": "社科类",
+        "core_feature": "参考样例封面生成社科经管书封面",
+        "directions": "红黑白、大字标题、社科经管、简洁强识别",
+        "prompt_status": "ready",
+    },
 )
 
 COVER_CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
@@ -72,13 +93,19 @@ _register_alias("文学", "literature")
 _register_alias("正统出版", "literature")
 _register_alias("治愈插画", "illustration")
 _register_alias("治愈插画（蜡笔）", "illustration_crayon")
-_register_alias("文学类", "literature")
 _register_alias("文学题材", "literature")
 _register_alias("文艺治愈", "literature")
 _register_alias("饱和插画", "illustration")
 _register_alias("萌系治愈", "illustration_crayon")
 _register_alias("社会痛点", "social_science")
 _register_alias("视觉冲击", "social_science")
+_register_alias("心理认知", "psychology_cognition")
+_register_alias("心理类", "psychology_cognition")
+_register_alias("认知类", "psychology_cognition")
+_register_alias("文学类", "literature_simple")
+_register_alias("社科", "social_science_simple")
+_register_alias("社科类", "social_science_simple")
+_register_alias("社会科学", "social_science_simple")
 for _category in COVER_CATEGORY_OPTIONS:
     _register_alias(_category["id"], _category["id"])
     _register_alias(_category["label"], _category["id"])
