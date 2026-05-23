@@ -338,7 +338,6 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert cover_input.category == "literature"
     assert cover_input.category_label == "正统出版"
     assert LITERATURE_PUBLISHING_PROMPT in brief.generation_prompt_addendum
-    assert LITERATURE_PUBLISHING_PROMPT in prompt
     assert LITERATURE_PUBLISHING_PROMPT in refine_prompt
     assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
     assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
@@ -346,16 +345,16 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert "本地正统出版ZIP参考封面库 + 成熟出版版式迁移" in prompt
     assert brief.reference_site.startswith("本地正统出版ZIP参考封面库")
     assert brief.reference_brands == ("正统出版ZIP参考封面库",)
-    assert brief.reference_samples
-    assert {item["source"] for item in brief.reference_samples} == {"local_zip"}
-    assert all("reference_covers.zip" in item["source_page"] for item in brief.reference_samples)
     assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "正统出版封面长期参考指令｜高仿安全版" in prompt
+    assert "正统出版封面长期参考指令｜高仿执行版" in prompt
+    assert "核心逻辑：先选母版，再抄版式，再换内容，再调细节，最后检查侵权元素" in prompt
+    assert "先选母版 → 再抄版式 → 再换内容 → 再调细节 → 最后检查是否保留侵权元素" in prompt
+    assert "不要从多个封面里随意拼凑" in prompt
     assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
     assert "只抽象学习所谓“出版感”" in prompt
-    assert "成熟出版封面的真实效果" in prompt
+    assert "尽量高仿参考图库中成熟封面的排版、配色和书架效果" in prompt
     assert "不要自行发明新构图" in prompt
-    assert "标题所在区域、标题大小关系、标题分行方式、作者名位置、副标题位置" in prompt
+    assert "标题所在区域、标题大小比例、标题分行方式、作者名位置、副标题位置" in prompt
     assert "主视觉必须服务于当前书名、简介、题材和读者期待" in prompt
     assert "允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式" in prompt
     assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in prompt
@@ -411,9 +410,12 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "正统出版封面长期参考指令｜高仿安全版" in prompt
+    assert "正统出版封面长期参考指令｜高仿执行版" in prompt
     assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
-    assert "标题所在区域、标题大小关系、标题分行方式" in prompt
+    assert "标题所在区域、标题大小比例、标题分行方式" in prompt
+    assert "再抄版式" in prompt
+    assert "再换内容" in prompt
+    assert "再调细节" in prompt
     assert "内部逐个尝试强标题留白型、色块标题型" in prompt
     assert "可以高仿的是版式骨架、标题层级、留白节奏" in prompt
     assert "真实品牌元素、已有摄影作品、已有插画作品" in prompt
@@ -538,9 +540,11 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert calls[0][2] == "draft_reference"
     assert "正统出版封面直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
-    assert "高仿安全版" in calls[0][1]
-    assert "微信读书、得到系列等成熟出版封面的设计规律" in calls[0][1]
-    assert "不要生成随机 AI 图、PPT 封面、知识付费课程海报、电商主图或网文封面" in calls[0][1]
+    assert "高仿执行版" in calls[0][1]
+    assert "先选母版 → 再抄版式 → 再换内容 → 再调细节 → 最后检查是否保留侵权元素" in calls[0][1]
+    assert "选择它作为主要版式母版；不要从多张封面随意拼凑" in calls[0][1]
+    assert "微信读书、得到系列等成熟出版封面" in calls[0][1]
+    assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
     assert (tmp_path / "draft_cover.png").exists()
