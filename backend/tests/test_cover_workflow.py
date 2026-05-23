@@ -569,6 +569,36 @@ def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_templa
     assert "如果书名或简介确实需要对应意象，必须按本书重新组织版式、配色和细节" in prompt_a
 
 
+def test_orthodox_reference_visual_plan_differs_by_book() -> None:
+    cover_input_a = cover.prepare_cover_input(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间、记忆和自我告别的文学随笔。",
+        author="作者A",
+        category="正统出版",
+    )
+    cover_input_b = cover.prepare_cover_input(
+        "经济学的思维方式",
+        "@最终简介\n一本讲商业判断、市场趋势和普通人决策方法的社科书。",
+        author="作者B",
+        category="正统出版",
+    )
+
+    plan_a = cover._orthodox_reference_visual_plan(cover_input_a)  # noqa: SLF001
+    plan_b = cover._orthodox_reference_visual_plan(cover_input_b)  # noqa: SLF001
+
+    assert plan_a != plan_b
+    assert set(plan_a) == {
+        "semantic_anchor",
+        "color_axis",
+        "layout_axis",
+        "title_axis",
+        "visual_axis",
+        "text_density_axis",
+    }
+    assert "城市房间" in plan_a["semantic_anchor"]
+    assert "市场趋势" in plan_b["semantic_anchor"]
+
+
 def test_generate_cover_file_writes_three_stage_artifacts(
     tmp_path: Path,
     monkeypatch,
@@ -656,18 +686,29 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert len(calls[0][0]) == 16
     assert all(name.endswith(".png") for name in calls[0][0])
     assert calls[0][2] == "draft_reference"
-    assert "正统出版封面直连生成工作流" in calls[0][1]
+    assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
-    assert "高仿执行版" in calls[0][1]
-    assert "先选母版 → 再抄版式 → 再换内容 → 再调细节 → 最后检查是否保留侵权元素" in calls[0][1]
-    assert "选择它作为主要版式母版；不要从多张封面随意拼凑" in calls[0][1]
-    assert "微信读书、得到系列等成熟出版封面" in calls[0][1]
+    assert "正统出版风格 DNA" in calls[0][1]
+    assert "本书差异化视觉方案" in calls[0][1]
+    assert "配色主轴" in calls[0][1]
+    assert "版式骨架" in calls[0][1]
+    assert "主视觉叙事" in calls[0][1]
+    assert "文字密度" in calls[0][1]
+    assert "最多 0 到 1 句短金句" in calls[0][1]
+    assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
+    assert "版权替换规则" in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
-    assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
+    assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
+    assert "先选母版 → 再抄版式" not in calls[0][1]
+    assert "选择它作为主要版式母版" not in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
+    style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
+    assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 大图库风格DNA"
+    assert style_payload["visual_plan"]["color_axis"]
+    assert style_payload["visual_plan"]["layout_axis"]
 
 
 def test_literature_cover_direct_reuses_reference_batch_until_force(
