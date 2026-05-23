@@ -131,6 +131,40 @@ _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
         "white_space": "25%-45%",
         "metaphors": ("笑脸", "人物剪影", "手掌", "心形", "咖啡杯", "自我成长符号"),
         "prompt_hint": "参考样例中的亮色底、大标题、心理认知/自助成长气质、简洁插画和强缩略图识别度。",
+        "style_dna": "亮色底、超大标题、心理认知/自助成长气质、少量符号化插画，整体像大众心理认知类畅销书。",
+        "color_axes": (
+            "明黄主轴 + 深咖/黑色标题 + 少量白色呼吸区，适合自信、意义、积极转向的主题。",
+            "珊瑚红主轴 + 米白局部 + 灰蓝小面积插画，适合关系、人性、情绪秘密和亲密困境。",
+            "青蓝主轴 + 深蓝标题 + 白色局部留白，适合勇气、成长课、安全感和认知升级。",
+            "草绿主轴 + 浅黄辅助 + 深绿色标题，适合身体感受、需求、疗愈和自我接纳。",
+            "淡紫/蓝紫主轴 + 墨黑标题 + 粉色点缀，适合自我价值、敏感、内耗和温柔心理主题。",
+            "橙黄主轴 + 孔雀蓝点缀 + 白色高光，适合热量、行动力、改变和外向能量。",
+        ),
+        "layout_axes": (
+            "顶部或左上超大标题占 45%-60%，主视觉放下半部或右下角，像样例那样手机端第一眼读标题。",
+            "标题做成 3-5 行粗体堆叠，人物剪影或心理符号从标题空隙穿插，不要整齐居中模板。",
+            "大色块铺底，标题在左侧竖向压版，右侧用一个简单心理符号形成平衡。",
+            "主视觉居中偏下，标题从上方压下来，副标题只做一小行，留出明确呼吸区。",
+            "用一个圆形/手势/心形/头像轮廓作为视觉锚点，标题环绕或贴边排版，避免四张都同一左上大标题。",
+        ),
+        "title_axes": (
+            "书名拆成 2-4 行，最大字重，单行不要太长；关键词可放大，但不要每个字都一样大。",
+            "主标题强，副标题弱；副标题不超过 12 个中文字符，放在标题下方或角落。",
+            "标题可有一处错位、跨行或大小对比，让封面有设计节奏，不要全都同样齐左。",
+            "标题使用现代粗黑体或圆角黑体，确保缩略图可读；不要仿书法。",
+        ),
+        "visual_axes": (
+            "从简介提炼一个心理动作或身体感受，用人物剪影、手势、拥抱姿态或心形容器表达。",
+            "从简介提炼一个抽象心理符号，例如温度计、钥匙、气泡、拼图、地图、种子或护盾。",
+            "从简介提炼一个社交场景，只保留桌椅、杯子、侧影、对话气泡等极简元素。",
+            "从简介提炼一个自我成长隐喻，例如打开的门、阶梯、光点、镜子、背包或植物，不要做复杂插画。",
+            "用一个大面积单色剪影或扁平图形作为主视觉，少细节，和标题形成强对比。",
+        ),
+        "quote_axes": (
+            "金句策略：不加金句，只保留书名、作者和一个很短副标题。",
+            "金句策略：最多 1 句短句，不超过 10 个中文字符，放角落，不抢标题。",
+            "金句策略：如果书名已经有情绪张力，不加任何额外金句。",
+        ),
     },
     "literature_simple": {
         "label": "文学类",
@@ -143,6 +177,40 @@ _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
         "white_space": "20%-45%",
         "metaphors": ("水纹", "灯笼", "土地纹理", "山水纹理", "文学意象"),
         "prompt_hint": "参考样例中的书法大标题、文学意象、强色彩背景和真实出版物气质。",
+        "style_dna": "书法/手写大标题、强文学意象、纹理背景、纸书出版感，情绪浓但画面不做网文海报。",
+        "color_axes": (
+            "水纹绿主轴 + 米白书法标题 + 深绿纹理，适合潮汐、记忆、乡土、水边和清冷文学。",
+            "朱红主轴 + 墨黑标题/插画 + 米白小字，适合历史、命运、家族、时代感。",
+            "深红/黑红主轴 + 米白粗书法 + 暗纹理，适合苦难、燃烧、土地、强烈人物命运。",
+            "米白纸色主轴 + 墨黑书法 + 一处朱红印记，适合散文、回忆、温和文学。",
+            "夜色蓝黑主轴 + 银白标题 + 微弱暖色光点，适合孤独、城市、冬夜、悬念文学。",
+            "低饱和自然色主轴 + 深墨标题 + 局部植物/山水纹理，适合安静、自然、成长和疗愈文学。",
+        ),
+        "layout_axes": (
+            "超大书法标题占画面 45%-70%，背景做一整块文学纹理，作者名贴边小号放置。",
+            "标题竖向或半竖向排版，主视觉只保留一个象征物，不要把画面填满。",
+            "标题在上半部强压版，底部留出一条简介/推荐语区，但文字极少。",
+            "中心放一个文学意象，标题绕它展开或压在其上，形成像纸书封面的整体感。",
+            "使用左右不对称：一侧大标题，一侧留白/纹理/小人物或物件，避免每张都红底满屏字。",
+        ),
+        "title_axes": (
+            "标题使用书法、手写或粗宋变体；每本书可改变字势、行距和分行，不要统一红底白字。",
+            "长标题拆成有呼吸的 2-5 行，关键词放大；短标题可以极大化并保留留白。",
+            "作者名小而稳，靠边或靠下；不要加大段简介。",
+            "标题可压过主视觉，但必须读得清，缩略图中第一眼能辨认。",
+        ),
+        "visual_axes": (
+            "从简介提炼一个文学场景：水面、山路、灯、猫、窗、旧城、田野、船、雨夜或纸页。",
+            "从简介提炼一个情绪物件：灯笼、伞、石头、树影、河岸、空椅子、门牌、信件或火光。",
+            "用背景纹理讲故事：水纹、木刻、山形、土地裂纹、夜色颗粒或旧纸纤维。",
+            "如果主题有强命运感，用单一高对比物件或人物剪影；不要出现写实人脸。",
+            "如果主题安静，减少主视觉面积，让标题、纹理和留白承担情绪。",
+        ),
+        "quote_axes": (
+            "金句策略：不加金句，只保留书名和作者。",
+            "金句策略：最多 1 句短句，不超过 12 个中文字符，像腰封外的一行小字。",
+            "金句策略：标题已经有文学感时，不加副标题和营销句。",
+        ),
     },
     "social_science_simple": {
         "label": "社科类",
@@ -155,6 +223,40 @@ _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
         "white_space": "15%-40%",
         "metaphors": ("数字", "经济符号", "倒计时", "投资", "中国经济", "趋势图案"),
         "prompt_hint": "参考样例中的红黑白大字标题、极简社科经管版式和强商业出版识别度。",
+        "style_dna": "社科经管书架感、超大标题、少色高对比、极简符号或数字，像严肃商业出版物而不是课程海报。",
+        "color_axes": (
+            "红底 + 黑色超大标题 + 小面积白色圆形/标签，适合冲突、危机、强判断主题。",
+            "白底 + 黑色超大标题 + 红色局部强调，适合预测、趋势、技术和理性分析。",
+            "黑底 + 白色标题 + 红色数字/图形点缀，适合倒计时、未来、风险和硬核判断。",
+            "深红主轴 + 米白标题 + 金色细线，适合中国经济、国运、长期主义和宏观主题。",
+            "灰白主轴 + 黑字 + 红色数据符号，适合产业、AI、投资方法和分析型主题。",
+            "红白分割主轴 + 黑字压版，适合观点鲜明、标题较长的社科书。",
+        ),
+        "layout_axes": (
+            "超大标题占 60%-80%，只用一个圆形、数字或小符号辅助，不要堆插画。",
+            "巨型数字或关键词做主视觉，其他文字围绕其建立层级。",
+            "上下强分割：上方大标题，下方作者/副标题/小符号，整体像样例社科经管书。",
+            "左右强分割：一侧标题压满，一侧留白或放一个数据符号，避免每张都纯红满版。",
+            "标题斜切或错位堆叠，配一个极简几何/数据图形，保持严肃而有冲击。",
+        ),
+        "title_axes": (
+            "标题使用超粗黑体或大号数字，字距紧，层级强；缩略图必须先读到标题。",
+            "长标题拆成 3-5 行，关键词加大；副标题只保留一小行。",
+            "标题可以极端放大到切边，但不能遮掉核心字义。",
+            "作者名小号，靠上或靠下，像真实经管/社科书署名。",
+        ),
+        "visual_axes": (
+            "从简介提炼一个数据/趋势符号：箭头、曲线、圆环、坐标、倒计时、芯片或货币轮廓。",
+            "从简介提炼一个宏观概念：城市网格、产业链、市场波动、国运符号或结构图。",
+            "只使用一个符号作为视觉锚点，保持极简，不要变成 PPT 信息图。",
+            "如果书名有数字或年份，把数字做成主视觉；没有数字时抽取一个关键词做巨型图形。",
+            "用留白和大字形成冲击，主视觉可小到只是一处红/白/黑几何标记。",
+        ),
+        "quote_axes": (
+            "金句策略：不加金句，只保留必要副标题。",
+            "金句策略：最多 1 句短判断，不超过 12 个中文字符，像出版封面的短副标。",
+            "金句策略：如果标题本身就是观点句，不再添加任何额外金句。",
+        ),
     },
 }
 
@@ -610,6 +712,37 @@ _LITERATURE_ELEMENT_VARIANTS = (
 def _stable_variant(options: tuple[str, ...], seed: str, salt: str) -> str:
     digest = hashlib.sha256(f"{salt}:{seed}".encode("utf-8")).hexdigest()
     return options[int(digest[:8], 16) % len(options)]
+
+
+def _simple_reference_visual_plan(cover_input: CoverInput) -> dict[str, str]:
+    category_id = _simple_reference_category_id(cover_input.category)
+    if category_id is None:
+        raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
+    profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    seed = f"{cover_input.title}|{cover_input.author}|{cover_input.intro}|{cover_input.category}"
+    return {
+        "semantic_anchor": (
+            f"书名《{cover_input.title}》；作者：{cover_input.author}；"
+            f"简介线索：{cover_input.intro[:220]}"
+        ),
+        "color_axis": _stable_variant(tuple(profile["color_axes"]), seed, "simple_color"),
+        "layout_axis": _stable_variant(tuple(profile["layout_axes"]), seed, "simple_layout"),
+        "title_axis": _stable_variant(tuple(profile["title_axes"]), seed, "simple_title"),
+        "visual_axis": _stable_variant(tuple(profile["visual_axes"]), seed, "simple_visual"),
+        "quote_axis": _stable_variant(tuple(profile["quote_axes"]), seed, "simple_quote"),
+    }
+
+
+def _simple_reference_visual_plan_text(cover_input: CoverInput) -> str:
+    plan = _simple_reference_visual_plan(cover_input)
+    return (
+        f"语义锚点：{plan['semantic_anchor']}\n"
+        f"- 配色主轴：{plan['color_axis']}\n"
+        f"- 版式骨架：{plan['layout_axis']}\n"
+        f"- 标题策略：{plan['title_axis']}\n"
+        f"- 主视觉叙事：{plan['visual_axis']}\n"
+        f"- 金句策略：{plan['quote_axis']}"
+    )
 
 
 def _literature_fallback_visual_plan(cover_input: CoverInput) -> str:
@@ -2232,6 +2365,7 @@ def _build_simple_reference_cover_prompt(
     if category_id is None:
         raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
     profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    visual_plan = _simple_reference_visual_plan_text(cover_input)
     return f"""基础封面生成 prompt
 
 你是中文图书封面设计师。请根据当前书名、作者和简介，参考随请求附上的 {reference_count} 张「{profile['label']}」示例封面，直接生成一张类似风格的新书封面。
@@ -2242,10 +2376,20 @@ def _build_simple_reference_cover_prompt(
 - 分类：{cover_input.category_label}
 - 简介：{cover_input.intro}
 
+分类风格 DNA：
+- {profile['style_dna']}
+- 示例图是这个分类的风格 DNA，不是每本书都复制同一配色、同一标题位置、同一人物剪影或同一红/橙色大字模板。
+- 必须完整学习示例图的出版感、标题冲击力、色彩明确度、图文关系和书架识别度；但要根据当前书名和简介重组配色、版式、主视觉和文字密度。
+
+本书差异化视觉方案：
+{visual_plan}
+
 参考方式：
 - 完整参考这些示例封面的整体方向：{profile['prompt_hint']}
 - 重点学习示例封面的构图、标题位置、标题大小关系、标题分行方式、配色、主视觉位置、图文关系和整体书架气质。
 - 具体书名、作者、画面主体和细节要换成当前这本书；不要保留示例封面里的原书名、原作者或出版社文字。
+- 必须执行“本书差异化视觉方案”中的配色主轴、版式骨架、标题策略、主视觉叙事和金句策略；不要把同一批书做成同一种颜色、同一种排版、同一种剪影或同一种大字模板。
+- 封面上的金句可以少一点：除书名、作者和必要副标题外，最多只允许 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、长清单和密集小字。
 
 最终输出：
 只输出一张竖版中文图书正面封面本体，不要输出说明文字、拼贴图或多张候选图。
@@ -2260,6 +2404,7 @@ def _simple_reference_style_payload(
     if category_id is None:
         raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
     profile = _SIMPLE_REFERENCE_CATEGORY_PROFILES[category_id]
+    visual_plan = _simple_reference_visual_plan(cover_input)
     return {
         "workflow": "simple_reference_cover",
         "reference_site": f"封面分类.zip / {profile['label']}",
@@ -2269,6 +2414,7 @@ def _simple_reference_style_payload(
         "cover_type": profile["cover_type"],
         "reference_samples": list(reference_records),
         "generation_prompt_addendum": profile["prompt_hint"],
+        "visual_plan": visual_plan,
         "title": cover_input.title,
         "author": cover_input.author,
         "intro": cover_input.intro,

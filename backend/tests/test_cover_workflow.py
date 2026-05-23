@@ -134,8 +134,18 @@ def test_simple_reference_cover_categories_use_basic_prompt() -> None:
 
         assert "基础封面生成 prompt" in prompt
         assert label in prompt
+        assert "分类风格 DNA" in prompt
+        assert "本书差异化视觉方案" in prompt
+        assert "配色主轴" in prompt
+        assert "版式骨架" in prompt
+        assert "标题策略" in prompt
+        assert "主视觉叙事" in prompt
+        assert "金句策略" in prompt
         assert "完整参考这些示例封面的整体方向" in prompt
         assert "构图、标题位置、标题大小关系、标题分行方式、配色" in prompt
+        assert "不要把同一批书做成同一种颜色、同一种排版、同一种剪影或同一种大字模板" in prompt
+        assert "最多只允许 0 到 1 句短金句" in prompt
+        assert "禁止多段营销文案、长清单和密集小字" in prompt
         assert "不要保留示例封面里的原书名、原作者或出版社文字" in prompt
         assert "正统出版封面长期参考指令" not in prompt
         assert CRAYON_ILLUSTRATION_PROMPT not in prompt
@@ -144,6 +154,36 @@ def test_simple_reference_cover_categories_use_basic_prompt() -> None:
     assert cover.prepare_cover_input("书名", "", category="文学").category == "literature"
     assert cover.prepare_cover_input("书名", "", category="社科类").category == "social_science_simple"
     assert cover.prepare_cover_input("书名", "", category="心理认知类").category == "psychology_cognition"
+
+
+def test_simple_reference_visual_plan_differs_by_book() -> None:
+    cover_input_a = cover.prepare_cover_input(
+        "温度有尽头吗",
+        "@最终简介\n一本关于热量、熵增和绝对零度的认知科普书。",
+        author="宇宙中转站",
+        category="心理认知类",
+    )
+    cover_input_b = cover.prepare_cover_input(
+        "你要的是真正被满足",
+        "@最终简介\n一本关于身体、安全感、爱与被爱的需求地图。",
+        author="张亮",
+        category="心理认知类",
+    )
+
+    plan_a = cover._simple_reference_visual_plan(cover_input_a)  # noqa: SLF001
+    plan_b = cover._simple_reference_visual_plan(cover_input_b)  # noqa: SLF001
+
+    assert plan_a != plan_b
+    assert set(plan_a) == {
+        "semantic_anchor",
+        "color_axis",
+        "layout_axis",
+        "title_axis",
+        "visual_axis",
+        "quote_axis",
+    }
+    assert "热量" in plan_a["semantic_anchor"]
+    assert "安全感" in plan_b["semantic_anchor"]
 
 
 def test_simple_reference_cover_generation_uses_example_images_directly(
@@ -183,6 +223,9 @@ def test_simple_reference_cover_generation_uses_example_images_directly(
     assert calls[0][2] == "draft_reference"
     assert "基础封面生成 prompt" in calls[0][1]
     assert "心理认知类" in calls[0][1]
+    assert "本书差异化视觉方案" in calls[0][1]
+    assert "配色主轴" in calls[0][1]
+    assert "最多只允许 0 到 1 句短金句" in calls[0][1]
     assert (tmp_path / "cover_reference_samples.json").exists()
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
