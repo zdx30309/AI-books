@@ -304,9 +304,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  createClassicalChineseTaskFromDocx: (file: File, classicalVariant = "plain") =>
+  createClassicalChineseTaskFromDocx: (
+    file: File,
+    classicalVariant = "plain",
+    title = "",
+  ) =>
     uploadFile<CreateTaskResponse>("/tasks/classical-chinese/docx", file, {
       classical_variant: classicalVariant,
+      title,
     }),
   createTaskBatch: (body: BatchCreateTaskRequest) =>
     request<BatchCreateTaskResponse>("/tasks/batch", {

@@ -25,6 +25,7 @@ from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
+from app.services.classical_chinese import classical_final_title
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
 from app.services.youtube import extract_youtube_text, is_youtube_url
@@ -45,6 +46,23 @@ _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
 
 class StaleTaskRun(RuntimeError):
     pass
+
+
+def _classical_original_title_from_config(config: dict[str, Any], *, source_url: str = "") -> str:
+    for key in ("classical_original_title", "original_title", "book_title", "title"):
+        value = str(config.get(key) or "").strip()
+        if value:
+            return value[:120]
+    filename = str(config.get("source_filename") or "").strip()
+    if filename:
+        stem = Path(filename).stem.strip()
+        if stem:
+            return stem[:120]
+    if source_url.startswith("manual://classical_chinese_docx/"):
+        stem = Path(source_url.rsplit("/", 1)[-1]).stem.strip()
+        if stem:
+            return stem[:120]
+    return "古文白话"
 
 
 _ACTIVE_RUN_STATUSES = {
@@ -731,6 +749,11 @@ def process_video(_self, task_id: str) -> dict:
 
         category = normalize_category(str((task.config or {}).get("category") or "social_science"))
         category_meta = get_category_meta(category)
+        classical_original_title = (
+            _classical_original_title_from_config(task.config or {}, source_url=task.source_url)
+            if category == "classical_chinese"
+            else None
+        )
         _patch_config(
             task,
             category=category,
@@ -820,6 +843,7 @@ def process_video(_self, task_id: str) -> dict:
                 style_reference=str((task.config or {}).get("style_reference") or "").strip() or None,
                 style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
                 classical_variant=str((task.config or {}).get("classical_variant") or "").strip() or None,
+                classical_original_title=classical_original_title,
             )
         )
         _ensure_active_run(db, task, run_id)
@@ -827,7 +851,11 @@ def process_video(_self, task_id: str) -> dict:
         _patch_config(task, markdown_chars=len(markdown))
         _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节", run_id=run_id)
 
-        book_title = _extract_book_title(markdown)
+        book_title = (
+            classical_final_title(classical_original_title)
+            if category == "classical_chinese"
+            else _extract_book_title(markdown)
+        )
         _ensure_active_run(db, task, run_id)
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown, title=book_title)

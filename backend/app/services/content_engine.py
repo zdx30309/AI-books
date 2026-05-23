@@ -16,7 +16,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts, normalize_category
-from app.services.classical_chinese import build_classical_prompt_source
+from app.services.classical_chinese import build_classical_prompt_source, classical_final_title
 from app.services.deepseek import format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
@@ -344,6 +344,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
     text = _repair_blank_catalog_titles(text)
+    normalized = normalize_category(category or "")
     match = re.search(r"(?m)^@?\s*正文\s*$", text)
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
@@ -353,11 +354,15 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     front = text[: match.end()]
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
+    if normalized == "classical_chinese":
+        body_text = "\n".join(line.rstrip() for line in body.split("\n")).strip("\n")
+        result = "\n".join(front_lines + ([body_text] if body_text else [])).strip()
+        return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
-    if normalize_category(category or "") in {"comic_series", "healing_comic"}:
+    if normalized in {"comic_series", "healing_comic"}:
         result = "\n".join(front_lines + body_lines).strip()
         return result + ("\n" if result else "")
-    is_wisdom_story = normalize_category(category or "") == "wisdom_stories"
+    is_wisdom_story = normalized == "wisdom_stories"
     if is_wisdom_story:
         body_lines = _split_wisdom_story_body_subheadings(body_lines)
     body_lines = _join_broken_body_lines(
@@ -367,6 +372,24 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
     return result + ("\n" if result else "")
+
+
+def enforce_classical_title(markdown: str, original_title: object) -> str:
+    final_title = classical_final_title(original_title)
+    title_re = re.compile(
+        r"^@?\s*(最终书名|三个备选书名)\s*$[\s\S]*?(?=^@?\s*(?:"
+        + "|".join(map(re.escape, _FRONT_SECTION_TITLES))
+        + r")\s*$|\Z)",
+        re.MULTILINE,
+    )
+    match = title_re.search(markdown or "")
+    if match:
+        return (
+            (markdown or "")[: match.start()]
+            + f"@最终书名\n{final_title}\n"
+            + (markdown or "")[match.end() :]
+        )
+    return f"@最终书名\n{final_title}\n{markdown or ''}"
 
 
 def _resolve_openai_api_key() -> str | None:
@@ -1321,6 +1344,7 @@ async def generate_full_book(
     style_reference: str | None = None,
     style_notes: str | None = None,
     classical_variant: str | None = None,
+    classical_original_title: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
     prompts = get_prompts(normalized_category)
@@ -1333,6 +1357,7 @@ async def generate_full_book(
         writer_input_text = build_classical_prompt_source(
             writer_input_text,
             variant=classical_variant,
+            original_title=classical_original_title,
         )
 
     if output_dir is not None:
@@ -1507,7 +1532,9 @@ async def generate_full_book(
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
 
-    final_markdown = normalize_final_markdown(final_markdown)
+    if normalized_category == "classical_chinese":
+        final_markdown = enforce_classical_title(final_markdown, classical_original_title)
+    final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
     _dump_stage(output_dir, "04_format.md", final_markdown)
 
     logger.info(

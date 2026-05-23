@@ -65,12 +65,22 @@ def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
 
     response = task_router._create_and_dispatch_task(
         source_url="manual://classical_chinese_docx/test.docx",
-        config={"category": "classical_chinese", "raw_text": "子曰：学而时习之。"},
+        config={
+            "category": "classical_chinese",
+            "raw_text": "子曰：学而时习之。",
+            "classical_original_title": "论语",
+        },
         db=FakeDb(),
         user=user,
     )
 
     assert response.status == TaskStatus.PENDING
+    assert task_router._normalize_task_config(  # noqa: SLF001
+        {
+            "category": "classical_chinese",
+            "title": "论语",
+        }
+    )["classical_original_title"] == "论语"
 
 
 def test_source_text_path_can_feed_long_docx_text(tmp_path, monkeypatch) -> None:

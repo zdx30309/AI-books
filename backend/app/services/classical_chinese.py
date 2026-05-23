@@ -89,6 +89,7 @@ _VARIANT_RULES: dict[str, str] = {
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _PUA_MARKER_RE = re.compile(r"\{\[[0-9a-fA-F]+\]\}")
 _LINK_MARK_RE = re.compile(r"[`~]")
+_TITLE_SUFFIX = "（白话版）"
 
 
 def normalize_classical_variant(raw: object) -> str:
@@ -110,6 +111,15 @@ def get_classical_variant_meta(raw: object) -> dict[str, str]:
 
 def classical_variant_rules(raw: object) -> str:
     return _VARIANT_RULES[normalize_classical_variant(raw)]
+
+
+def classical_final_title(original_title: object) -> str:
+    title = re.sub(r"\s+", " ", str(original_title or "")).strip(" \t\r\n《》")
+    if not title:
+        title = "古文白话"
+    if title.endswith(_TITLE_SUFFIX):
+        return title
+    return f"{title}{_TITLE_SUFFIX}"
 
 
 def _dictionary_path() -> Path:
@@ -234,11 +244,29 @@ def build_classical_dictionary_context(raw_text: str) -> str:
     return "\n".join(lines)
 
 
-def build_classical_prompt_source(raw_text: str, *, variant: object = None) -> str:
+def build_classical_prompt_source(
+    raw_text: str,
+    *,
+    variant: object = None,
+    original_title: object = None,
+) -> str:
     meta = get_classical_variant_meta(variant)
     dictionary_context = build_classical_dictionary_context(raw_text)
+    final_title = classical_final_title(original_title)
     return f"""【古文白话总方向】
 形似神似，活灵活现。必须在故事自己的基础上，把原文的骨架、情节、人物关系、语气和意味都保住，同时让现代读者读起来顺畅、自然、有画面。不要把古文改成另一个故事，也不要为了好看而擅自加戏。
+
+【书名硬规则】
+- 最终书名必须逐字使用：{final_title}
+- 不要生成新书名，不要改写原书名，不要扩写、缩短或润色书名；只允许在原书名后保留“（白话版）”。
+
+【简介硬规则】
+- @最终简介要适合在微信读书投放，文学性强一点，像认真图书的封底简介。
+- 简介要有古典文本的气息、人物与命运的余味、阅读质感；不需要“抓人研究”、爆款钩子、标题党、营销口号或论文式研究价值。
+
+【段落硬规则】
+- 原文段落边界以换行分隔为准。白话正文必须按原文段落一一对应输出：原文第几段，白话正文就第几段。
+- 不要为了阅读节奏强制分段，不要合并原文段落，不要拆散原文段落，不要重排段落顺序。
 
 【细分方向】
 {meta["label"]}：{meta["description"]}
@@ -258,6 +286,7 @@ __all__ = [
     "build_classical_dictionary_context",
     "build_classical_prompt_source",
     "classical_variant_rules",
+    "classical_final_title",
     "get_classical_variant_meta",
     "normalize_classical_variant",
 ]

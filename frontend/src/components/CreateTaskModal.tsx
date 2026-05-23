@@ -77,6 +77,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [classicalVariant, setClassicalVariant] = useState("plain");
+  const [classicalBookTitle, setClassicalBookTitle] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
   const [comicTitle, setComicTitle] = useState("");
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
@@ -108,6 +109,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setClassicalVariant("plain");
+      setClassicalBookTitle("");
       setCandidateLinks("");
       setComicTitle("");
       setComicThemeRequirement("");
@@ -321,6 +323,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
         const res = await api.createClassicalChineseTaskFromDocx(
           classicalDocxFile,
           classicalVariant,
+          classicalBookTitle.trim(),
         );
         onCreated(res.task_id);
       } catch (e) {
@@ -348,7 +351,13 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
-      if (isClassicalChinese) config.classical_variant = classicalVariant;
+      if (isClassicalChinese) {
+        config.classical_variant = classicalVariant;
+        if (classicalBookTitle.trim()) {
+          config.classical_original_title = classicalBookTitle.trim();
+          config.title = classicalBookTitle.trim();
+        }
+      }
       if (supportsStyleReference) {
         if (styleReference.trim()) config.style_reference = styleReference.trim();
         if (styleNotes.trim()) config.style_notes = styleNotes.trim();
@@ -560,6 +569,24 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
 
               {isClassicalChinese && (
                 <div className="space-y-3 rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
+                  <div>
+                    <label
+                      htmlFor="classical-book-title"
+                      className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                    >
+                      原书名
+                    </label>
+                    <input
+                      id="classical-book-title"
+                      value={classicalBookTitle}
+                      onChange={(e) => setClassicalBookTitle(e.target.value)}
+                      placeholder="例如：十叶野闻"
+                      className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                    />
+                    <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                      最终书名会固定为“原书名（白话版）”。上传 Word 时可留空，系统会用文件名作为原书名。
+                    </p>
+                  </div>
                   <div>
                     <label
                       htmlFor="classical-variant"

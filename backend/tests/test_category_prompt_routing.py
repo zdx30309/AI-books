@@ -121,16 +121,72 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     task_source = build_classical_prompt_source(
         "子曰：学而时习之。",
         variant="zhiguai_web",
+        original_title="论语",
     )
     rendered = prompt.format(raw_text=task_source)
 
     assert "古文白话大板块" in rendered
+    assert "最终书名必须逐字使用：论语（白话版）" in rendered
+    assert "上方通用书名规则在本题材中不适用" in rendered
+    assert "适合在微信读书投放，文学性强一点" in rendered
+    assert "不要为了阅读节奏强制分段" in rendered
     assert "形似神似，活灵活现" in rendered
     assert "不要脑补剧情，不要跳剧情，不要自己加开头和结尾" in rendered
     assert "志怪小说爽读版" in rendered
     assert "以剧情和人物对话为核心" in rendered
     assert "【古汉语词典摘录】" in rendered
     assert get_classical_variant_meta("武侠小说爽读版")["id"] == "wuxia_web"
+
+
+def test_classical_chinese_enforces_original_title_suffix_and_preserves_blank_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "第一段文言。\n\n第二段文言。"
+    expected_source = build_classical_prompt_source(
+        raw_text,
+        original_title="十叶野闻",
+    )
+    expected_prompt = get_prompts("classical_chinese")["full_book_writer"].format(
+        raw_text=expected_source
+    )
+    writer_prompts: list[str] = []
+    manuscript = """@最终书名
+模型乱起的名字
+@最终简介
+测试简介
+@目录
+1. 全文
+@导言
+测试导言。
+@正文
+@1. 全文
+第一段白话。
+
+第二段白话。
+"""
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return manuscript
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="classical_chinese",
+            output_dir=tmp_path / "classical",
+            classical_original_title="十叶野闻",
+        )
+    )
+
+    assert writer_prompts == [expected_prompt]
+    assert "@最终书名\n十叶野闻（白话版）" in result
+    assert "第一段白话。\n\n第二段白话。" in result
 
 
 def test_web_short_story_style_reference_keeps_history_prompt_sync(

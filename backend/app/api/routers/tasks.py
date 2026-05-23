@@ -203,9 +203,20 @@ def _normalize_task_config(config: dict | None) -> dict:
         variant_meta = get_classical_variant_meta(cfg.get("classical_variant"))
         cfg["classical_variant"] = variant_meta["id"]
         cfg["classical_variant_label"] = variant_meta["label"]
+        original_title = str(
+            cfg.get("classical_original_title")
+            or cfg.get("original_title")
+            or cfg.get("book_title")
+            or cfg.get("title")
+            or ""
+        ).strip()
+        if original_title:
+            cfg["classical_original_title"] = original_title[:120]
+            cfg["title"] = original_title[:120]
     else:
         cfg.pop("classical_variant", None)
         cfg.pop("classical_variant_label", None)
+        cfg.pop("classical_original_title", None)
     if category == "healing_comic":
         title = parse_comic_title(
             cfg.get("comic_title")
@@ -537,6 +548,7 @@ def create_task(
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
     classical_variant: str = Form(default="plain"),
+    title: str = Form(default=""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
@@ -553,6 +565,8 @@ async def create_classical_chinese_from_docx(
         {
             "category": "classical_chinese",
             "classical_variant": classical_variant,
+            "classical_original_title": (title.strip() or Path(filename).stem.strip())[:120],
+            "title": (title.strip() or Path(filename).stem.strip())[:120],
             "raw_text_chars": len(raw_text),
             "source_filename": filename[:255],
             "input_source": "docx_upload",
