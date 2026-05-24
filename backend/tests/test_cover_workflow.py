@@ -569,36 +569,6 @@ def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_templa
     assert "如果书名或简介确实需要对应意象，必须按本书重新组织版式、配色和细节" in prompt_a
 
 
-def test_orthodox_reference_visual_plan_differs_by_book() -> None:
-    cover_input_a = cover.prepare_cover_input(
-        "风经过房间",
-        "@最终简介\n一本关于城市房间、记忆和自我告别的文学随笔。",
-        author="作者A",
-        category="正统出版",
-    )
-    cover_input_b = cover.prepare_cover_input(
-        "经济学的思维方式",
-        "@最终简介\n一本讲商业判断、市场趋势和普通人决策方法的社科书。",
-        author="作者B",
-        category="正统出版",
-    )
-
-    plan_a = cover._orthodox_reference_visual_plan(cover_input_a)  # noqa: SLF001
-    plan_b = cover._orthodox_reference_visual_plan(cover_input_b)  # noqa: SLF001
-
-    assert plan_a != plan_b
-    assert set(plan_a) == {
-        "semantic_anchor",
-        "color_axis",
-        "layout_axis",
-        "title_axis",
-        "visual_axis",
-        "text_density_axis",
-    }
-    assert "城市房间" in plan_a["semantic_anchor"]
-    assert "市场趋势" in plan_b["semantic_anchor"]
-
-
 def test_generate_cover_file_writes_three_stage_artifacts(
     tmp_path: Path,
     monkeypatch,
@@ -689,25 +659,22 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
     assert "正统出版风格 DNA" in calls[0][1]
-    assert "本书差异化视觉方案" in calls[0][1]
-    assert "配色主轴" in calls[0][1]
-    assert "版式骨架" in calls[0][1]
-    assert "主视觉叙事" in calls[0][1]
-    assert "文字密度" in calls[0][1]
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
     assert "颜色必须清透透亮、明净、鲜活、干净" in calls[0][1]
     assert "不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张" in calls[0][1]
-    assert "书名的字体和排版必须模仿参考图库里的标题差异" in calls[0][1]
+    assert "书名的字体和排版必须学习参考图库里的丰富差异" in calls[0][1]
     assert "书名标题字体不能千篇一律" in calls[0][1]
-    assert "复刻其独特的字重、字形、分行、横竖关系、大小对比和留白关系" in calls[0][1]
-    assert "标题字体/排版主参考" in calls[0][1]
-    assert "设计语法相似度目标约 90%" in calls[0][1]
-    assert "不要只学抽象感觉，要具体贴近参考图的标题排版骨架" in calls[0][1]
-    assert "90% 贴近执行" in calls[0][1]
-    assert "像“参考图同一个设计师做的新书”" in calls[0][1]
-    assert "只替换书名、作者、具体图像和高风险版权元素" in calls[0][1]
+    assert "每次都要从参考图里重新选择值得学习的标题字形和排版节奏" in calls[0][1]
+    assert "模仿其字重、字形、分行、横竖关系、大小对比和留白关系" in calls[0][1]
+    assert "每次生成都当成重新掷色子" in calls[0][1]
+    assert "重新生成时要大胆从当次参考图里换一个风格方向" in calls[0][1]
+    assert "具体书籍种类不能锁死风格" in calls[0][1]
+    assert "风格自由执行" in calls[0][1]
+    assert "不要按书名 hash 固定路线" in calls[0][1]
+    assert "本书差异化视觉方案" not in calls[0][1]
+    assert "设计语法相似度目标约 90%" not in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
@@ -718,8 +685,8 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 大图库风格DNA"
-    assert style_payload["visual_plan"]["color_axis"]
-    assert style_payload["visual_plan"]["layout_axis"]
+    assert style_payload["creative_policy"] == "open_style_dice_per_generation"
+    assert "visual_plan" not in style_payload
 
 
 def test_literature_cover_direct_reuses_reference_batch_until_force(

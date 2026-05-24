@@ -713,52 +713,6 @@ _ORTHODOX_REFERENCE_STYLE_DNA = (
     "克制但明确的色彩主轴、清透透亮的新书纸感、成熟留白、稳定图文关系、少而准的视觉锚点、"
     "随书变化的标题字体与标题排版。"
 )
-_ORTHODOX_REFERENCE_COLOR_AXES = (
-    "水绿/湖蓝/青绿色主轴，配米白或深墨标题，适合清冷文学、心理疗愈、记忆、水边和自然主题。",
-    "朱红/橙红/珊瑚红主轴，配黑白强标题或小面积金色，适合命运、关系、社会观察和强观点主题。",
-    "米白/纸白/暖白主轴，配墨黑标题和一处红/蓝/绿点色，适合散文、思想、温和叙事和文学书架感。",
-    "黑白高对比主轴，配单一亮色点缀，适合社科、悬疑思辨、硬核观点和强标题书。",
-    "夜色蓝黑/深绿黑主轴，配银白或暖黄标题，适合孤独、城市、悬疑、时间和复杂情绪。",
-    "低饱和自然色主轴，配深色标题和局部植物/人物/物件，适合成长、家庭、乡土和细腻叙事。",
-    "明黄/草绿/淡紫等柔和心理色块主轴，配粗黑体或圆体标题，适合大众心理、自我认知和成长书。",
-    "商业社科红黑白主轴，标题极强、图形极少，适合经济、决策、趋势、效率和方法论主题。",
-)
-_ORTHODOX_REFERENCE_LAYOUT_AXES = (
-    "超大标题压版：标题占画面 45%-70%，主视觉只做一个清楚锚点，保留手机书架第一眼识别。",
-    "大留白中心意象：用一个物件、人物局部或抽象符号居中/偏下，标题与留白形成真实纸书节奏。",
-    "左右不对称：一侧强标题，一侧主视觉或纯留白，避免每本都做成同一张红底大字。",
-    "上下分割：上方标题层级强，下方放主视觉/作者/短副标，整体像成熟出版封面而不是海报。",
-    "竖排或半竖排标题：适合文学、历史、东方意象或长标题，必须清晰，不做古风模板。",
-    "单色块承载标题：背景色块、局部几何或纸张纹理承载文字，主视觉穿插但不抢标题。",
-    "满版图像弱化：图像作为背景气质，文字层级稳定覆盖其上，避免脏乱和真实素材残留。",
-    "极简符号版式：只用数字、线、圆、门、窗、树影、脸部轮廓等一个符号，靠比例和留白取胜。",
-)
-_ORTHODOX_REFERENCE_TITLE_AXES = (
-    "标题拆成 2-5 行，关键词放大，其余字收小，形成真实出版物标题层级。",
-    "标题极大但有呼吸，允许切边或贴边，但不能丢失可读性。",
-    "标题使用现代宋体、粗黑体、手写/书法感标题或混排，但要按书的气质选择，不统一套模板。",
-    "作者名小而稳，靠上、靠下或贴边；副标题最多一行，不能变成课程海报。",
-    "长标题优先做层级与分行，不堆满多段解释；短标题可以极大化并配大留白。",
-    "书名字体必须参考当前输入参考图里的标题字形差异，可在宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排之间选择，不能千篇一律。",
-    "从本次输入参考图中选一个最匹配书名长度和气质的标题排版主参考，标题字形、字重、字号比例、分行节奏、字距行距和横竖排关系按约 90% 的设计语法去贴近。",
-)
-_ORTHODOX_REFERENCE_VISUAL_AXES = (
-    "文学意象：从简介提炼水面、山路、灯、窗、树、猫、旧城、田野、船、雨夜、信件或纸页。",
-    "心理符号：从简介提炼心形、脸、手势、拥抱、镜子、气泡、地图、钥匙、温度计或身体轮廓。",
-    "社科符号：从简介提炼数字、箭头、圆环、坐标、市场曲线、城市网格、结构图或时间刻度。",
-    "人物局部：使用背影、侧脸轮廓、手、衣物、脚步或剪影关系，不使用可识别真实肖像。",
-    "单一物件：用书、杯子、椅子、门牌、花、石头、车票、钟面、信封或玻璃反射作为叙事锚点。",
-    "抽象纹理：用水纹、纸纹、木刻、山形、裂缝、线圈、色块边界表达情绪，但必须干净克制。",
-    "自然/城市场景：只保留必要轮廓和气氛，不做复杂写实插画，不做网文场景海报。",
-)
-_ORTHODOX_REFERENCE_TEXT_DENSITY_AXES = (
-    "文字密度：除书名、作者和必要副标题外，不加金句。",
-    "文字密度：最多 0 到 1 句短金句，不超过 12 个中文字符，放角落或腰封感小位置。",
-    "文字密度：标题已足够有观点时，不添加任何营销文案。",
-    "文字密度：副标题可以有，但必须短、稳、出版化；禁止多段营销文案、课程口号和密集小字。",
-)
-
-
 def _stable_variant(options: tuple[str, ...], seed: str, salt: str) -> str:
     digest = hashlib.sha256(f"{salt}:{seed}".encode("utf-8")).hexdigest()
     return options[int(digest[:8], 16) % len(options)]
@@ -792,33 +746,6 @@ def _simple_reference_visual_plan_text(cover_input: CoverInput) -> str:
         f"- 标题策略：{plan['title_axis']}\n"
         f"- 主视觉叙事：{plan['visual_axis']}\n"
         f"- 金句策略：{plan['quote_axis']}"
-    )
-
-
-def _orthodox_reference_visual_plan(cover_input: CoverInput) -> dict[str, str]:
-    seed = f"{cover_input.title}|{cover_input.author}|{cover_input.intro}|{cover_input.category}"
-    return {
-        "semantic_anchor": (
-            f"书名《{cover_input.title}》；作者：{cover_input.author}；"
-            f"简介线索：{cover_input.intro[:260]}"
-        ),
-        "color_axis": _stable_variant(_ORTHODOX_REFERENCE_COLOR_AXES, seed, "orthodox_color"),
-        "layout_axis": _stable_variant(_ORTHODOX_REFERENCE_LAYOUT_AXES, seed, "orthodox_layout"),
-        "title_axis": _stable_variant(_ORTHODOX_REFERENCE_TITLE_AXES, seed, "orthodox_title"),
-        "visual_axis": _stable_variant(_ORTHODOX_REFERENCE_VISUAL_AXES, seed, "orthodox_visual"),
-        "text_density_axis": _stable_variant(_ORTHODOX_REFERENCE_TEXT_DENSITY_AXES, seed, "orthodox_text_density"),
-    }
-
-
-def _orthodox_reference_visual_plan_text(cover_input: CoverInput) -> str:
-    plan = _orthodox_reference_visual_plan(cover_input)
-    return (
-        f"语义锚点：{plan['semantic_anchor']}\n"
-        f"- 配色主轴：{plan['color_axis']}\n"
-        f"- 版式骨架：{plan['layout_axis']}\n"
-        f"- 标题策略：{plan['title_axis']}\n"
-        f"- 主视觉叙事：{plan['visual_axis']}\n"
-        f"- 文字密度：{plan['text_density_axis']}"
     )
 
 
@@ -2320,7 +2247,6 @@ def _build_literature_direct_cover_prompt(
     *,
     reference_count: int,
 ) -> str:
-    visual_plan = _orthodox_reference_visual_plan_text(cover_input)
     return f"""正统出版大图库轻量直连生成工作流
 
 当前新书信息：
@@ -2342,20 +2268,17 @@ def _build_literature_direct_cover_prompt(
 - 允许明显贴近参考图库的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
 - 不能把所有书做成同一种红底大字、同一种蓝绿插画、同一种人物剪影或同一种极简留白模板。
 - 颜色必须清透透亮、明净、鲜活、干净，有新书封面的清爽纸质感；不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张、发乌背景、发黄做旧、低饱和寡淡或灰脏颗粒。
-- 书名的字体和排版必须模仿参考图库里的标题差异：不同书可用宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排、横排、竖排或半竖排；不要每本都使用同一种粗黑体和同一种分行模板。
-- 字体和版式模仿强度：必须从本次输入的 {reference_count} 张参考封面里，选出 1 张最适合当前书名长度、情绪和品类的“标题字体/排版主参考”；标题区位置、标题占比、字形气质、字重粗细、字号比例、分行节奏、字距行距、横排/竖排/半竖排关系、作者名位置、标题与主视觉/留白的关系，设计语法相似度目标约 90%。不要只学抽象感觉，要具体贴近参考图的标题排版骨架。
-
-本书差异化视觉方案：
-{visual_plan}
+- 书名的字体和排版必须学习参考图库里的丰富差异，但不要被固定规则锁死：可自由选择宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排、横排、竖排、半竖排、极大标题、小标题留白、满版标题、边缘标题等方向。
+- 每次生成都当成重新掷色子：即使同一本书、同一种书籍类型，也不要自动复用上一次的配色、版式、字体、主视觉或构图路线。重新生成时要大胆从当次参考图里换一个风格方向。
+- 具体书籍种类不能锁死风格。心理书可以走文学留白、社科强标题、插画心理符号或极简物件；文学书可以走强色块、极简图形、摄影感、手写标题或现代黑体；社科书也可以走白底留白、抽象图形、数字海报或克制文学化。让当前参考图和书名气质共同决定，不要按类别套模板。
 
 本书执行要求：
 - 只输出一张竖版中文图书正面封面本体。
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
-- 必须执行“本书差异化视觉方案”里的配色主轴、版式骨架、标题策略、主视觉叙事和文字密度。
-- 示例图可以提供出版气质和结构语言，但当前书的具体画面、主视觉、文字内容和视觉隐喻必须为这本书重新设计。
+- 示例图只提供出版气质、字体排版、色彩关系和结构语言；当前书的具体画面、主视觉、文字内容和视觉隐喻必须为这本书重新设计。
+- 风格自由执行：从本次输入参考图里自由挑选一个或多个最有启发的方向，可以强烈模仿其字体排版和版面秩序，也可以混合另一个参考图的色彩/主视觉关系；但不要形成固定算法，不要按书名 hash 固定路线，不要每次都输出同一类封面。
 - 色彩执行：配色主轴必须干净、透亮、清晰，有明度和层次；纸质感只能是高质量新书纸张的细腻纤维，不得出现灰蒙蒙、泛灰雾化、脏点、暗沉、发乌、发黄、旧纸滤镜或低饱和灰脏感。
-- 字体执行：书名标题字体不能千篇一律；必须主动参考本次输入参考图中最适合本书气质的标题字形和排版节奏，复刻其独特的字重、字形、分行、横竖关系、大小对比和留白关系，同时替换成当前书名。
-- 90% 贴近执行：标题和版式层面要像“参考图同一个设计师做的新书”，不是换一种普通字体重排。请保留主参考图的标题骨架、版心重心、字体气质、层级比例和文字块关系；只替换书名、作者、具体图像和高风险版权元素。
+- 字体执行：书名标题字体不能千篇一律；每次都要从参考图里重新选择值得学习的标题字形和排版节奏，模仿其字重、字形、分行、横竖关系、大小对比和留白关系，同时替换成当前书名。
 - 具体主视觉必须根据本书简介重新设计，不能复制参考图中的具体摄影、插画、人物肖像、logo、二维码、价格、水印、品牌资产或独特图形细节。
 - 版权替换规则：真实书名、原作者、出版社、平台标识、出版社 logo、二维码、价格、水印、真实品牌资产、真实摄影作品、已有插画作品、可识别人物肖像、独特图形细节，都必须删除或重画替换；只学习版式方法、比例关系和出版气质。
 - 封面上的金句可以少一点：除书名、作者和必要副标题外，最多 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、课程口号、长清单和密集小字。
@@ -2369,17 +2292,16 @@ def _literature_direct_style_payload(
     cover_input: CoverInput,
     reference_records: Sequence[dict[str, str]],
 ) -> dict[str, Any]:
-    visual_plan = _orthodox_reference_visual_plan(cover_input)
     return {
         "workflow": "orthodox_direct_reference",
         "reference_site": "本地正统出版ZIP参考封面库 + 大图库风格DNA",
         "reference_brands": ["正统出版ZIP参考封面库"],
         "matched_category_style": "正统出版大图库轻量直连风格",
-        "brand_style_direction": "以参考封面库作为分类风格DNA，按当前书稳定生成差异化成熟出版封面。",
+        "brand_style_direction": "以参考封面库作为分类风格DNA，每次生成自由选择参考方向，避免按书名或类型固定模板。",
         "cover_type": "正统出版 / 大图库风格DNA成熟出版封面",
         "reference_samples": list(reference_records),
         "generation_prompt_addendum": _ORTHODOX_REFERENCE_STYLE_DNA,
-        "visual_plan": visual_plan,
+        "creative_policy": "open_style_dice_per_generation",
         "title": cover_input.title,
         "author": cover_input.author,
         "intro": cover_input.intro,
