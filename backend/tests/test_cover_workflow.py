@@ -697,6 +697,11 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
+    assert "颜色必须清透透亮、明净、鲜活、干净" in calls[0][1]
+    assert "不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张" in calls[0][1]
+    assert "书名的字体和排版必须模仿参考图库里的标题差异" in calls[0][1]
+    assert "书名标题字体不能千篇一律" in calls[0][1]
+    assert "复刻其独特的字重、字形、分行、横竖关系、大小对比和留白关系" in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
@@ -918,6 +923,33 @@ def test_image_request_retries_transient_520(monkeypatch) -> None:
             request = httpx.Request("POST", endpoint)
             if self.calls == 1:
                 return httpx.Response(520, text="temporary edge error", request=request)
+            return httpx.Response(
+                200,
+                json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+                request=request,
+            )
+
+    fake = FakeHttp()
+    monkeypatch.setattr(cover.settings, "IMAGE_API_MAX_RETRIES", 2)
+    monkeypatch.setattr(cover.time, "sleep", lambda _seconds: None)
+
+    response_data = cover._post_image_request(fake, "https://api.example.test/images/edits", "key")  # noqa: SLF001
+    result = cover._decode_image_response(response_data)  # noqa: SLF001
+
+    assert result == PNG_BYTES
+    assert fake.calls == 2
+
+
+def test_image_request_retries_remote_protocol_disconnect(monkeypatch) -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, endpoint: str, **kwargs):
+            self.calls += 1
+            request = httpx.Request("POST", endpoint)
+            if self.calls == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
             return httpx.Response(
                 200,
                 json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},

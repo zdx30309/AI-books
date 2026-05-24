@@ -710,7 +710,8 @@ _LITERATURE_ELEMENT_VARIANTS = (
 
 _ORTHODOX_REFERENCE_STYLE_DNA = (
     "256 张正统出版参考封面的大图库 DNA：真实中文出版物质感、强标题层级、清楚书架缩略图识别、"
-    "克制但明确的色彩主轴、干净纸感、成熟留白、稳定图文关系、少而准的视觉锚点。"
+    "克制但明确的色彩主轴、清透透亮的新书纸感、成熟留白、稳定图文关系、少而准的视觉锚点、"
+    "随书变化的标题字体与标题排版。"
 )
 _ORTHODOX_REFERENCE_COLOR_AXES = (
     "水绿/湖蓝/青绿色主轴，配米白或深墨标题，适合清冷文学、心理疗愈、记忆、水边和自然主题。",
@@ -738,6 +739,7 @@ _ORTHODOX_REFERENCE_TITLE_AXES = (
     "标题使用现代宋体、粗黑体、手写/书法感标题或混排，但要按书的气质选择，不统一套模板。",
     "作者名小而稳，靠上、靠下或贴边；副标题最多一行，不能变成课程海报。",
     "长标题优先做层级与分行，不堆满多段解释；短标题可以极大化并配大留白。",
+    "书名字体必须参考当前输入参考图里的标题字形差异，可在宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排之间选择，不能千篇一律。",
 )
 _ORTHODOX_REFERENCE_VISUAL_AXES = (
     "文学意象：从简介提炼水面、山路、灯、窗、树、猫、旧城、田野、船、雨夜、信件或纸页。",
@@ -2163,10 +2165,16 @@ def _post_image_request(
             last_error = ImageApiTransientError(message)
             if attempt >= max_attempts:
                 raise ImageApiTransientError(f"{message}，已重试 {attempt} 次") from exc
-        except (httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+        except httpx.TimeoutException as exc:
             raise ImageApiUncertainError(
                 f"image API request result is uncertain; automatic retry stopped to avoid duplicate billing: {exc}"
             ) from exc
+        except httpx.RemoteProtocolError as exc:
+            last_error = ImageApiTransientError(f"图像 API 连接提前断开，未收到响应: {exc}")
+            if attempt >= max_attempts:
+                raise ImageApiTransientError(
+                    f"图像 API 连接提前断开，未收到响应: {exc}，已重试 {attempt} 次"
+                ) from exc
         except httpx.HTTPError as exc:
             last_error = ImageApiTransientError(f"图像 API 连接失败: {exc}")
             if attempt >= max_attempts:
@@ -2332,6 +2340,8 @@ def _build_literature_direct_cover_prompt(
 - 参考图库里同时包含文学、心理认知、社科经管、生活方式、思想随笔、治愈成长等成熟出版方向；请按当前书名和简介选择最合适的一类出版气质。
 - 允许明显贴近参考图库的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
 - 不能把所有书做成同一种红底大字、同一种蓝绿插画、同一种人物剪影或同一种极简留白模板。
+- 颜色必须清透透亮、明净、鲜活、干净，有新书封面的清爽纸质感；不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张、发乌背景、发黄做旧、低饱和寡淡或灰脏颗粒。
+- 书名的字体和排版必须模仿参考图库里的标题差异：不同书可用宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排、横排、竖排或半竖排；不要每本都使用同一种粗黑体和同一种分行模板。
 
 本书差异化视觉方案：
 {visual_plan}
@@ -2341,6 +2351,8 @@ def _build_literature_direct_cover_prompt(
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
 - 必须执行“本书差异化视觉方案”里的配色主轴、版式骨架、标题策略、主视觉叙事和文字密度。
 - 示例图可以提供出版气质和结构语言，但当前书的具体画面、主视觉、文字内容和视觉隐喻必须为这本书重新设计。
+- 色彩执行：配色主轴必须干净、透亮、清晰，有明度和层次；纸质感只能是高质量新书纸张的细腻纤维，不得出现灰蒙蒙、泛灰雾化、脏点、暗沉、发乌、发黄、旧纸滤镜或低饱和灰脏感。
+- 字体执行：书名标题字体不能千篇一律；必须主动参考本次输入参考图中最适合本书气质的标题字形和排版节奏，复刻其独特的字重、字形、分行、横竖关系、大小对比和留白关系，同时替换成当前书名。
 - 具体主视觉必须根据本书简介重新设计，不能复制参考图中的具体摄影、插画、人物肖像、logo、二维码、价格、水印、品牌资产或独特图形细节。
 - 版权替换规则：真实书名、原作者、出版社、平台标识、出版社 logo、二维码、价格、水印、真实品牌资产、真实摄影作品、已有插画作品、可识别人物肖像、独特图形细节，都必须删除或重画替换；只学习版式方法、比例关系和出版气质。
 - 封面上的金句可以少一点：除书名、作者和必要副标题外，最多 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、课程口号、长清单和密集小字。
