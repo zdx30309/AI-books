@@ -713,96 +713,6 @@ _ORTHODOX_REFERENCE_STYLE_DNA = (
     "克制但明确的色彩主轴、清透透亮的新书纸感、成熟留白、稳定图文关系、少而准的视觉锚点、"
     "随书变化的标题字体与标题排版。"
 )
-_ORTHODOX_LAYOUT_COPY_TARGETS = (
-    "主抄版心结构、标题占比、上下左右留白和作者名落点；主视觉只按当前书重做。",
-    "主抄标题字重节奏、分行方式、文字块重心和留白比例；具体图形全部替换。",
-    "主抄色块面积、冷暖/明暗关系和图文层级；不复用参考图里的主体物。",
-    "主抄大标题书架识别度、边缘标题/竖排/横排关系和小字秩序；画面叙事另起。",
-    "主抄封面整体出版秩序、纸书气质和视觉锚点比例；锚点内容换成本书的新隐喻。",
-)
-_ORTHODOX_MOTIF_FAMILIES: tuple[dict[str, str], ...] = (
-    {
-        "id": "typographic_only",
-        "label": "纯标题排版",
-        "instruction": "只用标题、作者、小副标、留白和色块形成封面力量；不依赖具象插画。",
-    },
-    {
-        "id": "abstract_geometry",
-        "label": "抽象几何",
-        "instruction": "用圆、线、门、窗、路径、网格、切面、坐标或抽象形状表达主题。",
-    },
-    {
-        "id": "single_object",
-        "label": "单一物件",
-        "instruction": "从书名和简介提炼一个新物件作为锚点，物件必须不同于参考图原主体。",
-    },
-    {
-        "id": "natural_image",
-        "label": "自然意象",
-        "instruction": "使用水、风、山、树影、光、云、雪、火、花或纸页等干净自然意象。",
-    },
-    {
-        "id": "city_space",
-        "label": "城市/空间",
-        "instruction": "使用房间、走廊、窗、街道、楼宇、桌面或远景空间组织叙事。",
-    },
-    {
-        "id": "data_symbol",
-        "label": "数据/符号",
-        "instruction": "使用数字、箭头、刻度、曲线、表格感、结构图或符号系统表达观点。",
-    },
-    {
-        "id": "human_silhouette",
-        "label": "人物轮廓",
-        "instruction": "只用不可识别的人物剪影、侧脸轮廓、手势或背影，不使用真实肖像。",
-    },
-    {
-        "id": "color_block",
-        "label": "色块结构",
-        "instruction": "用大色块、拼接边界、腰封感或强对比色面承载标题和主视觉关系。",
-    },
-    {
-        "id": "photo_flat",
-        "label": "摄影感平面",
-        "instruction": "生成干净的摄影感平面物件/场景，但不能复制参考图真实摄影作品。",
-    },
-    {
-        "id": "literary_blank",
-        "label": "文学留白",
-        "instruction": "以大面积留白、小意象和克制标题形成真实出版物的呼吸感。",
-    },
-    {
-        "id": "animal_companion",
-        "label": "动物意象",
-        "instruction": "只有书名或简介明确需要动物时才使用，且必须重画为新动物形象。",
-    },
-)
-_ORTHODOX_ANIMAL_MOTIF_ID = "animal_companion"
-_ORTHODOX_ANIMAL_CUES = (
-    "猫",
-    "猫咪",
-    "小猫",
-    "狗",
-    "小狗",
-    "鸟",
-    "动物",
-    "宠物",
-    "兽",
-    "猫科",
-    "犬",
-    "cat",
-    "dog",
-    "bird",
-    "animal",
-    "pet",
-)
-_ORTHODOX_BASE_FORBIDDEN_MOTIFS = (
-    "参考图里的原书名、原作者、出版社、平台标识、logo、二维码、价格、水印",
-    "参考图里的真实摄影、已有插画、可识别人物肖像和独特图形细节",
-    "照搬参考图中的猫、狗、鸟、椅子、头像、人物、具体摆件或原有主体物",
-    "把猫狗鸟等动物当作通用心理/情绪符号反复使用",
-    "把同一本书的重生结果做成上一版的轻微变体",
-)
 def _stable_variant(options: tuple[str, ...], seed: str, salt: str) -> str:
     digest = hashlib.sha256(f"{salt}:{seed}".encode("utf-8")).hexdigest()
     return options[int(digest[:8], 16) % len(options)]
@@ -1023,144 +933,6 @@ def _selected_literature_direct_reference_members(
             return cached[: min(limit, len(cached))]
     count = min(limit, len(members))
     return tuple(random.sample(list(members), count))
-
-
-def _orthodox_new_generation_nonce() -> str:
-    seed = f"{time.time_ns()}:{random.getrandbits(64)}"
-    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
-
-
-def _orthodox_output_item_index(output_dir: Path) -> int:
-    prefix = output_dir.name.lstrip(".").split("_", 1)[0]
-    if prefix.isdigit():
-        return max(1, int(prefix))
-    return 1
-
-
-def _orthodox_text_allows_animal_motif(cover_input: CoverInput) -> bool:
-    text = f"{cover_input.title} {cover_input.author} {cover_input.intro}".lower()
-    return any(cue.lower() in text for cue in _ORTHODOX_ANIMAL_CUES)
-
-
-def _orthodox_motif_family_pool(cover_input: CoverInput) -> tuple[dict[str, str], ...]:
-    if _orthodox_text_allows_animal_motif(cover_input):
-        return _ORTHODOX_MOTIF_FAMILIES
-    return tuple(item for item in _ORTHODOX_MOTIF_FAMILIES if item["id"] != _ORTHODOX_ANIMAL_MOTIF_ID)
-
-
-def _orthodox_chosen_motif_family(cover_input: CoverInput, output_dir: Path) -> dict[str, str]:
-    pool = _orthodox_motif_family_pool(cover_input)
-    item_index = _orthodox_output_item_index(output_dir)
-    return dict(pool[(item_index - 1) % len(pool)])
-
-
-def _orthodox_secondary_references(members: Sequence[str], primary_reference: str) -> tuple[str, ...]:
-    others = [member for member in members if member != primary_reference]
-    if not others:
-        return ()
-    return tuple(others[: min(5, max(1, len(others)))])
-
-
-def _orthodox_cached_reference_strategy(
-    strategy_path: Path,
-    available_members: set[str],
-) -> dict[str, Any] | None:
-    if not strategy_path.exists() or strategy_path.stat().st_size <= 0:
-        return None
-    try:
-        payload = json.loads(strategy_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    primary = payload.get("primary_reference")
-    if not isinstance(primary, str) or primary not in available_members:
-        return None
-    for member in payload.get("secondary_references") or ():
-        if not isinstance(member, str) or member not in available_members:
-            return None
-    family = payload.get("chosen_motif_family")
-    if not isinstance(family, dict) or not family.get("id"):
-        return None
-    return payload
-
-
-def _build_orthodox_reference_strategy(
-    cover_input: CoverInput,
-    output_dir: Path,
-    members: Sequence[str],
-) -> dict[str, Any]:
-    nonce = _orthodox_new_generation_nonce()
-    item_index = _orthodox_output_item_index(output_dir)
-    primary_seed = f"{nonce}|{cover_input.title}|{cover_input.author}|{item_index}"
-    primary_index = int(hashlib.sha1(primary_seed.encode("utf-8")).hexdigest()[:8], 16) % len(members)
-    primary_reference = members[primary_index]
-    secondary_references = _orthodox_secondary_references(members, primary_reference)
-    secondary_reference_indexes = [members.index(member) + 1 for member in secondary_references]
-    background_references = [
-        member
-        for member in members
-        if member != primary_reference and member not in set(secondary_references)
-    ]
-    animal_allowed = _orthodox_text_allows_animal_motif(cover_input)
-    forbidden_motifs = list(_ORTHODOX_BASE_FORBIDDEN_MOTIFS)
-    if not animal_allowed:
-        forbidden_motifs.append("猫 / cat、狗 / dog、鸟 / bird、宠物、动物吉祥物等动物主视觉")
-    return {
-        "generation_nonce": nonce,
-        "item_index": item_index,
-        "reference_count": len(members),
-        "primary_reference_index": primary_index + 1,
-        "primary_reference": primary_reference,
-        "secondary_reference_indexes": secondary_reference_indexes,
-        "secondary_references": list(secondary_references),
-        "background_references": background_references,
-        "chosen_motif_family": _orthodox_chosen_motif_family(cover_input, output_dir),
-        "layout_copy_target": _stable_variant(
-            _ORTHODOX_LAYOUT_COPY_TARGETS,
-            f"{nonce}|{cover_input.title}|{item_index}",
-            "orthodox_layout_copy",
-        ),
-        "forbidden_motifs": forbidden_motifs,
-        "animal_motif_allowed": animal_allowed,
-        "copy_policy": "design_syntax_strong_reference_specific_elements_replaced",
-    }
-
-
-def _orthodox_reference_strategy(
-    cover_input: CoverInput,
-    output_dir: Path,
-    members: Sequence[str],
-    *,
-    force: bool,
-) -> dict[str, Any]:
-    strategy_path = output_dir / "orthodox_reference_strategy.json"
-    if not force:
-        cached = _orthodox_cached_reference_strategy(strategy_path, set(members))
-        if cached is not None:
-            return cached
-    return _build_orthodox_reference_strategy(cover_input, output_dir, members)
-
-
-def _orthodox_strategy_prompt_section(strategy: dict[str, Any]) -> str:
-    family = strategy.get("chosen_motif_family") if isinstance(strategy.get("chosen_motif_family"), dict) else {}
-    secondary = strategy.get("secondary_references") or []
-    secondary_indexes = strategy.get("secondary_reference_indexes") or []
-    secondary_pairs = [
-        f"第 {index} 张（{Path(str(member)).name}）"
-        for index, member in zip(secondary_indexes, secondary[:5])
-    ]
-    secondary_text = "、".join(secondary_pairs) or "无"
-    forbidden = "；".join(str(item) for item in strategy.get("forbidden_motifs") or ())
-    return f"""本次参考执行策略（必须执行）：
-- 主版式参考：第 {strategy.get("primary_reference_index")} 张参考图（{strategy.get("primary_reference")}）。设计语法强参考它的版心、标题块、留白比例、字重节奏、色块关系和书架识别度。
-- 辅助参考：{secondary_text}。只补充字体、色彩、图文关系和出版气质，不复制具体主体。
-- 版式抄法：{strategy.get("layout_copy_target")}
-- 主视觉家族：{family.get("label")}。{family.get("instruction")}
-- 具体元素强替换：参考图里的猫、狗、鸟、椅子、人物、插画主体、摄影主体、独特图形和真实文字都不能直接搬到新封面；只能学习版式方法、比例关系、标题气质和色彩结构。
-- 禁止 motifs：{forbidden}
-- 禁止把猫狗鸟等动物当通用情绪符号；只有书名或简介明确需要动物时才允许使用动物意象，且必须重画成全新形象。
-- 不要做成上一版变体：重新生成时必须换主参考、换主视觉家族或换标题排版骨架，让同一本书的新结果明显不是上一张的轻微改色。"""
 
 
 def _extract_literature_reference_inputs(
@@ -2474,9 +2246,7 @@ def _build_literature_direct_cover_prompt(
     cover_input: CoverInput,
     *,
     reference_count: int,
-    strategy: dict[str, Any],
 ) -> str:
-    strategy_section = _orthodox_strategy_prompt_section(strategy)
     return f"""正统出版大图库轻量直连生成工作流
 
 当前新书信息：
@@ -2489,27 +2259,29 @@ def _build_literature_direct_cover_prompt(
 - 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
 - 这些参考封面是“正统出版风格 DNA”，不是普通灵感图，也不是要求逐字逐元素照抄某一本旧封面。
 - 需要从这批图里整体学习成熟出版物的审美规律：真实纸书感、强标题层级、书架缩略图识别、干净留白、图文关系、冷暖/明暗色彩结构、克制装饰和稳定出版秩序。
-- 参考方式是“设计语法强参考 + 具体元素强替换”：可以贴近参考封面的版式骨架、标题块、字体节奏、色彩结构和留白比例，但必须替换具体物件、人物、动物、插画主体和版权细节。
+- 可以选择其中一张或几张作为版式方向参考，但不要死抄单张母版；最终效果要像从这个 256 图库同一套出版审美里自然生成出来的新封面。
 - 不需要沿用传统封面 workflow，不需要生成拼贴板，不需要输出多张候选图，不需要输出分析文字。
 
 正统出版风格 DNA：
 - {_ORTHODOX_REFERENCE_STYLE_DNA}
-- 参考图库里同时包含文学、心理认知、社科经管、生活方式、思想随笔、治愈成长等成熟出版方向；请按“本次参考执行策略”选择出版气质和主视觉家族。
-- 允许明显贴近主版式参考的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
+- 参考图库里同时包含文学、心理认知、社科经管、生活方式、思想随笔、治愈成长等成熟出版方向；请按当前书名和简介选择最合适的一类出版气质。
+- 允许明显贴近参考图库的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
 - 不能把所有书做成同一种红底大字、同一种蓝绿插画、同一种人物剪影或同一种极简留白模板。
 - 颜色必须清透透亮、明净、鲜活、干净，有新书封面的清爽纸质感；不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张、发乌背景、发黄做旧、低饱和寡淡或灰脏颗粒。
 - 书名的字体和排版必须学习参考图库里的丰富差异，但不要被固定规则锁死：可自由选择宋体、黑体、圆体、手写、书法、衬线、无衬线、粗细混排、横排、竖排、半竖排、极大标题、小标题留白、满版标题、边缘标题等方向。
-
-{strategy_section}
+- 书名标题主参考：必须从本次输入的 {reference_count} 张参考封面里选 1 张最适合当前书名长度和气质的标题设计作为主参考，只针对“书名标题区”抄到位。
+- 标题排版必须重点模仿主参考的标题字形、字重、字号比例、分行节奏、横竖排关系、字距行距、标题块位置、标题与留白/主视觉的关系；不要只是换一种普通字体重排。
+- 抄到位的是标题设计语法：当前书名要像参考图里成熟设计师做出的新书标题，必须替换成“{cover_input.title}”，不能保留参考图原书名、原字形残影、原作者、出版社、logo、二维码、水印或平台信息。
+- 每次生成都当成重新掷色子：即使同一本书、同一种书籍类型，也不要自动复用上一次的配色、版式、字体、主视觉或构图路线。重新生成时要大胆从当次参考图里换一个风格方向。
+- 具体书籍种类不能锁死风格。心理书可以走文学留白、社科强标题、插画心理符号或极简物件；文学书可以走强色块、极简图形、摄影感、手写标题或现代黑体；社科书也可以走白底留白、抽象图形、数字海报或克制文学化。让当前参考图和书名气质共同决定，不要按类别套模板。
 
 本书执行要求：
 - 只输出一张竖版中文图书正面封面本体。
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
 - 示例图只提供出版气质、字体排版、色彩关系和结构语言；当前书的具体画面、主视觉、文字内容和视觉隐喻必须为这本书重新设计。
-- 抄的对象：版式骨架、标题块、字重节奏、留白比例、色彩明暗关系、图文层级、书架缩略图识别度。
-- 不能抄的对象：原书名、原作者、出版社、logo、二维码、价格、水印、真实摄影/插画、可识别人物、猫狗鸟等具体主体和独特图形。
+- 风格自由执行：从本次输入参考图里自由挑选一个或多个最有启发的方向，可以强烈模仿其字体排版和版面秩序，也可以混合另一个参考图的色彩/主视觉关系；但不要形成固定算法，不要按书名 hash 固定路线，不要每次都输出同一类封面。
 - 色彩执行：配色主轴必须干净、透亮、清晰，有明度和层次；纸质感只能是高质量新书纸张的细腻纤维，不得出现灰蒙蒙、泛灰雾化、脏点、暗沉、发乌、发黄、旧纸滤镜或低饱和灰脏感。
-- 字体执行：书名标题字体不能千篇一律；每次都要从参考图里重新选择值得学习的标题字形和排版节奏，模仿其字重、字形、分行、横竖关系、大小对比和留白关系，同时替换成当前书名。
+- 字体执行：书名标题字体不能千篇一律；每次都要从参考图里重新选择值得学习的标题字形和排版节奏，模仿其字重、字形、分行、横竖关系、大小对比和留白关系，同时替换成当前书名。标题区要像参考图里成熟设计师做出的新书标题，不能像普通系统字体排版。
 - 具体主视觉必须根据本书简介重新设计，不能复制参考图中的具体摄影、插画、人物肖像、logo、二维码、价格、水印、品牌资产或独特图形细节。
 - 版权替换规则：真实书名、原作者、出版社、平台标识、出版社 logo、二维码、价格、水印、真实品牌资产、真实摄影作品、已有插画作品、可识别人物肖像、独特图形细节，都必须删除或重画替换；只学习版式方法、比例关系和出版气质。
 - 封面上的金句可以少一点：除书名、作者和必要副标题外，最多 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、课程口号、长清单和密集小字。
@@ -2522,19 +2294,17 @@ def _build_literature_direct_cover_prompt(
 def _literature_direct_style_payload(
     cover_input: CoverInput,
     reference_records: Sequence[dict[str, str]],
-    strategy: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "workflow": "orthodox_direct_reference",
         "reference_site": "本地正统出版ZIP参考封面库 + 大图库风格DNA",
         "reference_brands": ["正统出版ZIP参考封面库"],
         "matched_category_style": "正统出版大图库轻量直连风格",
-        "brand_style_direction": "以参考封面库作为分类风格DNA，强参考设计语法并替换具体元素，避免复用猫狗鸟等通用主体。",
+        "brand_style_direction": "以参考封面库作为分类风格DNA，每次生成自由选择参考方向，避免按书名或类型固定模板。",
         "cover_type": "正统出版 / 大图库风格DNA成熟出版封面",
         "reference_samples": list(reference_records),
         "generation_prompt_addendum": _ORTHODOX_REFERENCE_STYLE_DNA,
-        "creative_policy": "design_syntax_copy_element_replacement",
-        "reference_strategy": strategy,
+        "creative_policy": "open_style_dice_per_generation",
         "title": cover_input.title,
         "author": cover_input.author,
         "intro": cover_input.intro,
@@ -2556,7 +2326,6 @@ def _generate_literature_cover_direct(
     draft_response_path = output_dir / "cover_draft_response.json"
     draft_prompt_path = output_dir / "cover_draft_prompt.txt"
     samples_path = output_dir / "orthodox_reference_samples.json"
-    strategy_path = output_dir / "orthodox_reference_strategy.json"
     style_brief_path = output_dir / "cover_style_brief.json"
 
     if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
@@ -2566,27 +2335,20 @@ def _generate_literature_cover_direct(
     members = _selected_literature_direct_reference_members(output_dir, force=force)
     zip_path = _literature_reference_zip_path()
     reference_records = _literature_reference_records(zip_path, members)
-    strategy = _orthodox_reference_strategy(cover_input, output_dir, members, force=force)
     _write_cover_text_file(
         samples_path,
         json.dumps(reference_records, ensure_ascii=False, indent=2),
-        should_abort,
-    )
-    _write_cover_text_file(
-        strategy_path,
-        json.dumps(strategy, ensure_ascii=False, indent=2),
         should_abort,
     )
     reference_images = _extract_literature_reference_inputs(members, output_dir, should_abort)
     direct_prompt = _build_literature_direct_cover_prompt(
         cover_input,
         reference_count=len(reference_images),
-        strategy=strategy,
     )
     _write_cover_text_file(draft_prompt_path, direct_prompt, should_abort)
     _write_cover_text_file(
         style_brief_path,
-        json.dumps(_literature_direct_style_payload(cover_input, reference_records, strategy), ensure_ascii=False, indent=2),
+        json.dumps(_literature_direct_style_payload(cover_input, reference_records), ensure_ascii=False, indent=2),
         should_abort,
     )
 

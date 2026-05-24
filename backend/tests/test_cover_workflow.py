@@ -659,48 +659,44 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
     assert "正统出版风格 DNA" in calls[0][1]
-    assert "设计语法强参考 + 具体元素强替换" in calls[0][1]
-    assert "本次参考执行策略（必须执行）" in calls[0][1]
-    assert "主版式参考" in calls[0][1]
-    assert "辅助参考" in calls[0][1]
-    assert "版式抄法" in calls[0][1]
-    assert "主视觉家族" in calls[0][1]
-    assert "具体元素强替换" in calls[0][1]
-    assert "禁止把猫狗鸟等动物当通用情绪符号" in calls[0][1]
-    assert "不要做成上一版变体" in calls[0][1]
-    assert "抄的对象：版式骨架、标题块、字重节奏、留白比例、色彩明暗关系、图文层级、书架缩略图识别度" in calls[0][1]
-    assert "不能抄的对象：原书名、原作者、出版社、logo、二维码、价格、水印、真实摄影/插画、可识别人物、猫狗鸟等具体主体和独特图形" in calls[0][1]
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
     assert "颜色必须清透透亮、明净、鲜活、干净" in calls[0][1]
     assert "不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张" in calls[0][1]
     assert "书名的字体和排版必须学习参考图库里的丰富差异" in calls[0][1]
+    assert "书名标题主参考" in calls[0][1]
+    assert "标题字形、字重、字号比例、分行节奏、横竖排关系、字距行距" in calls[0][1]
+    assert "标题块位置、标题与留白/主视觉的关系" in calls[0][1]
+    assert "抄到位的是标题设计语法" in calls[0][1]
+    assert "标题区要像参考图里成熟设计师做出的新书标题" in calls[0][1]
+    assert "不能保留参考图原书名、原字形残影、原作者、出版社、logo、二维码、水印或平台信息" in calls[0][1]
     assert "书名标题字体不能千篇一律" in calls[0][1]
     assert "每次都要从参考图里重新选择值得学习的标题字形和排版节奏" in calls[0][1]
     assert "模仿其字重、字形、分行、横竖关系、大小对比和留白关系" in calls[0][1]
-    assert "风格自由执行" not in calls[0][1]
-    assert "hash" not in calls[0][1]
+    assert "每次生成都当成重新掷色子" in calls[0][1]
+    assert "重新生成时要大胆从当次参考图里换一个风格方向" in calls[0][1]
+    assert "具体书籍种类不能锁死风格" in calls[0][1]
+    assert "风格自由执行" in calls[0][1]
+    assert "不要按书名 hash 固定路线" in calls[0][1]
     assert "本书差异化视觉方案" not in calls[0][1]
+    assert "orthodox_reference_strategy" not in calls[0][1]
+    assert "本次参考执行策略" not in calls[0][1]
+    assert "主视觉家族" not in calls[0][1]
+    assert "设计语法强参考 + 具体元素强替换" not in calls[0][1]
     assert "设计语法相似度目标约 90%" not in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
     assert "选择它作为主要版式母版" not in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
-    assert (tmp_path / "orthodox_reference_strategy.json").exists()
+    assert not (tmp_path / "orthodox_reference_strategy.json").exists()
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
-    strategy_payload = json.loads((tmp_path / "orthodox_reference_strategy.json").read_text(encoding="utf-8"))
-    assert strategy_payload["primary_reference"]
-    assert 3 <= len(strategy_payload["secondary_references"]) <= 5
-    assert strategy_payload["chosen_motif_family"]["id"] != "animal_companion"
-    assert any("猫 / cat" in item for item in strategy_payload["forbidden_motifs"])
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 大图库风格DNA"
-    assert style_payload["creative_policy"] == "design_syntax_copy_element_replacement"
-    assert style_payload["reference_strategy"] == strategy_payload
+    assert style_payload["creative_policy"] == "open_style_dice_per_generation"
     assert "visual_plan" not in style_payload
 
 
@@ -715,18 +711,12 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
 
     sample_calls = 0
     edit_calls = 0
-    nonce_calls = 0
 
     def fake_sample(population, count):
         nonlocal sample_calls
         sample_calls += 1
         items = list(population)
         return items[:count] if sample_calls == 1 else list(reversed(items))[:count]
-
-    def fake_nonce():
-        nonlocal nonce_calls
-        nonce_calls += 1
-        return f"nonce-{nonce_calls}"
 
     def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
         nonlocal edit_calls
@@ -737,7 +727,6 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
 
     monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
     monkeypatch.setattr(cover.random, "sample", fake_sample)
-    monkeypatch.setattr(cover, "_orthodox_new_generation_nonce", fake_nonce)
     monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
     monkeypatch.setattr(
         cover,
@@ -755,11 +744,8 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
         )
 
     first_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    first_strategy = json.loads((tmp_path / "orthodox_reference_strategy.json").read_text(encoding="utf-8"))
     assert sample_calls == 1
-    assert nonce_calls == 1
     assert len(first_samples) == 16
-    assert first_strategy["generation_nonce"] == "nonce-1"
 
     result = cover.generate_cover_file(
         "风经过房间",
@@ -770,12 +756,9 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
     )
 
     second_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    second_strategy = json.loads((tmp_path / "orthodox_reference_strategy.json").read_text(encoding="utf-8"))
     assert result == tmp_path / "cover.png"
     assert second_samples == first_samples
-    assert second_strategy == first_strategy
     assert sample_calls == 1
-    assert nonce_calls == 1
 
     cover.generate_cover_file(
         "风经过房间",
@@ -787,59 +770,8 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
     )
 
     forced_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    forced_strategy = json.loads((tmp_path / "orthodox_reference_strategy.json").read_text(encoding="utf-8"))
     assert sample_calls == 2
-    assert nonce_calls == 2
     assert forced_samples != first_samples
-    assert forced_strategy != first_strategy
-    assert forced_strategy["generation_nonce"] == "nonce-2"
-
-
-def test_orthodox_reference_strategy_diversifies_batch_and_blocks_animal_motifs(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    members = tuple(f"cover_{index:02d}.png" for index in range(16))
-    monkeypatch.setattr(cover, "_orthodox_new_generation_nonce", lambda: "same-batch-nonce")
-    rows = (
-        ("温度有尽头吗", "一本关于热量、熵增和绝对零度的通识书。"),
-        ("你要的是真正被满足", "一本关于身体、安全感、爱与尊严的心理书。"),
-        ("谁还没点脾气", "一本关于情绪、自我表达、关系边界和内在力量的通俗心理书。"),
-        ("人格心理学", "一本讲坏话、自拍、谈吐和气味如何透露人格线索的心理书。"),
-    )
-
-    strategies = []
-    for index, (title, intro) in enumerate(rows, start=1):
-        cover_input = cover.prepare_cover_input(
-            title,
-            f"@最终简介\n{intro}",
-            author="作者",
-            category="正统出版",
-        )
-        output_dir = tmp_path / f".{index:03d}_{title}_work"
-        strategy = cover._build_orthodox_reference_strategy(cover_input, output_dir, members)  # noqa: SLF001
-        strategies.append(strategy)
-
-    families = {strategy["chosen_motif_family"]["id"] for strategy in strategies}
-    assert len(families) > 1
-    temper_strategy = strategies[2]
-    assert temper_strategy["animal_motif_allowed"] is False
-    assert temper_strategy["chosen_motif_family"]["id"] != "animal_companion"
-    assert any("猫 / cat" in item for item in temper_strategy["forbidden_motifs"])
-
-    animal_cover_input = cover.prepare_cover_input(
-        "我和猫的房间",
-        "@最终简介\n一本明确讲人与猫相处、宠物陪伴和生活修复的散文。",
-        author="作者",
-        category="正统出版",
-    )
-    animal_strategy = cover._build_orthodox_reference_strategy(  # noqa: SLF001
-        animal_cover_input,
-        tmp_path / ".005_我和猫的房间_work",
-        members,
-    )
-    assert animal_strategy["animal_motif_allowed"] is True
-    assert not any("猫 / cat、狗 / dog、鸟 / bird" in item for item in animal_strategy["forbidden_motifs"])
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
