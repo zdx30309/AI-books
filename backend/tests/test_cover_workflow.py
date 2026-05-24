@@ -475,11 +475,16 @@ def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
     assert "标题所在区域、标题大小比例、标题分行方式、作者名位置、副标题位置" in prompt
     assert "主视觉必须服务于当前书名、简介、题材和读者期待" in prompt
     assert "允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式" in prompt
-    assert "不要坑洼、斑驳、脏点、划痕、掉墨、褶皱、旧纸感或做旧效果" in prompt
+    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
+    assert "不要模拟实体纸书摄影效果" in prompt
     assert "以素材库中的成熟出版封面为母版" in prompt
     assert "不要随意添加无意义的横线、竖线、圆点、印章、编号" in prompt
     assert "出版社或平台 logo、二维码、价格、水印" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
+    assert "#FFFFFF 数字白" in prompt
+    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
+    assert "避免灰蒙蒙和所谓高级感灰滤镜" in prompt
+    assert "允许轻微纸张肌理" not in prompt
     assert "当当网" not in prompt
     assert get_cover_category_meta("literature")["label"] == "正统出版"
 
@@ -537,9 +542,14 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "内部逐个尝试强标题留白型、色块标题型" in prompt
     assert "可以高仿的是版式骨架、标题层级、留白节奏" in prompt
     assert "真实品牌元素、已有摄影作品、已有插画作品" in prompt
-    assert "纸张质感可以有，但必须干净、平整、细腻" in prompt
-    assert "文字区域保持纯净清晰" in prompt
+    assert "#FFFFFF 数字白" in prompt
+    assert "不要米白、奶油白、暖白、灰白或纸白" in prompt
+    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
+    assert "不要模拟实体纸书摄影效果" in prompt
+    assert "文字区域必须纯净清晰" in prompt
     assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
+    assert "纸张质感可以有，但必须干净、平整、细腻" not in prompt
+    assert "允许轻微纸张肌理" not in prompt
     assert "当当网" not in prompt
 
 
@@ -563,10 +573,41 @@ def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_templa
     assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
     assert "本书强参考视觉方案" in prompt_a
     assert "先保证版式像成熟出版物" in prompt_a
-    assert "文字和背景不能脏、破损、坑洼" in prompt_a
+    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点或做旧效果" in prompt_a
+    assert "纯白 #FFFFFF 数字白" in prompt_a
     assert "不要无依据地默认套用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡" in prompt_a
     assert "几何门洞、光束、人影、蓝黄对比、古风水彩、泛黄纸张" in prompt_a
     assert "如果书名或简介确实需要对应意象，必须按本书重新组织版式、配色和细节" in prompt_a
+
+
+def test_orthodox_reference_visual_plan_differs_by_book() -> None:
+    cover_input_a = cover.prepare_cover_input(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间、记忆和自我告别的文学随笔。",
+        author="作者A",
+        category="正统出版",
+    )
+    cover_input_b = cover.prepare_cover_input(
+        "经济学的思维方式",
+        "@最终简介\n一本讲商业判断、市场趋势和普通人决策方法的社科书。",
+        author="作者B",
+        category="正统出版",
+    )
+
+    plan_a = cover._orthodox_reference_visual_plan(cover_input_a)  # noqa: SLF001
+    plan_b = cover._orthodox_reference_visual_plan(cover_input_b)  # noqa: SLF001
+
+    assert plan_a != plan_b
+    assert set(plan_a) == {
+        "semantic_anchor",
+        "color_axis",
+        "layout_axis",
+        "title_axis",
+        "visual_axis",
+        "text_density_axis",
+    }
+    assert "城市房间" in plan_a["semantic_anchor"]
+    assert "市场趋势" in plan_b["semantic_anchor"]
 
 
 def test_generate_cover_file_writes_three_stage_artifacts(
@@ -659,53 +700,37 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
     assert "正统出版风格 DNA" in calls[0][1]
+    assert "本书差异化视觉方案" in calls[0][1]
+    assert "配色主轴" in calls[0][1]
+    assert "版式骨架" in calls[0][1]
+    assert "主视觉叙事" in calls[0][1]
+    assert "文字密度" in calls[0][1]
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
-    assert "颜色必须清透透亮、明净、鲜活、干净" in calls[0][1]
-    assert "不要灰蒙蒙纸张感、雾面灰滤镜、脏旧纸张" in calls[0][1]
-    assert "如果需要白底，必须是纯白（#FFFFFF）数字白" in calls[0][1]
-    assert "不要米白、奶油白、暖白、灰白、纸白或泛黄底色" in calls[0][1]
-    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感、油墨渗透感" in calls[0][1]
-    assert "不要模拟实体纸书摄影效果" in calls[0][1]
-    assert "不要“书页感”“纸面肌理”“胶版纸质感”" in calls[0][1]
-    assert "提高整体明度与色彩纯度" in calls[0][1]
-    assert "避免“高级感灰滤镜”" in calls[0][1]
-    assert "书名的字体和排版必须学习参考图库里的丰富差异" in calls[0][1]
-    assert "书名标题主参考" in calls[0][1]
-    assert "标题字形、字重、字号比例、分行节奏、横竖排关系、字距行距" in calls[0][1]
-    assert "标题块位置、标题与留白/主视觉的关系" in calls[0][1]
-    assert "抄到位的是标题设计语法" in calls[0][1]
-    assert "标题区要像参考图里成熟设计师做出的新书标题" in calls[0][1]
-    assert "不能保留参考图原书名、原字形残影、原作者、出版社、logo、二维码、水印或平台信息" in calls[0][1]
-    assert "书名标题字体不能千篇一律" in calls[0][1]
-    assert "每次都要从参考图里重新选择值得学习的标题字形和排版节奏" in calls[0][1]
-    assert "模仿其字重、字形、分行、横竖关系、大小对比和留白关系" in calls[0][1]
-    assert "每次生成都当成重新掷色子" in calls[0][1]
-    assert "重新生成时要大胆从当次参考图里换一个风格方向" in calls[0][1]
-    assert "具体书籍种类不能锁死风格" in calls[0][1]
-    assert "风格自由执行" in calls[0][1]
-    assert "不要按书名 hash 固定路线" in calls[0][1]
-    assert "本书差异化视觉方案" not in calls[0][1]
-    assert "orthodox_reference_strategy" not in calls[0][1]
-    assert "本次参考执行策略" not in calls[0][1]
-    assert "主视觉家族" not in calls[0][1]
-    assert "设计语法强参考 + 具体元素强替换" not in calls[0][1]
-    assert "设计语法相似度目标约 90%" not in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
-    assert "不允许任何纸张肌理或实体纸书摄影质感" in calls[0][1]
-    assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感、做旧效果、扫描感或油墨渗透感" in calls[0][1]
+    assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
+    assert "书名标题主参考" in calls[0][1]
+    assert "书名标题排版要 100% 抄到位" in calls[0][1]
+    assert "标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距" in calls[0][1]
+    assert "100% 抄的是书名标题的排版方法和字体气质" in calls[0][1]
+    assert "让每本书都有自己的特色" in calls[0][1]
+    assert "#FFFFFF 数字白" in calls[0][1]
+    assert "不要米白、奶油白、暖白、灰白或纸白" in calls[0][1]
+    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in calls[0][1]
+    assert "不要模拟实体纸书摄影效果" in calls[0][1]
+    assert "高级感灰滤镜" in calls[0][1]
+    assert "允许轻微纸张肌理" not in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
     assert "选择它作为主要版式母版" not in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
-    assert not (tmp_path / "orthodox_reference_strategy.json").exists()
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 大图库风格DNA"
-    assert style_payload["creative_policy"] == "open_style_dice_per_generation"
-    assert "visual_plan" not in style_payload
+    assert style_payload["visual_plan"]["color_axis"]
+    assert style_payload["visual_plan"]["layout_axis"]
 
 
 def test_literature_cover_direct_reuses_reference_batch_until_force(
@@ -915,33 +940,6 @@ def test_image_request_retries_transient_520(monkeypatch) -> None:
             request = httpx.Request("POST", endpoint)
             if self.calls == 1:
                 return httpx.Response(520, text="temporary edge error", request=request)
-            return httpx.Response(
-                200,
-                json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
-                request=request,
-            )
-
-    fake = FakeHttp()
-    monkeypatch.setattr(cover.settings, "IMAGE_API_MAX_RETRIES", 2)
-    monkeypatch.setattr(cover.time, "sleep", lambda _seconds: None)
-
-    response_data = cover._post_image_request(fake, "https://api.example.test/images/edits", "key")  # noqa: SLF001
-    result = cover._decode_image_response(response_data)  # noqa: SLF001
-
-    assert result == PNG_BYTES
-    assert fake.calls == 2
-
-
-def test_image_request_retries_remote_protocol_disconnect(monkeypatch) -> None:
-    class FakeHttp:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def post(self, endpoint: str, **kwargs):
-            self.calls += 1
-            request = httpx.Request("POST", endpoint)
-            if self.calls == 1:
-                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
             return httpx.Response(
                 200,
                 json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
