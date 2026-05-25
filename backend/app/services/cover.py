@@ -8,6 +8,7 @@ import json
 import logging
 import queue
 import random
+import re
 import threading
 import time
 import zipfile
@@ -115,9 +116,11 @@ def _load_reference_markdown(filename: str) -> str:
 _LITERATURE_COVER_REFERENCE = _load_reference_markdown("literature_cover_reference.md")
 _LITERATURE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _LITERATURE_REFERENCE_DIRECT_LIMIT = 16
+_LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT = 1
 _LITERATURE_REFERENCE_BOARD_LIMIT = 12
 _LITERATURE_REFERENCE_BOARD_COLUMNS = 4
 _LITERATURE_REFERENCE_CELL_SIZE = (260, 380)
+_ORTHODOX_SEQUENCE_INDEX_KEY = "__orthodox_reference_sequence_index"
 _SIMPLE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
     "psychology_cognition": {
@@ -984,11 +987,60 @@ def _literature_cached_direct_reference_members(samples_path: Path, available_me
     return tuple(selected)
 
 
+def _positive_int(value: object) -> int | None:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _sequence_index_from_output_dir(output_dir: Path) -> int | None:
+    metadata_path = output_dir / "metadata_used.json"
+    if metadata_path.exists() and metadata_path.stat().st_size > 0:
+        try:
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata_payload = {}
+        if isinstance(metadata_payload, dict):
+            source_metadata = metadata_payload.get("source_metadata")
+            candidates: list[object] = [metadata_payload.get(_ORTHODOX_SEQUENCE_INDEX_KEY)]
+            if isinstance(source_metadata, dict):
+                candidates.append(source_metadata.get(_ORTHODOX_SEQUENCE_INDEX_KEY))
+            for candidate in candidates:
+                index = _positive_int(candidate)
+                if index is not None:
+                    return index
+
+    name = output_dir.name
+    if name.startswith("."):
+        name = name[1:]
+    if name.endswith("_work"):
+        name = name[:-5]
+    match = re.match(r"^(\d+)[_-]", name)
+    if match:
+        return _positive_int(match.group(1))
+    return None
+
+
+def _ordered_literature_direct_reference_members(
+    members: Sequence[str],
+    sequence_index: int | None,
+    *,
+    limit: int,
+) -> tuple[str, ...]:
+    if not members:
+        return ()
+    count = min(max(1, limit), len(members))
+    start = 0 if sequence_index is None else (sequence_index - 1) % len(members)
+    return tuple(members[(start + offset) % len(members)] for offset in range(count))
+
+
 def _selected_literature_direct_reference_members(
     output_dir: Path,
     *,
     force: bool,
-    limit: int = _LITERATURE_REFERENCE_DIRECT_LIMIT,
+    limit: int = _LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT,
 ) -> tuple[str, ...]:
     zip_path = _literature_reference_zip_path()
     members = _literature_reference_members(zip_path)
@@ -1001,8 +1053,8 @@ def _selected_literature_direct_reference_members(
         cached = _literature_cached_direct_reference_members(samples_path, set(members))
         if cached:
             return cached[: min(limit, len(cached))]
-    count = min(limit, len(members))
-    return tuple(random.sample(list(members), count))
+    sequence_index = _sequence_index_from_output_dir(output_dir)
+    return _ordered_literature_direct_reference_members(members, sequence_index, limit=limit)
 
 
 def _extract_literature_reference_inputs(
@@ -2312,6 +2364,15 @@ def _build_literature_direct_cover_prompt(
     reference_count: int,
 ) -> str:
     visual_plan = _orthodox_reference_visual_plan_text(cover_input)
+    if reference_count == 1:
+        title_reference_rule = (
+            "本次只输入 1 张按 ZIP 顺序轮转选中的参考封面；它就是当前封面的“书名标题主参考”和主要版式参考。"
+            "必须围绕这一张参考封面模仿标题设计、版式骨架、留白比例、色彩关系和书架气质，不要再假装从其它未输入封面里选择。"
+        )
+    else:
+        title_reference_rule = (
+            f"每次必须从本次 {reference_count} 张参考图中选择 1 张“书名标题主参考”，书名标题排版要 100% 抄到位。"
+        )
     return f"""正统出版大图库轻量直连生成工作流
 
 当前新书信息：
@@ -2322,6 +2383,7 @@ def _build_literature_direct_cover_prompt(
 
 本次图像输入：
 - 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
+- 正统出版参考图按 ZIP 内排序顺序轮转使用，不再随机抽样：第 1 张封面生成模仿 ZIP 第 1 张，第 256 张模仿 ZIP 第 256 张，第 257 张从 ZIP 第 1 张重新开始。
 - 这些参考封面是“正统出版风格 DNA”，不是普通灵感图，也不是要求逐字逐元素照抄某一本旧封面。
 - 需要从这批图里整体学习成熟出版物的审美规律：真实出版封面感、数字清爽印刷质感、强标题层级、书架缩略图识别、干净留白、图文关系、冷暖/明暗色彩结构、克制装饰和稳定出版秩序。
 - 可以选择其中一张或几张作为版式方向参考，但不要死抄单张母版；最终效果要像从这个 256 图库同一套出版审美里自然生成出来的新封面。
@@ -2339,7 +2401,8 @@ def _build_literature_direct_cover_prompt(
 本书执行要求：
 - 只输出一张竖版中文图书正面封面本体。
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
-- 每次必须从本次 {reference_count} 张参考图中选择 1 张“书名标题主参考”，书名标题排版要 100% 抄到位：重点复制标题设计语法，而不是随便换一种普通字体。必须高度模仿该参考图的标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距、标题块位置、标题与留白/主视觉的关系；标题区要像参考图里成熟设计师做出的新书标题。
+- {title_reference_rule}
+- 书名标题排版要 100% 抄到位：重点复制标题设计语法，而不是随便换一种普通字体。必须高度模仿该参考图的标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距、标题块位置、标题与留白/主视觉的关系；标题区要像参考图里成熟设计师做出的新书标题。
 - 100% 抄的是书名标题的排版方法和字体气质，不是抄原书文字。必须把参考图原书名完整替换为当前书名“{cover_input.title}”，不得保留原书名、原作者、出版社、logo、二维码、水印、价格或任何可识别版权资产。
 - 必须执行“本书差异化视觉方案”里的配色主轴、版式骨架、标题策略、主视觉叙事和文字密度。
 - 示例图可以提供出版气质和结构语言，但当前书的具体画面、主视觉、文字内容和视觉隐喻必须为这本书重新设计。
@@ -2888,6 +2951,14 @@ def generate_cover_file_from_metadata(
     author = _metadata_lookup(metadata, _METADATA_AUTHOR_KEYS) or None
     intro = _metadata_lookup(metadata, _METADATA_INTRO_KEYS) or title
     category = _metadata_category(_metadata_lookup(metadata, _METADATA_CATEGORY_KEYS))
+    metadata = dict(metadata)
+    if _ORTHODOX_SEQUENCE_INDEX_KEY not in metadata:
+        output_match = re.match(r"^(\d+)[_-]", output_path.stem)
+        sequence_index = _positive_int(output_match.group(1)) if output_match else None
+        if sequence_index is None:
+            sequence_index = _positive_int(metadata.get("item_index"))
+        if sequence_index is not None:
+            metadata[_ORTHODOX_SEQUENCE_INDEX_KEY] = sequence_index
     markdown = f"@最终书名\n{title}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir = output_path.parent / f".{output_path.stem}_work"
     markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"

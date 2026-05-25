@@ -657,11 +657,11 @@ def test_generate_cover_file_writes_three_stage_artifacts(
     assert "参考出版社版本时也不能做得过黑过暗" in calls[1][1]
 
 
-def test_literature_cover_generation_uses_direct_multi_image_references(
+def test_literature_cover_generation_uses_ordered_zip_reference(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    calls: list[tuple[tuple[str, ...], str, str | None]] = []
+    calls: list[tuple[tuple[Path, ...], str, str | None]] = []
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
         for index in range(20):
@@ -675,7 +675,7 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
 
     def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
         paths = tuple(image_paths)
-        calls.append((tuple(path.name for path in paths), prompt, kwargs.get("stage")))
+        calls.append((paths, prompt, kwargs.get("stage")))
         return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
     monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
@@ -694,11 +694,14 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
 
     assert result == tmp_path / "cover.png"
     assert len(calls) == 1
-    assert len(calls[0][0]) == 16
-    assert all(name.endswith(".png") for name in calls[0][0])
+    assert len(calls[0][0]) == 1
+    assert calls[0][0][0].name.startswith("01_")
+    assert calls[0][0][0].suffix == ".png"
     assert calls[0][2] == "draft_reference"
     assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
+    assert "按 ZIP 内排序顺序轮转使用，不再随机抽样" in calls[0][1]
+    assert "第 257 张从 ZIP 第 1 张重新开始" in calls[0][1]
     assert "正统出版风格 DNA" in calls[0][1]
     assert "本书差异化视觉方案" in calls[0][1]
     assert "配色主轴" in calls[0][1]
@@ -711,6 +714,7 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert "书名标题主参考" in calls[0][1]
+    assert "本次只输入 1 张按 ZIP 顺序轮转选中的参考封面" in calls[0][1]
     assert "书名标题排版要 100% 抄到位" in calls[0][1]
     assert "标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距" in calls[0][1]
     assert "100% 抄的是书名标题的排版方法和字体气质" in calls[0][1]
@@ -724,6 +728,9 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert "先选母版 → 再抄版式" not in calls[0][1]
     assert "选择它作为主要版式母版" not in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
+    samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+    assert len(samples) == 1
+    assert samples[0]["title"] == "cover_00"
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
@@ -733,7 +740,7 @@ def test_literature_cover_generation_uses_direct_multi_image_references(
     assert style_payload["visual_plan"]["layout_axis"]
 
 
-def test_literature_cover_direct_reuses_reference_batch_until_force(
+def test_literature_cover_direct_reuses_ordered_reference_until_force(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -742,14 +749,7 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
         for index in range(18):
             archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
 
-    sample_calls = 0
     edit_calls = 0
-
-    def fake_sample(population, count):
-        nonlocal sample_calls
-        sample_calls += 1
-        items = list(population)
-        return items[:count] if sample_calls == 1 else list(reversed(items))[:count]
 
     def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
         nonlocal edit_calls
@@ -759,7 +759,6 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
         return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
     monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
-    monkeypatch.setattr(cover.random, "sample", fake_sample)
     monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
     monkeypatch.setattr(
         cover,
@@ -777,8 +776,8 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
         )
 
     first_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    assert sample_calls == 1
-    assert len(first_samples) == 16
+    assert len(first_samples) == 1
+    assert first_samples[0]["title"] == "cover_00"
 
     result = cover.generate_cover_file(
         "风经过房间",
@@ -791,7 +790,6 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
     second_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
     assert result == tmp_path / "cover.png"
     assert second_samples == first_samples
-    assert sample_calls == 1
 
     cover.generate_cover_file(
         "风经过房间",
@@ -803,8 +801,53 @@ def test_literature_cover_direct_reuses_reference_batch_until_force(
     )
 
     forced_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    assert sample_calls == 2
-    assert forced_samples != first_samples
+    assert forced_samples == first_samples
+
+
+def test_literature_cover_direct_cycles_zip_references_by_item_index(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(3):
+            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(
+        cover,
+        "_request_image_edit_response",
+        lambda *args, **kwargs: {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+    )
+    monkeypatch.setattr(
+        cover,
+        "_request_image_generation_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generation should not run")),
+    )
+
+    cases = (
+        (1, "cover_00"),
+        (2, "cover_01"),
+        (3, "cover_02"),
+        (4, "cover_00"),
+    )
+    for item_index, expected_title in cases:
+        output_path = tmp_path / f"{item_index:03d}_测试书{item_index}.png"
+        cover.generate_cover_file_from_metadata(
+            {
+                "title": f"测试书{item_index}",
+                "author": "作者",
+                "category": "正统出版",
+                "intro": "用于验证正统出版 ZIP 顺序轮转。",
+            },
+            output_path,
+        )
+        work_dir = output_path.parent / f".{output_path.stem}_work"
+        samples = json.loads((work_dir / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+        metadata_used = json.loads((work_dir / "metadata_used.json").read_text(encoding="utf-8"))
+        assert len(samples) == 1
+        assert samples[0]["title"] == expected_title
+        assert metadata_used["source_metadata"][cover._ORTHODOX_SEQUENCE_INDEX_KEY] == item_index  # noqa: SLF001
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
