@@ -220,25 +220,26 @@ def _mark_processing(
     run_id: str,
     total: int,
     status_lock: Lock,
-) -> tuple[CoverItemResult | None, str, Any]:
+) -> tuple[CoverItemResult | None, str, Any, bool]:
     with status_lock:
         latest = read_status(job_id)
         if latest.get("active_run_id") != run_id:
-            return "superseded", "", None
+            return "superseded", "", None, False
         if latest.get("status") == "paused":
-            return "paused", "", None
+            return "paused", "", None, False
         items = list(latest.get("items") or [])
         if index > len(items):
-            return "skipped", "", None
+            return "skipped", "", None, False
         item = items[index - 1]
         title = str(item.get("title") or row.get("title") or f"cover_{index}")
         path = image_path(job_id, index, title)
         if item.get("status") == "deleted":
-            return "skipped", title, path
+            return "skipped", title, path, False
         if item.get("status") == "failed":
-            return "skipped", title, path
+            return "skipped", title, path, False
         if item.get("status") == "completed" and path.exists() and path.stat().st_size > 0:
-            return "skipped", title, path
+            return "skipped", title, path, False
+        force_regenerate = bool(item.pop("force_regenerate", False))
         item.pop("retry_after", None)
         item.update(
             status="processing",
@@ -254,7 +255,7 @@ def _mark_processing(
         latest["status"] = "processing"
         _summarize_processing(latest, note=f"正在并发生成第 {index}/{total} 张《{title}》")
         write_status(job_id, latest)
-        return None, title, path
+        return None, title, path, force_regenerate
 
 
 def _mark_item_progress(
@@ -461,7 +462,7 @@ def _generate_one_cover(
     total: int,
     status_lock: Lock,
 ) -> CoverItemResult:
-    result, title, path = _mark_processing(
+    result, title, path, force_regenerate = _mark_processing(
         job_id,
         index=index,
         row=row,
@@ -476,6 +477,7 @@ def _generate_one_cover(
         generate_cover_file_from_metadata(
             row,
             path,
+            force=force_regenerate,
             should_abort=lambda: _should_abort_cover_item(
                 job_id,
                 index=index,
@@ -699,6 +701,10 @@ def _generate_one_cover_batch_item(job_id: str, item_id: str, worker_id: str) ->
         if item is None or item.status == CoverBatchItemStatus.DELETED:
             return "skipped"
         metadata = dict(item.source_metadata or {})
+        force_regenerate = bool(metadata.pop("__force_regenerate_once", False))
+        if force_regenerate:
+            item.source_metadata = metadata
+            db.commit()
         output_path = _cover_batch_item_path(item)
 
         def _abort() -> bool:
@@ -731,6 +737,7 @@ def _generate_one_cover_batch_item(job_id: str, item_id: str, worker_id: str) ->
             generate_cover_file_from_metadata(
                 metadata,
                 output_path,
+                force=force_regenerate,
                 should_abort=_abort,
                 on_progress=_progress,
             )

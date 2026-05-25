@@ -479,6 +479,7 @@ def regenerate_cover_job_items(
             image_url=None,
             error=None,
             auto_retry_count=0,
+            force_regenerate=True,
             regenerated_at=now_iso(),
         )
         item.pop("run_id", None)

@@ -98,7 +98,7 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE}${path}`, { headers });
+  const res = await fetch(`${BASE}${path}`, { headers, cache: "no-store" });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -192,7 +192,7 @@ async function fetchBlob(path: string): Promise<Blob> {
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE}${path}`, { headers });
+  const res = await fetch(`${BASE}${path}`, { headers, cache: "no-store" });
   if (!res.ok) {
     let detail = res.statusText;
     try {

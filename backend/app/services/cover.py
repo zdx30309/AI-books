@@ -3016,6 +3016,7 @@ def generate_cover_file_from_metadata(
     metadata: dict[str, Any],
     output_path: Path,
     *,
+    force: bool = False,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
@@ -3026,7 +3027,7 @@ def generate_cover_file_from_metadata(
     per-item work directory first, then copies the final cover to output_path.
     """
     _abort_cover_generation_if_requested(should_abort, stage="metadata start")
-    if output_path.exists() and output_path.stat().st_size > 0:
+    if output_path.exists() and output_path.stat().st_size > 0 and not force:
         logger.info("复用已存在独立封面: %s", output_path)
         return output_path
 
@@ -3064,7 +3065,7 @@ def generate_cover_file_from_metadata(
         category=category,
         author=author,
         intro=intro,
-        force=False,
+        force=force,
         should_abort=should_abort,
         on_progress=on_progress,
     )

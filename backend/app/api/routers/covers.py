@@ -506,7 +506,7 @@ def get_cover_job_image(
                 path,
                 media_type="image/png",
                 headers={
-                    "Cache-Control": "private, max-age=3600",
+                    "Cache-Control": "no-store, max-age=0",
                     "Vary": "Authorization",
                 },
             )
@@ -524,7 +524,7 @@ def get_cover_job_image(
         path,
         media_type="image/png",
         headers={
-            "Cache-Control": "private, max-age=3600",
+            "Cache-Control": "no-store, max-age=0",
             "Vary": "Authorization",
         },
     )

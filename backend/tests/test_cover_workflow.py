@@ -966,6 +966,34 @@ def test_literature_cover_direct_global_sequence_lock_allocates_unique_reference
     assert state["next_sequence_index"] == 9
 
 
+def test_generate_cover_file_from_metadata_force_bypasses_existing_cover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_path = tmp_path / "001_测试书.png"
+    output_path.write_bytes(b"old cover")
+    calls: list[bool] = []
+
+    def fake_generate_cover_file(*, output_dir: Path, force: bool, **kwargs) -> Path:
+        calls.append(force)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        generated = output_dir / "cover.png"
+        generated.write_bytes(b"new cover")
+        return generated
+
+    monkeypatch.setattr(cover, "generate_cover_file", fake_generate_cover_file)
+
+    result = cover.generate_cover_file_from_metadata(
+        {"title": "测试书", "author": "作者", "category": "正统出版", "intro": "简介"},
+        output_path,
+        force=True,
+    )
+
+    assert result == output_path
+    assert calls == [True]
+    assert output_path.read_bytes() == b"new cover"
+
+
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(
     tmp_path: Path,
     monkeypatch,
@@ -1345,6 +1373,49 @@ def test_retry_cover_job_items_preserves_draft_and_requeues_failed_cover(
     assert updated["items"][0]["auto_retry_count"] == 0
     assert not image.exists()
     assert draft.exists()
+
+
+def test_regenerate_cover_job_item_forces_new_generation_even_if_old_image_remains(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cover_jobs, "COVER_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(cover_tasks, "COVER_JOBS_ROOT", tmp_path)
+    status = cover_jobs.create_cover_job(
+        "user-1",
+        "covers.csv",
+        [
+            {"title": "第一本书", "author": "作者A", "category": "正统出版", "category_label": "正统出版"},
+        ],
+        default_category="literature",
+    )
+    job_id = status["job_id"]
+    image = cover_jobs.image_path(job_id, 1, "第一本书")
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"old cover")
+    status["items"][0].update(status="completed", image_url=f"/api/v1/covers/jobs/{job_id}/items/1/image")
+    cover_jobs.write_status(job_id, status)
+
+    regenerated = cover_jobs.regenerate_cover_job_items(job_id, [1])
+    # Simulate a stale file left behind by a cache/path race; worker must still force a new image.
+    image.write_bytes(b"old cover")
+    seen_force: list[bool] = []
+
+    def fake_generate_cover_file_from_metadata(metadata: dict[str, str], output_path: Path, **kwargs) -> Path:
+        seen_force.append(bool(kwargs.get("force")))
+        output_path.write_bytes(b"new cover")
+        return output_path
+
+    monkeypatch.setattr(cover_tasks, "generate_cover_file_from_metadata", fake_generate_cover_file_from_metadata)
+
+    result = cover_tasks.generate_cover_job.run(regenerated["job_id"])
+    final = cover_jobs.read_status(job_id)
+
+    assert result["status"] == "completed"
+    assert seen_force == [True]
+    assert image.read_bytes() == b"new cover"
+    assert final["items"][0]["status"] == "completed"
+    assert "force_regenerate" not in final["items"][0]
 
 
 def test_cover_job_zip_uses_title_names_without_leading_index(tmp_path: Path, monkeypatch) -> None:

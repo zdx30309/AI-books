@@ -403,9 +403,13 @@ def regenerate_cover_batch_items(
             if artifact_path.exists():
                 artifact_path.unlink()
             db.delete(artifact)
+        metadata = dict(item.source_metadata or {})
+        metadata["__force_regenerate_once"] = True
         item.status = CoverBatchItemStatus.PENDING
         item.error = None
         item.image_url = None
+        item.image_path = str(path)
+        item.source_metadata = metadata
         item.current_stage = None
         item.retry_after = None
         item.retry_count = 0
