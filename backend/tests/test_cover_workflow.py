@@ -540,16 +540,21 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "正统出版单封面 image-to-image 强模仿工作流" in prompt
+    assert "正统出版单封面 image-to-image 结构强参考工作流" in prompt
     assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt
     assert "不要走传统 style_brief、draft、refine 工作流" in prompt
-    assert "不要做自主视觉差异化方案" in prompt
+    assert "不要做自由发散的自主视觉方案" in prompt
     assert "书名标题排版必须 100% 抄到位" in prompt
     assert "版式骨架必须贴着母版" in prompt
     assert "色彩结构必须贴着母版" in prompt
-    assert "如果最终看不出它是基于输入母版强模仿出来的，视为失败" in prompt
+    assert "这部分保留抄袭的魂魄和大部分外形" in prompt
+    assert "主视觉必须替换，不能直接沿用母版里的具体视觉元素" in prompt
+    assert "只保留“视觉角色”，不保留“具体身份”" in prompt
+    assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in prompt
+    assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in prompt
     assert "全局第 257 张从 ZIP 第 1 张重新开始" in prompt
     assert "真实品牌资产、真实摄影作品、已有插画作品" in prompt
+    assert "可识别主视觉元素" in prompt
     assert "#FFFFFF 数字白" in prompt
     assert "不要米白、奶油白、暖白、灰白或纸白" in prompt
     assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
@@ -709,7 +714,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert calls[0][0][0].name.startswith("01_")
     assert calls[0][0][0].suffix == ".png"
     assert calls[0][2] == "draft_reference"
-    assert "正统出版单封面 image-to-image 强模仿工作流" in calls[0][1]
+    assert "正统出版单封面 image-to-image 结构强参考工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
     assert "按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样" in calls[0][1]
     assert "全局第 257 张从 ZIP 第 1 张重新开始" in calls[0][1]
@@ -719,18 +724,22 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "不要混合重组" in calls[0][1]
     assert "不要自由发明新构图" in calls[0][1]
     assert "不要走传统 style_brief、draft、refine 工作流" in calls[0][1]
-    assert "不要做自主视觉差异化方案" in calls[0][1]
+    assert "不要做自由发散的自主视觉方案" in calls[0][1]
     assert "书名标题排版必须 100% 抄到位" in calls[0][1]
     assert "版式骨架必须贴着母版" in calls[0][1]
     assert "色彩结构必须贴着母版" in calls[0][1]
-    assert "如果最终看不出它是基于输入母版强模仿出来的，视为失败" in calls[0][1]
+    assert "这部分保留抄袭的魂魄和大部分外形" in calls[0][1]
+    assert "主视觉必须替换，不能直接沿用母版里的具体视觉元素" in calls[0][1]
+    assert "只保留“视觉角色”，不保留“具体身份”" in calls[0][1]
+    assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in calls[0][1]
+    assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in calls[0][1]
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
     assert "标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距" in calls[0][1]
-    assert "当前书的特色只来自书名、作者、简介语义、主视觉具体内容和版权替换" in calls[0][1]
+    assert "当前书的特色只来自书名、作者、简介语义和重画后的主视觉内容" in calls[0][1]
     assert "#FFFFFF 数字白" in calls[0][1]
     assert "不要米白、奶油白、暖白、灰白或纸白" in calls[0][1]
     assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in calls[0][1]
@@ -761,7 +770,8 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert not (tmp_path / "orthodox_reference_board.png").exists()
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["workflow"] == "orthodox_direct_single_reference_imitation"
-    assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版强模仿"
+    assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版结构强参考"
+    assert "重画替换具体视觉元素" in style_payload["brand_style_direction"]
     assert "visual_plan" not in style_payload
 
 
