@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -38,6 +39,12 @@ def disable_external_cover_reference_calls(monkeypatch) -> None:
     monkeypatch.setattr(cover.settings, "COVER_DEEPSEEK_STYLE_ANALYSIS_ENABLED", False)
     monkeypatch.setattr(cover.settings, "COVER_REFERENCE_FETCH_ENABLED", False)
     monkeypatch.setattr(cover.settings, "COVER_REFERENCE_DOWNLOAD_IMAGES", False)
+
+
+def _patch_orthodox_sequence_state(monkeypatch, tmp_path: Path) -> Path:
+    state_dir = tmp_path / "orthodox_reference_state"
+    monkeypatch.setattr(cover, "_orthodox_reference_sequence_state_dir", lambda: state_dir)
+    return state_dir
 
 
 def test_style_brief_locks_reference_site_and_brands() -> None:
@@ -533,23 +540,26 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert get_cover_category_meta("literature")["label"] == "正统出版"
     assert cover.prepare_cover_input("远方的光", "", category="正统出版").category == "literature"
     assert "分类：正统出版" in prompt
-    assert "正统出版封面长期参考指令｜高仿执行版" in prompt
-    assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
-    assert "标题所在区域、标题大小比例、标题分行方式" in prompt
-    assert "再抄版式" in prompt
-    assert "再换内容" in prompt
-    assert "再调细节" in prompt
-    assert "内部逐个尝试强标题留白型、色块标题型" in prompt
-    assert "可以高仿的是版式骨架、标题层级、留白节奏" in prompt
-    assert "真实品牌元素、已有摄影作品、已有插画作品" in prompt
+    assert "正统出版单封面 image-to-image 强模仿工作流" in prompt
+    assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt
+    assert "不要走传统 style_brief、draft、refine 工作流" in prompt
+    assert "不要做自主视觉差异化方案" in prompt
+    assert "书名标题排版必须 100% 抄到位" in prompt
+    assert "版式骨架必须贴着母版" in prompt
+    assert "色彩结构必须贴着母版" in prompt
+    assert "如果最终看不出它是基于输入母版强模仿出来的，视为失败" in prompt
+    assert "全局第 257 张从 ZIP 第 1 张重新开始" in prompt
+    assert "真实品牌资产、真实摄影作品、已有插画作品" in prompt
     assert "#FFFFFF 数字白" in prompt
     assert "不要米白、奶油白、暖白、灰白或纸白" in prompt
     assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
     assert "不要模拟实体纸书摄影效果" in prompt
     assert "文字区域必须纯净清晰" in prompt
-    assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
+    assert "高级感灰滤镜" in prompt
     assert "纸张质感可以有，但必须干净、平整、细腻" not in prompt
     assert "允许轻微纸张肌理" not in prompt
+    assert "本书差异化视觉方案" not in prompt
+    assert "正统出版风格 DNA" not in prompt
     assert "当当网" not in prompt
 
 
@@ -662,6 +672,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     monkeypatch,
 ) -> None:
     calls: list[tuple[tuple[Path, ...], str, str | None]] = []
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
         for index in range(20):
@@ -698,62 +709,67 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert calls[0][0][0].name.startswith("01_")
     assert calls[0][0][0].suffix == ".png"
     assert calls[0][2] == "draft_reference"
-    assert "正统出版大图库轻量直连生成工作流" in calls[0][1]
+    assert "正统出版单封面 image-to-image 强模仿工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
-    assert "按 ZIP 内排序顺序轮转使用，不再随机抽样" in calls[0][1]
-    assert "第 257 张从 ZIP 第 1 张重新开始" in calls[0][1]
-    assert "这一张就是唯一母版" in calls[0][1]
-    assert "不要抽象成“出版感”" in calls[0][1]
-    assert "必须强模仿唯一母版的设计语法" in calls[0][1]
-    assert "模仿优先级固定：1 标题排版；2 版式骨架；3 主视觉位置和面积；4 色彩结构；5 留白与装饰功能" in calls[0][1]
-    assert "正统出版风格 DNA" in calls[0][1]
-    assert "本书差异化视觉方案" in calls[0][1]
-    assert "配色主轴" in calls[0][1]
-    assert "版式骨架" in calls[0][1]
-    assert "主视觉叙事" in calls[0][1]
-    assert "文字密度" in calls[0][1]
+    assert "按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样" in calls[0][1]
+    assert "全局第 257 张从 ZIP 第 1 张重新开始" in calls[0][1]
+    assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in calls[0][1]
+    assert "不要再选择别的方向" in calls[0][1]
+    assert "不要泛泛学习大图库" in calls[0][1]
+    assert "不要混合重组" in calls[0][1]
+    assert "不要自由发明新构图" in calls[0][1]
+    assert "不要走传统 style_brief、draft、refine 工作流" in calls[0][1]
+    assert "不要做自主视觉差异化方案" in calls[0][1]
+    assert "书名标题排版必须 100% 抄到位" in calls[0][1]
+    assert "版式骨架必须贴着母版" in calls[0][1]
+    assert "色彩结构必须贴着母版" in calls[0][1]
+    assert "如果最终看不出它是基于输入母版强模仿出来的，视为失败" in calls[0][1]
     assert "最多 0 到 1 句短金句" in calls[0][1]
     assert "禁止多段营销文案、课程口号、长清单和密集小字" in calls[0][1]
     assert "版权替换规则" in calls[0][1]
     assert "不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面" in calls[0][1]
     assert "不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果" in calls[0][1]
-    assert "书名标题主参考" in calls[0][1]
-    assert "本次只输入 1 张按 ZIP 顺序轮转选中的参考封面" in calls[0][1]
-    assert "禁止泛泛学习大图库 DNA" in calls[0][1]
-    assert "禁止另选未输入封面" in calls[0][1]
-    assert "禁止把多个参考方向混合重组" in calls[0][1]
-    assert "书名标题排版要 100% 抄到位" in calls[0][1]
     assert "标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距" in calls[0][1]
-    assert "100% 抄的是书名标题的排版方法和字体气质" in calls[0][1]
-    assert "让每本书都有自己的特色" in calls[0][1]
+    assert "当前书的特色只来自书名、作者、简介语义、主视觉具体内容和版权替换" in calls[0][1]
     assert "#FFFFFF 数字白" in calls[0][1]
     assert "不要米白、奶油白、暖白、灰白或纸白" in calls[0][1]
     assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in calls[0][1]
     assert "不要模拟实体纸书摄影效果" in calls[0][1]
     assert "高级感灰滤镜" in calls[0][1]
     assert "允许轻微纸张肌理" not in calls[0][1]
+    assert "本书差异化视觉方案" not in calls[0][1]
+    assert "正统出版风格 DNA" not in calls[0][1]
     assert "可以选择其中一张或几张作为版式方向参考" not in calls[0][1]
-    assert "本书差异化视觉方案”只能用于替换书名、作者、主视觉具体内容和少量语义细节，不能凌驾于唯一母版" in calls[0][1]
-    assert "如果看不出唯一母版的标题排版、版式骨架、色彩结构和图文比例，视为失败" in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
     assert "选择它作为主要版式母版" not in calls[0][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
+    assert (tmp_path / "orthodox_reference_sequence.json").exists()
     samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
     assert len(samples) == 1
     assert samples[0]["title"] == "cover_00"
+    sequence = json.loads((tmp_path / "orthodox_reference_sequence.json").read_text(encoding="utf-8"))
+    assert sequence["policy"] == "global_zip_order_single_reference"
+    assert sequence["selected_sequence_index"] == 1
+    state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state["policy"] == "global_zip_order_cycle"
+    assert state["last_sequence_index"] == 1
+    assert state["next_sequence_index"] == 2
+    assert state["total_allocations"] == 1
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
     assert not (tmp_path / "cover_refine_prompt.txt").exists()
+    assert not (tmp_path / "orthodox_reference_board.png").exists()
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
-    assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 大图库风格DNA"
-    assert style_payload["visual_plan"]["color_axis"]
-    assert style_payload["visual_plan"]["layout_axis"]
+    assert style_payload["workflow"] == "orthodox_direct_single_reference_imitation"
+    assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版强模仿"
+    assert "visual_plan" not in style_payload
 
 
 def test_literature_cover_direct_reuses_ordered_reference_until_force(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
         for index in range(18):
@@ -788,6 +804,10 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
     first_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
     assert len(first_samples) == 1
     assert first_samples[0]["title"] == "cover_00"
+    state_after_failure = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state_after_failure["last_sequence_index"] == 1
+    assert state_after_failure["next_sequence_index"] == 2
+    assert state_after_failure["total_allocations"] == 1
 
     result = cover.generate_cover_file(
         "风经过房间",
@@ -800,6 +820,8 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
     second_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
     assert result == tmp_path / "cover.png"
     assert second_samples == first_samples
+    state_after_retry = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state_after_retry == state_after_failure
 
     cover.generate_cover_file(
         "风经过房间",
@@ -811,13 +833,55 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
     )
 
     forced_samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
-    assert forced_samples == first_samples
+    assert forced_samples != first_samples
+    assert forced_samples[0]["title"] == "cover_01"
+    state_after_force = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state_after_force["last_sequence_index"] == 2
+    assert state_after_force["next_sequence_index"] == 3
+    assert state_after_force["total_allocations"] == 2
 
 
-def test_literature_cover_direct_cycles_zip_references_by_item_index(
+def test_literature_cover_direct_does_not_reuse_cached_image_when_prompt_changed(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _patch_orthodox_sequence_state(monkeypatch, tmp_path)
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("cover_00.png", PNG_BYTES)
+
+    edit_calls = 0
+
+    def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
+        nonlocal edit_calls
+        edit_calls += 1
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+    (tmp_path / "cover_draft_prompt.txt").write_text("old prompt from previous workflow", encoding="utf-8")
+    (tmp_path / "cover_draft_response.json").write_text(
+        json.dumps({"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}),
+        encoding="utf-8",
+    )
+
+    cover.generate_cover_file(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+        tmp_path,
+        category="正统出版",
+        author="作者L",
+    )
+
+    assert edit_calls == 1
+    assert "old prompt from previous workflow" not in (tmp_path / "cover_draft_prompt.txt").read_text(encoding="utf-8")
+
+
+def test_literature_cover_direct_cycles_zip_references_globally_across_new_tasks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
         for index in range(3):
@@ -836,28 +900,70 @@ def test_literature_cover_direct_cycles_zip_references_by_item_index(
     )
 
     cases = (
-        (1, "cover_00"),
-        (2, "cover_01"),
-        (3, "cover_02"),
-        (4, "cover_00"),
+        ("job_a", "001_测试书.png", "cover_00", 1),
+        ("job_b", "001_测试书.png", "cover_01", 2),
+        ("job_c", "001_测试书.png", "cover_02", 3),
+        ("job_d", "001_测试书.png", "cover_00", 1),
     )
-    for item_index, expected_title in cases:
-        output_path = tmp_path / f"{item_index:03d}_测试书{item_index}.png"
+    for job_name, filename, expected_title, expected_index in cases:
+        job_dir = tmp_path / job_name
+        job_dir.mkdir()
+        output_path = job_dir / filename
         cover.generate_cover_file_from_metadata(
             {
-                "title": f"测试书{item_index}",
+                "title": f"测试书{job_name}",
                 "author": "作者",
                 "category": "正统出版",
                 "intro": "用于验证正统出版 ZIP 顺序轮转。",
+                "item_index": 1,
             },
             output_path,
         )
         work_dir = output_path.parent / f".{output_path.stem}_work"
         samples = json.loads((work_dir / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
         metadata_used = json.loads((work_dir / "metadata_used.json").read_text(encoding="utf-8"))
+        sequence = json.loads((work_dir / "orthodox_reference_sequence.json").read_text(encoding="utf-8"))
         assert len(samples) == 1
         assert samples[0]["title"] == expected_title
-        assert metadata_used["source_metadata"][cover._ORTHODOX_SEQUENCE_INDEX_KEY] == item_index  # noqa: SLF001
+        assert sequence["selected_sequence_index"] == expected_index
+        assert "item_index" in metadata_used["source_metadata"]
+
+    state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state["members_count"] == 3
+    assert state["last_sequence_index"] == 1
+    assert state["next_sequence_index"] == 2
+    assert state["total_allocations"] == 4
+
+
+def test_literature_cover_direct_global_sequence_lock_allocates_unique_references(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(10):
+            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+
+    def reserve(index: int) -> str:
+        work_dir = tmp_path / f"parallel_{index}"
+        work_dir.mkdir()
+        selected = cover._selected_literature_direct_reference_members(  # noqa: SLF001
+            work_dir,
+            force=True,
+        )
+        return Path(selected[0]).stem
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        selected_titles = list(executor.map(reserve, range(8)))
+
+    assert set(selected_titles) == {f"cover_{index:02d}" for index in range(8)}
+    state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state["members_count"] == 10
+    assert state["total_allocations"] == 8
+    assert state["next_sequence_index"] == 9
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import queue
 import random
 import re
@@ -120,7 +121,6 @@ _LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT = 1
 _LITERATURE_REFERENCE_BOARD_LIMIT = 12
 _LITERATURE_REFERENCE_BOARD_COLUMNS = 4
 _LITERATURE_REFERENCE_CELL_SIZE = (260, 380)
-_ORTHODOX_SEQUENCE_INDEX_KEY = "__orthodox_reference_sequence_index"
 _SIMPLE_REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
     "psychology_cognition": {
@@ -995,32 +995,89 @@ def _positive_int(value: object) -> int | None:
     return number if number > 0 else None
 
 
-def _sequence_index_from_output_dir(output_dir: Path) -> int | None:
-    metadata_path = output_dir / "metadata_used.json"
-    if metadata_path.exists() and metadata_path.stat().st_size > 0:
-        try:
-            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            metadata_payload = {}
-        if isinstance(metadata_payload, dict):
-            source_metadata = metadata_payload.get("source_metadata")
-            candidates: list[object] = [metadata_payload.get(_ORTHODOX_SEQUENCE_INDEX_KEY)]
-            if isinstance(source_metadata, dict):
-                candidates.append(source_metadata.get(_ORTHODOX_SEQUENCE_INDEX_KEY))
-            for candidate in candidates:
-                index = _positive_int(candidate)
-                if index is not None:
-                    return index
+def _orthodox_reference_sequence_state_dir() -> Path:
+    return _repo_root() / "backend" / "output" / "orthodox_reference_state"
 
-    name = output_dir.name
-    if name.startswith("."):
-        name = name[1:]
-    if name.endswith("_work"):
-        name = name[:-5]
-    match = re.match(r"^(\d+)[_-]", name)
-    if match:
-        return _positive_int(match.group(1))
-    return None
+
+def _orthodox_reference_sequence_state_path() -> Path:
+    return _orthodox_reference_sequence_state_dir() / "sequence.json"
+
+
+def _orthodox_reference_sequence_lock_path() -> Path:
+    return _orthodox_reference_sequence_state_dir() / "sequence.lock"
+
+
+@contextmanager
+def _orthodox_reference_sequence_lock() -> Iterator[None]:
+    lock_path = _orthodox_reference_sequence_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 30
+    stale_after_seconds = 180
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {time.time()}".encode("utf-8"))
+            os.close(fd)
+        except FileExistsError as exc:
+            try:
+                if time.time() - lock_path.stat().st_mtime > stale_after_seconds:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise ImageApiTransientError("正统出版参考封面全局顺序锁等待超时，请稍后重试") from exc
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("正统出版参考封面全局顺序锁清理失败: %s", lock_path)
+
+
+def _read_orthodox_reference_sequence_state() -> dict[str, Any]:
+    state_path = _orthodox_reference_sequence_state_path()
+    if not state_path.exists() or state_path.stat().st_size <= 0:
+        return {}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("正统出版参考封面全局顺序状态不可读，将从第 1 张重新建立状态: %s", state_path)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_orthodox_reference_sequence_state(payload: dict[str, Any]) -> None:
+    state_path = _orthodox_reference_sequence_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = state_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(state_path)
+
+
+def _reserve_orthodox_reference_sequence_index(members_count: int) -> int:
+    if members_count <= 0:
+        raise ImageApiPermanentError("正统出版参考封面 ZIP 为空，无法分配全局顺序")
+    with _orthodox_reference_sequence_lock():
+        state = _read_orthodox_reference_sequence_state()
+        next_index = _positive_int(state.get("next_sequence_index")) or 1
+        selected_index = ((next_index - 1) % members_count) + 1
+        following_index = (selected_index % members_count) + 1
+        total_allocations = (_positive_int(state.get("total_allocations")) or 0) + 1
+        _write_orthodox_reference_sequence_state(
+            {
+                "policy": "global_zip_order_cycle",
+                "members_count": members_count,
+                "last_sequence_index": selected_index,
+                "next_sequence_index": following_index,
+                "total_allocations": total_allocations,
+                "updated_at_unix": time.time(),
+            }
+        )
+        return selected_index
 
 
 def _ordered_literature_direct_reference_members(
@@ -1053,8 +1110,17 @@ def _selected_literature_direct_reference_members(
         cached = _literature_cached_direct_reference_members(samples_path, set(members))
         if cached:
             return cached[: min(limit, len(cached))]
-    sequence_index = _sequence_index_from_output_dir(output_dir)
+    sequence_index = _reserve_orthodox_reference_sequence_index(len(members))
     return _ordered_literature_direct_reference_members(members, sequence_index, limit=limit)
+
+
+def _literature_reference_sequence_index(members: Sequence[str], selected: Sequence[str]) -> int | None:
+    if not members or not selected:
+        return None
+    try:
+        return members.index(selected[0]) + 1
+    except ValueError:
+        return None
 
 
 def _extract_literature_reference_inputs(
@@ -1902,6 +1968,11 @@ def build_cover_prompt(
             cover_input,
             reference_count=reference_count,
         )
+    if _is_literature_publishing(cover_input.category):
+        return _build_literature_direct_cover_prompt(
+            cover_input,
+            reference_count=_LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT,
+        )
     return build_draft_cover_prompt(cover_input, build_cover_style_brief(cover_input))
 
 
@@ -2363,18 +2434,16 @@ def _build_literature_direct_cover_prompt(
     *,
     reference_count: int,
 ) -> str:
-    visual_plan = _orthodox_reference_visual_plan_text(cover_input)
     if reference_count == 1:
         title_reference_rule = (
-            "本次只输入 1 张按 ZIP 顺序轮转选中的参考封面；它就是当前封面的唯一母版、书名标题主参考和主要版式参考。"
-            "必须围绕这一张参考封面模仿标题设计、版式骨架、留白比例、色彩关系、主视觉位置和书架气质；"
-            "禁止泛泛学习大图库 DNA，禁止另选未输入封面，禁止把多个参考方向混合重组，禁止自由发明一套新构图。"
+            "本次只输入 1 张按全局 ZIP 顺序轮转选中的参考封面；它就是唯一母版、书名标题主参考、版式主参考和色彩主参考。"
+            "不要再选择别的方向，不要泛泛学习大图库，不要混合重组，不要自由发明新构图。"
         )
     else:
         title_reference_rule = (
-            f"每次必须从本次 {reference_count} 张参考图中选择 1 张“书名标题主参考”，书名标题排版要 100% 抄到位。"
+            f"本次输入 {reference_count} 张参考封面时，必须只选择其中 1 张作为唯一母版；其余参考图只能辅助理解真实出版质感。"
         )
-    return f"""正统出版大图库轻量直连生成工作流
+    return f"""正统出版单封面 image-to-image 强模仿工作流
 
 当前新书信息：
 - 书名：{cover_input.title}
@@ -2382,38 +2451,26 @@ def _build_literature_direct_cover_prompt(
 - 分类：{cover_input.category_label}
 - 简介：{cover_input.intro}
 
-本次图像输入：
+参考输入与轮转规则：
 - 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
-- 正统出版参考图按 ZIP 内排序顺序轮转使用，不再随机抽样：第 1 张封面生成模仿 ZIP 第 1 张，第 256 张模仿 ZIP 第 256 张，第 257 张从 ZIP 第 1 张重新开始。
-- 如果本次只输入 1 张参考封面，这一张就是唯一母版。不要把它当作普通灵感图，不要抽象成“出版感”，不要只学一点颜色或气质。
-- 必须强模仿唯一母版的设计语法：版心结构、标题区域、标题字体气质、字号比例、标题分行、横竖排关系、字距行距、作者名位置、副标题位置、留白比例、主视觉位置、主视觉面积、主视觉与标题的相对关系、背景色块比例、色彩明暗关系、冷暖对比方式、装饰点线的位置功能、整体画面重心和手机书架缩略图效果。
-- 模仿优先级固定：1 标题排版；2 版式骨架；3 主视觉位置和面积；4 色彩结构；5 留白与装饰功能。当前书名和简介只负责替换内容，不允许推翻母版骨架。
-- 不需要沿用传统封面 workflow，不需要生成拼贴板，不需要输出多张候选图，不需要输出分析文字。
+- 正统出版参考图按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样：全局第 1 张封面生成模仿 ZIP 第 1 张，全局第 256 张模仿 ZIP 第 256 张，全局第 257 张从 ZIP 第 1 张重新开始。
+- {title_reference_rule}
+- 本次任务只做一件事：把输入参考封面当作 image-to-image 母版，强模仿它生成当前书的新封面。不要输出分析文字，不要走传统 style_brief、draft、refine 工作流，不要做自主视觉差异化方案。
 
-正统出版风格 DNA：
-- {_ORTHODOX_REFERENCE_STYLE_DNA}
-- 参考图库里同时包含文学、心理认知、社科经管、生活方式、思想随笔、治愈成长等成熟出版方向；请按当前书名和简介选择最合适的一类出版气质。
-- 允许明显贴近参考图库的版式骨架、标题区域、字号比例、标题分行节奏、留白比例、主视觉面积、色块关系和整体书架气质。
-- 不能把所有书做成同一种红底大字、同一种蓝绿插画、同一种人物剪影或同一种极简留白模板。
-
-本书差异化视觉方案：
-{visual_plan}
-
-本书执行要求：
+强模仿要求：
 - 只输出一张竖版中文图书正面封面本体。
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
-- {title_reference_rule}
-- 书名标题排版要 100% 抄到位：重点复制标题设计语法，而不是随便换一种普通字体。必须高度模仿该参考图的标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距、标题块位置、标题与留白/主视觉的关系；标题区要像参考图里成熟设计师做出的新书标题。
-- 100% 抄的是书名标题的排版方法和字体气质，不是抄原书文字。必须把参考图原书名完整替换为当前书名“{cover_input.title}”，不得保留原书名、原作者、出版社、logo、二维码、水印、价格或任何可识别版权资产。
-- “本书差异化视觉方案”只能用于替换书名、作者、主视觉具体内容和少量语义细节，不能凌驾于唯一母版；不得改变母版的标题排版、版心结构、留白比例、主视觉位置、色块关系和整体重心。
-- 具体主视觉必须根据本书简介重新设计，不能复制参考图中的具体摄影、插画、人物肖像、logo、二维码、价格、水印、品牌资产或独特图形细节；但主视觉的位置、面积、构图关系和与标题的相对关系必须贴近唯一母版。
-- 让每本书都有自己的特色，但特色只能来自当前书名、作者、简介语义、主视觉具体内容和必要文字替换；不能通过改变唯一母版的标题排版、版式骨架、色彩结构和图文比例来制造差异。
-- 不要把整体画面做成普通 AI 新封面。除替换书名作者和侵权元素外，最终效果要像同一位成熟出版设计师基于唯一母版做出的新书版本；如果看不出唯一母版的标题排版、版式骨架、色彩结构和图文比例，视为失败。
+- 书名标题排版必须 100% 抄到位：复制标题设计语法，而不是随便换一种普通字体。必须贴着母版模仿标题字形气质、字重、字号比例、分行节奏、横排/竖排/半竖排关系、字距行距、标题块位置、标题与留白/主视觉的关系；标题区要像参考图里成熟设计师做出的同系列新书标题。
+- 版式骨架必须贴着母版：版心结构、标题区域、作者名位置、副标题位置、留白比例、主视觉位置、主视觉面积、主视觉与标题的相对关系、背景色块比例、装饰点线的位置功能、整体画面重心和手机书架缩略图效果，都要明显像母版。
+- 色彩结构必须贴着母版：主色、辅助色、明暗关系、冷暖关系、色块面积关系和整体明度纯度要接近母版；只有在替换当前书内容时做必要微调。
+- 主视觉可以换成当前书名和简介需要的内容，但位置、面积、轮廓节奏、与标题的关系必须抄母版；不要因为“原创”而改掉母版构图。
+- 当前书的特色只来自书名、作者、简介语义、主视觉具体内容和版权替换；不能通过改变母版标题排版、版式骨架、色彩结构、图文比例来制造差异。
+- 如果最终看不出它是基于输入母版强模仿出来的，视为失败。效果要像人工把这张参考封面改成了当前新书，而不是重新设计了一张普通 AI 封面。
 - 版权替换规则：真实书名、原作者、出版社、平台标识、出版社 logo、二维码、价格、水印、真实品牌资产、真实摄影作品、已有插画作品、可识别人物肖像、独特图形细节，都必须删除或重画替换；只学习版式方法、比例关系和出版气质。
 - 封面上的金句可以少一点：除书名、作者和必要副标题外，最多 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、课程口号、长清单和密集小字。
 - 如果需要白底，必须是纯白 #FFFFFF 数字白；不要米白、奶油白、暖白、灰白或纸白。不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感、油墨渗透感；不要模拟实体纸书摄影效果，不要书页感、纸面肌理或胶版纸质感。提高整体明度与色彩纯度，避免灰蒙蒙和所谓高级感灰滤镜。文字区域必须纯净清晰，不要脏点、坑洼、破损、斑驳、划痕、掉墨、褶皱、旧纸感或做旧效果。
 - 不要做成随机 AI 图、PPT 课程封面、知识付费海报、公众号长图、电商主图、网文封面、3D 书模或促销广告。
-- 不要为了原创而远离参考素材库；最终效果要像成熟出版封面的同类新作，而不是抽象地“有出版感”。
+- 不要为了原创而远离输入母版；最终效果要像成熟出版封面的同系列新作，而不是抽象地“有出版感”。
 """
 
 
@@ -2421,17 +2478,15 @@ def _literature_direct_style_payload(
     cover_input: CoverInput,
     reference_records: Sequence[dict[str, str]],
 ) -> dict[str, Any]:
-    visual_plan = _orthodox_reference_visual_plan(cover_input)
     return {
-        "workflow": "orthodox_direct_reference",
-        "reference_site": "本地正统出版ZIP参考封面库 + 大图库风格DNA",
+        "workflow": "orthodox_direct_single_reference_imitation",
+        "reference_site": "本地正统出版ZIP参考封面库 + 全局顺序单母版强模仿",
         "reference_brands": ["正统出版ZIP参考封面库"],
-        "matched_category_style": "正统出版大图库轻量直连风格",
-        "brand_style_direction": "以参考封面库作为分类风格DNA，按当前书稳定生成差异化成熟出版封面。",
-        "cover_type": "正统出版 / 大图库风格DNA成熟出版封面",
+        "matched_category_style": "正统出版单封面 image-to-image 强模仿",
+        "brand_style_direction": "按全局 ZIP 顺序选 1 张参考封面作为唯一母版，直接强模仿版式、标题、色彩和图文关系。",
+        "cover_type": "正统出版 / 单母版强模仿成熟出版封面",
         "reference_samples": list(reference_records),
-        "generation_prompt_addendum": _ORTHODOX_REFERENCE_STYLE_DNA,
-        "visual_plan": visual_plan,
+        "generation_prompt_addendum": "单张参考封面 image-to-image 强模仿；不做自主视觉差异化方案，不走旧 style_brief/draft/refine 链路。",
         "title": cover_input.title,
         "author": cover_input.author,
         "intro": cover_input.intro,
@@ -2453,6 +2508,7 @@ def _generate_literature_cover_direct(
     draft_response_path = output_dir / "cover_draft_response.json"
     draft_prompt_path = output_dir / "cover_draft_prompt.txt"
     samples_path = output_dir / "orthodox_reference_samples.json"
+    sequence_path = output_dir / "orthodox_reference_sequence.json"
     style_brief_path = output_dir / "cover_style_brief.json"
 
     if cover_path.exists() and cover_path.stat().st_size > 0 and not force:
@@ -2461,10 +2517,29 @@ def _generate_literature_cover_direct(
 
     members = _selected_literature_direct_reference_members(output_dir, force=force)
     zip_path = _literature_reference_zip_path()
+    all_members = _literature_reference_members(zip_path)
+    sequence_index = _literature_reference_sequence_index(all_members, members)
     reference_records = _literature_reference_records(zip_path, members)
     _write_cover_text_file(
         samples_path,
         json.dumps(reference_records, ensure_ascii=False, indent=2),
+        should_abort,
+    )
+    _write_cover_text_file(
+        sequence_path,
+        json.dumps(
+            {
+                "policy": "global_zip_order_single_reference",
+                "state_path": str(_orthodox_reference_sequence_state_path()),
+                "zip_path": str(zip_path),
+                "members_count": len(all_members),
+                "selected_sequence_index": sequence_index,
+                "selected_members": list(members),
+                "force": force,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         should_abort,
     )
     reference_images = _extract_literature_reference_inputs(members, output_dir, should_abort)
@@ -2472,6 +2547,13 @@ def _generate_literature_cover_direct(
         cover_input,
         reference_count=len(reference_images),
     )
+    previous_direct_prompt = ""
+    if draft_prompt_path.exists() and draft_prompt_path.stat().st_size > 0:
+        try:
+            previous_direct_prompt = draft_prompt_path.read_text(encoding="utf-8")
+        except OSError:
+            previous_direct_prompt = ""
+    prompt_changed = bool(previous_direct_prompt and previous_direct_prompt != direct_prompt)
     _write_cover_text_file(draft_prompt_path, direct_prompt, should_abort)
     _write_cover_text_file(
         style_brief_path,
@@ -2497,7 +2579,7 @@ def _generate_literature_cover_direct(
             stage="draft_reference",
         ),
         should_abort=should_abort,
-        force=force,
+        force=force or prompt_changed,
     )
     _write_cover_bytes_file(draft_path, cover_bytes, should_abort)
     _notify_cover_progress(on_progress, "copy")
@@ -2953,13 +3035,6 @@ def generate_cover_file_from_metadata(
     intro = _metadata_lookup(metadata, _METADATA_INTRO_KEYS) or title
     category = _metadata_category(_metadata_lookup(metadata, _METADATA_CATEGORY_KEYS))
     metadata = dict(metadata)
-    if _ORTHODOX_SEQUENCE_INDEX_KEY not in metadata:
-        output_match = re.match(r"^(\d+)[_-]", output_path.stem)
-        sequence_index = _positive_int(output_match.group(1)) if output_match else None
-        if sequence_index is None:
-            sequence_index = _positive_int(metadata.get("item_index"))
-        if sequence_index is not None:
-            metadata[_ORTHODOX_SEQUENCE_INDEX_KEY] = sequence_index
     markdown = f"@最终书名\n{title}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir = output_path.parent / f".{output_path.stem}_work"
     markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
