@@ -542,7 +542,8 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "分类：正统出版" in prompt
     assert "正统出版单封面 image-to-image 结构强参考工作流" in prompt
     assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt
-    assert "不要走传统 style_brief、draft、refine 工作流" in prompt
+    assert "不要走传统 style_brief、draft、refine 旧链路" in prompt
+    assert "正统出版专用 image-to-image 精修步骤继续打磨排版细节" in prompt
     assert "不要做自由发散的自主视觉方案" in prompt
     assert "书名标题排版必须 100% 抄到位" in prompt
     assert "版式骨架必须贴着母版" in prompt
@@ -709,11 +710,14 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     )
 
     assert result == tmp_path / "cover.png"
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert len(calls[0][0]) == 1
     assert calls[0][0][0].name.startswith("01_")
     assert calls[0][0][0].suffix == ".png"
     assert calls[0][2] == "draft_reference"
+    assert len(calls[1][0]) == 1
+    assert calls[1][0][0] == tmp_path / "draft_cover.png"
+    assert calls[1][2] == "orthodox_refine"
     assert "正统出版单封面 image-to-image 结构强参考工作流" in calls[0][1]
     assert "参考封面(1).zip" in calls[0][1]
     assert "按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样" in calls[0][1]
@@ -723,7 +727,8 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "不要泛泛学习大图库" in calls[0][1]
     assert "不要混合重组" in calls[0][1]
     assert "不要自由发明新构图" in calls[0][1]
-    assert "不要走传统 style_brief、draft、refine 工作流" in calls[0][1]
+    assert "不要走传统 style_brief、draft、refine 旧链路" in calls[0][1]
+    assert "后续会有正统出版专用 image-to-image 精修步骤继续打磨排版细节" in calls[0][1]
     assert "不要做自由发散的自主视觉方案" in calls[0][1]
     assert "书名标题排版必须 100% 抄到位" in calls[0][1]
     assert "版式骨架必须贴着母版" in calls[0][1]
@@ -751,6 +756,13 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "可以选择其中一张或几张作为版式方向参考" not in calls[0][1]
     assert "先选母版 → 再抄版式" not in calls[0][1]
     assert "选择它作为主要版式母版" not in calls[0][1]
+    assert "正统出版封面第二次 image-to-image 精修工作流" in calls[1][1]
+    assert "增加 0 到 1 处很小的英文辅助排版" in calls[1][1]
+    assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
+    assert "建议 1 到 4 个英文单词" in calls[1][1]
+    assert "微调字距、行距、基线、标题块边界" in calls[1][1]
+    assert "不要重新构图，不要换风格方向" in calls[1][1]
+    assert "不要把它改回参考封面的具体猫、椅子、头像" in calls[1][1]
     assert (tmp_path / "orthodox_reference_samples.json").exists()
     assert (tmp_path / "orthodox_reference_sequence.json").exists()
     samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
@@ -766,12 +778,15 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert state["total_allocations"] == 1
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
-    assert not (tmp_path / "cover_refine_prompt.txt").exists()
+    assert (tmp_path / "cover_refine_prompt.txt").exists()
+    assert (tmp_path / "cover_refine_response.json").exists()
     assert not (tmp_path / "orthodox_reference_board.png").exists()
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["workflow"] == "orthodox_direct_single_reference_imitation"
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版结构强参考"
     assert "重画替换具体视觉元素" in style_payload["brand_style_direction"]
+    assert style_payload["refine_step"]["workflow"] == "orthodox_direct_image_edit_refine"
+    assert "少量英文" in style_payload["generation_prompt_addendum"]
     assert "visual_plan" not in style_payload
 
 
@@ -883,7 +898,7 @@ def test_literature_cover_direct_does_not_reuse_cached_image_when_prompt_changed
         author="作者L",
     )
 
-    assert edit_calls == 1
+    assert edit_calls == 2
     assert "old prompt from previous workflow" not in (tmp_path / "cover_draft_prompt.txt").read_text(encoding="utf-8")
 
 

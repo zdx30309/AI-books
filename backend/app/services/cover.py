@@ -2455,7 +2455,7 @@ def _build_literature_direct_cover_prompt(
 - 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
 - 正统出版参考图按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样：全局第 1 张封面生成模仿 ZIP 第 1 张，全局第 256 张模仿 ZIP 第 256 张，全局第 257 张从 ZIP 第 1 张重新开始。
 - {title_reference_rule}
-- 本次任务只做一件事：把输入参考封面当作 image-to-image 母版，学习它的设计骨架和出版气质，生成当前书的新封面。不要输出分析文字，不要走传统 style_brief、draft、refine 工作流，不要做自由发散的自主视觉方案。
+- 本步骤只做一件事：把输入参考封面当作 image-to-image 母版，学习它的设计骨架和出版气质，生成当前书的新封面初稿。不要输出分析文字，不要走传统 style_brief、draft、refine 旧链路，不要做自由发散的自主视觉方案；后续会有正统出版专用 image-to-image 精修步骤继续打磨排版细节。
 
 分层模仿要求：
 - 只输出一张竖版中文图书正面封面本体。
@@ -2476,6 +2476,30 @@ def _build_literature_direct_cover_prompt(
 """
 
 
+def _build_literature_direct_refine_prompt(cover_input: CoverInput) -> str:
+    return f"""正统出版封面第二次 image-to-image 精修工作流
+
+当前输入是一张已经按 ZIP 单张参考封面完成结构模仿、并替换过具体视觉元素的正统出版封面初稿。请只在这张初稿基础上做出版级精修，不要重新构图，不要换风格方向，不要改成另一张封面。
+
+当前新书信息：
+- 书名：{cover_input.title}
+- 作者：{cover_input.author or _AUTHOR_PLACEHOLDER}
+- 分类：{cover_input.category_label}
+- 简介：{cover_input.intro}
+
+精修目标：
+- 保留初稿的大版式、标题位置、标题分行、横竖排关系、主色结构、主视觉位置、主视觉面积和整体外形；不要削弱第一步对参考封面的结构模仿。
+- 保留第一步已经重画替换后的主视觉，不要把它改回参考封面的具体猫、椅子、头像、人物姿态、图标组合、摄影图、独特图形或其他可识别版权元素。
+- 重点增加排版细节，让封面更像成熟出版设计师的终稿：微调字距、行距、基线、标题块边界、作者名位置、副标题位置、留白边距、对齐关系、点线装饰、局部小标识、色块边界和图文呼吸感。
+- 中文书名“{cover_input.title}”和作者“{cover_input.author or _AUTHOR_PLACEHOLDER}”必须清晰、准确、可读；不要改错字，不要漏字，不要把作者名替换成英文作者或假出版社。
+- 根据书名和简介，允许增加 0 到 1 处很小的英文辅助排版：可以是书名英文翻译、主题英文关键词或极短英文副标题，建议 1 到 4 个英文单词，例如放在标题旁、页眉/页脚、小色块、竖排边栏或装饰线附近。英文只做高级出版细节，不要喧宾夺主。
+- 英文必须简短、准确、像真实书封上的设计元素；不要长句、不要英文段落、不要 fake praise、不要 ISBN、不要二维码、不要出版社 logo、不要价格、不要营销话术。
+- 如果初稿有白底，保持纯白 #FFFFFF 数字白；不要米白、奶油白、暖白、灰白、纸白，不要纸张纹理、纤维、印刷颗粒、噪点、做旧、扫描感、油墨渗透感或高级感灰滤镜。
+- 提高整体明度、色彩纯度和文字锐度；让封面在手机书架缩略图里更干净、更高级、更像正式出版封面。
+- 只输出一张竖版中文图书正面封面本体；不要 3D 书模、不要展示场景、不要额外说明文字。
+"""
+
+
 def _literature_direct_style_payload(
     cover_input: CoverInput,
     reference_records: Sequence[dict[str, str]],
@@ -2488,7 +2512,13 @@ def _literature_direct_style_payload(
         "brand_style_direction": "按全局 ZIP 顺序选 1 张参考封面作为唯一母版，强参考版式、标题、色彩和图文比例，同时重画替换具体视觉元素。",
         "cover_type": "正统出版 / 单母版结构强参考成熟出版封面",
         "reference_samples": list(reference_records),
-        "generation_prompt_addendum": "单张参考封面 image-to-image 结构强参考；标题排版和版式贴近母版，具体视觉元素重画替换；不走旧 style_brief/draft/refine 链路。",
+        "generation_prompt_addendum": "单张参考封面 image-to-image 结构强参考；标题排版和版式贴近母版，具体视觉元素重画替换；再用正统出版专用 image-to-image 精修排版细节和少量英文；不走旧 style_brief/draft/refine 链路。",
+        "refine_step": {
+            "workflow": "orthodox_direct_image_edit_refine",
+            "input": "draft_cover.png",
+            "output": "cover.png",
+            "goal": "提升排版细节、出版高级感和少量英文辅助排版，同时保留第一步结构模仿和主视觉替换成果。",
+        },
         "title": cover_input.title,
         "author": cover_input.author,
         "intro": cover_input.intro,
@@ -2509,6 +2539,8 @@ def _generate_literature_cover_direct(
     draft_path = output_dir / "draft_cover.png"
     draft_response_path = output_dir / "cover_draft_response.json"
     draft_prompt_path = output_dir / "cover_draft_prompt.txt"
+    refine_response_path = output_dir / "cover_refine_response.json"
+    refine_prompt_path = output_dir / "cover_refine_prompt.txt"
     samples_path = output_dir / "orthodox_reference_samples.json"
     sequence_path = output_dir / "orthodox_reference_sequence.json"
     style_brief_path = output_dir / "cover_style_brief.json"
@@ -2557,6 +2589,15 @@ def _generate_literature_cover_direct(
             previous_direct_prompt = ""
     prompt_changed = bool(previous_direct_prompt and previous_direct_prompt != direct_prompt)
     _write_cover_text_file(draft_prompt_path, direct_prompt, should_abort)
+    refine_prompt = _build_literature_direct_refine_prompt(cover_input)
+    previous_refine_prompt = ""
+    if refine_prompt_path.exists() and refine_prompt_path.stat().st_size > 0:
+        try:
+            previous_refine_prompt = refine_prompt_path.read_text(encoding="utf-8")
+        except OSError:
+            previous_refine_prompt = ""
+    refine_prompt_changed = bool(previous_refine_prompt and previous_refine_prompt != refine_prompt)
+    _write_cover_text_file(refine_prompt_path, refine_prompt, should_abort)
     _write_cover_text_file(
         style_brief_path,
         json.dumps(_literature_direct_style_payload(cover_input, reference_records), ensure_ascii=False, indent=2),
@@ -2584,8 +2625,42 @@ def _generate_literature_cover_direct(
         force=force or prompt_changed,
     )
     _write_cover_bytes_file(draft_path, cover_bytes, should_abort)
+    logger.info("开始正统出版封面二次精修: model=%s size=%s title=%s", settings.IMAGE_MODEL, settings.IMAGE_SIZE, cover_input.title)
+    try:
+        _notify_cover_progress(on_progress, "refine")
+        _abort_cover_generation_if_requested(should_abort, stage="before orthodox refinement image request")
+        refined_cover_bytes = _request_or_reuse_image_response(
+            refine_response_path,
+            lambda: _request_image_edit_response(
+                (draft_path,),
+                refine_prompt,
+                should_abort=should_abort,
+                stage="orthodox_refine",
+            ),
+            should_abort=should_abort,
+            force=force or prompt_changed or refine_prompt_changed,
+        )
+    except ImageApiTransientError as exc:
+        logger.warning("正统出版封面二次精修遇到临时错误，保留初稿等待自动重试: %s", exc)
+        _write_cover_text_file(
+            output_dir / "cover_refine_error.txt",
+            f"临时错误，等待自动重试：{exc}",
+            should_abort,
+        )
+        raise
+    except ImageApiPermanentError as exc:
+        logger.warning("正统出版封面二次精修遇到永久错误，保留初稿但不降级为最终封面: %s", exc)
+        _write_cover_text_file(output_dir / "cover_refine_error.txt", str(exc), should_abort)
+        raise
+    except Exception as exc:
+        logger.warning("正统出版封面二次精修失败，保留初稿但不降级为最终封面: %s", exc)
+        _write_cover_text_file(output_dir / "cover_refine_error.txt", str(exc), should_abort)
+        raise RuntimeError(
+            f"正统出版封面二次精修失败：{exc}。已保留 draft_cover.png 供排查，未生成最终 cover.png"
+        ) from exc
+
     _notify_cover_progress(on_progress, "copy")
-    _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
+    _write_cover_bytes_file(cover_path, refined_cover_bytes, should_abort)
     return cover_path
 
 
