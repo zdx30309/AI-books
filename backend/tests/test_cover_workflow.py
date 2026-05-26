@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -1508,7 +1509,89 @@ def test_cover_batch_public_status_exposes_uncertain_items_without_auto_completi
     assert public["uncertain"] == 1
     assert public["progress"] == 100
     assert public["items"][1]["status"] == "uncertain"
-    assert public["items"][1]["error"] == "no duplicate billing"
+    assert public["items"][1]["error"] == "图像服务连接波动，系统会自动重试"
+
+
+def test_cover_batch_uncertain_result_uses_existing_retry_queue(monkeypatch) -> None:
+    calls: list[tuple[str, uuid.UUID, str]] = []
+    item_id = uuid.uuid4()
+
+    def fake_retryable(db, item_uuid, exc):
+        calls.append(("retryable", item_uuid, str(exc)))
+        return "retry"
+
+    def fake_uncertain(*args, **kwargs):
+        raise AssertionError("uncertain should be routed through the existing retryable queue")
+
+    monkeypatch.setattr(cover_tasks.settings, "COVER_BATCH_UNCERTAIN_AUTO_RETRY", True)
+    monkeypatch.setattr(cover_tasks, "mark_cover_item_retryable", fake_retryable)
+    monkeypatch.setattr(cover_tasks, "mark_cover_item_uncertain", fake_uncertain)
+
+    result = cover_tasks._mark_cover_batch_uncertain_result(  # noqa: SLF001
+        object(),
+        item_id,
+        cover.ImageApiUncertainError("server disconnected"),
+    )
+
+    assert result == "retry"
+    assert calls == [("retryable", item_id, "server disconnected")]
+
+
+def test_cover_batch_uncertain_result_can_still_mark_uncertain_when_disabled(monkeypatch) -> None:
+    calls: list[tuple[str, uuid.UUID, str]] = []
+    item_id = uuid.uuid4()
+
+    def fake_retryable(*args, **kwargs):
+        raise AssertionError("retryable queue should not be used when uncertain auto retry is disabled")
+
+    def fake_uncertain(db, item_uuid, exc):
+        calls.append(("uncertain", item_uuid, str(exc)))
+        return "failed"
+
+    monkeypatch.setattr(cover_tasks.settings, "COVER_BATCH_UNCERTAIN_AUTO_RETRY", False)
+    monkeypatch.setattr(cover_tasks, "mark_cover_item_retryable", fake_retryable)
+    monkeypatch.setattr(cover_tasks, "mark_cover_item_uncertain", fake_uncertain)
+
+    result = cover_tasks._mark_cover_batch_uncertain_result(  # noqa: SLF001
+        object(),
+        item_id,
+        cover.ImageApiUncertainError("server disconnected"),
+    )
+
+    assert result == "failed"
+    assert calls == [("uncertain", item_id, "server disconnected")]
+
+
+def test_cover_batch_requeues_existing_uncertain_items_with_retry_scheduler(monkeypatch) -> None:
+    item_ids = [uuid.uuid4(), uuid.uuid4()]
+    calls: list[uuid.UUID] = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [(item_ids[0],), (item_ids[1],)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    def fake_retryable(db, item_uuid, exc):
+        assert isinstance(exc, cover.ImageApiUncertainError)
+        calls.append(item_uuid)
+        return "retry"
+
+    monkeypatch.setattr(cover_tasks.settings, "COVER_BATCH_UNCERTAIN_AUTO_RETRY", True)
+    monkeypatch.setattr(cover_tasks, "mark_cover_item_retryable", fake_retryable)
+
+    requeued = cover_tasks._requeue_uncertain_cover_batch_items(FakeDb(), "job-1")  # noqa: SLF001
+
+    assert requeued == 2
+    assert calls == item_ids
 
 
 def test_cover_batch_zip_uses_title_names_without_leading_index(tmp_path: Path, monkeypatch) -> None:

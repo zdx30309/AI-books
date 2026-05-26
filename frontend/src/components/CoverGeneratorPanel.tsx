@@ -31,12 +31,17 @@ function isPausedJob(job: CoverJobResponse | null | undefined) {
 function statusLabel(status: string) {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
-  if (status === "uncertain") return "待确认";
+  if (status === "uncertain") return "自动重试中";
   if (status === "paused") return "已暂停";
   if (status === "processing") return "生成中";
   if (status === "pending") return "排队中";
   if (status === "deleted") return "已删除";
   return status || "空闲";
+}
+
+function publicItemError(item: CoverJobItem) {
+  if (item.status === "uncertain") return "图像服务连接波动，系统会自动重试";
+  return item.error || "";
 }
 
 function itemMatchesCategory(item: CoverJobItem, filter: string) {
@@ -145,7 +150,7 @@ function CoverPreview({
           )}
         </button>
       )}
-      {!selectionMode && (item.status === "failed" || item.status === "uncertain") && (
+      {!selectionMode && item.status === "failed" && (
         <button
           type="button"
           onClick={(event) => {
@@ -207,9 +212,9 @@ function CoverPreview({
           <img src={src} alt={item.title} className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-warm-500">
-            {item.status === "failed" || item.status === "uncertain" ? (
+            {item.status === "failed" ? (
               <AlertCircle className="h-6 w-6 text-red-200" strokeWidth={1.6} />
-            ) : item.status === "processing" ? (
+            ) : item.status === "processing" || item.status === "uncertain" ? (
               <Loader2 className="h-6 w-6 animate-spin text-gold-300" strokeWidth={1.6} />
             ) : (
               <ImageIcon className="h-6 w-6" strokeWidth={1.6} />
@@ -227,9 +232,13 @@ function CoverPreview({
         <div className="truncate text-[11px] text-gold-200/80" title={item.category_label || ""}>
           {item.category_label || "未分类"}
         </div>
-        {item.error && (
-          <div className="line-clamp-2 text-[11px] leading-relaxed text-red-200">
-            {item.error}
+        {publicItemError(item) && (
+          <div
+            className={`line-clamp-2 text-[11px] leading-relaxed ${
+              item.status === "uncertain" ? "text-gold-100/80" : "text-red-200"
+            }`}
+          >
+            {publicItemError(item)}
           </div>
         )}
         {item.current_stage && item.status === "processing" && (
@@ -345,7 +354,7 @@ export function CoverGeneratorPanel() {
       visibleItems.filter(
         (item) =>
           selectedItemIndexes.has(item.index) &&
-          (item.status === "failed" || item.status === "uncertain"),
+          item.status === "failed",
       ).length,
     [selectedItemIndexes, visibleItems],
   );
@@ -361,7 +370,8 @@ export function CoverGeneratorPanel() {
   );
   const progressText = useMemo(() => {
     if (!job) return "等待上传";
-    return `${job.completed}/${job.total} 完成，${job.failed} 失败，${job.uncertain || 0} 待确认`;
+    const autoRetrying = job.uncertain || 0;
+    return `${job.completed}/${job.total} 完成，${job.failed} 失败${autoRetrying ? `，${autoRetrying} 自动处理中` : ""}`;
   }, [job]);
 
   const loadJobs = async (selectJobId?: string | null) => {
@@ -622,7 +632,7 @@ export function CoverGeneratorPanel() {
   };
 
   const retryFailedCurrent = async () => {
-    if (!job || (job.failed === 0 && (job.uncertain || 0) === 0)) return;
+    if (!job || job.failed === 0) return;
     setWorking("retry-failed");
     setError(null);
     try {
@@ -655,7 +665,7 @@ export function CoverGeneratorPanel() {
       .filter(
         (item) =>
           selectedItemIndexes.has(item.index) &&
-          (item.status === "failed" || item.status === "uncertain"),
+          item.status === "failed",
       )
       .map((item) => item.index);
     setWorking("retry-items");
@@ -963,7 +973,7 @@ export function CoverGeneratorPanel() {
                     继续
                   </button>
                 )}
-                {job && (job.failed > 0 || (job.uncertain || 0) > 0) && (
+                {job && job.failed > 0 && (
                   <button
                     type="button"
                     onClick={retryFailedCurrent}

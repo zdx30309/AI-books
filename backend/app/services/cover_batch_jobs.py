@@ -84,6 +84,9 @@ def _unique_archive_name(filename: str, used: set[str]) -> str:
 
 
 def _item_public(item: CoverBatchItem) -> dict[str, Any]:
+    public_error = item.error
+    if item.status == CoverBatchItemStatus.UNCERTAIN:
+        public_error = "图像服务连接波动，系统会自动重试"
     return {
         "index": int(item.item_index),
         "title": item.title,
@@ -92,7 +95,7 @@ def _item_public(item: CoverBatchItem) -> dict[str, Any]:
         "category_label": item.category_label,
         "status": item.status,
         "image_url": item.image_url,
-        "error": item.error,
+        "error": public_error,
         "metadata": dict(item.source_metadata or {}),
         "current_stage": item.current_stage,
         "retry_count": int(item.retry_count or 0),
@@ -581,6 +584,7 @@ def mark_cover_item_retryable(db: Session, item_id: uuid.UUID, exc: BaseExceptio
     item = db.get(CoverBatchItem, item_id)
     if item is None or item.status == CoverBatchItemStatus.DELETED:
         return "skipped"
+    is_uncertain = exc.__class__.__name__ == "ImageApiUncertainError"
     retry_count = int(item.retry_count or 0) + 1
     item.retry_count = retry_count
     item.image_url = None
@@ -589,7 +593,10 @@ def mark_cover_item_retryable(db: Session, item_id: uuid.UUID, exc: BaseExceptio
     item.lease_expires_at = None
     if retry_count > max(0, int(settings.COVER_BATCH_MAX_AUTO_RETRIES or 0)):
         item.status = CoverBatchItemStatus.FAILED
-        item.error = f"Auto retry limit reached: {str(exc)[:900]}"
+        if is_uncertain:
+            item.error = "图像服务连接不稳定，自动重试已达上限。请稍后重新生成。"
+        else:
+            item.error = f"Auto retry limit reached: {str(exc)[:900]}"
         item.retry_after = None
         result = "failed"
     else:
@@ -598,7 +605,10 @@ def mark_cover_item_retryable(db: Session, item_id: uuid.UUID, exc: BaseExceptio
         delay = min(max_delay, base * (2 ** max(0, retry_count - 1)))
         delay = int(delay + random.uniform(0, min(30, delay * 0.25)))
         item.status = CoverBatchItemStatus.PENDING
-        item.error = f"Retryable provider error; retry {retry_count}: {str(exc)[:900]}"
+        if is_uncertain:
+            item.error = f"图像服务连接波动，系统自动重试中（第 {retry_count} 次）"
+        else:
+            item.error = f"Retryable provider error; retry {retry_count}: {str(exc)[:900]}"
         item.retry_after = now_utc() + timedelta(seconds=delay)
         result = "retry"
     aggregate_cover_batch_job(db, item.job_id)
@@ -606,12 +616,12 @@ def mark_cover_item_retryable(db: Session, item_id: uuid.UUID, exc: BaseExceptio
     return result
 
 
-def mark_cover_item_uncertain(db: Session, item_id: uuid.UUID, exc: BaseException) -> None:
+def mark_cover_item_uncertain(db: Session, item_id: uuid.UUID, exc: BaseException) -> str:
     item = db.get(CoverBatchItem, item_id)
     if item is None or item.status == CoverBatchItemStatus.DELETED:
-        return
+        return "skipped"
     item.status = CoverBatchItemStatus.UNCERTAIN
-    item.error = f"Provider result uncertain; automatic retry stopped to avoid duplicate billing: {str(exc)[:900]}"
+    item.error = "图像服务连接波动，结果状态待确认。"
     item.image_url = None
     item.current_stage = None
     item.leased_by = None
@@ -620,6 +630,7 @@ def mark_cover_item_uncertain(db: Session, item_id: uuid.UUID, exc: BaseExceptio
     item.completed_at = now_utc()
     aggregate_cover_batch_job(db, item.job_id)
     db.commit()
+    return "failed"
 
 
 def mark_cover_item_failed(db: Session, item_id: uuid.UUID, exc: BaseException) -> None:

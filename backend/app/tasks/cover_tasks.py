@@ -114,6 +114,36 @@ def _auto_retry_limit() -> int:
     return max(0, int(settings.COVER_ITEM_MAX_AUTO_RETRIES or 0))
 
 
+def _mark_cover_batch_uncertain_result(db, item_uuid: uuid.UUID, exc: ImageApiUncertainError) -> CoverItemResult:
+    if settings.COVER_BATCH_UNCERTAIN_AUTO_RETRY:
+        return mark_cover_item_retryable(db, item_uuid, exc)
+    return mark_cover_item_uncertain(db, item_uuid, exc)
+
+
+def _requeue_uncertain_cover_batch_items(db, job_id: str) -> int:
+    if not settings.COVER_BATCH_UNCERTAIN_AUTO_RETRY:
+        return 0
+    rows = (
+        db.query(CoverBatchItem.id)
+        .filter(
+            CoverBatchItem.job_id == job_id,
+            CoverBatchItem.status == CoverBatchItemStatus.UNCERTAIN,
+        )
+        .order_by(CoverBatchItem.item_index.asc())
+        .all()
+    )
+    requeued = 0
+    for (item_uuid,) in rows:
+        result = mark_cover_item_retryable(
+            db,
+            item_uuid,
+            ImageApiUncertainError("previous uncertain image request"),
+        )
+        if result == "retry":
+            requeued += 1
+    return requeued
+
+
 def _short_error(exc: BaseException) -> str:
     return str(exc).strip()[:1000] or exc.__class__.__name__
 
@@ -324,14 +354,20 @@ def _mark_retryable(
         item.pop("last_heartbeat_at", None)
         if retry_count > _auto_retry_limit():
             item["status"] = "failed"
-            item["error"] = f"自动重试已达上限：{_short_error(exc)}"
+            if isinstance(exc, ImageApiUncertainError):
+                item["error"] = "图像服务连接不稳定，自动重试已达上限。请稍后重新生成。"
+            else:
+                item["error"] = f"自动重试已达上限：{_short_error(exc)}"
             item.pop("retry_after", None)
             result: CoverItemResult = "failed"
             note = f"第 {index} 张自动重试达到上限"
         else:
             item["status"] = "pending"
             item["retry_after"] = (datetime.now(timezone.utc) + timedelta(seconds=_retry_delay_seconds())).isoformat()
-            item["error"] = f"临时错误，等待自动重试（第 {retry_count} 次）：{_short_error(exc)}"
+            if isinstance(exc, ImageApiUncertainError):
+                item["error"] = f"图像服务连接波动，系统自动重试中（第 {retry_count} 次）"
+            else:
+                item["error"] = f"临时错误，等待自动重试（第 {retry_count} 次）：{_short_error(exc)}"
             result = "retry"
             note = f"第 {index} 张遇到临时错误，已回队列"
         latest["items"] = items
@@ -495,7 +531,7 @@ def _generate_one_cover(
     except CoverGenerationCancelled as exc:
         logger.info("[cover job %s] item %s cancelled: %s", job_id, index, exc)
         return "paused" if "暂停" in str(exc) else "skipped"
-    except (DistributedLimitError, ImageApiTransientError) as exc:
+    except (DistributedLimitError, ImageApiTransientError, ImageApiUncertainError) as exc:
         logger.warning("[cover job %s] item %s will retry: %s", job_id, index, exc)
         return _mark_retryable(job_id, index=index, run_id=run_id, exc=exc, status_lock=status_lock)
     except ImageApiPermanentError as exc:
@@ -748,10 +784,9 @@ def _generate_one_cover_batch_item(job_id: str, item_id: str, worker_id: str) ->
         logger.warning("[cover batch %s] item %s uncertain image result: %s", job_id, item_id, exc)
         mark_db = SessionLocal()
         try:
-            mark_cover_item_uncertain(mark_db, item_uuid, exc)
+            return _mark_cover_batch_uncertain_result(mark_db, item_uuid, exc)
         finally:
             mark_db.close()
-        return "failed"
     except (DistributedLimitError, ImageApiTransientError) as exc:
         logger.warning("[cover batch %s] item %s will retry: %s", job_id, item_id, exc)
         mark_db = SessionLocal()
@@ -801,6 +836,12 @@ def generate_cover_batch_job(_self, job_id: str) -> dict[str, Any]:
         job = cover_batch_jobs.get_cover_batch_job(db, job_id)
         if job is None:
             return {"job_id": job_id, "status": "deleted"}
+        requeued_uncertain = _requeue_uncertain_cover_batch_items(db, job_id)
+        if requeued_uncertain:
+            logger.info("[cover batch %s] requeued %d uncertain item(s) through retry scheduler", job_id, requeued_uncertain)
+            job = cover_batch_jobs.get_cover_batch_job(db, job_id)
+            if job is None:
+                return {"job_id": job_id, "status": "deleted"}
         if job.status == CoverBatchStatus.PAUSED:
             return {"job_id": job_id, "status": "paused"}
         if job.status == CoverBatchStatus.COMPLETED and not has_ready_cover_items(db, job_id):
