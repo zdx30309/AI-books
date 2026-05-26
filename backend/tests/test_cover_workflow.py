@@ -585,7 +585,10 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in prompt
     assert "可以模仿它们在版式里的“功能、位置、数量级、疏密和节奏”" in prompt
     assert "必须换成新的形状、新的组合、新的局部语义" in prompt
-    assert "在主正统出版分类中，必须替换母版的核心视觉元素和装饰元素" in prompt
+    assert "在主正统出版分类中，只允许抄母版的排版、配色和字体/标题排版设计语法" in prompt
+    assert "允许强参考的范围只有：版心结构、留白比例、标题字形气质" in prompt
+    assert "除此之外所有元素都必须更换" in prompt
+    assert "不能像母版换皮" in prompt
     assert "只保留“视觉角色”，不保留“具体身份”" in prompt
     assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in prompt
     assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in prompt
@@ -775,7 +778,10 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "这部分保留抄袭的魂魄和大部分外形" in calls[0][1]
     assert "主视觉必须替换，不能直接沿用母版里的具体视觉元素" in calls[0][1]
     assert "核心元素和装饰替换是硬约束" in calls[0][1]
-    assert "在主正统出版分类中，必须替换母版的核心视觉元素和装饰元素" in calls[0][1]
+    assert "在主正统出版分类中，只允许抄母版的排版、配色和字体/标题排版设计语法" in calls[0][1]
+    assert "允许强参考的范围只有：版心结构、留白比例、标题字形气质" in calls[0][1]
+    assert "除此之外所有元素都必须更换" in calls[0][1]
+    assert "不能像母版换皮" in calls[0][1]
     assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in calls[0][1]
     assert "必须换成新的形状、新的组合、新的局部语义" in calls[0][1]
     assert "只保留“视觉角色”，不保留“具体身份”" in calls[0][1]
@@ -802,7 +808,8 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "正统出版封面第二次 image-to-image 精修工作流" in calls[1][1]
     assert "增加 0 到 1 处很小的英文辅助排版" in calls[1][1]
     assert "核心元素和装饰复查" in calls[1][1]
-    assert "精修时继续检查装饰替换" in calls[1][1]
+    assert "精修时执行主正统出版的最终复查" in calls[1][1]
+    assert "只能保留排版、配色和字体/标题排版" in calls[1][1]
     assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
     assert "建议 1 到 4 个英文单词" in calls[1][1]
     assert "中文主书名必须仍然是“风经过房间”，逐字完全一致" in calls[1][1]
@@ -833,6 +840,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["workflow"] == "orthodox_direct_single_reference_imitation"
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版结构强参考"
+    assert "只抄排版、配色和字体/标题排版" in style_payload["brand_style_direction"]
     assert "重画替换核心视觉元素和装饰元素" in style_payload["brand_style_direction"]
     assert style_payload["element_replacement_profile"]["label"] == "正统出版"
     assert style_payload["element_replacement_profile"]["level"] == "主版本：平衡替换"
