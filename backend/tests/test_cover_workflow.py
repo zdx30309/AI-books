@@ -545,6 +545,9 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "不要走传统 style_brief、draft、refine 旧链路" in prompt
     assert "正统出版专用 image-to-image 精修步骤继续打磨排版细节" in prompt
     assert "不要做自由发散的自主视觉方案" in prompt
+    assert "封面主书名必须与“远方的光”逐字完全一致" in prompt
+    assert "不能自己添加前缀、后缀、副标题、系列名、解释性短语、营销词" in prompt
+    assert "不能删字、换字、改词序、改标点" in prompt
     assert "书名标题排版必须 100% 抄到位" in prompt
     assert "版式骨架必须贴着母版" in prompt
     assert "色彩结构必须贴着母版" in prompt
@@ -730,6 +733,9 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "不要走传统 style_brief、draft、refine 旧链路" in calls[0][1]
     assert "后续会有正统出版专用 image-to-image 精修步骤继续打磨排版细节" in calls[0][1]
     assert "不要做自由发散的自主视觉方案" in calls[0][1]
+    assert "封面主书名必须与“风经过房间”逐字完全一致" in calls[0][1]
+    assert "不能自己添加前缀、后缀、副标题、系列名、解释性短语、营销词" in calls[0][1]
+    assert "不能删字、换字、改词序、改标点" in calls[0][1]
     assert "书名标题排版必须 100% 抄到位" in calls[0][1]
     assert "版式骨架必须贴着母版" in calls[0][1]
     assert "色彩结构必须贴着母版" in calls[0][1]
@@ -760,6 +766,10 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "增加 0 到 1 处很小的英文辅助排版" in calls[1][1]
     assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
     assert "建议 1 到 4 个英文单词" in calls[1][1]
+    assert "中文主书名必须仍然是“风经过房间”，逐字完全一致" in calls[1][1]
+    assert "不要多字，不要少字，不要改标点" in calls[1][1]
+    assert "英文辅助信息只能是很小的装饰性副信息" in calls[1][1]
+    assert "不能替代、覆盖、扩写或改写中文主书名" in calls[1][1]
     assert "微调字距、行距、基线、标题块边界" in calls[1][1]
     assert "不要重新构图，不要换风格方向" in calls[1][1]
     assert "不要把它改回参考封面的具体猫、椅子、头像" in calls[1][1]
