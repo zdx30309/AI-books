@@ -40,7 +40,7 @@ function statusLabel(status: string) {
 }
 
 function publicItemError(item: CoverJobItem) {
-  if (item.status === "uncertain") return "图像服务连接波动，系统会自动重试";
+  if (item.status !== "failed") return "";
   return item.error || "";
 }
 

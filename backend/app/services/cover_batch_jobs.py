@@ -85,8 +85,13 @@ def _unique_archive_name(filename: str, used: set[str]) -> str:
 
 def _item_public(item: CoverBatchItem) -> dict[str, Any]:
     public_error = item.error
-    if item.status == CoverBatchItemStatus.UNCERTAIN:
-        public_error = "图像服务连接波动，系统会自动重试"
+    if item.status in {
+        CoverBatchItemStatus.PENDING,
+        CoverBatchItemStatus.QUEUED,
+        CoverBatchItemStatus.PROCESSING,
+        CoverBatchItemStatus.UNCERTAIN,
+    }:
+        public_error = None
     return {
         "index": int(item.item_index),
         "title": item.title,

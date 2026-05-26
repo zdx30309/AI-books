@@ -801,6 +801,53 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "visual_plan" not in style_payload
 
 
+def test_literature_cover_refine_uncertain_uses_draft_as_final(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[str | None] = []
+    _patch_orthodox_sequence_state(monkeypatch, tmp_path)
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("cover_00.png", PNG_BYTES)
+
+    def fail_style_brief(*args, **kwargs):
+        raise AssertionError("literature direct workflow should not build the old style brief")
+
+    def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
+        raise AssertionError("literature direct workflow should use image edit, not text generation")
+
+    def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
+        stage = kwargs.get("stage")
+        calls.append(stage)
+        if stage == "orthodox_refine":
+            raise cover.ImageApiUncertainError("server disconnected")
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(cover, "build_cover_style_brief", fail_style_brief)
+    monkeypatch.setattr(cover, "build_refine_cover_prompt", fail_style_brief)
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+    monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
+
+    result = cover.generate_cover_file(
+        "风经过房间",
+        "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
+        tmp_path,
+        category="正统出版",
+        author="作者A",
+    )
+
+    assert result == tmp_path / "cover.png"
+    assert calls == ["draft_reference", "orthodox_refine"]
+    assert (tmp_path / "draft_cover.png").exists()
+    assert (tmp_path / "cover.png").exists()
+    assert (tmp_path / "cover.png").read_bytes() == PNG_BYTES
+    refine_error = tmp_path / "cover_refine_error.txt"
+    assert refine_error.exists()
+    assert "二次精修结果不确定，已使用第一步初稿作为最终封面" in refine_error.read_text(encoding="utf-8")
+
+
 def test_literature_cover_direct_reuses_ordered_reference_until_force(
     tmp_path: Path,
     monkeypatch,
@@ -1509,7 +1556,46 @@ def test_cover_batch_public_status_exposes_uncertain_items_without_auto_completi
     assert public["uncertain"] == 1
     assert public["progress"] == 100
     assert public["items"][1]["status"] == "uncertain"
-    assert public["items"][1]["error"] == "图像服务连接波动，系统会自动重试"
+    assert public["items"][1]["error"] is None
+
+
+def test_cover_batch_public_status_hides_internal_retry_errors_for_active_items() -> None:
+    now = datetime.now(timezone.utc)
+    job = CoverBatchJob(
+        id="batch-retry",
+        status="processing",
+        progress=0,
+        total=2,
+        completed=0,
+        failed=0,
+        uncertain=0,
+        source_filename="covers.csv",
+        created_at=now,
+        updated_at=now,
+    )
+    job.items = [
+        CoverBatchItem(
+            item_index=1,
+            title="等待重试",
+            status="pending",
+            error="图像服务连接波动，系统自动重试中（第 1 次）",
+            source_metadata={},
+        ),
+        CoverBatchItem(
+            item_index=2,
+            title="真正失败",
+            status="failed",
+            error="真实失败原因",
+            source_metadata={},
+        ),
+    ]
+
+    public = cover_batch_jobs.public_cover_batch_job_status(job)
+
+    assert public["items"][0]["status"] == "pending"
+    assert public["items"][0]["error"] is None
+    assert public["items"][1]["status"] == "failed"
+    assert public["items"][1]["error"] == "真实失败原因"
 
 
 def test_cover_batch_uncertain_result_uses_existing_retry_queue(monkeypatch) -> None:

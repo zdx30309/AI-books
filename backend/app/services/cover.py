@@ -2642,6 +2642,16 @@ def _generate_literature_cover_direct(
             should_abort=should_abort,
             force=force or prompt_changed or refine_prompt_changed,
         )
+    except ImageApiUncertainError as exc:
+        logger.warning("正统出版封面二次精修结果不确定，使用已生成初稿作为最终封面: %s", exc)
+        _write_cover_text_file(
+            output_dir / "cover_refine_error.txt",
+            f"二次精修结果不确定，已使用第一步初稿作为最终封面：{exc}",
+            should_abort,
+        )
+        _notify_cover_progress(on_progress, "copy")
+        _write_cover_bytes_file(cover_path, cover_bytes, should_abort)
+        return cover_path
     except ImageApiTransientError as exc:
         logger.warning("正统出版封面二次精修遇到临时错误，保留初稿等待自动重试: %s", exc)
         _write_cover_text_file(
