@@ -9,6 +9,9 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
   "治愈插画(蜡笔)": "萌系治愈",
   "治愈插画（蜡笔)": "萌系治愈",
   "文学": "正统出版",
+  "心理认知类": "正统测试1",
+  "文学类": "正统测试2",
+  "社科类": "正统测试3",
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
@@ -154,23 +157,23 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   },
   {
     id: "psychology_cognition",
-    label: "心理认知类",
-    core_feature: "参考样例封面生成亮色心理认知书封面",
-    directions: "亮色底、大标题、心理认知、自助成长、简洁插画",
+    label: "正统测试1",
+    core_feature: "正统出版轻度核心元素替换测试版，强参考单张母版但替换可识别主体与装饰",
+    directions: "单母版强参考、标题版式贴近、核心元素轻度替换、装饰符号重画",
     prompt_status: "ready",
   },
   {
     id: "literature_simple",
-    label: "文学类",
-    core_feature: "参考样例封面生成文学书封面",
-    directions: "文学意象、书法标题、强情绪背景、出版质感",
+    label: "正统测试2",
+    core_feature: "正统出版中度核心元素替换测试版，保留版式魂魄但主视觉与装饰系统明显换新",
+    directions: "单母版强参考、标题排版贴近、主视觉中度替换、装饰体系重组",
     prompt_status: "ready",
   },
   {
     id: "social_science_simple",
-    label: "社科类",
-    core_feature: "参考样例封面生成社科经管书封面",
-    directions: "红黑白、大字标题、社科经管、简洁强识别",
+    label: "正统测试3",
+    core_feature: "正统出版强核心元素替换测试版，只保留版式标题色彩关系，核心视觉和装饰彻底重画",
+    directions: "单母版强参考、标题排版贴近、核心元素强替换、装饰完全原创化",
     prompt_status: "ready",
   },
 ];

@@ -119,20 +119,20 @@ def test_cover_category_registry_exposes_reference_zip_categories() -> None:
         ("illustration", "饱和插画"),
         ("illustration_crayon", "萌系治愈"),
         ("literature", "正统出版"),
-        ("psychology_cognition", "心理认知类"),
-        ("literature_simple", "文学类"),
-        ("social_science_simple", "社科类"),
+        ("psychology_cognition", "正统测试1"),
+        ("literature_simple", "正统测试2"),
+        ("social_science_simple", "正统测试3"),
     ]
 
 
-def test_simple_reference_cover_categories_use_basic_prompt() -> None:
+def test_orthodox_test_cover_categories_use_orthodox_prompt_with_distinct_replacement_levels() -> None:
     expected = (
-        ("psychology_cognition", "心理认知类"),
-        ("literature_simple", "文学类"),
-        ("social_science_simple", "社科类"),
+        ("psychology_cognition", "正统测试1", "测试1：轻度替换", "70%-80% 像母版"),
+        ("literature_simple", "正统测试2", "测试2：中度替换", "55%-70% 像母版"),
+        ("social_science_simple", "正统测试3", "测试3：强替换", "40%-55% 像母版"),
     )
 
-    for category_id, label in expected:
+    for category_id, label, level, ratio in expected:
         prompt = cover.build_cover_prompt(
             "参考封面测试",
             "@最终简介\n一本用于测试新封面分类的书。",
@@ -140,21 +140,20 @@ def test_simple_reference_cover_categories_use_basic_prompt() -> None:
             category=category_id,
         )
 
-        assert "基础封面生成 prompt" in prompt
+        assert "正统出版单封面 image-to-image 结构强参考工作流" in prompt
         assert label in prompt
-        assert "分类风格 DNA" in prompt
-        assert "本书差异化视觉方案" in prompt
-        assert "配色主轴" in prompt
-        assert "版式骨架" in prompt
-        assert "标题策略" in prompt
-        assert "主视觉叙事" in prompt
-        assert "金句策略" in prompt
-        assert "完整参考这些示例封面的整体方向" in prompt
-        assert "构图、标题位置、标题大小关系、标题分行方式、配色" in prompt
-        assert "不要把同一批书做成同一种颜色、同一种排版、同一种剪影或同一种大字模板" in prompt
-        assert "最多只允许 0 到 1 句短金句" in prompt
-        assert "禁止多段营销文案、长清单和密集小字" in prompt
-        assert "不要保留示例封面里的原书名、原作者或出版社文字" in prompt
+        assert level in prompt
+        assert ratio in prompt
+        assert "参考封面(1).zip / 正统出版ZIP参考封面库" in prompt
+        assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt
+        assert "核心元素和装饰替换是硬约束" in prompt
+        assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in prompt
+        assert "可以模仿它们在版式里的“功能、位置、数量级、疏密和节奏”" in prompt
+        assert "必须换成新的形状、新的组合、新的局部语义" in prompt
+        assert "书名标题排版必须 100% 抄到位" in prompt
+        assert "基础封面生成 prompt" not in prompt
+        assert "本书差异化视觉方案" not in prompt
+        assert "封面分类.zip" not in prompt
         assert "正统出版封面长期参考指令" not in prompt
         assert CRAYON_ILLUSTRATION_PROMPT not in prompt
 
@@ -162,6 +161,9 @@ def test_simple_reference_cover_categories_use_basic_prompt() -> None:
     assert cover.prepare_cover_input("书名", "", category="文学").category == "literature"
     assert cover.prepare_cover_input("书名", "", category="社科类").category == "social_science_simple"
     assert cover.prepare_cover_input("书名", "", category="心理认知类").category == "psychology_cognition"
+    assert cover.prepare_cover_input("书名", "", category="正统测试1").category == "psychology_cognition"
+    assert cover.prepare_cover_input("书名", "", category="正统测试2").category == "literature_simple"
+    assert cover.prepare_cover_input("书名", "", category="正统测试3").category == "social_science_simple"
 
 
 def test_simple_reference_visual_plan_differs_by_book() -> None:
@@ -194,50 +196,75 @@ def test_simple_reference_visual_plan_differs_by_book() -> None:
     assert "安全感" in plan_b["semantic_anchor"]
 
 
-def test_simple_reference_cover_generation_uses_example_images_directly(
+def test_orthodox_test_cover_generation_uses_ordered_zip_reference_with_profile_prompts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    calls: list[tuple[tuple[str, ...], str, str | None]] = []
-    refs = []
-    for index in range(3):
-        path = tmp_path / f"ref_{index}.jpg"
-        path.write_bytes(PNG_BYTES)
-        refs.append(path)
+    calls: list[tuple[tuple[Path, ...], str, str | None]] = []
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(5):
+            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
+
+    def fail_simple_reference(*args, **kwargs):
+        raise AssertionError("orthodox test categories should use the orthodox ZIP, not 封面分类.zip")
 
     def fake_generation(prompt: str, **kwargs) -> dict[str, object]:
-        raise AssertionError("simple reference categories should use image edit, not text generation")
+        raise AssertionError("orthodox direct workflow should use image edit, not text generation")
 
     def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
         paths = tuple(image_paths)
-        calls.append((tuple(path.name for path in paths), prompt, kwargs.get("stage")))
+        calls.append((paths, prompt, kwargs.get("stage")))
         return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
 
-    monkeypatch.setattr(cover, "_simple_reference_image_paths", lambda category_id: tuple(refs))
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(cover, "_simple_reference_image_paths", fail_simple_reference)
     monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
     monkeypatch.setattr(cover, "_request_image_edit_response", fake_edit)
 
-    result = cover.generate_cover_file(
-        "自卑与超越",
-        "@最终简介\n一本关于心理认知与自我成长的书。",
-        tmp_path,
-        category="心理认知类",
-        author="测试作者",
+    categories = (
+        ("心理认知类", "正统测试1", "测试1：轻度替换", "70%-80% 像母版", "cover_00"),
+        ("文学类", "正统测试2", "测试2：中度替换", "55%-70% 像母版", "cover_01"),
+        ("社科类", "正统测试3", "测试3：强替换", "40%-55% 像母版", "cover_02"),
     )
+    for index, (category, label, level, ratio, expected_title) in enumerate(categories):
+        work_dir = tmp_path / f"case_{index}"
+        result = cover.generate_cover_file(
+            f"自卑与超越{index}",
+            "@最终简介\n一本关于心理认知与自我成长的书。",
+            work_dir,
+            category=category,
+            author="测试作者",
+        )
 
-    assert result == tmp_path / "cover.png"
-    assert len(calls) == 1
-    assert calls[0][0] == ("ref_0.jpg", "ref_1.jpg", "ref_2.jpg")
-    assert calls[0][2] == "draft_reference"
-    assert "基础封面生成 prompt" in calls[0][1]
-    assert "心理认知类" in calls[0][1]
-    assert "本书差异化视觉方案" in calls[0][1]
-    assert "配色主轴" in calls[0][1]
-    assert "最多只允许 0 到 1 句短金句" in calls[0][1]
-    assert (tmp_path / "cover_reference_samples.json").exists()
-    assert (tmp_path / "draft_cover.png").exists()
-    assert (tmp_path / "cover.png").exists()
-    assert not (tmp_path / "cover_refine_prompt.txt").exists()
+        draft_call = calls[index * 2]
+        refine_call = calls[index * 2 + 1]
+        assert result == work_dir / "cover.png"
+        assert len(draft_call[0]) == 1
+        assert draft_call[0][0].name.startswith("01_")
+        assert draft_call[2] == "draft_reference"
+        assert refine_call[0][0] == work_dir / "draft_cover.png"
+        assert refine_call[2] == "orthodox_refine"
+        assert label in draft_call[1]
+        assert level in draft_call[1]
+        assert ratio in draft_call[1]
+        assert "核心元素和装饰替换是硬约束" in draft_call[1]
+        assert "基础封面生成 prompt" not in draft_call[1]
+        assert "本书差异化视觉方案" not in draft_call[1]
+        assert "封面分类.zip" not in draft_call[1]
+        assert (work_dir / "orthodox_reference_samples.json").exists()
+        assert not (work_dir / "cover_reference_samples.json").exists()
+        assert (work_dir / "cover_refine_prompt.txt").exists()
+        samples = json.loads((work_dir / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+        assert samples[0]["title"] == expected_title
+        style_payload = json.loads((work_dir / "cover_style_brief.json").read_text(encoding="utf-8"))
+        assert style_payload["element_replacement_profile"]["label"] == label
+        assert style_payload["element_replacement_profile"]["level"] == level
+
+    state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert state["next_sequence_index"] == 4
+    assert state["total_allocations"] == 3
 
 
 def test_saturated_illustration_reuses_generic_cover_prompt() -> None:
@@ -554,6 +581,11 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "色彩结构必须贴着母版" in prompt
     assert "这部分保留抄袭的魂魄和大部分外形" in prompt
     assert "主视觉必须替换，不能直接沿用母版里的具体视觉元素" in prompt
+    assert "核心元素和装饰替换是硬约束" in prompt
+    assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in prompt
+    assert "可以模仿它们在版式里的“功能、位置、数量级、疏密和节奏”" in prompt
+    assert "必须换成新的形状、新的组合、新的局部语义" in prompt
+    assert "在主正统出版分类中，必须替换母版的核心视觉元素和装饰元素" in prompt
     assert "只保留“视觉角色”，不保留“具体身份”" in prompt
     assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in prompt
     assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in prompt
@@ -742,6 +774,10 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "色彩结构必须贴着母版" in calls[0][1]
     assert "这部分保留抄袭的魂魄和大部分外形" in calls[0][1]
     assert "主视觉必须替换，不能直接沿用母版里的具体视觉元素" in calls[0][1]
+    assert "核心元素和装饰替换是硬约束" in calls[0][1]
+    assert "在主正统出版分类中，必须替换母版的核心视觉元素和装饰元素" in calls[0][1]
+    assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in calls[0][1]
+    assert "必须换成新的形状、新的组合、新的局部语义" in calls[0][1]
     assert "只保留“视觉角色”，不保留“具体身份”" in calls[0][1]
     assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in calls[0][1]
     assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in calls[0][1]
@@ -765,6 +801,8 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "选择它作为主要版式母版" not in calls[0][1]
     assert "正统出版封面第二次 image-to-image 精修工作流" in calls[1][1]
     assert "增加 0 到 1 处很小的英文辅助排版" in calls[1][1]
+    assert "核心元素和装饰复查" in calls[1][1]
+    assert "精修时继续检查装饰替换" in calls[1][1]
     assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
     assert "建议 1 到 4 个英文单词" in calls[1][1]
     assert "中文主书名必须仍然是“风经过房间”，逐字完全一致" in calls[1][1]
@@ -795,7 +833,9 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     style_payload = json.loads((tmp_path / "cover_style_brief.json").read_text(encoding="utf-8"))
     assert style_payload["workflow"] == "orthodox_direct_single_reference_imitation"
     assert style_payload["reference_site"] == "本地正统出版ZIP参考封面库 + 全局顺序单母版结构强参考"
-    assert "重画替换具体视觉元素" in style_payload["brand_style_direction"]
+    assert "重画替换核心视觉元素和装饰元素" in style_payload["brand_style_direction"]
+    assert style_payload["element_replacement_profile"]["label"] == "正统出版"
+    assert style_payload["element_replacement_profile"]["level"] == "主版本：平衡替换"
     assert style_payload["refine_step"]["workflow"] == "orthodox_direct_image_edit_refine"
     assert "少量英文" in style_payload["generation_prompt_addendum"]
     assert "visual_plan" not in style_payload

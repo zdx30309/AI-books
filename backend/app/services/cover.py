@@ -263,6 +263,67 @@ _SIMPLE_REFERENCE_CATEGORY_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
+_ORTHODOX_DIRECT_CATEGORY_IDS = {
+    "literature",
+    "psychology_cognition",
+    "literature_simple",
+    "social_science_simple",
+}
+_ORTHODOX_ELEMENT_REPLACEMENT_PROFILES: dict[str, dict[str, str]] = {
+    "literature": {
+        "label": "正统出版",
+        "level": "主版本：平衡替换",
+        "direct_rule": (
+            "在主正统出版分类中，必须替换母版的核心视觉元素和装饰元素。"
+            "标题排版、版心、留白、色彩面积和图文比例继续强参考；"
+            "但母版里的主体物件、人物/动物姿态、符号造型、角标、边框、纹样、小图标、线条装饰、背景点缀、印章式标记和局部插画组合都要重画。"
+            "替换后仍要像这张母版所属设计系统的新书，不要变成自由发挥。"
+        ),
+        "refine_rule": (
+            "精修时继续检查装饰替换：如果初稿里仍能认出母版的角标、纹样、小图标、线条点缀、背景装饰或独特主体轮廓，必须重画成新的同功能装饰。"
+        ),
+    },
+    "psychology_cognition": {
+        "label": "正统测试1",
+        "level": "测试1：轻度替换",
+        "direct_rule": (
+            "这是正统测试1：保留最多的母版外形，只做轻度核心替换。"
+            "标题排版、版式骨架、色块比例、主视觉占位和装饰数量要贴近母版；"
+            "但可识别核心主体和所有装饰细节必须换新，尤其是角落小符号、边线、圆点、气泡、贴纸、印章、纹样和背景点缀不能照搬。"
+            "目标是 70%-80% 像母版的设计语法，20%-30% 来自当前书的新主体和新装饰。"
+        ),
+        "refine_rule": (
+            "精修时只做轻度原创化：保留母版式秩序，但把任何像母版原装饰的小符号、角标、线条、背景点缀替换成新图形。"
+        ),
+    },
+    "literature_simple": {
+        "label": "正统测试2",
+        "level": "测试2：中度替换",
+        "direct_rule": (
+            "这是正统测试2：中度替换核心视觉和装饰系统。"
+            "版心、标题比例、留白、主色关系继续明显像母版；"
+            "主视觉类别、主体轮廓、装饰图形、边框/角标/纹样/小图标/背景点缀必须系统性重组。"
+            "目标是 55%-70% 像母版的排版和色彩关系，30%-45% 来自当前书的新主体、新装饰和新叙事。"
+        ),
+        "refine_rule": (
+            "精修时做中度原创化：保留标题和版式骨架，重新整理所有装饰关系，避免母版的图标组合、边框纹样、背景小元素被认出来。"
+        ),
+    },
+    "social_science_simple": {
+        "label": "正统测试3",
+        "level": "测试3：强替换",
+        "direct_rule": (
+            "这是正统测试3：强替换核心视觉和装饰，只保留母版的骨架魂魄。"
+            "标题排版、版心、留白比例、色彩明暗结构仍要强参考；"
+            "但主视觉主体、主体类别、装饰体系、角标、纹样、小图标、线条、背景点缀、局部符号和所有独特记忆点必须彻底换掉。"
+            "目标是 40%-55% 像母版的结构和标题设计，45%-60% 来自当前书的新视觉元素；绝不能像直接换皮。"
+        ),
+        "refine_rule": (
+            "精修时做强原创化检查：除了标题版式、版心和色彩结构，任何可识别母版装饰、主体轮廓或图标组合都要替换。"
+        ),
+    },
+}
+
 
 class ImageApiError(RuntimeError):
     """Base exception for image API failures."""
@@ -604,9 +665,22 @@ def _is_visual_impact(category: str | None) -> bool:
 
 def _is_literature_publishing(category: str | None) -> bool:
     try:
-        return normalize_cover_category_id(category or "") == "literature"
+        return normalize_cover_category_id(category or "") in _ORTHODOX_DIRECT_CATEGORY_IDS
     except ValueError:
         return False
+
+
+def _orthodox_direct_category_id(category: str | None) -> str:
+    try:
+        normalized = normalize_cover_category_id(category or "")
+    except ValueError:
+        return "literature"
+    return normalized if normalized in _ORTHODOX_DIRECT_CATEGORY_IDS else "literature"
+
+
+def _orthodox_element_replacement_profile(category: str | None) -> dict[str, str]:
+    category_id = _orthodox_direct_category_id(category)
+    return _ORTHODOX_ELEMENT_REPLACEMENT_PROFILES.get(category_id, _ORTHODOX_ELEMENT_REPLACEMENT_PROFILES["literature"])
 
 
 def _simple_reference_category_id(category: str | None) -> str | None:
@@ -1341,7 +1415,7 @@ def _category_options_for_market_prompt() -> str:
 def cover_categories_fallback() -> str:
     return (
         "social_science=视觉冲击；illustration=饱和插画；illustration_crayon=萌系治愈；"
-        "literature=正统出版；psychology_cognition=心理认知类；literature_simple=文学类；social_science_simple=社科类"
+        "literature=正统出版；psychology_cognition=正统测试1；literature_simple=正统测试2；social_science_simple=正统测试3"
     )
 
 
@@ -1962,16 +2036,16 @@ def build_cover_prompt(
         intro=intro,
         category=category,
     )
+    if _is_literature_publishing(cover_input.category):
+        return _build_literature_direct_cover_prompt(
+            cover_input,
+            reference_count=_LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT,
+        )
     if _is_simple_reference_category(cover_input.category):
         reference_count = len(_simple_reference_image_paths(cover_input.category))
         return _build_simple_reference_cover_prompt(
             cover_input,
             reference_count=reference_count,
-        )
-    if _is_literature_publishing(cover_input.category):
-        return _build_literature_direct_cover_prompt(
-            cover_input,
-            reference_count=_LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT,
         )
     return build_draft_cover_prompt(cover_input, build_cover_style_brief(cover_input))
 
@@ -2434,6 +2508,7 @@ def _build_literature_direct_cover_prompt(
     *,
     reference_count: int,
 ) -> str:
+    replacement_profile = _orthodox_element_replacement_profile(cover_input.category)
     if reference_count == 1:
         title_reference_rule = (
             "本次只输入 1 张按全局 ZIP 顺序轮转选中的参考封面；它就是唯一母版、书名标题主参考、版式主参考和色彩主参考。"
@@ -2449,6 +2524,7 @@ def _build_literature_direct_cover_prompt(
 - 书名：{cover_input.title}
 - 作者：{cover_input.author}
 - 分类：{cover_input.category_label}
+- 测试/替换档位：{replacement_profile['level']}
 - 简介：{cover_input.intro}
 
 参考输入与轮转规则：
@@ -2465,6 +2541,8 @@ def _build_literature_direct_cover_prompt(
 - 版式骨架必须贴着母版：版心结构、标题区域、作者名位置、副标题位置、留白比例、主视觉位置、主视觉面积、主视觉与标题的相对关系、背景色块比例、装饰点线的位置功能、整体画面重心和手机书架缩略图效果，都要明显像母版；这部分保留抄袭的魂魄和大部分外形。
 - 色彩结构必须贴着母版：主色、辅助色、明暗关系、冷暖关系、色块面积关系和整体明度纯度要接近母版；可以对色相、局部比例和饱和度做轻微迁移，避免像同一张封面直接改字。
 - 主视觉必须替换，不能直接沿用母版里的具体视觉元素。动物、人物、物件、植物、建筑、图标、抽象符号、照片、插画主体、独特轮廓、纹样、局部装饰组合，都必须根据当前书名和简介重新设计成新的视觉资产。
+- 核心元素和装饰替换是硬约束：母版里的主视觉主体、配角、背景点缀、角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡、线框、边框、纹样、图标、符号、局部小插画、装饰线、重复小图案、底纹和任何有记忆点的细节，都不能原样搬到新封面。可以模仿它们在版式里的“功能、位置、数量级、疏密和节奏”，但必须换成新的形状、新的组合、新的局部语义。
+- {replacement_profile['direct_rule']}
 - 替换主视觉时只保留“视觉角色”，不保留“具体身份”：可以保留母版中主视觉的位置、面积、重量、疏密、朝向关系、与标题的距离和画面节奏，但要更换物件类别、人物姿态、动物种类、符号造型、插画线条和细节组合。最终不能让人一眼认出原参考封面里的猫、椅子、头像、人物姿态、图标组合、摄影图或独特图形。
 - 如果母版主视觉是猫、狗、鸟、椅子、杯子、人物头像、钥匙孔、手机、书堆、山水、圆形色块或任何强记忆点，不要原样保留；除非当前书名或简介明确需要同类元素，也必须重画成不同姿态、不同轮廓、不同细节、不同组合的原创元素。
 - 当前书的特色只来自书名、作者、简介语义和重画后的主视觉内容；不能通过改变母版标题排版、版式骨架、色彩结构、图文比例来制造差异，也不能通过复制母版具体元素来偷懒。
@@ -2478,6 +2556,7 @@ def _build_literature_direct_cover_prompt(
 
 
 def _build_literature_direct_refine_prompt(cover_input: CoverInput) -> str:
+    replacement_profile = _orthodox_element_replacement_profile(cover_input.category)
     return f"""正统出版封面第二次 image-to-image 精修工作流
 
 当前输入是一张已经按 ZIP 单张参考封面完成结构模仿、并替换过具体视觉元素的正统出版封面初稿。请只在这张初稿基础上做出版级精修，不要重新构图，不要换风格方向，不要改成另一张封面。
@@ -2486,11 +2565,14 @@ def _build_literature_direct_refine_prompt(cover_input: CoverInput) -> str:
 - 书名：{cover_input.title}
 - 作者：{cover_input.author or _AUTHOR_PLACEHOLDER}
 - 分类：{cover_input.category_label}
+- 测试/替换档位：{replacement_profile['level']}
 - 简介：{cover_input.intro}
 
 精修目标：
 - 保留初稿的大版式、标题位置、标题分行、横竖排关系、主色结构、主视觉位置、主视觉面积和整体外形；不要削弱第一步对参考封面的结构模仿。
 - 保留第一步已经重画替换后的主视觉，不要把它改回参考封面的具体猫、椅子、头像、人物姿态、图标组合、摄影图、独特图形或其他可识别版权元素。
+- 核心元素和装饰复查：母版中的角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡、线框、边框、纹样、小图标、装饰线、重复小图案、底纹、背景点缀和局部小插画，不能在精修中被补回或描得更像原图；只能保留它们的排版功能，必须换成新的形状、组合、细节和语义。
+- {replacement_profile['refine_rule']}
 - 重点增加排版细节，让封面更像成熟出版设计师的终稿：微调字距、行距、基线、标题块边界、作者名位置、副标题位置、留白边距、对齐关系、点线装饰、局部小标识、色块边界和图文呼吸感。
 - 中文主书名必须仍然是“{cover_input.title}”，逐字完全一致、清晰、准确、可读；不要改错字，不要漏字，不要多字，不要少字，不要改标点，不要自己添加前缀、后缀、副标题、系列名、解释性短语或营销词。作者必须仍然是“{cover_input.author or _AUTHOR_PLACEHOLDER}”，不要把作者名替换成英文作者或假出版社。
 - 根据书名和简介，允许增加 0 到 1 处很小的英文辅助排版：可以是书名英文翻译、主题英文关键词或极短英文副标题，建议 1 到 4 个英文单词，例如放在标题旁、页眉/页脚、小色块、竖排边栏或装饰线附近。英文只做高级出版细节，不要喧宾夺主。
@@ -2506,13 +2588,18 @@ def _literature_direct_style_payload(
     cover_input: CoverInput,
     reference_records: Sequence[dict[str, str]],
 ) -> dict[str, Any]:
+    replacement_profile = _orthodox_element_replacement_profile(cover_input.category)
     return {
         "workflow": "orthodox_direct_single_reference_imitation",
         "reference_site": "本地正统出版ZIP参考封面库 + 全局顺序单母版结构强参考",
         "reference_brands": ["正统出版ZIP参考封面库"],
         "matched_category_style": "正统出版单封面 image-to-image 结构强参考",
-        "brand_style_direction": "按全局 ZIP 顺序选 1 张参考封面作为唯一母版，强参考版式、标题、色彩和图文比例，同时重画替换具体视觉元素。",
+        "brand_style_direction": (
+            "按全局 ZIP 顺序选 1 张参考封面作为唯一母版，强参考版式、标题、色彩和图文比例，"
+            f"同时按「{replacement_profile['label']} / {replacement_profile['level']}」重画替换核心视觉元素和装饰元素。"
+        ),
         "cover_type": "正统出版 / 单母版结构强参考成熟出版封面",
+        "element_replacement_profile": dict(replacement_profile),
         "reference_samples": list(reference_records),
         "generation_prompt_addendum": "单张参考封面 image-to-image 结构强参考；标题排版和版式贴近母版，具体视觉元素重画替换；再用正统出版专用 image-to-image 精修排版细节和少量英文；不走旧 style_brief/draft/refine 链路。",
         "refine_step": {
