@@ -24,6 +24,15 @@ from app.services.dangdang_crawler import DANGDANG_REFERENCE_BRANDS, DangdangCov
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return image.size
+
+
 CRAYON_ILLUSTRATION_PROMPT = (
     "治愈蜡笔：日韩治愈系绘本封面，手绘感，像私人日记。"
     "高饱和纯色背景，背景颜色不要渐变，简洁构图，大留白。"
@@ -46,6 +55,24 @@ def _patch_orthodox_sequence_state(monkeypatch, tmp_path: Path) -> Path:
     state_dir = tmp_path / "orthodox_reference_state"
     monkeypatch.setattr(cover, "_orthodox_reference_sequence_state_dir", lambda: state_dir)
     return state_dir
+
+
+def test_write_cover_bytes_file_normalizes_final_cover_size(tmp_path: Path) -> None:
+    output = tmp_path / "cover.png"
+
+    cover._write_cover_bytes_file(output, PNG_BYTES)  # noqa: SLF001
+
+    assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
+
+
+def test_literature_reference_members_excludes_removed_suffixes(tmp_path: Path) -> None:
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("参考封面/album_temp_1779350883.jpg", PNG_BYTES)
+        archive.writestr("参考封面/album_temp_1779350903.jpg", PNG_BYTES)
+        archive.writestr("参考封面/album_temp_1779350904.jpg", PNG_BYTES)
+
+    assert cover._literature_reference_members(zip_path) == ("参考封面/album_temp_1779350904.jpg",)  # noqa: SLF001
 
 
 def test_style_brief_locks_reference_site_and_brands() -> None:
@@ -151,6 +178,7 @@ def test_orthodox_test_cover_categories_use_orthodox_prompt_with_distinct_replac
         assert "可以模仿它们在版式里的“功能、位置、数量级、疏密和节奏”" in prompt
         assert "必须换成新的形状、新的组合、新的局部语义" in prompt
         assert "书名标题排版必须 100% 抄到位" in prompt
+        assert "2450*3500" in prompt
         assert "基础封面生成 prompt" not in prompt
         assert "本书差异化视觉方案" not in prompt
         assert "封面分类.zip" not in prompt
@@ -810,6 +838,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in calls[0][1]
     assert "不要模拟实体纸书摄影效果" in calls[0][1]
     assert "高级感灰滤镜" in calls[0][1]
+    assert "2450*3500" in calls[0][1]
     assert "允许轻微纸张肌理" not in calls[0][1]
     assert "本书差异化视觉方案" not in calls[0][1]
     assert "正统出版风格 DNA" not in calls[0][1]
@@ -821,6 +850,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "核心元素和装饰复查" in calls[1][1]
     assert "精修时执行主正统出版的最终复查" in calls[1][1]
     assert "只能保留排版、配色和字体/标题排版" in calls[1][1]
+    assert "2450*3500" in calls[1][1]
     assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
     assert "建议 1 到 4 个英文单词" in calls[1][1]
     assert "中文主书名必须仍然是“风经过房间”，逐字完全一致" in calls[1][1]
@@ -903,7 +933,7 @@ def test_literature_cover_refine_uncertain_uses_draft_as_final(
     assert calls == ["draft_reference", "orthodox_refine"]
     assert (tmp_path / "draft_cover.png").exists()
     assert (tmp_path / "cover.png").exists()
-    assert (tmp_path / "cover.png").read_bytes() == PNG_BYTES
+    assert _image_size(tmp_path / "cover.png") == cover._FINAL_COVER_SIZE  # noqa: SLF001
     refine_error = tmp_path / "cover_refine_error.txt"
     assert refine_error.exists()
     assert "二次精修结果不确定，已使用第一步初稿作为最终封面" in refine_error.read_text(encoding="utf-8")
@@ -1455,7 +1485,7 @@ def test_generate_cover_file_retries_refine_from_existing_draft_without_rebuildi
     )
 
     assert result == tmp_path / "cover.png"
-    assert result.read_bytes() == PNG_BYTES
+    assert _image_size(result) == cover._FINAL_COVER_SIZE  # noqa: SLF001
 
 
 def test_generate_cover_file_reuses_cached_refine_url_without_new_image_api(
@@ -1512,7 +1542,7 @@ def test_generate_cover_file_reuses_cached_refine_url_without_new_image_api(
     )
 
     assert result == tmp_path / "cover.png"
-    assert result.read_bytes() == PNG_BYTES
+    assert _image_size(result) == cover._FINAL_COVER_SIZE  # noqa: SLF001
     assert generation_calls == 1
     assert edit_calls == 1
     assert download_calls == 2
