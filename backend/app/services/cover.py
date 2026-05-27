@@ -786,7 +786,7 @@ _LITERATURE_ELEMENT_VARIANTS = (
 )
 
 _ORTHODOX_REFERENCE_STYLE_DNA = (
-    "256 张正统出版参考封面的大图库 DNA：真实中文出版物质感、强标题层级、清楚书架缩略图识别、"
+    "当前正统出版参考封面库的大图库 DNA：真实中文出版物质感、强标题层级、清楚书架缩略图识别、"
     "克制但明确的色彩主轴、清透数字底色、成熟留白、稳定图文关系、少而准的视觉锚点。"
 )
 _ORTHODOX_REFERENCE_COLOR_AXES = (
@@ -966,6 +966,24 @@ def _literature_reference_members(zip_path: Path) -> tuple[str, ...]:
         return ()
 
 
+def _orthodox_reference_zip_fingerprint(zip_path: Path, members: Sequence[str]) -> str:
+    try:
+        stat = zip_path.stat()
+        size = stat.st_size
+    except OSError:
+        size = 0
+    payload = json.dumps(
+        {
+            "zip_name": zip_path.name,
+            "zip_size": size,
+            "members": list(members),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _selected_literature_reference_members(
     cover_input: CoverInput,
     *,
@@ -1132,19 +1150,34 @@ def _write_orthodox_reference_sequence_state(payload: dict[str, Any]) -> None:
     tmp_path.replace(state_path)
 
 
-def _reserve_orthodox_reference_sequence_index(members_count: int) -> int:
+def _reserve_orthodox_reference_sequence_index(
+    members_count: int,
+    *,
+    zip_fingerprint: str | None = None,
+) -> int:
     if members_count <= 0:
         raise ImageApiPermanentError("正统出版参考封面 ZIP 为空，无法分配全局顺序")
     with _orthodox_reference_sequence_lock():
         state = _read_orthodox_reference_sequence_state()
-        next_index = _positive_int(state.get("next_sequence_index")) or 1
+        previous_fingerprint = state.get("zip_fingerprint")
+        previous_members_count = _positive_int(state.get("members_count"))
+        zip_changed = bool(
+            zip_fingerprint
+            and (
+                not isinstance(previous_fingerprint, str)
+                or previous_fingerprint != zip_fingerprint
+                or previous_members_count != members_count
+            )
+        )
+        next_index = 1 if zip_changed else (_positive_int(state.get("next_sequence_index")) or 1)
         selected_index = ((next_index - 1) % members_count) + 1
         following_index = (selected_index % members_count) + 1
-        total_allocations = (_positive_int(state.get("total_allocations")) or 0) + 1
+        total_allocations = 1 if zip_changed else ((_positive_int(state.get("total_allocations")) or 0) + 1)
         _write_orthodox_reference_sequence_state(
             {
                 "policy": "global_zip_order_cycle",
                 "members_count": members_count,
+                "zip_fingerprint": zip_fingerprint,
                 "last_sequence_index": selected_index,
                 "next_sequence_index": following_index,
                 "total_allocations": total_allocations,
@@ -1184,7 +1217,10 @@ def _selected_literature_direct_reference_members(
         cached = _literature_cached_direct_reference_members(samples_path, set(members))
         if cached:
             return cached[: min(limit, len(cached))]
-    sequence_index = _reserve_orthodox_reference_sequence_index(len(members))
+    sequence_index = _reserve_orthodox_reference_sequence_index(
+        len(members),
+        zip_fingerprint=_orthodox_reference_zip_fingerprint(zip_path, members),
+    )
     return _ordered_literature_direct_reference_members(members, sequence_index, limit=limit)
 
 
@@ -2037,9 +2073,11 @@ def build_cover_prompt(
         category=category,
     )
     if _is_literature_publishing(cover_input.category):
+        library_count = len(_literature_reference_members(_literature_reference_zip_path()))
         return _build_literature_direct_cover_prompt(
             cover_input,
             reference_count=_LITERATURE_REFERENCE_DIRECT_SEQUENCE_COUNT,
+            library_count=library_count,
         )
     if _is_simple_reference_category(cover_input.category):
         reference_count = len(_simple_reference_image_paths(cover_input.category))
@@ -2507,8 +2545,11 @@ def _build_literature_direct_cover_prompt(
     cover_input: CoverInput,
     *,
     reference_count: int,
+    library_count: int | None = None,
 ) -> str:
     replacement_profile = _orthodox_element_replacement_profile(cover_input.category)
+    effective_library_count = max(1, library_count or reference_count)
+    restart_index = effective_library_count + 1
     if reference_count == 1:
         title_reference_rule = (
             "本次只输入 1 张按全局 ZIP 顺序轮转选中的参考封面；它就是唯一母版、书名标题主参考、版式主参考和色彩主参考。"
@@ -2528,8 +2569,8 @@ def _build_literature_direct_cover_prompt(
 - 简介：{cover_input.intro}
 
 参考输入与轮转规则：
-- 已随请求附上 {reference_count} 张来自本地“参考封面(1).zip / 正统出版ZIP参考封面库”的成熟出版封面。
-- 正统出版参考图按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样：全局第 1 张封面生成模仿 ZIP 第 1 张，全局第 256 张模仿 ZIP 第 256 张，全局第 257 张从 ZIP 第 1 张重新开始。
+- 已随请求附上 {reference_count} 张来自本地“参考封面(3).zip / 正统出版ZIP参考封面库”的成熟出版封面。
+- 当前参考库共有 {effective_library_count} 张可用封面；正统出版参考图按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样：全局第 1 张封面生成模仿 ZIP 第 1 张，全局第 {effective_library_count} 张模仿 ZIP 第 {effective_library_count} 张，全局第 {restart_index} 张从 ZIP 第 1 张重新开始。
 - {title_reference_rule}
 - 本步骤只做一件事：把输入参考封面当作 image-to-image 母版，学习它的设计骨架和出版气质，生成当前书的新封面初稿。不要输出分析文字，不要走传统 style_brief、draft、refine 旧链路，不要做自由发散的自主视觉方案；后续会有正统出版专用 image-to-image 精修步骤继续打磨排版细节。
 
@@ -2656,6 +2697,7 @@ def _generate_literature_cover_direct(
                 "state_path": str(_orthodox_reference_sequence_state_path()),
                 "zip_path": str(zip_path),
                 "members_count": len(all_members),
+                "zip_fingerprint": _orthodox_reference_zip_fingerprint(zip_path, all_members),
                 "selected_sequence_index": sequence_index,
                 "selected_members": list(members),
                 "force": force,
@@ -2669,6 +2711,7 @@ def _generate_literature_cover_direct(
     direct_prompt = _build_literature_direct_cover_prompt(
         cover_input,
         reference_count=len(reference_images),
+        library_count=len(all_members),
     )
     previous_direct_prompt = ""
     if draft_prompt_path.exists() and draft_prompt_path.stat().st_size > 0:
@@ -3029,7 +3072,7 @@ def generate_cover_file(
         draft_prompt = (
             f"{draft_prompt}\n\n"
             "ZIP参考封面图像输入规则：已随请求附上一张 orthodox_reference_board.png，"
-            "它由参考封面(1).zip 中按本书稳定抽样的真实正统出版封面组成。"
+            "它由参考封面(3).zip 中按本书稳定抽样的真实正统出版封面组成。"
             "必须把这张图当作最主要的版式和风格参考板，严格按先选母版、再抄版式、再换内容、再调细节、最后查侵权元素执行。"
             "先从其中选择一张最适合本书的封面作为主要版式母版，不要从多张封面随意拼凑；"
             "迁移标题区域、字号层级、标题分行、作者名位置、副标题位置、留白比例、主视觉区域、主视觉占比、图文关系、背景色块比例、色彩明度关系、冷暖对比方式和整体书架气质。"

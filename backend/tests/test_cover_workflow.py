@@ -144,7 +144,7 @@ def test_orthodox_test_cover_categories_use_orthodox_prompt_with_distinct_replac
         assert label in prompt
         assert level in prompt
         assert ratio in prompt
-        assert "参考封面(1).zip / 正统出版ZIP参考封面库" in prompt
+        assert "参考封面(3).zip / 正统出版ZIP参考封面库" in prompt
         assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt
         assert "核心元素和装饰替换是硬约束" in prompt
         assert "角标、边栏、贴纸、徽章、印章、圆点、箭头、气泡" in prompt
@@ -592,7 +592,8 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "只保留“视觉角色”，不保留“具体身份”" in prompt
     assert "最终不能让人一眼认出原参考封面里的猫、椅子、头像" in prompt
     assert "如果能被认出是某张参考封面的换皮、描摹或套壳，也视为失败" in prompt
-    assert "全局第 257 张从 ZIP 第 1 张重新开始" in prompt
+    assert "当前参考库共有" in prompt
+    assert "从 ZIP 第 1 张重新开始" in prompt
     assert "真实品牌资产、真实摄影作品、已有插画作品" in prompt
     assert "可识别主视觉元素" in prompt
     assert "#FFFFFF 数字白" in prompt
@@ -758,9 +759,11 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert calls[1][0][0] == tmp_path / "draft_cover.png"
     assert calls[1][2] == "orthodox_refine"
     assert "正统出版单封面 image-to-image 结构强参考工作流" in calls[0][1]
-    assert "参考封面(1).zip" in calls[0][1]
+    assert "参考封面(3).zip" in calls[0][1]
     assert "按 ZIP 内排序全局轮转，不按单个任务重置，不随机抽样" in calls[0][1]
-    assert "全局第 257 张从 ZIP 第 1 张重新开始" in calls[0][1]
+    assert "当前参考库共有 20 张可用封面" in calls[0][1]
+    assert "全局第 20 张模仿 ZIP 第 20 张" in calls[0][1]
+    assert "全局第 21 张从 ZIP 第 1 张重新开始" in calls[0][1]
     assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in calls[0][1]
     assert "不要再选择别的方向" in calls[0][1]
     assert "不要泛泛学习大图库" in calls[0][1]
@@ -1061,9 +1064,71 @@ def test_literature_cover_direct_cycles_zip_references_globally_across_new_tasks
 
     state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
     assert state["members_count"] == 3
+    assert isinstance(state["zip_fingerprint"], str)
     assert state["last_sequence_index"] == 1
     assert state["next_sequence_index"] == 2
     assert state["total_allocations"] == 4
+
+
+def test_literature_cover_direct_resets_global_sequence_when_reference_zip_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_dir = _patch_orthodox_sequence_state(monkeypatch, tmp_path)
+    zip_path = tmp_path / "reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(3):
+            archive.writestr(f"old_cover_{index:02d}.png", PNG_BYTES)
+
+    monkeypatch.setattr(cover, "_literature_reference_zip_path", lambda: zip_path)
+    monkeypatch.setattr(
+        cover,
+        "_request_image_edit_response",
+        lambda *args, **kwargs: {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+    )
+    monkeypatch.setattr(
+        cover,
+        "_request_image_generation_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generation should not run")),
+    )
+
+    for index in range(2):
+        cover.generate_cover_file(
+            f"旧库测试{index}",
+            "@最终简介\n旧库顺序状态。",
+            tmp_path / f"old_job_{index}",
+            category="正统出版",
+            author="作者",
+        )
+
+    old_state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert old_state["members_count"] == 3
+    assert old_state["next_sequence_index"] == 3
+    assert old_state["total_allocations"] == 2
+
+    with ZipFile(zip_path, "w") as archive:
+        for index in range(2):
+            archive.writestr(f"new_cover_{index:02d}.png", PNG_BYTES)
+
+    cover.generate_cover_file(
+        "新库测试",
+        "@最终简介\n新库应从第一张开始。",
+        tmp_path / "new_job",
+        category="正统出版",
+        author="作者",
+    )
+
+    samples = json.loads((tmp_path / "new_job" / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
+    sequence = json.loads((tmp_path / "new_job" / "orthodox_reference_sequence.json").read_text(encoding="utf-8"))
+    new_state = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
+    assert samples[0]["title"] == "new_cover_00"
+    assert sequence["members_count"] == 2
+    assert sequence["selected_sequence_index"] == 1
+    assert sequence["zip_fingerprint"] != old_state["zip_fingerprint"]
+    assert new_state["members_count"] == 2
+    assert new_state["last_sequence_index"] == 1
+    assert new_state["next_sequence_index"] == 2
+    assert new_state["total_allocations"] == 1
 
 
 def test_literature_cover_direct_global_sequence_lock_allocates_unique_references(
