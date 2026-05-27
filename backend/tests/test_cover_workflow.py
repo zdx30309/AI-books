@@ -576,6 +576,10 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "封面主书名必须与“远方的光”逐字完全一致" in prompt
     assert "不能自己添加前缀、后缀、副标题、系列名、解释性短语、营销词" in prompt
     assert "不能删字、换字、改词序、改标点" in prompt
+    assert "参考封面原始文字信息必须零继承" in prompt
+    assert "原封面上的所有文字、短句、副标题、金句、腰封文案" in prompt
+    assert "都不能与新封面文字信息重合" in prompt
+    assert "如果某个词、短句或英文来自参考图原文，必须删除或改写到完全不可识别" in prompt
     assert "书名标题排版必须 100% 抄到位" in prompt
     assert "版式骨架必须贴着母版" in prompt
     assert "色彩结构必须贴着母版" in prompt
@@ -775,6 +779,10 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "封面主书名必须与“风经过房间”逐字完全一致" in calls[0][1]
     assert "不能自己添加前缀、后缀、副标题、系列名、解释性短语、营销词" in calls[0][1]
     assert "不能删字、换字、改词序、改标点" in calls[0][1]
+    assert "参考封面原始文字信息必须零继承" in calls[0][1]
+    assert "原封面上的所有文字、短句、副标题、金句、腰封文案" in calls[0][1]
+    assert "都不能与新封面文字信息重合" in calls[0][1]
+    assert "如果某个词、短句或英文来自参考图原文，必须删除或改写到完全不可识别" in calls[0][1]
     assert "书名标题排版必须 100% 抄到位" in calls[0][1]
     assert "版式骨架必须贴着母版" in calls[0][1]
     assert "色彩结构必须贴着母版" in calls[0][1]
@@ -816,6 +824,8 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "书名英文翻译、主题英文关键词或极短英文副标题" in calls[1][1]
     assert "建议 1 到 4 个英文单词" in calls[1][1]
     assert "中文主书名必须仍然是“风经过房间”，逐字完全一致" in calls[1][1]
+    assert "精修时必须再次清除参考封面原始文字信息" in calls[1][1]
+    assert "不得与原封面文字内容重合" in calls[1][1]
     assert "不要多字，不要少字，不要改标点" in calls[1][1]
     assert "英文辅助信息只能是很小的装饰性副信息" in calls[1][1]
     assert "不能替代、覆盖、扩写或改写中文主书名" in calls[1][1]
