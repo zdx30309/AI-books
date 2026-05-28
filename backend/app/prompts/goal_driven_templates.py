@@ -1254,6 +1254,30 @@ if HISTORY_CULTURE_DEDUP_CLOSING_REQUIREMENTS not in HISTORY_CULTURE_FULL_BOOK_W
         )
 
 
+WRITER_PUNCTUATION_USAGE_PROMPT = """【标点符号专项要求】
+- 初稿生成时必须按中文正式出版书稿规范使用标点，先根据语义判断停顿层级，再选择逗号、顿号、分号、句号、问号或省略号。
+- 句号只用于完整意思已经结束的位置；如果前后仍属于同一个判断、同一组条件、同一串并列事项、同一次追问或同一段递进说明，不要粗暴断成句号，优先使用逗号或分号。
+- 逗号用于句内一般停顿；顿号用于短并列词语；分号用于较长并列分句、分项说明或同一层级的多个问题之间。不要把一串明显并列的问题或短语全部用句号切开。
+- 问句必须用问号；感叹号要克制；省略号统一使用中文六点“……”，不要写成英文三个点、六个英文点、多个句点或“......。”。
+- 不要混用中英文标点；不要把普通逗号位置写成句号；不要在同一句内部堆叠顿号、分号和句号造成机械停顿。
+- 输出前自检全文标点。凡是读起来像“本该用逗号、顿号或分号，却被写成句号”的地方，必须主动改成更准确的中文标点。"""
+
+
+def _with_writer_punctuation_rules(full_book_writer: str) -> str:
+    if "【标点符号专项要求】" in full_book_writer:
+        return full_book_writer
+
+    for marker in ("\n输入：", "\n输入:"):
+        if marker in full_book_writer:
+            return full_book_writer.replace(
+                marker,
+                "\n\n" + WRITER_PUNCTUATION_USAGE_PROMPT + "\n" + marker,
+                1,
+            )
+
+    return full_book_writer.rstrip() + "\n\n" + WRITER_PUNCTUATION_USAGE_PROMPT
+
+
 def _prompt_set(
     full_book_writer: str,
     *,
@@ -1262,7 +1286,7 @@ def _prompt_set(
     formatter: str | None = None,
 ) -> dict[str, str]:
     return {
-        "full_book_writer": full_book_writer,
+        "full_book_writer": _with_writer_punctuation_rules(full_book_writer),
         "gemini_fast_polish": polish or GEMINI_FAST_POLISH_PROMPT,
         "gemini_fast_refine": refine or GEMINI_FAST_REFINE_PROMPT,
         "final_book_format": formatter or FINAL_BOOK_FORMAT_PROMPT,

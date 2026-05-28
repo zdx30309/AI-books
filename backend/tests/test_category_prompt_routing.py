@@ -150,6 +150,18 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("科普读物认知升级版") == "popular_science_cognitive_upgrade"
 
 
+def test_writer_prompts_include_punctuation_usage_rules() -> None:
+    prompt = get_prompts("social_science")["full_book_writer"]
+
+    assert "【标点符号专项要求】" in prompt
+    assert "句号只用于完整意思已经结束的位置" in prompt
+    assert "逗号用于句内一般停顿" in prompt
+    assert "顿号用于短并列词语" in prompt
+    assert "分号用于较长并列分句" in prompt
+    assert "省略号统一使用中文六点“……”" in prompt
+    assert "不要混用中英文标点" in prompt
+
+
 def test_crayon_illustration_is_not_a_body_writing_category() -> None:
     assert "illustration" not in SUPPORTED_CATEGORIES
     assert "illustration_crayon" not in SUPPORTED_CATEGORIES
