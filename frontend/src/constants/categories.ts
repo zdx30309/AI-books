@@ -30,6 +30,14 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "social_science_core_conflict",
+    label: "社会痛点（核心矛盾版）",
+    core_feature:
+      "提炼原文最值得展开的核心矛盾，围绕压力、代价、阶层、关系和选择重搭长文结构",
+    directions: "教育、婚姻、住房、职场压力、养老、阶层流动、普通人选择",
+    prompt_status: "ready",
+  },
+  {
     id: "life_philosophy",
     label: "人生哲学",
     core_feature: "提供认知升级或心灵慰藉",
@@ -37,10 +45,26 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "life_philosophy_self_rescue",
+    label: "人生哲学（困境自救版）",
+    core_feature:
+      "从具体生活困境切入，写清反复被困住的原因以及判断、边界、节奏和选择的重排",
+    directions: "清醒、取舍、边界、长期主义、内耗、比较、关系消耗、自我负责",
+    prompt_status: "ready",
+  },
+  {
     id: "popular_science",
     label: "科普读物",
     core_feature: "把复杂知识讲明白",
     directions: "AI、经济、投资、科技、名人思想",
+    prompt_status: "ready",
+  },
+  {
+    id: "popular_science_cognitive_upgrade",
+    label: "科普读物（认知升级版）",
+    core_feature:
+      "把复杂概念放回真实生活和时代变化中解释，制造原来如此和这件事与我有关的阅读体验",
+    directions: "反常识问题、时代变化、认知升级、AI、经济、科技、健康与生活科学",
     prompt_status: "ready",
   },
   {

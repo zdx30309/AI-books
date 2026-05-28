@@ -14,6 +14,7 @@ from app.prompts.goal_driven_templates import (
     SUPPORTED_CATEGORIES,
     get_category_meta,
     get_prompts,
+    normalize_category,
 )
 from app.services.classical_chinese import (
     build_classical_prompt_source,
@@ -105,6 +106,48 @@ def test_social_science_test_prompt_sync() -> None:
 
     assert social_test_prompts == social_prompts
     assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
+
+
+def test_longform_variant_categories_use_dedicated_prompts() -> None:
+    cases = [
+        (
+            "social_science_core_conflict",
+            "社会痛点（核心矛盾版）",
+            "写作时先判断原文最值得展开的一个核心矛盾",
+        ),
+        (
+            "life_philosophy_self_rescue",
+            "人生哲学（困境自救版）",
+            "一个人为什么会反复被同一种困境困住",
+        ),
+        (
+            "popular_science_cognitive_upgrade",
+            "科普读物（认知升级版）",
+            "让读者产生“原来如此”“这件事和我有关”的阅读体验",
+        ),
+    ]
+
+    for category, label, needle in cases:
+        meta = get_category_meta(category)
+        prompt = get_prompts(category)["full_book_writer"]
+        rendered = prompt.format(raw_text="原始视频文稿")
+
+        assert meta["label"] == label
+        assert label in prompt
+        assert needle in prompt
+        assert "{raw_text}" in prompt
+        assert "原始视频文稿" in rendered
+        assert "@最终书名" in prompt
+        assert "@最终简介" in prompt
+        assert "@目录" in prompt
+        assert "@导言" in prompt
+        assert "@正文" in prompt
+
+
+def test_longform_variant_aliases_resolve() -> None:
+    assert normalize_category("社会痛点核心矛盾版") == "social_science_core_conflict"
+    assert normalize_category("人生哲学困境自救版") == "life_philosophy_self_rescue"
+    assert normalize_category("科普读物认知升级版") == "popular_science_cognitive_upgrade"
 
 
 def test_crayon_illustration_is_not_a_body_writing_category() -> None:

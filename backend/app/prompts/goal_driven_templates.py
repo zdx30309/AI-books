@@ -8,6 +8,11 @@ from app.services.comic_prompts import (
     COMIC_STORY_PROMPT,
     HEALING_COMIC_REFERENCE,
 )
+from app.prompts.longform_variant_prompts import (
+    LIFE_PHILOSOPHY_SELF_RESCUE_FULL_BOOK_WRITER_PROMPT,
+    POPULAR_SCIENCE_COGNITIVE_UPGRADE_FULL_BOOK_WRITER_PROMPT,
+    SOCIAL_SCIENCE_CORE_CONFLICT_FULL_BOOK_WRITER_PROMPT,
+)
 
 BOOK_TITLE_AND_DESCRIPTION_PROMPT = """【书名与简介专项要求】
 - 最终书名和最终简介要带一点新媒体短视频博眼球的感觉，但不能失去图书书名和图书简介的质感。
@@ -233,6 +238,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "social_science_core_conflict",
+        "label": "社会痛点（核心矛盾版）",
+        "core_feature": "提炼原文最值得展开的核心矛盾，围绕压力、代价、阶层、关系和选择重搭长文结构",
+        "directions": "教育、婚姻、住房、职场压力、养老、阶层流动、普通人选择",
+        "prompt_status": "ready",
+    },
+    {
         "id": "life_philosophy",
         "label": "人生哲学",
         "core_feature": "提供认知升级或心灵慰藉",
@@ -240,10 +252,24 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "life_philosophy_self_rescue",
+        "label": "人生哲学（困境自救版）",
+        "core_feature": "从具体生活困境切入，写清反复被困住的原因以及判断、边界、节奏和选择的重排",
+        "directions": "清醒、取舍、边界、长期主义、内耗、比较、关系消耗、自我负责",
+        "prompt_status": "ready",
+    },
+    {
         "id": "popular_science",
         "label": "科普读物",
         "core_feature": "把复杂知识讲明白",
         "directions": "AI、经济、投资、科技、名人思想",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "popular_science_cognitive_upgrade",
+        "label": "科普读物（认知升级版）",
+        "core_feature": "把复杂概念放回真实生活和时代变化中解释，制造原来如此和这件事与我有关的阅读体验",
+        "directions": "反常识问题、时代变化、认知升级、AI、经济、科技、健康与生活科学",
         "prompt_status": "ready",
     },
     {
@@ -1368,13 +1394,24 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "social_science": SOCIAL_SCIENCE_PROMPT_SET,
     # 社会痛点测试版：保留独立入口；prompt 与社会痛点端口严格同步，前端可追加笔锋参考。
     "social_science_test": SOCIAL_SCIENCE_PROMPT_SET,
+    "social_science_core_conflict": _prompt_set(
+        SOCIAL_SCIENCE_CORE_CONFLICT_FULL_BOOK_WRITER_PROMPT,
+    ),
     "life_philosophy": _prompt_set(
         LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
         polish=LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT,
         refine=LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT,
     ),
+    "life_philosophy_self_rescue": _prompt_set(
+        LIFE_PHILOSOPHY_SELF_RESCUE_FULL_BOOK_WRITER_PROMPT,
+        polish=LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT,
+        refine=LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT,
+    ),
     "popular_science": _prompt_set(
         POPULAR_SCIENCE_FULL_BOOK_WRITER_PROMPT,
+    ),
+    "popular_science_cognitive_upgrade": _prompt_set(
+        POPULAR_SCIENCE_COGNITIVE_UPGRADE_FULL_BOOK_WRITER_PROMPT,
     ),
     "wisdom_stories": _prompt_set(
         WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT,
@@ -1427,6 +1464,12 @@ CATEGORY_ALIASES: dict[str, str] = {
     "social": "social_science",
     "workplace_survival": "social_science",
     "职场生存": "social_science",
+    "social_core_conflict": "social_science_core_conflict",
+    "社会痛点核心矛盾版": "social_science_core_conflict",
+    "life_self_rescue": "life_philosophy_self_rescue",
+    "人生哲学困境自救版": "life_philosophy_self_rescue",
+    "popular_science_upgrade": "popular_science_cognitive_upgrade",
+    "科普读物认知升级版": "popular_science_cognitive_upgrade",
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",
