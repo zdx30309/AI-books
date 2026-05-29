@@ -125,6 +125,21 @@ def test_longform_variant_categories_use_dedicated_prompts() -> None:
             "科普读物（认知升级版）",
             "让读者产生“原来如此”“这件事和我有关”的阅读体验",
         ),
+        (
+            "wisdom_stories_causal_philosophy",
+            "故事·智慧（因果哲思版）",
+            "让读者从人物的选择和后果里，看见人生运行中的因果关系",
+        ),
+        (
+            "emotion_relationship_unique_view",
+            "心理情感（情感·关系）（独特观点版）",
+            "让最终成稿与原视频文稿在结构、案例、表达和推进方式上都有明显区别",
+        ),
+        (
+            "health_wellness_daily_pain",
+            "健康养生（日常痛点版）",
+            "必须单独列出一章，详细讲解什么状况需要寻求专业帮助",
+        ),
     ]
 
     for category, label, needle in cases:
@@ -148,6 +163,9 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("社会痛点核心矛盾版") == "social_science_core_conflict"
     assert normalize_category("人生哲学困境自救版") == "life_philosophy_self_rescue"
     assert normalize_category("科普读物认知升级版") == "popular_science_cognitive_upgrade"
+    assert normalize_category("故事智慧因果哲思版") == "wisdom_stories_causal_philosophy"
+    assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
+    assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
 
 
 def test_writer_prompts_include_punctuation_usage_rules() -> None:

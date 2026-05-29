@@ -781,6 +781,11 @@ export function Bookshelf({
           setModalOpen(false);
           navigate(`/book/${taskId}`);
         }}
+        defaultCategoryId={
+          categoryFilter !== "all" && categoryFilter !== "uncategorized"
+            ? categoryFilter
+            : categoryScopeIds?.[0]
+        }
       />
     </>
   );

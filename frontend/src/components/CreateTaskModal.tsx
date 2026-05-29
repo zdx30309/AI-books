@@ -16,6 +16,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onCreated: (taskId: string) => void;
+  defaultCategoryId?: string;
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
@@ -78,7 +79,7 @@ function parsePanelCount(value: string) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-export function CreateTaskModal({ open, onClose, onCreated }: Props) {
+export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }: Props) {
   const [mode, setMode] = useState<"single" | "batch" | "comic">("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
@@ -92,7 +93,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
-  const [category, setCategory] = useState("social_science");
+  const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
@@ -125,14 +126,14 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setComicThemeRequirement("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
-      setCategory("social_science");
+      setCategory(defaultCategoryId ?? "social_science");
       setStyleReference("");
       setStyleNotes("");
       setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
       setError(null);
       setSubmitting(false);
     }
-  }, [open]);
+  }, [defaultCategoryId, open]);
 
   useEffect(() => {
     if (!open) return;

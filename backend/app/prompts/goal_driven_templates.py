@@ -9,9 +9,12 @@ from app.services.comic_prompts import (
     HEALING_COMIC_REFERENCE,
 )
 from app.prompts.longform_variant_prompts import (
+    EMOTION_RELATIONSHIP_UNIQUE_VIEW_FULL_BOOK_WRITER_PROMPT,
+    HEALTH_WELLNESS_DAILY_PAIN_FULL_BOOK_WRITER_PROMPT,
     LIFE_PHILOSOPHY_SELF_RESCUE_FULL_BOOK_WRITER_PROMPT,
     POPULAR_SCIENCE_COGNITIVE_UPGRADE_FULL_BOOK_WRITER_PROMPT,
     SOCIAL_SCIENCE_CORE_CONFLICT_FULL_BOOK_WRITER_PROMPT,
+    WISDOM_STORIES_CAUSAL_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
 )
 
 BOOK_TITLE_AND_DESCRIPTION_PROMPT = """【书名与简介专项要求】
@@ -280,6 +283,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "wisdom_stories_causal_philosophy",
+        "label": "故事·智慧（因果哲思版）",
+        "core_feature": "从人物选择和后果里写出因果关系、命运回望与克制的人生警醒",
+        "directions": "因果、命运、执念、善恶、误判、得失、报应、无常、选择与代价",
+        "prompt_status": "ready",
+    },
+    {
         "id": "biography",
         "label": "传记·人物",
         "core_feature": "浓缩人生关键节点与品格",
@@ -298,6 +308,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "情感·关系",
         "core_feature": "贴近日常，治愈或实用",
         "directions": "亲情、友情、爱情、社交边界",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "emotion_relationship_unique_view",
+        "label": "心理情感（情感·关系）（独特观点版）",
+        "core_feature": "重组结构、拓展关系场景，用更成熟的分析角度写出与原视频明显不同的关系长文",
+        "directions": "讨好、冷淡、依赖、边界、控制、失望、表达、告别、亲密、信任、家庭压力、社交消耗",
         "prompt_status": "ready",
     },
     {
@@ -340,6 +357,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "健康·养生",
         "core_feature": "轻科普，可立即行动",
         "directions": "睡眠、运动、饮食、放松、预防",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "health_wellness_daily_pain",
+        "label": "健康养生（日常痛点版）",
+        "core_feature": "把日常健康痛点放回真实生活场景，讲清根源、成因、边界和温和可执行调整",
+        "directions": "睡不好、久坐疲惫、饮食混乱、体检焦虑、压力过大、运动坚持不了",
         "prompt_status": "ready",
     },
     {
@@ -1440,6 +1464,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "wisdom_stories": _prompt_set(
         WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT,
     ),
+    "wisdom_stories_causal_philosophy": _prompt_set(
+        WISDOM_STORIES_CAUSAL_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
+    ),
     "biography": _prompt_set(
         BIOGRAPHY_FULL_BOOK_WRITER_PROMPT,
         polish=BIOGRAPHY_GEMINI_FAST_POLISH_PROMPT,
@@ -1448,6 +1475,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "history_culture": HISTORY_CULTURE_PROMPT_SET,
     "emotion_relationship": _prompt_set(
         EMOTION_RELATIONSHIP_FULL_BOOK_WRITER_PROMPT,
+    ),
+    "emotion_relationship_unique_view": _prompt_set(
+        EMOTION_RELATIONSHIP_UNIQUE_VIEW_FULL_BOOK_WRITER_PROMPT,
     ),
     "psychology_self_help": _prompt_set(
         PSYCHOLOGY_SELF_HELP_FULL_BOOK_WRITER_PROMPT,
@@ -1475,6 +1505,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "health_wellness": _prompt_set(
         HEALTH_WELLNESS_FULL_BOOK_WRITER_PROMPT,
     ),
+    "health_wellness_daily_pain": _prompt_set(
+        HEALTH_WELLNESS_DAILY_PAIN_FULL_BOOK_WRITER_PROMPT,
+    ),
     "classic_interpretation": _prompt_set(
         CLASSIC_INTERPRETATION_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -1494,6 +1527,18 @@ CATEGORY_ALIASES: dict[str, str] = {
     "人生哲学困境自救版": "life_philosophy_self_rescue",
     "popular_science_upgrade": "popular_science_cognitive_upgrade",
     "科普读物认知升级版": "popular_science_cognitive_upgrade",
+    "wisdom_causal_philosophy": "wisdom_stories_causal_philosophy",
+    "story_wisdom_causal_philosophy": "wisdom_stories_causal_philosophy",
+    "故事智慧因果哲思版": "wisdom_stories_causal_philosophy",
+    "小故事智慧因果哲思版": "wisdom_stories_causal_philosophy",
+    "emotion_unique_view": "emotion_relationship_unique_view",
+    "emotion_relationship_unique_perspective": "emotion_relationship_unique_view",
+    "情感关系独特观点版": "emotion_relationship_unique_view",
+    "心理情感独特观点版": "emotion_relationship_unique_view",
+    "health_daily_pain": "health_wellness_daily_pain",
+    "health_wellness_daily_pain": "health_wellness_daily_pain",
+    "健康养生日常痛点版": "health_wellness_daily_pain",
+    "健康·养生日常痛点版": "health_wellness_daily_pain",
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",

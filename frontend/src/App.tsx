@@ -62,11 +62,11 @@ export default function App() {
               <AppShell>
                 <Bookshelf
                   title="长文新版书架"
-                  subtitle="收纳社会痛点核心矛盾版、人生哲学困境自救版、科普读物认知升级版"
+                  subtitle="收纳核心矛盾、困境自救、认知升级、因果哲思、独特观点、日常痛点等新版长文"
                   categoryScopeIds={LONGFORM_VARIANT_CATEGORY_IDS}
                   allCategoryLabel="全部新版"
                   emptyTitle="新版书架还空着"
-                  emptyDescription="用昨天新增的三个新版分类生成书稿后，会自动收纳到这里"
+                  emptyDescription="用新版分类生成书稿后，会自动收纳到这里"
                 />
               </AppShell>
             </ProtectedRoute>

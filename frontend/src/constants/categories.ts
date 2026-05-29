@@ -75,6 +75,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "wisdom_stories_causal_philosophy",
+    label: "故事·智慧（因果哲思版）",
+    core_feature: "从人物选择和后果里写出因果关系、命运回望与克制的人生警醒",
+    directions: "因果、命运、执念、善恶、误判、得失、报应、无常、选择与代价",
+    prompt_status: "ready",
+  },
+  {
     id: "biography",
     label: "传记·人物",
     core_feature: "浓缩人生关键节点与品格",
@@ -93,6 +100,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     label: "情感·关系",
     core_feature: "贴近日常，治愈或实用",
     directions: "亲情、友情、爱情、社交边界",
+    prompt_status: "ready",
+  },
+  {
+    id: "emotion_relationship_unique_view",
+    label: "心理情感（情感·关系）（独特观点版）",
+    core_feature: "重组结构、拓展关系场景，用更成熟的分析角度写出不同于原视频的关系长文",
+    directions: "讨好、冷淡、依赖、边界、控制、失望、表达、告别、亲密、信任、家庭压力、社交消耗",
     prompt_status: "ready",
   },
   {
@@ -138,6 +152,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "health_wellness_daily_pain",
+    label: "健康养生（日常痛点版）",
+    core_feature: "把日常健康痛点放回真实生活场景，讲清根源、成因、边界和温和可执行调整",
+    directions: "睡不好、久坐疲惫、饮食混乱、体检焦虑、压力过大、运动坚持不了",
+    prompt_status: "ready",
+  },
+  {
     id: "classic_interpretation",
     label: "经典·解读",
     core_feature: "降低门槛，提取精华",
@@ -157,6 +178,9 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "social_science_core_conflict",
   "life_philosophy_self_rescue",
   "popular_science_cognitive_upgrade",
+  "wisdom_stories_causal_philosophy",
+  "emotion_relationship_unique_view",
+  "health_wellness_daily_pain",
 ] as const;
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
