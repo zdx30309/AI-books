@@ -126,7 +126,7 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "healing_comic",
     label: "漫画",
-    core_feature: "只输入书名，自动生成 32 页同系列原创治愈漫画",
+    core_feature: "只输入书名和章节数，自动生成同系列原创治愈漫画",
     directions: "出版感封面、白底留白、图上短句、原创角色、同系列配图",
     prompt_status: "ready",
   },
@@ -152,6 +152,12 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
 ];
+
+export const LONGFORM_VARIANT_CATEGORY_IDS = [
+  "social_science_core_conflict",
+  "life_philosophy_self_rescue",
+  "popular_science_cognitive_upgrade",
+] as const;
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 from pathlib import Path
 import sys
@@ -266,6 +267,57 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     assert image_prompts[0][0] == "comic_cover.png"
     assert (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_section_32.png").exists()
+
+
+def test_healing_comic_category_accepts_custom_panel_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = "慢慢来，也很好"
+    image_prompts: list[tuple[str, str]] = []
+    writer_prompts: list[str] = []
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        image_prompts.append((output_path.name, prompt))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    async def fake_writer(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        assert "正好输出 12 条章节" in prompt
+        assert "不要固定成 32 条" in prompt
+        panels = [
+            {
+                "title": f"第{index}张",
+                "image_text": [f"第{index}次慢慢来"],
+                "phrases": [f"第{index}次慢慢来"],
+                "visual": f"原创小角色在白底日常场景 {index} 里停顿，留白。",
+            }
+            for index in range(1, 13)
+        ]
+        return json.dumps({"title": title, "intro": "治愈短漫画。", "panels": panels}, ensure_ascii=False)
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(content_engine.settings, "DEEPSEEK_API_KEY", "")
+
+    output_dir = tmp_path / "healing_comic_custom"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            f"书名：{title}",
+            category="healing_comic",
+            output_dir=output_dir,
+            healing_comic_panel_count=12,
+        )
+    )
+
+    assert writer_prompts
+    assert len(image_prompts) == 13
+    assert "comic_images/comic_section_12.png" in result
+    assert "comic_images/comic_section_13.png" not in result
+    assert (output_dir / "comic_images" / "comic_section_12.png").exists()
+    assert not (output_dir / "comic_images" / "comic_section_13.png").exists()
 
 
 def test_healing_comic_uncertain_image_does_not_fail_manuscript(

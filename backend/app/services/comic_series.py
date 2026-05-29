@@ -89,7 +89,10 @@ _ANIMALS = (
     ("小企鹅", "圆肚小企鹅，略笨拙，适合冷笑话、反差和小聪明"),
     ("小水獭", "抱着小物件的小水獭，适合日常哲思、小失落和被生活接住"),
 )
-HEALING_COMIC_PANEL_COUNT = 32
+HEALING_COMIC_DEFAULT_PANEL_COUNT = 32
+HEALING_COMIC_PANEL_COUNT = HEALING_COMIC_DEFAULT_PANEL_COUNT
+HEALING_COMIC_MIN_PANEL_COUNT = 1
+HEALING_COMIC_MAX_PANEL_COUNT = 64
 REFERENCE_ASSET_DIR = Path(__file__).with_name("reference_assets") / "healing_comic"
 HEALING_COMIC_REFERENCE_EPUB = REFERENCE_ASSET_DIR / "kan_ni_yi_yan_jiu_hui_xiao.epub"
 HEALING_COMIC_REFERENCE_COVERS_ZIP = REFERENCE_ASSET_DIR / "reference_covers.zip"
@@ -173,6 +176,18 @@ def parse_healing_comic_title(value: object) -> str:
     first = raw.split("\n", 1)[0]
     first = re.sub(r"^\s*(?:书名|标题|漫画名|漫画书名)\s*[：:、.．)]\s*", "", first).strip()
     return first.strip(" \t，,。；;")[:60]
+
+
+def parse_healing_comic_panel_count(value: object, *, default: int = HEALING_COMIC_DEFAULT_PANEL_COUNT) -> int:
+    try:
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            raw = int(match.group(0)) if match else default
+        else:
+            raw = int(value or default)
+    except (TypeError, ValueError):
+        raw = default
+    return max(HEALING_COMIC_MIN_PANEL_COUNT, min(HEALING_COMIC_MAX_PANEL_COUNT, raw))
 
 
 def _read_epub_toc_titles(limit: int = 180) -> list[str]:
@@ -327,9 +342,15 @@ def _animal_for(index: int) -> tuple[str, str]:
     return _ANIMALS[(index - 1) % len(_ANIMALS)]
 
 
-def build_healing_comic_writer_prompt(title: str, research_context: str) -> str:
+def build_healing_comic_writer_prompt(
+    title: str,
+    research_context: str,
+    *,
+    panel_count: int = HEALING_COMIC_DEFAULT_PANEL_COUNT,
+) -> str:
     book_title = parse_healing_comic_title(title) or "今天也不用很厉害"
-    return f"""你是原创成年人治愈系漫画主编。请根据用户给定书名，参考服务端漫画数据库的抽象规律，创作一本 {HEALING_COMIC_PANEL_COUNT} 章的原创成年人治愈漫画图文书。
+    panel_count = parse_healing_comic_panel_count(panel_count)
+    return f"""你是原创成年人治愈系漫画主编。请根据用户给定书名，参考服务端漫画数据库的抽象规律，创作一本 {panel_count} 章的原创成年人治愈漫画图文书。
 
 用户书名：
 {book_title}
@@ -339,12 +360,12 @@ def build_healing_comic_writer_prompt(title: str, research_context: str) -> str:
 
 硬性要求：
 - 只根据书名自动推导一类适合的漫画系列，不需要用户再输入短语、角色或剧情。
-- 需要正好输出 {HEALING_COMIC_PANEL_COUNT} 条章节，每条都是一张要生成的漫画图。
+- 需要正好输出 {panel_count} 条章节，每条都是一张要生成的漫画图；不要固定成 32 条，也不要自行增减。
 - 每条必须自拟章节标题，标题要短，像成年人治愈漫画目录。
 - 每条必须给出 image_text：这是要直接写在配图上的中文短语，1 到 3 行，每行 4 到 12 个中文字符，短、轻、好读。
 - 每条必须给出 phrases：章节正文使用的几句短语，必须与 image_text 一致或高度一致；正文只是短语，不要写故事长文。
 - 每条必须给出 visual：画面设计必须先服务 image_text，让图片和短语天然绑定。
-- 32 张图必须属于同一本书：统一主色、线条、颗粒感、留白、光影、角色气质和出版感。
+- {panel_count} 张图必须属于同一本书：统一主色、线条、颗粒感、留白、光影、角色气质和出版感。
 - 最终摊开效果要像同一本微信读书治愈漫画：白底大留白、单页小场景、少量角色动作、手写短句、轻幽默。
 - 可以有原创固定角色，也可以用人物、动物、植物、物件、天气、房间、街道、光影等意象，但不要复刻参考书主角。
 - 如果使用动物主角，必须避开绿色鳄鱼、短尾鳄、鳄鱼外形和参考书可识别角色；改成完全原创的动物或人物。
@@ -384,15 +405,28 @@ def _json_object_from_text(text: str) -> dict[str, object]:
     return data
 
 
-def fallback_healing_comic_panels(title: str) -> tuple[str, str, list[dict[str, object]]]:
+def fallback_healing_comic_panels(
+    title: str,
+    *,
+    panel_count: int = HEALING_COMIC_DEFAULT_PANEL_COUNT,
+) -> tuple[str, str, list[dict[str, object]]]:
     final_title = parse_healing_comic_title(title) or "今天也不用很厉害"
+    panel_count = parse_healing_comic_panel_count(panel_count)
     theme = final_title
-    moments = (
+    base_moments = [
         "醒来", "出门", "等车", "买早餐", "坐电梯", "回消息", "发呆", "下雨",
         "加班", "迷路", "便利店", "晾衣服", "找钥匙", "看云", "喝水", "午休",
         "道歉", "拥抱空气", "收拾桌面", "路过花店", "夜跑", "听歌", "写便签", "停电",
         "等月亮", "修小灯", "看旧照片", "不赶路", "说晚安", "做梦", "醒来一点", "明天",
-    )
+        "开窗", "换床单", "等红灯", "买花", "煮面", "晒太阳", "躲雨", "整理包",
+        "关电脑", "走小路", "吹风", "洗杯子", "丢旧票", "等朋友", "看路灯", "擦桌子",
+        "听雨停", "慢慢走", "收伞", "看晚霞", "写名字", "醒得早", "不解释", "留一盏灯",
+        "去散步", "看雪", "等电梯", "喝热水", "抱抱自己", "把门关轻", "早点睡", "下一页",
+    ]
+    moments = [
+        base_moments[index] if index < len(base_moments) else f"第{index + 1}个小瞬间"
+        for index in range(panel_count)
+    ]
     panels: list[dict[str, object]] = []
     for index, moment in enumerate(moments, start=1):
         animal, subject = _animal_for(index)
@@ -425,15 +459,21 @@ def _short_text_lines(value: object, *, fallback: str) -> list[str]:
     return lines or [fallback[:16]]
 
 
-def parse_healing_comic_writer_output(text: str, title: str) -> tuple[str, str, list[dict[str, object]], dict[str, str]]:
+def parse_healing_comic_writer_output(
+    text: str,
+    title: str,
+    *,
+    panel_count: int = HEALING_COMIC_DEFAULT_PANEL_COUNT,
+) -> tuple[str, str, list[dict[str, object]], dict[str, str]]:
     requested_title = parse_healing_comic_title(title) or "治愈漫画"
+    panel_count = parse_healing_comic_panel_count(panel_count)
     try:
         data = _json_object_from_text(text)
         raw_panels = data.get("panels")
         if not isinstance(raw_panels, list):
             raise ValueError("panels missing")
         panels: list[dict[str, object]] = []
-        for index, item in enumerate(raw_panels[:HEALING_COMIC_PANEL_COUNT], start=1):
+        for index, item in enumerate(raw_panels[:panel_count], start=1):
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or f"第{index}张").strip()[:40]
@@ -451,9 +491,11 @@ def parse_healing_comic_writer_output(text: str, title: str) -> tuple[str, str, 
                     "visual": visual,
                 }
             )
-        if len(panels) >= 24:
-            while len(panels) < HEALING_COMIC_PANEL_COUNT:
-                panels.append(fallback_healing_comic_panels(requested_title)[2][len(panels)])
+        min_required = max(1, min(panel_count, 24, (panel_count * 3 + 3) // 4))
+        if len(panels) >= min_required:
+            fallback_panels = fallback_healing_comic_panels(requested_title, panel_count=panel_count)[2]
+            while len(panels) < panel_count:
+                panels.append(fallback_panels[len(panels)])
             series = {
                 "series_style": str(data.get("series_style") or "").strip()[:400],
                 "cover_visual": str(data.get("cover_visual") or "").strip()[:260],
@@ -461,12 +503,12 @@ def parse_healing_comic_writer_output(text: str, title: str) -> tuple[str, str, 
             return (
                 requested_title,
                 str(data.get("intro") or "一本原创成年人情绪短漫画。").strip()[:160],
-                panels[:HEALING_COMIC_PANEL_COUNT],
+                panels[:panel_count],
                 series,
             )
     except Exception:
         pass
-    fallback_title, intro, panels = fallback_healing_comic_panels(requested_title)
+    fallback_title, intro, panels = fallback_healing_comic_panels(requested_title, panel_count=panel_count)
     return fallback_title, intro, panels, {"series_style": "", "cover_visual": ""}
 
 
@@ -1280,6 +1322,9 @@ __all__ = [
     "COMIC_STORY_PROMPT",
     "ComicSectionImage",
     "HEALING_COMIC_PANEL_COUNT",
+    "HEALING_COMIC_DEFAULT_PANEL_COUNT",
+    "HEALING_COMIC_MAX_PANEL_COUNT",
+    "HEALING_COMIC_MIN_PANEL_COUNT",
     "assemble_healing_comic_markdown",
     "assemble_comic_series_markdown",
     "build_healing_comic_cover_prompt",
@@ -1306,6 +1351,7 @@ __all__ = [
     "parse_comic_theme_requirement",
     "parse_comic_title",
     "parse_healing_comic_requirement",
+    "parse_healing_comic_panel_count",
     "parse_healing_comic_title",
     "parse_healing_comic_writer_output",
     "plan_healing_comic_images",

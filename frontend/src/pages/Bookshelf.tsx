@@ -113,7 +113,23 @@ function inDateFilter(task: TaskListItem, filter: DateFilter) {
   return date < startOfMonth;
 }
 
-export function Bookshelf() {
+interface BookshelfProps {
+  title?: string;
+  subtitle?: string;
+  categoryScopeIds?: readonly string[];
+  allCategoryLabel?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
+}
+
+export function Bookshelf({
+  title = "我的书架",
+  subtitle,
+  categoryScopeIds,
+  allCategoryLabel = "全部分类",
+  emptyTitle = "书架还空着",
+  emptyDescription = "点击「开始创作」，把第一段视频思想写成你的第一本书",
+}: BookshelfProps = {}) {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
@@ -171,35 +187,57 @@ export function Bookshelf() {
     localStorage.setItem(CATEGORY_ORDER_STORAGE_KEY, JSON.stringify(categoryOrder));
   }, [categoryOrder]);
 
+  const isScopedShelf = Boolean(categoryScopeIds?.length);
+  const categoryScopeSet = useMemo(() => new Set(categoryScopeIds ?? []), [categoryScopeIds]);
+  const scopedCategories = useMemo(
+    () => (isScopedShelf ? categories.filter((item) => categoryScopeSet.has(item.id)) : categories),
+    [categories, categoryScopeSet, isScopedShelf],
+  );
+  const scopedTasks = useMemo(
+    () =>
+      isScopedShelf
+        ? tasks.filter((task) => categoryScopeSet.has(categoryValue(task, categories)))
+        : tasks,
+    [categories, categoryScopeSet, isScopedShelf, tasks],
+  );
+
   const categoryChips = useMemo<CategoryChip[]>(() => {
     const chips: CategoryChip[] = [
-      { id: "filter:all", label: "全部分类", filterValue: "all", type: "all" },
-      ...categories.map((item) => ({
+      { id: "filter:all", label: allCategoryLabel, filterValue: "all", type: "all" },
+      ...scopedCategories.map((item) => ({
         id: `category:${item.id}`,
         label: item.label,
         filterValue: item.id,
         type: "category" as const,
       })),
-      {
+    ];
+    if (!isScopedShelf) {
+      chips.push({
         id: "filter:uncategorized",
         label: "未分类",
         filterValue: "uncategorized",
         type: "uncategorized",
-      },
-    ];
+      });
+    }
     return orderCategoryChips(chips, categoryOrder);
-  }, [categories, categoryOrder]);
+  }, [allCategoryLabel, categoryOrder, isScopedShelf, scopedCategories]);
+
+  useEffect(() => {
+    if (categoryFilter !== "all" && !categoryChips.some((item) => item.filterValue === categoryFilter)) {
+      setCategoryFilter("all");
+    }
+  }, [categoryChips, categoryFilter]);
 
   const statusFiltered =
     filter === "all"
-      ? tasks
+      ? scopedTasks
       : filter === "processing"
-        ? tasks.filter((t) =>
+        ? scopedTasks.filter((t) =>
             ["pending", "processing", "fetching_topics", "filtering_topics", "generating_outline", "writing_chapters", "fact_checking"].includes(
               t.status,
             ),
           )
-        : tasks.filter((t) => t.status === filter);
+        : scopedTasks.filter((t) => t.status === filter);
 
   const filtered = statusFiltered
     .filter((task) =>
@@ -212,9 +250,9 @@ export function Bookshelf() {
     .filter((task) => inDateFilter(task, dateFilter));
 
   const downloadableFiltered = filtered.filter((task) => task.status === "completed");
-  const failedTaskIds = tasks.filter((task) => task.status === "failed").map((task) => task.id);
+  const failedTaskIds = scopedTasks.filter((task) => task.status === "failed").map((task) => task.id);
   const visibleFailedTaskIds = filtered.filter((task) => task.status === "failed").map((task) => task.id);
-  const selectedTasks = tasks.filter((task) => selectedTaskIds.has(task.id));
+  const selectedTasks = scopedTasks.filter((task) => selectedTaskIds.has(task.id));
   const selectedCompletedTaskIds = selectedTasks
     .filter((task) => task.status === "completed")
     .map((task) => task.id);
@@ -472,10 +510,10 @@ export function Bookshelf() {
       <div className="mb-10 flex items-end justify-between">
         <div>
           <h1 className="font-serif text-3xl tracking-wide text-warm-100">
-            我的书架
+            {title}
           </h1>
           <p className="mt-2 text-xs tracking-widest text-warm-400">
-            共 {tasks.length} 本书稿
+            {subtitle ?? `共 ${scopedTasks.length} 本书稿`}
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-3">
@@ -691,8 +729,8 @@ export function Bookshelf() {
         </div>
       ) : filtered.length === 0 ? (
         <EmptyState
-          title={filter === "all" ? "书架还空着" : "暂无相关书稿"}
-          description="点击「新建书稿」，把第一段视频思想写成你的第一本书"
+          title={filter === "all" && categoryFilter === "all" && dateFilter === "all" ? emptyTitle : "暂无相关书稿"}
+          description={filter === "all" && categoryFilter === "all" && dateFilter === "all" ? emptyDescription : "当前筛选条件下暂时没有书稿"}
           action={
             <button
               type="button"

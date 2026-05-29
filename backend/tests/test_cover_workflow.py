@@ -65,6 +65,14 @@ def test_write_cover_bytes_file_normalizes_final_cover_size(tmp_path: Path) -> N
     assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
 
 
+def test_write_cover_bytes_file_normalizes_draft_cover_size(tmp_path: Path) -> None:
+    output = tmp_path / "draft_cover.png"
+
+    cover._write_cover_bytes_file(output, PNG_BYTES)  # noqa: SLF001
+
+    assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
+
+
 def test_literature_reference_members_excludes_removed_suffixes(tmp_path: Path) -> None:
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
@@ -111,6 +119,23 @@ def test_draft_and_refine_prompts_enforce_publication_cover_not_ecommerce() -> N
     assert "出版品牌 logo" in prompt
     assert "不要乱码中文" in prompt
     assert "参考出版社版本时也不能做得过黑过暗" in prompt
+
+
+def test_draft_and_refine_prompts_lock_first_cover_generation_size() -> None:
+    cover_input = cover.prepare_cover_input(
+        "看清代价",
+        "@最终简介\n一本讨论普通人困境和选择代价的社会痛点书。",
+        author="测试作者",
+        category="social_science",
+    )
+    brief = cover.build_cover_style_brief(cover_input)
+    draft_prompt = cover.build_draft_cover_prompt(cover_input, brief)
+    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
+
+    for prompt in (draft_prompt, refine_prompt):
+        assert "OpenAI 第一步生成的封面初稿就必须严格按 2450*3500" in prompt
+        assert "画布宽高比必须是 7:10" in prompt
+        assert "不要横版、方图、拼贴图、多封面合集、书模、展示场景、外框画布、额外留边或非封面区域" in prompt
 
 
 def test_visual_impact_cover_uses_early_high_saturation_workflow() -> None:

@@ -43,6 +43,10 @@ _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
 _IMAGE_PROMPT_LIMIT = 32000
 _FINAL_COVER_SIZE = (2450, 3500)
 _FINAL_COVER_SIZE_TEXT = "2450*3500"
+_COVER_DIMENSION_HARD_RULE = (
+    f"- 尺寸硬规则：OpenAI 第一步生成的封面初稿就必须严格按 {_FINAL_COVER_SIZE_TEXT} 像素竖版成品封面来构图，"
+    "画布宽高比必须是 7:10，只能是一张完整正面封面本体；不要横版、方图、拼贴图、多封面合集、书模、展示场景、外框画布、额外留边或非封面区域。"
+)
 _AUTHOR_PLACEHOLDER = "作者名留白"
 _SATURATED_COLOR_DIRECTION = (
     "以高饱和、明亮、强识别的出版色彩为主，颜色组合要清楚、有情绪、有手机端识别度。",
@@ -1922,6 +1926,7 @@ def build_draft_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBri
 - 分类：{cover_input.category_label}
 
 必须优先遵守的硬规则：
+{_COVER_DIMENSION_HARD_RULE}
 {market_rule_section.rstrip()}
 {category_rule_section.rstrip()}
 {style_addendum_section}
@@ -2027,6 +2032,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 - 分类：{cover_input.category_label}
 
 精修硬规则：
+{_COVER_DIMENSION_HARD_RULE}
 {composition_rule}
 {visual_variation_section.rstrip()}
 - 继续遵循：{style_brief.generation_prompt_addendum[:1400]}
@@ -2038,7 +2044,7 @@ def build_refine_cover_prompt(cover_input: CoverInput, style_brief: CoverStyleBr
 - 不要改成电商商品图，不要出现 3D 书本样机、书脊、赠品、白底商品展示。
 
 最终输出：
-竖版正面封面本体，高清干净，有纸张或印刷质感。"""
+严格 {_FINAL_COVER_SIZE_TEXT} 像素竖版正面封面本体，高清干净。"""
 
 
 def build_cover_prompt(
@@ -2508,7 +2514,7 @@ def _normalize_final_cover_bytes(data: bytes) -> bytes:
 def _write_cover_bytes_file(path: Path, data: bytes, should_abort: Callable[[], bool] | None = None) -> None:
     _abort_cover_generation_if_requested(should_abort, stage=f"write {path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.name == "cover.png":
+    if path.name in {"draft_cover.png", "cover.png"}:
         data = _normalize_final_cover_bytes(data)
         _abort_cover_generation_if_requested(should_abort, stage=f"normalize {path.name}")
     try:
@@ -2589,7 +2595,7 @@ def _build_literature_direct_cover_prompt(
 
 分层模仿要求：
 - 只输出一张竖版中文图书正面封面本体。
-- 最终封面必须严格按 2450*3500 像素的竖版成品比例组织画面，不能横版、方图、书模、带场景边框或留出额外画布。
+{_COVER_DIMENSION_HARD_RULE}
 - 书名必须使用“{cover_input.title}”，作者必须使用“{cover_input.author or _AUTHOR_PLACEHOLDER}”；不要保留参考图里的真实书名、原作者、出版社、平台信息或任何残影。
 - 参考封面原始文字信息必须零继承：原封面上的所有文字、短句、副标题、金句、腰封文案、作者介绍、推荐语、系列名、栏目名、出版社名、品牌名、英文单词、数字编号、ISBN、价格、二维码旁文字、角标文字、印章文字、边栏竖排文字和任何可读字符，都不能与新封面文字信息重合，也不能局部照搬或改一两个字继续使用。新封面文字只能来自当前书名、当前作者、当前简介重新生成的 0 到 1 句短辅助文案，以及按当前书名/简介重新翻译或提炼的极少量英文；如果某个词、短句或英文来自参考图原文，必须删除或改写到完全不可识别。
 - 封面主书名必须与“{cover_input.title}”逐字完全一致：不能自己添加前缀、后缀、副标题、系列名、解释性短语、营销词、标点变体或额外汉字；不能删字、换字、改词序、改标点、拆错词、合并词或把书名扩写成另一句话。书名本身包含的冒号、问号、顿号、空格、数字和英文必须原样保留。
@@ -2638,7 +2644,7 @@ def _build_literature_direct_refine_prompt(cover_input: CoverInput) -> str:
 - 如果初稿有白底，保持纯白 #FFFFFF 数字白；不要米白、奶油白、暖白、灰白、纸白，不要纸张纹理、纤维、印刷颗粒、噪点、做旧、扫描感、油墨渗透感或高级感灰滤镜。
 - 提高整体明度、色彩纯度和文字锐度；让封面在手机书架缩略图里更干净、更高级、更像正式出版封面。
 - 只输出一张竖版中文图书正面封面本体；不要 3D 书模、不要展示场景、不要额外说明文字。
-- 最终精修成品必须保持 2450*3500 像素的竖版封面比例，不要输出横版、方图、拼贴图、带外框画布或非封面区域。
+{_COVER_DIMENSION_HARD_RULE}
 """
 
 
@@ -2860,7 +2866,8 @@ def _build_simple_reference_cover_prompt(
 - 封面上的金句可以少一点：除书名、作者和必要副标题外，最多只允许 0 到 1 句短金句；标题已经足够清楚时不要加金句；禁止多段营销文案、长清单和密集小字。
 
 最终输出：
-只输出一张竖版中文图书正面封面本体，不要输出说明文字、拼贴图或多张候选图。
+{_COVER_DIMENSION_HARD_RULE}
+只输出一张严格 {_FINAL_COVER_SIZE_TEXT} 像素竖版中文图书正面封面本体，不要输出说明文字、拼贴图或多张候选图。
 """
 
 

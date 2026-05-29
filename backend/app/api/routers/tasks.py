@@ -37,6 +37,7 @@ from app.services.comic_series import (
     parse_comic_preface_phrase,
     parse_comic_theme_requirement,
     parse_comic_title,
+    parse_healing_comic_panel_count,
     validate_comic_phrases,
 )
 from app.services.classical_chinese import get_classical_variant_meta
@@ -228,7 +229,14 @@ def _normalize_task_config(config: dict | None) -> dict:
         )
         if not title:
             raise HTTPException(status_code=400, detail="漫画需要输入书名")
+        panel_count = parse_healing_comic_panel_count(
+            cfg.get("comic_panel_count")
+            or cfg.get("healing_comic_panel_count")
+            or cfg.get("chapter_count")
+            or cfg.get("panel_count")
+        )
         cfg["comic_title"] = title
+        cfg["comic_panel_count"] = panel_count
         cfg["title"] = title
         cfg.pop("comic_preface_phrase", None)
         cfg.pop("comic_phrases", None)

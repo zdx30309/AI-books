@@ -20,6 +20,9 @@ interface Props {
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
 const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
+const HEALING_COMIC_DEFAULT_PANEL_COUNT = 32;
+const HEALING_COMIC_MIN_PANEL_COUNT = 1;
+const HEALING_COMIC_MAX_PANEL_COUNT = 64;
 const CLASSICAL_VARIANTS = [
   { id: "plain", label: "通俗白话" },
   { id: "zhiguai_web", label: "志怪小说爽读版" },
@@ -70,6 +73,11 @@ function parseComicPhrases(text: string) {
     .map((line) => line.slice(0, 120));
 }
 
+function parsePanelCount(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [mode, setMode] = useState<"single" | "batch" | "comic">("single");
   const [url, setUrl] = useState("");
@@ -80,6 +88,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
   const [classicalBookTitle, setClassicalBookTitle] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
   const [comicTitle, setComicTitle] = useState("");
+  const [comicPanelCount, setComicPanelCount] = useState(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
@@ -112,6 +121,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
       setClassicalBookTitle("");
       setCandidateLinks("");
       setComicTitle("");
+      setComicPanelCount(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
       setComicThemeRequirement("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
@@ -195,6 +205,15 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           setError("漫画需要输入书名");
           return;
         }
+        const panelCount = parsePanelCount(comicPanelCount);
+        if (
+          !Number.isInteger(panelCount) ||
+          panelCount < HEALING_COMIC_MIN_PANEL_COUNT ||
+          panelCount > HEALING_COMIC_MAX_PANEL_COUNT
+        ) {
+          setError(`漫画章节数需要在 ${HEALING_COMIC_MIN_PANEL_COUNT} 到 ${HEALING_COMIC_MAX_PANEL_COUNT} 之间`);
+          return;
+        }
         setSubmitting(true);
         try {
           const res = await api.createTask({
@@ -202,6 +221,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
             config: {
               category: "healing_comic",
               comic_title: cleanedTitle,
+              comic_panel_count: panelCount,
               title: cleanedTitle,
               raw_text: `书名：${cleanedTitle}`,
             },
@@ -691,6 +711,7 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
           ) : mode === "comic" ? (
             <div className="space-y-4">
               {category === "healing_comic" ? (
+                <>
                 <div>
                   <label
                     htmlFor="healing-comic-title"
@@ -706,9 +727,32 @@ export function CreateTaskModal({ open, onClose, onCreated }: Props) {
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    只需要输入书名；系统会参考服务端漫画数据库，自动规划 32 个章节、封面和同系列配图，短句会直接写在图上。
+                    只需要输入书名和章节数；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。
                   </p>
                 </div>
+                <div>
+                  <label
+                    htmlFor="healing-comic-panel-count"
+                    className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                  >
+                    章节数量
+                  </label>
+                  <input
+                    id="healing-comic-panel-count"
+                    type="number"
+                    min={HEALING_COMIC_MIN_PANEL_COUNT}
+                    max={HEALING_COMIC_MAX_PANEL_COUNT}
+                    step={1}
+                    value={comicPanelCount}
+                    onChange={(e) => setComicPanelCount(e.target.value.replace(/[^\d]/g, ""))}
+                    placeholder={String(HEALING_COMIC_DEFAULT_PANEL_COUNT)}
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义 {HEALING_COMIC_MIN_PANEL_COUNT} 到 {HEALING_COMIC_MAX_PANEL_COUNT} 章；每章会生成一张同系列漫画图。
+                  </p>
+                </div>
+                </>
               ) : (
                 <>
               <div>

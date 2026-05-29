@@ -1187,17 +1187,20 @@ async def _generate_healing_comic_book(
     *,
     output_dir: Path | None,
     on_stage: StageCallback | None,
+    panel_count: int = 32,
 ) -> str:
     from app.services.comic_series import (
         assemble_healing_comic_markdown,
         build_healing_comic_writer_prompt,
         generate_healing_comic_images,
         inject_comic_images,
+        parse_healing_comic_panel_count,
         parse_healing_comic_title,
         parse_healing_comic_writer_output,
     )
 
     comic_title = parse_healing_comic_title(raw_text) or "今天也不用很厉害"
+    panel_count = parse_healing_comic_panel_count(panel_count)
     if output_dir is None:
         raise ValueError("漫画需要 output_dir 以保存每张配图")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1207,7 +1210,7 @@ async def _generate_healing_comic_book(
     if on_stage:
         on_stage("comic_structure_done", {"chars": len(research_context), "research_done": True})
 
-    writer_prompt = build_healing_comic_writer_prompt(comic_title, research_context)
+    writer_prompt = build_healing_comic_writer_prompt(comic_title, research_context, panel_count=panel_count)
     _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
     try:
         writer_output = await _route_writer_call(
@@ -1220,7 +1223,11 @@ async def _generate_healing_comic_book(
         logger.warning("ChatGPT healing comic writer fallback: %s", exc)
         writer_output = ""
     _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
-    title, intro, panels, series_meta = parse_healing_comic_writer_output(writer_output, comic_title)
+    title, intro, panels, series_meta = parse_healing_comic_writer_output(
+        writer_output,
+        comic_title,
+        panel_count=panel_count,
+    )
     script_json = json.dumps(
         {"title": title, "intro": intro, "series_meta": series_meta, "panels": panels},
         ensure_ascii=False,
@@ -1345,6 +1352,7 @@ async def generate_full_book(
     style_notes: str | None = None,
     classical_variant: str | None = None,
     classical_original_title: str | None = None,
+    healing_comic_panel_count: int | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
     prompts = get_prompts(normalized_category)
@@ -1368,6 +1376,7 @@ async def generate_full_book(
             raw_text,
             output_dir=output_dir,
             on_stage=on_stage,
+            panel_count=healing_comic_panel_count or 32,
         )
 
     if normalized_category == "comic_series":

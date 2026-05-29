@@ -26,6 +26,7 @@ from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.classical_chinese import classical_final_title
+from app.services.comic_series import parse_healing_comic_panel_count
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
 from app.services.youtube import extract_youtube_text, is_youtube_url
@@ -851,6 +852,9 @@ def process_video(_self, task_id: str) -> dict:
                 style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
                 classical_variant=str((task.config or {}).get("classical_variant") or "").strip() or None,
                 classical_original_title=classical_original_title,
+                healing_comic_panel_count=parse_healing_comic_panel_count(
+                    (task.config or {}).get("comic_panel_count")
+                ),
             )
         )
         _ensure_active_run(db, task, run_id)
