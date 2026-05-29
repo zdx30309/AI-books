@@ -176,6 +176,14 @@ class RegenerateSelectionRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=20000, description="待重新生成的选中文本")
 
 
+class RegenerateCoverRequest(BaseModel):
+    reference_mode: str = Field(
+        default="refresh",
+        pattern="^(refresh|reuse)$",
+        description="refresh=重新选择参考封面；reuse=沿用当前参考封面",
+    )
+
+
 class RegenerateSelectionResponse(BaseModel):
     original: str
     regenerated: str

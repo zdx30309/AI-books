@@ -478,6 +478,29 @@ export function BookDetail() {
     }
   }, [id]);
 
+  const handleRegenerateCover = useCallback(
+    async (referenceMode: "refresh" | "reuse") => {
+      if (!id) return;
+      const ok = window.confirm(
+        referenceMode === "refresh"
+          ? "确定重新选择参考封面并重新生成封面吗？当前封面会被新图替换。"
+          : "确定沿用当前参考封面并重新生成封面吗？当前封面会被新图替换。",
+      );
+      if (!ok) return;
+      try {
+        setLoading(true);
+        await api.regenerateCover(id, { reference_mode: referenceMode });
+        await refresh();
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.detail : "重新生成封面失败";
+        alert(`重新生成封面失败：${msg}`);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [id, refresh],
+  );
+
   if (loading) {
     return (
       <div className="flex items-center gap-3 text-warm-300">
@@ -688,6 +711,24 @@ export function BookDetail() {
                 >
                   <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
                   下载封面
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateCover("refresh")}
+                  disabled={coverInFlight}
+                  className="btn-ghost disabled:opacity-50"
+                >
+                  <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  换参考重生
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateCover("reuse")}
+                  disabled={coverInFlight}
+                  className="btn-ghost disabled:opacity-50"
+                >
+                  <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  沿用参考重生
                 </button>
               </>
             )}

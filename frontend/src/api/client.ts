@@ -25,6 +25,7 @@ import type {
   MarkdownResponse,
   PolishParagraphRequest,
   PolishParagraphResponse,
+  CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
   RegisterRequest,
@@ -98,7 +99,11 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE}${path}`, { headers, cache: "no-store" });
+  const separator = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${BASE}${path}${separator}_=${Date.now()}`, {
+    headers,
+    cache: "no-store",
+  });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -192,7 +197,11 @@ async function fetchBlob(path: string): Promise<Blob> {
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE}${path}`, { headers, cache: "no-store" });
+  const separator = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${BASE}${path}${separator}_=${Date.now()}`, {
+    headers,
+    cache: "no-store",
+  });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -342,8 +351,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  regenerateCover: (id: string) =>
-    request<TaskStatusResponse>(`/tasks/${id}/cover/regenerate`, { method: "POST" }),
+  regenerateCover: (id: string, body: CoverRegenerateRequest = { reference_mode: "refresh" }) =>
+    request<TaskStatusResponse>(`/tasks/${id}/cover/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   getChapters: (id: string) =>
     request<ChaptersListResponse>(`/tasks/${id}/chapters`),
   updateChapter: (
@@ -421,11 +433,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  regenerateCoverJob: (jobId: string) =>
-    request<CoverJobResponse>(`/covers/jobs/${jobId}/regenerate`, { method: "POST" }),
-  regenerateCoverJobItem: (jobId: string, index: number) =>
+  regenerateCoverJob: (jobId: string, body: CoverRegenerateRequest = { reference_mode: "refresh" }) =>
+    request<CoverJobResponse>(`/covers/jobs/${jobId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  regenerateCoverJobItem: (
+    jobId: string,
+    index: number,
+    body: CoverRegenerateRequest = { reference_mode: "refresh" },
+  ) =>
     request<CoverJobResponse>(`/covers/jobs/${jobId}/items/${index}/regenerate`, {
       method: "POST",
+      body: JSON.stringify(body),
     }),
   regenerateCoverJobItems: (jobId: string, body: CoverJobItemBatchRetryRequest) =>
     request<CoverJobResponse>(`/covers/jobs/${jobId}/items/batch-regenerate`, {

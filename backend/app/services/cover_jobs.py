@@ -63,6 +63,22 @@ def _clean_cell(value: Any) -> str:
     return str(value).strip()
 
 
+def _delete_work_dir_for_reference_mode(work_dir: Path, reference_mode: str) -> None:
+    if not work_dir.exists():
+        return
+    if reference_mode != "reuse":
+        shutil.rmtree(work_dir)
+        return
+    keep = {"orthodox_reference_samples.json"}
+    for path in work_dir.iterdir():
+        if path.name in keep:
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def _normalized_key(value: str) -> str:
     return value.strip().lower().replace(" ", "_")
 
@@ -313,7 +329,7 @@ def public_cover_job_status(status: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
-def _delete_item_artifacts(job_id: str, item: dict[str, Any]) -> None:
+def _delete_item_artifacts(job_id: str, item: dict[str, Any], *, reference_mode: str = "refresh") -> None:
     try:
         index = int(item.get("index") or 0)
     except (TypeError, ValueError):
@@ -325,8 +341,7 @@ def _delete_item_artifacts(job_id: str, item: dict[str, Any]) -> None:
     if path.exists():
         path.unlink()
     work_dir = path.parent / f".{path.stem}_work"
-    if work_dir.exists():
-        shutil.rmtree(work_dir)
+    _delete_work_dir_for_reference_mode(work_dir, reference_mode)
 
 
 def delete_cover_job_items(
@@ -445,6 +460,7 @@ def regenerate_cover_job_items(
     job_id: str,
     indexes: list[int] | None = None,
     status: dict[str, Any] | None = None,
+    reference_mode: str = "refresh",
 ) -> dict[str, Any]:
     """Force selected cover items back to pending and delete all generated artifacts."""
     data = dict(status or read_status(job_id))
@@ -473,7 +489,7 @@ def regenerate_cover_job_items(
         if item.get("status") in {"deleted", "processing"}:
             continue
 
-        _delete_item_artifacts(job_id, item)
+        _delete_item_artifacts(job_id, item, reference_mode=reference_mode)
         item.update(
             status="pending",
             image_url=None,
@@ -481,6 +497,7 @@ def regenerate_cover_job_items(
             auto_retry_count=0,
             force_regenerate=True,
             regenerated_at=now_iso(),
+            reference_mode="reuse" if reference_mode == "reuse" else "refresh",
         )
         item.pop("run_id", None)
         item.pop("current_stage", None)

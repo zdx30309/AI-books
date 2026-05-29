@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.schemas.cover_job import (
     CoverJobBatchResponse,
     CoverJobItemBatchDeleteRequest,
     CoverJobItemBatchRetryRequest,
+    CoverJobRegenerateRequest,
     CoverJobListResponse,
     CoverJobResponse,
 )
@@ -408,16 +409,19 @@ def retry_my_cover_job_item(
 )
 def regenerate_my_cover_job_items(
     job_id: str,
+    req: CoverJobRegenerateRequest | None = Body(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     if _v2_enabled():
+        reference_mode = req.reference_mode if req is not None else "refresh"
         job = get_owned_cover_batch_job(db, job_id, str(user.id))
         if job is not None:
-            next_job = regenerate_cover_batch_items(db, job_id, None)
+            next_job = regenerate_cover_batch_items(db, job_id, None, reference_mode=reference_mode)
             _enqueue_cover_batch_job(job_id)
             return _v2_response(next_job)
-    status = regenerate_cover_job_items(job_id, None, _owned_status(job_id, user))
+    reference_mode = req.reference_mode if req is not None else "refresh"
+    status = regenerate_cover_job_items(job_id, None, _owned_status(job_id, user), reference_mode=reference_mode)
     return _response(_enqueue_retry_if_needed(job_id, status))
 
 
@@ -437,10 +441,20 @@ def regenerate_my_cover_job_items_batch(
     if _v2_enabled():
         job = get_owned_cover_batch_job(db, job_id, str(user.id))
         if job is not None:
-            next_job = regenerate_cover_batch_items(db, job_id, req.indexes)
+            next_job = regenerate_cover_batch_items(
+                db,
+                job_id,
+                req.indexes,
+                reference_mode=getattr(req, "reference_mode", "refresh"),
+            )
             _enqueue_cover_batch_job(job_id)
             return _v2_response(next_job)
-    status = regenerate_cover_job_items(job_id, req.indexes, _owned_status(job_id, user))
+    status = regenerate_cover_job_items(
+        job_id,
+        req.indexes,
+        _owned_status(job_id, user),
+        reference_mode=getattr(req, "reference_mode", "refresh"),
+    )
     return _response(_enqueue_retry_if_needed(job_id, status))
 
 
@@ -452,16 +466,19 @@ def regenerate_my_cover_job_items_batch(
 def regenerate_my_cover_job_item(
     job_id: str,
     index: int,
+    req: CoverJobRegenerateRequest | None = Body(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CoverJobResponse:
     if _v2_enabled():
+        reference_mode = req.reference_mode if req is not None else "refresh"
         job = get_owned_cover_batch_job(db, job_id, str(user.id))
         if job is not None:
-            next_job = regenerate_cover_batch_items(db, job_id, [index])
+            next_job = regenerate_cover_batch_items(db, job_id, [index], reference_mode=reference_mode)
             _enqueue_cover_batch_job(job_id)
             return _v2_response(next_job)
-    status = regenerate_cover_job_items(job_id, [index], _owned_status(job_id, user))
+    reference_mode = req.reference_mode if req is not None else "refresh"
+    status = regenerate_cover_job_items(job_id, [index], _owned_status(job_id, user), reference_mode=reference_mode)
     return _response(_enqueue_retry_if_needed(job_id, status))
 
 
@@ -507,6 +524,7 @@ def get_cover_job_image(
                 media_type="image/png",
                 headers={
                     "Cache-Control": "no-store, max-age=0",
+                    "Pragma": "no-cache",
                     "Vary": "Authorization",
                 },
             )
@@ -525,6 +543,7 @@ def get_cover_job_image(
         media_type="image/png",
         headers={
             "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
             "Vary": "Authorization",
         },
     )

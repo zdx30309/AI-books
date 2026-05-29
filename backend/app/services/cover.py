@@ -75,36 +75,13 @@ _CRAYON_QUALITY_CONTROL_RULE = (
     "禁止清单、段落、整页日记文字和多个便签文案。"
 )
 _LITERATURE_PUBLISHING_STYLE_RULE = (
-    "正统出版封面长期参考指令｜高仿执行版\n"
-    "核心逻辑：先选母版，再抄版式，再换内容，再调细节，最后检查侵权元素。\n"
-    "执行顺序必须固定：先选母版 → 再抄版式 → 再换内容 → 再调细节 → 最后检查是否保留侵权元素。\n"
-    "本文件用于“正统出版”封面书架的长期参考。参考来源包括用户提供的正统出版长期素材库，以及微信读书、得到系列等成熟出版封面的设计规律。\n"
-    "目标不是让 AI 自由发挥，也不是只抽象学习所谓“出版感”，而是让 AI 在不保留侵权元素的前提下，尽量高仿参考图库中成熟封面的排版、配色和书架效果。\n"
-    "生成前必须先从素材库中选择一张最适合当前书名、简介、分类和读者期待的参考封面作为主要版式母版。不要泛泛学习“出版感”，不要自己重新发明一套构图，不要从多个封面里随意拼凑。\n"
-    "优先选择与当前书籍题材、气质、目标读者、上架场景、标题长度和封面信息量接近的参考封面；如果没有完全对应的题材，也要选择版式最适合的一张作为主母版。\n"
-    "高仿时重点模仿参考母版的标题所在区域、标题大小比例、标题分行方式、作者名位置、副标题位置、留白比例、主视觉区域、主视觉占比、主视觉与标题的相对关系、背景色块比例、色彩明度关系、冷暖对比方式、画面重心、手机书架缩略图效果。\n"
-    "以用户当前提供的书名、作者、分类和简介为主。长期素材库不是普通灵感参考，而是主要版式参考来源。\n"
-    "AI 应先从素材库中判断当前书更接近哪一类出版封面，哪种排版最适合当前书名，哪种标题层级最适合缩略图识别，哪种色彩关系最适合当前题材和读者期待，然后以素材库中相近封面的排版方式为母版，进行高相似度改写。\n"
-    "允许高仿参考封面的标题所在区域、标题大小关系、标题分行节奏、作者名位置、副标题位置、留白比例、主视觉占比、主视觉与标题的相对关系、背景色块关系、整体版面重心、色彩明度关系、冷暖对比方式、手机书架缩略图效果；排版、配色、标题层级、留白节奏、主视觉位置和画面重心都可以高度相似。\n"
-    "不要为了追求原创而刻意远离参考图库。如果某个参考封面的排版方式适合当前书，可以大胆贴近它。\n"
-    "可以高仿的是版式骨架、标题层级、留白节奏、色彩气质、主视觉位置、图文关系、背景处理方式、整体出版审美。\n"
-    "必须删除或替换真实书名、原作者信息、出版社信息、出版社或平台 logo、二维码、价格、水印、真实品牌元素、已有摄影作品、已有插画作品、可识别人物肖像、独特图形细节。\n"
-    "可以像它的排版和气质，不能留下它的身份信息和具体视觉资产。\n"
-    "主视觉的位置、比例、面积、与文字的关系可以高仿母版，但具体内容必须根据当前书名和简介重新生成；如果母版是人物、插画、摄影或独特图形，不能复制原姿态、原图像或原细节，只保留视觉位置和构图关系。\n"
-    "配色可以接近参考母版，可以高仿主色、辅助色、明暗关系、冷暖关系和整体色彩气质，但不要完全复制到每个色块、每个比例、每个细节都一样；要微调色相、明度、饱和度、点缀色或局部比例。\n"
-    "优先让封面看起来像真实书架上的成熟出版物。不要生成随机 AI 图、PPT 封面、知识付费课程海报、电商主图或网文封面。\n"
-    "排版可以大胆贴近参考图。标题位置、字号比例、留白关系、主视觉区域、色块比例和配色气质，都可以高相似度参考。\n"
-    "主视觉必须服务于当前书名、简介、题材和读者期待。可以借鉴参考封面的主视觉位置、面积比例、图文关系和整体氛围，但具体视觉元素要根据当前书重新设计。\n"
-    "配色可以接近参考封面。允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式，但不要完全复制某一本封面的完整配色比例。\n"
-    "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡。\n"
-    "如果需要白底，必须是纯白 #FFFFFF 数字白；不要米白、奶油白、暖白、灰白或纸白。不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感、油墨渗透感；不要模拟实体纸书摄影效果，不要书页感、纸面肌理或胶版纸质感。提高整体明度与色彩纯度，避免灰蒙蒙和所谓高级感灰滤镜；文字区域必须纯净清晰。\n"
-    "标题是封面的第一识别信息。标题必须清晰、有层级，适合手机书架缩略图识别。作者名、副标题、推荐语等信息要克制。除非用户明确要求，不要添加大段简介、营销金句、课程口号或无意义小字。\n"
-    "不要随意添加无意义的横线、竖线、圆点、印章、编号等装饰符号。所有装饰元素都必须服务于标题层级、版面结构或主视觉关系。\n"
-    "如果母版中有装饰线、圆点、编号或小符号，可以参考它的功能和位置关系，但不要原样照搬，也不要在不需要的位置强行添加。\n"
-    "生成完成后必须自检：是否真的选择了一张参考母版；标题区域、主视觉区域、留白比例是否明显贴近母版；配色气质和书架效果是否接近母版；是否已经删除或替换真实书名、作者、出版社、logo、二维码、价格、水印；是否没有复制原摄影、原插画、原人物肖像、独特图形细节；是否像真正图书封面而不是课程页、广告页、说明页或 PPT。\n"
-    "不要知识付费海报感、PPT 课程封面感、公众号长图感、电商商品图感。不要网文封面感、廉价 AI 插画感、过度 3D 感、促销广告感。\n"
-    "不要为了“原创”而远离参考图库，导致封面不像真实出版物。不要为了“高级感”一律做成冷淡抽象风。不要为了“文学感”一律做成古风水彩、远山、飞鸟、太阳、泛黄纸张。不要为了“现代感”一律做成几何门洞、光束、人影、蓝黄对比、大标题模板。\n"
-    "最终封面应当像以素材库中的成熟出版封面为母版，经过高相似度改写后生成的新书封面。排版像，配色像，出版气质像；真实书名、作者信息、出版社信息、logo、二维码、价格、水印、真实品牌元素、具体摄影作品、具体插画作品、可识别人物肖像、独特图形细节全部删除或替换。"
+    "正统出版封面只由 ChatGPT 图像模型完成，不调用 DeepSeek 或其他 AI 协作。"
+    "直接读取随请求附上的本地参考封面图片，由 ChatGPT 自行判断哪一张最适合当前书名、作者、简介和书架分类。"
+    "生成时强参照最合适的本地封面：标题区域、标题字形气质、字号比例、分行节奏、作者名位置、留白比例、主视觉占比、图文关系、背景色块、明暗冷暖、配色气质和整体书架效果都要高度相似。"
+    "参考强度按接近 85% 执行，让新封面第一眼像本地参考封面库里的同类新书，而不是普通泛泛的出版感封面。"
+    "整体颜色要更鲜艳、更明亮、更有书架识别度，避免灰蒙蒙、低饱和、发黄做旧和高级感灰滤镜。"
+    "同时必须把参考图中的原书名、原作者、原出版信息、出版社或平台 LOGO、二维码、价格、水印、真实品牌元素、已有摄影/插画、可识别人物肖像和独特图形细节全部删除或重画替换。"
+    "只保留可迁移的版式方法、比例关系、标题设计语法、配色关系和出版气质；当前书的具体主视觉、文字内容和细节必须围绕当前简介重新生成。"
 )
 
 
@@ -945,14 +922,7 @@ def _repo_root() -> Path:
 
 def _literature_reference_zip_path() -> Path:
     service_dir = Path(__file__).resolve().parent
-    candidates = (
-        service_dir / "reference_assets" / "orthodox_publishing" / "reference_covers.zip",
-        service_dir / "reference_assets" / "healing_comic" / "reference_covers.zip",
-    )
-    for path in candidates:
-        if path.exists() and path.stat().st_size > 0:
-            return path
-    return candidates[0]
+    return service_dir / "reference_assets" / "orthodox_publishing" / "reference_covers.zip"
 
 
 def _literature_reference_members(zip_path: Path) -> tuple[str, ...]:
@@ -961,10 +931,10 @@ def _literature_reference_members(zip_path: Path) -> tuple[str, ...]:
     try:
         with zipfile.ZipFile(zip_path) as archive:
             return tuple(
-                sorted(
-                    info.filename
-                    for info in archive.infolist()
-                    if not info.is_dir()
+                info.filename
+                for info in archive.infolist()
+                if (
+                    not info.is_dir()
                     and Path(info.filename).suffix.lower() in _LITERATURE_REFERENCE_IMAGE_EXTENSIONS
                     and info.file_size > 0
                     and Path(info.filename).stem not in _ORTHODOX_REFERENCE_EXCLUDED_STEMS
@@ -1778,8 +1748,13 @@ def build_cover_style_brief(cover_input: CoverInput) -> CoverStyleBrief:
         generation_prompt_addendum = (
             f"{profile['addendum']}\n"
             f"参考来源：本地正统出版ZIP参考封面库 + 成熟出版版式迁移。\n"
-            f"长期参考文件摘要：{_LITERATURE_COVER_REFERENCE[:900]}\n"
-            f"本书视觉判断：{visual_variation_directive}\n"
+            "正统出版生成只由 ChatGPT 图像模型完成，不调用 DeepSeek 或其他 AI 协作；"
+            "直接参考随请求附上的本地正统出版 zip 封面样本，自行选择最适合当前书的一张主参考封面。\n"
+            "高仿主参考约 85% 的版式、标题设计语法、留白比例、图文关系和配色气质；"
+            "颜色要更鲜艳、更明亮、更有书架识别度，避免灰蒙蒙、低饱和和高级感灰滤镜；"
+            "删除原书名、原作者、原出版信息、出版社或平台 LOGO、二维码、价格、水印和可识别版权资产，"
+            "当前书的主视觉与细节围绕当前简介重新生成。\n"
+            f"本书差异化视觉判断：{visual_variation_directive}\n"
         )
     else:
         avoid_rules = (
@@ -2089,7 +2064,10 @@ def build_cover_prompt(
             library_count=library_count,
         )
     if _is_simple_reference_category(cover_input.category):
-        reference_count = len(_simple_reference_image_paths(cover_input.category))
+        category_id = _simple_reference_category_id(cover_input.category)
+        if category_id is None:
+            raise ImageApiPermanentError(f"unsupported simple reference cover category: {cover_input.category}")
+        reference_count = len(_simple_reference_image_paths(category_id))
         return _build_simple_reference_cover_prompt(
             cover_input,
             reference_count=reference_count,
@@ -2701,6 +2679,7 @@ def _generate_literature_cover_direct(
     output_dir: Path,
     *,
     force: bool = False,
+    refresh_references: bool = True,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
@@ -2718,7 +2697,7 @@ def _generate_literature_cover_direct(
         logger.info("复用已存在正统出版封面: %s", cover_path)
         return cover_path
 
-    members = _selected_literature_direct_reference_members(output_dir, force=force)
+    members = _selected_literature_direct_reference_members(output_dir, force=force and refresh_references)
     zip_path = _literature_reference_zip_path()
     all_members = _literature_reference_members(zip_path)
     sequence_index = _literature_reference_sequence_index(all_members, members)
@@ -3021,6 +3000,7 @@ def generate_cover_file(
     author: str | None = None,
     intro: str | None = None,
     force: bool = False,
+    reference_mode: str = "refresh",
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
@@ -3041,10 +3021,12 @@ def generate_cover_file(
         category=category,
     )
     if _is_literature_publishing(cover_input.category):
+        refresh_references = reference_mode != "reuse"
         return _generate_literature_cover_direct(
             cover_input,
             output_dir,
             force=force,
+            refresh_references=refresh_references,
             should_abort=should_abort,
             on_progress=on_progress,
         )
@@ -3275,6 +3257,7 @@ def generate_cover_file_from_metadata(
     output_path: Path,
     *,
     force: bool = False,
+    reference_mode: str = "refresh",
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
@@ -3294,6 +3277,8 @@ def generate_cover_file_from_metadata(
     intro = _metadata_lookup(metadata, _METADATA_INTRO_KEYS) or title
     category = _metadata_category(_metadata_lookup(metadata, _METADATA_CATEGORY_KEYS))
     metadata = dict(metadata)
+    metadata_reference_mode = str(metadata.get("reference_mode") or reference_mode or "refresh").strip()
+    reference_mode = "reuse" if metadata_reference_mode == "reuse" else "refresh"
     markdown = f"@最终书名\n{title}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
     work_dir = output_path.parent / f".{output_path.stem}_work"
     markdown = f"@最终书名\n{title}\n\n@作者\n{author or ''}\n\n@最终简介\n{intro}\n\n@正文\n{intro}\n"
@@ -3324,6 +3309,7 @@ def generate_cover_file_from_metadata(
         author=author,
         intro=intro,
         force=force,
+        reference_mode=reference_mode,
         should_abort=should_abort,
         on_progress=on_progress,
     )

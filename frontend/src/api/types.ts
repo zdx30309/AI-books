@@ -137,6 +137,11 @@ export interface CoverJobItemBatchDeleteRequest {
 
 export interface CoverJobItemBatchRetryRequest {
   indexes: number[];
+  reference_mode?: "refresh" | "reuse";
+}
+
+export interface CoverRegenerateRequest {
+  reference_mode: "refresh" | "reuse";
 }
 
 export interface TaskCategoryOption {

@@ -590,7 +590,13 @@ def _cover_dispatch_guard_id(task_id: str) -> str:
     return f"cover:{task_id}"
 
 
-def enqueue_cover_generation(db: Session, task: Task, *, force: bool = False) -> bool:
+def enqueue_cover_generation(
+    db: Session,
+    task: Task,
+    *,
+    force: bool = False,
+    reference_mode: str = "refresh",
+) -> bool:
     """Queue cover generation without blocking the completed manuscript."""
     cfg = dict(task.config or {})
     if not settings.COVER_WORKFLOW_ENABLED:
@@ -635,6 +641,7 @@ def enqueue_cover_generation(db: Session, task: Task, *, force: bool = False) ->
     task.config = cfg
     if force:
         task.cover_url = None
+        cfg["cover_reference_mode"] = "reuse" if reference_mode == "reuse" else "refresh"
     db.commit()
 
     guard_id = _cover_dispatch_guard_id(str(task.id))
@@ -1079,6 +1086,8 @@ def generate_cover(_self, task_id: str, force: bool = False) -> dict:
         category = str(cfg.get("category") or "social_science").strip()
         author = str(cfg.get("author") or cfg.get("book_author") or "").strip() or None
         intro = str(cfg.get("intro") or cfg.get("synopsis") or "").strip() or None
+        reference_mode = str(cfg.pop("cover_reference_mode", "refresh") or "refresh").strip()
+        reference_mode = "reuse" if reference_mode == "reuse" else "refresh"
         cfg.update(
             cover_disabled=False,
             cover_status="generating",
@@ -1099,6 +1108,7 @@ def generate_cover(_self, task_id: str, force: bool = False) -> dict:
                 author=author,
                 intro=intro,
                 force=force,
+                reference_mode=reference_mode,
             )
         except DistributedLimitError as exc:
             db.rollback()

@@ -59,6 +59,7 @@ from app.schemas.task import (
     CreateTaskRequest,
     CreateTaskResponse,
     MarkdownResponse,
+    RegenerateCoverRequest,
     RegenerateSelectionRequest,
     RegenerateSelectionResponse,
     StageContentResponse,
@@ -1497,7 +1498,8 @@ def get_cover(
         cover_path,
         media_type="image/png",
         headers={
-            "Cache-Control": "private, max-age=3600",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
             "Vary": "Authorization",
         },
     )
@@ -1523,7 +1525,8 @@ def download_cover(
         media_type="image/png",
         filename=_safe_download_name(task, "png"),
         headers={
-            "Cache-Control": "private, max-age=3600",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
             "Vary": "Authorization",
         },
     )
@@ -1562,6 +1565,7 @@ def get_task_image(
 )
 def regenerate_cover(
     task_id: UUID,
+    req: RegenerateCoverRequest | None = Body(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TaskStatusResponse:
@@ -1602,7 +1606,8 @@ def regenerate_cover(
     if cfg.get("cover_status") in {"queued", "generating"}:
         return TaskStatusResponse.model_validate(task)
 
-    enqueue_cover_generation(db, task, force=True)
+    reference_mode = req.reference_mode if req is not None else "refresh"
+    enqueue_cover_generation(db, task, force=True, reference_mode=reference_mode)
     db.refresh(task)
     return TaskStatusResponse.model_validate(task)
 

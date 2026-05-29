@@ -66,3 +66,16 @@ class CoverJobItemBatchDeleteRequest(BaseModel):
 
 class CoverJobItemBatchRetryRequest(BaseModel):
     indexes: list[int] = Field(default_factory=list)
+    reference_mode: str = Field(
+        default="refresh",
+        pattern="^(refresh|reuse)$",
+        description="仅批量重新生成时使用：refresh=重新选择参考封面；reuse=沿用当前参考封面",
+    )
+
+
+class CoverJobRegenerateRequest(BaseModel):
+    reference_mode: str = Field(
+        default="refresh",
+        pattern="^(refresh|reuse)$",
+        description="refresh=重新选择参考封面；reuse=沿用当前参考封面",
+    )

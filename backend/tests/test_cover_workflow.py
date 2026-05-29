@@ -504,57 +504,30 @@ def test_cover_job_allows_same_title_and_author_reupload(tmp_path: Path, monkeyp
     assert first["items"][0]["title"] == second["items"][0]["title"] == "第一本书"
 
 
-def test_literature_cover_category_has_dedicated_cover_prompt() -> None:
-    cover_input = cover.prepare_cover_input(
+def test_orthodox_cover_uses_chatgpt_local_reference_prompt() -> None:
+    prompt = cover.build_cover_prompt(
         "风经过房间",
         "@最终简介\n一本关于城市、房间、旅行和自我告别的文学随笔。",
         author="作者L",
         category="正统出版",
     )
-    brief = cover.build_cover_style_brief(cover_input)
-    prompt = cover.build_draft_cover_prompt(cover_input, brief)
-    refine_prompt = cover.build_refine_cover_prompt(cover_input, brief)
-    adjustment = cover.get_cover_category_prompt_adjustment("literature")
 
-    assert cover_input.category == "literature"
-    assert cover_input.category_label == "正统出版"
-    assert LITERATURE_PUBLISHING_PROMPT in brief.generation_prompt_addendum
-    assert LITERATURE_PUBLISHING_PROMPT in refine_prompt
-    assert adjustment["style_brief_rules"][0] == LITERATURE_PUBLISHING_PROMPT
-    assert adjustment["draft_rules"][0] == LITERATURE_PUBLISHING_PROMPT
-    assert adjustment["refine_rules"][0] == f"继续保持并强化：{LITERATURE_PUBLISHING_PROMPT}"
-    assert "本地正统出版ZIP参考封面库 + 成熟出版版式迁移" in prompt
-    assert brief.reference_site.startswith("本地正统出版ZIP参考封面库")
-    assert brief.reference_brands == ("正统出版ZIP参考封面库",)
-    assert "长期参考文件摘要" in brief.generation_prompt_addendum
-    assert "正统出版封面长期参考指令｜高仿执行版" in prompt
-    assert "核心逻辑：先选母版，再抄版式，再换内容，再调细节，最后检查侵权元素" in prompt
-    assert "先选母版 → 再抄版式 → 再换内容 → 再调细节 → 最后检查是否保留侵权元素" in prompt
-    assert "不要从多个封面里随意拼凑" in prompt
-    assert "微信读书、得到系列等成熟出版封面的设计规律" in prompt
-    assert "只抽象学习所谓“出版感”" in prompt
-    assert "尽量高仿参考图库中成熟封面的排版、配色和书架效果" in prompt
-    assert "不要自行发明新构图" in prompt
-    assert "标题所在区域、标题大小比例、标题分行方式、作者名位置、副标题位置" in prompt
-    assert "主视觉必须服务于当前书名、简介、题材和读者期待" in prompt
-    assert "允许使用相似的主色、辅助色、明度关系、冷暖关系和对比方式" in prompt
-    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
-    assert "不要模拟实体纸书摄影效果" in prompt
-    assert "以素材库中的成熟出版封面为母版" in prompt
-    assert "不要随意添加无意义的横线、竖线、圆点、印章、编号" in prompt
-    assert "出版社或平台 logo、二维码、价格、水印" in prompt
-    assert "不要灰蒙蒙、不要发黄做旧、不要低饱和寡淡" in prompt
-    assert "#FFFFFF 数字白" in prompt
-    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点、做旧感、扫描感" in prompt
-    assert "避免灰蒙蒙和所谓高级感灰滤镜" in prompt
-    assert "允许轻微纸张肌理" not in prompt
-    assert "当当网" not in prompt
+    assert cover.prepare_cover_input("风经过房间", "", category="正统出版").category == "literature"
     assert get_cover_category_meta("literature")["label"] == "正统出版"
+    assert "正统出版单封面 image-to-image 结构强参考工作流" in prompt
+    assert "参考输入与轮转规则" in prompt
+    assert "按 ZIP 内排序全局轮转" in prompt
+    assert "不要泛泛学习大图库" in prompt
+    assert "标题字形气质、字重、字号比例、分行节奏" in prompt
+    assert "真实书名、原作者、出版社、平台标识、出版社 logo、二维码、价格、水印" in prompt
+    assert "正统出版封面长期参考指令｜高仿执行版" not in prompt
+    assert "DeepSeek 分类/市场分析" not in prompt
+    assert "当当网" not in prompt
 
 
 def test_crayon_illustration_prompt_does_not_leak_to_other_cover_categories() -> None:
     for item in list_cover_categories():
-        if item["id"] == "illustration_crayon":
+        if item["id"] in {"illustration_crayon", "literature"}:
             continue
         prompt = cover.build_cover_prompt(
             "普通封面",
@@ -638,6 +611,7 @@ def test_literature_cover_category_uses_modern_publishing_prompt() -> None:
     assert "允许轻微纸张肌理" not in prompt
     assert "本书差异化视觉方案" not in prompt
     assert "正统出版风格 DNA" not in prompt
+
     assert "当当网" not in prompt
 
 
@@ -654,18 +628,19 @@ def test_literature_cover_visual_plan_differs_by_book_and_blocks_sun_road_templa
         author="作者B",
         category="正统出版",
     )
-    brief_a = cover.build_cover_style_brief(cover_input_a)
-    brief_b = cover.build_cover_style_brief(cover_input_b)
-    prompt_a = cover.build_draft_cover_prompt(cover_input_a, brief_a)
+    plan_a = cover._orthodox_reference_visual_plan(cover_input_a)  # noqa: SLF001
+    plan_b = cover._orthodox_reference_visual_plan(cover_input_b)  # noqa: SLF001
+    prompt_a = cover.build_cover_prompt(
+        cover_input_a.title,
+        "@最终简介\n一本关于临终反思、日常选择和重新整理人生优先级的书。",
+        author=cover_input_a.author,
+        category="正统出版",
+    )
 
-    assert brief_a.visual_variation_directive != brief_b.visual_variation_directive
-    assert "本书强参考视觉方案" in prompt_a
-    assert "先保证版式像成熟出版物" in prompt_a
-    assert "不要任何纸张纹理、纤维感、印刷颗粒、噪点或做旧效果" in prompt_a
-    assert "纯白 #FFFFFF 数字白" in prompt_a
-    assert "不要无依据地默认套用太阳、夕阳、日出圆盘、弯曲白路、绿色山坡" in prompt_a
-    assert "几何门洞、光束、人影、蓝黄对比、古风水彩、泛黄纸张" in prompt_a
-    assert "如果书名或简介确实需要对应意象，必须按本书重新组织版式、配色和细节" in prompt_a
+    assert plan_a != plan_b
+    assert "本书差异化视觉判断" not in prompt_a
+    assert "本书差异化视觉方案" not in prompt_a
+    assert "唯一母版、书名标题主参考、版式主参考和色彩主参考" in prompt_a
 
 
 def test_orthodox_reference_visual_plan_differs_by_book() -> None:
@@ -754,7 +729,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     zip_path = tmp_path / "reference_covers.zip"
     with ZipFile(zip_path, "w") as archive:
         for index in range(20):
-            archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
+            archive.writestr(f"covers/reference_{index + 1:02d}.png", PNG_BYTES)
 
     def fail_style_brief(*args, **kwargs):
         raise AssertionError("literature direct workflow should not build the old style brief")
@@ -862,11 +837,12 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
     assert "微调字距、行距、基线、标题块边界" in calls[1][1]
     assert "不要重新构图，不要换风格方向" in calls[1][1]
     assert "不要把它改回参考封面的具体猫、椅子、头像" in calls[1][1]
+
     assert (tmp_path / "orthodox_reference_samples.json").exists()
     assert (tmp_path / "orthodox_reference_sequence.json").exists()
     samples = json.loads((tmp_path / "orthodox_reference_samples.json").read_text(encoding="utf-8"))
     assert len(samples) == 1
-    assert samples[0]["title"] == "cover_00"
+    assert samples[0]["title"] == "reference_01"
     sequence = json.loads((tmp_path / "orthodox_reference_sequence.json").read_text(encoding="utf-8"))
     assert sequence["policy"] == "global_zip_order_single_reference"
     assert sequence["selected_sequence_index"] == 1
@@ -893,6 +869,7 @@ def test_literature_cover_generation_uses_ordered_zip_reference(
 
 
 def test_literature_cover_refine_uncertain_uses_draft_as_final(
+
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -949,6 +926,7 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
         for index in range(18):
             archive.writestr(f"cover_{index:02d}.png", PNG_BYTES)
 
+
     edit_calls = 0
 
     def fake_edit(image_paths, prompt: str, **kwargs) -> dict[str, object]:
@@ -983,6 +961,7 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
     assert state_after_failure["next_sequence_index"] == 2
     assert state_after_failure["total_allocations"] == 1
 
+
     result = cover.generate_cover_file(
         "风经过房间",
         "@最终简介\n一本关于城市房间和自我告别的文学随笔。",
@@ -996,6 +975,7 @@ def test_literature_cover_direct_reuses_ordered_reference_until_force(
     assert second_samples == first_samples
     state_after_retry = json.loads((state_dir / "sequence.json").read_text(encoding="utf-8"))
     assert state_after_retry == state_after_failure
+
 
     cover.generate_cover_file(
         "风经过房间",
@@ -1228,6 +1208,7 @@ def test_generate_cover_file_from_metadata_force_bypasses_existing_cover(
     assert result == output_path
     assert calls == [True]
     assert output_path.read_bytes() == b"new cover"
+
 
 
 def test_generate_cover_file_does_not_downgrade_to_draft_on_refine_failure(

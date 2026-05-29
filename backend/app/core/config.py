@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"
     IMAGE_MODEL: str = "gpt-image-2"
-    IMAGE_SIZE: str = "1024x1536"
+    IMAGE_SIZE: str = "2450x3500"
     IMAGE_QUALITY: str = ""
     IMAGE_RESPONSE_FORMAT: str = ""
     IMAGE_OUTPUT_FORMAT: str = ""

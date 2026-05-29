@@ -78,7 +78,8 @@ function CoverPreview({
   onToggle,
   onDelete,
   onRetry,
-  onRegenerate,
+  onRegenerateRefresh,
+  onRegenerateReuse,
 }: {
   jobId: string;
   item: CoverJobItem;
@@ -90,7 +91,8 @@ function CoverPreview({
   onToggle: () => void;
   onDelete: () => void;
   onRetry: () => void;
-  onRegenerate: () => void;
+  onRegenerateRefresh: () => void;
+  onRegenerateReuse: () => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
 
@@ -170,23 +172,38 @@ function CoverPreview({
         </button>
       )}
       {!selectionMode && item.status === "completed" && (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onRegenerate();
-          }}
-          disabled={regenerating}
-          className="absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-gold-300/35 bg-base-900/80 text-gold-100 shadow transition-colors hover:border-gold-200/70 disabled:opacity-50"
-          aria-label="重新生成单张封面"
-          title="重新生成单张封面"
-        >
-          {regenerating ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
-          ) : (
+        <div className="absolute left-2 top-2 z-10 flex gap-1">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRegenerateRefresh();
+            }}
+            disabled={regenerating}
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-gold-300/35 bg-base-900/80 text-gold-100 shadow transition-colors hover:border-gold-200/70 disabled:opacity-50"
+            aria-label="重新选择参考封面生成"
+            title="重新选择参考封面生成"
+          >
+            {regenerating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+            ) : (
+              <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRegenerateReuse();
+            }}
+            disabled={regenerating}
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-warm-300/25 bg-base-900/80 text-warm-100 shadow transition-colors hover:border-warm-200/60 disabled:opacity-50"
+            aria-label="沿用当前参考封面生成"
+            title="沿用当前参考封面生成"
+          >
             <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.7} />
-          )}
-        </button>
+          </button>
+        </div>
       )}
       {!selectionMode && (
         <button
@@ -682,14 +699,18 @@ export function CoverGeneratorPanel() {
     }
   };
 
-  const regenerateCurrent = async () => {
+  const regenerateCurrent = async (referenceMode: "refresh" | "reuse") => {
     if (!job || job.items.length === 0) return;
-    const ok = window.confirm("确定重新生成当前任务里所有可重新生成的封面吗？已完成图片会被新图替换。");
+    const ok = window.confirm(
+      referenceMode === "refresh"
+        ? "确定重新选择参考封面并重新生成当前任务里所有可重新生成的封面吗？已完成图片会被新图替换。"
+        : "确定沿用当前参考封面并重新生成当前任务里所有可重新生成的封面吗？已完成图片会被新图替换。",
+    );
     if (!ok) return;
-    setWorking("regenerate-job");
+    setWorking(referenceMode === "refresh" ? "regenerate-job-refresh" : "regenerate-job-reuse");
     setError(null);
     try {
-      await api.regenerateCoverJob(job.job_id);
+      await api.regenerateCoverJob(job.job_id, { reference_mode: referenceMode });
       await loadJobs(job.job_id);
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : "重新生成封面失败");
@@ -698,15 +719,19 @@ export function CoverGeneratorPanel() {
     }
   };
 
-  const regenerateItem = async (index: number) => {
+  const regenerateItem = async (index: number, referenceMode: "refresh" | "reuse") => {
     if (!job) return;
     const target = job.items.find((item) => item.index === index);
-    const ok = window.confirm(`确定重新生成《${target?.title || "这张封面"}》吗？当前图片会被新图替换。`);
+    const ok = window.confirm(
+      referenceMode === "refresh"
+        ? `确定为《${target?.title || "这张封面"}》重新选择参考封面并生成吗？当前图片会被新图替换。`
+        : `确定为《${target?.title || "这张封面"}》沿用当前参考封面并生成吗？当前图片会被新图替换。`,
+    );
     if (!ok) return;
     setWorking(`regenerate-item-${index}`);
     setError(null);
     try {
-      await api.regenerateCoverJobItem(job.job_id, index);
+      await api.regenerateCoverJobItem(job.job_id, index, { reference_mode: referenceMode });
       await loadJobs(job.job_id);
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : "重新生成单张封面失败");
@@ -715,7 +740,7 @@ export function CoverGeneratorPanel() {
     }
   };
 
-  const regenerateSelectedItems = async () => {
+  const regenerateSelectedItems = async (referenceMode: "refresh" | "reuse") => {
     if (!job || selectedRegeneratableItemCount === 0) return;
     const indexes = visibleItems
       .filter(
@@ -725,12 +750,16 @@ export function CoverGeneratorPanel() {
           item.status !== "processing",
       )
       .map((item) => item.index);
-    const ok = window.confirm(`确定重新生成选中的 ${indexes.length} 张封面吗？当前图片会被新图替换。`);
+    const ok = window.confirm(
+      referenceMode === "refresh"
+        ? `确定为选中的 ${indexes.length} 张封面重新选择参考封面并生成吗？当前图片会被新图替换。`
+        : `确定为选中的 ${indexes.length} 张封面沿用当前参考封面并生成吗？当前图片会被新图替换。`,
+    );
     if (!ok) return;
-    setWorking("regenerate-items");
+    setWorking(referenceMode === "refresh" ? "regenerate-items-refresh" : "regenerate-items-reuse");
     setError(null);
     try {
-      await api.regenerateCoverJobItems(job.job_id, { indexes });
+      await api.regenerateCoverJobItems(job.job_id, { indexes, reference_mode: referenceMode });
       setSelectedItemIndexes(new Set());
       setItemSelectionMode(false);
       await loadJobs(job.job_id);
@@ -991,16 +1020,31 @@ export function CoverGeneratorPanel() {
                 {job && job.items.some((item) => item.status !== "deleted" && item.status !== "processing") && (
                   <button
                     type="button"
-                    onClick={regenerateCurrent}
+                    onClick={() => regenerateCurrent("refresh")}
                     disabled={working !== null}
                     className="btn-ghost disabled:opacity-50"
                   >
-                    {working === "regenerate-job" ? (
+                    {working === "regenerate-job-refresh" ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.6} />
                     ) : (
                       <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.6} />
                     )}
-                    全部重生
+                    全部换参考
+                  </button>
+                )}
+                {job && job.items.some((item) => item.status !== "deleted" && item.status !== "processing") && (
+                  <button
+                    type="button"
+                    onClick={() => regenerateCurrent("reuse")}
+                    disabled={working !== null}
+                    className="btn-ghost disabled:opacity-50"
+                  >
+                    {working === "regenerate-job-reuse" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.6} />
+                    ) : (
+                      <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    )}
+                    全部沿用参考
                   </button>
                 )}
                 {job && job.completed > 0 && (
@@ -1103,11 +1147,19 @@ export function CoverGeneratorPanel() {
                     </button>
                     <button
                       type="button"
-                      onClick={regenerateSelectedItems}
+                      onClick={() => regenerateSelectedItems("refresh")}
                       disabled={selectedRegeneratableItemCount === 0 || working !== null}
                       className="rounded-full border border-gold-400/30 bg-gold-500/10 px-3 py-1.5 text-[10px] tracking-widest text-gold-100 disabled:opacity-50"
                     >
-                      重生 {selectedRegeneratableItemCount || ""} 张
+                      换参考 {selectedRegeneratableItemCount || ""} 张
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => regenerateSelectedItems("reuse")}
+                      disabled={selectedRegeneratableItemCount === 0 || working !== null}
+                      className="rounded-full border border-gold-400/30 bg-gold-500/10 px-3 py-1.5 text-[10px] tracking-widest text-gold-100 disabled:opacity-50"
+                    >
+                      沿用参考 {selectedRegeneratableItemCount || ""} 张
                     </button>
                     <button
                       type="button"
@@ -1140,13 +1192,16 @@ export function CoverGeneratorPanel() {
                   }
                   regenerating={
                     working === `regenerate-item-${item.index}` ||
-                    working === "regenerate-items" ||
-                    working === "regenerate-job"
+                    working === "regenerate-items-refresh" ||
+                    working === "regenerate-items-reuse" ||
+                    working === "regenerate-job-refresh" ||
+                    working === "regenerate-job-reuse"
                   }
                   onToggle={() => toggleItemSelection(item.index)}
                   onDelete={() => deleteItem(item.index)}
                   onRetry={() => retryItem(item.index)}
-                  onRegenerate={() => regenerateItem(item.index)}
+                  onRegenerateRefresh={() => regenerateItem(item.index, "refresh")}
+                  onRegenerateReuse={() => regenerateItem(item.index, "reuse")}
                 />
               ))}
             </div>

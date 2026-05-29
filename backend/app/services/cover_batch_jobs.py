@@ -49,6 +49,22 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _delete_work_dir_for_reference_mode(work_dir: Path, reference_mode: str) -> None:
+    if not work_dir.exists():
+        return
+    if reference_mode != "reuse":
+        shutil.rmtree(work_dir)
+        return
+    keep = {"orthodox_reference_samples.json"}
+    for path in work_dir.iterdir():
+        if path.name in keep:
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def create_job_id() -> str:
     return uuid.uuid4().hex
 
@@ -388,6 +404,7 @@ def regenerate_cover_batch_items(
     db: Session,
     job_id: str,
     indexes: list[int] | None = None,
+    reference_mode: str = "refresh",
 ) -> CoverBatchJob:
     job = get_cover_batch_job(db, job_id)
     if job is None:
@@ -404,8 +421,7 @@ def regenerate_cover_batch_items(
         if path.exists():
             path.unlink()
         work_dir = path.parent / f".{path.stem}_work"
-        if work_dir.exists():
-            shutil.rmtree(work_dir)
+        _delete_work_dir_for_reference_mode(work_dir, reference_mode)
         for artifact in list(item.artifacts or []):
             artifact_path = Path(artifact.path or "")
             if artifact_path.exists():
@@ -413,6 +429,7 @@ def regenerate_cover_batch_items(
             db.delete(artifact)
         metadata = dict(item.source_metadata or {})
         metadata["__force_regenerate_once"] = True
+        metadata["reference_mode"] = "reuse" if reference_mode == "reuse" else "refresh"
         item.status = CoverBatchItemStatus.PENDING
         item.error = None
         item.image_url = None
