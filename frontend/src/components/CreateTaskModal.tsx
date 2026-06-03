@@ -196,6 +196,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     } else if (nextMode === "article") {
       setCategory("emotion_relationship");
       setUrl("");
+      setRawText("");
     } else if (COMIC_CATEGORY_IDS.has(category)) {
       setCategory("social_science");
     }
@@ -290,14 +291,14 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     }
 
     if (mode === "article") {
-      const text = rawText.trim();
-      if (!text) {
-        setError("请粘贴参考文章全文");
+      const articleUrl = url.trim();
+      if (!articleUrl) {
+        setError("请填写微信公众号文章链接");
         return;
       }
       setSubmitting(true);
       try {
-        const res = await api.createEmotionReferenceArticleTask({ text });
+        const res = await api.createEmotionReferenceArticleTask({ url: articleUrl });
         onCreated(res.task_id);
       } catch (e) {
         const msg =
@@ -455,7 +456,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
           开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴视频链接、已有文稿、参考文章，或把候选链接批量放入自动生成库
+          选择书籍方向后，粘贴视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
         </p>
 
         <div className="mt-6 space-y-4">
@@ -496,7 +497,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
               }`}
             >
               <PencilLine className="h-3.5 w-3.5" strokeWidth={1.5} />
-              文章参考
+              公众号参考
             </button>
             <button
               type="button"
@@ -572,7 +573,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             </select>
             <p className="mt-2 text-xs leading-relaxed text-warm-500">
               {isReferenceArticle
-                ? "文章参考固定使用情感·关系方向，按心理情感类长文流程生成原创文章。"
+                ? "公众号参考固定使用情感·关系方向，系统会先识别公开公众号正文，再按心理情感类长文流程生成原创文章。"
                 : `${selectedCategory.core_feature} · ${selectedCategory.directions}`}
             </p>
           </div>
@@ -632,6 +633,28 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                     <div className="flex-1 border-t border-gold-500/10" />
                   </div>
                 </>
+              )}
+
+              {isReferenceArticle && (
+                <div>
+                  <label
+                    htmlFor="wechat-article-url"
+                    className="mb-2 block text-[11px] tracking-widest text-warm-300"
+                  >
+                    微信公众号文章链接
+                  </label>
+                  <input
+                    id="wechat-article-url"
+                    type="text"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://mp.weixin.qq.com/s/..."
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    仅支持公开可访问的公众号文章。系统会自动识别正文，提炼情感关系问题并生成原创文章。
+                  </p>
+                </div>
               )}
 
               {isClassicalChinese && (
@@ -701,7 +724,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                 </div>
               )}
 
-              {isClassicalChinese && classicalInputMode === "docx" ? (
+              {!isReferenceArticle && (isClassicalChinese && classicalInputMode === "docx" ? (
                 <div>
                   <label
                     htmlFor="classical-docx"
@@ -759,7 +782,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 </div>
-              )}
+              ))}
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
@@ -980,7 +1003,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   : mode === "comic"
                     ? `生成${comicCategoryLabel}`
                     : mode === "article"
-                      ? "生成文章"
+                      ? "抓取并生成"
                       : "立即生成"}
               </span>
             )}

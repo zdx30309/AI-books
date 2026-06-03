@@ -72,6 +72,7 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
+from app.services.wechat_article import WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
 from app.utils.docx_text import DocxTextError, extract_docx_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
@@ -561,22 +562,28 @@ def create_emotion_reference_article_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
-    source_text = req.text.strip()
-    if not source_text:
-        raise HTTPException(status_code=400, detail="请粘贴参考文章全文")
+    try:
+        article = extract_wechat_article(req.url)
+    except WeChatArticleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    source_title = (req.title or "").strip()[:120]
+    source_text = article.text.strip()
+    source_title = (req.title or article.title or "").strip()[:120]
     base_config: dict[str, object] = {
         "category": "emotion_relationship",
         "input_source": "reference_article",
+        "reference_source": "wechat_article",
+        "wechat_article_url": article.source_url,
         "raw_text_chars": len(source_text),
     }
+    if article.author:
+        base_config["source_author"] = article.author[:120]
     if source_title:
         base_config["source_title"] = source_title
         base_config["title"] = source_title
     cfg = _normalize_task_config(base_config)
     response = _create_and_dispatch_task(
-        source_url="manual://reference_article/emotion_relationship",
+        source_url=article.source_url,
         config=cfg,
         db=db,
         user=user,
@@ -592,20 +599,24 @@ def create_emotion_reference_article_task(
             source_text_path=source_text_path,
             raw_text_chars=len(source_text),
             input_source="reference_article",
+            reference_source="wechat_article",
+            wechat_article_url=article.source_url,
         )
+        if article.author:
+            cfg["source_author"] = article.author[:120]
         if source_title:
             cfg["source_title"] = source_title
         task.config = cfg
         db.commit()
         _dispatch_task(task)
     except Exception as exc:
-        logger.exception("[task %s] 参考文章落盘或 Celery 投递失败", response.task_id)
+        logger.exception("[task %s] 微信文章落盘或 Celery 投递失败", response.task_id)
         task.status = TaskStatus.FAILED
-        task.error_message = f"Reference article dispatch failed: {exc}"[:2000]
+        task.error_message = f"WeChat article dispatch failed: {exc}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
-            detail=f"参考文章已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
+            detail=f"微信文章已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
         ) from exc
     return response
 

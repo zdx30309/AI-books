@@ -31,7 +31,12 @@ class CreateTaskResponse(BaseModel):
 
 
 class ReferenceArticleTaskRequest(BaseModel):
-    text: str = Field(..., min_length=1, description="用于生成原创心理情感文章的参考文章全文")
+    url: str = Field(
+        ...,
+        min_length=1,
+        max_length=2048,
+        description="微信公众号公开文章链接",
+    )
     title: str | None = Field(
         default=None,
         max_length=120,

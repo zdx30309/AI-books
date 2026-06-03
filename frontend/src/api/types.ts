@@ -22,7 +22,7 @@ export interface CreateTaskResponse {
 }
 
 export interface ReferenceArticleTaskRequest {
-  text: string;
+  url: string;
   title?: string | null;
 }
 
