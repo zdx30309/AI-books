@@ -361,6 +361,50 @@ def test_style_reference_only_applies_to_test_categories(
     assert "笔锋参考要求" not in writer_prompts[0]
 
 
+def test_reference_article_mode_appends_emotion_originality_rules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "这是一篇参考文章，讨论亲密关系里的情绪消耗。"
+    writer_prompts: list[str] = []
+    base_prompt = get_prompts("emotion_relationship")["full_book_writer"].format(raw_text=raw_text)
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="emotion_relationship",
+            output_dir=tmp_path / "reference_article",
+            input_source="reference_article",
+        )
+    )
+
+    assert writer_prompts[0].startswith(base_prompt)
+    assert "参考文章生成专项要求" in writer_prompts[0]
+    assert "只学习主题、问题意识和关系困境" in writer_prompts[0]
+    assert "不能改写、洗稿或同义替换原文" in writer_prompts[0]
+    assert "正文字数不设人为上限" in writer_prompts[0]
+
+
+def test_reference_article_mode_only_supports_emotion_relationship() -> None:
+    with pytest.raises(ValueError, match="参考文章生成当前只支持情感·关系分类"):
+        asyncio.run(
+            content_engine.generate_full_book(
+                "普通社会议题素材。",
+                category="social_science",
+                input_source="reference_article",
+            )
+        )
+
+
 def test_gemini_refine_max_tokens_falls_back_to_chunked_refine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

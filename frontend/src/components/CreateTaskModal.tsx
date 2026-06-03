@@ -30,6 +30,7 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
 ] as const;
+type CreateMode = "single" | "batch" | "comic" | "article";
 
 function extractCandidateLinks(text: string) {
   const matches = text.match(URL_RE) ?? [];
@@ -80,7 +81,7 @@ function parsePanelCount(value: string) {
 }
 
 export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }: Props) {
-  const [mode, setMode] = useState<"single" | "batch" | "comic">("single");
+  const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
@@ -105,6 +106,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const comicPhrases = parseComicPhrases(comicPhraseInput);
+  const isReferenceArticle = mode === "article";
   const isClassicalChinese = category === "classical_chinese";
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
@@ -187,10 +189,13 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
 
   if (!open) return null;
 
-  const switchMode = (nextMode: "single" | "batch" | "comic", nextCategory?: string) => {
+  const switchMode = (nextMode: CreateMode, nextCategory?: string) => {
     setMode(nextMode);
     if (nextMode === "comic") {
       setCategory(nextCategory && COMIC_CATEGORY_IDS.has(nextCategory) ? nextCategory : "comic_series");
+    } else if (nextMode === "article") {
+      setCategory("emotion_relationship");
+      setUrl("");
     } else if (COMIC_CATEGORY_IDS.has(category)) {
       setCategory("social_science");
     }
@@ -269,6 +274,30 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
           url: `manual://${comicCategory}`,
           config,
         });
+        onCreated(res.task_id);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建任务失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    if (mode === "article") {
+      const text = rawText.trim();
+      if (!text) {
+        setError("请粘贴参考文章全文");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await api.createEmotionReferenceArticleTask({ text });
         onCreated(res.task_id);
       } catch (e) {
         const msg =
@@ -426,7 +455,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
           开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴单个视频链接、已有文稿，或把候选链接批量放入自动生成库
+          选择书籍方向后，粘贴视频链接、已有文稿、参考文章，或把候选链接批量放入自动生成库
         </p>
 
         <div className="mt-6 space-y-4">
@@ -456,6 +485,18 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             >
               <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
               候选库
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("article")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                isReferenceArticle
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <PencilLine className="h-3.5 w-3.5" strokeWidth={1.5} />
+              文章参考
             </button>
             <button
               type="button"
@@ -509,6 +550,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             <select
               id="task-category"
               value={category}
+              disabled={isReferenceArticle}
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
@@ -518,7 +560,9 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   setMode("single");
                 }
               }}
-              className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+              className={`w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50 ${
+                isReferenceArticle ? "cursor-not-allowed opacity-70" : ""
+              }`}
             >
               {categories.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -527,7 +571,9 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
               ))}
             </select>
             <p className="mt-2 text-xs leading-relaxed text-warm-500">
-              {selectedCategory.core_feature} · {selectedCategory.directions}
+              {isReferenceArticle
+                ? "文章参考固定使用情感·关系方向，按心理情感类长文流程生成原创文章。"
+                : `${selectedCategory.core_feature} · ${selectedCategory.directions}`}
             </p>
           </div>
 
@@ -559,9 +605,9 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             </div>
           )}
 
-          {mode === "single" ? (
+          {mode === "single" || mode === "article" ? (
             <>
-              {!isClassicalChinese && (
+              {!isClassicalChinese && !isReferenceArticle && (
                 <>
                   <div>
                     <label
@@ -692,7 +738,11 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   htmlFor="task-raw-text"
                   className="mb-2 block text-[11px] tracking-widest text-warm-300"
                 >
-                  {isClassicalChinese ? "文言文原文" : "视频文稿（可选）"}
+                  {isClassicalChinese
+                    ? "文言文原文"
+                    : isReferenceArticle
+                      ? "参考文章全文"
+                      : "视频文稿（可选）"}
                 </label>
                 <textarea
                   id="task-raw-text"
@@ -701,9 +751,11 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   placeholder={
                     isClassicalChinese
                       ? "请直接粘贴需要转成白话文的文言文原文"
-                      : "如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
+                      : isReferenceArticle
+                        ? "请粘贴公众号文章或已有文章全文。系统会提炼情感关系问题，重新组织结构和案例，生成原创文章。"
+                        : "如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
                   }
-                  rows={isClassicalChinese ? 9 : 5}
+                  rows={isClassicalChinese ? 9 : isReferenceArticle ? 12 : 5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 </div>
@@ -927,7 +979,9 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   ? "加入候选库"
                   : mode === "comic"
                     ? `生成${comicCategoryLabel}`
-                    : "立即生成"}
+                    : mode === "article"
+                      ? "生成文章"
+                      : "立即生成"}
               </span>
             )}
           </button>

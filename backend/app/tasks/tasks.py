@@ -742,7 +742,10 @@ def process_video(_self, task_id: str) -> dict:
         output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _update_progress(db, task, progress=8, step="正在获取视频文案", run_id=run_id)
+        input_source = str((task.config or {}).get("input_source") or "").strip()
+        is_reference_article = input_source == "reference_article"
+        fetch_start_step = "正在读取参考文章" if is_reference_article else "正在获取视频文案"
+        _update_progress(db, task, progress=8, step=fetch_start_step, run_id=run_id)
         db.flush()
         video_text = _resolve_video_text_for_run(task, output_dir)
         if video_text:
@@ -750,7 +753,11 @@ def process_video(_self, task_id: str) -> dict:
                 _patch_config(task, raw_text_chars=len(video_text))
             else:
                 _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text))
-            fetch_step = f"文案就绪 ({len(video_text)} 字符)"
+            fetch_step = (
+                f"参考文章就绪 ({len(video_text)} 字符)"
+                if is_reference_article
+                else f"文案就绪 ({len(video_text)} 字符)"
+            )
         else:
             fetch_step = "检测到阶段产物，跳过文案抓取，准备断点续跑"
         _update_progress(db, task, progress=15, step=fetch_step, run_id=run_id)
@@ -855,6 +862,7 @@ def process_video(_self, task_id: str) -> dict:
                 healing_comic_panel_count=parse_healing_comic_panel_count(
                     (task.config or {}).get("comic_panel_count")
                 ),
+                input_source=input_source,
             )
         )
         _ensure_active_run(db, task, run_id)

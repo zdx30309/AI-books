@@ -29,6 +29,7 @@ import type {
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
   RegisterRequest,
+  ReferenceArticleTaskRequest,
   StageContentResponse,
   StageName,
   StatsResponse,
@@ -310,6 +311,11 @@ export const api = {
   getTask: (id: string) => request<TaskStatusResponse>(`/tasks/${id}`),
   createTask: (body: CreateTaskRequest) =>
     request<CreateTaskResponse>("/tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createEmotionReferenceArticleTask: (body: ReferenceArticleTaskRequest) =>
+    request<CreateTaskResponse>("/tasks/reference-article/emotion-relationship", {
       method: "POST",
       body: JSON.stringify(body),
     }),

@@ -63,6 +63,7 @@ from app.schemas.task import (
     RegenerateCoverRequest,
     RegenerateSelectionRequest,
     RegenerateSelectionResponse,
+    ReferenceArticleTaskRequest,
     StageContentResponse,
     TaskMetadataUpdateRequest,
     TaskListItem,
@@ -546,6 +547,67 @@ def create_task(
     if cfg.get("category") == "classical_chinese" and not str(cfg.get("raw_text") or "").strip():
         raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
+
+
+@router.post(
+    "/reference-article/emotion-relationship",
+    response_model=CreateTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="参考文章生成心理情感长文",
+)
+def create_emotion_reference_article_task(
+    req: ReferenceArticleTaskRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CreateTaskResponse:
+    _ensure_generation_capacity(db)
+    source_text = req.text.strip()
+    if not source_text:
+        raise HTTPException(status_code=400, detail="请粘贴参考文章全文")
+
+    source_title = (req.title or "").strip()[:120]
+    base_config: dict[str, object] = {
+        "category": "emotion_relationship",
+        "input_source": "reference_article",
+        "raw_text_chars": len(source_text),
+    }
+    if source_title:
+        base_config["source_title"] = source_title
+        base_config["title"] = source_title
+    cfg = _normalize_task_config(base_config)
+    response = _create_and_dispatch_task(
+        source_url="manual://reference_article/emotion_relationship",
+        config=cfg,
+        db=db,
+        user=user,
+        dispatch=False,
+    )
+    task = db.query(Task).filter(Task.id == response.task_id, Task.owner_id == user.id).first()
+    if task is None:
+        raise HTTPException(status_code=500, detail="任务创建后未能写入参考文章正文")
+    try:
+        source_text_path = _persist_uploaded_source_text(response.task_id, source_text)
+        cfg = dict(task.config or {})
+        cfg.update(
+            source_text_path=source_text_path,
+            raw_text_chars=len(source_text),
+            input_source="reference_article",
+        )
+        if source_title:
+            cfg["source_title"] = source_title
+        task.config = cfg
+        db.commit()
+        _dispatch_task(task)
+    except Exception as exc:
+        logger.exception("[task %s] 参考文章落盘或 Celery 投递失败", response.task_id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Reference article dispatch failed: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"参考文章已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
+        ) from exc
+    return response
 
 
 @router.post(

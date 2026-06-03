@@ -21,6 +21,11 @@ export interface CreateTaskResponse {
   status: TaskStatus;
 }
 
+export interface ReferenceArticleTaskRequest {
+  text: string;
+  title?: string | null;
+}
+
 export interface BatchCreateTaskRequest {
   urls: string[];
   config?: Record<string, unknown>;

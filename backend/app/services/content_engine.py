@@ -1308,6 +1308,31 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
 }
 
 
+REFERENCE_ARTICLE_INPUT_SOURCE = "reference_article"
+
+
+def _append_reference_article_prompt(
+    writer_prompt: str,
+    *,
+    category: str,
+    input_source: str | None,
+) -> str:
+    if (input_source or "").strip() != REFERENCE_ARTICLE_INPUT_SOURCE:
+        return writer_prompt
+    if normalize_category(category) != "emotion_relationship":
+        raise ValueError("参考文章生成当前只支持情感·关系分类")
+
+    parts = [
+        "【参考文章生成专项要求】",
+        "- 当前输入不是视频文稿，而是一篇参考文章原文；请按情感·关系类 prompt 理解其核心关系问题、情绪处境、叙事入口、读者痛点和判断框架。",
+        "- 只学习主题、问题意识和关系困境，不复刻原文标题、目录、段落顺序、句式、金句、比喻、独特案例、人物设定和可识别表达。",
+        "- 必须重新选择切入场景、章节结构、案例材料和表达方式，生成一篇独立原创文章；不能改写、洗稿或同义替换原文。",
+        "- 如果参考文章包含独特真实故事、个人经历或可识别细节，应抽象为更通用的关系处境，另起概括性场景，不沿用原文的关键人物关系和细节组合。",
+        "- 正文字数不设人为上限，以把核心关系问题讲透为准；不要为了凑篇幅重复观点。",
+    ]
+    return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
+
+
 def _append_style_reference_prompt(
     writer_prompt: str,
     *,
@@ -1353,8 +1378,14 @@ async def generate_full_book(
     classical_variant: str | None = None,
     classical_original_title: str | None = None,
     healing_comic_panel_count: int | None = None,
+    input_source: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
+    if (
+        (input_source or "").strip() == REFERENCE_ARTICLE_INPUT_SOURCE
+        and normalized_category != "emotion_relationship"
+    ):
+        raise ValueError("参考文章生成当前只支持情感·关系分类")
     prompts = get_prompts(normalized_category)
     full_book_writer_prompt = prompts["full_book_writer"]
     gemini_fast_polish_prompt = prompts["gemini_fast_polish"]
@@ -1425,6 +1456,11 @@ async def generate_full_book(
             category=normalized_category,
             style_reference=style_reference,
             style_notes=style_notes,
+        )
+        writer_prompt = _append_reference_article_prompt(
+            writer_prompt,
+            category=normalized_category,
+            input_source=input_source,
         )
         generated_markdown = await _route_writer_call(writer_prompt)
         _log_stage("1/4 writer", generated_markdown)

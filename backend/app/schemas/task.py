@@ -30,6 +30,15 @@ class CreateTaskResponse(BaseModel):
     status: str
 
 
+class ReferenceArticleTaskRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="用于生成原创心理情感文章的参考文章全文")
+    title: str | None = Field(
+        default=None,
+        max_length=120,
+        description="可选参考文章标题，仅用于任务记录",
+    )
+
+
 class BatchCreateTaskRequest(BaseModel):
     urls: list[str] = Field(..., min_length=1, max_length=500, description="候选链接列表，最多 500 条")
     config: dict[str, Any] = Field(default_factory=dict, description="批量任务共享配置")
