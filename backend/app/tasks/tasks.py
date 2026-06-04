@@ -28,8 +28,11 @@ from app.prompts.goal_driven_templates import get_category_meta, normalize_categ
 from app.services.classical_chinese import classical_final_title
 from app.services.comic_series import parse_healing_comic_panel_count
 from app.services.content_engine import generate_full_book, normalize_final_markdown
-from app.services.qingdou import extract_video_text_with_qingdou
-from app.services.video_sources import detect_video_source_platform, platform_label
+from app.services.qingdou import (
+    QingdouDurationExceededError,
+    extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
+)
+from app.services.video_sources import canonical_source_url, detect_video_source_platform, platform_label, source_url_candidates
 from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
@@ -280,10 +283,57 @@ def _start_active_run_heartbeat(task_id: str, run_id: str) -> tuple[threading.Ev
     return stop_event, thread
 
 
+def extract_video_text_with_qingdou(
+    source_url: str,
+    *,
+    timeout_seconds: int | None = None,
+    poll_interval_seconds: float = 3.0,
+    max_video_duration: int | None = None,
+) -> tuple[str, int | None, Any]:
+    platform = detect_video_source_platform(source_url)
+    candidates = source_url_candidates(source_url, platform)
+    errors: list[str] = []
+    for idx, candidate_url in enumerate(candidates, start=1):
+        try:
+            logger.info(
+                "Qingdou parse candidate %d/%d platform=%s source_url=%s",
+                idx,
+                len(candidates),
+                platform_label(platform),
+                candidate_url,
+            )
+            return _extract_video_text_with_qingdou_once(
+                candidate_url,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                max_video_duration=max_video_duration,
+            )
+        except QingdouDurationExceededError:
+            raise
+        except Exception as exc:
+            errors.append(f"{candidate_url}: {type(exc).__name__}: {exc}")
+            logger.warning(
+                "Qingdou parse candidate failed candidate=%d/%d source_url=%s error=%s",
+                idx,
+                len(candidates),
+                candidate_url,
+                exc,
+            )
+
+    raise RuntimeError(
+        f"{platform_label(platform)} video parse failed after {len(candidates)} candidate URL(s): "
+        + " | ".join(errors[-4:])
+    )
+
+
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
     category = str(config.get("category") or "").strip()
-    source_platform = str(config.get("source_platform") or detect_video_source_platform(source_url))
+    source_canonical_url = str(config.get("source_canonical_url") or canonical_source_url(source_url))
+    detected_platform = detect_video_source_platform(source_canonical_url or source_url)
+    source_platform = str(config.get("source_platform") or detected_platform)
+    if source_platform == "unknown" and detected_platform != "unknown":
+        source_platform = detected_platform
     source_platform_label = str(config.get("source_platform_label") or platform_label(source_platform))
     cached_text = _source_text_from_config(config, task_label="fetch")
     if cached_text:
@@ -300,10 +350,11 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     poll_interval = float(config.get("poll_interval_seconds") or settings.QINGDOU_POLL_INTERVAL_SECONDS)
     poll_timeout = int(config.get("poll_timeout_seconds") or settings.QINGDOU_POLL_TIMEOUT_SECONDS)
 
-    if settings.YOUTUBE_TRANSCRIPT_ENABLED and (source_platform == "youtube" or is_youtube_url(source_url)):
+    parser_url = source_canonical_url or source_url
+    if settings.YOUTUBE_TRANSCRIPT_ENABLED and (source_platform == "youtube" or is_youtube_url(parser_url)):
         try:
             logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)
-            result = extract_youtube_text(source_url, config=config)
+            result = extract_youtube_text(parser_url, config=config)
             logger.info(
                 "YouTube 字幕解析完成: video_id=%s provider=%s language=%s generated=%s chars=%d",
                 result.video_id,
@@ -321,11 +372,11 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     logger.info(
         "调用轻抖 API 解析%s视频: source_url=%s max_duration=%s",
         source_platform_label,
-        source_url,
+        parser_url,
         max_duration_arg or "unlimited",
     )
     text, duration, result = extract_video_text_with_qingdou(
-        source_url,
+        parser_url,
         timeout_seconds=poll_timeout,
         poll_interval_seconds=poll_interval,
         max_video_duration=max_duration_arg,

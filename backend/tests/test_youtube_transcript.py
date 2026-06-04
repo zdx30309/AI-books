@@ -15,6 +15,7 @@ import app.services.youtube as youtube
         ("https://youtu.be/dQw4w9WgXcQ?si=abc", "dQw4w9WgXcQ"),
         ("https://www.youtube.com/shorts/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
         ("https://www.youtube.com/embed/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+        ("shared text https://youtu.be/dQw4w9WgXcQ?si=abc", "dQw4w9WgXcQ"),
         ("dQw4w9WgXcQ", "dQw4w9WgXcQ"),
     ],
 )
@@ -128,3 +129,59 @@ def test_fetch_video_text_falls_back_to_qingdou_when_youtube_transcript_fails(
 
     assert text == "轻抖兜底文案"
     assert calls == ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
+
+
+def test_fetch_video_text_sends_canonical_youtube_url_to_qingdou(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail_youtube(*args, **kwargs):
+        calls.append("youtube")
+        raise youtube.YouTubeTranscriptError("bot check")
+
+    def ok_qingdou(source_url: str, **kwargs):
+        calls.append(source_url)
+        return "qingdou transcript", 42, type("Result", (), {"batch_id": 1, "task_id": 2})()
+
+    monkeypatch.setattr(task_tasks.settings, "YOUTUBE_TRANSCRIPT_ENABLED", True)
+    monkeypatch.setattr(task_tasks.settings, "QINGDOU_API_KEY", "test-key")
+    monkeypatch.setattr(task_tasks.settings, "QINGDOU_BASE_URL", "https://example.test/commitGetTextTask")
+    monkeypatch.setattr(task_tasks, "extract_youtube_text", fail_youtube)
+    monkeypatch.setattr(task_tasks, "extract_video_text_with_qingdou", ok_qingdou)
+
+    text = task_tasks._fetch_video_text(  # noqa: SLF001
+        "shared text https://youtu.be/dQw4w9WgXcQ?si=abc",
+        {"source_platform": "youtube", "youtube_transcript_min_chars": 5},
+    )
+
+    assert text == "qingdou transcript"
+    assert calls == ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
+
+
+def test_qingdou_wrapper_tries_wechat_channel_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_qingdou(source_url: str, **kwargs):
+        calls.append(source_url)
+        if source_url.startswith("https://weixin.qq.com/"):
+            raise RuntimeError("first shape failed")
+        return "wechat transcript", 60, type("Result", (), {"batch_id": 1, "task_id": 2})()
+
+    monkeypatch.setattr(task_tasks, "_extract_video_text_with_qingdou_once", fake_qingdou)
+
+    text, duration, _ = task_tasks.extract_video_text_with_qingdou(
+        "#tag https://weixin.qq.com/sph/A8yYHFLFrB",
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+        max_video_duration=None,
+    )
+
+    assert text == "wechat transcript"
+    assert duration == 60
+    assert calls[:2] == [
+        "https://weixin.qq.com/sph/A8yYHFLFrB",
+        "https://channels.weixin.qq.com/platform/post/A8yYHFLFrB",
+    ]

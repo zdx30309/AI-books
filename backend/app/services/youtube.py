@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.core.config import PROJECT_ROOT, settings
+from app.services.video_sources import canonical_source_url
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class YouTubeTranscriptResult:
 def is_youtube_url(source_url: str) -> bool:
     """Return true for common YouTube URL shapes."""
     try:
-        parsed = urlparse((source_url or "").strip())
+        parsed = urlparse(canonical_source_url(source_url))
     except Exception:
         return False
     host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
@@ -75,7 +76,7 @@ def is_youtube_url(source_url: str) -> bool:
 
 def extract_youtube_video_id(source_url: str) -> str:
     """Extract the canonical 11-character YouTube video id."""
-    raw = (source_url or "").strip()
+    raw = canonical_source_url(source_url)
     if _VIDEO_ID_RE.match(raw):
         return raw
 
@@ -110,6 +111,7 @@ def extract_youtube_video_id(source_url: str) -> str:
 def extract_youtube_text(source_url: str, *, config: dict[str, Any] | None = None) -> YouTubeTranscriptResult:
     """Fetch transcript text through multiple free providers, fastest first."""
     config = dict(config or {})
+    source_url = canonical_source_url(source_url)
     video_id = extract_youtube_video_id(source_url)
     languages = _language_preferences(config)
     timeout = int(config.get("youtube_transcript_timeout_seconds") or settings.YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS)
@@ -182,7 +184,7 @@ def _provider_preferences(config: dict[str, Any]) -> list[str]:
     raw = str(config.get("youtube_transcript_providers") or settings.YOUTUBE_TRANSCRIPT_PROVIDERS or "")
     providers = [item.strip().lower() for item in raw.split(",") if item.strip()]
     valid = {"youtube_transcript_api", "yt_dlp", "pytubefix"}
-    return [item for item in providers if item in valid] or ["youtube_transcript_api", "yt_dlp"]
+    return [item for item in providers if item in valid] or ["youtube_transcript_api", "pytubefix", "yt_dlp"]
 
 
 def _language_preferences(config: dict[str, Any]) -> list[str]:
@@ -385,8 +387,6 @@ def _yt_dlp_info(source_url: str, *, timeout: int) -> dict[str, Any]:
         "1",
         "--fragment-retries",
         "1",
-        "--extractor-args",
-        "youtube:skip=hls,dash",
     ]
     proxy = _proxy_url()
     if proxy:
@@ -394,6 +394,8 @@ def _yt_dlp_info(source_url: str, *, timeout: int) -> dict[str, Any]:
     cookies = _cookies_file()
     if cookies:
         command.extend(["--cookies", str(cookies)])
+    for extractor_args in _yt_dlp_extractor_args():
+        command.extend(["--extractor-args", extractor_args])
     command.append(source_url)
 
     try:
@@ -600,6 +602,16 @@ def _proxy_url() -> str | None:
 
 def _cookies_file() -> Path | None:
     raw = (settings.YOUTUBE_COOKIES_FILE or "").strip()
+    content = (getattr(settings, "YOUTUBE_COOKIES_CONTENT", "") or "").strip()
+    if content:
+        cache_dir = Path(settings.YOUTUBE_CACHE_DIR or tempfile.gettempdir())
+        if not cache_dir.is_absolute():
+            cache_dir = PROJECT_ROOT / cache_dir
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / "cookies.txt"
+        if not path.exists() or path.read_text(encoding="utf-8", errors="ignore") != content:
+            path.write_text(content, encoding="utf-8")
+        return path
     if not raw:
         return None
     path = Path(raw)
@@ -609,3 +621,18 @@ def _cookies_file() -> Path | None:
             cache_dir = PROJECT_ROOT / cache_dir
         path = cache_dir / path
     return path if path.exists() else None
+
+
+def _yt_dlp_extractor_args() -> list[str]:
+    raw = (getattr(settings, "YOUTUBE_YT_DLP_EXTRACTOR_ARGS", "") or "").strip()
+    if raw:
+        return [item.strip() for item in raw.replace("\n", "|").split("|") if item.strip()]
+
+    args = ["skip=hls,dash", "player_client=default,mweb"]
+    visitor_data = (getattr(settings, "YOUTUBE_VISITOR_DATA", "") or "").strip()
+    if visitor_data:
+        args.append(f"visitor_data={visitor_data}")
+    po_token = (getattr(settings, "YOUTUBE_PO_TOKEN", "") or "").strip()
+    if po_token:
+        args.append(f"po_token={po_token}")
+    return ["youtube:" + ";".join(args)]

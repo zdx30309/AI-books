@@ -73,7 +73,7 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
-from app.services.video_sources import detect_video_source_platform, platform_label
+from app.services.video_sources import canonical_source_url, detect_video_source_platform, platform_label
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
 from app.utils.docx_text import DocxTextError, extract_docx_text
@@ -543,7 +543,11 @@ def _config_with_source_platform(config: dict, source_url: str) -> dict:
     cfg = dict(config or {})
     if str(source_url or "").strip().startswith("manual://") or str(cfg.get("raw_text") or "").strip():
         return cfg
-    platform = detect_video_source_platform(source_url)
+    canonical_url = canonical_source_url(source_url)
+    platform = detect_video_source_platform(canonical_url or source_url)
+    if canonical_url:
+        cfg["source_original_input"] = source_url
+        cfg["source_canonical_url"] = canonical_url
     cfg["source_platform"] = platform
     cfg["source_platform_label"] = platform_label(platform)
     return cfg
