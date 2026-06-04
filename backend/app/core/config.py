@@ -171,10 +171,10 @@ class Settings(BaseSettings):
 
     # --- YouTube transcript extraction (free providers, no paid model API) ---
     YOUTUBE_TRANSCRIPT_ENABLED: bool = True
-    YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,pytubefix,yt_dlp"
+    YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,pytubefix,yt_dlp,openai_audio"
     YOUTUBE_TRANSCRIPT_LANGUAGES: str = "zh-Hans,zh-Hant,zh,en,en-US,en-GB"
-    YOUTUBE_TRANSCRIPT_TOTAL_TIMEOUT_SECONDS: int = 10
-    YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS: int = 20
+    YOUTUBE_TRANSCRIPT_TOTAL_TIMEOUT_SECONDS: int = 240
+    YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS: int = 45
     YOUTUBE_TRANSCRIPT_MIN_CHARS: int = 80
     YOUTUBE_HTTPS_PROXY: str = ""
     YOUTUBE_COOKIES_FILE: str = ""
@@ -182,6 +182,9 @@ class Settings(BaseSettings):
     YOUTUBE_VISITOR_DATA: str = ""
     YOUTUBE_PO_TOKEN: str = ""
     YOUTUBE_YT_DLP_EXTRACTOR_ARGS: str = ""
+    YOUTUBE_AUDIO_TRANSCRIPTION_ENABLED: bool = True
+    YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    YOUTUBE_AUDIO_MAX_BYTES: int = 25_000_000
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
 
     # --- 古文白话 ---

@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -16,9 +17,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from openai import OpenAI
 
 from app.core.config import PROJECT_ROOT, settings
 from app.services.video_sources import canonical_source_url
+from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,13 @@ def extract_youtube_text(source_url: str, *, config: dict[str, Any] | None = Non
                 )
             elif provider == "pytubefix":
                 result = _from_pytubefix(source_url, video_id=video_id, languages=languages)
+            elif provider == "openai_audio":
+                result = _from_openai_audio(
+                    source_url,
+                    video_id=video_id,
+                    timeout=attempt_timeout,
+                    deadline=deadline,
+                )
             else:
                 errors.append(f"{provider}: unknown provider")
                 continue
@@ -183,8 +193,13 @@ def extract_youtube_text(source_url: str, *, config: dict[str, Any] | None = Non
 def _provider_preferences(config: dict[str, Any]) -> list[str]:
     raw = str(config.get("youtube_transcript_providers") or settings.YOUTUBE_TRANSCRIPT_PROVIDERS or "")
     providers = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    valid = {"youtube_transcript_api", "yt_dlp", "pytubefix"}
-    return [item for item in providers if item in valid] or ["youtube_transcript_api", "pytubefix", "yt_dlp"]
+    valid = {"youtube_transcript_api", "yt_dlp", "pytubefix", "openai_audio"}
+    return [item for item in providers if item in valid] or [
+        "youtube_transcript_api",
+        "pytubefix",
+        "yt_dlp",
+        "openai_audio",
+    ]
 
 
 def _language_preferences(config: dict[str, Any]) -> list[str]:
@@ -589,6 +604,138 @@ def _pick_pytubefix_caption(captions: Any, languages: list[str]) -> Any | None:
         except Exception:
             values = []
     return values[0] if values else None
+
+
+def _from_openai_audio(
+    source_url: str,
+    *,
+    video_id: str,
+    timeout: int,
+    deadline: float | None = None,
+) -> YouTubeTranscriptResult:
+    if not settings.YOUTUBE_AUDIO_TRANSCRIPTION_ENABLED:
+        raise YouTubeTranscriptError("OpenAI audio transcription fallback is disabled")
+    if not (settings.OPENAI_API_KEY or "").strip():
+        raise YouTubeTranscriptError("OPENAI_API_KEY is required for audio transcription fallback")
+
+    remaining = _remaining_timeout(deadline)
+    download_timeout = max(10, min(timeout, remaining)) if remaining is not None else max(10, timeout)
+    audio_path = _download_youtube_audio(source_url, timeout=download_timeout)
+    try:
+        remaining = _remaining_timeout(deadline)
+        transcribe_timeout = max(30, remaining) if remaining is not None else max(30, timeout)
+        text = _transcribe_audio_with_openai(audio_path, timeout=transcribe_timeout)
+    finally:
+        try:
+            audio_path.unlink(missing_ok=True)
+            audio_path.parent.rmdir()
+        except Exception:
+            logger.debug("failed to remove temporary YouTube audio file %s", audio_path, exc_info=True)
+
+    return YouTubeTranscriptResult(
+        text=text,
+        video_id=video_id,
+        provider="openai_audio",
+        language=None,
+        is_generated=True,
+    )
+
+
+def _download_youtube_audio(source_url: str, *, timeout: int) -> Path:
+    with tempfile.TemporaryDirectory(prefix="youtube-audio-") as tmp:
+        tmp_path = Path(tmp)
+        output_template = tmp_path / "audio.%(ext)s"
+        max_bytes = max(1_000_000, int(settings.YOUTUBE_AUDIO_MAX_BYTES or 25_000_000))
+        command = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-f",
+            "ba/bestaudio/best",
+            "--no-playlist",
+            "--no-warnings",
+            "--socket-timeout",
+            str(max(1, timeout)),
+            "--retries",
+            "1",
+            "--fragment-retries",
+            "1",
+            "--max-filesize",
+            str(max_bytes),
+            "-o",
+            str(output_template),
+        ]
+        proxy = _proxy_url()
+        if proxy:
+            command.extend(["--proxy", proxy])
+        cookies = _cookies_file()
+        if cookies:
+            command.extend(["--cookies", str(cookies)])
+        for extractor_args in _yt_dlp_extractor_args():
+            command.extend(["--extractor-args", extractor_args])
+        command.append(source_url)
+
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(10, timeout),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise YouTubeTranscriptError(f"yt-dlp audio download timed out after {timeout}s") from exc
+
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            raise YouTubeTranscriptError(f"yt-dlp audio download failed rc={completed.returncode}: {stderr[-700:]}")
+
+        files = [path for path in tmp_path.iterdir() if path.is_file()]
+        if not files:
+            raise YouTubeTranscriptError("yt-dlp audio download produced no file")
+        audio_path = max(files, key=lambda path: path.stat().st_size)
+        if audio_path.stat().st_size > max_bytes:
+            raise YouTubeTranscriptError(
+                f"downloaded audio exceeds limit ({audio_path.stat().st_size} > {max_bytes} bytes)"
+            )
+
+        final_path = Path(tempfile.mkdtemp(prefix="youtube-audio-ready-")) / audio_path.name
+        os.replace(audio_path, final_path)
+        return final_path
+
+
+def _transcribe_audio_with_openai(audio_path: Path, *, timeout: int) -> str:
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
+    client_kwargs: dict[str, Any] = {
+        "api_key": settings.OPENAI_API_KEY,
+        "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
+        "timeout": max(30, timeout),
+    }
+    if proxy:
+        client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, timeout))
+    client = OpenAI(**client_kwargs)
+    try:
+        with audio_path.open("rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model=settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL,
+                file=audio_file,
+                response_format="text",
+            )
+    except Exception as exc:
+        raise YouTubeTranscriptError(f"OpenAI audio transcription failed: {exc}") from exc
+    finally:
+        http_client = client_kwargs.get("http_client")
+        if http_client is not None:
+            http_client.close()
+
+    if isinstance(response, str):
+        text = response
+    else:
+        text = str(getattr(response, "text", "") or response or "")
+    text = text.strip()
+    if not text:
+        raise YouTubeTranscriptError("OpenAI audio transcription returned empty text")
+    return text
 
 
 def _proxy_url() -> str | None:

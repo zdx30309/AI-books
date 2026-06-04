@@ -103,6 +103,37 @@ def test_extract_youtube_text_splits_total_timeout(monkeypatch: pytest.MonkeyPat
     assert seen_timeouts[1] <= 10
 
 
+def test_extract_youtube_text_can_use_openai_audio_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fail_provider(*args, **kwargs):
+        calls.append("captions")
+        raise youtube.YouTubeTranscriptError("no captions")
+
+    def ok_audio(*args, **kwargs):
+        calls.append("audio")
+        return youtube.YouTubeTranscriptResult(
+            text="audio transcript line one\nline two",
+            video_id="dQw4w9WgXcQ",
+            provider="openai_audio",
+            language=None,
+            is_generated=True,
+        )
+
+    monkeypatch.setattr(youtube, "_provider_preferences", lambda config: ["youtube_transcript_api", "openai_audio"])
+    monkeypatch.setattr(youtube, "_from_youtube_transcript_api", fail_provider)
+    monkeypatch.setattr(youtube, "_from_openai_audio", ok_audio)
+
+    result = youtube.extract_youtube_text(
+        "https://youtu.be/dQw4w9WgXcQ?si=abc",
+        config={"youtube_transcript_min_chars": 5, "youtube_transcript_total_timeout_seconds": 60},
+    )
+
+    assert calls == ["captions", "audio"]
+    assert result.provider == "openai_audio"
+    assert result.text == "audio transcript line one\nline two"
+
+
 def test_fetch_video_text_falls_back_to_qingdou_when_youtube_transcript_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
