@@ -676,6 +676,7 @@ def _stream_openai_writer(
     effort: str,
     verb: str,
     max_tok: int | None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> tuple[str, Any | None]:
     client = _get_openai_writer_client()
     kwargs: dict[str, Any] = {
@@ -690,14 +691,26 @@ def _stream_openai_writer(
     stream = client.responses.create(**kwargs)
     chunks: list[str] = []
     final_response: Any | None = None
+    generated_chars = 0
+    last_progress_chars = 0
+    last_progress_at = time.monotonic()
     for event in stream:
         if (getattr(event, "type", "") or "").endswith("output_text.delta"):
             delta = getattr(event, "delta", None)
             if delta:
                 print(delta, end="", flush=True)
                 chunks.append(delta)
+                generated_chars += len(delta)
+                if on_progress is not None:
+                    now = time.monotonic()
+                    if generated_chars - last_progress_chars >= 2000 or now - last_progress_at >= 15:
+                        on_progress(generated_chars)
+                        last_progress_chars = generated_chars
+                        last_progress_at = now
         elif (getattr(event, "type", "") or "").endswith("response.completed"):
             final_response = getattr(event, "response", None) or final_response
+    if on_progress is not None and generated_chars:
+        on_progress(generated_chars)
     print()
     return "".join(chunks).strip(), final_response
 
@@ -727,6 +740,7 @@ def _openai_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> str:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
@@ -747,7 +761,13 @@ def _openai_writer_call(
             ):
                 if settings.OPENAI_WRITER_STREAM:
                     try:
-                        text, response = _stream_openai_writer(rendered_prompt, effort=effort, verb=verb, max_tok=max_tok)
+                        text, response = _stream_openai_writer(
+                            rendered_prompt,
+                            effort=effort,
+                            verb=verb,
+                            max_tok=max_tok,
+                            on_progress=on_progress,
+                        )
                     except Exception as stream_exc:
                         if first_stream_exc is None:
                             first_stream_exc = stream_exc
@@ -826,6 +846,7 @@ async def _route_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> str:
     return await asyncio.to_thread(
         _openai_writer_call,
@@ -833,6 +854,7 @@ async def _route_writer_call(
         reasoning_effort=reasoning_effort,
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
+        on_progress=on_progress,
     )
 
 
@@ -879,49 +901,13 @@ def _refine_book_text_without_output_cap(text: str, *, system_instruction: str |
     )
 
 
-def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
-    """按完整段落切块，每块目标 ~target_chars 字。
-
-    - 段落边界 = 一个或多个空行（保留 markdown 段落语义）
-    - 不破坏段落：单个段落超过 target_chars 时独立成块
-    - 否则贪心拼装到接近 target_chars
-    """
-    import re
-
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    if not paragraphs:
-        return []
-
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-
-    for para in paragraphs:
-        para_len = len(para)
-        if current and current_len + para_len > target_chars:
-            chunks.append("\n\n".join(current))
-            current = [para]
-            current_len = para_len
-        else:
-            current.append(para)
-            current_len += para_len
-
-    if current:
-        chunks.append("\n\n".join(current))
-
-    return chunks
-
-
-def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[str]:
-    retry_target = max(300, min(700, target_chars // 2 if target_chars > 0 else 500))
-    paragraph_chunks = _split_text_by_paragraph(text, target_chars=retry_target)
-    if len(paragraph_chunks) > 1:
-        return paragraph_chunks
-
+def _split_long_text_by_sentence(text: str, *, target_chars: int) -> list[str]:
     compact = text.strip()
     if not compact:
         return []
-    if len(compact) <= retry_target:
+
+    hard_target = max(300, int(target_chars or 1000))
+    if len(compact) <= hard_target:
         return [compact]
 
     parts = re.split(r"([。！？!?；;])", compact)
@@ -935,24 +921,27 @@ def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[st
         sentences.append(sentence)
 
     if len(sentences) <= 1:
-        return [compact[start : start + retry_target] for start in range(0, len(compact), retry_target)]
+        return [
+            compact[start : start + hard_target]
+            for start in range(0, len(compact), hard_target)
+        ]
 
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
     for sentence in sentences:
         sentence_len = len(sentence)
-        if sentence_len > retry_target:
+        if sentence_len > hard_target:
             if current:
                 chunks.append("".join(current))
                 current = []
                 current_len = 0
             chunks.extend(
-                sentence[start : start + retry_target]
-                for start in range(0, sentence_len, retry_target)
+                sentence[start : start + hard_target]
+                for start in range(0, sentence_len, hard_target)
             )
             continue
-        if current and current_len + sentence_len > retry_target:
+        if current and current_len + sentence_len > hard_target:
             chunks.append("".join(current))
             current = [sentence]
             current_len = sentence_len
@@ -963,6 +952,46 @@ def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[st
     if current:
         chunks.append("".join(current))
     return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
+    """Split text into model-sized chunks without treating huge paragraphs as one block."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        pieces = (
+            _split_long_text_by_sentence(para, target_chars=target_chars)
+            if len(para) > target_chars
+            else [para]
+        )
+        for piece in pieces:
+            piece_len = len(piece)
+            if current and current_len + piece_len > target_chars:
+                chunks.append("\n\n".join(current))
+                current = []
+                current_len = 0
+            current.append(piece)
+            current_len += piece_len
+            if current_len >= target_chars:
+                chunks.append("\n\n".join(current))
+                current = []
+                current_len = 0
+
+    if current:
+        chunks.append("\n\n".join(current))
+
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[str]:
+    retry_target = max(300, min(700, target_chars // 2 if target_chars > 0 else 500))
+    return _split_text_by_paragraph(text, target_chars=retry_target)
 
 
 async def _polish_by_paragraph_chunks(
@@ -1836,6 +1865,11 @@ async def generate_full_book(
         generated_markdown = await _route_writer_call(
             writer_prompt,
             max_output_tokens=writer_max_output_tokens,
+            on_progress=(
+                (lambda chars: on_stage("writer_progress", {"chars": chars}))
+                if on_stage
+                else None
+            ),
         )
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)

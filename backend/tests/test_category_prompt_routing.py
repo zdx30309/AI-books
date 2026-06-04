@@ -92,6 +92,35 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "final_book_format" in prompts
 
 
+def test_writer_stream_progress_is_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        on_progress = kwargs.get("on_progress")
+        assert callable(on_progress)
+        on_progress(2400)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            "writer progress input",
+            category="social_science",
+            output_dir=tmp_path / "writer_progress",
+            on_stage=lambda stage, info: events.append((stage, info)),
+        )
+    )
+
+    assert ("writer_progress", {"chars": 2400}) in events
+
+
 def test_web_short_story_is_history_test_prompt_sync() -> None:
     history_prompts = get_prompts("history_culture")
     web_short_story_prompts = get_prompts("web_short_story")
@@ -600,3 +629,11 @@ def test_zero_gemini_chunk_timeout_is_bounded_wait_not_output_cap() -> None:
 
     assert timeout > 0
     assert timeout <= 180
+
+
+def test_long_single_paragraph_is_split_before_gemini() -> None:
+    chunks = content_engine._split_text_by_paragraph("A" * 2500, target_chars=1000)
+
+    assert len(chunks) == 3
+    assert max(len(chunk) for chunk in chunks) <= 1000
+    assert "".join(chunks) == "A" * 2500
