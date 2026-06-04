@@ -35,7 +35,7 @@ class CreateTaskRequest(BaseModel):
         ...,
         min_length=1,
         max_length=2048,
-        description="原始视频 URL (抖音/B站/YouTube 等)",
+        description="原始视频 URL (YouTube/小红书/微信视频号/抖音/B站等)",
     )
     config: dict[str, Any] = Field(
         default_factory=dict,

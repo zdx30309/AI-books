@@ -663,16 +663,31 @@ def _openai_writer_retry_efforts(current_effort: str) -> list[str]:
     return efforts
 
 
-def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> tuple[str, Any | None]:
+def _positive_max_tokens(value: int | None) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
+
+
+def _stream_openai_writer(
+    rendered_prompt: str,
+    *,
+    effort: str,
+    verb: str,
+    max_tok: int | None,
+) -> tuple[str, Any | None]:
     client = _get_openai_writer_client()
-    stream = client.responses.create(
-        model=settings.OPENAI_WRITER_MODEL,
-        input=rendered_prompt,
-        reasoning={"effort": effort},
-        text={"verbosity": verb},
-        max_output_tokens=max_tok,
-        stream=True,
-    )
+    kwargs: dict[str, Any] = {
+        "model": settings.OPENAI_WRITER_MODEL,
+        "input": rendered_prompt,
+        "reasoning": {"effort": effort},
+        "text": {"verbosity": verb},
+        "stream": True,
+    }
+    if max_tok is not None:
+        kwargs["max_output_tokens"] = max_tok
+    stream = client.responses.create(**kwargs)
     chunks: list[str] = []
     final_response: Any | None = None
     for event in stream:
@@ -687,15 +702,23 @@ def _stream_openai_writer(rendered_prompt: str, *, effort: str, verb: str, max_t
     return "".join(chunks).strip(), final_response
 
 
-def _create_openai_writer_response(rendered_prompt: str, *, effort: str, verb: str, max_tok: int) -> Any:
+def _create_openai_writer_response(
+    rendered_prompt: str,
+    *,
+    effort: str,
+    verb: str,
+    max_tok: int | None,
+) -> Any:
     client = _get_openai_writer_client()
-    return client.responses.create(
-        model=settings.OPENAI_WRITER_MODEL,
-        input=rendered_prompt,
-        reasoning={"effort": effort},
-        text={"verbosity": verb},
-        max_output_tokens=max_tok,
-    )
+    kwargs: dict[str, Any] = {
+        "model": settings.OPENAI_WRITER_MODEL,
+        "input": rendered_prompt,
+        "reasoning": {"effort": effort},
+        "text": {"verbosity": verb},
+    }
+    if max_tok is not None:
+        kwargs["max_output_tokens"] = max_tok
+    return client.responses.create(**kwargs)
 
 
 def _openai_writer_call(
@@ -707,7 +730,8 @@ def _openai_writer_call(
 ) -> str:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
-    max_tok = max_output_tokens or settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS
+    raw_max_tok = settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
+    max_tok = _positive_max_tokens(raw_max_tok)
 
     response: Any | None = None
     text = ""
@@ -809,6 +833,22 @@ async def _route_writer_call(
         reasoning_effort=reasoning_effort,
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
+    )
+
+
+def _polish_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
+    return polish_book_text(
+        text,
+        system_instruction=system_instruction,
+        disable_max_output_tokens=True,
+    )
+
+
+def _refine_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
+    return refine_book_text(
+        text,
+        system_instruction=system_instruction,
+        disable_max_output_tokens=True,
     )
 
 
@@ -1239,6 +1279,7 @@ async def _refine_by_paragraph_chunks_strict(
     system_instruction: str | None = None,
     on_stage: StageCallback | None = None,
     output_dir: Path | None = None,
+    chunk_func: Callable[..., str] | None = None,
 ) -> str:
     return await _polish_by_paragraph_chunks_strict(
         text,
@@ -1246,7 +1287,7 @@ async def _refine_by_paragraph_chunks_strict(
         system_instruction=system_instruction,
         on_stage=on_stage,
         output_dir=output_dir,
-        chunk_func=refine_book_text,
+        chunk_func=chunk_func or refine_book_text,
         call_timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
         cache_subdir="03_refine_chunks",
         progress_stage="refine_chunk",
@@ -1691,11 +1732,7 @@ async def generate_full_book(
             category=normalized_category,
             input_source=input_source,
         )
-        writer_max_output_tokens = (
-            settings.CLASSICAL_WRITER_MAX_OUTPUT_TOKENS
-            if normalized_category == "classical_chinese"
-            else None
-        )
+        writer_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
         generated_markdown = await _route_writer_call(
             writer_prompt,
             max_output_tokens=writer_max_output_tokens,
@@ -1726,12 +1763,18 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("polish_start", {})
+        polish_chunk_func = (
+            _polish_book_text_without_output_cap
+            if normalized_category == "classical_chinese"
+            else polish_book_text
+        )
         polished_markdown = await _polish_by_paragraph_chunks_strict(
             generated_markdown,
             target_chars=1000,
             system_instruction=gemini_fast_polish_prompt,
             on_stage=on_stage,
             output_dir=output_dir,
+            chunk_func=polish_chunk_func,
         )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
@@ -1750,9 +1793,14 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("refine_start", {})
+        refine_func = (
+            _refine_book_text_without_output_cap
+            if normalized_category == "classical_chinese"
+            else refine_book_text
+        )
         try:
             refined_markdown = await _to_thread_with_optional_timeout(
-                refine_book_text,
+                refine_func,
                 polished_markdown,
                 system_instruction=gemini_fast_refine_prompt,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
@@ -1768,6 +1816,7 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
+                chunk_func=refine_func,
             )
         except Exception as exc:
             logger.error("Gemini 二润失败，回退到一润结果继续: %s", exc)
@@ -1790,11 +1839,7 @@ async def generate_full_book(
         if on_stage:
             on_stage("format_start", {})
         try:
-            format_max_output_tokens = (
-                settings.CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS
-                if normalized_category == "classical_chinese"
-                else None
-            )
+            format_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
                     format_book_text,

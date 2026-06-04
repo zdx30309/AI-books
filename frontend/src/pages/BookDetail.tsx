@@ -146,6 +146,11 @@ export function BookDetail() {
     }
   }, [id, dirty]);
 
+  const restartPolling = useCallback(() => {
+    if (pollRef.current) window.clearInterval(pollRef.current);
+    pollRef.current = window.setInterval(() => void refresh(), 2500);
+  }, [refresh]);
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -366,41 +371,29 @@ export function BookDetail() {
     }
   }, [id, metaTitle, metaCategory]);
 
-  const regenerateSelected = useCallback(async () => {
-    if (!id) return;
-    if (!editing || activeView !== "final") {
-      alert("请先切到编辑模式，并在终稿中选中要重新生成的内容。");
-      return;
-    }
-    if (!polishTrigger) {
-      alert("请先在正文编辑框里选中一段内容。");
-      return;
-    }
-
-    const { chapterId, textareaEl, start, end, text } = polishTrigger;
+  const regenerateWholeTask = useCallback(async () => {
+    if (!id || !task) return;
+    const ok = window.confirm(
+      "确定从头重新生成整篇文稿吗？系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类。",
+    );
+    if (!ok) return;
     setRegenerating(true);
     try {
-      const r = await api.regenerateSelection(id, { text });
-      const target = chapters.find((c) => c.id === chapterId);
-      if (!target) return;
-      const newContent =
-        target.content.slice(0, start) +
-        r.regenerated +
-        target.content.slice(end);
-      setChapters((prev) =>
-        prev.map((c) =>
-          c.id === chapterId
-            ? { ...c, content: newContent, word_count: newContent.length }
-            : c,
-        ),
-      );
-      setDirty((d) => ({ ...d, [chapterId]: true }));
+      const res = await api.regenerateTasks({ task_ids: [id] });
+      const skipped = res.skipped.find((item) => item.task_id === id);
+      if (res.total_regenerated === 0 || skipped) {
+        alert(`重新生成未入队：${skipped?.reason || "当前任务暂不能重新生成"}`);
+        return;
+      }
+      setDirty({});
+      setSavedAt({});
       setPolishTrigger(null);
-      setTimeout(() => {
-        textareaEl.focus();
-        const newEnd = start + r.regenerated.length;
-        textareaEl.setSelectionRange(newEnd, newEnd);
-      }, 0);
+      setEditing(false);
+      setActiveView("final");
+      setChapters([]);
+      setError(null);
+      restartPolling();
+      await refresh();
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -410,7 +403,7 @@ export function BookDetail() {
     } finally {
       setRegenerating(false);
     }
-  }, [id, editing, activeView, polishTrigger, chapters]);
+  }, [id, task, restartPolling, refresh]);
 
   const dirtyCount = useMemo(
     () => Object.values(dirty).filter(Boolean).length,
@@ -439,6 +432,7 @@ export function BookDetail() {
     try {
       await api.retryTask(id);
       setError(null);
+      restartPolling();
       setLoading(true);
       await refresh();
     } catch (e) {
@@ -447,7 +441,7 @@ export function BookDetail() {
     } finally {
       setLoading(false);
     }
-  }, [id, task, refresh]);
+  }, [id, task, refresh, restartPolling]);
 
   const handleDownload = useCallback(
     async (fmt: "md" | "docx") => {
@@ -684,7 +678,7 @@ export function BookDetail() {
               <>
                 <button
                   type="button"
-                  onClick={regenerateSelected}
+                  onClick={regenerateWholeTask}
                   disabled={regenerating}
                   className="btn-ghost disabled:opacity-50"
                 >
@@ -693,7 +687,7 @@ export function BookDetail() {
                   ) : (
                     <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
                   )}
-                  {regenerating ? "重新生成中" : "重新生成"}
+                  {regenerating ? "重新生成中" : "重新生成整篇"}
                 </button>
                 <button
                   type="button"

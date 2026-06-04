@@ -441,7 +441,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
       return;
     }
     if (!isClassicalChinese && !url.trim() && !rawText.trim()) {
-      setError("请填入抖音链接，或直接粘贴视频文稿");
+      setError("请填入 YouTube、小红书、微信视频号等视频链接，或直接粘贴视频文稿");
       return;
     }
     setSubmitting(true);
@@ -501,7 +501,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
           开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
+          选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
         </p>
 
         <div className="mt-6 space-y-4">
@@ -679,7 +679,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                       type="text"
                       value={url}
                       onChange={(e) => setUrl(e.target.value)}
-                      placeholder="https://v.douyin.com/..."
+                      placeholder="YouTube / 小红书 / 微信视频号 / 抖音链接"
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                     />
                   </div>
@@ -865,7 +865,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                       ? "请直接粘贴需要转成白话文的文言文原文"
                       : isReferenceArticle
                         ? "请粘贴公众号文章或已有文章全文。系统会提炼情感关系问题，重新组织结构和案例，生成原创文章。"
-                        : "如果已经有视频文稿，可以直接粘贴在这里，跳过抖音解析步骤"
+                        : "如果已经有视频文稿，可以直接粘贴在这里，跳过链接解析步骤"
                   }
                   rows={isClassicalChinese ? 9 : isReferenceArticle ? 12 : 5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"

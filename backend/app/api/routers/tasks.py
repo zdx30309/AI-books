@@ -73,6 +73,7 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
+from app.services.video_sources import detect_video_source_platform, platform_label
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
 from app.utils.docx_text import DocxTextError, extract_docx_text
@@ -333,6 +334,60 @@ def _create_and_dispatch_task(
     return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
+def _create_classical_text_task(
+    *,
+    source_url: str,
+    config: dict,
+    db: Session,
+    user: User,
+) -> CreateTaskResponse:
+    raw_text = str(config.get("raw_text") or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
+
+    cfg = dict(config)
+    cfg.pop("raw_text", None)
+    cfg["raw_text_chars"] = len(raw_text)
+    task = Task(
+        source_url=source_url,
+        owner_id=user.id,
+        config=cfg,
+        status=TaskStatus.PENDING,
+        progress=0,
+        current_step="排队中",
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    logger.info("[task %s] 古文白话文本建库完成, 准备外置原文并投 Celery", task.id)
+
+    try:
+        source_text_path = _persist_uploaded_source_text(task.id, raw_text)
+        cfg.update(source_text_path=source_text_path, raw_text_chars=len(raw_text))
+        task.config = cfg
+        db.commit()
+    except Exception as exc:
+        logger.exception("[task %s] 古文白话原文落盘失败", task.id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Classical source text persist failed: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"古文白话原文保存失败: {exc}") from exc
+
+    try:
+        _dispatch_task(task)
+    except Exception as e:
+        logger.exception("[task %s] Celery 投递失败", task.id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Celery dispatch failed: {e}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"任务已建库但 Celery 投递失败 (task_id={task.id}): {e}",
+        ) from e
+
+    return CreateTaskResponse(task_id=task.id, status=task.status)
+
+
 def _persist_uploaded_source_text(task_id: UUID, text: str) -> str:
     input_dir = PROJECT_ROOT / "backend" / "output" / "task_inputs"
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -484,6 +539,16 @@ def _normalize_candidate_urls(urls: list[str]) -> tuple[list[str], list[str]]:
     return unique, duplicates
 
 
+def _config_with_source_platform(config: dict, source_url: str) -> dict:
+    cfg = dict(config or {})
+    if str(source_url or "").strip().startswith("manual://") or str(cfg.get("raw_text") or "").strip():
+        return cfg
+    platform = detect_video_source_platform(source_url)
+    cfg["source_platform"] = platform
+    cfg["source_platform_label"] = platform_label(platform)
+    return cfg
+
+
 def _render_chapters_markdown(chapters: list[Chapter]) -> str:
     lines: list[str] = ["@正文"]
     for chapter in sorted(chapters, key=lambda c: c.chapter_num):
@@ -545,9 +610,9 @@ def create_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
-    cfg = _normalize_task_config(req.config)
-    if cfg.get("category") == "classical_chinese" and not str(cfg.get("raw_text") or "").strip():
-        raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
+    cfg = _config_with_source_platform(_normalize_task_config(req.config), req.url)
+    if cfg.get("category") == "classical_chinese":
+        return _create_classical_text_task(source_url=req.url, config=cfg, db=db, user=user)
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
 
 
@@ -922,7 +987,7 @@ def create_task_batch(
         task = Task(
             source_url=url,
             owner_id=user.id,
-            config=dict(cfg),
+            config=_config_with_source_platform(cfg, url),
             status=TaskStatus.PENDING,
             progress=0,
             current_step="排队中",

@@ -265,7 +265,7 @@ def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lin
     assert "第一段白话。\n\n第二段白话。" not in result
 
 
-def test_classical_chinese_uses_expanded_output_budgets(
+def test_classical_chinese_uses_no_application_output_caps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -294,8 +294,8 @@ def test_classical_chinese_uses_expanded_output_budgets(
         )
     )
 
-    assert writer_kwargs[0]["max_output_tokens"] == content_engine.settings.CLASSICAL_WRITER_MAX_OUTPUT_TOKENS
-    assert format_kwargs[0]["max_output_tokens"] == content_engine.settings.CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS
+    assert writer_kwargs[0]["max_output_tokens"] == 0
+    assert format_kwargs[0]["max_output_tokens"] == 0
     assert format_kwargs[0]["fail_on_max_tokens"] is True
 
 

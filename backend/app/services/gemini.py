@@ -309,26 +309,36 @@ def generate_text(
     raise RuntimeError("Gemini 调用失败")
 
 
-def polish_book_text(text: str, *, system_instruction: str | None = None) -> str:
+def polish_book_text(
+    text: str,
+    *,
+    system_instruction: str | None = None,
+    disable_max_output_tokens: bool = False,
+) -> str:
     """第一轮润色：自然化语言，保持原意。Prompt 来源: goal_driven_templates.GEMINI_FAST_POLISH_PROMPT"""
     return generate_text(
         text,
         model=settings.GEMINI_MODEL,
         temperature=0.3,
-        max_output_tokens=settings.GEMINI_POLISH_MAX_OUTPUT_TOKENS,
+        max_output_tokens=None if disable_max_output_tokens else settings.GEMINI_POLISH_MAX_OUTPUT_TOKENS,
         system_instruction=system_instruction or GEMINI_FAST_POLISH_PROMPT,
         request_timeout_seconds=settings.GEMINI_REQUEST_TIMEOUT,
         retries=settings.GEMINI_MAX_RETRIES,
     )
 
 
-def refine_book_text(text: str, *, system_instruction: str | None = None) -> str:
+def refine_book_text(
+    text: str,
+    *,
+    system_instruction: str | None = None,
+    disable_max_output_tokens: bool = False,
+) -> str:
     """第二轮微调：去重、改章节序号、重新分段。Prompt 来源: goal_driven_templates.GEMINI_FAST_REFINE_PROMPT"""
     return generate_text(
         text,
         model=settings.GEMINI_MODEL,
         temperature=0.2,
-        max_output_tokens=settings.GEMINI_REFINE_MAX_OUTPUT_TOKENS,
+        max_output_tokens=None if disable_max_output_tokens else settings.GEMINI_REFINE_MAX_OUTPUT_TOKENS,
         system_instruction=system_instruction or GEMINI_FAST_REFINE_PROMPT,
         request_timeout_seconds=settings.GEMINI_REFINE_REQUEST_TIMEOUT,
         retries=settings.GEMINI_MAX_RETRIES,

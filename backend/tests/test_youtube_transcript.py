@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.tasks import tasks as task_tasks
 import app.services.youtube as youtube
 
 
@@ -99,3 +100,31 @@ def test_extract_youtube_text_splits_total_timeout(monkeypatch: pytest.MonkeyPat
     assert result.provider == "yt_dlp"
     assert seen_timeouts[0] <= 5
     assert seen_timeouts[1] <= 10
+
+
+def test_fetch_video_text_falls_back_to_qingdou_when_youtube_transcript_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail_youtube(*args, **kwargs):
+        calls.append("youtube")
+        raise youtube.YouTubeTranscriptError("captions unavailable")
+
+    def ok_qingdou(source_url: str, **kwargs):
+        calls.append(source_url)
+        return "轻抖兜底文案", 42, type("Result", (), {"batch_id": 1, "task_id": 2})()
+
+    monkeypatch.setattr(task_tasks.settings, "YOUTUBE_TRANSCRIPT_ENABLED", True)
+    monkeypatch.setattr(task_tasks.settings, "QINGDOU_API_KEY", "test-key")
+    monkeypatch.setattr(task_tasks.settings, "QINGDOU_BASE_URL", "https://example.test/commitGetTextTask")
+    monkeypatch.setattr(task_tasks, "extract_youtube_text", fail_youtube)
+    monkeypatch.setattr(task_tasks, "extract_video_text_with_qingdou", ok_qingdou)
+
+    text = task_tasks._fetch_video_text(  # noqa: SLF001
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        {"source_platform": "youtube", "youtube_transcript_min_chars": 5},
+    )
+
+    assert text == "轻抖兜底文案"
+    assert calls == ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"]

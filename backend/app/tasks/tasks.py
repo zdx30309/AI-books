@@ -29,7 +29,8 @@ from app.services.classical_chinese import classical_final_title
 from app.services.comic_series import parse_healing_comic_panel_count
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import extract_video_text_with_qingdou
-from app.services.youtube import extract_youtube_text, is_youtube_url
+from app.services.video_sources import detect_video_source_platform, platform_label
+from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
 from celery_app import celery_app
@@ -282,6 +283,8 @@ def _start_active_run_heartbeat(task_id: str, run_id: str) -> tuple[threading.Ev
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
     category = str(config.get("category") or "").strip()
+    source_platform = str(config.get("source_platform") or detect_video_source_platform(source_url))
+    source_platform_label = str(config.get("source_platform_label") or platform_label(source_platform))
     cached_text = _source_text_from_config(config, task_label="fetch")
     if cached_text:
         return cached_text
@@ -297,20 +300,30 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     poll_interval = float(config.get("poll_interval_seconds") or settings.QINGDOU_POLL_INTERVAL_SECONDS)
     poll_timeout = int(config.get("poll_timeout_seconds") or settings.QINGDOU_POLL_TIMEOUT_SECONDS)
 
-    if settings.YOUTUBE_TRANSCRIPT_ENABLED and is_youtube_url(source_url):
-        logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)
-        result = extract_youtube_text(source_url, config=config)
-        logger.info(
-            "YouTube 字幕解析完成: video_id=%s provider=%s language=%s generated=%s chars=%d",
-            result.video_id,
-            result.provider,
-            result.language,
-            result.is_generated,
-            len(result.text),
-        )
-        return result.text
+    if settings.YOUTUBE_TRANSCRIPT_ENABLED and (source_platform == "youtube" or is_youtube_url(source_url)):
+        try:
+            logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)
+            result = extract_youtube_text(source_url, config=config)
+            logger.info(
+                "YouTube 字幕解析完成: video_id=%s provider=%s language=%s generated=%s chars=%d",
+                result.video_id,
+                result.provider,
+                result.language,
+                result.is_generated,
+                len(result.text),
+            )
+            return result.text
+        except YouTubeTranscriptError as exc:
+            if not settings.QINGDOU_API_KEY or not settings.QINGDOU_BASE_URL:
+                raise
+            logger.warning("YouTube 字幕解析失败，改用轻抖兜底: %s", exc)
 
-    logger.info("调用轻抖 API 解析视频: source_url=%s max_duration=%s", source_url, max_duration_arg or "unlimited")
+    logger.info(
+        "调用轻抖 API 解析%s视频: source_url=%s max_duration=%s",
+        source_platform_label,
+        source_url,
+        max_duration_arg or "unlimited",
+    )
     text, duration, result = extract_video_text_with_qingdou(
         source_url,
         timeout_seconds=poll_timeout,
