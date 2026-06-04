@@ -443,3 +443,40 @@ def test_gemini_refine_max_tokens_falls_back_to_chunked_refine(
 
     assert "分块二润完成。" in result
     assert calls == ["writer", "polish", "chunked_refine"]
+
+
+def test_gemini_polish_max_tokens_retries_smaller_subchunks(tmp_path: Path) -> None:
+    raw_text = "A" * 1200
+    calls: list[int] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def fake_polish(chunk: str, **_: object) -> str:
+        calls.append(len(chunk))
+        if len(chunk) > 500:
+            raise GeminiMaxTokensError(
+                "Gemini returned empty response finish_reason=FinishReason.MAX_TOKENS"
+            )
+        return f"polished:{len(chunk)}"
+
+    result = asyncio.run(
+        content_engine._polish_by_paragraph_chunks_strict(
+            raw_text,
+            target_chars=2000,
+            output_dir=tmp_path,
+            chunk_func=fake_polish,
+            call_timeout_seconds=0,
+            on_stage=lambda stage, info: events.append((stage, info)),
+        )
+    )
+
+    assert result.count("polished:") == 3
+    assert sorted(size for size in calls if size <= 500) == [350, 350, 500]
+    assert calls[0] == 1200
+    assert 700 in calls
+    assert "AAAAA" not in result
+    assert len(events) == 1
+    assert events[0][0] == "polish_chunk"
+    assert events[0][1]["total"] == 1
+    cache_files = list((tmp_path / "02_polish_chunks").glob("*.md"))
+    assert len(cache_files) == 1
+    assert "polished:500" in cache_files[0].read_text(encoding="utf-8")

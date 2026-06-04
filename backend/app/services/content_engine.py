@@ -747,6 +747,59 @@ def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str
     return chunks
 
 
+def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[str]:
+    retry_target = max(300, min(700, target_chars // 2 if target_chars > 0 else 500))
+    paragraph_chunks = _split_text_by_paragraph(text, target_chars=retry_target)
+    if len(paragraph_chunks) > 1:
+        return paragraph_chunks
+
+    compact = text.strip()
+    if not compact:
+        return []
+    if len(compact) <= retry_target:
+        return [compact]
+
+    parts = re.split(r"([。！？!?；;])", compact)
+    sentences: list[str] = []
+    for pos in range(0, len(parts), 2):
+        sentence = parts[pos].strip()
+        if not sentence:
+            continue
+        if pos + 1 < len(parts):
+            sentence += parts[pos + 1]
+        sentences.append(sentence)
+
+    if len(sentences) <= 1:
+        return [compact[start : start + retry_target] for start in range(0, len(compact), retry_target)]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for sentence in sentences:
+        sentence_len = len(sentence)
+        if sentence_len > retry_target:
+            if current:
+                chunks.append("".join(current))
+                current = []
+                current_len = 0
+            chunks.extend(
+                sentence[start : start + retry_target]
+                for start in range(0, sentence_len, retry_target)
+            )
+            continue
+        if current and current_len + sentence_len > retry_target:
+            chunks.append("".join(current))
+            current = [sentence]
+            current_len = sentence_len
+        else:
+            current.append(sentence)
+            current_len += sentence_len
+
+    if current:
+        chunks.append("".join(current))
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
 async def _polish_by_paragraph_chunks(
     text: str,
     *,
@@ -857,6 +910,7 @@ async def _polish_by_paragraph_chunks_strict(
     progress_stage: str = "polish_chunk",
     log_label: str = "Gemini polish",
     quality_gate_name: str = "Gemini polish",
+    max_tokens_retry_depth: int = 3,
 ) -> str:
     """Quality-safe Gemini polish with per-chunk resume cache.
 
@@ -923,6 +977,71 @@ async def _polish_by_paragraph_chunks_strict(
             timeout_seconds=timeout,
         )
 
+    async def _polish_with_max_tokens_retry(
+        chunk: str,
+        *,
+        idx: int,
+        depth: int = 0,
+        current_target_chars: int = target_chars,
+    ) -> str:
+        try:
+            return await _polish_once(chunk)
+        except GeminiMaxTokensError:
+            if depth >= max_tokens_retry_depth:
+                raise
+            retry_chunks = _split_text_for_max_tokens_retry(
+                chunk,
+                target_chars=current_target_chars,
+            )
+            if len(retry_chunks) <= 1:
+                raise
+
+            retry_target = max(
+                300,
+                min(700, current_target_chars // 2 if current_target_chars > 0 else 500),
+            )
+            sub_concurrency = max(1, min(len(retry_chunks), concurrency))
+            logger.warning(
+                "%s chunk %d/%d hit MAX_TOKENS; retrying as %d subchunks depth=%d concurrency=%d",
+                log_label,
+                idx + 1,
+                total,
+                len(retry_chunks),
+                depth + 1,
+                sub_concurrency,
+            )
+            sub_semaphore = asyncio.Semaphore(sub_concurrency)
+
+            async def _retry_subchunk(sub_idx: int, subchunk: str) -> str:
+                async with sub_semaphore:
+                    logger.info(
+                        "%s chunk %d/%d MAX_TOKENS subchunk %d/%d (%d chars)",
+                        log_label,
+                        idx + 1,
+                        total,
+                        sub_idx + 1,
+                        len(retry_chunks),
+                        len(subchunk),
+                    )
+                    return await _polish_with_max_tokens_retry(
+                        subchunk,
+                        idx=idx,
+                        depth=depth + 1,
+                        current_target_chars=retry_target,
+                    )
+
+            sub_results = await asyncio.gather(
+                *(
+                    _retry_subchunk(sub_idx, subchunk)
+                    for sub_idx, subchunk in enumerate(retry_chunks)
+                )
+            )
+            return "\n\n".join(
+                item.strip()
+                for item in sub_results
+                if item and item.strip()
+            )
+
     async def _mark_completed(chunk_idx: int, chunk: str) -> None:
         nonlocal completed_count
         if not on_stage:
@@ -963,10 +1082,22 @@ async def _polish_by_paragraph_chunks_strict(
                 concurrency,
             )
             try:
-                result = await _polish_once(chunk)
+                result = await _polish_with_max_tokens_retry(chunk, idx=idx)
                 polished[idx] = result
                 _write_cache(idx, chunk, result)
                 await _mark_completed(idx + 1, result)
+            except GeminiMaxTokensError as exc:
+                message = f"{exc.__class__.__name__}: {exc}"
+                async with error_lock:
+                    errors.append(f"chunk {idx + 1}/{total}: {message}")
+                    abort_event.set()
+                logger.error(
+                    "%s chunk %d/%d failed after MAX_TOKENS retry [%s]; task will retry",
+                    log_label,
+                    idx + 1,
+                    total,
+                    message,
+                )
             except asyncio.TimeoutError as exc:
                 message = f"TimeoutError: {exc}"
                 async with error_lock:
