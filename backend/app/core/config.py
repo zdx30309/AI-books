@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 60000
+    CLASSICAL_WRITER_MAX_OUTPUT_TOKENS: int = 120000
     OPENAI_WRITER_MAX_RETRIES: int = 3
     OPENAI_WRITER_RETRY_BACKOFF_SECONDS: float = 8.0
     OPENAI_WRITER_STREAM: bool = False
@@ -85,6 +86,7 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-chat"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 20000
+    CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 60000
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 4
     DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800

@@ -17,7 +17,7 @@ from openai import OpenAI
 from app.core.config import settings
 from app.prompts.goal_driven_templates import get_prompts, normalize_category
 from app.services.classical_chinese import build_classical_prompt_source, classical_final_title
-from app.services.deepseek import format_book_text
+from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
@@ -340,6 +340,104 @@ def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: boo
     return repaired
 
 
+_CLASSICAL_BODY_PUNCT_TRANSLATION = str.maketrans(
+    {
+        ",": "，",
+        ".": "。",
+        ":": "：",
+        ";": "；",
+        "?": "？",
+        "!": "！",
+        "(": "（",
+        ")": "）",
+        "[": "【",
+        "]": "】",
+        "<": "《",
+        ">": "》",
+    }
+)
+_CLASSICAL_CHAPTER_HEADING_RE = re.compile(r"^(@?\s*\d+[.．、]\s*)(.+?)\s*$")
+_CLASSICAL_PUNCT_ONLY_RE = re.compile(
+    r"^[\s,，.。:：;；?？!！\"“”'‘’`·、（）()【】\[\]《》<>]+$"
+)
+
+
+def _convert_ascii_quotes_to_chinese(text: str) -> str:
+    pieces: list[str] = []
+    double_open = True
+    single_open = True
+    for char in text:
+        if char == '"':
+            pieces.append("“" if double_open else "”")
+            double_open = not double_open
+        elif char == "'":
+            pieces.append("‘" if single_open else "’")
+            single_open = not single_open
+        else:
+            pieces.append(char)
+    return "".join(pieces)
+
+
+def _clean_classical_body_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("...", "……").replace("..", "……")
+    cleaned = cleaned.translate(_CLASSICAL_BODY_PUNCT_TRANSLATION)
+    cleaned = _convert_ascii_quotes_to_chinese(cleaned)
+    cleaned = re.sub(r"[ \t\u00a0\u3000]+", "", cleaned)
+    cleaned = re.sub(r"([“‘])\s+", r"\1", cleaned)
+    cleaned = re.sub(r"\s+([”’])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _clean_classical_body_line(raw_line: str) -> str:
+    stripped = (raw_line or "").strip()
+    if not stripped:
+        return ""
+    chapter = _CLASSICAL_CHAPTER_HEADING_RE.match(stripped)
+    if chapter:
+        prefix = re.sub(r"\s+", "", chapter.group(1)).replace("．", ".").replace("、", ".")
+        title = _clean_classical_body_text(chapter.group(2))
+        return f"{prefix} {title}".rstrip() if title else prefix
+    cleaned = _clean_classical_body_text(stripped)
+    if not cleaned or _CLASSICAL_PUNCT_ONLY_RE.fullmatch(cleaned):
+        return ""
+    return cleaned
+
+
+def _clean_classical_body_lines(body: str) -> list[str]:
+    cleaned: list[str] = []
+    for raw_line in body.split("\n"):
+        line = _clean_classical_body_line(raw_line)
+        if line:
+            cleaned.append(line)
+    return cleaned
+
+
+def _classical_cjk_signature(text: str) -> str:
+    return "".join(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text or ""))
+
+
+def _classical_format_looks_truncated(source: str, formatted: str) -> bool:
+    if not source or not formatted or len(source) < 5000:
+        return False
+    if len(formatted) < max(1000, int(len(source) * 0.65)):
+        return True
+    source_tail = _classical_cjk_signature(source)[-40:]
+    if len(source_tail) >= 20 and source_tail not in _classical_cjk_signature(formatted):
+        return True
+    return False
+
+
+def _classical_format_fallback_text(source: str, partial: str | None = None) -> str:
+    partial_text = (partial or "").strip()
+    if partial_text and not _front_matter_missing(partial_text) and not _classical_format_looks_truncated(source, partial_text):
+        return partial_text
+    logger.warning("古文白话终稿格式层疑似触达长度上限，改用 Gemini 二润完整稿进入确定性终稿清洗，避免后半截丢失")
+    return source
+
+
 def normalize_final_markdown(markdown: str, *, category: str | None = None) -> str:
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
@@ -355,8 +453,8 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
     if normalized == "classical_chinese":
-        body_text = "\n".join(line.rstrip() for line in body.split("\n")).strip("\n")
-        result = "\n".join(front_lines + ([body_text] if body_text else [])).strip()
+        body_lines = _clean_classical_body_lines(body)
+        result = "\n".join(front_lines + body_lines).strip()
         return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
     if normalized in {"comic_series", "healing_comic"}:
@@ -1593,7 +1691,15 @@ async def generate_full_book(
             category=normalized_category,
             input_source=input_source,
         )
-        generated_markdown = await _route_writer_call(writer_prompt)
+        writer_max_output_tokens = (
+            settings.CLASSICAL_WRITER_MAX_OUTPUT_TOKENS
+            if normalized_category == "classical_chinese"
+            else None
+        )
+        generated_markdown = await _route_writer_call(
+            writer_prompt,
+            max_output_tokens=writer_max_output_tokens,
+        )
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         if on_stage:
@@ -1684,14 +1790,30 @@ async def generate_full_book(
         if on_stage:
             on_stage("format_start", {})
         try:
+            format_max_output_tokens = (
+                settings.CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS
+                if normalized_category == "classical_chinese"
+                else None
+            )
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
                     format_book_text,
                     refined_markdown,
                     prompt_template=final_book_format_prompt,
+                    max_output_tokens=format_max_output_tokens,
+                    fail_on_max_tokens=normalized_category == "classical_chinese",
                 ),
                 timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
+            if (
+                normalized_category == "classical_chinese"
+                and _classical_format_looks_truncated(refined_markdown, final_markdown)
+            ):
+                final_markdown = _classical_format_fallback_text(refined_markdown, final_markdown)
+        except DeepSeekMaxTokensError as exc:
+            if normalized_category != "classical_chinese":
+                raise
+            final_markdown = _classical_format_fallback_text(refined_markdown, exc.partial_text)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"DeepSeek 终稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"

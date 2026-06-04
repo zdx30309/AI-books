@@ -203,6 +203,8 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     assert "上方通用书名规则在本题材中不适用" in rendered
     assert "适合在微信读书投放，文学性强一点" in rendered
     assert "不要为了阅读节奏强制分段" in rendered
+    assert "不要输出只有空格或单独标点的空段" in rendered
+    assert "正文标点必须使用中文全角标点" in rendered
     assert "形似神似，活灵活现" in rendered
     assert "不要脑补剧情，不要跳剧情，不要自己加开头和结尾" in rendered
     assert "志怪小说爽读版" in rendered
@@ -211,7 +213,7 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     assert get_classical_variant_meta("武侠小说爽读版")["id"] == "wuxia_web"
 
 
-def test_classical_chinese_enforces_original_title_suffix_and_preserves_blank_lines(
+def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lines(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -259,7 +261,75 @@ def test_classical_chinese_enforces_original_title_suffix_and_preserves_blank_li
 
     assert writer_prompts == [expected_prompt]
     assert "@最终书名\n十叶野闻（白话版）" in result
-    assert "第一段白话。\n\n第二段白话。" in result
+    assert "第一段白话。\n第二段白话。" in result
+    assert "第一段白话。\n\n第二段白话。" not in result
+
+
+def test_classical_chinese_uses_expanded_output_budgets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_kwargs: list[dict[str, object]] = []
+    format_kwargs: list[dict[str, object]] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_kwargs.append(dict(kwargs))
+        return MINIMAL_MANUSCRIPT
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        format_kwargs.append(dict(kwargs))
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            "第一段文言。",
+            category="classical_chinese",
+            output_dir=tmp_path / "classical_budget",
+            classical_original_title="人间有鬼",
+        )
+    )
+
+    assert writer_kwargs[0]["max_output_tokens"] == content_engine.settings.CLASSICAL_WRITER_MAX_OUTPUT_TOKENS
+    assert format_kwargs[0]["max_output_tokens"] == content_engine.settings.CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS
+    assert format_kwargs[0]["fail_on_max_tokens"] is True
+
+
+def test_classical_chinese_deepseek_max_tokens_fallback_preserves_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tail = "尾部必须完整保留"
+    manuscript = MINIMAL_MANUSCRIPT.replace("测试正文。", f"{'长正文。' * 1800}{tail}。")
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        return manuscript
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        raise content_engine.DeepSeekMaxTokensError(
+            partial_text=text[:1000],
+            max_output_tokens=int(kwargs["max_output_tokens"]),
+        )
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "第一段文言。",
+            category="classical_chinese",
+            output_dir=tmp_path / "classical_fallback",
+            classical_original_title="人间有鬼",
+        )
+    )
+
+    assert tail in result
 
 
 def test_web_short_story_style_reference_keeps_history_prompt_sync(

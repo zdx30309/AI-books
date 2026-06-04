@@ -20,6 +20,17 @@ _RETRYABLE_DEEPSEEK_ERRORS = (OpenAIError, httpx.HTTPError, ConnectionError, Tim
 _REQUIRED_FORMAT_MARKERS = ("@最终书名", "@最终简介", "@目录", "@导言", "@正文")
 
 
+class DeepSeekMaxTokensError(RuntimeError):
+    """Raised when DeepSeek stops because the requested output budget is exhausted."""
+
+    def __init__(self, partial_text: str, max_output_tokens: int | None) -> None:
+        self.partial_text = partial_text
+        self.max_output_tokens = max_output_tokens
+        super().__init__(
+            f"DeepSeek reached max_tokens={max_output_tokens}; partial_chars={len(partial_text or '')}"
+        )
+
+
 @lru_cache
 def get_deepseek_client() -> OpenAI:
     api_key = (settings.DEEPSEEK_API_KEY or os.getenv("DEEPSEEK_API_KEY", "")).strip()
@@ -45,6 +56,7 @@ def generate_text(
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     system_instruction: str | None = None,
+    fail_on_max_tokens: bool = False,
 ) -> str:
     client = get_deepseek_client()
     messages: list[dict[str, str]] = []
@@ -61,6 +73,7 @@ def generate_text(
         kwargs["max_tokens"] = max_output_tokens
 
     chunks: list[str] = []
+    stopped_by_max_tokens = False
     try:
         with distributed_semaphore(
             "deepseek-format",
@@ -74,6 +87,9 @@ def generate_text(
                 piece = getattr(delta, "content", None)
                 if piece:
                     chunks.append(piece)
+                finish_reason = getattr(event.choices[0], "finish_reason", None)
+                if finish_reason in {"length", "max_tokens"}:
+                    stopped_by_max_tokens = True
     except (httpx.RemoteProtocolError, httpx.ReadError, OpenAIError) as exc:
         partial = "".join(chunks).strip()
         if _looks_like_complete_format_output(partial):
@@ -88,6 +104,8 @@ def generate_text(
     content = "".join(chunks).strip()
     if not content:
         raise ValueError("DeepSeek 返回空响应")
+    if stopped_by_max_tokens and fail_on_max_tokens:
+        raise DeepSeekMaxTokensError(content, max_output_tokens)
     return content
 
 
@@ -97,7 +115,13 @@ def _looks_like_complete_format_output(text: str) -> bool:
     return all(marker in text for marker in _REQUIRED_FORMAT_MARKERS)
 
 
-def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
+def format_book_text(
+    text: str,
+    *,
+    prompt_template: str | None = None,
+    max_output_tokens: int | None = None,
+    fail_on_max_tokens: bool = False,
+) -> str:
     """格式整理。Prompt 来源: goal_driven_templates.FINAL_BOOK_FORMAT_PROMPT"""
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
     rendered = (prompt_template or FINAL_BOOK_FORMAT_PROMPT).format(text=text)
@@ -105,5 +129,6 @@ def format_book_text(text: str, *, prompt_template: str | None = None) -> str:
         rendered,
         model=settings.DEEPSEEK_MODEL,
         temperature=0.0,
-        max_output_tokens=settings.DEEPSEEK_FORMAT_MAX_TOKENS,
+        max_output_tokens=max_output_tokens or settings.DEEPSEEK_FORMAT_MAX_TOKENS,
+        fail_on_max_tokens=fail_on_max_tokens,
     )
