@@ -171,7 +171,7 @@ class Settings(BaseSettings):
 
     # --- YouTube transcript extraction (free providers, no paid model API) ---
     YOUTUBE_TRANSCRIPT_ENABLED: bool = True
-    YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,pytubefix,yt_dlp,openai_audio"
+    YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,youtube_transcript_ai,pytubefix,yt_dlp,openai_audio"
     YOUTUBE_TRANSCRIPT_LANGUAGES: str = "zh-Hans,zh-Hant,zh,en,en-US,en-GB"
     YOUTUBE_TRANSCRIPT_TOTAL_TIMEOUT_SECONDS: int = 240
     YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS: int = 45

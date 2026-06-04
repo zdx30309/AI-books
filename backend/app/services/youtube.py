@@ -37,6 +37,7 @@ _YOUTUBE_HOSTS = {
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _TIMESTAMP_RE = re.compile(r"^\s*\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+")
 _VTT_TIMESTAMP_RE = re.compile(r"^\s*\d{2}:\d{2}\.\d{3}\s+-->\s+")
+_TRANSCRIPT_AI_TIMESTAMP_RE = re.compile(r"^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
 _TAG_RE = re.compile(r"<[^>]+>")
 _BRACKET_NOISE_RE = re.compile(
     r"^\s*[\[(](?:music|applause|laughter|laughs|silence|noise|inaudible|foreign language|音乐|掌声|笑声)[\])]\s*$",
@@ -141,6 +142,8 @@ def extract_youtube_text(source_url: str, *, config: dict[str, Any] | None = Non
             )
             if provider == "youtube_transcript_api":
                 result = _from_youtube_transcript_api(video_id, languages=languages, timeout=attempt_timeout)
+            elif provider == "youtube_transcript_ai":
+                result = _from_youtube_transcript_ai(video_id, languages=languages, timeout=attempt_timeout)
             elif provider == "yt_dlp":
                 result = _from_yt_dlp(
                     source_url,
@@ -193,9 +196,10 @@ def extract_youtube_text(source_url: str, *, config: dict[str, Any] | None = Non
 def _provider_preferences(config: dict[str, Any]) -> list[str]:
     raw = str(config.get("youtube_transcript_providers") or settings.YOUTUBE_TRANSCRIPT_PROVIDERS or "")
     providers = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    valid = {"youtube_transcript_api", "yt_dlp", "pytubefix", "openai_audio"}
+    valid = {"youtube_transcript_api", "youtube_transcript_ai", "yt_dlp", "pytubefix", "openai_audio"}
     return [item for item in providers if item in valid] or [
         "youtube_transcript_api",
+        "youtube_transcript_ai",
         "pytubefix",
         "yt_dlp",
         "openai_audio",
@@ -351,6 +355,74 @@ print(json.dumps({
         language=data.get("language"),
         is_generated=data.get("is_generated"),
     )
+
+
+def _from_youtube_transcript_ai(video_id: str, *, languages: list[str], timeout: int) -> YouTubeTranscriptResult:
+    base_url = f"https://youtube-transcript.ai/transcript/{video_id}.txt"
+    lang_codes = _transcript_ai_language_codes(languages)
+    errors: list[str] = []
+    proxy = _proxy_url()
+    headers = {"User-Agent": "Mozilla/5.0"}
+    with httpx.Client(timeout=timeout, follow_redirects=True, proxy=proxy or None, headers=headers) as client:
+        for lang in lang_codes:
+            try:
+                params = {"lang": lang} if lang else None
+                response = client.get(base_url, params=params)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "text/markdown" not in content_type and "text/plain" not in content_type:
+                    raise YouTubeTranscriptError(f"unexpected content-type={content_type}")
+                text = _parse_transcript_ai_markdown(response.text)
+                if text:
+                    return YouTubeTranscriptResult(
+                        text=text,
+                        video_id=video_id,
+                        provider="youtube_transcript_ai",
+                        language=lang,
+                        is_generated=None,
+                    )
+                raise YouTubeTranscriptError("empty transcript")
+            except Exception as exc:
+                errors.append(f"{lang or 'default'}: {type(exc).__name__}: {exc}")
+                continue
+    raise YouTubeTranscriptError("youtube-transcript.ai failed; " + " | ".join(errors[:5]))
+
+
+def _transcript_ai_language_codes(languages: list[str]) -> list[str | None]:
+    codes: list[str | None] = []
+
+    def add(value: str | None) -> None:
+        if value not in codes:
+            codes.append(value)
+
+    for language in languages:
+        lowered = language.lower()
+        if lowered.startswith("zh"):
+            add("zh")
+        elif lowered.startswith("en"):
+            add("en")
+        else:
+            add(language)
+    add(None)
+    return codes
+
+
+def _parse_transcript_ai_markdown(payload: str) -> str:
+    lines: list[str] = []
+    in_transcript = False
+    for raw_line in (payload or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("## transcript"):
+            in_transcript = True
+            continue
+        if not in_transcript:
+            continue
+        line = _TRANSCRIPT_AI_TIMESTAMP_RE.sub("", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _from_yt_dlp(

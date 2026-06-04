@@ -37,6 +37,25 @@ def test_parse_json3_subtitles() -> None:
     assert text == "hello world\nnext line"
 
 
+def test_parse_transcript_ai_markdown() -> None:
+    payload = """# Transcript: sample
+Source video: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+## Transcript
+[0:02] first line
+
+[0:04] second line
+"""
+
+    assert youtube._parse_transcript_ai_markdown(payload) == "first line\nsecond line"
+
+
+def test_default_provider_preferences_include_managed_transcript_api() -> None:
+    providers = youtube._provider_preferences({})
+
+    assert providers[:2] == ["youtube_transcript_api", "youtube_transcript_ai"]
+
+
 def test_extract_youtube_text_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
