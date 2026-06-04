@@ -33,6 +33,7 @@ from app.services.qingdou import (
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
 )
 from app.services.video_sources import canonical_source_url, detect_video_source_platform, platform_label, source_url_candidates
+from app.services.wechat_channels import WeChatChannelsError, extract_wechat_channels_text
 from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
@@ -375,12 +376,25 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
         parser_url,
         max_duration_arg or "unlimited",
     )
-    text, duration, result = extract_video_text_with_qingdou(
-        parser_url,
-        timeout_seconds=poll_timeout,
-        poll_interval_seconds=poll_interval,
-        max_video_duration=max_duration_arg,
-    )
+    try:
+        text, duration, result = extract_video_text_with_qingdou(
+            parser_url,
+            timeout_seconds=poll_timeout,
+            poll_interval_seconds=poll_interval,
+            max_video_duration=max_duration_arg,
+        )
+    except Exception as exc:
+        if source_platform == "wechat_channels" and not isinstance(exc, QingdouDurationExceededError):
+            try:
+                fallback = extract_wechat_channels_text(parser_url, timeout=min(max(poll_timeout, 5), 30))
+                logger.warning(
+                    "WeChat Channels Qingdou parse failed; using public preview metadata fallback: %s",
+                    exc,
+                )
+                return fallback.text
+            except WeChatChannelsError:
+                logger.warning("WeChat Channels public preview fallback failed", exc_info=True)
+        raise
     logger.info(
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
         result.batch_id, result.task_id, duration,
