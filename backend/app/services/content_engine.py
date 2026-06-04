@@ -1990,6 +1990,11 @@ async def generate_full_book(
                     prompt_template=final_book_format_prompt,
                     max_output_tokens=format_max_output_tokens,
                     fail_on_max_tokens=normalized_category == "classical_chinese",
+                    on_progress=(
+                        (lambda chars: on_stage("format_progress", {"chars": chars}))
+                        if on_stage
+                        else None
+                    ),
                 ),
                 timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )

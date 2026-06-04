@@ -843,6 +843,17 @@ def process_video(_self, task_id: str) -> dict:
                         run_id=run_id,
                     )
                     return
+                if stage == "format_progress":
+                    chars = max(0, int(info.get("chars", 0) or 0))
+                    prog = min(89, 87 + int(chars / 20000))
+                    _update_progress(
+                        db,
+                        task,
+                        progress=prog,
+                        step=f"DeepSeek 终稿格式化中（已生成 {chars:,} 字）",
+                        run_id=run_id,
+                    )
+                    return
                 if stage == "comic_image":
                     idx = int(info.get("idx", 0))
                     total = max(int(info.get("total", 1)), 1)

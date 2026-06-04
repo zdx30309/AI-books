@@ -121,6 +121,38 @@ def test_writer_stream_progress_is_forwarded(
     assert ("writer_progress", {"chars": 2400}) in events
 
 
+def test_format_stream_progress_is_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        return MINIMAL_MANUSCRIPT
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        on_progress = kwargs.get("on_progress")
+        assert callable(on_progress)
+        on_progress(3600)
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            "format progress input",
+            category="social_science",
+            output_dir=tmp_path / "format_progress",
+            on_stage=lambda stage, info: events.append((stage, info)),
+        )
+    )
+
+    assert ("format_progress", {"chars": 3600}) in events
+
+
 def test_web_short_story_is_history_test_prompt_sync() -> None:
     history_prompts = get_prompts("history_culture")
     web_short_story_prompts = get_prompts("web_short_story")

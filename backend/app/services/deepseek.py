@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+from typing import Callable
 
 import httpx
 from openai import OpenAI, OpenAIError
@@ -57,6 +58,7 @@ def generate_text(
     max_output_tokens: int | None = None,
     system_instruction: str | None = None,
     fail_on_max_tokens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> str:
     client = get_deepseek_client()
     messages: list[dict[str, str]] = []
@@ -73,6 +75,7 @@ def generate_text(
         kwargs["max_tokens"] = max_output_tokens
 
     chunks: list[str] = []
+    generated_chars = 0
     stopped_by_max_tokens = False
     try:
         with distributed_semaphore(
@@ -87,6 +90,9 @@ def generate_text(
                 piece = getattr(delta, "content", None)
                 if piece:
                     chunks.append(piece)
+                    generated_chars += len(piece)
+                    if on_progress is not None and generated_chars % 2000 < len(piece):
+                        on_progress(generated_chars)
                 finish_reason = getattr(event.choices[0], "finish_reason", None)
                 if finish_reason in {"length", "max_tokens"}:
                     stopped_by_max_tokens = True
@@ -102,6 +108,8 @@ def generate_text(
         get_deepseek_client.cache_clear()
         raise
     content = "".join(chunks).strip()
+    if on_progress is not None and generated_chars:
+        on_progress(generated_chars)
     if not content:
         raise ValueError("DeepSeek 返回空响应")
     if stopped_by_max_tokens and fail_on_max_tokens:
@@ -121,6 +129,7 @@ def format_book_text(
     prompt_template: str | None = None,
     max_output_tokens: int | None = None,
     fail_on_max_tokens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> str:
     """格式整理。Prompt 来源: goal_driven_templates.FINAL_BOOK_FORMAT_PROMPT"""
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
@@ -133,4 +142,5 @@ def format_book_text(
         temperature=0.0,
         max_output_tokens=effective_max_tokens,
         fail_on_max_tokens=fail_on_max_tokens,
+        on_progress=on_progress,
     )
