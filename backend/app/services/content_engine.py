@@ -836,11 +836,34 @@ async def _route_writer_call(
     )
 
 
+def _effective_gemini_chunk_timeout(
+    configured_timeout: int | float | None,
+    request_timeout: int | float | None,
+) -> float:
+    configured = float(configured_timeout or 0)
+    if configured > 0:
+        return configured
+    request_limit = float(request_timeout or settings.GEMINI_REQUEST_TIMEOUT or 180)
+    # Keep chunk calls bounded even when production config sets the outer
+    # timeout to 0. This is a wait/retry boundary, not a text-length cap.
+    return max(60.0, min(request_limit, 120.0))
+
+
+def _classical_gemini_chunk_request_timeout(
+    request_timeout: int | float | None,
+) -> int:
+    return int(_effective_gemini_chunk_timeout(0, request_timeout))
+
+
 def _polish_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
     return polish_book_text(
         text,
         system_instruction=system_instruction,
         disable_max_output_tokens=True,
+        request_timeout_seconds=_classical_gemini_chunk_request_timeout(
+            settings.GEMINI_REQUEST_TIMEOUT
+        ),
+        retries=1,
     )
 
 
@@ -849,6 +872,10 @@ def _refine_book_text_without_output_cap(text: str, *, system_instruction: str |
         text,
         system_instruction=system_instruction,
         disable_max_output_tokens=True,
+        request_timeout_seconds=_classical_gemini_chunk_request_timeout(
+            settings.GEMINI_REFINE_REQUEST_TIMEOUT
+        ),
+        retries=1,
     )
 
 
@@ -1049,6 +1076,8 @@ async def _polish_by_paragraph_chunks_strict(
     log_label: str = "Gemini polish",
     quality_gate_name: str = "Gemini polish",
     max_tokens_retry_depth: int = 3,
+    allow_chunk_fallback: bool = False,
+    chunk_failure_bypass_threshold: int = 2,
 ) -> str:
     """Quality-safe Gemini polish with per-chunk resume cache.
 
@@ -1066,18 +1095,26 @@ async def _polish_by_paragraph_chunks_strict(
     total = len(chunks)
     polished: list[str | None] = [None] * total
     errors: list[str] = []
+    fallback_count = 0
     completed_count = 0
     concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
     semaphore = asyncio.Semaphore(concurrency)
     progress_lock = asyncio.Lock()
     error_lock = asyncio.Lock()
     abort_event = asyncio.Event()
+    bypass_remaining_event = asyncio.Event()
     cache_dir = output_dir / cache_subdir if output_dir is not None else None
     call = chunk_func or polish_book_text
-    timeout = (
+    configured_timeout = (
         settings.GEMINI_POLISH_CALL_TIMEOUT
         if call_timeout_seconds is None
         else call_timeout_seconds
+    )
+    timeout = _effective_gemini_chunk_timeout(
+        configured_timeout,
+        settings.GEMINI_REQUEST_TIMEOUT
+        if progress_stage == "polish_chunk"
+        else settings.GEMINI_REFINE_REQUEST_TIMEOUT,
     )
 
     def _cache_path(idx: int, chunk: str) -> Path | None:
@@ -1180,7 +1217,22 @@ async def _polish_by_paragraph_chunks_strict(
                 if item and item.strip()
             )
 
-    async def _mark_completed(chunk_idx: int, chunk: str) -> None:
+    async def _mark_started(chunk_idx: int, chunk: str) -> None:
+        if not on_stage:
+            return
+        async with progress_lock:
+            on_stage(
+                progress_stage,
+                {
+                    "idx": chunk_idx,
+                    "total": total,
+                    "chars": len(chunk),
+                    "chunk_idx": chunk_idx,
+                    "phase": "started",
+                },
+            )
+
+    async def _mark_completed(chunk_idx: int, chunk: str, *, phase: str = "completed") -> None:
         nonlocal completed_count
         if not on_stage:
             return
@@ -1193,8 +1245,25 @@ async def _polish_by_paragraph_chunks_strict(
                     "total": total,
                     "chars": len(chunk),
                     "chunk_idx": chunk_idx,
+                    "phase": phase,
                 },
             )
+
+    async def _fallback_chunk(idx: int, chunk: str, *, message: str) -> None:
+        nonlocal fallback_count
+        polished[idx] = chunk
+        async with error_lock:
+            fallback_count += 1
+            if fallback_count >= max(1, int(chunk_failure_bypass_threshold or 1)):
+                bypass_remaining_event.set()
+        logger.error(
+            "%s chunk %d/%d failed [%s]; using original chunk and continuing",
+            log_label,
+            idx + 1,
+            total,
+            message,
+        )
+        await _mark_completed(idx + 1, chunk, phase="fallback")
 
     async def _polish_chunk(idx: int, chunk: str) -> None:
         if abort_event.is_set():
@@ -1210,6 +1279,15 @@ async def _polish_by_paragraph_chunks_strict(
         async with semaphore:
             if abort_event.is_set():
                 return
+            if bypass_remaining_event.is_set():
+                logger.warning(
+                    "%s chunk %d/%d bypassed after repeated failures",
+                    log_label,
+                    idx + 1,
+                    total,
+                )
+                await _fallback_chunk(idx, chunk, message="bypassed after repeated failures")
+                return
 
             logger.info(
                 "%s chunk %d/%d (%d chars) concurrency=%d",
@@ -1219,6 +1297,7 @@ async def _polish_by_paragraph_chunks_strict(
                 len(chunk),
                 concurrency,
             )
+            await _mark_started(idx + 1, chunk)
             try:
                 result = await _polish_with_max_tokens_retry(chunk, idx=idx)
                 polished[idx] = result
@@ -1226,6 +1305,9 @@ async def _polish_by_paragraph_chunks_strict(
                 await _mark_completed(idx + 1, result)
             except GeminiMaxTokensError as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
+                if allow_chunk_fallback:
+                    await _fallback_chunk(idx, chunk, message=message)
+                    return
                 async with error_lock:
                     errors.append(f"chunk {idx + 1}/{total}: {message}")
                     abort_event.set()
@@ -1238,6 +1320,9 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except asyncio.TimeoutError as exc:
                 message = f"TimeoutError: {exc}"
+                if allow_chunk_fallback:
+                    await _fallback_chunk(idx, chunk, message=message)
+                    return
                 async with error_lock:
                     errors.append(f"chunk {idx + 1}/{total}: {message}")
                     abort_event.set()
@@ -1250,6 +1335,9 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except Exception as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
+                if allow_chunk_fallback:
+                    await _fallback_chunk(idx, chunk, message=message)
+                    return
                 async with error_lock:
                     errors.append(f"chunk {idx + 1}/{total}: {message}")
                     abort_event.set()
@@ -1269,6 +1357,14 @@ async def _polish_by_paragraph_chunks_strict(
             f"retryable {quality_gate_name} quality gate: {len(errors)}/{total} chunks failed; first={first}"
         )
 
+    if fallback_count:
+        logger.warning(
+            "%s completed with %d/%d fallback chunks",
+            log_label,
+            fallback_count,
+            total,
+        )
+
     return "\n\n".join(item.strip() for item in polished if item and item.strip())
 
 
@@ -1280,6 +1376,8 @@ async def _refine_by_paragraph_chunks_strict(
     on_stage: StageCallback | None = None,
     output_dir: Path | None = None,
     chunk_func: Callable[..., str] | None = None,
+    allow_chunk_fallback: bool = False,
+    chunk_failure_bypass_threshold: int = 2,
 ) -> str:
     return await _polish_by_paragraph_chunks_strict(
         text,
@@ -1293,6 +1391,8 @@ async def _refine_by_paragraph_chunks_strict(
         progress_stage="refine_chunk",
         log_label="Gemini refine",
         quality_gate_name="Gemini refine",
+        allow_chunk_fallback=allow_chunk_fallback,
+        chunk_failure_bypass_threshold=chunk_failure_bypass_threshold,
     )
 
 
@@ -1775,6 +1875,7 @@ async def generate_full_book(
             on_stage=on_stage,
             output_dir=output_dir,
             chunk_func=polish_chunk_func,
+            allow_chunk_fallback=normalized_category == "classical_chinese",
         )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
@@ -1798,18 +1899,8 @@ async def generate_full_book(
             if normalized_category == "classical_chinese"
             else refine_book_text
         )
-        try:
-            refined_markdown = await _to_thread_with_optional_timeout(
-                refine_func,
-                polished_markdown,
-                system_instruction=gemini_fast_refine_prompt,
-                timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
-            )
-        except GeminiMaxTokensError as exc:
-            logger.warning(
-                "Gemini 二润触发 MAX_TOKENS，切换为分块二润兜底: %s",
-                exc,
-            )
+        if normalized_category == "classical_chinese":
+            logger.info("Classical Chinese refine uses chunked path to avoid whole-book Gemini stalls")
             refined_markdown = await _refine_by_paragraph_chunks_strict(
                 polished_markdown,
                 target_chars=1000,
@@ -1817,11 +1908,29 @@ async def generate_full_book(
                 on_stage=on_stage,
                 output_dir=output_dir,
                 chunk_func=refine_func,
+                allow_chunk_fallback=True,
             )
-        except Exception as exc:
-            logger.error("Gemini 二润失败，回退到一润结果继续: %s", exc)
-            logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
-            raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
+        else:
+            try:
+                refined_markdown = await _to_thread_with_optional_timeout(
+                    refine_func,
+                    polished_markdown,
+                    system_instruction=gemini_fast_refine_prompt,
+                    timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+                )
+            except GeminiMaxTokensError as exc:
+                logger.warning("Gemini refine hit MAX_TOKENS; falling back to chunked refine: %s", exc)
+                refined_markdown = await _refine_by_paragraph_chunks_strict(
+                    polished_markdown,
+                    target_chars=1000,
+                    system_instruction=gemini_fast_refine_prompt,
+                    on_stage=on_stage,
+                    output_dir=output_dir,
+                    chunk_func=refine_func,
+                )
+            except Exception as exc:
+                logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
+                raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
         _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)

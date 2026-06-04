@@ -270,6 +270,8 @@ def test_classical_chinese_uses_no_application_output_caps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     writer_kwargs: list[dict[str, object]] = []
+    polish_kwargs: list[dict[str, object]] = []
+    refine_kwargs: list[dict[str, object]] = []
     format_kwargs: list[dict[str, object]] = []
 
     async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
@@ -280,9 +282,17 @@ def test_classical_chinese_uses_no_application_output_caps(
         format_kwargs.append(dict(kwargs))
         return text
 
+    def fake_polish_book_text(text: str, **kwargs: object) -> str:
+        polish_kwargs.append(dict(kwargs))
+        return text
+
+    def fake_refine_book_text(text: str, **kwargs: object) -> str:
+        refine_kwargs.append(dict(kwargs))
+        return text
+
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
-    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
+    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
     monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
 
     asyncio.run(
@@ -295,6 +305,12 @@ def test_classical_chinese_uses_no_application_output_caps(
     )
 
     assert writer_kwargs[0]["max_output_tokens"] == 0
+    assert polish_kwargs
+    assert refine_kwargs
+    assert all(kwargs["disable_max_output_tokens"] is True for kwargs in polish_kwargs)
+    assert all(kwargs["disable_max_output_tokens"] is True for kwargs in refine_kwargs)
+    assert all("max_output_tokens" not in kwargs for kwargs in polish_kwargs)
+    assert all("max_output_tokens" not in kwargs for kwargs in refine_kwargs)
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert format_kwargs[0]["fail_on_max_tokens"] is True
 
@@ -544,9 +560,43 @@ def test_gemini_polish_max_tokens_retries_smaller_subchunks(tmp_path: Path) -> N
     assert calls[0] == 1200
     assert 700 in calls
     assert "AAAAA" not in result
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0][0] == "polish_chunk"
+    assert events[0][1]["phase"] == "started"
+    assert events[1][0] == "polish_chunk"
+    assert events[1][1]["phase"] == "completed"
     assert events[0][1]["total"] == 1
     cache_files = list((tmp_path / "02_polish_chunks").glob("*.md"))
     assert len(cache_files) == 1
     assert "polished:500" in cache_files[0].read_text(encoding="utf-8")
+
+
+def test_classical_chunk_fallback_continues_after_gemini_error(tmp_path: Path) -> None:
+    raw_text = "alpha\n\nbeta"
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def failing_polish(chunk: str, **_: object) -> str:
+        raise RuntimeError(f"blocked chunk: {chunk}")
+
+    result = asyncio.run(
+        content_engine._polish_by_paragraph_chunks_strict(
+            raw_text,
+            target_chars=5,
+            output_dir=tmp_path,
+            chunk_func=failing_polish,
+            allow_chunk_fallback=True,
+            call_timeout_seconds=0,
+            on_stage=lambda stage, info: events.append((stage, info)),
+        )
+    )
+
+    assert "alpha" in result
+    assert "beta" in result
+    assert any(info.get("phase") == "fallback" for _, info in events)
+
+
+def test_zero_gemini_chunk_timeout_is_bounded_wait_not_output_cap() -> None:
+    timeout = content_engine._effective_gemini_chunk_timeout(0, 180)
+
+    assert timeout > 0
+    assert timeout <= 180
