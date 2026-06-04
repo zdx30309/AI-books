@@ -63,6 +63,7 @@ from app.schemas.task import (
     RegenerateCoverRequest,
     RegenerateSelectionRequest,
     RegenerateSelectionResponse,
+    ReferenceArticleBatchTaskRequest,
     ReferenceArticleTaskRequest,
     StageContentResponse,
     TaskMetadataUpdateRequest,
@@ -72,7 +73,7 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
-from app.services.wechat_article import WeChatArticleError, extract_wechat_article
+from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
 from app.utils.docx_text import DocxTextError, extract_docx_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
@@ -550,6 +551,71 @@ def create_task(
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
 
 
+def _reference_article_config(
+    article: WeChatArticle,
+    *,
+    title: str | None = None,
+) -> tuple[dict, str]:
+    source_text = article.text.strip()
+    source_title = (title or article.title or "").strip()[:120]
+    base_config: dict[str, object] = {
+        "category": "emotion_relationship",
+        "input_source": "reference_article",
+        "reference_source": "wechat_article",
+        "wechat_article_url": article.source_url,
+        "raw_text_chars": len(source_text),
+    }
+    if article.author:
+        base_config["source_author"] = article.author[:120]
+    if source_title:
+        base_config["source_title"] = source_title
+        base_config["title"] = source_title
+    return _normalize_task_config(base_config), source_text
+
+
+def _create_reference_article_task_from_article(
+    article: WeChatArticle,
+    *,
+    db: Session,
+    user: User,
+    title: str | None = None,
+) -> Task:
+    cfg, source_text = _reference_article_config(article, title=title)
+    task = Task(
+        source_url=article.source_url,
+        owner_id=user.id,
+        config=cfg,
+        status=TaskStatus.PENDING,
+        progress=0,
+        current_step="排队中",
+    )
+    db.add(task)
+    db.flush()
+    try:
+        source_text_path = _persist_uploaded_source_text(task.id, source_text)
+        cfg = dict(task.config or {})
+        cfg.update(
+            source_text_path=source_text_path,
+            raw_text_chars=len(source_text),
+            input_source="reference_article",
+            reference_source="wechat_article",
+            wechat_article_url=article.source_url,
+        )
+        if article.author:
+            cfg["source_author"] = article.author[:120]
+        source_title = (title or article.title or "").strip()[:120]
+        if source_title:
+            cfg["source_title"] = source_title
+            cfg["title"] = source_title
+        task.config = cfg
+        db.commit()
+        db.refresh(task)
+    except Exception:
+        db.rollback()
+        raise
+    return task
+
+
 @router.post(
     "/reference-article/emotion-relationship",
     response_model=CreateTaskResponse,
@@ -619,6 +685,113 @@ def create_emotion_reference_article_task(
             detail=f"微信文章已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
         ) from exc
     return response
+
+
+@router.post(
+    "/reference-article/emotion-relationship/batch",
+    response_model=BatchCreateTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="批量抓取公众号文章并生成心理情感长文",
+)
+def create_emotion_reference_article_task_batch(
+    req: ReferenceArticleBatchTaskRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BatchCreateTaskResponse:
+    urls, duplicate_urls = _normalize_candidate_urls(req.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="公众号文章链接不能为空")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="公众号文章一次最多批量提交 100 条")
+
+    skipped: list[BatchCreateTaskItem] = [
+        BatchCreateTaskItem(url=url, status="skipped", reason="批量列表内重复")
+        for url in duplicate_urls
+    ]
+    existing_input_urls = {
+        row[0]
+        for row in db.query(Task.source_url)
+        .filter(Task.owner_id == user.id, Task.source_url.in_(urls))
+        .all()
+    }
+
+    fetched: list[tuple[str, WeChatArticle]] = []
+    for url in urls:
+        if url in existing_input_urls:
+            skipped.append(BatchCreateTaskItem(url=url, status="skipped", reason="已存在任务"))
+            continue
+        try:
+            article = extract_wechat_article(url)
+        except WeChatArticleError as exc:
+            skipped.append(BatchCreateTaskItem(url=url, status="skipped", reason=str(exc)[:300]))
+            continue
+        fetched.append((url, article))
+
+    unique_articles: list[tuple[str, WeChatArticle]] = []
+    seen_article_urls: set[str] = set()
+    for submitted_url, article in fetched:
+        if article.source_url in seen_article_urls:
+            skipped.append(
+                BatchCreateTaskItem(
+                    url=submitted_url,
+                    status="skipped",
+                    reason="解析后与本批次其他公众号文章重复",
+                )
+            )
+            continue
+        seen_article_urls.add(article.source_url)
+        unique_articles.append((submitted_url, article))
+
+    canonical_urls = [article.source_url for _, article in unique_articles]
+    existing_article_urls = {
+        row[0]
+        for row in db.query(Task.source_url)
+        .filter(Task.owner_id == user.id, Task.source_url.in_(canonical_urls))
+        .all()
+    }
+    createable = [
+        (submitted_url, article)
+        for submitted_url, article in unique_articles
+        if article.source_url not in existing_article_urls
+    ]
+    for submitted_url, article in unique_articles:
+        if article.source_url in existing_article_urls:
+            skipped.append(BatchCreateTaskItem(url=submitted_url, status="skipped", reason="已存在任务"))
+
+    if createable:
+        _ensure_generation_capacity(db, requested=len(createable))
+
+    created: list[BatchCreateTaskItem] = []
+    tasks_to_dispatch: list[Task] = []
+    for submitted_url, article in createable:
+        try:
+            task = _create_reference_article_task_from_article(article, db=db, user=user)
+        except Exception as exc:
+            logger.exception("批量公众号文章任务创建失败 url=%s", submitted_url)
+            skipped.append(BatchCreateTaskItem(url=submitted_url, status="skipped", reason=str(exc)[:300]))
+            continue
+        tasks_to_dispatch.append(task)
+        created.append(BatchCreateTaskItem(url=article.source_url, task_id=task.id, status=task.status))
+
+    for task in tasks_to_dispatch:
+        try:
+            _dispatch_task(task)
+        except Exception as exc:
+            task.status = TaskStatus.FAILED
+            task.error_message = f"WeChat article batch dispatch failed: {exc}"[:2000]
+            db.commit()
+            for item in created:
+                if item.task_id == task.id:
+                    item.status = TaskStatus.FAILED
+                    item.reason = str(exc)[:300]
+                    break
+
+    return BatchCreateTaskResponse(
+        created=created,
+        skipped=skipped,
+        total_created=len(created),
+        total_skipped=len(skipped),
+    )
 
 
 @router.post(

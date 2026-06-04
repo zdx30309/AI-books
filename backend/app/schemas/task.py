@@ -44,6 +44,15 @@ class ReferenceArticleTaskRequest(BaseModel):
     )
 
 
+class ReferenceArticleBatchTaskRequest(BaseModel):
+    urls: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="微信公众号公开文章链接列表，最多 100 条",
+    )
+
+
 class BatchCreateTaskRequest(BaseModel):
     urls: list[str] = Field(..., min_length=1, max_length=500, description="候选链接列表，最多 500 条")
     config: dict[str, Any] = Field(default_factory=dict, description="批量任务共享配置")

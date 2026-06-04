@@ -29,6 +29,7 @@ import type {
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
   RegisterRequest,
+  ReferenceArticleBatchTaskRequest,
   ReferenceArticleTaskRequest,
   StageContentResponse,
   StageName,
@@ -316,6 +317,11 @@ export const api = {
     }),
   createEmotionReferenceArticleTask: (body: ReferenceArticleTaskRequest) =>
     request<CreateTaskResponse>("/tasks/reference-article/emotion-relationship", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createEmotionReferenceArticleTaskBatch: (body: ReferenceArticleBatchTaskRequest) =>
+    request<BatchCreateTaskResponse>("/tasks/reference-article/emotion-relationship/batch", {
       method: "POST",
       body: JSON.stringify(body),
     }),

@@ -30,7 +30,7 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
 ] as const;
-type CreateMode = "single" | "batch" | "comic" | "article";
+type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch";
 
 function extractCandidateLinks(text: string) {
   const matches = text.match(URL_RE) ?? [];
@@ -89,6 +89,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
   const [classicalVariant, setClassicalVariant] = useState("plain");
   const [classicalBookTitle, setClassicalBookTitle] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
+  const [articleLinks, setArticleLinks] = useState("");
   const [comicTitle, setComicTitle] = useState("");
   const [comicPanelCount, setComicPanelCount] = useState(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
@@ -106,12 +107,14 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     categories.find((item) => item.id === category) ?? DEFAULT_CATEGORIES[0]!;
   const candidateLinkStats = normalizeCandidateLinks(candidateLinks);
   const comicPhrases = parseComicPhrases(comicPhraseInput);
-  const isReferenceArticle = mode === "article";
+  const isReferenceArticle = mode === "article" || mode === "articleBatch";
+  const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = category === "classical_chinese";
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
     category === "web_short_story" || category === "social_science_test";
+  const articleLinkStats = normalizeCandidateLinks(articleLinks);
 
   useEffect(() => {
     if (!open) {
@@ -123,6 +126,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
       setClassicalVariant("plain");
       setClassicalBookTitle("");
       setCandidateLinks("");
+      setArticleLinks("");
       setComicTitle("");
       setComicPanelCount(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
       setComicThemeRequirement("");
@@ -193,7 +197,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     setMode(nextMode);
     if (nextMode === "comic") {
       setCategory(nextCategory && COMIC_CATEGORY_IDS.has(nextCategory) ? nextCategory : "comic_series");
-    } else if (nextMode === "article") {
+    } else if (nextMode === "article" || nextMode === "articleBatch") {
       setCategory("emotion_relationship");
       setUrl("");
       setRawText("");
@@ -276,6 +280,47 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
           config,
         });
         onCreated(res.task_id);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建任务失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    if (mode === "articleBatch") {
+      const { urls, duplicateCount } = articleLinkStats;
+      if (urls.length === 0) {
+        setError("请放入至少 1 条微信公众号文章链接");
+        return;
+      }
+      if (urls.length > 100) {
+        setError("公众号文章一次最多批量提交 100 条");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await api.createEmotionReferenceArticleTaskBatch({ urls });
+        const first = res.created.find((item) => item.task_id)?.task_id;
+        if (!first) {
+          const duplicateHint =
+            duplicateCount > 0 ? `已自动合并 ${duplicateCount} 条重复链接。` : "";
+          setError(`没有创建新任务，可能链接已存在或公众号正文无法读取。${duplicateHint}`);
+          return;
+        }
+        if (res.total_skipped > 0 || duplicateCount > 0) {
+          const parts = [`已创建 ${res.total_created} 个公众号任务`];
+          if (duplicateCount > 0) parts.push(`自动合并 ${duplicateCount} 条重复链接`);
+          if (res.total_skipped > 0) parts.push(`跳过 ${res.total_skipped} 条`);
+          window.alert(`${parts.join("，")}。`);
+        }
+        onCreated(first);
       } catch (e) {
         const msg =
           e instanceof ApiError
@@ -491,13 +536,25 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
               type="button"
               onClick={() => switchMode("article")}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                isReferenceArticle
+                mode === "article"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
                   : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
             >
               <PencilLine className="h-3.5 w-3.5" strokeWidth={1.5} />
               公众号参考
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("articleBatch")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "articleBatch"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
+              公众号批量
             </button>
             <button
               type="button"
@@ -606,7 +663,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             </div>
           )}
 
-          {mode === "single" || mode === "article" ? (
+          {mode === "single" || isReferenceArticle ? (
             <>
               {!isClassicalChinese && !isReferenceArticle && (
                 <>
@@ -635,7 +692,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                 </>
               )}
 
-              {isReferenceArticle && (
+              {isReferenceArticle && !isReferenceArticleBatch && (
                 <div>
                   <label
                     htmlFor="wechat-article-url"
@@ -653,6 +710,38 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
                     仅支持公开可访问的公众号文章。系统会自动识别正文，提炼情感关系问题并生成原创文章。
+                  </p>
+                </div>
+              )}
+
+              {isReferenceArticleBatch && (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="wechat-article-links"
+                      className="block text-[11px] tracking-widest text-warm-300"
+                    >
+                      微信公众号文章链接
+                    </label>
+                    <span className="text-[10px] tracking-widest text-warm-500">
+                      {articleLinkStats.urls.length}/100
+                    </span>
+                  </div>
+                  <textarea
+                    id="wechat-article-links"
+                    value={articleLinks}
+                    onChange={(e) => setArticleLinks(e.target.value)}
+                    placeholder="每行一条，或直接粘贴一整段包含公众号链接的文本；仅支持公开可访问的 mp.weixin.qq.com 文章，最多 100 条。"
+                    rows={10}
+                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  {articleLinkStats.duplicateCount > 0 && (
+                    <p className="mt-2 text-xs leading-relaxed text-gold-200">
+                      已自动合并 {articleLinkStats.duplicateCount} 条重复链接。
+                    </p>
+                  )}
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    系统会先逐条识别公众号正文，再统一创建心理情感类原创文章任务；读取失败的链接会跳过并显示原因。
                   </p>
                 </div>
               )}
@@ -1002,6 +1091,8 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                   ? "加入候选库"
                   : mode === "comic"
                     ? `生成${comicCategoryLabel}`
+                    : mode === "articleBatch"
+                      ? "批量抓取生成"
                     : mode === "article"
                       ? "抓取并生成"
                       : "立即生成"}

@@ -26,6 +26,10 @@ export interface ReferenceArticleTaskRequest {
   title?: string | null;
 }
 
+export interface ReferenceArticleBatchTaskRequest {
+  urls: string[];
+}
+
 export interface BatchCreateTaskRequest {
   urls: string[];
   config?: Record<string, unknown>;
