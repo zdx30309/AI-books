@@ -222,6 +222,8 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
         assert "服务端参考数据库摘要" in prompt
         assert "image_text" in prompt
         assert "正好输出 32" in prompt
+        assert "标题正文限制在 10 个字以内" in prompt
+        assert "禁止使用“把”字句、“被”字句" in prompt
         panels = [
             {
                 "title": f"第{index}张",

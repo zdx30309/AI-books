@@ -15,7 +15,12 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
-from app.prompts.goal_driven_templates import get_prompts, normalize_category
+from app.prompts.goal_driven_templates import (
+    INTRO_BODY_SEPARATION_PROMPT,
+    SECTION_TITLE_REQUIREMENT_PROMPT,
+    get_prompts,
+    normalize_category,
+)
 from app.services.classical_chinese import build_classical_prompt_source, classical_final_title
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
@@ -148,6 +153,123 @@ def _repair_blank_catalog_titles(text: str) -> str:
 
         repaired.append(line)
     return "\n".join(repaired)
+
+
+def _canonical_duplicate_text(text: str) -> str:
+    return "".join(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaffA-Za-z0-9]+", text or "")).lower()
+
+
+def _front_section_ranges(lines: list[str]) -> dict[str, tuple[int, int]]:
+    markers: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        section = _FRONT_SECTION_RE.match(line.strip())
+        if section:
+            markers.append((section.group(1), index))
+
+    ranges: dict[str, tuple[int, int]] = {}
+    for pos, (section, index) in enumerate(markers):
+        end = markers[pos + 1][1] if pos + 1 < len(markers) else len(lines)
+        ranges[section] = (index + 1, end)
+    return ranges
+
+
+def _is_chapter_heading_line(line: str) -> bool:
+    return bool(re.match(r"^@?\s*\d+[.．、]\s+.+$", line.strip()))
+
+
+def _has_remaining_body_content(
+    lines: list[str],
+    *,
+    start: int,
+    end: int,
+    removed: set[int],
+) -> bool:
+    for index in range(start, end):
+        if index in removed:
+            continue
+        stripped = lines[index].strip()
+        if not stripped or _is_chapter_heading_line(stripped):
+            continue
+        return True
+    return False
+
+
+def _same_duplicate_block(left: str, right: str) -> bool:
+    left_key = _canonical_duplicate_text(left)
+    right_key = _canonical_duplicate_text(right)
+    if min(len(left_key), len(right_key)) < 24:
+        return False
+    if left_key == right_key:
+        return True
+    ratio = min(len(left_key), len(right_key)) / max(len(left_key), len(right_key))
+    return ratio >= 0.92 and (left_key.startswith(right_key) or right_key.startswith(left_key))
+
+
+def _remove_intro_duplicate_from_body(text: str) -> str:
+    lines = text.split("\n")
+    ranges = _front_section_ranges(lines)
+    intro_range = ranges.get("导言")
+    body_range = ranges.get("正文")
+    if not intro_range or not body_range:
+        return text
+
+    intro_start, intro_end = intro_range
+    body_start, body_end = body_range
+    intro_lines = [
+        lines[index].strip()
+        for index in range(intro_start, intro_end)
+        if lines[index].strip()
+    ]
+    intro_text = "\n".join(intro_lines)
+    if len(_canonical_duplicate_text(intro_text)) < 24:
+        return text
+
+    cursor = body_start
+    while cursor < body_end and not lines[cursor].strip():
+        cursor += 1
+    if cursor < body_end and _is_chapter_heading_line(lines[cursor]):
+        cursor += 1
+        while cursor < body_end and not lines[cursor].strip():
+            cursor += 1
+
+    candidate_indices: list[int] = []
+    candidate_lines: list[str] = []
+    while cursor < body_end:
+        stripped = lines[cursor].strip()
+        if _FRONT_SECTION_RE.match(stripped):
+            break
+        if _is_chapter_heading_line(stripped) and candidate_indices:
+            break
+        if stripped:
+            candidate_indices.append(cursor)
+            candidate_lines.append(stripped)
+            candidate_text = "\n".join(candidate_lines)
+            if _same_duplicate_block(candidate_text, intro_text):
+                removed = set(candidate_indices)
+                if _has_remaining_body_content(lines, start=body_start, end=body_end, removed=removed):
+                    return "\n".join(
+                        line for index, line in enumerate(lines) if index not in removed
+                    )
+                return text
+            if len(_canonical_duplicate_text(candidate_text)) > len(_canonical_duplicate_text(intro_text)) * 1.15:
+                break
+        cursor += 1
+
+    removed_prefix: list[int] = []
+    body_index = 0
+    for intro_line in intro_lines:
+        if body_index >= len(candidate_indices):
+            break
+        body_line = lines[candidate_indices[body_index]].strip()
+        if not _same_duplicate_block(intro_line, body_line):
+            break
+        removed_prefix.append(candidate_indices[body_index])
+        body_index += 1
+
+    removed = set(removed_prefix)
+    if removed and _has_remaining_body_content(lines, start=body_start, end=body_end, removed=removed):
+        return "\n".join(line for index, line in enumerate(lines) if index not in removed)
+    return text
 
 
 _SOFT_LINE_ENDINGS = "，,、；;：:"
@@ -442,6 +564,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
     text = _repair_blank_catalog_titles(text)
+    text = _remove_intro_duplicate_from_body(text)
     normalized = normalize_category(category or "")
     match = re.search(r"(?m)^@?\s*正文\s*$", text)
     if not match:
@@ -1444,9 +1567,11 @@ async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
         "- 导言放在目录之后、正文之前，长度 100~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言，不要和正文太相似。\n"
         "- 导言第一段要带钩子：用问题、冲突、反常识判断或现实困境把读者带入；但只搭建阅读入口，不提前展开正文完整论证\n"
         "- 导言钩子要冷静克制，不要标题党、悬疑营销、鸡汤口号或夸张情绪\n"
+        f"{INTRO_BODY_SEPARATION_PROMPT}\n"
         "- 正文尽量沿用原稿，不要大幅改写\n"
         "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
         "- 所有书名、目录标题和正文章节标题都不要出现冒号；最后一章不要命名为“结语”\n"
+        f"{SECTION_TITLE_REQUIREMENT_PROMPT}\n"
         "- 不要解释，不要输出分析\n\n"
         f"[原始视频文稿]\n{raw_text.strip()}\n\n"
         f"[当前书稿]\n{generated_markdown.strip()}\n"

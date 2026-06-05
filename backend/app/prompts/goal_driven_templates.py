@@ -211,6 +211,8 @@ FINAL_BOOK_FORMAT_PROMPT = """你是格式整理器，负责把书稿整理成�
    - 正文内每一个章节标题（形如「@1. xxx」「@2. xxx」）
 3. 标题清理：所有书名、目录标题、导言标题、正文章节标题中，不得出现中文冒号或英文冒号；如果标题中有冒号，直接删掉冒号或改成自然停顿。
 4. 结尾标题清理：正文最后一章不得命名为“结语”，也不得出现“结语”两个字作为章节标题；如输入有“结语”，改成一个普通章节标题，但不要新增内容。
+5. 小节标题优化：目录标题、正文章节标题和正文内小节标题，标题正文必须限制在 10 个字以内，必须清楚、简洁地描述本节主要内容；禁止使用“把”字句、“被”字句，以及“让……”“真正该……”“……这件事……”等绕口或复杂句式。只允许改标题，不得改写正文。
+6. 导言重复清理：如果 @正文 开头与 @导言 完全重复或高度重合，保留 @导言，只删除 @正文 开头的重复段落；不得删除后续正文，不得因此改写正文。
 
 【强制要求】
 - 必须保持五节顺序：最终书名 → 最终简介 → 目录 → 导言 → 正文。不得调换顺序，不得删除任何一节。
@@ -1287,19 +1289,67 @@ WRITER_PUNCTUATION_USAGE_PROMPT = """【标点符号专项要求】
 - 输出前自检全文标点。凡是读起来像“本该用逗号、顿号或分号，却被写成句号”的地方，必须主动改成更准确的中文标点。"""
 
 
+SECTION_TITLE_REQUIREMENT_PROMPT = """【小节标题全局要求】
+- 所有目录标题、正文章节标题和正文内小节标题都必须清楚、简洁地描述本节主要内容。
+- 标题正文限制在 10 个字以内；确有必要时可保留必要引号、数字或专名，但不得写成长句。
+- 禁止使用“把”字句、“被”字句，以及“让……”“真正该……”“……这件事……”等绕口或复杂句式。
+- 优先使用短名词短语或清晰问题句，例如：“趁热吃”的风险、养胃可以吃辣椒吗、护胃的用药习惯、胃部不适的罪魁祸首、正确面对幽门螺杆菌。"""
+
+
+SECTION_TITLE_REFINE_GUARD_PROMPT = """【小节标题兜底要求】
+- 章节数量、章节顺序和正文内容必须保留。
+- 如果目录标题、正文章节标题或正文内小节标题明显超过 10 个字，或使用“把”字句、“被”字句等复杂句式，只允许在不改变章节含义的前提下短化标题。
+- 标题要清楚、简洁地描述本节主要内容；正文不得因此被删减、合并、改序或重写。"""
+
+
+INTRO_BODY_SEPARATION_PROMPT = """【导言与正文分工全局要求】
+- @导言只负责提出全书问题意识、阅读入口、核心悬念或阅读方法，不要提前把正文的主要论证、案例和章节内容完整讲完。
+- @正文必须在导言基础上继续推进，直接进入第一章的新信息、新场景、新案例或解释，不得原样复制、改写复述或近似复述 @导言。
+- 如果发现 @正文 开头与 @导言 完全重复或高度重合，必须保留 @导言，删除 @正文 开头的重复段落，让正文从第一章实质内容开始；不得删减后续正文。"""
+
+
+INTRO_BODY_REFINE_GUARD_PROMPT = """【导言与正文重复兜底】
+- 保留 @导言 与 @正文 的结构边界。
+- 不要把 @导言 复制到 @正文 开头，也不要把正文第一章改成导言的复述。
+- 如果输入中 @正文 开头已经与 @导言 完全重复，只允许删除正文开头的重复段落，后续正文必须完整保留。"""
+
+
+def _insert_prompt_before_input(prompt: str, addition: str) -> str:
+    for marker in ("\n输入：", "\n输入:", "\n【文本】"):
+        if marker in prompt:
+            return prompt.replace(marker, "\n\n" + addition + "\n" + marker, 1)
+    return prompt.rstrip() + "\n\n" + addition
+
+
 def _with_writer_punctuation_rules(full_book_writer: str) -> str:
     if "【标点符号专项要求】" in full_book_writer:
         return full_book_writer
 
-    for marker in ("\n输入：", "\n输入:"):
-        if marker in full_book_writer:
-            return full_book_writer.replace(
-                marker,
-                "\n\n" + WRITER_PUNCTUATION_USAGE_PROMPT + "\n" + marker,
-                1,
-            )
+    return _insert_prompt_before_input(full_book_writer, WRITER_PUNCTUATION_USAGE_PROMPT)
 
-    return full_book_writer.rstrip() + "\n\n" + WRITER_PUNCTUATION_USAGE_PROMPT
+
+def _with_section_title_rules(prompt: str) -> str:
+    if not prompt or "【小节标题全局要求】" in prompt:
+        return prompt
+    return _insert_prompt_before_input(prompt, SECTION_TITLE_REQUIREMENT_PROMPT)
+
+
+def _with_section_title_refine_guard(prompt: str) -> str:
+    if not prompt or "【小节标题兜底要求】" in prompt:
+        return prompt
+    return prompt.rstrip() + "\n\n" + SECTION_TITLE_REFINE_GUARD_PROMPT
+
+
+def _with_intro_body_separation_rules(prompt: str) -> str:
+    if not prompt or "【导言与正文分工全局要求】" in prompt:
+        return prompt
+    return _insert_prompt_before_input(prompt, INTRO_BODY_SEPARATION_PROMPT)
+
+
+def _with_intro_body_refine_guard(prompt: str) -> str:
+    if not prompt or "【导言与正文重复兜底】" in prompt:
+        return prompt
+    return prompt.rstrip() + "\n\n" + INTRO_BODY_REFINE_GUARD_PROMPT
 
 
 def _prompt_set(
@@ -1309,11 +1359,22 @@ def _prompt_set(
     refine: str | None = None,
     formatter: str | None = None,
 ) -> dict[str, str]:
+    polish_prompt = polish or GEMINI_FAST_POLISH_PROMPT
+    refine_prompt = refine or GEMINI_FAST_REFINE_PROMPT
+    formatter_prompt = formatter or FINAL_BOOK_FORMAT_PROMPT
     return {
-        "full_book_writer": _with_writer_punctuation_rules(full_book_writer),
-        "gemini_fast_polish": polish or GEMINI_FAST_POLISH_PROMPT,
-        "gemini_fast_refine": refine or GEMINI_FAST_REFINE_PROMPT,
-        "final_book_format": formatter or FINAL_BOOK_FORMAT_PROMPT,
+        "full_book_writer": _with_intro_body_separation_rules(
+            _with_section_title_rules(_with_writer_punctuation_rules(full_book_writer))
+        ),
+        "gemini_fast_polish": _with_intro_body_refine_guard(
+            _with_section_title_rules(polish_prompt)
+        ),
+        "gemini_fast_refine": _with_intro_body_refine_guard(
+            _with_section_title_refine_guard(refine_prompt)
+        ),
+        "final_book_format": _with_intro_body_separation_rules(
+            _with_section_title_rules(formatter_prompt)
+        ),
     }
 
 
@@ -1588,6 +1649,10 @@ __all__ = [
     "GEMINI_FAST_POLISH_PROMPT",
     "GEMINI_FAST_REFINE_PROMPT",
     "FINAL_BOOK_FORMAT_PROMPT",
+    "SECTION_TITLE_REQUIREMENT_PROMPT",
+    "SECTION_TITLE_REFINE_GUARD_PROMPT",
+    "INTRO_BODY_SEPARATION_PROMPT",
+    "INTRO_BODY_REFINE_GUARD_PROMPT",
     "CATEGORY_OPTIONS",
     "PROMPT_REGISTRY",
     "SUPPORTED_CATEGORIES",

@@ -48,6 +48,45 @@ def test_normalize_final_markdown_preserves_chapter_boundaries() -> None:
     assert "这是第一段。\n@2. 第二章\n人物传记等。" in result
 
 
+def test_normalize_final_markdown_removes_intro_copied_at_body_start() -> None:
+    intro = "很多人第一次听到这个问题时，会以为答案很简单。真正麻烦的是，生活里的选择往往没有标准答案。"
+    markdown = f"""@最终书名
+测试书
+@最终简介
+测试简介
+@目录
+1. 测试章节
+@导言
+{intro}
+@正文
+@1. 测试章节
+{intro}
+第一章应该从新的案例继续推进。
+"""
+
+    result = normalize_final_markdown(markdown, category="social_science")
+    body = result.split("@正文", 1)[1]
+
+    assert result.count(intro) == 1
+    assert intro not in body
+    assert "第一章应该从新的案例继续推进。" in body
+
+
+def test_normalize_final_markdown_keeps_body_when_duplicate_is_only_content() -> None:
+    intro = "这段导言如果也是唯一正文，后处理不能把正文删空。"
+    markdown = f"""@导言
+{intro}
+@正文
+@1. 测试章节
+{intro}
+"""
+
+    result = normalize_final_markdown(markdown, category="social_science")
+    body = result.split("@正文", 1)[1]
+
+    assert intro in body
+
+
 def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation() -> None:
     markdown = """@最终书名
 人间有鬼（白话版）

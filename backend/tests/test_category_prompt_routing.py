@@ -11,6 +11,10 @@ if str(PROJECT_ROOT) not in sys.path:
 import pytest
 
 from app.prompts.goal_driven_templates import (
+    INTRO_BODY_REFINE_GUARD_PROMPT,
+    INTRO_BODY_SEPARATION_PROMPT,
+    SECTION_TITLE_REFINE_GUARD_PROMPT,
+    SECTION_TITLE_REQUIREMENT_PROMPT,
     SUPPORTED_CATEGORIES,
     get_category_meta,
     get_prompts,
@@ -239,6 +243,52 @@ def test_writer_prompts_include_punctuation_usage_rules() -> None:
     assert "分号用于较长并列分句" in prompt
     assert "省略号统一使用中文六点“……”" in prompt
     assert "不要混用中英文标点" in prompt
+
+
+def test_all_category_generation_prompts_include_section_title_rules() -> None:
+    for category in SUPPORTED_CATEGORIES:
+        prompts = get_prompts(category)
+
+        assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["full_book_writer"]
+        assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["gemini_fast_polish"]
+        assert SECTION_TITLE_REFINE_GUARD_PROMPT in prompts["gemini_fast_refine"]
+        if prompts["final_book_format"]:
+            assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["final_book_format"]
+            assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
+                "final_book_format"
+            ].find("{text}")
+
+
+def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:
+    for category in SUPPORTED_CATEGORIES:
+        prompts = get_prompts(category)
+
+        assert INTRO_BODY_SEPARATION_PROMPT in prompts["full_book_writer"]
+        assert INTRO_BODY_REFINE_GUARD_PROMPT in prompts["gemini_fast_polish"]
+        assert INTRO_BODY_REFINE_GUARD_PROMPT in prompts["gemini_fast_refine"]
+        if prompts["final_book_format"]:
+            assert INTRO_BODY_SEPARATION_PROMPT in prompts["final_book_format"]
+            assert prompts["final_book_format"].find(INTRO_BODY_SEPARATION_PROMPT) < prompts[
+                "final_book_format"
+            ].find("{text}")
+
+
+def test_front_matter_repair_prompt_includes_section_title_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repair_prompts: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        repair_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+
+    asyncio.run(content_engine._repair_front_matter("原始文稿", "缺失前置块"))
+
+    assert repair_prompts
+    assert SECTION_TITLE_REQUIREMENT_PROMPT in repair_prompts[0]
+    assert INTRO_BODY_SEPARATION_PROMPT in repair_prompts[0]
 
 
 def test_crayon_illustration_is_not_a_body_writing_category() -> None:
