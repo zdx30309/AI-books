@@ -187,6 +187,23 @@ class Settings(BaseSettings):
     YOUTUBE_AUDIO_MAX_BYTES: int = 25_000_000
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
 
+    # --- WeChat Channels fallback resolvers ---
+    WECHAT_CHANNELS_PROVIDERS: str = "tikhub,wechatvideodownloader,generic"
+    WECHAT_CHANNELS_TIKHUB_API_KEY: str = ""
+    WECHAT_CHANNELS_TIKHUB_BASE_URL: str = "https://api.tikhub.io"
+    WECHAT_CHANNELS_DOWNLOADER_API_KEY: str = ""
+    WECHAT_CHANNELS_DOWNLOADER_BASE_URL: str = "https://api.wechatvideodownloader.com/sph/"
+    WECHAT_CHANNELS_GENERIC_RESOLVER_URL: str = ""
+    WECHAT_CHANNELS_GENERIC_RESOLVER_METHOD: str = "GET"
+    WECHAT_CHANNELS_GENERIC_RESOLVER_API_KEY: str = ""
+    WECHAT_CHANNELS_GENERIC_RESOLVER_AUTH_HEADER: str = "Authorization"
+    WECHAT_CHANNELS_MEDIA_DOWNLOAD_TIMEOUT_SECONDS: int = 180
+    WECHAT_CHANNELS_TRANSCRIPTION_TIMEOUT_SECONDS: int = 600
+    WECHAT_CHANNELS_MEDIA_MAX_BYTES: int = 200_000_000
+    WECHAT_CHANNELS_AUDIO_MAX_BYTES: int = 25_000_000
+    WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    WECHAT_CHANNELS_TRANSCRIPT_MIN_CHARS: int = 20
+
     # --- 古文白话 ---
     CLASSICAL_DICTIONARY_PATH: str = "backend/output/classical_dictionary/dict-revised.json.xz"
     CLASSICAL_DICTIONARY_CONTEXT_MAX_CHARS: int = 4500

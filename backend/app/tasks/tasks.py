@@ -386,14 +386,25 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     except Exception as exc:
         if source_platform == "wechat_channels" and not isinstance(exc, QingdouDurationExceededError):
             try:
-                fallback = extract_wechat_channels_text(parser_url, timeout=min(max(poll_timeout, 5), 30))
                 logger.warning(
-                    "WeChat Channels Qingdou parse failed; using public preview metadata fallback: %s",
+                    "WeChat Channels Qingdou parse failed; trying configured media resolvers: %s",
                     exc,
                 )
+                fallback = extract_wechat_channels_text(parser_url, timeout=min(max(poll_timeout, 5), 60))
+                logger.warning(
+                    "WeChat Channels media resolver completed: provider=%s source_id=%s chars=%d",
+                    fallback.provider,
+                    fallback.source_id,
+                    len(fallback.text),
+                )
                 return fallback.text
-            except WeChatChannelsError:
-                logger.warning("WeChat Channels public preview fallback failed", exc_info=True)
+            except WeChatChannelsError as resolver_exc:
+                logger.warning("WeChat Channels media resolver fallback failed", exc_info=True)
+                raise RuntimeError(
+                    "微信视频号解析失败：轻抖未返回视频正文，备用解析源也未能拿到可转写媒体。"
+                    "请配置 WECHAT_CHANNELS_TIKHUB_API_KEY、WECHAT_CHANNELS_DOWNLOADER_API_KEY "
+                    "或 WECHAT_CHANNELS_GENERIC_RESOLVER_URL 后重试。"
+                ) from resolver_exc
         raise
     logger.info(
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
@@ -426,6 +437,14 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
     for key in ("raw_text", "video_text", "transcript"):
         val = config.get(key)
         if val and isinstance(val, str) and val.strip():
+            if _is_legacy_wechat_preview_metadata(config, val):
+                logger.warning(
+                    "[%s] ignore legacy WeChat Channels preview metadata cached in config['%s'] (%d chars)",
+                    task_label,
+                    key,
+                    len(val),
+                )
+                continue
             logger.info("[%s] 使用 config['%s'] 提供的预解析文案 (%d 字)", task_label, key, len(val))
             return val.strip()
 
@@ -443,6 +462,17 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
         raise ValueError("上传的 Word 正文文件为空，请重新上传")
     logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
     return text
+
+
+def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> bool:
+    platform = str(config.get("source_platform") or "").strip()
+    if platform != "wechat_channels":
+        return False
+    normalized = text.strip()
+    return (
+        normalized.startswith("微信视频号公开视频信息")
+        and "公开预览接口未返回字幕或可下载音轨" in normalized
+    )
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
