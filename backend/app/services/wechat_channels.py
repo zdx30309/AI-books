@@ -111,14 +111,26 @@ def _resolve_with_tikhub(source_url: str, *, timeout: int) -> WeChatChannelsMedi
     if not api_key:
         raise WeChatChannelsError("WECHAT_CHANNELS_TIKHUB_API_KEY is not configured")
     base_url = (settings.WECHAT_CHANNELS_TIKHUB_BASE_URL or "https://api.tikhub.io").strip().rstrip("/")
-    endpoint = urljoin(base_url + "/", "api/v1/wechat_channels/fetch_video_by_share_url")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "User-Agent": "Mozilla/5.0",
     }
+    endpoint = urljoin(base_url + "/", "api/v1/wechat_channels/fetch_video_by_share_url")
     data = _http_get_json(endpoint, params={"share_url": canonical_source_url(source_url)}, headers=headers, timeout=timeout)
     _assert_resolver_success(data, provider="tikhub")
     media_url, decode_key = _extract_media_url_and_decode_key(data)
+    if not media_url:
+        export_id = _extract_tikhub_export_id(data)
+        if export_id:
+            detail_endpoint = urljoin(base_url + "/", "api/v1/wechat_channels/fetch_video_detail")
+            data = _http_get_json(
+                detail_endpoint,
+                params={"exportId": export_id},
+                headers=headers,
+                timeout=timeout,
+            )
+            _assert_resolver_success(data, provider="tikhub")
+            media_url, decode_key = _extract_media_url_and_decode_key(data)
     if not media_url:
         raise WeChatChannelsError(f"TikHub returned no media URL: {_summarize_payload(data)}")
     return WeChatChannelsMedia(provider="tikhub", media_url=media_url, decode_key=decode_key, raw=data)
@@ -220,6 +232,14 @@ def _extract_media_url_and_decode_key(data: Any) -> tuple[str, str | None]:
         decode_key = _first_string(node, "decode_key", "decodeKey", "decode_key_v2")
         return url + (token or ""), decode_key
     return "", None
+
+
+def _extract_tikhub_export_id(data: Any) -> str:
+    for node in _walk_dicts(data):
+        export_id = _first_string(node, "dynamicExportId", "dynamic_export_id", "exportId", "export_id")
+        if export_id:
+            return export_id
+    return ""
 
 
 def _walk_dicts(value: Any) -> list[dict[str, Any]]:

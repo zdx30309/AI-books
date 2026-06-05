@@ -58,6 +58,49 @@ def test_extract_media_url_prefers_tikhub_media_shape() -> None:
     assert decode_key == "987654"
 
 
+def test_tikhub_share_resolver_follows_export_id_to_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_get(url: str, *, params: dict[str, str], headers: dict[str, str], timeout: int) -> dict:
+        calls.append((url, params))
+        if url.endswith("/fetch_video_by_share_url"):
+            return {
+                "code": 200,
+                "data": {
+                    "data": {
+                        "sceneInfo": {"dynamicExportId": "export/test-id"},
+                        "feedInfo": {"description": "preview only"},
+                    }
+                },
+            }
+        if url.endswith("/fetch_video_detail"):
+            assert params == {"exportId": "export/test-id"}
+            return {
+                "code": 200,
+                "data": {
+                    "object_desc": {
+                        "media": [
+                            {
+                                "url": "https://finder.video.qq.com/path/video.mp4",
+                                "url_token": "?token=abc",
+                                "decode_key": "987654",
+                            }
+                        ]
+                    }
+                },
+            }
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(wechat_channels.settings, "WECHAT_CHANNELS_TIKHUB_API_KEY", "test-key")
+    monkeypatch.setattr(wechat_channels, "_http_get_json", fake_get)
+
+    media = wechat_channels._resolve_with_tikhub("https://weixin.qq.com/sph/A8yYHFLFrB", timeout=10)  # noqa: SLF001
+
+    assert len(calls) == 2
+    assert media.media_url == "https://finder.video.qq.com/path/video.mp4?token=abc"
+    assert media.decode_key == "987654"
+
+
 def test_fetch_video_text_uses_wechat_channels_media_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail_qingdou(*args, **kwargs):
         raise RuntimeError("qingdou failed")
