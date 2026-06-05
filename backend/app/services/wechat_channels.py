@@ -120,17 +120,22 @@ def _resolve_with_tikhub(source_url: str, *, timeout: int) -> WeChatChannelsMedi
     _assert_resolver_success(data, provider="tikhub")
     media_url, decode_key = _extract_media_url_and_decode_key(data)
     if not media_url:
-        export_id = _extract_tikhub_export_id(data)
-        if export_id:
+        for export_id in _candidate_tikhub_export_ids(data, source_url, timeout=timeout):
             detail_endpoint = urljoin(base_url + "/", "api/v1/wechat_channels/fetch_video_detail")
-            data = _http_get_json(
-                detail_endpoint,
-                params={"exportId": export_id},
-                headers=headers,
-                timeout=timeout,
-            )
-            _assert_resolver_success(data, provider="tikhub")
+            try:
+                data = _http_get_json(
+                    detail_endpoint,
+                    params={"exportId": export_id},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                _assert_resolver_success(data, provider="tikhub")
+            except WeChatChannelsError as exc:
+                logger.warning("TikHub detail lookup failed export_id_prefix=%s error=%s", export_id[:18], exc)
+                continue
             media_url, decode_key = _extract_media_url_and_decode_key(data)
+            if media_url:
+                break
     if not media_url:
         raise WeChatChannelsError(f"TikHub returned no media URL: {_summarize_payload(data)}")
     return WeChatChannelsMedia(provider="tikhub", media_url=media_url, decode_key=decode_key, raw=data)
@@ -190,7 +195,7 @@ def _http_get_json(url: str, *, params: dict[str, str], headers: dict[str, str],
         raise WeChatChannelsError(f"resolver GET failed url={url}: {exc}") from exc
 
 
-def _http_post_json(url: str, *, json_payload: dict[str, str], headers: dict[str, str], timeout: int) -> dict[str, Any]:
+def _http_post_json(url: str, *, json_payload: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
     try:
         with httpx.Client(timeout=max(5, timeout), follow_redirects=True, headers=headers) as client:
             response = client.post(url, json=json_payload)
@@ -240,6 +245,44 @@ def _extract_tikhub_export_id(data: Any) -> str:
         if export_id:
             return export_id
     return ""
+
+
+def _candidate_tikhub_export_ids(data: Any, source_url: str, *, timeout: int) -> list[str]:
+    ids: list[str] = []
+
+    def add(value: str) -> None:
+        if value and value not in ids:
+            ids.append(value)
+
+    add(_extract_tikhub_export_id(data))
+    try:
+        add(_fetch_wechat_preview_export_id(source_url, timeout=timeout))
+    except Exception:
+        logger.warning("WeChat Channels public preview sceneInfo lookup failed", exc_info=True)
+    return ids
+
+
+def _fetch_wechat_preview_export_id(source_url: str, *, timeout: int) -> str:
+    source_id = _wechat_channels_short_id(source_url)
+    if not source_id:
+        return ""
+    page_url = f"https://channels.weixin.qq.com/finder-preview/pages/sph?id={source_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": page_url,
+        "Origin": "https://channels.weixin.qq.com",
+        "Content-Type": "application/json",
+    }
+    payload = {"baseReq": {"generalToken": ""}, "shortUri": source_id}
+    data = _http_post_json(
+        "https://channels.weixin.qq.com/finder-preview/api/feed/get_feed_info",
+        json_payload=payload,
+        headers=headers,
+        timeout=timeout,
+    )
+    if int(data.get("errCode") or 0) != 0:
+        return ""
+    return str((((data.get("data") or {}).get("sceneInfo") or {}).get("dynamicExportId") or "")).strip()
 
 
 def _walk_dicts(value: Any) -> list[dict[str, Any]]:
