@@ -44,6 +44,7 @@ _IMAGE_PROMPT_LIMIT = 32000
 _FINAL_COVER_SIZE = (2450, 3500)
 _FINAL_COVER_SIZE_TEXT = "2450*3500"
 _IMAGE_API_SIZE_MULTIPLE = 16
+_IMAGE_API_MAX_PIXELS = 4_000_000
 _COVER_DIMENSION_HARD_RULE = (
     f"- 尺寸硬规则：OpenAI 第一步生成的封面初稿就必须严格按 {_FINAL_COVER_SIZE_TEXT} 像素竖版成品封面来构图，"
     "画布宽高比必须是 7:10，只能是一张完整正面封面本体；不要横版、方图、拼贴图、多封面合集、书模、展示场景、外框画布、额外留边或非封面区域。"
@@ -377,10 +378,23 @@ def _image_api_request_size(size: str | None = None) -> str:
     if parsed is None:
         return configured
     width, height = parsed
-    if width % _IMAGE_API_SIZE_MULTIPLE == 0 and height % _IMAGE_API_SIZE_MULTIPLE == 0:
-        return f"{width}x{height}"
     request_width = _nearest_image_api_dimension(width)
     request_height = _nearest_image_api_dimension(height)
+    if request_width * request_height > _IMAGE_API_MAX_PIXELS:
+        scale = (_IMAGE_API_MAX_PIXELS / max(1, width * height)) ** 0.5
+        request_width = max(
+            _IMAGE_API_SIZE_MULTIPLE,
+            int(width * scale) // _IMAGE_API_SIZE_MULTIPLE * _IMAGE_API_SIZE_MULTIPLE,
+        )
+        request_height = max(
+            _IMAGE_API_SIZE_MULTIPLE,
+            int(height * scale) // _IMAGE_API_SIZE_MULTIPLE * _IMAGE_API_SIZE_MULTIPLE,
+        )
+        while request_width * request_height > _IMAGE_API_MAX_PIXELS:
+            if request_width / max(1, width) >= request_height / max(1, height):
+                request_width -= _IMAGE_API_SIZE_MULTIPLE
+            else:
+                request_height -= _IMAGE_API_SIZE_MULTIPLE
     return f"{request_width}x{request_height}"
 
 

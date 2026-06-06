@@ -82,10 +82,16 @@ def test_write_cover_bytes_file_normalizes_comic_image_size(tmp_path: Path) -> N
     assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
 
 
-def test_image_api_request_size_uses_nearest_supported_multiple(monkeypatch) -> None:
+def test_image_api_request_size_uses_budget_safe_supported_multiple(monkeypatch) -> None:
     monkeypatch.setattr(cover.settings, "IMAGE_SIZE", "2450x3500")
 
-    assert cover._image_api_request_size() == "2448x3504"  # noqa: SLF001
+    request_size = cover._image_api_request_size()  # noqa: SLF001
+    width, height = map(int, request_size.split("x"))
+
+    assert request_size == "1664x2384"
+    assert width % 16 == 0
+    assert height % 16 == 0
+    assert width * height <= 4_000_000
 
 
 def test_image_generation_request_uses_api_safe_size(monkeypatch) -> None:
@@ -106,7 +112,7 @@ def test_image_generation_request_uses_api_safe_size(monkeypatch) -> None:
 
     cover._request_image_generation_response("测试提示词")  # noqa: SLF001
 
-    assert captured["size"] == "2448x3504"
+    assert captured["size"] == "1664x2384"
 
 
 def test_image_edit_request_uses_api_safe_size(tmp_path: Path, monkeypatch) -> None:
@@ -129,7 +135,7 @@ def test_image_edit_request_uses_api_safe_size(tmp_path: Path, monkeypatch) -> N
 
     cover._request_image_edit_response(image_path, "测试提示词")  # noqa: SLF001
 
-    assert captured["size"] == "2448x3504"
+    assert captured["size"] == "1664x2384"
 
 
 def test_generate_image_file_from_prompt_normalizes_comic_output(
