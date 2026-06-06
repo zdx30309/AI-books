@@ -4,6 +4,7 @@ import base64
 import json
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -71,6 +72,79 @@ def test_write_cover_bytes_file_normalizes_draft_cover_size(tmp_path: Path) -> N
     cover._write_cover_bytes_file(output, PNG_BYTES)  # noqa: SLF001
 
     assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
+
+
+def test_write_cover_bytes_file_normalizes_comic_image_size(tmp_path: Path) -> None:
+    output = tmp_path / "comic_section_01.png"
+
+    cover._write_cover_bytes_file(output, PNG_BYTES, normalize_final_size=True)  # noqa: SLF001
+
+    assert _image_size(output) == cover._FINAL_COVER_SIZE  # noqa: SLF001
+
+
+def test_image_api_request_size_uses_nearest_supported_multiple(monkeypatch) -> None:
+    monkeypatch.setattr(cover.settings, "IMAGE_SIZE", "2450x3500")
+
+    assert cover._image_api_request_size() == "2448x3504"  # noqa: SLF001
+
+
+def test_image_generation_request_uses_api_safe_size(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_semaphore(*_: object, **__: object):
+        yield
+
+    def fake_post(*_: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs["json_payload"])  # type: ignore[arg-type]
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover.settings, "IMAGE_SIZE", "2450x3500")
+    monkeypatch.setattr(cover, "_resolve_image_api_credentials", lambda: ("key", "https://api.openai.com/v1", ""))
+    monkeypatch.setattr(cover, "distributed_semaphore", fake_semaphore)
+    monkeypatch.setattr(cover, "_post_image_request_with_cancellation", fake_post)
+
+    cover._request_image_generation_response("测试提示词")  # noqa: SLF001
+
+    assert captured["size"] == "2448x3504"
+
+
+def test_image_edit_request_uses_api_safe_size(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "input.png"
+    image_path.write_bytes(PNG_BYTES)
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_semaphore(*_: object, **__: object):
+        yield
+
+    def fake_post(*_: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs["data"])  # type: ignore[arg-type]
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover.settings, "IMAGE_SIZE", "2450x3500")
+    monkeypatch.setattr(cover, "_resolve_image_api_credentials", lambda: ("key", "https://api.openai.com/v1", ""))
+    monkeypatch.setattr(cover, "distributed_semaphore", fake_semaphore)
+    monkeypatch.setattr(cover, "_post_image_request_with_cancellation", fake_post)
+
+    cover._request_image_edit_response(image_path, "测试提示词")  # noqa: SLF001
+
+    assert captured["size"] == "2448x3504"
+
+
+def test_generate_image_file_from_prompt_normalizes_comic_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_generation(*_: object, **__: object) -> dict[str, object]:
+        return {"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+
+    monkeypatch.setattr(cover, "_request_image_generation_response", fake_generation)
+
+    result = cover.generate_image_file_from_prompt("测试提示词", tmp_path / "comic_section_01.png")
+
+    assert result == tmp_path / "comic_section_01.png"
+    assert _image_size(result) == cover._FINAL_COVER_SIZE  # noqa: SLF001
 
 
 def test_literature_reference_members_excludes_removed_suffixes(tmp_path: Path) -> None:

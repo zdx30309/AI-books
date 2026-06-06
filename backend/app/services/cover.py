@@ -43,6 +43,7 @@ _PLACEHOLDER_KEYS = {"", "sk-xxx", "sk-xxxx", "sk-xxxx..."}
 _IMAGE_PROMPT_LIMIT = 32000
 _FINAL_COVER_SIZE = (2450, 3500)
 _FINAL_COVER_SIZE_TEXT = "2450*3500"
+_IMAGE_API_SIZE_MULTIPLE = 16
 _COVER_DIMENSION_HARD_RULE = (
     f"- 尺寸硬规则：OpenAI 第一步生成的封面初稿就必须严格按 {_FINAL_COVER_SIZE_TEXT} 像素竖版成品封面来构图，"
     "画布宽高比必须是 7:10，只能是一张完整正面封面本体；不要横版、方图、拼贴图、多封面合集、书模、展示场景、外框画布、额外留边或非封面区域。"
@@ -352,6 +353,35 @@ def _emit_image_request_event(event: dict[str, Any]) -> None:
         observer(event)
     except Exception:
         logger.warning("cover image request observer failed", exc_info=True)
+
+
+def _parse_image_size(size: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\s*(\d+)\s*[xX×*]\s*(\d+)\s*", size or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _nearest_image_api_dimension(value: int) -> int:
+    value = max(1, int(value))
+    lower = max(_IMAGE_API_SIZE_MULTIPLE, (value // _IMAGE_API_SIZE_MULTIPLE) * _IMAGE_API_SIZE_MULTIPLE)
+    upper = max(_IMAGE_API_SIZE_MULTIPLE, ((value + _IMAGE_API_SIZE_MULTIPLE - 1) // _IMAGE_API_SIZE_MULTIPLE) * _IMAGE_API_SIZE_MULTIPLE)
+    if abs(value - lower) <= abs(upper - value):
+        return lower
+    return upper
+
+
+def _image_api_request_size(size: str | None = None) -> str:
+    configured = (size or settings.IMAGE_SIZE or "").strip()
+    parsed = _parse_image_size(configured)
+    if parsed is None:
+        return configured
+    width, height = parsed
+    if width % _IMAGE_API_SIZE_MULTIPLE == 0 and height % _IMAGE_API_SIZE_MULTIPLE == 0:
+        return f"{width}x{height}"
+    request_width = _nearest_image_api_dimension(width)
+    request_height = _nearest_image_api_dimension(height)
+    return f"{request_width}x{request_height}"
 
 
 @dataclass(frozen=True)
@@ -2151,10 +2181,11 @@ def _request_image_generation_response(
 ) -> Any:
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/generations"
+    request_size = _image_api_request_size()
     payload: dict[str, Any] = {
         "model": settings.IMAGE_MODEL,
         "prompt": prompt[:_IMAGE_PROMPT_LIMIT],
-        "size": settings.IMAGE_SIZE,
+        "size": request_size,
         "n": 1,
     }
     if settings.IMAGE_RESPONSE_FORMAT:
@@ -2282,10 +2313,11 @@ def _request_image_edit_response(
     image_paths = _coerce_image_edit_paths(image_path)
     api_key, base_url, proxy = _resolve_image_api_credentials()
     endpoint = f"{base_url}/images/edits"
+    request_size = _image_api_request_size()
     data: dict[str, str] = {
         "model": settings.IMAGE_MODEL,
         "prompt": prompt[:_IMAGE_PROMPT_LIMIT],
-        "size": settings.IMAGE_SIZE,
+        "size": request_size,
         "n": "1",
     }
     if settings.IMAGE_RESPONSE_FORMAT:
@@ -2490,7 +2522,7 @@ def _write_cover_text_file(path: Path, text: str, should_abort: Callable[[], boo
 
 def _normalize_final_cover_bytes(data: bytes) -> bytes:
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError as exc:
         raise ImageApiPermanentError("Pillow is required to normalize final cover size") from exc
 
@@ -2501,7 +2533,7 @@ def _normalize_final_cover_bytes(data: bytes) -> bytes:
                 return data
             mode = "RGBA" if image.mode in {"RGBA", "LA"} or "transparency" in image.info else "RGB"
             resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-            normalized = image.convert(mode).resize(_FINAL_COVER_SIZE, resample)
+            normalized = ImageOps.fit(image.convert(mode), _FINAL_COVER_SIZE, method=resample)
             output = io.BytesIO()
             normalized.save(output, format="PNG", optimize=True)
             return output.getvalue()
@@ -2511,10 +2543,21 @@ def _normalize_final_cover_bytes(data: bytes) -> bytes:
         ) from exc
 
 
-def _write_cover_bytes_file(path: Path, data: bytes, should_abort: Callable[[], bool] | None = None) -> None:
+def _write_cover_bytes_file(
+    path: Path,
+    data: bytes,
+    should_abort: Callable[[], bool] | None = None,
+    *,
+    normalize_final_size: bool | None = None,
+) -> None:
     _abort_cover_generation_if_requested(should_abort, stage=f"write {path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.name in {"draft_cover.png", "cover.png"}:
+    should_normalize = (
+        normalize_final_size
+        if normalize_final_size is not None
+        else path.name in {"draft_cover.png", "cover.png"}
+    )
+    if should_normalize:
         data = _normalize_final_cover_bytes(data)
         _abort_cover_generation_if_requested(should_abort, stage=f"normalize {path.name}")
     try:
@@ -2994,7 +3037,7 @@ def generate_image_file_from_prompt(
         should_abort=should_abort,
         force=force,
     )
-    _write_cover_bytes_file(output_path, image_bytes, should_abort)
+    _write_cover_bytes_file(output_path, image_bytes, should_abort, normalize_final_size=True)
     return output_path
 
 
