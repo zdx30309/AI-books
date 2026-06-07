@@ -10,6 +10,7 @@ from app.prompts.goal_driven_templates import get_category_meta
 
 BASE_COVER_CATEGORY_IDS: tuple[str, ...] = (
     "social_science",
+    "finance_technology",
 )
 
 _COVER_CATEGORY_LABEL_OVERRIDES: dict[str, str] = {
@@ -99,6 +100,10 @@ _register_alias("饱和插画", "illustration")
 _register_alias("萌系治愈", "illustration_crayon")
 _register_alias("社会痛点", "social_science")
 _register_alias("视觉冲击", "social_science")
+_register_alias("财经", "finance_technology")
+_register_alias("财经科技", "finance_technology")
+_register_alias("财经·科技", "finance_technology")
+_register_alias("finance_tech", "finance_technology")
 _register_alias("心理认知", "psychology_cognition")
 _register_alias("心理类", "psychology_cognition")
 _register_alias("认知类", "psychology_cognition")

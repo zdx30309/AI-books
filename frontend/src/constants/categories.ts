@@ -68,6 +68,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "finance_technology",
+    label: "财经·科技",
+    core_feature: "把钱、产业、公司、技术、政策和周期讲清楚",
+    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人机会误判",
+    prompt_status: "ready",
+  },
+  {
     id: "wisdom_stories",
     label: "小故事·智慧",
     core_feature: "以故事承载哲理，易传播",
@@ -187,6 +194,9 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
   {
     ...DEFAULT_CATEGORIES.find((item) => item.id === "social_science")!,
     label: "视觉冲击",
+  },
+  {
+    ...DEFAULT_CATEGORIES.find((item) => item.id === "finance_technology")!,
   },
   {
     id: "illustration",

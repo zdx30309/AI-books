@@ -233,6 +233,29 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
 
 
+def test_finance_technology_category_uses_dedicated_prompt() -> None:
+    meta = get_category_meta("finance_technology")
+    prompt = get_prompts("finance_technology")["full_book_writer"]
+    rendered = prompt.format(raw_text="原始视频文稿")
+
+    assert meta["label"] == "财经·科技"
+    assert "财经·科技类深度长文" in prompt
+    assert "不能只是复述、扩写或顺着原文逐段改写" in prompt
+    assert "不要做具体投资预测" in prompt
+    assert "如果美元走弱" in prompt
+    assert "每个重要概念、事件、政策、技术、公司动作或市场变化" in prompt
+    assert "【小节标题全局要求】" in prompt
+    assert "【导言与正文分工全局要求】" in prompt
+    assert "原始视频文稿" in rendered
+
+
+def test_finance_technology_aliases_resolve() -> None:
+    assert normalize_category("财经") == "finance_technology"
+    assert normalize_category("财经科技") == "finance_technology"
+    assert normalize_category("财经·科技") == "finance_technology"
+    assert normalize_category("finance_tech") == "finance_technology"
+
+
 def test_writer_prompts_include_punctuation_usage_rules() -> None:
     prompt = get_prompts("social_science")["full_book_writer"]
 
