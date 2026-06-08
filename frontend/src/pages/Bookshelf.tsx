@@ -781,6 +781,10 @@ export function Bookshelf({
           setModalOpen(false);
           navigate(`/book/${taskId}`);
         }}
+        onLongNovelCreated={(projectId) => {
+          setModalOpen(false);
+          navigate(`/long-novel/${projectId}`);
+        }}
         defaultCategoryId={
           categoryFilter !== "all" && categoryFilter !== "uncategorized"
             ? categoryFilter

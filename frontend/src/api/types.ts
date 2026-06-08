@@ -390,3 +390,201 @@ export interface DataAnalysisResponse {
   summary: DataAnalysisSummary;
   rows: DataAnalysisRow[];
 }
+
+export interface FamilyLongNovelCreateRequest {
+  premise: string;
+  family_setup?: string | null;
+  conflict_tags?: string[];
+  source_type?: string;
+  source_text?: string | null;
+  target_words?: number;
+  target_chapters?: number;
+  generation_mode?: "cheap" | "standard" | "high_quality";
+  style?: string;
+  forbidden_rules?: string | null;
+}
+
+export interface FamilyLongNovelBatchRequest {
+  from_chapter: number;
+  to_chapter: number;
+  retry_failed?: boolean;
+}
+
+export interface LongNovelProject {
+  id: string;
+  owner_id: string | null;
+  title: string;
+  type: string;
+  genre_label: string;
+  premise: string;
+  family_setup: string | null;
+  conflict_tags: string[];
+  source_type: string;
+  source_text: string | null;
+  target_words: number;
+  target_chapters: number;
+  generation_mode: string;
+  style: string;
+  forbidden_rules: string | null;
+  status: string;
+  current_chapter: number;
+  total_words: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LongNovelBible {
+  id: string;
+  project_id: string;
+  theme: string | null;
+  core_promise: string | null;
+  emotional_hook: string | null;
+  family_background: string | null;
+  world_rules: unknown[];
+  style_rules: unknown[];
+  forbidden_rules: unknown[];
+  ending_direction: string | null;
+  main_conflict: string | null;
+  raw_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LongNovelFamilyMember {
+  id: string;
+  project_id: string;
+  name: string;
+  family_role: string | null;
+  public_image: string | null;
+  private_desire: string | null;
+  grievance: string | null;
+  leverage: string | null;
+  weakness: string | null;
+  secret: string | null;
+  relationship_to_heroine: string | null;
+  relationship_map: Record<string, unknown>;
+  voice_rules: Record<string, unknown>;
+  arc_start: string | null;
+  arc_end: string | null;
+  ending: string | null;
+  raw_json: Record<string, unknown>;
+}
+
+export interface LongNovelFamilyRelation {
+  id: string;
+  project_id: string;
+  from_member: string;
+  to_member: string;
+  relation_type: string | null;
+  surface_relation: string | null;
+  hidden_conflict: string | null;
+  interest_conflict: string | null;
+  emotional_debt: string | null;
+  current_tension_level: number;
+  raw_json: Record<string, unknown>;
+}
+
+export interface LongNovelConflictLine {
+  id: string;
+  project_id: string;
+  conflict_key: string;
+  name: string;
+  conflict_type: string | null;
+  description: string | null;
+  introduced_chapter: number | null;
+  last_escalated_chapter: number | null;
+  planned_explosion_chapter: number | null;
+  planned_resolution_chapter: number | null;
+  status: string;
+  importance: string;
+}
+
+export interface LongNovelChapterPlan {
+  id: string;
+  project_id: string;
+  chapter_number: number;
+  volume_number: number | null;
+  title: string;
+  target_words: number;
+  chapter_goal: string | null;
+  domestic_conflict: string | null;
+  emotional_hook: string | null;
+  required_events: unknown[];
+  character_arc_move: unknown[];
+  conflict_lines_to_advance: unknown[];
+  forbidden_reveals: unknown[];
+  ending_hook: string | null;
+  scenes: unknown[];
+  status: string;
+  raw_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LongNovelChapter {
+  id: string;
+  project_id: string;
+  chapter_number: number;
+  title: string;
+  content: string;
+  summary: string | null;
+  word_count: number;
+  status: string;
+  version: number;
+  raw_model_output: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LongNovelContinuityIssue {
+  id: string;
+  project_id: string;
+  chapter_number: number;
+  severity: string;
+  issue_type: string | null;
+  description: string;
+  evidence: string | null;
+  suggested_fix: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface LongNovelGenerationLog {
+  id: string;
+  project_id: string;
+  chapter_number: number | null;
+  action: string;
+  provider: string | null;
+  model: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost: number;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface LongNovelProjectDetailResponse {
+  project: LongNovelProject;
+  bible: LongNovelBible | null;
+  members: LongNovelFamilyMember[];
+  relations: LongNovelFamilyRelation[];
+  conflict_lines: LongNovelConflictLine[];
+  chapter_plans: LongNovelChapterPlan[];
+  chapters: LongNovelChapter[];
+  issues: LongNovelContinuityIssue[];
+  logs: LongNovelGenerationLog[];
+}
+
+export interface LongNovelProjectListResponse {
+  total: number;
+  items: LongNovelProject[];
+}
+
+export interface LongNovelBatchResponse {
+  project_id: string;
+  status: string;
+  generated: number[];
+  failed: Array<{ chapter_number: number; error: string }>;
+  skipped: number[];
+}

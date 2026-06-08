@@ -22,6 +22,16 @@ import type {
   CoverJobResponse,
   DataAnalysisResponse,
   LoginRequest,
+  FamilyLongNovelBatchRequest,
+  FamilyLongNovelCreateRequest,
+  LongNovelBatchResponse,
+  LongNovelChapter,
+  LongNovelChapterPlan,
+  LongNovelConflictLine,
+  LongNovelContinuityIssue,
+  LongNovelProject,
+  LongNovelProjectDetailResponse,
+  LongNovelProjectListResponse,
   MarkdownResponse,
   PolishParagraphRequest,
   PolishParagraphResponse,
@@ -477,6 +487,63 @@ export const api = {
     }),
 
   // 系统健康（检测 Celery worker 是否在线）
+  createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>
+    request<LongNovelProject>("/long-novel/family/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listLongNovelProjects: (page = 1, pageSize = 50) =>
+    request<LongNovelProjectListResponse>(
+      `/long-novel/family/projects?page=${page}&page_size=${pageSize}`,
+    ),
+  getLongNovelProject: (id: string) =>
+    request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}`),
+  generateLongNovelBible: (id: string) =>
+    request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/bible`, {
+      method: "POST",
+    }),
+  generateLongNovelOutline: (id: string) =>
+    request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/outline`, {
+      method: "POST",
+    }),
+  generateLongNovelChapterPlan: (id: string, chapterNumber: number) =>
+    request<LongNovelChapterPlan>(
+      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/plan`,
+      { method: "POST" },
+    ),
+  generateLongNovelChapter: (id: string, chapterNumber: number) =>
+    request<LongNovelChapter>(
+      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/generate`,
+      { method: "POST" },
+    ),
+  generateLongNovelBatch: (id: string, body: FamilyLongNovelBatchRequest) =>
+    request<LongNovelBatchResponse>(`/long-novel/family/projects/${id}/generate-batch`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  pauseLongNovelProject: (id: string) =>
+    request<LongNovelProject>(`/long-novel/family/projects/${id}/pause`, { method: "POST" }),
+  resumeLongNovelProject: (id: string) =>
+    request<LongNovelProject>(`/long-novel/family/projects/${id}/resume`, { method: "POST" }),
+  checkLongNovelChapter: (id: string, chapterNumber: number) =>
+    request<LongNovelContinuityIssue[]>(
+      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/check`,
+      { method: "POST" },
+    ),
+  repairLongNovelChapter: (id: string, chapterNumber: number) =>
+    request<LongNovelChapter>(
+      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/repair`,
+      { method: "POST" },
+    ),
+  listLongNovelConflicts: (id: string) =>
+    request<LongNovelConflictLine[]>(`/long-novel/family/projects/${id}/conflicts`),
+  downloadLongNovelExport: async (id: string, format: "markdown" | "txt" | "json" = "markdown") => {
+    const { blob, filename } = await download(
+      `/long-novel/family/projects/${id}/export?format=${format}`,
+    );
+    saveBlob(blob, filename);
+  },
+
   systemHealth: () => request<SystemHealth>("/system/health"),
 
   // 微信读书推荐值

@@ -10,6 +10,24 @@ from app.models.cover_batch import (
     ProviderRequest,
     ProviderRequestStatus,
 )
+from app.models.long_novel import (
+    LongNovelBible,
+    LongNovelCanonFact,
+    LongNovelChapter,
+    LongNovelChapterPlan,
+    LongNovelChapterStatus,
+    LongNovelCharacterState,
+    LongNovelConflictLine,
+    LongNovelContinuityIssue,
+    LongNovelEvent,
+    LongNovelFamilyMember,
+    LongNovelFamilyRelation,
+    LongNovelGenerationLog,
+    LongNovelIssueStatus,
+    LongNovelObjectState,
+    LongNovelProject,
+    LongNovelProjectStatus,
+)
 from app.models.task import Task, TaskStatus
 from app.models.user import User
 
@@ -26,4 +44,20 @@ __all__ = [
     "ProviderRequestStatus",
     "CoverArtifact",
     "CoverArtifactKind",
+    "LongNovelProject",
+    "LongNovelProjectStatus",
+    "LongNovelBible",
+    "LongNovelFamilyMember",
+    "LongNovelFamilyRelation",
+    "LongNovelConflictLine",
+    "LongNovelChapterPlan",
+    "LongNovelChapter",
+    "LongNovelChapterStatus",
+    "LongNovelEvent",
+    "LongNovelCanonFact",
+    "LongNovelCharacterState",
+    "LongNovelObjectState",
+    "LongNovelContinuityIssue",
+    "LongNovelIssueStatus",
+    "LongNovelGenerationLog",
 ]

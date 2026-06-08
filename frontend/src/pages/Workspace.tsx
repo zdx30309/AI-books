@@ -93,6 +93,10 @@ export function Workspace() {
           setModalOpen(false);
           navigate(`/book/${taskId}`);
         }}
+        onLongNovelCreated={(projectId) => {
+          setModalOpen(false);
+          navigate(`/long-novel/${projectId}`);
+        }}
       />
     </>
   );

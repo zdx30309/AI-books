@@ -16,6 +16,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onCreated: (taskId: string) => void;
+  onLongNovelCreated?: (projectId: string) => void;
   defaultCategoryId?: string;
 }
 
@@ -30,7 +31,33 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
 ] as const;
-type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch";
+const LONG_NOVEL_CONFLICT_OPTIONS = [
+  "婆媳偏心",
+  "兄弟分家",
+  "拆迁补偿",
+  "房产归属",
+  "养老赡养",
+  "带娃教育",
+  "彩礼嫁妆",
+  "借钱不还",
+  "小姑子啃老",
+  "妯娌争宠",
+  "丈夫愚孝",
+  "亲戚道德绑架",
+  "住院陪护",
+  "年夜饭爆发",
+];
+const LONG_NOVEL_STYLE_OPTIONS = [
+  "强情节现实家长里短",
+  "克制现实",
+  "强情绪爽感",
+  "短视频爆款感",
+  "乡土家庭",
+  "城市家庭",
+  "中年女性成长",
+  "伦理纠葛",
+];
+type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch" | "longNovel";
 
 function extractCandidateLinks(text: string) {
   const matches = text.match(URL_RE) ?? [];
@@ -80,10 +107,27 @@ function parsePanelCount(value: string) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }: Props) {
+export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, defaultCategoryId }: Props) {
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
+  const [longNovelPremise, setLongNovelPremise] = useState("");
+  const [longNovelFamilySetup, setLongNovelFamilySetup] = useState("");
+  const [longNovelConflictTags, setLongNovelConflictTags] = useState<string[]>([
+    "婆媳偏心",
+    "妯娌争宠",
+    "兄弟分家",
+  ]);
+  const [longNovelSourceType, setLongNovelSourceType] = useState("manual");
+  const [longNovelSourceText, setLongNovelSourceText] = useState("");
+  const [longNovelTargetWords, setLongNovelTargetWords] = useState(200000);
+  const [longNovelTargetChapters, setLongNovelTargetChapters] = useState(50);
+  const [longNovelGenerationMode, setLongNovelGenerationMode] =
+    useState<"cheap" | "standard" | "high_quality">("standard");
+  const [longNovelStyle, setLongNovelStyle] = useState("强情节现实家长里短");
+  const [longNovelForbiddenRules, setLongNovelForbiddenRules] = useState(
+    "不要玄幻，不要重生，不要系统，不要总裁，不要金手指，不要突然暴富，不要机械降神，不要人物突然变好或变坏。",
+  );
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [classicalVariant, setClassicalVariant] = useState("plain");
@@ -121,6 +165,16 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
       setMode("single");
       setUrl("");
       setRawText("");
+      setLongNovelPremise("");
+      setLongNovelFamilySetup("");
+      setLongNovelConflictTags(["婆媳偏心", "妯娌争宠", "兄弟分家"]);
+      setLongNovelSourceType("manual");
+      setLongNovelSourceText("");
+      setLongNovelTargetWords(200000);
+      setLongNovelTargetChapters(50);
+      setLongNovelGenerationMode("standard");
+      setLongNovelStyle("强情节现实家长里短");
+      setLongNovelForbiddenRules("不要玄幻，不要重生，不要系统，不要总裁，不要金手指，不要突然暴富，不要机械降神，不要人物突然变好或变坏。");
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setClassicalVariant("plain");
@@ -197,6 +251,10 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
     setMode(nextMode);
     if (nextMode === "comic") {
       setCategory(nextCategory && COMIC_CATEGORY_IDS.has(nextCategory) ? nextCategory : "comic_series");
+    } else if (nextMode === "longNovel") {
+      setCategory("social_science");
+      setUrl("");
+      setRawText("");
     } else if (nextMode === "article" || nextMode === "articleBatch") {
       setCategory("emotion_relationship");
       setUrl("");
@@ -208,6 +266,41 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
 
   const submit = async () => {
     setError(null);
+    if (mode === "longNovel") {
+      const premise = longNovelPremise.trim();
+      if (!premise) {
+        setError("请填写长篇小说核心创意");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const project = await api.createLongNovelProject({
+          premise,
+          family_setup: longNovelFamilySetup.trim() || null,
+          conflict_tags: longNovelConflictTags,
+          source_type: longNovelSourceType,
+          source_text: longNovelSourceText.trim() || null,
+          target_words: longNovelTargetWords,
+          target_chapters: longNovelTargetChapters,
+          generation_mode: longNovelGenerationMode,
+          style: longNovelStyle,
+          forbidden_rules: longNovelForbiddenRules.trim() || null,
+        });
+        if (onLongNovelCreated) onLongNovelCreated(project.id);
+        else onCreated(project.id);
+      } catch (e) {
+        const msg =
+          e instanceof ApiError
+            ? `[${e.status}] ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : "创建长篇项目失败";
+        setError(msg);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
       if (comicCategory === "healing_comic") {
@@ -573,6 +666,18 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             </button>
             <button
               type="button"
+              onClick={() => switchMode("longNovel")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "longNovel"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+              妯娌长篇
+            </button>
+            <button
+              type="button"
               onClick={() => switchMode("comic", "comic_series")}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "comic" && category === "comic_series"
@@ -608,7 +713,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             <select
               id="task-category"
               value={category}
-              disabled={isReferenceArticle}
+              disabled={isReferenceArticle || mode === "longNovel"}
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
@@ -619,7 +724,7 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
                 }
               }}
               className={`w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50 ${
-                isReferenceArticle ? "cursor-not-allowed opacity-70" : ""
+                isReferenceArticle || mode === "longNovel" ? "cursor-not-allowed opacity-70" : ""
               }`}
             >
               {categories.map((item) => (
@@ -663,7 +768,184 @@ export function CreateTaskModal({ open, onClose, onCreated, defaultCategoryId }:
             </div>
           )}
 
-          {mode === "single" || isReferenceArticle ? (
+          {mode === "longNovel" ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
+                <div className="text-[11px] tracking-widest text-gold-200">家长里短·妯娌</div>
+                <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                  第一版锁定妯娌、婆媳、分家、房产、养老、借钱、带娃等家庭利益矛盾，创建后进入长篇工作区生成圣经、大纲和章节。
+                </p>
+              </div>
+              <div>
+                <label htmlFor="long-novel-premise" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                  核心创意
+                </label>
+                <textarea
+                  id="long-novel-premise"
+                  value={longNovelPremise}
+                  onChange={(e) => setLongNovelPremise(e.target.value)}
+                  placeholder="例如：大嫂照顾瘫痪婆婆三年，拆迁款下来后，婆婆却把房子过户给从没出过力的二儿子。"
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
+              <div>
+                <label htmlFor="long-novel-family" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                  家庭关系设定
+                </label>
+                <textarea
+                  id="long-novel-family"
+                  value={longNovelFamilySetup}
+                  onChange={(e) => setLongNovelFamilySetup(e.target.value)}
+                  placeholder="例如：婆婆强势偏心，小儿媳嘴甜会算计，大儿媳老实能干，两个儿子一个愚孝一个圆滑。"
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label className="block text-[11px] tracking-widest text-warm-300">主要矛盾</label>
+                  <span className="text-[10px] tracking-widest text-warm-500">{longNovelConflictTags.length} 个</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {LONG_NOVEL_CONFLICT_OPTIONS.map((item) => {
+                    const checked = longNovelConflictTags.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() =>
+                          setLongNovelConflictTags((prev) =>
+                            prev.includes(item)
+                              ? prev.filter((tag) => tag !== item)
+                              : [...prev, item],
+                          )
+                        }
+                        className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                          checked
+                            ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                            : "border-gold-500/15 text-warm-500 hover:border-gold-400/30 hover:text-warm-200"
+                        }`}
+                      >
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="long-novel-target-words" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                    目标字数
+                  </label>
+                  <select
+                    id="long-novel-target-words"
+                    value={longNovelTargetWords}
+                    onChange={(e) => setLongNovelTargetWords(Number(e.target.value))}
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                  >
+                    <option value={30000}>30000 测试版</option>
+                    <option value={80000}>80000 中篇</option>
+                    <option value={200000}>200000 长篇</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="long-novel-target-chapters" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                    章节数
+                  </label>
+                  <select
+                    id="long-novel-target-chapters"
+                    value={longNovelTargetChapters}
+                    onChange={(e) => setLongNovelTargetChapters(Number(e.target.value))}
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                  >
+                    <option value={10}>10</option>
+                    <option value={30}>30</option>
+                    <option value={50}>50</option>
+                    <option value={60}>60</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="long-novel-mode" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                    生成强度
+                  </label>
+                  <select
+                    id="long-novel-mode"
+                    value={longNovelGenerationMode}
+                    onChange={(e) =>
+                      setLongNovelGenerationMode(e.target.value as "cheap" | "standard" | "high_quality")
+                    }
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                  >
+                    <option value="cheap">省钱模式</option>
+                    <option value="standard">标准模式</option>
+                    <option value="high_quality">高质量模式</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="long-novel-style" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                    风格
+                  </label>
+                  <select
+                    id="long-novel-style"
+                    value={longNovelStyle}
+                    onChange={(e) => setLongNovelStyle(e.target.value)}
+                    className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                  >
+                    {LONG_NOVEL_STYLE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="long-novel-source-type" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                  素材来源
+                </label>
+                <select
+                  id="long-novel-source-type"
+                  value={longNovelSourceType}
+                  onChange={(e) => setLongNovelSourceType(e.target.value)}
+                  className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+                >
+                  <option value="manual">手动粘贴</option>
+                  <option value="video_link">视频链接</option>
+                  <option value="video_transcript">视频文稿</option>
+                  <option value="wechat_article">公众号文章</option>
+                  <option value="short_story">已有短篇</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="long-novel-source" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                  素材正文
+                </label>
+                <textarea
+                  id="long-novel-source"
+                  value={longNovelSourceText}
+                  onChange={(e) => setLongNovelSourceText(e.target.value)}
+                  placeholder="可粘贴视频文稿、公众号正文、已有短篇或补充素材。"
+                  rows={5}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
+              <div>
+                <label htmlFor="long-novel-forbidden" className="mb-2 block text-[11px] tracking-widest text-warm-300">
+                  禁忌
+                </label>
+                <textarea
+                  id="long-novel-forbidden"
+                  value={longNovelForbiddenRules}
+                  onChange={(e) => setLongNovelForbiddenRules(e.target.value)}
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                />
+              </div>
+            </div>
+          ) : mode === "single" || isReferenceArticle ? (
             <>
               {!isClassicalChinese && !isReferenceArticle && (
                 <>

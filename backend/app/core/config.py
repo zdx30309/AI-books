@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     CLASSICAL_DICTIONARY_PATH: str = "backend/output/classical_dictionary/dict-revised.json.xz"
     CLASSICAL_DICTIONARY_CONTEXT_MAX_CHARS: int = 4500
     CLASSICAL_DICTIONARY_MAX_ENTRIES: int = 80
+    LONG_NOVEL_STRONG_MODEL: str = ""
+    LONG_NOVEL_DEFAULT_MODEL: str = ""
+    LONG_NOVEL_CHEAP_MODEL: str = ""
+    LONG_NOVEL_MAX_PROJECT_COST: float = 0.0
+    LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT: int = 1
 
     # --- 5000字章节墙 (业务硬性指标) ---
     CHAPTER_TARGET_WORDS: int = 5000

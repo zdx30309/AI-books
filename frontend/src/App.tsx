@@ -12,6 +12,7 @@ import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { WeReadTool } from "./pages/WeReadTool";
 import { DataAnalysis } from "./pages/DataAnalysis";
+import { LongNovelWorkspace } from "./pages/LongNovelWorkspace";
 import { LONGFORM_VARIANT_CATEGORY_IDS } from "./constants/categories";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -98,6 +99,26 @@ export default function App() {
             <ProtectedRoute>
               <AppShell>
                 <WeReadTool />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/long-novel"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <LongNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/long-novel/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <LongNovelWorkspace />
               </AppShell>
             </ProtectedRoute>
           }
