@@ -239,8 +239,10 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     rendered = prompt.format(raw_text="原始视频文稿")
 
     assert meta["label"] == "财经·科技"
-    assert "财经·科技类深度长文" in prompt
-    assert "不能只是复述、扩写或顺着原文逐段改写" in prompt
+    assert "直接生成一篇完整的深度长文" in prompt
+    assert "只能作为“参照材料”，不能作为逐段改写的底稿" in prompt
+    assert "不得沿用原文的开篇方式、段落顺序、案例组合、论证路径、表达节奏和关键句式" in prompt
+    assert "抓住1个主矛盾和2—4个核心问题" in prompt
     assert "不要做具体投资预测" in prompt
     assert "如果美元走弱" in prompt
     assert "每个重要概念、事件、政策、技术、公司动作或市场变化" in prompt
