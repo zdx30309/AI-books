@@ -14,6 +14,8 @@ from app.models import LongNovelGenerationLog, User
 from app.schemas.long_novel import (
     FamilyLongNovelBatchRequest,
     FamilyLongNovelCreateRequest,
+    LongNovelAssistRequest,
+    LongNovelAssistResponse,
     LongNovelActionResponse,
     LongNovelBatchResponse,
     LongNovelChapterPlanResponse,
@@ -26,6 +28,7 @@ from app.schemas.long_novel import (
 )
 from app.services.family_long_novel import (
     FamilyLongNovelError,
+    assist_long_novel_field,
     check_family_continuity,
     create_family_long_novel_project,
     export_family_novel,
@@ -42,6 +45,7 @@ from app.services.family_long_novel import (
 )
 
 
+long_novel_router = APIRouter(prefix="/api/v1/long-novel", tags=["LongNovel"])
 router = APIRouter(prefix="/api/v1/long-novel/family", tags=["LongNovelFamily"])
 
 
@@ -72,6 +76,18 @@ def _project_detail(db: Session, project_id: UUID, user: User) -> LongNovelProje
         issues=project.issues,
         logs=logs,
     )
+
+
+@long_novel_router.post("/assist", response_model=LongNovelAssistResponse)
+def assist_long_novel(
+    req: LongNovelAssistRequest,
+    user: User = Depends(get_current_user),
+) -> LongNovelAssistResponse:
+    del user
+    try:
+        return assist_long_novel_field(req)
+    except FamilyLongNovelError as exc:
+        _raise_http(exc)
 
 
 @router.post("/projects", response_model=LongNovelProjectResponse)

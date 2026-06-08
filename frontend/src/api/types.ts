@@ -410,6 +410,18 @@ export interface FamilyLongNovelBatchRequest {
   retry_failed?: boolean;
 }
 
+export interface LongNovelAssistRequest {
+  module_type?: string;
+  field: "premise" | "family_setup" | "conflict_tags" | "source_text" | "forbidden_rules";
+  current_values?: Record<string, unknown>;
+}
+
+export interface LongNovelAssistResponse {
+  field: string;
+  content: string;
+  conflict_tags: string[];
+}
+
 export interface LongNovelProject {
   id: string;
   owner_id: string | null;

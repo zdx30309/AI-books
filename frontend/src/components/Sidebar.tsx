@@ -15,7 +15,7 @@ const navItems = [
   { to: "/", label: "工作台", icon: LayoutGrid, end: true },
   { to: "/bookshelf", label: "书架", icon: BookMarked, end: true },
   { to: "/bookshelf/longform-variants", label: "长文新版书架", icon: BookOpenCheck, end: false },
-  { to: "/long-novel", label: "妯娌长篇", icon: BookOpenCheck, end: false },
+  { to: "/long-novel", label: "长篇小说", icon: BookOpenCheck, end: false },
   { to: "/covers", label: "封面书架", icon: Images, end: false },
   { to: "/weread", label: "推荐值工具", icon: FileSpreadsheet, end: false },
   { to: "/data-analysis", label: "数据分析", icon: BarChart3, end: false },

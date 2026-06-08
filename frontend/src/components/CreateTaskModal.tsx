@@ -57,6 +57,13 @@ const LONG_NOVEL_STYLE_OPTIONS = [
   "中年女性成长",
   "伦理纠葛",
 ];
+const LONG_NOVEL_MODULES = [
+  {
+    id: "family_sisters_in_law_longform",
+    label: "家长里短·妯娌",
+    description: "婆媳、妯娌、分家、房产、养老、借钱、带娃等家庭利益矛盾。",
+  },
+];
 type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch" | "longNovel";
 
 function extractCandidateLinks(text: string) {
@@ -111,6 +118,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
+  const [longNovelModule, setLongNovelModule] = useState("family_sisters_in_law_longform");
   const [longNovelPremise, setLongNovelPremise] = useState("");
   const [longNovelFamilySetup, setLongNovelFamilySetup] = useState("");
   const [longNovelConflictTags, setLongNovelConflictTags] = useState<string[]>([
@@ -128,6 +136,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [longNovelForbiddenRules, setLongNovelForbiddenRules] = useState(
     "不要玄幻，不要重生，不要系统，不要总裁，不要金手指，不要突然暴富，不要机械降神，不要人物突然变好或变坏。",
   );
+  const [assistingField, setAssistingField] = useState<string | null>(null);
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
   const [classicalVariant, setClassicalVariant] = useState("plain");
@@ -165,6 +174,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setMode("single");
       setUrl("");
       setRawText("");
+      setLongNovelModule("family_sisters_in_law_longform");
       setLongNovelPremise("");
       setLongNovelFamilySetup("");
       setLongNovelConflictTags(["婆媳偏心", "妯娌争宠", "兄弟分家"]);
@@ -175,6 +185,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setLongNovelGenerationMode("standard");
       setLongNovelStyle("强情节现实家长里短");
       setLongNovelForbiddenRules("不要玄幻，不要重生，不要系统，不要总裁，不要金手指，不要突然暴富，不要机械降神，不要人物突然变好或变坏。");
+      setAssistingField(null);
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setClassicalVariant("plain");
@@ -263,6 +274,72 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setCategory("social_science");
     }
   };
+
+  const longNovelCurrentValues = () => ({
+    module_type: longNovelModule,
+    premise: longNovelPremise,
+    family_setup: longNovelFamilySetup,
+    conflict_tags: longNovelConflictTags,
+    source_type: longNovelSourceType,
+    source_text: longNovelSourceText,
+    target_words: longNovelTargetWords,
+    target_chapters: longNovelTargetChapters,
+    generation_mode: longNovelGenerationMode,
+    style: longNovelStyle,
+    forbidden_rules: longNovelForbiddenRules,
+  });
+
+  const assistLongNovel = async (
+    field: "premise" | "family_setup" | "conflict_tags" | "source_text" | "forbidden_rules",
+  ) => {
+    setError(null);
+    setAssistingField(field);
+    try {
+      const res = await api.assistLongNovelField({
+        module_type: longNovelModule,
+        field,
+        current_values: longNovelCurrentValues(),
+      });
+      if (field === "conflict_tags") {
+        if (res.conflict_tags.length > 0) setLongNovelConflictTags(res.conflict_tags);
+        return;
+      }
+      if (!res.content.trim()) return;
+      if (field === "premise") setLongNovelPremise(res.content);
+      if (field === "family_setup") setLongNovelFamilySetup(res.content);
+      if (field === "source_text") setLongNovelSourceText(res.content);
+      if (field === "forbidden_rules") setLongNovelForbiddenRules(res.content);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `[${e.status}] ${e.detail}`
+          : e instanceof Error
+            ? e.message
+            : "AI 辅助生成失败";
+      setError(msg);
+    } finally {
+      setAssistingField(null);
+    }
+  };
+
+  const assistButton = (
+    field: "premise" | "family_setup" | "conflict_tags" | "source_text" | "forbidden_rules",
+  ) => (
+    <button
+      type="button"
+      onClick={() => void assistLongNovel(field)}
+      disabled={Boolean(assistingField) || submitting}
+      title="使用 GPT-5.5 XHIGH 辅助填写"
+      className="inline-flex items-center gap-1 rounded-full border border-gold-500/25 px-2.5 py-1 text-[10px] tracking-widest text-gold-200 transition-colors hover:border-gold-400/60 hover:bg-gold-500/8 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {assistingField === field ? (
+        <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.8} />
+      ) : (
+        <Sparkles className="h-3 w-3" strokeWidth={1.8} />
+      )}
+      AI生成
+    </button>
+  );
 
   const submit = async () => {
     setError(null);
@@ -674,7 +751,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               }`}
             >
               <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
-              妯娌长篇
+              长篇小说
             </button>
             <button
               type="button"
@@ -702,6 +779,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </button>
           </div>
 
+          {mode !== "longNovel" ? (
           <div>
             <label
               htmlFor="task-category"
@@ -713,7 +791,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             <select
               id="task-category"
               value={category}
-              disabled={isReferenceArticle || mode === "longNovel"}
+              disabled={isReferenceArticle}
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
@@ -724,7 +802,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 }
               }}
               className={`w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50 ${
-                isReferenceArticle || mode === "longNovel" ? "cursor-not-allowed opacity-70" : ""
+                isReferenceArticle ? "cursor-not-allowed opacity-70" : ""
               }`}
             >
               {categories.map((item) => (
@@ -739,6 +817,32 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 : `${selectedCategory.core_feature} · ${selectedCategory.directions}`}
             </p>
           </div>
+          ) : (
+            <div>
+              <label
+                htmlFor="long-novel-module"
+                className="mb-2 flex items-center gap-2 text-[11px] tracking-widest text-warm-300"
+              >
+                <BookOpenCheck className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />
+                长篇类型
+              </label>
+              <select
+                id="long-novel-module"
+                value={longNovelModule}
+                onChange={(e) => setLongNovelModule(e.target.value)}
+                className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
+              >
+                {LONG_NOVEL_MODULES.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                {LONG_NOVEL_MODULES.find((item) => item.id === longNovelModule)?.description}
+              </p>
+            </div>
+          )}
 
           {supportsStyleReference && (
             <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
@@ -771,15 +875,18 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           {mode === "longNovel" ? (
             <div className="space-y-4">
               <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
-                <div className="text-[11px] tracking-widest text-gold-200">家长里短·妯娌</div>
+                <div className="text-[11px] tracking-widest text-gold-200">长篇小说模块</div>
                 <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                  第一版锁定妯娌、婆媳、分家、房产、养老、借钱、带娃等家庭利益矛盾，创建后进入长篇工作区生成圣经、大纲和章节。
+                  当前模块为“家长里短·妯娌”，用于婆媳、妯娌、分家、房产、养老、借钱、带娃等家庭利益矛盾，创建后进入长篇工作区生成圣经、大纲和章节。
                 </p>
               </div>
               <div>
-                <label htmlFor="long-novel-premise" className="mb-2 block text-[11px] tracking-widest text-warm-300">
-                  核心创意
-                </label>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label htmlFor="long-novel-premise" className="block text-[11px] tracking-widest text-warm-300">
+                    核心创意
+                  </label>
+                  {assistButton("premise")}
+                </div>
                 <textarea
                   id="long-novel-premise"
                   value={longNovelPremise}
@@ -790,9 +897,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 />
               </div>
               <div>
-                <label htmlFor="long-novel-family" className="mb-2 block text-[11px] tracking-widest text-warm-300">
-                  家庭关系设定
-                </label>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label htmlFor="long-novel-family" className="block text-[11px] tracking-widest text-warm-300">
+                    家庭关系设定
+                  </label>
+                  {assistButton("family_setup")}
+                </div>
                 <textarea
                   id="long-novel-family"
                   value={longNovelFamilySetup}
@@ -805,7 +915,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label className="block text-[11px] tracking-widest text-warm-300">主要矛盾</label>
-                  <span className="text-[10px] tracking-widest text-warm-500">{longNovelConflictTags.length} 个</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] tracking-widest text-warm-500">{longNovelConflictTags.length} 个</span>
+                    {assistButton("conflict_tags")}
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {LONG_NOVEL_CONFLICT_OPTIONS.map((item) => {
@@ -920,9 +1033,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 </select>
               </div>
               <div>
-                <label htmlFor="long-novel-source" className="mb-2 block text-[11px] tracking-widest text-warm-300">
-                  素材正文
-                </label>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label htmlFor="long-novel-source" className="block text-[11px] tracking-widest text-warm-300">
+                    素材正文
+                  </label>
+                  {assistButton("source_text")}
+                </div>
                 <textarea
                   id="long-novel-source"
                   value={longNovelSourceText}
@@ -933,9 +1049,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 />
               </div>
               <div>
-                <label htmlFor="long-novel-forbidden" className="mb-2 block text-[11px] tracking-widest text-warm-300">
-                  禁忌
-                </label>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label htmlFor="long-novel-forbidden" className="block text-[11px] tracking-widest text-warm-300">
+                    禁忌
+                  </label>
+                  {assistButton("forbidden_rules")}
+                </div>
                 <textarea
                   id="long-novel-forbidden"
                   value={longNovelForbiddenRules}

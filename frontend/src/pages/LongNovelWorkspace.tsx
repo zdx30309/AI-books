@@ -93,7 +93,7 @@ function ProjectList() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-gold-500/20 bg-gold-500/8 px-3 py-1 text-[11px] tracking-widest text-gold-200">
             <BookOpenText className="h-3.5 w-3.5" strokeWidth={1.6} />
-            家长里短·妯娌
+            长篇小说
           </div>
           <h1 className="font-serif text-3xl text-warm-100">长篇小说工作区</h1>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-warm-400">

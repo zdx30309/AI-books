@@ -6,6 +6,7 @@ from app.api.routers import (
     covers_router,
     data_analysis_router,
     health_router,
+    long_novel_family_router,
     long_novel_router,
     polish_router,
     stats_router,
@@ -17,6 +18,7 @@ from app.api.routers import (
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(long_novel_router)
+api_router.include_router(long_novel_family_router)
 api_router.include_router(auth_router)
 api_router.include_router(covers_router)
 api_router.include_router(data_analysis_router)

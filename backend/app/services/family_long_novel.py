@@ -43,7 +43,12 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_STATE_EXTRACT_PROMPT,
     render_prompt,
 )
-from app.schemas.long_novel import FamilyLongNovelBatchRequest, FamilyLongNovelCreateRequest
+from app.schemas.long_novel import (
+    FamilyLongNovelBatchRequest,
+    FamilyLongNovelCreateRequest,
+    LongNovelAssistRequest,
+    LongNovelAssistResponse,
+)
 from app.services import content_engine
 
 logger = logging.getLogger(__name__)
@@ -131,12 +136,23 @@ def _clean_title(title: str, fallback: str) -> str:
     return (cleaned[:10] or fallback)[:10]
 
 
-def _run_writer(prompt: str, *, max_output_tokens: int) -> str:
+def _run_writer(
+    prompt: str,
+    *,
+    max_output_tokens: int,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+) -> str:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            content_engine._route_writer_call(prompt, max_output_tokens=max_output_tokens)
+            content_engine._route_writer_call(
+                prompt,
+                reasoning_effort=reasoning_effort,
+                verbosity=verbosity,
+                max_output_tokens=max_output_tokens,
+            )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
 
@@ -155,6 +171,85 @@ def _model_for_tier(tier: str) -> str:
     if provider == "deepseek":
         return settings.DEEPSEEK_MODEL
     return settings.OPENAI_WRITER_MODEL
+
+
+_ASSIST_FIELD_RULES = {
+    "premise": "生成一个80-140字的核心创意，必须有明确家庭利益矛盾、女主处境和可连续展开的冲突钩子。",
+    "family_setup": "生成120-260字家庭关系设定，必须写清婆婆、丈夫、另一位妯娌、关键亲戚的利益位置和称谓关系。",
+    "conflict_tags": "从候选矛盾中选择3-6个最适合本项目的标签，不要编造过泛标签。",
+    "source_text": "生成一段180-360字可作为补充素材的现实家庭事件梗概，给后续圣经和大纲提供信息，不写正文。",
+    "forbidden_rules": "生成一段简洁禁忌要求，强调现实家长里短，不要玄幻、重生、系统、霸总、金手指、机械降神。",
+}
+
+
+_ASSIST_CONFLICT_TAGS = [
+    "婆媳偏心",
+    "兄弟分家",
+    "拆迁补偿",
+    "房产归属",
+    "养老赡养",
+    "带娃教育",
+    "彩礼嫁妆",
+    "借钱不还",
+    "小姑子啃老",
+    "妯娌争宠",
+    "丈夫愚孝",
+    "亲戚道德绑架",
+    "住院陪护",
+    "年夜饭爆发",
+]
+
+
+def assist_long_novel_field(req: LongNovelAssistRequest) -> LongNovelAssistResponse:
+    """Use the OpenAI writer model only when the user explicitly asks for form help."""
+
+    if req.module_type != FAMILY_LONG_NOVEL_TYPE:
+        raise FamilyLongNovelError("当前只支持家长里短·妯娌长篇模块的辅助填写")
+    field_rule = _ASSIST_FIELD_RULES.get(req.field)
+    if not field_rule:
+        raise FamilyLongNovelError("不支持的辅助填写字段")
+    compact_values = {
+        key: value
+        for key, value in (req.current_values or {}).items()
+        if value not in (None, "", [], {})
+    }
+    context = _json_dumps(compact_values)[:4000]
+    prompt = f"""
+你是长篇小说策划助理。当前长篇模块是“家长里短·妯娌”，你只帮助填写创建表单，不生成正文，不创建项目。
+
+必须遵守：
+- 只服务现实家庭矛盾长篇，围绕婆媳、妯娌、房产、养老、借钱、带娃、分家、亲戚舆论等。
+- 不要玄幻、重生、系统、霸总、金手指、机械降神。
+- 输出要短，能直接粘进表单，不要解释。
+- 如果用户已有方向，要顺着现有方向补强，不要推翻。
+- 节省 token，不要扩写成长文。
+
+字段：{req.field}
+任务：{field_rule}
+候选矛盾标签：{_json_dumps(_ASSIST_CONFLICT_TAGS)}
+当前表单已有内容：
+{context}
+
+输出严格 JSON，不要代码块：
+{{
+  "content": "",
+  "conflict_tags": []
+}}
+""".strip()
+    output = _run_writer(
+        prompt,
+        max_output_tokens=1200,
+        reasoning_effort="xhigh",
+        verbosity="low",
+    )
+    data = _json_loads(output)
+    tags = [str(item).strip() for item in _as_list(data.get("conflict_tags")) if str(item).strip()]
+    tags = [tag for tag in tags if tag in _ASSIST_CONFLICT_TAGS][:6]
+    return LongNovelAssistResponse(
+        field=req.field,
+        content=_text(data, "content")[:1200],
+        conflict_tags=tags,
+    )
 
 
 def _log_llm_call(
@@ -240,6 +335,7 @@ def _call_text(
 def _project_payload(project: LongNovelProject) -> dict[str, Any]:
     return {
         "type": project.type,
+        "moduleType": FAMILY_LONG_NOVEL_TYPE,
         "genreLabel": project.genre_label,
         "premise": project.premise,
         "familySetup": project.family_setup,
@@ -271,8 +367,8 @@ def create_family_long_novel_project(
 ) -> LongNovelProject:
     project = LongNovelProject(
         owner_id=user.id if user else None,
-        title="未命名妯娌长篇",
-        type=FAMILY_LONG_NOVEL_TYPE,
+        title="未命名长篇小说",
+        type="long_novel",
         genre_label=FAMILY_LONG_NOVEL_LABEL,
         premise=req.premise.strip(),
         family_setup=(req.family_setup or "").strip() or None,

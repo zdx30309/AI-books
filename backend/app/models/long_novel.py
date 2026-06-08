@@ -43,8 +43,8 @@ class LongNovelProject(Base):
         nullable=True,
         index=True,
     )
-    title = Column(String(255), nullable=False, default="未命名妯娌长篇")
-    type = Column(String(64), nullable=False, default="family_sisters_in_law_longform")
+    title = Column(String(255), nullable=False, default="未命名长篇小说")
+    type = Column(String(64), nullable=False, default="long_novel")
     genre_label = Column(String(64), nullable=False, default="家长里短·妯娌")
     premise = Column(Text, nullable=False)
     family_setup = Column(Text, nullable=True)

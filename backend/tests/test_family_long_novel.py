@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.api.api import api_router
 from app.db.session import Base
+from app.models import LongNovelProject
 from app.prompts.family_long_novel_prompts import (
     COMMON_GENRE_RULES,
     FAMILY_LONG_NOVEL_LABEL,
@@ -17,6 +18,8 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
 )
+from app.schemas.long_novel import LongNovelAssistRequest
+from app.services import family_long_novel
 from app.services.family_long_novel import _json_loads
 
 
@@ -48,14 +51,40 @@ def test_family_long_novel_tables_are_registered() -> None:
         "long_novel_generation_logs",
     }
     assert expected.issubset(set(Base.metadata.tables))
+    assert LongNovelProject.__table__.c.type.default.arg == "long_novel"
 
 
 def test_family_long_novel_routes_are_registered() -> None:
     paths = {getattr(route, "path", "") for route in api_router.routes}
+    assert "/api/v1/long-novel/assist" in paths
     assert "/api/v1/long-novel/family/projects" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/bible" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/generate-batch" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/export" in paths
+
+
+def test_long_novel_assist_is_short_explicit_openai_form_help(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_run_writer(prompt: str, **kwargs: object) -> str:
+        calls.update(kwargs)
+        assert "只帮助填写创建表单" in prompt
+        assert "不生成正文" in prompt
+        return '{"content":"大嫂照顾婆婆多年，拆迁款下来后，小叔一家突然要分走老宅。","conflict_tags":["婆媳偏心","兄弟分家","房产归属"]}'
+
+    monkeypatch.setattr(family_long_novel, "_run_writer", fake_run_writer)
+    res = family_long_novel.assist_long_novel_field(
+        LongNovelAssistRequest(
+            field="premise",
+            current_values={"premise": "大嫂照顾婆婆多年"},
+        )
+    )
+
+    assert res.content.startswith("大嫂照顾婆婆多年")
+    assert res.conflict_tags == ["婆媳偏心", "兄弟分家", "房产归属"]
+    assert calls["max_output_tokens"] == 1200
+    assert calls["reasoning_effort"] == "xhigh"
+    assert calls["verbosity"] == "low"
 
 
 def test_json_loader_accepts_fenced_model_output() -> None:

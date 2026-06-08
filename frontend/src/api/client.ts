@@ -24,6 +24,8 @@ import type {
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
+  LongNovelAssistRequest,
+  LongNovelAssistResponse,
   LongNovelBatchResponse,
   LongNovelChapter,
   LongNovelChapterPlan,
@@ -489,6 +491,11 @@ export const api = {
   // 系统健康（检测 Celery worker 是否在线）
   createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>
     request<LongNovelProject>("/long-novel/family/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  assistLongNovelField: (body: LongNovelAssistRequest) =>
+    request<LongNovelAssistResponse>("/long-novel/assist", {
       method: "POST",
       body: JSON.stringify(body),
     }),

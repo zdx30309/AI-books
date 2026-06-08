@@ -21,6 +21,18 @@ class FamilyLongNovelCreateRequest(BaseModel):
     forbidden_rules: str | None = None
 
 
+class LongNovelAssistRequest(BaseModel):
+    module_type: str = Field(default="family_sisters_in_law_longform", max_length=80)
+    field: Literal["premise", "family_setup", "conflict_tags", "source_text", "forbidden_rules"] = "premise"
+    current_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class LongNovelAssistResponse(BaseModel):
+    field: str
+    content: str = ""
+    conflict_tags: list[str] = Field(default_factory=list)
+
+
 class FamilyLongNovelBatchRequest(BaseModel):
     from_chapter: int = Field(default=1, ge=1, le=80)
     to_chapter: int = Field(default=3, ge=1, le=80)
