@@ -1,0 +1,23 @@
+[Unit]
+Description=Video Plan OpenAI/Gemini proxy tunnel to US
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N \
+  -D 127.0.0.1:1081 \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=2 \
+  -o TCPKeepAlive=yes \
+  -o ConnectTimeout=20 \
+  -o StrictHostKeyChecking=accept-new \
+  -i /root/.ssh/video_plan_us_proxy_ed25519 \
+  root@45.78.76.202
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

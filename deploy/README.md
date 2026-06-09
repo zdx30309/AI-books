@@ -6,7 +6,8 @@ This app is deployed as:
 - `backend`: FastAPI on port 8000.
 - `worker`: Celery worker using the same backend image.
 - `backend_output`: shared volume for generated covers and intermediate outputs, mounted by both `backend` and `worker`.
-- `video-plan-jp-proxy-tunnel.service`: SSH tunnel to the Japan proxy relay. Beijing ECS needs this relay for OpenAI and Gemini egress.
+- `video-plan-us-proxy-tunnel.service`: current primary SSH SOCKS tunnel to the US proxy relay for OpenAI and Gemini egress.
+- `video-plan-jp-proxy-tunnel.service`: standby SSH tunnel to the Japan proxy relay. Keep it installed so it can be restored when the relay is renewed.
 
 ## Server Commands
 
@@ -19,7 +20,7 @@ docker compose up -d --build
 
 ## Official AI APIs Through Japan Proxy
 
-OpenAI and Gemini calls use official provider endpoints, but Beijing ECS must egress through the local Privoxy listener backed by the Japan proxy. Keep the official base URLs and set the provider proxy variables to `http://172.18.0.1:7898`.
+OpenAI and Gemini calls use official provider endpoints, but Beijing ECS must egress through the local Privoxy listener. The current primary path is Privoxy `172.18.0.1:7898` -> US SOCKS tunnel `127.0.0.1:1081`. The Japan tunnel is retained as standby.
 
 Required endpoint defaults:
 
@@ -29,6 +30,15 @@ Required endpoint defaults:
 - `OFFICIAL_API_DIRECT_ONLY=False`
 - `OPENAI_HTTPS_PROXY=http://172.18.0.1:7898`
 - `GOOGLE_HTTPS_PROXY=http://172.18.0.1:7898`
+
+Privoxy should contain:
+
+```text
+listen-address 172.18.0.1:7898
+forward-socks5t / 127.0.0.1:1081 .
+```
+
+To restore the Japan relay as primary later, keep the Japan service installed and switch the Privoxy `forward-socks5t` target back to its local SOCKS listener.
 
 Health checks from the Beijing ECS:
 
