@@ -18,6 +18,7 @@ import { CreateTaskModal } from "@/components/CreateTaskModal";
 import type {
   LongNovelChapter,
   LongNovelChapterPlan,
+  LongNovelGenerationLog,
   LongNovelProject,
   LongNovelProjectDetailResponse,
 } from "@/api/types";
@@ -70,6 +71,18 @@ const busyLabels: Record<string, { title: string; detail: string }> = {
   },
 };
 
+const serverBusyActionMap: Record<string, string> = {
+  generate_bible: "bible",
+  generate_outline: "outline",
+  generate_chapter_plan: "plan",
+  generate_chapter: "chapter",
+  extract_chapter_state: "chapter",
+  check_continuity: "check",
+  repair_chapter: "repair",
+};
+
+const serverBusyLogTtlMs = 6 * 60 * 60 * 1000;
+
 function asText(value: unknown) {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -96,6 +109,66 @@ function formatDuration(ms: number) {
   const seconds = total % 60;
   if (minutes <= 0) return `${seconds} 秒`;
   return `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`;
+}
+
+function busyInfoFor(key: string) {
+  if (busyLabels[key]) return busyLabels[key];
+  if (key.startsWith("plan")) {
+    return {
+      title: "章节细纲生成中",
+      detail: "正在拆分本章场次、冲突推进和必写事件",
+    };
+  }
+  if (key.startsWith("check")) {
+    return {
+      title: "连续性检查中",
+      detail: "正在检查人物状态、矛盾线和情节前后的一致性",
+    };
+  }
+  if (key.startsWith("repair")) {
+    return {
+      title: "章节修复中",
+      detail: "正在根据连续性问题修正文稿，保持原有质量和风格",
+    };
+  }
+  if (key.startsWith("chapter")) return busyLabels.chapter;
+  return { title: `${key} 执行中`, detail: "正在等待后端返回结果" };
+}
+
+function logStartedAt(log: LongNovelGenerationLog | undefined) {
+  if (!log) return null;
+  const startedAt = Date.parse(log.created_at);
+  return Number.isFinite(startedAt) ? startedAt : null;
+}
+
+function inferServerBusy(detail: LongNovelProjectDetailResponse) {
+  const now = Date.now();
+  const activeLog = detail.logs.find((log) => {
+    if (log.status !== "started") return false;
+    const startedAt = logStartedAt(log);
+    return startedAt == null || now - startedAt < serverBusyLogTtlMs;
+  });
+  const generatingPlan = detail.chapter_plans.find((plan) => plan.status === "generating");
+  const generatingChapter = detail.chapters.find((chapter) => chapter.status === "generating");
+  const projectGenerating = detail.project.status === "generating";
+  if (!activeLog && !generatingPlan && !generatingChapter && !projectGenerating) return null;
+  const mapped = activeLog ? serverBusyActionMap[activeLog.action] : null;
+  const chapterNumber = activeLog?.chapter_number ?? generatingChapter?.chapter_number ?? generatingPlan?.chapter_number ?? null;
+  const key = mapped
+    ? chapterNumber && !["bible", "outline"].includes(mapped)
+      ? `${mapped}-${chapterNumber}`
+      : mapped
+    : generatingChapter
+      ? `chapter-${generatingChapter.chapter_number}`
+      : generatingPlan
+        ? `plan-${generatingPlan.chapter_number}`
+        : "batch";
+  const fallbackStartedAt = Date.parse(detail.project.updated_at);
+  return {
+    key,
+    log: activeLog,
+    startedAt: logStartedAt(activeLog) ?? (Number.isFinite(fallbackStartedAt) ? fallbackStartedAt : null),
+  };
 }
 
 function ProjectList() {
@@ -222,18 +295,22 @@ export function LongNovelWorkspace() {
     }
   }, [id]);
 
+  const serverBusy = useMemo(() => (detail ? inferServerBusy(detail) : null), [detail]);
+  const activeBusy = busy ?? serverBusy?.key ?? null;
+  const activeBusyStartedAt = busyStartedAt ?? serverBusy?.startedAt ?? null;
+
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    if (!busyStartedAt) return undefined;
+    if (!activeBusyStartedAt) return undefined;
     const timer = window.setInterval(() => setBusyNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [busyStartedAt]);
+  }, [activeBusyStartedAt]);
 
   useEffect(() => {
-    if (!busy || !id) return undefined;
+    if (!activeBusy || !id) return undefined;
     const timer = window.setInterval(() => {
       api
         .getLongNovelProject(id)
@@ -241,7 +318,7 @@ export function LongNovelWorkspace() {
         .catch(() => undefined);
     }, 12000);
     return () => window.clearInterval(timer);
-  }, [busy, id]);
+  }, [activeBusy, id]);
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -288,11 +365,11 @@ export function LongNovelWorkspace() {
 
   const project = detail.project;
   const nextNumber = nextChapterNumber(detail);
-  const isBusy = Boolean(busy);
-  const busyElapsed = busyStartedAt ? busyNow - busyStartedAt : 0;
-  const busyProgress = busyStartedAt ? Math.min(92, 12 + Math.floor((busyElapsed / 1000) * 1.4)) : 0;
-  const busyInfo = busy ? busyLabels[busy] ?? { title: `${busy} 执行中`, detail: "正在等待后端返回结果" } : null;
-  const latestLog = detail.logs[0];
+  const isBusy = Boolean(activeBusy);
+  const busyElapsed = activeBusyStartedAt ? busyNow - activeBusyStartedAt : 0;
+  const busyProgress = activeBusy ? Math.min(92, 12 + Math.floor((busyElapsed / 1000) * 1.4)) : 0;
+  const busyInfo = activeBusy ? busyInfoFor(activeBusy) : null;
+  const latestLog = serverBusy?.log ?? detail.logs[0];
 
   return (
     <div className="space-y-6">
@@ -396,7 +473,7 @@ export function LongNovelWorkspace() {
                 <Download className="h-4 w-4" /> JSON
               </button>
             </div>
-            {busy && (
+            {activeBusy && (
               <div className="rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-3 text-sm text-gold-200">
                 <div className="flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />

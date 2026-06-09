@@ -351,6 +351,32 @@ def _call_text(
     ).strip()
 
 
+def _mark_project_generating(db: Session, project: LongNovelProject) -> None:
+    project.status = LongNovelProjectStatus.GENERATING
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+
+
+def _mark_generation_failed(
+    db: Session,
+    project: LongNovelProject,
+    *,
+    plan: LongNovelChapterPlan | None = None,
+    chapter: LongNovelChapter | None = None,
+) -> None:
+    db.rollback()
+    project.status = LongNovelProjectStatus.FAILED
+    db.add(project)
+    if plan is not None:
+        plan.status = LongNovelChapterStatus.FAILED
+        db.add(plan)
+    if chapter is not None and chapter.status != LongNovelChapterStatus.COMPLETED:
+        chapter.status = LongNovelChapterStatus.FAILED
+        db.add(chapter)
+    db.commit()
+
+
 def _project_payload(project: LongNovelProject) -> dict[str, Any]:
     return {
         "type": project.type,
@@ -427,25 +453,54 @@ def list_family_projects(
     return total, items
 
 
+def sync_family_project_progress(db: Session, project: LongNovelProject) -> LongNovelProject:
+    total_words, current_chapter = (
+        db.query(
+            func.coalesce(func.sum(LongNovelChapter.word_count), 0),
+            func.coalesce(func.max(LongNovelChapter.chapter_number), 0),
+        )
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.status == LongNovelChapterStatus.COMPLETED,
+        )
+        .one()
+    )
+    total_words = int(total_words or 0)
+    current_chapter = int(current_chapter or 0)
+    if project.total_words == total_words and project.current_chapter == current_chapter:
+        return project
+    project.total_words = total_words
+    project.current_chapter = current_chapter
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
 def generate_family_novel_bible(
     db: Session,
     project_id: UUID,
     user: User | None = None,
 ) -> LongNovelProject:
     project = _get_project(db, project_id, user)
+    _mark_project_generating(db, project)
     prompt = render_prompt(
         ZHOULI_BIBLE_PROMPT,
         project_payload=_json_dumps(_project_payload(project)),
     )
-    data = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=None,
-        action="generate_bible",
-        tier="strong",
-        prompt=prompt,
-        max_output_tokens=24000,
-    )
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=None,
+            action="generate_bible",
+            tier="strong",
+            prompt=prompt,
+            max_output_tokens=24000,
+        )
+    except Exception:
+        _mark_generation_failed(db, project)
+        raise
 
     project.title = _clean_title(_text(data, "title", default=project.title), project.title)
     project.status = LongNovelProjectStatus.ACTIVE
@@ -580,15 +635,20 @@ def generate_family_novel_outline(
         project_payload=_json_dumps(_project_payload(project)),
         bible_json=_json_dumps(project.bible.raw_json if project.bible else {}),
     )
-    data = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=None,
-        action="generate_outline",
-        tier="strong",
-        prompt=prompt,
-        max_output_tokens=_outline_max_output_tokens(project),
-    )
+    _mark_project_generating(db, project)
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=None,
+            action="generate_outline",
+            tier="strong",
+            prompt=prompt,
+            max_output_tokens=_outline_max_output_tokens(project),
+        )
+    except Exception:
+        _mark_generation_failed(db, project)
+        raise
     chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
     by_number = {
         _int_value(_get(item, "chapterNumber", "chapter_number"), 0): item
@@ -826,20 +886,32 @@ def generate_family_chapter_plan(
         db.commit()
         db.refresh(plan)
 
+    project.status = LongNovelProjectStatus.GENERATING
+    plan.status = LongNovelChapterStatus.GENERATING
+    db.add(project)
+    db.add(plan)
+    db.commit()
+    db.refresh(project)
+    db.refresh(plan)
+
     context = _build_chapter_context(db, project, chapter_number)
     prompt = render_prompt(
         ZHOULI_CHAPTER_PLAN_PROMPT,
         chapter_context=_json_dumps(context),
     )
-    data = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        action="generate_chapter_plan",
-        tier="default",
-        prompt=prompt,
-        max_output_tokens=16000,
-    )
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=chapter_number,
+            action="generate_chapter_plan",
+            tier="default",
+            prompt=prompt,
+            max_output_tokens=16000,
+        )
+    except Exception:
+        _mark_generation_failed(db, project, plan=plan)
+        raise
     plan.title = _clean_title(_text(data, "title", default=plan.title), plan.title)
     plan.chapter_goal = _text(data, "chapterGoal", "chapter_goal", default=plan.chapter_goal or "")
     plan.domestic_conflict = _text(data, "mainDomesticConflict", "domesticConflict", "domestic_conflict", default=plan.domestic_conflict or "")
@@ -848,6 +920,9 @@ def generate_family_chapter_plan(
     plan.required_events = _as_list(_get(data, "mustInclude", "requiredEvents")) or plan.required_events
     plan.forbidden_reveals = _as_list(_get(data, "mustNotReveal", "forbiddenReveals")) or plan.forbidden_reveals
     plan.raw_json = {**(plan.raw_json or {}), "chapterPlan": data}
+    plan.status = LongNovelChapterStatus.PLANNED
+    project.status = LongNovelProjectStatus.ACTIVE
+    db.add(project)
     db.add(plan)
     db.commit()
     db.refresh(plan)
@@ -893,15 +968,19 @@ def generate_family_chapter(
         ZHOULI_CHAPTER_WRITE_PROMPT,
         chapter_context=_json_dumps(context),
     )
-    content = _call_text(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        action="generate_chapter",
-        tier="default",
-        prompt=prompt,
-        max_output_tokens=_chapter_write_max_output_tokens(project),
-    )
+    try:
+        content = _call_text(
+            db,
+            project_id=project.id,
+            chapter_number=chapter_number,
+            action="generate_chapter",
+            tier="default",
+            prompt=prompt,
+            max_output_tokens=_chapter_write_max_output_tokens(project),
+        )
+    except Exception:
+        _mark_generation_failed(db, project, plan=plan)
+        raise
     title = plan.title if plan else f"第{chapter_number}章"
     chapter = (
         db.query(LongNovelChapter)
@@ -922,21 +1001,19 @@ def generate_family_chapter(
     db.add(plan)
     db.commit()
     db.refresh(chapter)
+    sync_family_project_progress(db, project)
 
-    extract_family_chapter_state(db, project.id, chapter_number, user)
-    issues = check_family_continuity(db, project.id, chapter_number, user)
-    severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
-    if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
-        chapter = repair_family_chapter(db, project.id, chapter_number, user)
+    try:
+        extract_family_chapter_state(db, project.id, chapter_number, user)
+        issues = check_family_continuity(db, project.id, chapter_number, user)
+        severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
+        if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
+            chapter = repair_family_chapter(db, project.id, chapter_number, user)
+    except Exception:
+        _mark_generation_failed(db, project, plan=plan, chapter=chapter)
+        raise
 
-    total_words = int(
-        db.query(func.coalesce(func.sum(LongNovelChapter.word_count), 0))
-        .filter(LongNovelChapter.project_id == project.id)
-        .scalar()
-        or 0
-    )
-    project.total_words = total_words
-    project.current_chapter = max(project.current_chapter or 0, chapter_number)
+    sync_family_project_progress(db, project)
     project.status = (
         LongNovelProjectStatus.COMPLETED
         if project.current_chapter >= project.target_chapters
@@ -1356,14 +1433,7 @@ def generate_family_batch(
     db.refresh(project)
     if project.status != LongNovelProjectStatus.PAUSED:
         project.status = LongNovelProjectStatus.FAILED if failed and not generated else LongNovelProjectStatus.ACTIVE
-    total_words = int(
-        db.query(func.coalesce(func.sum(LongNovelChapter.word_count), 0))
-        .filter(LongNovelChapter.project_id == project.id)
-        .scalar()
-        or 0
-    )
-    project.total_words = total_words
-    project.current_chapter = max(project.current_chapter or 0, max(generated or [project.current_chapter or 0]))
+    sync_family_project_progress(db, project)
     db.add(project)
     db.commit()
     return {

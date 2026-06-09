@@ -41,6 +41,7 @@ from app.services.family_long_novel import (
     pause_family_project,
     repair_family_chapter,
     resume_family_project,
+    sync_family_project_progress,
     _get_project,
 )
 
@@ -62,6 +63,7 @@ def _project_detail(db: Session, project_id: UUID, user: User) -> LongNovelProje
         project = _get_project(db, project_id, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    sync_family_project_progress(db, project)
     logs = (
         db.query(LongNovelGenerationLog)
         .filter(LongNovelGenerationLog.project_id == project.id)
