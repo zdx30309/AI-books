@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -529,7 +530,58 @@ def list_family_projects(
     return total, items
 
 
+def _heal_completed_family_chapters(db: Session, project: LongNovelProject) -> None:
+    completed_chapters = (
+        db.query(LongNovelChapter)
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.status == LongNovelChapterStatus.COMPLETED,
+        )
+        .order_by(LongNovelChapter.chapter_number.asc())
+        .all()
+    )
+    for chapter in completed_chapters:
+        plan = (
+            db.query(LongNovelChapterPlan)
+            .filter(
+                LongNovelChapterPlan.project_id == project.id,
+                LongNovelChapterPlan.chapter_number == chapter.chapter_number,
+            )
+            .first()
+        )
+        if plan is not None and plan.status != LongNovelChapterStatus.COMPLETED:
+            plan.status = LongNovelChapterStatus.COMPLETED
+            db.add(plan)
+        if not (chapter.summary or "").strip():
+            _ensure_chapter_state_floor(db, project, chapter)
+
+
+def _close_stale_family_logs(
+    db: Session,
+    project: LongNovelProject,
+    *,
+    has_active_generation: bool,
+) -> None:
+    if has_active_generation:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+    stale_logs = (
+        db.query(LongNovelGenerationLog)
+        .filter(
+            LongNovelGenerationLog.project_id == project.id,
+            LongNovelGenerationLog.status == "started",
+            LongNovelGenerationLog.created_at < cutoff,
+        )
+        .all()
+    )
+    for log in stale_logs:
+        log.status = "failed"
+        log.error = "stale started log closed after generation state healed"
+        db.add(log)
+
+
 def sync_family_project_progress(db: Session, project: LongNovelProject) -> LongNovelProject:
+    _heal_completed_family_chapters(db, project)
     total_words, current_chapter = (
         db.query(
             func.coalesce(func.sum(LongNovelChapter.word_count), 0),
@@ -544,6 +596,29 @@ def sync_family_project_progress(db: Session, project: LongNovelProject) -> Long
     total_words = int(total_words or 0)
     current_chapter = int(current_chapter or 0)
     next_status = project.status
+    has_generating_plan = (
+        db.query(LongNovelChapterPlan.id)
+        .filter(
+            LongNovelChapterPlan.project_id == project.id,
+            LongNovelChapterPlan.status == LongNovelChapterStatus.GENERATING,
+        )
+        .first()
+        is not None
+    )
+    has_generating_chapter = (
+        db.query(LongNovelChapter.id)
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.status == LongNovelChapterStatus.GENERATING,
+        )
+        .first()
+        is not None
+    )
+    _close_stale_family_logs(
+        db,
+        project,
+        has_active_generation=has_generating_plan or has_generating_chapter,
+    )
     if project.status == LongNovelProjectStatus.GENERATING:
         latest_log = (
             db.query(LongNovelGenerationLog)
@@ -552,24 +627,6 @@ def sync_family_project_progress(db: Session, project: LongNovelProject) -> Long
             .first()
         )
         has_started_log = latest_log is not None and latest_log.status == "started"
-        has_generating_plan = (
-            db.query(LongNovelChapterPlan.id)
-            .filter(
-                LongNovelChapterPlan.project_id == project.id,
-                LongNovelChapterPlan.status == LongNovelChapterStatus.GENERATING,
-            )
-            .first()
-            is not None
-        )
-        has_generating_chapter = (
-            db.query(LongNovelChapter.id)
-            .filter(
-                LongNovelChapter.project_id == project.id,
-                LongNovelChapter.status == LongNovelChapterStatus.GENERATING,
-            )
-            .first()
-            is not None
-        )
         if not has_started_log and not has_generating_plan and not has_generating_chapter:
             next_status = (
                 LongNovelProjectStatus.COMPLETED
@@ -1689,9 +1746,46 @@ def generate_family_chapter(
         severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
         if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
             chapter = repair_family_chapter(db, project.id, chapter_number, user)
-    except Exception:
-        _mark_generation_failed(db, project, plan=plan, chapter=chapter)
-        raise
+    except Exception as exc:
+        logger.exception(
+            "family chapter postprocess failed after content completion project=%s chapter=%s",
+            project.id,
+            chapter_number,
+        )
+        db.rollback()
+        project = _get_project(db, project_id, user)
+        plan = (
+            db.query(LongNovelChapterPlan)
+            .filter(
+                LongNovelChapterPlan.project_id == project.id,
+                LongNovelChapterPlan.chapter_number == chapter_number,
+            )
+            .first()
+        )
+        chapter = (
+            db.query(LongNovelChapter)
+            .filter(
+                LongNovelChapter.project_id == project.id,
+                LongNovelChapter.chapter_number == chapter_number,
+            )
+            .first()
+        )
+        if chapter is None or not (chapter.content or "").strip():
+            _mark_generation_failed(db, project, plan=plan, chapter=chapter)
+            raise
+        chapter.status = LongNovelChapterStatus.COMPLETED
+        if plan is not None:
+            plan.status = LongNovelChapterStatus.COMPLETED
+            db.add(plan)
+        _ensure_chapter_state_floor(db, project, chapter)
+        db.add(chapter)
+        db.commit()
+        logger.warning(
+            "family chapter returned with fallback state after postprocess error project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
 
     sync_family_project_progress(db, project)
     project.status = (
