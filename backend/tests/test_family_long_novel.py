@@ -24,6 +24,7 @@ from app.schemas.long_novel import LongNovelAssistRequest
 from app.services import family_long_novel
 from app.services.family_long_novel import (
     FamilyLongNovelError,
+    MalformedModelJsonError,
     _chapter_target_words,
     _chapter_write_max_output_tokens,
     _json_loads,
@@ -124,6 +125,16 @@ def test_json_loader_accepts_fenced_model_output() -> None:
     parsed = _json_loads('```json\n{"title": "账要算清", "chapters": []}\n```')
     assert parsed["title"] == "账要算清"
     assert parsed["chapters"] == []
+
+
+def test_json_loader_repairs_missing_comma_between_objects() -> None:
+    parsed = _json_loads('{"issues":[{"severity":"low"}\n{"severity":"high"}]}')
+    assert parsed["issues"] == [{"severity": "low"}, {"severity": "high"}]
+
+
+def test_json_loader_raises_typed_error_after_repair_fails() -> None:
+    with pytest.raises(MalformedModelJsonError):
+        _json_loads('{"issues": [ invalid ]}')
 
 
 def test_context_pack_validation_blocks_missing_previous_state() -> None:

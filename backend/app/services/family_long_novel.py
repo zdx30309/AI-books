@@ -58,6 +58,14 @@ class FamilyLongNovelError(RuntimeError):
     """Raised when the family long novel workflow cannot continue."""
 
 
+class MalformedModelJsonError(FamilyLongNovelError):
+    """Raised when model text cannot be parsed as JSON after local repair attempts."""
+
+    def __init__(self, message: str, raw_text: str) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9]+")
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -112,13 +120,59 @@ def _json_loads(text: str) -> dict[str, Any]:
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
         cleaned = cleaned[start : end + 1]
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise FamilyLongNovelError(f"模型返回不是合法 JSON: {exc}") from exc
+    last_error: json.JSONDecodeError | None = None
+    for candidate in _json_repair_candidates(cleaned):
+        try:
+            parsed = json.loads(candidate)
+            break
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    else:
+        message = f"模型返回不是合法 JSON: {last_error}" if last_error else "模型返回不是合法 JSON"
+        raise MalformedModelJsonError(message, cleaned)
     if not isinstance(parsed, dict):
         raise FamilyLongNovelError("模型 JSON 顶层必须是对象")
     return parsed
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    candidates = [text]
+    repaired = text
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    repaired = re.sub(r"([}\]])\s*(?=[{\[])", r"\1,", repaired)
+    repaired = re.sub(r"([}\]\"0-9])\s*\n\s*(\"[A-Za-z_][A-Za-z0-9_]*\"\s*:)", r"\1,\n\2", repaired)
+    repaired = re.sub(r"(true|false|null)\s*\n\s*(\"[A-Za-z_][A-Za-z0-9_]*\"\s*:)", r"\1,\n\2", repaired)
+    repaired = re.sub(r"([}\]\"0-9])\s*\n\s*(\"[^\"\n]+\"\s*(?:,|\]))", r"\1,\n\2", repaired)
+    if repaired != text:
+        candidates.append(repaired)
+    balanced = _balance_json_tail(repaired)
+    if balanced != repaired:
+        candidates.append(balanced)
+    return list(dict.fromkeys(candidates))
+
+
+def _balance_json_tail(text: str) -> str:
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char in "{[":
+            stack.append(char)
+        elif char in "}]" and stack:
+            stack.pop()
+    suffix = "".join("}" if char == "{" else "]" for char in reversed(stack))
+    return text + suffix
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -956,9 +1010,9 @@ def _ensure_chapter_state_floor(
     *,
     extracted: dict[str, Any] | None = None,
 ) -> None:
-    summary = _chapter_summary(chapter)
+    summary = (chapter.summary or "").strip()
     if not summary:
-        summary = _clip_text(chapter.content, 240) or f"第{chapter.chapter_number}章已生成"
+        summary = (chapter.content or "").strip()[:240] or f"第{chapter.chapter_number}章已生成"
         chapter.summary = summary
         db.add(chapter)
 
@@ -1084,6 +1138,106 @@ def _has_context_overlap(source: str | None, target: str | None, *, minimum: int
         return True
     target_terms = _context_terms(target)
     return len(source_terms.intersection(target_terms)) >= min(minimum, max(1, len(source_terms)))
+
+
+def _fallback_state_extract_data(project: LongNovelProject, chapter: LongNovelChapter) -> dict[str, Any]:
+    content = (chapter.content or "").strip()
+    summary = (chapter.summary or "").strip() or content[:240] or f"第{chapter.chapter_number}章已生成"
+    ending_hook = _clip_text(content, 220) or summary
+    members = [member.name for member in project.family_members if member.name]
+    return {
+        "chapterSummary": summary,
+        "endingHook": ending_hook,
+        "events": [
+            {
+                "eventType": "chapter_generated",
+                "actors": members[:6],
+                "location": "",
+                "timeLabel": f"第{chapter.chapter_number}章",
+                "cause": "",
+                "effect": summary,
+                "familyImpact": summary,
+            }
+        ],
+        "canonFacts": [
+            {
+                "fact": summary,
+                "factType": "chapter_summary",
+                "entities": members[:6],
+                "confidence": 0.75,
+            }
+        ],
+        "familyMemberStateDeltas": [],
+        "objectStateChanges": [],
+        "conflictLineUpdates": [],
+        "continuityClaims": ["state extraction fell back to deterministic chapter summary"],
+        "fallbackReason": "malformed_model_json",
+    }
+
+
+def _fallback_chapter_plan_data(
+    plan: LongNovelChapterPlan,
+    context_pack: dict[str, Any],
+) -> dict[str, Any]:
+    active_conflict = next(
+        (item for item in _as_list(context_pack.get("activeConflictLines")) if isinstance(item, dict)),
+        {},
+    )
+    character_states = [
+        item for item in _as_list(context_pack.get("latestCharacterStates")) if isinstance(item, dict)
+    ]
+    characters = [_text(item, "memberName") for item in character_states if _text(item, "memberName")][:6]
+    domestic_conflict = (
+        plan.domestic_conflict
+        or _text(active_conflict, "latestUpdate")
+        or _text(active_conflict, "description")
+        or "围绕家庭利益和知情范围继续推进冲突"
+    )
+    base_events = _as_list(plan.required_events) or [domestic_conflict, plan.emotional_hook or "留下下一章钩子"]
+    scenes: list[dict[str, Any]] = []
+    for index, event in enumerate(base_events[:4], start=1):
+        scenes.append(
+            {
+                "sceneNumber": index,
+                "sceneGoal": str(event),
+                "location": "家中",
+                "characters": characters,
+                "domesticConflict": domestic_conflict,
+                "subtext": "每个人都在用亲情包装自己的利益诉求",
+                "informationChange": str(event),
+                "emotionalTurn": plan.emotional_hook or domestic_conflict,
+                "endingBeat": plan.ending_hook or _text(context_pack.get("mustContinueFrom") or {}, "previousEndingHook"),
+            }
+        )
+    if not scenes:
+        scenes.append(
+            {
+                "sceneNumber": 1,
+                "sceneGoal": plan.chapter_goal or domestic_conflict,
+                "location": "家中",
+                "characters": characters,
+                "domesticConflict": domestic_conflict,
+                "subtext": "旧账继续压到饭桌上",
+                "informationChange": domestic_conflict,
+                "emotionalTurn": plan.emotional_hook or domestic_conflict,
+                "endingBeat": plan.ending_hook or domestic_conflict,
+            }
+        )
+    return {
+        "chapterNumber": plan.chapter_number,
+        "title": plan.title,
+        "chapterGoal": plan.chapter_goal,
+        "mainDomesticConflict": domestic_conflict,
+        "emotionalHook": plan.emotional_hook,
+        "scenes": scenes,
+        "mustInclude": base_events,
+        "mustNotReveal": plan.forbidden_reveals or [],
+        "characterArcMove": plan.character_arc_move or [],
+        "conflictLinesToAdvance": plan.conflict_lines_to_advance
+        or [_text(active_conflict, "conflictKey") or _text(active_conflict, "name")],
+        "endingHook": plan.ending_hook or scenes[-1]["endingBeat"],
+        "styleNotes": ["fallback plan after malformed model JSON; preserve chapter context pack constraints"],
+    }
 
 
 def _active_conflict_payloads(
@@ -1417,6 +1571,14 @@ def generate_family_chapter_plan(
             prompt=prompt,
             max_output_tokens=16000,
         )
+    except MalformedModelJsonError as exc:
+        logger.warning(
+            "chapter plan JSON malformed; using deterministic fallback project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
+        data = _fallback_chapter_plan_data(plan, context)
     except Exception:
         _mark_generation_failed(db, project, plan=plan)
         raise
@@ -1568,15 +1730,24 @@ def extract_family_chapter_state(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_STATE_RULES}"
-    data = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        action="extract_chapter_state",
-        tier="cheap",
-        prompt=prompt,
-        max_output_tokens=14000,
-    )
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=chapter_number,
+            action="extract_chapter_state",
+            tier="cheap",
+            prompt=prompt,
+            max_output_tokens=14000,
+        )
+    except MalformedModelJsonError as exc:
+        logger.warning(
+            "chapter state JSON malformed; using deterministic fallback project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
+        data = _fallback_state_extract_data(project, chapter)
     chapter.summary = _text(data, "chapterSummary", "chapter_summary") or chapter.content[:240]
     db.add(chapter)
 
@@ -1822,15 +1993,24 @@ def check_family_continuity(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
-    data = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        action="check_continuity",
-        tier="cheap",
-        prompt=prompt,
-        max_output_tokens=12000,
-    )
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=chapter_number,
+            action="check_continuity",
+            tier="cheap",
+            prompt=prompt,
+            max_output_tokens=12000,
+        )
+    except MalformedModelJsonError as exc:
+        logger.warning(
+            "continuity check JSON malformed; keeping rule-based issues project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
+        data = {"issues": []}
     all_issues = rule_issues + [
         item for item in _as_list(_get(data, "issues")) if isinstance(item, dict)
     ]
@@ -1877,15 +2057,29 @@ def quality_check_family_chapter(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
-    return _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        action="quality_check",
-        tier="cheap",
-        prompt=prompt,
-        max_output_tokens=8000,
-    )
+    try:
+        return _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=chapter_number,
+            action="quality_check",
+            tier="cheap",
+            prompt=prompt,
+            max_output_tokens=8000,
+        )
+    except MalformedModelJsonError as exc:
+        logger.warning(
+            "quality check JSON malformed; returning fallback report project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
+        return {
+            "score": 0,
+            "problems": ["quality check returned malformed JSON"],
+            "rewriteSuggestions": [],
+            "fallbackReason": "malformed_model_json",
+        }
 
 
 def repair_family_chapter(
