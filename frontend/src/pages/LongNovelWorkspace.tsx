@@ -43,6 +43,33 @@ const tabs: Array<{ id: TabId; label: string }> = [
   { id: "logs", label: "生成日志" },
 ];
 
+const busyLabels: Record<string, { title: string; detail: string }> = {
+  bible: {
+    title: "作品圣经生成中",
+    detail: "正在搭建人物、家庭关系、矛盾线和写作规则",
+  },
+  outline: {
+    title: "分卷大纲生成中",
+    detail: "正在按目标章节数拆分大纲，并均匀规划每章字数",
+  },
+  chapter: {
+    title: "章节正文生成中",
+    detail: "正在按章节计划写正文，并保持人物关系和矛盾线连续",
+  },
+  batch: {
+    title: "批量章节生成中",
+    detail: "正在逐章生成正文，期间会自动检查连续性问题",
+  },
+  pause: {
+    title: "正在暂停",
+    detail: "正在更新项目状态",
+  },
+  resume: {
+    title: "正在继续",
+    detail: "正在恢复项目状态",
+  },
+};
+
 function asText(value: unknown) {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -61,6 +88,14 @@ function nextChapterNumber(detail: LongNovelProjectDetailResponse) {
     if (!done.has(index)) return index;
   }
   return Math.min(detail.project.target_chapters, (detail.project.current_chapter || 0) + 1);
+}
+
+function formatDuration(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes <= 0) return `${seconds} 秒`;
+  return `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`;
 }
 
 function ProjectList() {
@@ -163,6 +198,8 @@ export function LongNovelWorkspace() {
   const [tab, setTab] = useState<TabId>("bible");
   const [loading, setLoading] = useState(Boolean(id));
   const [busy, setBusy] = useState<string | null>(null);
+  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [busyNow, setBusyNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [batchFrom, setBatchFrom] = useState(1);
   const [batchTo, setBatchTo] = useState(3);
@@ -189,8 +226,27 @@ export function LongNovelWorkspace() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!busyStartedAt) return undefined;
+    const timer = window.setInterval(() => setBusyNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [busyStartedAt]);
+
+  useEffect(() => {
+    if (!busy || !id) return undefined;
+    const timer = window.setInterval(() => {
+      api
+        .getLongNovelProject(id)
+        .then((res) => setDetail(res))
+        .catch(() => undefined);
+    }, 12000);
+    return () => window.clearInterval(timer);
+  }, [busy, id]);
+
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
+    setBusyStartedAt(Date.now());
+    setBusyNow(Date.now());
     setError(null);
     try {
       await fn();
@@ -199,6 +255,7 @@ export function LongNovelWorkspace() {
       setError(actionError(e));
     } finally {
       setBusy(null);
+      setBusyStartedAt(null);
     }
   };
 
@@ -232,6 +289,10 @@ export function LongNovelWorkspace() {
   const project = detail.project;
   const nextNumber = nextChapterNumber(detail);
   const isBusy = Boolean(busy);
+  const busyElapsed = busyStartedAt ? busyNow - busyStartedAt : 0;
+  const busyProgress = busyStartedAt ? Math.min(92, 12 + Math.floor((busyElapsed / 1000) * 1.4)) : 0;
+  const busyInfo = busy ? busyLabels[busy] ?? { title: `${busy} 执行中`, detail: "正在等待后端返回结果" } : null;
+  const latestLog = detail.logs[0];
 
   return (
     <div className="space-y-6">
@@ -336,9 +397,22 @@ export function LongNovelWorkspace() {
               </button>
             </div>
             {busy && (
-              <div className="flex items-center gap-2 rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-sm text-gold-200">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {busy} 执行中
+              <div className="rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-3 text-sm text-gold-200">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{busyInfo?.title}</span>
+                  <span className="ml-auto text-xs text-warm-500">{formatDuration(busyElapsed)}</span>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-warm-500">{busyInfo?.detail}</p>
+                <div className="progress-track mt-3">
+                  <div className="progress-fill" style={{ width: `${busyProgress}%` }} />
+                </div>
+                {latestLog && (
+                  <div className="mt-2 text-[11px] leading-relaxed text-warm-500">
+                    最近记录：{latestLog.action}
+                    {latestLog.chapter_number ? ` · 第 ${latestLog.chapter_number} 章` : ""} · {latestLog.status}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -173,6 +173,25 @@ def _model_for_tier(tier: str) -> str:
     return settings.OPENAI_WRITER_MODEL
 
 
+def _chapter_target_words(project: LongNovelProject) -> int:
+    chapters = max(1, min(80, int(project.target_chapters or 50)))
+    total = max(1000, int(project.target_words or 200000))
+    return max(1200, int(round(total / chapters)))
+
+
+def _chapter_word_tolerance(project: LongNovelProject) -> int:
+    return max(150, int(round(_chapter_target_words(project) * 0.08)))
+
+
+def _outline_max_output_tokens(project: LongNovelProject) -> int:
+    target = max(1, min(80, int(project.target_chapters or 50)))
+    return min(32000, max(10000, 5000 + target * 900))
+
+
+def _chapter_write_max_output_tokens(project: LongNovelProject) -> int:
+    return min(50000, max(24000, _chapter_target_words(project) * 4))
+
+
 _ASSIST_FIELD_RULES = {
     "premise": "生成一个80-140字的核心创意，必须有明确家庭利益矛盾、女主处境和可连续展开的冲突钩子。",
     "family_setup": "生成120-260字家庭关系设定，必须写清婆婆、丈夫、另一位妯娌、关键亲戚的利益位置和称谓关系。",
@@ -344,6 +363,8 @@ def _project_payload(project: LongNovelProject) -> dict[str, Any]:
         "sourceText": project.source_text,
         "targetWords": project.target_words,
         "targetChapters": project.target_chapters,
+        "averageChapterTargetWords": _chapter_target_words(project),
+        "chapterWordTolerance": _chapter_word_tolerance(project),
         "generationMode": project.generation_mode,
         "style": project.style,
         "forbiddenRules": project.forbidden_rules,
@@ -529,12 +550,12 @@ def _ensure_bible(db: Session, project: LongNovelProject, user: User | None) -> 
 
 
 def _fallback_chapter_plan(project: LongNovelProject, chapter_number: int) -> dict[str, Any]:
-    per_chapter = max(2500, int(project.target_words / max(project.target_chapters, 1)))
+    per_chapter = _chapter_target_words(project)
     return {
         "chapterNumber": chapter_number,
         "volumeNumber": max(1, (chapter_number - 1) // 12 + 1),
         "title": f"账要算清",
-        "targetWords": min(4500, max(3000, per_chapter)),
+        "targetWords": per_chapter,
         "chapterGoal": "推进一条家庭利益矛盾，让女主更清楚自己在家中的处境。",
         "domesticConflict": "围绕钱、房子、老人或孩子产生具体争执。",
         "emotionalHook": "亲近的人用亲情要求女主退让。",
@@ -566,7 +587,7 @@ def generate_family_novel_outline(
         action="generate_outline",
         tier="strong",
         prompt=prompt,
-        max_output_tokens=32000,
+        max_output_tokens=_outline_max_output_tokens(project),
     )
     chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
     by_number = {
@@ -574,6 +595,7 @@ def generate_family_novel_outline(
         for item in chapters
     }
     target = max(1, min(80, project.target_chapters or 50))
+    uniform_target_words = _chapter_target_words(project)
     for number in range(1, target + 1):
         item = by_number.get(number) or _fallback_chapter_plan(project, number)
         title = _clean_title(_text(item, "title"), f"第{number}章")
@@ -588,7 +610,7 @@ def generate_family_novel_outline(
         )
         plan.volume_number = _int_value(_get(item, "volumeNumber", "volume_number"), max(1, (number - 1) // 12 + 1))
         plan.title = title
-        plan.target_words = _int_value(_get(item, "targetWords", "target_words"), 4000)
+        plan.target_words = uniform_target_words
         plan.chapter_goal = _text(item, "chapterGoal", "chapter_goal")
         plan.domestic_conflict = _text(item, "domesticConflict", "domestic_conflict")
         plan.emotional_hook = _text(item, "emotionalHook", "emotional_hook")
@@ -597,7 +619,7 @@ def generate_family_novel_outline(
         plan.conflict_lines_to_advance = _as_list(_get(item, "conflictLinesToAdvance", "conflict_lines_to_advance"))
         plan.forbidden_reveals = _as_list(_get(item, "forbiddenReveals", "forbidden_reveals"))
         plan.ending_hook = _text(item, "endingHook", "ending_hook")
-        plan.raw_json = item
+        plan.raw_json = {**item, "targetWords": uniform_target_words}
         plan.status = LongNovelChapterStatus.PLANNED
         db.add(plan)
     project.status = LongNovelProjectStatus.ACTIVE
@@ -878,7 +900,7 @@ def generate_family_chapter(
         action="generate_chapter",
         tier="default",
         prompt=prompt,
-        max_output_tokens=24000,
+        max_output_tokens=_chapter_write_max_output_tokens(project),
     )
     title = plan.title if plan else f"第{chapter_number}章"
     chapter = (

@@ -53,6 +53,10 @@ def _raise_http(exc: FamilyLongNovelError) -> None:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _raise_upstream_http(exc: Exception) -> None:
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 def _project_detail(db: Session, project_id: UUID, user: User) -> LongNovelProjectDetailResponse:
     try:
         project = _get_project(db, project_id, user)
@@ -137,6 +141,8 @@ def generate_bible(
         generate_family_novel_bible(db, project_id, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
     return _project_detail(db, project_id, user)
 
 
@@ -150,6 +156,8 @@ def generate_outline(
         generate_family_novel_outline(db, project_id, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
     return _project_detail(db, project_id, user)
 
 
@@ -164,6 +172,8 @@ def generate_chapter_plan(
         return generate_family_chapter_plan(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
 
 
 @router.post("/projects/{project_id}/chapters/{chapter_number}/generate", response_model=LongNovelChapterResponse)
@@ -177,6 +187,8 @@ def generate_chapter(
         return generate_family_chapter(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
 
 
 @router.post("/projects/{project_id}/generate-batch", response_model=LongNovelBatchResponse)
@@ -190,6 +202,8 @@ def generate_batch(
         return generate_family_batch(db, project_id, req, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
 
 
 @router.post("/projects/{project_id}/pause", response_model=LongNovelProjectResponse)
@@ -227,6 +241,8 @@ def check_chapter(
         return check_family_continuity(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
 
 
 @router.post("/projects/{project_id}/chapters/{chapter_number}/repair", response_model=LongNovelChapterResponse)
@@ -240,6 +256,8 @@ def repair_chapter(
         return repair_family_chapter(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
 
 
 @router.get("/projects/{project_id}/chapters", response_model=list[LongNovelChapterResponse])

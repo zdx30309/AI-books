@@ -117,6 +117,7 @@ ZHOULI_OUTLINE_PROMPT = """
 
 要求：
 - 章节数尽量贴合项目目标章节数。
+- 每章 targetWords 必须统一使用项目输入里的 averageChapterTargetWords，不要让章节字数忽高忽低。
 - 每 3-5 章有一个小爆点，每 10-15 章有一个大爆点。
 - 中段必须有关系反转，后段必须揭开利益真相，结尾必须让家庭结构重新洗牌。
 - 每章至少推进一条 conflict line，并且必须有情绪钩子。
@@ -204,7 +205,7 @@ ZHOULI_CHAPTER_WRITE_PROMPT = """
 {common_rules}
 
 正文要求：
-- 中文，目标 3500-4500 字。
+- 中文，字数必须贴合章节上下文 currentPlanRecord.targetWords，允许上下浮动 8%，不要写成章节梗概，不要随意缩短。
 - 3-5 个生活场景，每个场景都要有具体事件，不要空谈情绪。
 - 冲突必须具体，至少推进一条 conflict line。
 - 至少产生一个不可逆家庭影响。

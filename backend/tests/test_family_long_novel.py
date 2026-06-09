@@ -20,7 +20,12 @@ from app.prompts.family_long_novel_prompts import (
 )
 from app.schemas.long_novel import LongNovelAssistRequest
 from app.services import family_long_novel
-from app.services.family_long_novel import _json_loads
+from app.services.family_long_novel import (
+    _chapter_target_words,
+    _chapter_write_max_output_tokens,
+    _json_loads,
+    _outline_max_output_tokens,
+)
 
 
 def test_family_long_novel_prompts_are_dedicated() -> None:
@@ -85,6 +90,29 @@ def test_long_novel_assist_is_short_explicit_openai_form_help(monkeypatch) -> No
     assert calls["max_output_tokens"] == 1200
     assert calls["reasoning_effort"] == "xhigh"
     assert calls["verbosity"] == "low"
+
+
+def test_outline_budget_scales_with_chapter_count() -> None:
+    project = LongNovelProject(premise="大嫂照顾婆婆多年", target_chapters=10)
+    assert _outline_max_output_tokens(project) == 14000
+
+    project.target_chapters = 50
+    assert _outline_max_output_tokens(project) == 32000
+
+
+def test_chapter_word_targets_are_uniform() -> None:
+    project = LongNovelProject(
+        premise="大嫂照顾婆婆多年",
+        target_words=80000,
+        target_chapters=10,
+    )
+    assert _chapter_target_words(project) == 8000
+    assert _chapter_write_max_output_tokens(project) == 32000
+
+    project.target_words = 200000
+    project.target_chapters = 50
+    assert _chapter_target_words(project) == 4000
+    assert _chapter_write_max_output_tokens(project) == 24000
 
 
 def test_json_loader_accepts_fenced_model_output() -> None:
