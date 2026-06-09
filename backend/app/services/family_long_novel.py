@@ -61,6 +61,28 @@ class FamilyLongNovelError(RuntimeError):
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9]+")
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_CONTEXT_PACK_PLAN_RULES = """
+Chapter Context Pack is the only source of continuity truth.
+- For chapter 2 and later, the plan must directly continue previousChapter.endingHook and previousChapter.last800Chars.
+- latestCharacterStates, familyRelations, objectStates, canonFacts, activeConflictLines and openContinuityIssues are hard constraints.
+- Each scene must show which conflict line or state changes it advances; do not invent events that are not supported by the pack.
+- Do not let a character know information outside their knowledge/secrets state.
+""".strip()
+_CONTEXT_PACK_WRITE_RULES = """
+Continuity is mandatory.
+- The opening of chapter 2 and later must visibly continue previousChapter.endingHook and previousChapter.last800Chars.
+- Use latestCharacterStates as the current state of every family member; if a person is not updated in this chapter, keep their prior goal, leverage, knowledge and secrets.
+- Use canonFacts and objectStates as immutable facts. Do not move objects, reveal secrets, resolve conflicts, or change relationships unless the current plan explicitly advances that change.
+- At least one activeConflictLines item must be advanced in a concrete family-interest event, and the ending must leave the next chapter a usable endingHook.
+- The writing must still be full-quality fiction, not a summary, outline, continuity report, or mechanical checklist.
+""".strip()
+_CONTEXT_PACK_STATE_RULES = """
+Extract durable state for the next chapter. If a person, object, fact, conflict line or knowledge boundary changed, it must be written in JSON.
+Also include "endingHook": a concise unresolved final beat that the next chapter must continue.
+""".strip()
+_CONTEXT_PACK_CHECK_RULES = """
+Use Chapter Context Pack as hard continuity evidence. Focus on whether this chapter continued previousChapter.endingHook/last800Chars, respected latestCharacterStates/objectStates/canonFacts, advanced activeConflictLines, and avoided knowledge leaks.
+""".strip()
 _FORBIDDEN_WORDS = (
     "重生",
     "系统",
@@ -727,7 +749,35 @@ def generate_family_novel_outline(
     return project
 
 
-def _latest_states(db: Session, project_id: UUID, chapter_number: int) -> list[dict[str, Any]]:
+def _clip_text(text: str | None, limit: int) -> str:
+    value = (text or "").strip()
+    return value if len(value) <= limit else value[-limit:]
+
+
+def _initial_character_state(member: LongNovelFamilyMember) -> dict[str, Any]:
+    return {
+        "memberName": member.name,
+        "chapterNumber": 0,
+        "sourceChapterNumber": 0,
+        "source": "bible",
+        "goal": member.private_desire or member.arc_start or "",
+        "emotion": member.public_image or "",
+        "grievanceLevel": 1,
+        "knowledge": [],
+        "secrets": [member.secret] if member.secret else [],
+        "currentLeverage": member.leverage or "",
+        "relationshipTensionDelta": member.relationship_map or {},
+        "raw": member.raw_json or {},
+    }
+
+
+def _latest_states(
+    db: Session,
+    project_id: UUID,
+    chapter_number: int,
+    *,
+    project: LongNovelProject | None = None,
+) -> list[dict[str, Any]]:
     rows = (
         db.query(LongNovelCharacterState)
         .filter(
@@ -747,14 +797,23 @@ def _latest_states(db: Session, project_id: UUID, chapter_number: int) -> list[d
             {
                 "memberName": row.member_name,
                 "chapterNumber": row.chapter_number,
+                "sourceChapterNumber": row.chapter_number,
+                "source": "state_extract",
                 "goal": row.goal,
                 "emotion": row.emotion,
                 "grievanceLevel": row.grievance_level,
                 "knowledge": row.knowledge,
                 "secrets": row.secrets,
                 "currentLeverage": row.current_leverage,
+                "relationshipTensionDelta": row.tension_with_others,
+                "raw": row.raw_json or {},
             }
         )
+    if project is not None:
+        for member in project.family_members:
+            if member.name and member.name not in seen:
+                seen.add(member.name)
+                result.append(_initial_character_state(member))
     return result
 
 
@@ -778,6 +837,7 @@ def _latest_object_states(db: Session, project_id: UUID, chapter_number: int) ->
             {
                 "objectName": row.object_name,
                 "chapterNumber": row.chapter_number,
+                "sourceChapterNumber": row.chapter_number,
                 "holder": row.holder,
                 "location": row.location,
                 "knownBy": row.known_by,
@@ -787,7 +847,282 @@ def _latest_object_states(db: Session, project_id: UUID, chapter_number: int) ->
     return result
 
 
-def _build_chapter_context(db: Session, project: LongNovelProject, chapter_number: int) -> dict[str, Any]:
+def _plan_payload(plan: LongNovelChapterPlan | None) -> dict[str, Any] | None:
+    if plan is None:
+        return None
+    return {
+        "chapterNumber": plan.chapter_number,
+        "volumeNumber": plan.volume_number,
+        "title": plan.title,
+        "targetWords": plan.target_words,
+        "chapterGoal": plan.chapter_goal,
+        "domesticConflict": plan.domestic_conflict,
+        "emotionalHook": plan.emotional_hook,
+        "requiredEvents": plan.required_events,
+        "characterArcMove": plan.character_arc_move,
+        "conflictLinesToAdvance": plan.conflict_lines_to_advance,
+        "forbiddenReveals": plan.forbidden_reveals,
+        "endingHook": plan.ending_hook,
+        "scenes": plan.scenes,
+        "raw": plan.raw_json or {},
+    }
+
+
+def _chapter_summary(chapter: LongNovelChapter | None) -> str:
+    if chapter is None:
+        return ""
+    return (chapter.summary or _clip_text(chapter.content, 240)).strip()
+
+
+def _raw_nested_text(raw: dict[str, Any] | None, *keys: str) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    for section in ("stateExtract", "chapterPlan", "raw", ""):
+        data: Any = raw
+        if section:
+            data = raw.get(section)
+        if isinstance(data, dict):
+            value = _text(data, *keys)
+            if value:
+                return value
+    return ""
+
+
+def _chapter_ending_hook(
+    db: Session,
+    project_id: UUID,
+    chapter_number: int,
+    chapter: LongNovelChapter | None = None,
+) -> str:
+    plan = (
+        db.query(LongNovelChapterPlan)
+        .filter(
+            LongNovelChapterPlan.project_id == project_id,
+            LongNovelChapterPlan.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    if plan:
+        hook = (plan.ending_hook or _raw_nested_text(plan.raw_json, "endingHook", "ending_hook")).strip()
+        if hook:
+            return hook
+    if chapter is None:
+        chapter = (
+            db.query(LongNovelChapter)
+            .filter(
+                LongNovelChapter.project_id == project_id,
+                LongNovelChapter.chapter_number == chapter_number,
+            )
+            .first()
+        )
+    summary = _chapter_summary(chapter)
+    if summary:
+        return summary[-180:]
+    return _clip_text(chapter.content if chapter else "", 240)
+
+
+def _conflict_latest_update(
+    db: Session,
+    project_id: UUID,
+    line: LongNovelConflictLine,
+) -> str:
+    chapter_number = line.last_escalated_chapter or line.introduced_chapter
+    if not chapter_number:
+        return (line.description or "").strip()
+    chapter = (
+        db.query(LongNovelChapter)
+        .filter(
+            LongNovelChapter.project_id == project_id,
+            LongNovelChapter.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    plan = (
+        db.query(LongNovelChapterPlan)
+        .filter(
+            LongNovelChapterPlan.project_id == project_id,
+            LongNovelChapterPlan.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    update = (plan.domestic_conflict if plan else "") or _chapter_summary(chapter) or line.description or ""
+    return f"第{chapter_number}章推进：{update}".strip()
+
+
+def _ensure_chapter_state_floor(
+    db: Session,
+    project: LongNovelProject,
+    chapter: LongNovelChapter,
+    *,
+    extracted: dict[str, Any] | None = None,
+) -> None:
+    summary = _chapter_summary(chapter)
+    if not summary:
+        summary = _clip_text(chapter.content, 240) or f"第{chapter.chapter_number}章已生成"
+        chapter.summary = summary
+        db.add(chapter)
+
+    plan = (
+        db.query(LongNovelChapterPlan)
+        .filter(
+            LongNovelChapterPlan.project_id == project.id,
+            LongNovelChapterPlan.chapter_number == chapter.chapter_number,
+        )
+        .first()
+    )
+    if plan is not None and extracted is not None:
+        ending_hook = _text(extracted, "endingHook", "ending_hook")
+        if ending_hook:
+            plan.ending_hook = ending_hook
+        plan.raw_json = {**(plan.raw_json or {}), "stateExtract": extracted}
+        db.add(plan)
+
+    has_fact = (
+        db.query(LongNovelCanonFact.id)
+        .filter(
+            LongNovelCanonFact.project_id == project.id,
+            LongNovelCanonFact.chapter_number == chapter.chapter_number,
+        )
+        .first()
+        is not None
+    )
+    if not has_fact:
+        db.add(
+            LongNovelCanonFact(
+                project_id=project.id,
+                chapter_number=chapter.chapter_number,
+                fact=summary,
+                fact_type="chapter_summary",
+                entities=[member.name for member in project.family_members if member.name][:6],
+                source=f"chapter:{chapter.chapter_number}:fallback",
+                confidence=0.8,
+            )
+        )
+
+    existing_members = {
+        row.member_name
+        for row in db.query(LongNovelCharacterState.member_name)
+        .filter(
+            LongNovelCharacterState.project_id == project.id,
+            LongNovelCharacterState.chapter_number == chapter.chapter_number,
+        )
+        .all()
+    }
+    previous_states = {
+        item["memberName"]: item
+        for item in _latest_states(db, project.id, chapter.chapter_number, project=project)
+        if item.get("memberName")
+    }
+    for member in project.family_members:
+        if not member.name or member.name in existing_members:
+            continue
+        previous = previous_states.get(member.name) or _initial_character_state(member)
+        db.add(
+            LongNovelCharacterState(
+                project_id=project.id,
+                chapter_number=chapter.chapter_number,
+                member_name=member.name,
+                goal=previous.get("goal") or member.private_desire or "",
+                emotion=previous.get("emotion") or "",
+                grievance_level=_int_value(previous.get("grievanceLevel"), 1),
+                tension_with_others=_as_dict(previous.get("relationshipTensionDelta")),
+                knowledge=_as_list(previous.get("knowledge")),
+                secrets=_as_list(previous.get("secrets")),
+                current_leverage=previous.get("currentLeverage") or member.leverage or "",
+                raw_json={
+                    "fallback": True,
+                    "carriedFromChapter": previous.get("sourceChapterNumber", previous.get("chapterNumber", 0)),
+                    "chapterSummary": summary,
+                },
+            )
+        )
+
+    active_lines = (
+        db.query(LongNovelConflictLine)
+        .filter(
+            LongNovelConflictLine.project_id == project.id,
+            LongNovelConflictLine.status.notin_(["resolved", "closed", "done"]),
+        )
+        .order_by(LongNovelConflictLine.importance.desc(), LongNovelConflictLine.id.asc())
+        .all()
+    )
+    if active_lines and not any(line.last_escalated_chapter == chapter.chapter_number for line in active_lines):
+        planned_keys = set(_as_list(plan.conflict_lines_to_advance if plan else []))
+        selected = next(
+            (
+                line
+                for line in active_lines
+                if line.conflict_key in planned_keys or line.name in planned_keys
+            ),
+            active_lines[0],
+        )
+        if selected.status == "open":
+            selected.status = "escalating"
+        selected.last_escalated_chapter = chapter.chapter_number
+        db.add(selected)
+
+
+def _context_terms(text: str | None) -> set[str]:
+    value = (text or "").strip()
+    terms: set[str] = set()
+    for match in re.finditer(r"[\u4e00-\u9fff]{2,8}", value):
+        chunk = match.group(0)
+        if len(chunk) <= 4:
+            terms.add(chunk)
+        else:
+            for size in (2, 3, 4):
+                for index in range(0, max(0, len(chunk) - size + 1)):
+                    terms.add(chunk[index : index + size])
+    terms.update(item.lower() for item in _ALNUM_RE.findall(value) if len(item) >= 3)
+    stop_terms = {"一个", "这个", "那个", "他们", "她们", "自己", "没有", "已经", "还是", "不是", "因为", "所以", "但是"}
+    return {item for item in terms if item not in stop_terms}
+
+
+def _has_context_overlap(source: str | None, target: str | None, *, minimum: int = 2) -> bool:
+    source_terms = _context_terms(source)
+    if not source_terms:
+        return True
+    target_terms = _context_terms(target)
+    return len(source_terms.intersection(target_terms)) >= min(minimum, max(1, len(source_terms)))
+
+
+def _active_conflict_payloads(
+    db: Session,
+    project_id: UUID,
+) -> list[dict[str, Any]]:
+    conflict_lines = (
+        db.query(LongNovelConflictLine)
+        .filter(LongNovelConflictLine.project_id == project_id)
+        .order_by(LongNovelConflictLine.importance.desc(), LongNovelConflictLine.id.asc())
+        .all()
+    )
+    result: list[dict[str, Any]] = []
+    for row in conflict_lines:
+        if row.status in {"resolved", "closed", "done"}:
+            continue
+        result.append(
+            {
+                "conflictKey": row.conflict_key,
+                "name": row.name,
+                "type": row.conflict_type,
+                "description": row.description,
+                "latestUpdate": _conflict_latest_update(db, project_id, row),
+                "status": row.status,
+                "introducedChapter": row.introduced_chapter,
+                "lastEscalatedChapter": row.last_escalated_chapter,
+                "plannedExplosionChapter": row.planned_explosion_chapter,
+                "plannedResolutionChapter": row.planned_resolution_chapter,
+                "importance": row.importance,
+            }
+        )
+    return result
+
+
+def _build_chapter_context_pack_for_project(
+    db: Session,
+    project: LongNovelProject,
+    chapter_number: int,
+) -> dict[str, Any]:
     plan = (
         db.query(LongNovelChapterPlan)
         .filter(
@@ -796,6 +1131,20 @@ def _build_chapter_context(db: Session, project: LongNovelProject, chapter_numbe
         )
         .first()
     )
+    previous_chapter = None
+    if chapter_number > 1:
+        previous_chapter = (
+            db.query(LongNovelChapter)
+            .filter(
+                LongNovelChapter.project_id == project.id,
+                LongNovelChapter.chapter_number == chapter_number - 1,
+                LongNovelChapter.status == LongNovelChapterStatus.COMPLETED,
+            )
+            .first()
+        )
+        if previous_chapter is not None:
+            _ensure_chapter_state_floor(db, project, previous_chapter)
+            db.flush()
     recent_chapters = (
         db.query(LongNovelChapter)
         .filter(
@@ -805,12 +1154,6 @@ def _build_chapter_context(db: Session, project: LongNovelProject, chapter_numbe
         )
         .order_by(LongNovelChapter.chapter_number.desc())
         .limit(2)
-        .all()
-    )
-    conflict_lines = (
-        db.query(LongNovelConflictLine)
-        .filter(LongNovelConflictLine.project_id == project.id)
-        .order_by(LongNovelConflictLine.importance.desc(), LongNovelConflictLine.id.asc())
         .all()
     )
     canon_facts = (
@@ -823,48 +1166,82 @@ def _build_chapter_context(db: Session, project: LongNovelProject, chapter_numbe
         .limit(80)
         .all()
     )
-    return {
+    family_relations = (
+        db.query(LongNovelFamilyRelation)
+        .filter(LongNovelFamilyRelation.project_id == project.id)
+        .order_by(LongNovelFamilyRelation.id.asc())
+        .all()
+    )
+    open_issues = (
+        db.query(LongNovelContinuityIssue)
+        .filter(
+            LongNovelContinuityIssue.project_id == project.id,
+            LongNovelContinuityIssue.chapter_number < chapter_number,
+            LongNovelContinuityIssue.status == "open",
+        )
+        .order_by(LongNovelContinuityIssue.chapter_number.desc(), LongNovelContinuityIssue.created_at.desc())
+        .limit(40)
+        .all()
+    )
+    latest_character_states = _latest_states(db, project.id, chapter_number, project=project)
+    latest_object_states = _latest_object_states(db, project.id, chapter_number)
+    active_conflicts = _active_conflict_payloads(db, project.id)
+    previous_payload = None
+    if previous_chapter is not None:
+        previous_payload = {
+            "chapterNumber": previous_chapter.chapter_number,
+            "title": previous_chapter.title,
+            "summary": _chapter_summary(previous_chapter),
+            "endingHook": _chapter_ending_hook(db, project.id, previous_chapter.chapter_number, previous_chapter),
+            "last800Chars": _clip_text(previous_chapter.content, 800),
+            "wordCount": previous_chapter.word_count,
+        }
+    recent_payload = [
+        {
+            "chapterNumber": row.chapter_number,
+            "title": row.title,
+            "summary": _chapter_summary(row),
+            "endingHook": _chapter_ending_hook(db, project.id, row.chapter_number, row),
+            "last300Chars": _clip_text(row.content, 300),
+            "wordCount": row.word_count,
+        }
+        for row in reversed(recent_chapters)
+    ]
+    context_pack = {
+        "contextPackVersion": 2,
         "project": _project_payload(project),
         "bible": project.bible.raw_json if project.bible else {},
         "chapterNumber": chapter_number,
         "currentPlan": plan.raw_json if plan else None,
-        "currentPlanRecord": {
-            "title": plan.title,
-            "targetWords": plan.target_words,
-            "chapterGoal": plan.chapter_goal,
-            "domesticConflict": plan.domestic_conflict,
-            "emotionalHook": plan.emotional_hook,
-            "conflictLinesToAdvance": plan.conflict_lines_to_advance,
-            "forbiddenReveals": plan.forbidden_reveals,
-            "endingHook": plan.ending_hook,
-            "scenes": plan.scenes,
-        }
-        if plan
-        else None,
+        "currentPlanRecord": _plan_payload(plan),
+        "currentChapterOutline": _plan_payload(plan),
+        "previousChapter": previous_payload,
+        "recentChapters": recent_payload,
         "recentChapterSummaries": [
             {
                 "chapterNumber": row.chapter_number,
                 "title": row.title,
-                "summary": row.summary,
+                "summary": _chapter_summary(row),
             }
             for row in reversed(recent_chapters)
         ],
-        "activeConflictLines": [
+        "familyRelations": [
             {
-                "conflictKey": row.conflict_key,
-                "name": row.name,
-                "type": row.conflict_type,
-                "description": row.description,
-                "status": row.status,
-                "lastEscalatedChapter": row.last_escalated_chapter,
-                "plannedExplosionChapter": row.planned_explosion_chapter,
-                "plannedResolutionChapter": row.planned_resolution_chapter,
-                "importance": row.importance,
+                "fromMember": row.from_member,
+                "toMember": row.to_member,
+                "relationType": row.relation_type,
+                "surfaceRelation": row.surface_relation,
+                "hiddenConflict": row.hidden_conflict,
+                "interestConflict": row.interest_conflict,
+                "emotionalDebt": row.emotional_debt,
+                "currentTensionLevel": row.current_tension_level,
             }
-            for row in conflict_lines
+            for row in family_relations
         ],
-        "latestCharacterStates": _latest_states(db, project.id, chapter_number),
-        "latestObjectStates": _latest_object_states(db, project.id, chapter_number),
+        "activeConflictLines": active_conflicts,
+        "latestCharacterStates": latest_character_states,
+        "latestObjectStates": latest_object_states,
+        "objectStates": latest_object_states,
         "canonFacts": [
             {
                 "chapterNumber": row.chapter_number,
@@ -875,7 +1252,95 @@ def _build_chapter_context(db: Session, project: LongNovelProject, chapter_numbe
             }
             for row in canon_facts
         ],
+        "openContinuityIssues": [
+            {
+                "chapterNumber": row.chapter_number,
+                "severity": row.severity,
+                "issueType": row.issue_type,
+                "description": row.description,
+                "evidence": row.evidence,
+                "suggestedFix": row.suggested_fix,
+            }
+            for row in open_issues
+        ],
+        "mustContinueFrom": {
+            "previousEndingHook": previous_payload["endingHook"] if previous_payload else "",
+            "previousChapterSummary": previous_payload["summary"] if previous_payload else "",
+            "previousLast800Chars": previous_payload["last800Chars"] if previous_payload else "",
+            "requiredCarryOver": [
+                item
+                for item in [
+                    previous_payload["endingHook"] if previous_payload else "",
+                    *[line.get("latestUpdate") or line.get("description") for line in active_conflicts[:6]],
+                    *[
+                        f"{item.get('objectName')}：{item.get('holder') or item.get('location') or item.get('status')}"
+                        for item in latest_object_states[:8]
+                    ],
+                ]
+                if item
+            ],
+            "strictRules": [
+                "下一章必须承接上一章 endingHook 和 last800Chars 的即时情境。",
+                "人物目标、知情范围、把柄、物品持有人必须以 latestCharacterStates/objectStates 为准。",
+                "至少推进一条 activeConflictLines，不得把已解决矛盾当新矛盾。",
+                "canonFacts 是硬事实，不得改写、遗忘或让角色提前知道未公开信息。",
+            ],
+        },
     }
+    if chapter_number > 1:
+        logger.info(
+            "long novel context pack project=%s chapter=%s previous=%s states=%s conflicts=%s facts=%s objects=%s",
+            project.id,
+            chapter_number,
+            bool(previous_payload),
+            len(latest_character_states),
+            len(active_conflicts),
+            len(context_pack["canonFacts"]),
+            len(latest_object_states),
+        )
+    return context_pack
+
+
+def validate_chapter_context_pack(context_pack: dict[str, Any], chapter_number: int | None = None) -> None:
+    number = _int_value(context_pack.get("chapterNumber"), chapter_number or 0)
+    if number <= 1:
+        return
+    missing: list[str] = []
+    previous = _as_dict(context_pack.get("previousChapter"))
+    if not previous:
+        missing.append("previous completed chapter")
+    if not _text(previous, "summary"):
+        missing.append("previous chapter summary")
+    if not _text(previous, "endingHook"):
+        missing.append("previous chapter ending hook")
+    states = [item for item in _as_list(context_pack.get("latestCharacterStates")) if isinstance(item, dict)]
+    if not any(_int_value(item.get("sourceChapterNumber", item.get("chapterNumber")), 0) > 0 for item in states):
+        missing.append("persisted character state")
+    if not _as_list(context_pack.get("activeConflictLines")):
+        missing.append("active conflict lines")
+    if not _as_list(context_pack.get("canonFacts")):
+        missing.append("canon facts")
+    if missing:
+        raise FamilyLongNovelError(
+            f"Chapter {number} context pack is incomplete before generation: {', '.join(missing)}"
+        )
+
+
+def build_chapter_context_pack(
+    db: Session,
+    project_id: UUID,
+    chapter_number: int,
+    user: User | None = None,
+) -> dict[str, Any]:
+    project = _get_project(db, project_id, user)
+    _ensure_bible(db, project, user)
+    context_pack = _build_chapter_context_pack_for_project(db, project, chapter_number)
+    validate_chapter_context_pack(context_pack, chapter_number)
+    return context_pack
+
+
+def _build_chapter_context(db: Session, project: LongNovelProject, chapter_number: int) -> dict[str, Any]:
+    return _build_chapter_context_pack_for_project(db, project, chapter_number)
 
 
 def generate_family_chapter_plan(
@@ -883,6 +1348,8 @@ def generate_family_chapter_plan(
     project_id: UUID,
     chapter_number: int,
     user: User | None = None,
+    *,
+    context_pack: dict[str, Any] | None = None,
 ) -> LongNovelChapterPlan:
     project = _get_project(db, project_id, user)
     _ensure_bible(db, project, user)
@@ -924,6 +1391,9 @@ def generate_family_chapter_plan(
         db.commit()
         db.refresh(plan)
 
+    context = context_pack or _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
+
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
     db.add(project)
@@ -932,11 +1402,11 @@ def generate_family_chapter_plan(
     db.refresh(project)
     db.refresh(plan)
 
-    context = _build_chapter_context(db, project, chapter_number)
     prompt = render_prompt(
         ZHOULI_CHAPTER_PLAN_PROMPT,
         chapter_context=_json_dumps(context),
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}"
     try:
         data = _call_json(
             db,
@@ -956,7 +1426,10 @@ def generate_family_chapter_plan(
     plan.emotional_hook = _text(data, "emotionalHook", "emotional_hook", default=plan.emotional_hook or "")
     plan.scenes = _as_list(_get(data, "scenes"))
     plan.required_events = _as_list(_get(data, "mustInclude", "requiredEvents")) or plan.required_events
+    plan.character_arc_move = _as_list(_get(data, "characterArcMove", "character_arc_move")) or plan.character_arc_move
+    plan.conflict_lines_to_advance = _as_list(_get(data, "conflictLinesToAdvance", "conflict_lines_to_advance")) or plan.conflict_lines_to_advance
     plan.forbidden_reveals = _as_list(_get(data, "mustNotReveal", "forbiddenReveals")) or plan.forbidden_reveals
+    plan.ending_hook = _text(data, "endingHook", "ending_hook", default=plan.ending_hook or "")
     plan.raw_json = {**(plan.raw_json or {}), "chapterPlan": data}
     plan.status = LongNovelChapterStatus.PLANNED
     project.status = LongNovelProjectStatus.ACTIVE
@@ -993,7 +1466,14 @@ def generate_family_chapter(
         .first()
     )
     if plan is None or not plan.scenes:
-        plan = generate_family_chapter_plan(db, project.id, chapter_number, user)
+        initial_context = _build_chapter_context(db, project, chapter_number)
+        validate_chapter_context_pack(initial_context, chapter_number)
+        plan = generate_family_chapter_plan(db, project.id, chapter_number, user, context_pack=initial_context)
+        db.refresh(project)
+        db.refresh(plan)
+
+    context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
 
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
@@ -1001,11 +1481,11 @@ def generate_family_chapter(
     db.add(plan)
     db.commit()
 
-    context = _build_chapter_context(db, project, chapter_number)
     prompt = render_prompt(
         ZHOULI_CHAPTER_WRITE_PROMPT,
         chapter_context=_json_dumps(context),
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}"
     try:
         content = _call_text(
             db,
@@ -1081,11 +1561,13 @@ def extract_family_chapter_state(
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
     context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
         chapter_context=_json_dumps(context),
         chapter_text=chapter.content,
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_STATE_RULES}"
     data = _call_json(
         db,
         project_id=project.id,
@@ -1199,6 +1681,8 @@ def extract_family_chapter_state(
             line.status = {"advanced": "escalating"}.get(update_type, update_type)
             line.last_escalated_chapter = chapter_number
         db.add(line)
+    db.flush()
+    _ensure_chapter_state_floor(db, project, chapter, extracted=data)
     db.commit()
     return data
 
@@ -1207,9 +1691,60 @@ def _rule_continuity_issues(
     db: Session,
     project: LongNovelProject,
     chapter: LongNovelChapter,
+    context_pack: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     content = chapter.content or ""
+    context_pack = context_pack or {}
+    previous = _as_dict(context_pack.get("previousChapter"))
+    if chapter.chapter_number > 1 and previous:
+        opening = content[:1800]
+        previous_hook = _text(previous, "endingHook")
+        if previous_hook and not _has_context_overlap(previous_hook, opening):
+            issues.append(
+                {
+                    "severity": "high",
+                    "issueType": "previous_hook_not_continued",
+                    "description": "This chapter does not visibly continue the previous chapter ending hook.",
+                    "evidence": previous_hook[:240],
+                    "suggestedFix": "Open this chapter from the unresolved situation left by the previous ending hook.",
+                }
+            )
+    active_conflicts = [
+        item for item in _as_list(context_pack.get("activeConflictLines")) if isinstance(item, dict)
+    ]
+    if active_conflicts:
+        current_plan = _as_dict(context_pack.get("currentPlanRecord"))
+        planned_conflict = " ".join(
+            [
+                _text(current_plan, "domesticConflict"),
+                " ".join(str(item) for item in _as_list(current_plan.get("conflictLinesToAdvance"))),
+            ]
+        )
+        conflict_hit = False
+        for line in active_conflicts:
+            probes = [
+                _text(line, "conflictKey"),
+                _text(line, "name"),
+                _text(line, "latestUpdate"),
+                _text(line, "description"),
+            ]
+            if any(probe and (probe in content or probe in planned_conflict) for probe in probes[:2]):
+                conflict_hit = True
+                break
+            if any(_has_context_overlap(probe, content, minimum=2) for probe in probes[2:]):
+                conflict_hit = True
+                break
+        if not conflict_hit:
+            issues.append(
+                {
+                    "severity": "high",
+                    "issueType": "active_conflict_not_advanced",
+                    "description": "This chapter does not clearly advance any active conflict line from the context pack.",
+                    "evidence": ", ".join(_text(item, "name") or _text(item, "conflictKey") for item in active_conflicts[:5]),
+                    "suggestedFix": "Use at least one active conflict line as the concrete family-interest event of this chapter.",
+                }
+            )
     for word in _FORBIDDEN_WORDS:
         if word in content:
             issues.append(
@@ -1278,13 +1813,15 @@ def check_family_continuity(
         LongNovelContinuityIssue.project_id == project.id,
         LongNovelContinuityIssue.chapter_number == chapter_number,
     ).delete()
-    rule_issues = _rule_continuity_issues(db, project, chapter)
     context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
+    rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
         ZHOULI_CONTINUITY_CHECK_PROMPT,
         chapter_context=_json_dumps(context),
         chapter_text=chapter.content,
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
     data = _call_json(
         db,
         project_id=project.id,
@@ -1333,11 +1870,13 @@ def quality_check_family_chapter(
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法质检")
     context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
     prompt = render_prompt(
         ZHOULI_QUALITY_CHECK_PROMPT,
         chapter_context=_json_dumps(context),
         chapter_text=chapter.content,
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
     return _call_json(
         db,
         project_id=project.id,
@@ -1376,6 +1915,7 @@ def repair_family_chapter(
     if not issues:
         return chapter
     context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
     issues_payload = [
         {
             "severity": item.severity,
@@ -1392,6 +1932,7 @@ def repair_family_chapter(
         issues_json=_json_dumps(issues_payload),
         chapter_text=chapter.content,
     )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}"
     repaired = _call_text(
         db,
         project_id=project.id,

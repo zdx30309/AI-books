@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -21,10 +23,12 @@ from app.prompts.family_long_novel_prompts import (
 from app.schemas.long_novel import LongNovelAssistRequest
 from app.services import family_long_novel
 from app.services.family_long_novel import (
+    FamilyLongNovelError,
     _chapter_target_words,
     _chapter_write_max_output_tokens,
     _json_loads,
     _outline_max_output_tokens,
+    validate_chapter_context_pack,
 )
 
 
@@ -65,6 +69,7 @@ def test_family_long_novel_routes_are_registered() -> None:
     assert "/api/v1/long-novel/family/projects" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/bible" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/generate-batch" in paths
+    assert "/api/v1/long-novel/family/projects/{project_id}/chapters/{chapter_number}/context-pack" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/export" in paths
 
 
@@ -119,3 +124,36 @@ def test_json_loader_accepts_fenced_model_output() -> None:
     parsed = _json_loads('```json\n{"title": "账要算清", "chapters": []}\n```')
     assert parsed["title"] == "账要算清"
     assert parsed["chapters"] == []
+
+
+def test_context_pack_validation_blocks_missing_previous_state() -> None:
+    with pytest.raises(FamilyLongNovelError) as exc:
+        validate_chapter_context_pack(
+            {
+                "chapterNumber": 2,
+                "previousChapter": {"summary": "", "endingHook": ""},
+                "latestCharacterStates": [],
+                "activeConflictLines": [],
+                "canonFacts": [],
+            },
+            2,
+        )
+
+    message = str(exc.value)
+    assert "previous chapter summary" in message
+    assert "persisted character state" in message
+    assert "active conflict lines" in message
+    assert "canon facts" in message
+
+
+def test_context_pack_validation_accepts_durable_previous_state() -> None:
+    validate_chapter_context_pack(
+        {
+            "chapterNumber": 2,
+            "previousChapter": {"summary": "Chapter one summary", "endingHook": "Doorbell rings"},
+            "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 1}],
+            "activeConflictLines": [{"conflictKey": "house", "name": "House dispute"}],
+            "canonFacts": [{"chapterNumber": 1, "fact": "The house certificate is missing"}],
+        },
+        2,
+    )

@@ -29,6 +29,7 @@ from app.schemas.long_novel import (
 from app.services.family_long_novel import (
     FamilyLongNovelError,
     assist_long_novel_field,
+    build_chapter_context_pack,
     check_family_continuity,
     create_family_long_novel_project,
     export_family_novel,
@@ -187,6 +188,21 @@ def generate_chapter(
 ) -> LongNovelChapterResponse:
     try:
         return generate_family_chapter(db, project_id, chapter_number, user)
+    except FamilyLongNovelError as exc:
+        _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
+
+
+@router.get("/projects/{project_id}/chapters/{chapter_number}/context-pack")
+def get_chapter_context_pack(
+    project_id: UUID,
+    chapter_number: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    try:
+        return build_chapter_context_pack(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
     except Exception as exc:
