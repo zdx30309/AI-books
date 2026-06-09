@@ -467,10 +467,50 @@ def sync_family_project_progress(db: Session, project: LongNovelProject) -> Long
     )
     total_words = int(total_words or 0)
     current_chapter = int(current_chapter or 0)
-    if project.total_words == total_words and project.current_chapter == current_chapter:
+    next_status = project.status
+    if project.status == LongNovelProjectStatus.GENERATING:
+        has_started_log = (
+            db.query(LongNovelGenerationLog.id)
+            .filter(
+                LongNovelGenerationLog.project_id == project.id,
+                LongNovelGenerationLog.status == "started",
+            )
+            .first()
+            is not None
+        )
+        has_generating_plan = (
+            db.query(LongNovelChapterPlan.id)
+            .filter(
+                LongNovelChapterPlan.project_id == project.id,
+                LongNovelChapterPlan.status == LongNovelChapterStatus.GENERATING,
+            )
+            .first()
+            is not None
+        )
+        has_generating_chapter = (
+            db.query(LongNovelChapter.id)
+            .filter(
+                LongNovelChapter.project_id == project.id,
+                LongNovelChapter.status == LongNovelChapterStatus.GENERATING,
+            )
+            .first()
+            is not None
+        )
+        if not has_started_log and not has_generating_plan and not has_generating_chapter:
+            next_status = (
+                LongNovelProjectStatus.COMPLETED
+                if current_chapter >= project.target_chapters and project.target_chapters > 0
+                else LongNovelProjectStatus.ACTIVE
+            )
+    if (
+        project.total_words == total_words
+        and project.current_chapter == current_chapter
+        and project.status == next_status
+    ):
         return project
     project.total_words = total_words
     project.current_chapter = current_chapter
+    project.status = next_status
     db.add(project)
     db.commit()
     db.refresh(project)
