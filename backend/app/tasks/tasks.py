@@ -32,7 +32,13 @@ from app.services.qingdou import (
     QingdouDurationExceededError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
 )
-from app.services.video_sources import canonical_source_url, detect_video_source_platform, platform_label, source_url_candidates
+from app.services.video_sources import (
+    canonical_source_url,
+    detect_video_source_platform,
+    platform_label,
+    resolve_bilibili_source_url,
+    source_url_candidates,
+)
 from app.services.wechat_channels import WeChatChannelsError, extract_wechat_channels_text
 from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
@@ -352,6 +358,8 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     poll_timeout = int(config.get("poll_timeout_seconds") or settings.QINGDOU_POLL_TIMEOUT_SECONDS)
 
     parser_url = source_canonical_url or source_url
+    if source_platform == "bilibili":
+        parser_url = resolve_bilibili_source_url(parser_url)
     if settings.YOUTUBE_TRANSCRIPT_ENABLED and (source_platform == "youtube" or is_youtube_url(parser_url)):
         try:
             logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)

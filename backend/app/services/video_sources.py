@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qs, urlparse
 
+import httpx
+
 _YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -49,6 +51,7 @@ _BILIBILI_HOSTS = {
 }
 _URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", re.IGNORECASE)
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_BILIBILI_VIDEO_ID_RE = re.compile(r"^(?:BV[A-Za-z0-9]+|av\d+)$", re.IGNORECASE)
 _URL_TRAILING_CHARS = " \t\r\n\"'.,;:!?)]}>，。；：！？、）】》"
 
 _PLATFORM_LABELS = {
@@ -124,6 +127,61 @@ def _wechat_channels_id(source_url: str) -> str:
     return ""
 
 
+def _bilibili_video_url(source_url: str) -> str:
+    try:
+        parsed = urlparse(extract_source_url(source_url))
+    except Exception:
+        return ""
+    host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+    if not _is_host(host, _BILIBILI_HOSTS, ".bilibili.com"):
+        return ""
+    parts = [part for part in (parsed.path or "").split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "video" and index + 1 < len(parts):
+            video_id = parts[index + 1].strip()
+            if _BILIBILI_VIDEO_ID_RE.match(video_id):
+                return f"https://www.bilibili.com/video/{video_id}"
+    for part in parts:
+        if _BILIBILI_VIDEO_ID_RE.match(part):
+            return f"https://www.bilibili.com/video/{part}"
+    return ""
+
+
+def resolve_bilibili_source_url(source_url: str, *, timeout_seconds: float = 5.0) -> str:
+    """Expand b23.tv short links before handing the URL to Qingdou."""
+    url = extract_source_url(source_url)
+    if not url or url.startswith("manual://"):
+        return url
+    direct = _bilibili_video_url(url)
+    if direct:
+        return direct
+    if _hostname(url) != "b23.tv":
+        return url
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+        )
+    }
+    timeout = httpx.Timeout(timeout_seconds, connect=timeout_seconds)
+    try:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
+            for method in ("HEAD", "GET"):
+                for follow_redirects in (False, True):
+                    try:
+                        response = client.request(method, url, follow_redirects=follow_redirects)
+                    except Exception:
+                        continue
+                    for candidate in (response.headers.get("location") or "", str(response.url), response.text[:2000]):
+                        expanded = _bilibili_video_url(candidate)
+                        if expanded:
+                            return expanded
+    except Exception:
+        pass
+    return url
+
+
 def canonical_source_url(source_url: str) -> str:
     """Return a parser-friendly URL while preserving non-video/manual inputs."""
     url = extract_source_url(source_url)
@@ -138,6 +196,10 @@ def canonical_source_url(source_url: str) -> str:
         sph_id = _wechat_channels_id(url)
         if sph_id:
             return f"https://weixin.qq.com/sph/{sph_id}"
+    if _is_host(host, _BILIBILI_HOSTS, ".bilibili.com"):
+        video_url = _bilibili_video_url(url)
+        if video_url:
+            return video_url
     return url
 
 
@@ -167,6 +229,10 @@ def source_url_candidates(source_url: str, platform: str | None = None) -> list[
         if sph_id:
             add(f"https://weixin.qq.com/sph/{sph_id}")
             add(f"https://channels.weixin.qq.com/platform/post/{sph_id}")
+    elif detected == "bilibili":
+        video_url = _bilibili_video_url(canonical or original)
+        if video_url:
+            return [video_url]
 
     extracted = extract_source_url(original)
     add(extracted)
