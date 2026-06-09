@@ -469,15 +469,13 @@ def sync_family_project_progress(db: Session, project: LongNovelProject) -> Long
     current_chapter = int(current_chapter or 0)
     next_status = project.status
     if project.status == LongNovelProjectStatus.GENERATING:
-        has_started_log = (
-            db.query(LongNovelGenerationLog.id)
-            .filter(
-                LongNovelGenerationLog.project_id == project.id,
-                LongNovelGenerationLog.status == "started",
-            )
+        latest_log = (
+            db.query(LongNovelGenerationLog)
+            .filter(LongNovelGenerationLog.project_id == project.id)
+            .order_by(LongNovelGenerationLog.created_at.desc())
             .first()
-            is not None
         )
+        has_started_log = latest_log is not None and latest_log.status == "started"
         has_generating_plan = (
             db.query(LongNovelChapterPlan.id)
             .filter(

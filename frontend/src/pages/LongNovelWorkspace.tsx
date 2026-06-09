@@ -143,11 +143,12 @@ function logStartedAt(log: LongNovelGenerationLog | undefined) {
 
 function inferServerBusy(detail: LongNovelProjectDetailResponse) {
   const now = Date.now();
-  const activeLog = detail.logs.find((log) => {
-    if (log.status !== "started") return false;
-    const startedAt = logStartedAt(log);
-    return startedAt == null || now - startedAt < serverBusyLogTtlMs;
-  });
+  const latestLog = detail.logs[0];
+  const latestLogStartedAt = logStartedAt(latestLog);
+  const activeLog =
+    latestLog?.status === "started" && (latestLogStartedAt == null || now - latestLogStartedAt < serverBusyLogTtlMs)
+      ? latestLog
+      : undefined;
   const generatingPlan = detail.chapter_plans.find((plan) => plan.status === "generating");
   const generatingChapter = detail.chapters.find((chapter) => chapter.status === "generating");
   const projectGenerating = detail.project.status === "generating";
