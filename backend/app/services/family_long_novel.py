@@ -1537,6 +1537,225 @@ def validate_chapter_context_pack(context_pack: dict[str, Any], chapter_number: 
         )
 
 
+def _clip_prompt_value(value: Any, limit: int) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        return text if len(text) <= limit else text[:limit]
+    if isinstance(value, list):
+        return [_clip_prompt_value(item, limit) for item in value]
+    if isinstance(value, dict):
+        return {key: _clip_prompt_value(item, limit) for key, item in value.items()}
+    return value
+
+
+def _compact_project_for_prompt(project_payload: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(project_payload)
+    source_text = str(compact.pop("sourceText", "") or "").strip()
+    if source_text:
+        compact["sourceTextPreview"] = source_text[:800]
+    return compact
+
+
+def _compact_bible_for_prompt(bible: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(bible, dict):
+        return {}
+    keys = [
+        "title",
+        "genre",
+        "theme",
+        "corePromise",
+        "emotionalHook",
+        "familyBackground",
+        "mainConflict",
+        "endingDirection",
+        "worldRules",
+        "styleRules",
+        "forbiddenRules",
+    ]
+    compact = {key: _clip_prompt_value(bible.get(key), 700) for key in keys if bible.get(key)}
+    members = [item for item in _as_list(bible.get("familyMembers")) if isinstance(item, dict)]
+    if members:
+        compact["familyMembers"] = [
+            {
+                "name": _text(item, "name"),
+                "familyRole": _text(item, "familyRole", "family_role"),
+                "privateDesire": _clip_prompt_value(_text(item, "privateDesire", "private_desire"), 260),
+                "grievance": _clip_prompt_value(_text(item, "grievance"), 260),
+                "leverage": _clip_prompt_value(_text(item, "leverage"), 220),
+                "secret": _clip_prompt_value(_text(item, "secret"), 220),
+            }
+            for item in members[:20]
+        ]
+    return compact
+
+
+def _compact_plan_for_prompt(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(plan, dict):
+        return None
+    scenes = [item for item in _as_list(plan.get("scenes")) if isinstance(item, dict)]
+    return {
+        "chapterNumber": plan.get("chapterNumber"),
+        "volumeNumber": plan.get("volumeNumber"),
+        "title": _clip_prompt_value(plan.get("title"), 80),
+        "targetWords": plan.get("targetWords"),
+        "chapterGoal": _clip_prompt_value(plan.get("chapterGoal"), 500),
+        "domesticConflict": _clip_prompt_value(plan.get("domesticConflict"), 500),
+        "emotionalHook": _clip_prompt_value(plan.get("emotionalHook"), 420),
+        "requiredEvents": _clip_prompt_value(_as_list(plan.get("requiredEvents"))[:8], 260),
+        "characterArcMove": _clip_prompt_value(_as_list(plan.get("characterArcMove"))[:8], 260),
+        "conflictLinesToAdvance": _clip_prompt_value(_as_list(plan.get("conflictLinesToAdvance"))[:8], 160),
+        "forbiddenReveals": _clip_prompt_value(_as_list(plan.get("forbiddenReveals"))[:12], 180),
+        "endingHook": _clip_prompt_value(plan.get("endingHook"), 360),
+        "scenes": [
+            {
+                "sceneNumber": item.get("sceneNumber"),
+                "sceneGoal": _clip_prompt_value(item.get("sceneGoal"), 260),
+                "location": _clip_prompt_value(item.get("location"), 80),
+                "characters": _clip_prompt_value(_as_list(item.get("characters"))[:8], 80),
+                "domesticConflict": _clip_prompt_value(item.get("domesticConflict"), 260),
+                "informationChange": _clip_prompt_value(item.get("informationChange"), 220),
+                "emotionalTurn": _clip_prompt_value(item.get("emotionalTurn"), 220),
+                "endingBeat": _clip_prompt_value(item.get("endingBeat"), 220),
+            }
+            for item in scenes[:6]
+        ],
+    }
+
+
+def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> dict[str, Any]:
+    previous = _as_dict(context_pack.get("previousChapter"))
+    current_plan = _compact_plan_for_prompt(
+        _as_dict(context_pack.get("currentPlanRecord") or context_pack.get("currentChapterOutline"))
+    )
+    recent_chapters = [item for item in _as_list(context_pack.get("recentChapters")) if isinstance(item, dict)]
+    conflicts = [item for item in _as_list(context_pack.get("activeConflictLines")) if isinstance(item, dict)]
+    states = [item for item in _as_list(context_pack.get("latestCharacterStates")) if isinstance(item, dict)]
+    objects = [item for item in _as_list(context_pack.get("objectStates") or context_pack.get("latestObjectStates")) if isinstance(item, dict)]
+    facts = [item for item in _as_list(context_pack.get("canonFacts")) if isinstance(item, dict)]
+    relations = [item for item in _as_list(context_pack.get("familyRelations")) if isinstance(item, dict)]
+    issues = [item for item in _as_list(context_pack.get("openContinuityIssues")) if isinstance(item, dict)]
+    must_continue = _as_dict(context_pack.get("mustContinueFrom"))
+    return {
+        "contextPackVersion": context_pack.get("contextPackVersion"),
+        "promptContextMode": "compact",
+        "purpose": purpose,
+        "chapterNumber": context_pack.get("chapterNumber"),
+        "project": _compact_project_for_prompt(_as_dict(context_pack.get("project"))),
+        "bible": _compact_bible_for_prompt(_as_dict(context_pack.get("bible"))),
+        "currentPlanRecord": current_plan,
+        "previousChapter": {
+            "chapterNumber": previous.get("chapterNumber"),
+            "title": _clip_prompt_value(previous.get("title"), 80),
+            "summary": _clip_prompt_value(previous.get("summary"), 700),
+            "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
+            "last800Chars": _clip_text(previous.get("last800Chars"), 800),
+            "wordCount": previous.get("wordCount"),
+        }
+        if previous
+        else None,
+        "recentChapters": [
+            {
+                "chapterNumber": item.get("chapterNumber"),
+                "title": _clip_prompt_value(item.get("title"), 80),
+                "summary": _clip_prompt_value(item.get("summary"), 500),
+                "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
+            }
+            for item in recent_chapters[-2:]
+        ],
+        "familyRelations": [
+            {
+                "fromMember": item.get("fromMember"),
+                "toMember": item.get("toMember"),
+                "relationType": item.get("relationType"),
+                "surfaceRelation": _clip_prompt_value(item.get("surfaceRelation"), 180),
+                "hiddenConflict": _clip_prompt_value(item.get("hiddenConflict"), 220),
+                "interestConflict": _clip_prompt_value(item.get("interestConflict"), 220),
+                "currentTensionLevel": item.get("currentTensionLevel"),
+            }
+            for item in relations[:30]
+        ],
+        "activeConflictLines": [
+            {
+                "conflictKey": item.get("conflictKey"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "description": _clip_prompt_value(item.get("description"), 360),
+                "latestUpdate": _clip_prompt_value(item.get("latestUpdate"), 360),
+                "status": item.get("status"),
+                "lastEscalatedChapter": item.get("lastEscalatedChapter"),
+                "plannedExplosionChapter": item.get("plannedExplosionChapter"),
+                "plannedResolutionChapter": item.get("plannedResolutionChapter"),
+                "importance": item.get("importance"),
+            }
+            for item in conflicts[:14]
+        ],
+        "latestCharacterStates": [
+            {
+                "memberName": item.get("memberName"),
+                "sourceChapterNumber": item.get("sourceChapterNumber", item.get("chapterNumber")),
+                "goal": _clip_prompt_value(item.get("goal"), 240),
+                "emotion": _clip_prompt_value(item.get("emotion"), 180),
+                "grievanceLevel": item.get("grievanceLevel"),
+                "knowledge": _clip_prompt_value(_as_list(item.get("knowledge"))[:10], 180),
+                "secrets": _clip_prompt_value(_as_list(item.get("secrets"))[:8], 180),
+                "currentLeverage": _clip_prompt_value(item.get("currentLeverage"), 220),
+                "relationshipTensionDelta": _clip_prompt_value(item.get("relationshipTensionDelta"), 160),
+            }
+            for item in states[:30]
+        ],
+        "objectStates": [
+            {
+                "objectName": item.get("objectName"),
+                "sourceChapterNumber": item.get("sourceChapterNumber", item.get("chapterNumber")),
+                "holder": item.get("holder"),
+                "location": item.get("location"),
+                "knownBy": _as_list(item.get("knownBy"))[:8],
+                "status": _clip_prompt_value(item.get("status"), 160),
+            }
+            for item in objects[:20]
+        ],
+        "canonFacts": [
+            {
+                "chapterNumber": item.get("chapterNumber"),
+                "fact": _clip_prompt_value(item.get("fact"), 260),
+                "factType": item.get("factType"),
+                "entities": _as_list(item.get("entities"))[:8],
+                "confidence": item.get("confidence"),
+            }
+            for item in facts[:50]
+        ],
+        "openContinuityIssues": [
+            {
+                "chapterNumber": item.get("chapterNumber"),
+                "severity": item.get("severity"),
+                "issueType": item.get("issueType"),
+                "description": _clip_prompt_value(item.get("description"), 260),
+                "suggestedFix": _clip_prompt_value(item.get("suggestedFix"), 220),
+            }
+            for item in issues[:12]
+        ],
+        "mustContinueFrom": {
+            "previousEndingHook": _clip_prompt_value(must_continue.get("previousEndingHook"), 420),
+            "previousChapterSummary": _clip_prompt_value(must_continue.get("previousChapterSummary"), 700),
+            "previousLast800Chars": _clip_text(must_continue.get("previousLast800Chars"), 800),
+            "requiredCarryOver": _clip_prompt_value(_as_list(must_continue.get("requiredCarryOver"))[:14], 260),
+            "strictRules": _as_list(must_continue.get("strictRules")),
+        },
+        "omittedForCostControl": {
+            "fullCurrentPlanRaw": bool(context_pack.get("currentPlan")),
+            "recentChapterCount": len(recent_chapters),
+            "canonFactCount": len(facts),
+            "conflictLineCount": len(conflicts),
+            "characterStateCount": len(states),
+            "objectStateCount": len(objects),
+        },
+    }
+
+
+def _context_prompt_json(context_pack: dict[str, Any], purpose: str) -> str:
+    return _json_dumps(_compact_context_for_prompt(context_pack, purpose))
+
+
 def build_chapter_context_pack(
     db: Session,
     project_id: UUID,
@@ -1615,7 +1834,7 @@ def generate_family_chapter_plan(
 
     prompt = render_prompt(
         ZHOULI_CHAPTER_PLAN_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "chapter_plan"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}"
     try:
@@ -1702,7 +1921,7 @@ def generate_family_chapter(
 
     prompt = render_prompt(
         ZHOULI_CHAPTER_WRITE_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "chapter_write"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}"
     try:
@@ -1820,7 +2039,7 @@ def extract_family_chapter_state(
     validate_chapter_context_pack(context, chapter_number)
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "state_extract"),
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_STATE_RULES}"
@@ -2083,7 +2302,7 @@ def check_family_continuity(
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
         ZHOULI_CONTINUITY_CHECK_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "continuity_check"),
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
@@ -2147,7 +2366,7 @@ def quality_check_family_chapter(
     validate_chapter_context_pack(context, chapter_number)
     prompt = render_prompt(
         ZHOULI_QUALITY_CHECK_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "quality_check"),
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
@@ -2216,7 +2435,7 @@ def repair_family_chapter(
     ]
     prompt = render_prompt(
         ZHOULI_REPAIR_PROMPT,
-        chapter_context=_json_dumps(context),
+        chapter_context=_context_prompt_json(context, "repair"),
         issues_json=_json_dumps(issues_payload),
         chapter_text=chapter.content,
     )

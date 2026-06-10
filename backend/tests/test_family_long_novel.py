@@ -27,6 +27,7 @@ from app.services.family_long_novel import (
     MalformedModelJsonError,
     _chapter_target_words,
     _chapter_write_max_output_tokens,
+    _compact_context_for_prompt,
     _json_loads,
     _outline_max_output_tokens,
     validate_chapter_context_pack,
@@ -168,3 +169,64 @@ def test_context_pack_validation_accepts_durable_previous_state() -> None:
         },
         2,
     )
+
+
+def test_prompt_context_compaction_preserves_quality_fields_without_raw_payloads() -> None:
+    full_context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 5,
+        "project": {
+            "premise": "family premise",
+            "sourceText": "x" * 5000,
+            "targetWords": 80000,
+            "targetChapters": 10,
+        },
+        "bible": {
+            "theme": "theme",
+            "corePromise": "promise",
+            "familyMembers": [{"name": "A", "familyRole": "heroine", "raw": {"drop": True}}],
+            "rawLargeSection": "drop me",
+        },
+        "currentPlanRecord": {
+            "chapterNumber": 5,
+            "targetWords": 8000,
+            "chapterGoal": "goal" * 200,
+            "domesticConflict": "conflict",
+            "raw": {"drop": True},
+            "scenes": [{"sceneNumber": 1, "sceneGoal": "scene", "raw": {"drop": True}}],
+        },
+        "currentPlan": {"raw": "drop me"},
+        "previousChapter": {
+            "chapterNumber": 4,
+            "summary": "summary",
+            "endingHook": "hook",
+            "last800Chars": "z" * 900,
+        },
+        "recentChapters": [{"chapterNumber": 4, "summary": "summary", "endingHook": "hook"}],
+        "familyRelations": [{"fromMember": "A", "toMember": "B", "hiddenConflict": "hidden"}],
+        "activeConflictLines": [{"conflictKey": "c1", "name": "conflict", "latestUpdate": "update"}],
+        "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 4, "knowledge": ["knows"]}],
+        "objectStates": [{"objectName": "paper", "sourceChapterNumber": 4, "holder": "A"}],
+        "canonFacts": [{"chapterNumber": 4, "fact": "fact"}],
+        "openContinuityIssues": [{"chapterNumber": 3, "description": "issue"}],
+        "mustContinueFrom": {
+            "previousEndingHook": "hook",
+            "previousChapterSummary": "summary",
+            "previousLast800Chars": "z" * 900,
+            "requiredCarryOver": ["carry"],
+            "strictRules": ["rule"],
+        },
+    }
+
+    compact = _compact_context_for_prompt(full_context, "chapter_write")
+
+    assert compact["promptContextMode"] == "compact"
+    assert "sourceText" not in compact["project"]
+    assert len(compact["project"]["sourceTextPreview"]) == 800
+    assert "currentPlan" not in compact
+    assert "raw" not in compact["currentPlanRecord"]
+    assert compact["previousChapter"]["endingHook"] == "hook"
+    assert len(compact["previousChapter"]["last800Chars"]) == 800
+    assert compact["activeConflictLines"][0]["latestUpdate"] == "update"
+    assert compact["latestCharacterStates"][0]["memberName"] == "A"
+    assert compact["canonFacts"][0]["fact"] == "fact"
