@@ -84,6 +84,13 @@ Updated: 2026-06-12
   - final `reference_pattern_cards`: 98,581
   - final `reference_mechanism_profiles`: 10
   - remaining below-100-card books are source-limited: `妖刀记` has 13 sections and 17 cards; `百炼成仙` has 32 sections and 36 cards
+- GitHub/ECS delivery completed:
+  - verified implementation commit pushed to `origin/codex/video-source-classical-regenerate`: `ce45cae1858b53c12acad83f1a071bd54762cd31`
+  - Beijing ECS deployed under `/opt/video-plan`; previous directory was preserved under `/opt/video-plan-backups/video-plan-20260612030545`
+  - ECS `docker compose up -d --build` succeeded for `backend`, `worker`, `beat`, and `web`
+  - ECS deploy verification recorded artifact `ce45cae1858b53c12acad83f1a071bd54762cd31` before this report-only documentation update
+  - ECS raw corpus is present under `/opt/video-plan/.local/novel_ref_corpus/raw`
+  - ECS raw corpus was manifest-verified against local files: 57 files, 296,481,452 bytes, 0 size mismatches, 0 sha256 mismatches
 
 ## Current Limits
 
@@ -96,7 +103,7 @@ Updated: 2026-06-12
 - The full 100-book corpus is not completely downloaded: 53 seed rows are matched to local downloads, 46 have no exact/high-confidence SoNovel candidate, and 1 source download currently times out. Per user instruction on 2026-06-12, unavailable/failed novels are skipped for deployment.
 - Raw reference artifacts are stored under `.local/` paths and ignored by git.
 - No DB migration framework was found; models are registered for the repo's existing `Base.metadata.create_all()` startup pattern.
-- End-to-end browser/API execution still needs a running backend/database and an authenticated user.
+- Public ECS web/API health checks passed after deployment.
 
 ## Remaining
 
@@ -105,7 +112,6 @@ Updated: 2026-06-12
 - Add broader API/service automated tests once a dedicated test database setup is confirmed.
 - Add first-class migrations if the repo adopts Alembic or another migration framework; current implementation follows the repo's `create_all()` pattern.
 - Expand docx export for Bible if a Word export dependency is selected; current API maps docx requests to markdown content.
-- Push to GitHub and deploy to Beijing ECS after artifact sync is reverified.
 
 ## Commands Run
 
@@ -132,6 +138,13 @@ Updated: 2026-06-12
 - `python -m pytest backend/tests/test_epic_context.py backend/tests/test_epic_reference.py -q`
 - repeated `python -u scripts/epic_ingest_reference_books.py --reingest-indexed ...` runs to finish full-section slicing for all imported books
 - SoNovel WebUI probes against `http://127.0.0.1:7765`
+- `git add`, `git commit`, and `git push -u origin codex/video-source-classical-regenerate`
+- `git archive --format=zip --output=.local/deploy_artifacts/video-plan-ce45cae.zip HEAD`
+- `Compress-Archive -Path .local\novel_ref_corpus\raw -DestinationPath .local\deploy_artifacts\novel_ref_corpus_raw.zip -Force`
+- SFTP upload of code/corpus archives to Beijing ECS using the root deployment config in `deployment.local.json`
+- ECS backup/deploy: move existing `/opt/video-plan` to `/opt/video-plan-backups/video-plan-20260612030545`, restore `.env`, extract code/corpus, and run `docker compose up -d --build`
+- ECS verification: deploy version, raw corpus file count/bytes/hash manifest, `docker compose ps`, backend `/health`, router import, DB counts, and `/api/v1/system/health`
+- Public verification: `http://101.200.48.238/` and `http://101.200.48.238/api/v1/system/health`
 
 ## Test Results
 
@@ -145,3 +158,13 @@ Updated: 2026-06-12
 - Live provider probes passed for DeepSeek V4 Pro and GPT-5.5. DB-backed provider log probe passed after retry.
 - Current DB reference import/ingest passed after full-section slicing: 57 books, 98,581 PatternCards, 10 mechanism profiles.
 - SoNovel manifest completed all 100 rows; 53 seed rows have matched downloaded files, 46 rows have no exact/high-confidence candidate, and 1 row has source timeout failure.
+- GitHub push passed for branch `codex/video-source-classical-regenerate`.
+- Beijing ECS deploy passed:
+  - `docker compose ps` reported `backend`, `worker`, `beat`, and `web` up after rebuild.
+  - backend `/health` returned `{"status":"ok","app":"GravitySingularity","version":"1.0.0"}`.
+  - route import on ECS printed router count `116`.
+  - DB counts from ECS printed `books 57`, `cards 98581`, `profiles 10`.
+  - system health returned `celery_alive=true`.
+  - public homepage returned HTTP 200.
+  - public system health returned HTTP 200 with `celery_alive=true`.
+- ECS corpus manifest verification passed: 57 files, 296,481,452 bytes, 0 missing files, 0 size mismatches, 0 sha256 mismatches.
