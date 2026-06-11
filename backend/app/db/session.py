@@ -46,6 +46,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_owner_id_column()
+    _ensure_epic_schema_columns()
 
 
 def _ensure_owner_id_column() -> None:
@@ -63,3 +64,18 @@ def _ensure_owner_id_column() -> None:
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_owner_id ON tasks(owner_id)"))
+
+
+def _ensure_epic_schema_columns() -> None:
+    """Keep early Epic Novel installs compatible with newly added audit fields."""
+    inspector = inspect(engine)
+    if inspector.has_table("reference_download_tasks"):
+        columns = {c["name"] for c in inspector.get_columns("reference_download_tasks")}
+        if "generated_card_count" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE reference_download_tasks "
+                        "ADD COLUMN IF NOT EXISTS generated_card_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                )

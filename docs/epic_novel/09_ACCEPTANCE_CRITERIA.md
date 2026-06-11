@@ -1,0 +1,24 @@
+# Acceptance Criteria
+
+- [ ] Existing short-form generation still works.
+- [ ] EpicNovelProject can be created.
+- [ ] Reference raw storage can be configured.
+- [ ] Reference books can be imported.
+- [ ] ReferencePatternCards can be generated.
+- [ ] AutoRetrievalPlanner can retrieve pattern cards.
+- [ ] WorldBible, WorldAtlas, BureaucracySystem, PowerSystem, Ensemble Cast, Global Spine can be generated.
+- [ ] EpicMasterBible can be created.
+- [ ] Bible Manifest and Bible sections can be generated.
+- [ ] Bible Coverage CI works.
+- [ ] Bible export markdown/json works.
+- [ ] Volume Contracts and Chapter Contracts can be generated.
+- [ ] Chapter Context Pack can be viewed.
+- [ ] First 3 chapters can be executed.
+- [ ] Chapter 2/3 read previous state, Bible sections, WorldAtlas, bureaucracy, and RAG inspiration pack.
+- [ ] draftContent and repairedContent never write to canon.
+- [ ] acceptedContent writes to state ledgers.
+- [ ] planned-vs-actual diff works.
+- [ ] acceptance gate works.
+- [ ] RetrievalTrace and AcceptanceReport are recorded.
+- [ ] chapters generate strictly serially.
+- [ ] frontend workspace and dashboard exist.

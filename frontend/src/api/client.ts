@@ -21,6 +21,17 @@ import type {
   CoverJobItemBatchRetryRequest,
   CoverJobResponse,
   DataAnalysisResponse,
+  EpicBatchGenerationRequest,
+  EpicBatchGenerationResponse,
+  EpicChapter,
+  EpicChapterContract,
+  EpicDashboardResponse,
+  EpicNovelCreateRequest,
+  EpicNovelProject,
+  EpicNovelProjectDetailResponse,
+  EpicNovelProjectListResponse,
+  EpicReferenceBook,
+  EpicReferenceMechanismProfile,
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
@@ -547,6 +558,134 @@ export const api = {
   downloadLongNovelExport: async (id: string, format: "markdown" | "txt" | "json" = "markdown") => {
     const { blob, filename } = await download(
       `/long-novel/family/projects/${id}/export?format=${format}`,
+    );
+    saveBlob(blob, filename);
+  },
+
+  createEpicNovelProject: (body: EpicNovelCreateRequest) =>
+    request<EpicNovelProject>("/epic-novel/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listEpicNovelProjects: (page = 1, pageSize = 50) =>
+    request<EpicNovelProjectListResponse>(
+      `/epic-novel/projects?page=${page}&page_size=${pageSize}`,
+    ),
+  getEpicNovelProject: (id: string) =>
+    request<EpicNovelProjectDetailResponse>(`/epic-novel/projects/${id}`),
+  getEpicNovelDashboard: (id: string) =>
+    request<EpicDashboardResponse>(`/epic-novel/projects/${id}/dashboard`),
+  detectEpicReferenceDownloader: () =>
+    request<Record<string, unknown>>("/epic-novel/reference-downloader/detect", {
+      method: "POST",
+    }),
+  scanEpicReferenceDownloads: () =>
+    request<Array<Record<string, unknown>>>("/epic-novel/reference-downloader/scan-downloads", {
+      method: "POST",
+    }),
+  importEpicDownloadedReferences: () =>
+    request<EpicReferenceBook[]>("/epic-novel/reference-downloader/import-downloaded", {
+      method: "POST",
+    }),
+  ingestEpicReferenceBook: (body: { book_id?: string; source_path?: string }) =>
+    request<Record<string, unknown>>("/epic-novel/reference-books/ingest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  buildEpicReferenceProfile: () =>
+    request<EpicReferenceMechanismProfile>("/epic-novel/reference-mechanism-profile/build", {
+      method: "POST",
+    }),
+  getEpicReferenceProfile: () =>
+    request<EpicReferenceMechanismProfile | null>("/epic-novel/reference-mechanism-profile"),
+  runEpicWorldviewTournament: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/worldview-tournament`, {
+      method: "POST",
+    }),
+  generateEpicWorldBible: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/world-bible`, {
+      method: "POST",
+    }),
+  generateEpicWorldAtlas: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/world-atlas`, {
+      method: "POST",
+    }),
+  forgeEpicPowerSystem: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/power-system`, {
+      method: "POST",
+    }),
+  generateEpicEnsembleCast: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/ensemble-cast`, {
+      method: "POST",
+    }),
+  generateEpicGlobalSpine: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/global-spine`, {
+      method: "POST",
+    }),
+  generateEpicBibleManifest: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/bible/manifest`, {
+      method: "POST",
+    }),
+  runEpicBibleCoverageCi: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/bible/coverage-ci`, {
+      method: "POST",
+    }),
+  repairEpicBibleCoverage: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/bible/repair`, {
+      method: "POST",
+    }),
+  generateEpicVolumeContracts: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/volume-contracts`, {
+      method: "POST",
+    }),
+  generateEpicArcLedgers: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/arc-ledgers`, {
+      method: "POST",
+    }),
+  runEpicOutlineCi: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/outline-ci`, {
+      method: "POST",
+    }),
+  repairEpicOutline: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/outline-repair`, {
+      method: "POST",
+    }),
+  compileEpicChapterContracts: (id: string, volumeNumber: number) =>
+    request<EpicChapterContract[]>(
+      `/epic-novel/projects/${id}/volumes/${volumeNumber}/compile-chapters`,
+      { method: "POST" },
+    ),
+  executeEpicChapter: (id: string, chapterNumber: number) =>
+    request<EpicChapter>(`/epic-novel/projects/${id}/chapters/${chapterNumber}/execute`, {
+      method: "POST",
+    }),
+  checkEpicChapter: (id: string, chapterNumber: number) =>
+    request<Array<Record<string, unknown>>>(
+      `/epic-novel/projects/${id}/chapters/${chapterNumber}/check`,
+      { method: "POST" },
+    ),
+  repairEpicChapter: (id: string, chapterNumber: number) =>
+    request<EpicChapter>(`/epic-novel/projects/${id}/chapters/${chapterNumber}/repair`, {
+      method: "POST",
+    }),
+  generateEpicVolume: (id: string, volumeNumber: number) =>
+    request<EpicChapter[]>(`/epic-novel/projects/${id}/volumes/${volumeNumber}/generate`, {
+      method: "POST",
+    }),
+  generateEpicBatch: (id: string, body: EpicBatchGenerationRequest) =>
+    request<EpicBatchGenerationResponse>(`/epic-novel/projects/${id}/generate-batch`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  downloadEpicBibleExport: async (id: string, format: "markdown" | "json" = "markdown") => {
+    const { blob, filename } = await download(
+      `/epic-novel/projects/${id}/bible/export?format=${format}`,
+    );
+    saveBlob(blob, filename);
+  },
+  downloadEpicNovelExport: async (id: string, format: "markdown" | "txt" | "json" = "markdown") => {
+    const { blob, filename } = await download(
+      `/epic-novel/projects/${id}/export?format=${format}`,
     );
     saveBlob(blob, filename);
   },

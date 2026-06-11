@@ -12,6 +12,7 @@ import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { WeReadTool } from "./pages/WeReadTool";
 import { DataAnalysis } from "./pages/DataAnalysis";
+import { EpicNovelWorkspace } from "./pages/EpicNovelWorkspace";
 import { LongNovelWorkspace } from "./pages/LongNovelWorkspace";
 import { LONGFORM_VARIANT_CATEGORY_IDS } from "./constants/categories";
 
@@ -119,6 +120,26 @@ export default function App() {
             <ProtectedRoute>
               <AppShell>
                 <LongNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/epic-novel"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <EpicNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/epic-novel/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <EpicNovelWorkspace />
               </AppShell>
             </ProtectedRoute>
           }

@@ -214,6 +214,45 @@ class Settings(BaseSettings):
     LONG_NOVEL_MAX_PROJECT_COST: float = 0.0
     LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT: int = 1
 
+    # --- Epic Novel Engine ---
+    EPIC_EDITOR_MODEL_PROVIDER: str = ""
+    EPIC_EDITOR_MODEL_NAME: str = ""
+    EPIC_AUTHOR_MODEL_PROVIDER: str = ""
+    EPIC_AUTHOR_MODEL_NAME: str = ""
+    EPIC_CHEAP_MODEL_PROVIDER: str = ""
+    EPIC_CHEAP_MODEL_NAME: str = ""
+    EPIC_MAX_PROJECT_COST: float = 0.0
+    EPIC_MAX_CHAPTER_REPAIR_COUNT: int = 1
+    EPIC_ENABLE_EDITOR_REVIEW: bool = True
+    EPIC_ENABLE_REFERENCE_RAG: bool = True
+    EPIC_ENABLE_WORLD_ATLAS: bool = True
+    EPIC_ENABLE_MEGA_BIBLE: bool = True
+    EPIC_ENABLE_REFERENCE_PROFILE: bool = True
+    EPIC_USE_EXISTING_WRITER_FOR_DRAFTS: bool = True
+    EPIC_CHAPTER_WRITER_MAX_OUTPUT_TOKENS: int = 0
+    EPIC_CONTEXT_RECENT_CHAPTER_LIMIT: int = 0
+    EPIC_CONTEXT_BIBLE_SECTION_LIMIT: int = 0
+    EPIC_CONTEXT_STATE_LIMIT: int = 0
+    EPIC_CONTEXT_REFERENCE_CARD_LIMIT: int = 0
+    EPIC_PROFILE_SUMMARY_ITEM_LIMIT: int = 0
+    EPIC_REFERENCE_INGEST_SECTION_LIMIT: int = 0
+    EPIC_REFERENCE_SECTION_CHARS: int = 5000
+    EPIC_CONTEXT_WINDOW_TOKENS: int = 0
+    EPIC_CONTEXT_PROMPT_BUDGET_RATIO: float = 0.75
+    EPIC_CONTINUATION_DONE_MARKER: str = "[[EPIC_CHAPTER_DONE]]"
+    EPIC_CONTINUATION_MAX_CHUNKS: int = 8
+    REFERENCE_RAW_STORAGE: str = "local"
+    REFERENCE_RAW_PATH: str = ".local/novel_ref_corpus/raw"
+    REFERENCE_PROCESSED_PATH: str = ".local/novel_ref_corpus/processed"
+    REFERENCE_DOWNLOAD_PATH: str = ".local/novel_ref_corpus/downloads"
+    EPIC_EXPORT_PATH: str = ".local/epic_novel_exports"
+    EPIC_RUN_ARTIFACT_PATH: str = ".local/epic_novel_runs"
+    REFERENCE_DOWNLOADER_PROVIDER: str = "sonovel"
+    SONOVEL_HOME: str = r"C:\Users\15050\Desktop\SoNovel"
+    SONOVEL_DOWNLOAD_PATH: str = r"C:\Users\15050\Desktop\SoNovel\downloads"
+    SONOVEL_OUTPUT_FORMAT: str = "epub"
+    SONOVEL_WEB_BASE_URL: str = "http://127.0.0.1:7765"
+
     # --- 5000字章节墙 (业务硬性指标) ---
     CHAPTER_TARGET_WORDS: int = 5000
     CHAPTER_MIN_WORDS: int = 4500

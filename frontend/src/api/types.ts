@@ -600,3 +600,232 @@ export interface LongNovelBatchResponse {
   failed: Array<{ chapter_number: number; error: string }>;
   skipped: number[];
 }
+
+export interface EpicNovelCreateRequest {
+  title: string;
+  premise: string;
+  genre?: string;
+  core_pleasures?: string[];
+  target_words?: number;
+  target_volumes?: number;
+  target_chapters?: number;
+  bible_target_words?: number;
+  reference_booklist_path?: string | null;
+  sonovel_home?: string | null;
+  sonovel_download_path?: string | null;
+  reference_raw_path?: string | null;
+  generation_mode?: "cheap" | "standard" | "high_quality";
+  style?: string | null;
+  forbidden_rules?: string | null;
+}
+
+export interface EpicNovelProject {
+  id: string;
+  owner_id: string | null;
+  title: string;
+  genre: string;
+  premise: string;
+  target_words: number;
+  target_volumes: number;
+  target_chapters: number;
+  bible_target_words: number;
+  style: string | null;
+  forbidden_rules: string | null;
+  status: string;
+  current_volume: number;
+  current_chapter: number;
+  total_words: number;
+  generation_mode: string;
+  editor_model: string | null;
+  author_model: string | null;
+  cheap_model: string | null;
+  reference_profile_id: string | null;
+  reference_booklist_path: string | null;
+  sonovel_home: string | null;
+  sonovel_download_path: string | null;
+  reference_raw_path: string | null;
+  raw_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicNovelProjectListResponse {
+  total: number;
+  items: EpicNovelProject[];
+}
+
+export interface EpicChapterContract {
+  id: string;
+  project_id: string;
+  volume_number: number;
+  chapter_number: number;
+  title: string;
+  target_words: number;
+  chapter_goal: string | null;
+  plot_function: string | null;
+  global_spine_function: string | null;
+  world_atlas_function: string | null;
+  bureaucracy_function: string | null;
+  local_arc_function: string | null;
+  core_pleasure: string | null;
+  reference_pattern_cards_used: unknown[];
+  must_execute: unknown[];
+  must_not_reveal: unknown[];
+  ending_hook: string | null;
+  status: string;
+  raw_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicChapter {
+  id: string;
+  project_id: string;
+  volume_number: number;
+  chapter_number: number;
+  title: string;
+  draft_content: string | null;
+  repaired_content: string | null;
+  accepted_content: string | null;
+  summary: string | null;
+  ending_hook: string | null;
+  word_count: number;
+  status: string;
+  version: number;
+  repair_count: number;
+  raw_model_output: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicAcceptanceReport {
+  id: string;
+  project_id: string;
+  chapter_number: number;
+  outline_execution_score: number;
+  character_arc_score: number;
+  power_legality_score: number;
+  foreshadow_score: number;
+  pleasure_score: number;
+  continuity_score: number;
+  anti_cliche_score: number;
+  overall_status: string;
+  issues_json: unknown[];
+  created_at: string;
+}
+
+export interface EpicGenerationLog {
+  id: string;
+  project_id: string | null;
+  action: string;
+  provider: string | null;
+  model: string | null;
+  bible_id: string | null;
+  section_key: string | null;
+  volume_number: number | null;
+  chapter_number: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost: number;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface EpicReferenceBook {
+  id: string;
+  booklist_item_id: string | null;
+  download_task_id: string | null;
+  title: string;
+  author: string | null;
+  genre: string | null;
+  tier: number;
+  category: string;
+  source_path: string;
+  storage_type: string;
+  file_hash: string;
+  language: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicReferenceMechanismProfile {
+  id: string;
+  project_id: string | null;
+  corpus_id: string | null;
+  profile_name: string;
+  source_book_count: number;
+  source_card_count: number;
+  genre: string | null;
+  tier_weights: Record<string, unknown>;
+  core_pleasure_mechanisms: unknown[];
+  case_structure_patterns: unknown[];
+  court_power_patterns: unknown[];
+  bureaucracy_conflict_patterns: unknown[];
+  heroine_agency_patterns: unknown[];
+  character_arc_patterns: unknown[];
+  foreshadow_patterns: unknown[];
+  power_progression_patterns: unknown[];
+  longform_pacing_patterns: unknown[];
+  anti_cliche_rules: unknown[];
+  common_pitfalls: unknown[];
+  originality_guidance: unknown[];
+  raw_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicNovelProjectDetailResponse {
+  project: EpicNovelProject;
+  world_bible: Record<string, unknown> | null;
+  world_atlas: Record<string, unknown> | null;
+  power_system: Record<string, unknown> | null;
+  master_bible: Record<string, unknown> | null;
+  bible_sections: Array<Record<string, unknown>>;
+  volume_contracts: Array<Record<string, unknown>>;
+  chapter_contracts: EpicChapterContract[];
+  chapters: EpicChapter[];
+  acceptance_reports: EpicAcceptanceReport[];
+  retrieval_traces: Array<Record<string, unknown>>;
+  logs: EpicGenerationLog[];
+}
+
+export interface EpicDashboardResponse {
+  project_id: string;
+  current_words: number;
+  completed_chapters: number;
+  completed_volumes: number;
+  bible_coverage_score: number;
+  outline_execution_rate: number;
+  world_atlas_usage_rate: number;
+  bureaucracy_consistency_issues: number;
+  power_violations: number;
+  character_arc_gaps: number;
+  heroine_appendage_risk: number;
+  a_tier_disappearance_warnings: number;
+  unpaid_foreshadows: number;
+  pleasure_gap_warnings: number;
+  side_quest_warnings: number;
+  continuity_issues: number;
+  anti_cliche_issues: number;
+  storage_state_errors: number;
+  reference_safety_warnings: number;
+  reference_overfit_warnings: number;
+  download_import_status: Record<string, number>;
+  generated_pattern_card_count: number;
+  repair_count: number;
+  cost_estimate: number;
+}
+
+export interface EpicBatchGenerationRequest {
+  from_chapter: number;
+  to_chapter: number;
+}
+
+export interface EpicBatchGenerationResponse {
+  project_id: string;
+  generated: number[];
+  failed: Array<{ chapter_number?: number; error: string }>;
+  skipped: number[];
+}
