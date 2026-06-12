@@ -24,6 +24,8 @@ import type {
   EpicNovelCreateRequest,
   EpicNovelProject,
   EpicNovelProjectDetailResponse,
+  EpicReferenceExtractionControl,
+  EpicReferenceExtractionCostEstimate,
 } from "@/api/types";
 
 type TabId = "foundation" | "reference" | "chapters" | "qa" | "logs";
@@ -346,16 +348,22 @@ function ProjectDetail({ id }: { id: string }) {
   const [batchFrom, setBatchFrom] = useState("1");
   const [batchTo, setBatchTo] = useState("3");
   const [scanRows, setScanRows] = useState<Array<Record<string, unknown>>>([]);
+  const [referenceCost, setReferenceCost] = useState<EpicReferenceExtractionCostEstimate | null>(null);
+  const [referenceControl, setReferenceControl] = useState<EpicReferenceExtractionControl | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [projectRes, dashboardRes] = await Promise.all([
+      const [projectRes, dashboardRes, costRes, controlRes] = await Promise.all([
         api.getEpicNovelProject(id),
         api.getEpicNovelDashboard(id),
+        api.getEpicReferenceExtractionCostEstimate(),
+        api.getEpicReferenceExtractionControl(),
       ]);
       setDetail(projectRes);
       setDashboard(dashboardRes);
+      setReferenceCost(costRes);
+      setReferenceControl(controlRes);
       const next = nextChapterNumber(projectRes);
       setBatchFrom(String(next));
       setBatchTo(String(Math.min(projectRes.project.target_chapters, next + 2)));
@@ -580,6 +588,24 @@ function ProjectDetail({ id }: { id: string }) {
                 icon={Database}
                 onClick={() => void runAction("profile", () => api.buildEpicReferenceProfile(), "Reference profile ready")}
               />
+              <ActionButton
+                label="Pause extraction"
+                busy={busy === "reference-pause"}
+                icon={AlertTriangle}
+                onClick={() => void runAction("reference-pause", () => api.setEpicReferenceExtractionControl("paused"), "Reference extraction paused")}
+              />
+              <ActionButton
+                label="Resume extraction"
+                busy={busy === "reference-resume"}
+                icon={Play}
+                onClick={() => void runAction("reference-resume", () => api.setEpicReferenceExtractionControl("running"), "Reference extraction resumed")}
+              />
+              <ActionButton
+                label="Stop extraction"
+                busy={busy === "reference-stop"}
+                icon={ShieldCheck}
+                onClick={() => void runAction("reference-stop", () => api.setEpicReferenceExtractionControl("stopped"), "Reference extraction stopped")}
+              />
             </div>
             <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
               <table className="w-full text-left text-sm">
@@ -610,6 +636,9 @@ function ProjectDetail({ id }: { id: string }) {
 
           <div className="space-y-3">
             <StatCard label="Pattern Cards" value={String(dashboard?.generated_pattern_card_count ?? 0)} icon={Database} />
+            <StatCard label="Extraction State" value={referenceControl?.state ?? "-"} icon={ShieldCheck} />
+            <StatCard label="Estimated Batches" value={String(referenceCost?.estimatedBatches ?? 0)} icon={Layers3} />
+            <StatCard label="Estimated Tokens" value={formatNumber(referenceCost?.estimatedPromptTokens ?? 0)} icon={ScrollText} />
             <StatCard label="Reference Warnings" value={String(dashboard?.reference_safety_warnings ?? 0)} icon={AlertTriangle} />
             <StatCard label="Overfit Warnings" value={String(dashboard?.reference_overfit_warnings ?? 0)} icon={AlertTriangle} />
           </div>

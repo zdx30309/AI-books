@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.models import EpicGenerationLog
 
 
-EpicModelRole = Literal["editor", "author", "cheap"]
+EpicModelRole = Literal["editor", "author", "cheap", "reference"]
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,12 @@ def resolve_model(role: EpicModelRole) -> EpicModelSelection:
     elif role == "author":
         provider = settings.EPIC_AUTHOR_MODEL_PROVIDER or "deepseek"
         model = settings.EPIC_AUTHOR_MODEL_NAME or settings.LONG_NOVEL_DEFAULT_MODEL or settings.DEEPSEEK_MODEL
-    else:
+    elif role == "cheap":
         provider = settings.EPIC_CHEAP_MODEL_PROVIDER or "deepseek"
         model = settings.EPIC_CHEAP_MODEL_NAME or settings.LONG_NOVEL_CHEAP_MODEL or settings.DEEPSEEK_MODEL
+    else:
+        provider = settings.EPIC_REFERENCE_MODEL_PROVIDER or "deepseek"
+        model = settings.EPIC_REFERENCE_MODEL_NAME or "deepseek-v4-pro"
     return EpicModelSelection(role=role, provider=provider, model=model)
 
 
@@ -140,6 +143,15 @@ def log_epic_generation(
     return log
 
 
+def _release_connection_before_model_call(db: Session) -> None:
+    try:
+        if db.in_transaction():
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def call_epic_model(
     db: Session,
     *,
@@ -156,6 +168,7 @@ def call_epic_model(
 ) -> str:
     selection = resolve_model(role)
     provider = (selection.provider or "").strip().lower()
+    _release_connection_before_model_call(db)
     try:
         if provider in {"openai", "gpt", "chatgpt"} or provider.startswith("openai"):
             completion = _call_existing_writer(prompt, max_output_tokens=max_output_tokens)
@@ -179,6 +192,7 @@ def call_epic_model(
                 status="error",
                 error=str(exc),
             )
+            db.commit()
         except Exception:
             db.rollback()
             raise
@@ -199,6 +213,7 @@ def call_epic_model(
             completion=completion,
             status="success",
         )
+        db.commit()
         return completion
     except Exception as exc:
         db.rollback()

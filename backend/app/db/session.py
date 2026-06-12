@@ -2,9 +2,11 @@
 Gravity Singularity - 数据库连接 / 会话 / Base
 被 FastAPI (sync get_db 依赖) 和 Celery worker (with SessionLocal()) 共用。
 """
+from time import sleep
 from typing import Generator
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.core.config import settings
@@ -15,8 +17,15 @@ engine_kwargs = {
     "pool_size": max(1, int(settings.DATABASE_POOL_SIZE or 30)),
     "max_overflow": max(0, int(settings.DATABASE_MAX_OVERFLOW or 20)),
     "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT or 120)),
+    "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS or 300)),
+    "pool_use_lifo": True,
     "future": True,
 }
+
+if settings.DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg2://")):
+    engine_kwargs["connect_args"] = {
+        "connect_timeout": max(1, int(settings.DATABASE_CONNECT_TIMEOUT or 15)),
+    }
 
 engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
 
@@ -44,9 +53,27 @@ def init_db() -> None:
     """开发环境快速建表；生产请用 Alembic 迁移。"""
     from app import models  # noqa: F401  确保所有模型类被注册到 metadata
 
-    Base.metadata.create_all(bind=engine)
+    _run_startup_schema_sync()
     _ensure_owner_id_column()
     _ensure_epic_schema_columns()
+
+
+def _run_startup_schema_sync() -> None:
+    last_error: OperationalError | None = None
+    for attempt in range(1, 4):
+        try:
+            with engine.begin() as conn:
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('video_plan_init_db_schema_sync'))"))
+                Base.metadata.create_all(bind=conn)
+            return
+        except OperationalError as exc:
+            last_error = exc
+            if attempt >= 3:
+                raise
+            sleep(attempt * 1.5)
+    if last_error is not None:
+        raise last_error
 
 
 def _ensure_owner_id_column() -> None:
@@ -79,3 +106,47 @@ def _ensure_epic_schema_columns() -> None:
                         "ADD COLUMN IF NOT EXISTS generated_card_count INTEGER NOT NULL DEFAULT 0"
                     )
                 )
+    if inspector.has_table("reference_pattern_cards"):
+        columns = {c["name"] for c in inspector.get_columns("reference_pattern_cards")}
+        ddl: list[str] = []
+        if "source_section_ids" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS source_section_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "source_card_ids" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS source_card_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "evidence_count" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS evidence_count INTEGER NOT NULL DEFAULT 1")
+        if "raw_text_included" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS raw_text_included BOOLEAN NOT NULL DEFAULT FALSE")
+        if "extraction_model_provider" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS extraction_model_provider VARCHAR(64)")
+        if "extraction_model_name" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS extraction_model_name VARCHAR(255)")
+        if "output_hash" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS output_hash VARCHAR(128)")
+        if ddl:
+            with engine.begin() as conn:
+                for fragment in ddl:
+                    conn.execute(text(f"ALTER TABLE reference_pattern_cards {fragment}"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_reference_pattern_cards_output_hash "
+                        "ON reference_pattern_cards(output_hash)"
+                    )
+                )
+    if inspector.has_table("epic_retrieval_traces"):
+        columns = {c["name"] for c in inspector.get_columns("epic_retrieval_traces")}
+        ddl = []
+        if "used_profile_sections" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS used_profile_sections JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "profile_version" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS profile_version VARCHAR(255)")
+        if "excluded_context" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS excluded_context JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "raw_text_included" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS raw_text_included BOOLEAN NOT NULL DEFAULT FALSE")
+        if "raw_json" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS raw_json JSONB NOT NULL DEFAULT '{}'::jsonb")
+        if ddl:
+            with engine.begin() as conn:
+                for fragment in ddl:
+                    conn.execute(text(f"ALTER TABLE epic_retrieval_traces {fragment}"))

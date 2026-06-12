@@ -56,6 +56,8 @@ from app.models.epic_novel import (
     ReferenceIngestionJob,
     ReferenceMechanismProfile,
     ReferencePatternCard,
+    ReferenceSection,
+    ReferenceSectionAnalysis,
     WorldviewCandidate,
 )
 from app.models.long_novel import (
@@ -97,6 +99,8 @@ __all__ = [
     "ReferenceDownloadStatus",
     "ReferenceBook",
     "ReferenceIngestionJob",
+    "ReferenceSection",
+    "ReferenceSectionAnalysis",
     "ReferencePatternCard",
     "ReferenceMechanismProfile",
     "EpicNovelProject",

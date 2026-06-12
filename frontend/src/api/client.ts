@@ -31,6 +31,8 @@ import type {
   EpicNovelProjectDetailResponse,
   EpicNovelProjectListResponse,
   EpicReferenceBook,
+  EpicReferenceExtractionControl,
+  EpicReferenceExtractionCostEstimate,
   EpicReferenceMechanismProfile,
   LoginRequest,
   FamilyLongNovelBatchRequest,
@@ -598,6 +600,14 @@ export const api = {
     }),
   getEpicReferenceProfile: () =>
     request<EpicReferenceMechanismProfile | null>("/epic-novel/reference-mechanism-profile"),
+  getEpicReferenceExtractionCostEstimate: () =>
+    request<EpicReferenceExtractionCostEstimate>("/epic-novel/reference-extraction/cost-estimate"),
+  getEpicReferenceExtractionControl: () =>
+    request<EpicReferenceExtractionControl>("/epic-novel/reference-extraction/control"),
+  setEpicReferenceExtractionControl: (state: EpicReferenceExtractionControl["state"]) =>
+    request<EpicReferenceExtractionControl>(`/epic-novel/reference-extraction/control/${state}`, {
+      method: "POST",
+    }),
   runEpicWorldviewTournament: (id: string) =>
     request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/worldview-tournament`, {
       method: "POST",

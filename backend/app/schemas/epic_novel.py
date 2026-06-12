@@ -176,6 +176,13 @@ class ReferencePatternCardResponse(EpicModelBase):
     required_global_link: str | None = None
     originality_notes: str | None = None
     tags: list[Any] = Field(default_factory=list)
+    source_section_ids: list[Any] = Field(default_factory=list)
+    source_card_ids: list[Any] = Field(default_factory=list)
+    evidence_count: int = 1
+    raw_text_included: bool = False
+    extraction_model_provider: str | None = None
+    extraction_model_name: str | None = None
+    output_hash: str | None = None
     raw_json: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 

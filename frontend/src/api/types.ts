@@ -776,6 +776,23 @@ export interface EpicReferenceMechanismProfile {
   updated_at: string;
 }
 
+export interface EpicReferenceExtractionCostEstimate {
+  books: number;
+  sections: number;
+  chars: number;
+  estimatedPromptTokens: number;
+  batchTokenBudget: number;
+  estimatedBatches: number;
+  modelProvider: string;
+  modelName: string;
+  estimatedCost: number;
+  perBook: Array<Record<string, unknown>>;
+}
+
+export interface EpicReferenceExtractionControl {
+  state: "running" | "paused" | "stopped";
+}
+
 export interface EpicNovelProjectDetailResponse {
   project: EpicNovelProject;
   world_bible: Record<string, unknown> | null;

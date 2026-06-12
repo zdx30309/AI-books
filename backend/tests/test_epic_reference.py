@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import uuid
+
+from app.models import ReferenceBook
+from app.services.epic_model_router import resolve_model
+from app.services.epic_novel import validate_bible_section_content
 from app.services.epic_reference import SoNovelAdapter, parse_booklist_seed
+from app.services.epic_reference import _abstract_card_data, _fallback_section_analysis, split_by_chapter
 
 
 def test_parse_inline_continuous_numbered_seed() -> None:
@@ -46,3 +52,49 @@ def test_sonovel_candidate_selection_accepts_exact_title_without_author() -> Non
 
     assert len(candidates) == 1
     assert candidates[0]["url"] == "https://example.invalid/right"
+
+
+def test_reference_role_defaults_to_deepseek_v4_pro() -> None:
+    selection = resolve_model("reference")
+
+    assert selection.provider == "deepseek"
+    assert selection.model == "deepseek-v4-pro"
+
+
+def test_reference_section_identity_and_pattern_card_are_abstract_only() -> None:
+    book = ReferenceBook(
+        id=uuid.uuid4(),
+        title="测试书",
+        author="测试作者",
+        tier=1,
+        category="core_similarity",
+        source_path="dummy.epub",
+        file_hash="filehash",
+    )
+    raw = "第一章 开端\n这是一段只用于抽象的参考文本。\n第二章 推进\n另一段参考文本。"
+
+    sections = split_by_chapter(raw)
+    analysis = _fallback_section_analysis(book, sections[0])
+    card = _abstract_card_data(book, sections[0], "pleasure", 0, analysis)
+
+    assert sections[0]["sourceSectionId"].startswith("section_")
+    assert sections[0]["sectionHash"]
+    assert analysis["sourceBookId"] == str(book.id)
+    assert analysis["sourceSectionId"] == sections[0]["sourceSectionId"]
+    assert analysis["rawTextIncluded"] is False
+    assert card["source_section_ids"] == [sections[0]["sourceSectionId"]]
+    assert card["evidence_count"] == 1
+    assert card["raw_text_included"] is False
+    assert "这是一段只用于抽象的参考文本" not in card["description"]
+    assert card["raw_json"]["rawTextIncluded"] is False
+
+
+def test_bible_section_acceptance_rejects_placeholder_or_english() -> None:
+    bad = validate_bible_section_content(
+        "Reference cards available. TODO placeholder.",
+        {"sectionKey": "project_overview", "storyPayload": {}, "referenceProfile": {}, "rawTextIncluded": False},
+    )
+
+    assert bad["status"] == "fail"
+    assert "boilerplate_or_placeholder" in bad["issues"]
+    assert "mostly_english" in bad["issues"]

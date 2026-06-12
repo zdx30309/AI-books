@@ -128,7 +128,61 @@ class ReferenceBook(Base):
 
     booklist_item = relationship("ReferenceBooklistItem", back_populates="books")
     download_task = relationship("ReferenceDownloadTask", back_populates="books")
+    sections = relationship("ReferenceSection", back_populates="source_book", cascade="all, delete-orphan")
+    section_analyses = relationship("ReferenceSectionAnalysis", back_populates="source_book", cascade="all, delete-orphan")
     pattern_cards = relationship("ReferencePatternCard", back_populates="source_book", cascade="all, delete-orphan")
+
+
+class ReferenceSection(Base):
+    __tablename__ = "reference_sections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_book_id = Column(UUID(as_uuid=True), ForeignKey("reference_books.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_section_id = Column(String(255), nullable=False, index=True)
+    chapter_title = Column(String(500), nullable=False, default="opening")
+    section_index = Column(Integer, nullable=False, default=0)
+    section_hash = Column(String(128), nullable=False, index=True)
+    start_offset = Column(Integer, nullable=True)
+    end_offset = Column(Integer, nullable=True)
+    text_chars = Column(Integer, nullable=False, default=0)
+    status = Column(String(32), nullable=False, default="parsed", index=True)
+    analysis_status = Column(String(32), nullable=False, default="pending", index=True)
+    card_count = Column(Integer, nullable=False, default=0)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    source_book = relationship("ReferenceBook", back_populates="sections")
+    analysis = relationship("ReferenceSectionAnalysis", back_populates="section", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_reference_section_book_section", "source_book_id", "source_section_id", unique=True),
+        Index("ix_reference_section_book_hash", "source_book_id", "section_hash"),
+    )
+
+
+class ReferenceSectionAnalysis(Base):
+    __tablename__ = "reference_section_analyses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    section_id = Column(UUID(as_uuid=True), ForeignKey("reference_sections.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    source_book_id = Column(UUID(as_uuid=True), ForeignKey("reference_books.id", ondelete="CASCADE"), nullable=False, index=True)
+    section_hash = Column(String(128), nullable=False, index=True)
+    model_provider = Column(String(64), nullable=False, default="deepseek")
+    model_name = Column(String(255), nullable=False, default="deepseek-v4-pro")
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    analysis_json = Column(JSONB, nullable=False, default=dict)
+    output_hash = Column(String(128), nullable=True, index=True)
+    raw_text_included = Column(Boolean, nullable=False, default=False)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    estimated_cost = Column(Float, nullable=False, default=0.0)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    section = relationship("ReferenceSection", back_populates="analysis")
+    source_book = relationship("ReferenceBook", back_populates="section_analyses")
 
 
 class ReferenceIngestionJob(Base):
@@ -164,6 +218,13 @@ class ReferencePatternCard(Base):
     originality_notes = Column(Text, nullable=True)
     tags = Column(JSONB, nullable=False, default=list)
     embedding = Column(JSONB, nullable=True)
+    source_section_ids = Column(JSONB, nullable=False, default=list)
+    source_card_ids = Column(JSONB, nullable=False, default=list)
+    evidence_count = Column(Integer, nullable=False, default=1)
+    raw_text_included = Column(Boolean, nullable=False, default=False)
+    extraction_model_provider = Column(String(64), nullable=True)
+    extraction_model_name = Column(String(255), nullable=True)
+    output_hash = Column(String(128), nullable=True, index=True)
     raw_json = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -877,7 +938,12 @@ class EpicRetrievalTrace(Base):
     query = Column(Text, nullable=False)
     retrieved_card_ids = Column(JSONB, nullable=False, default=list)
     used_card_ids = Column(JSONB, nullable=False, default=list)
+    used_profile_sections = Column(JSONB, nullable=False, default=list)
+    profile_version = Column(String(255), nullable=True)
+    excluded_context = Column(JSONB, nullable=False, default=list)
+    raw_text_included = Column(Boolean, nullable=False, default=False)
     usage_summary = Column(Text, nullable=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 

@@ -71,6 +71,8 @@ from app.services.epic_reference import (
     create_reference_search_task,
     detect_sonovel,
     download_reference_task,
+    estimate_reference_extraction_cost,
+    get_reference_extraction_control,
     import_downloaded_references,
     import_reference_file,
     ingest_reference_book,
@@ -80,6 +82,7 @@ from app.services.epic_reference import (
     scan_sonovel_downloads,
     search_reference_download_task,
     search_pattern_cards,
+    set_reference_extraction_control,
 )
 
 
@@ -267,6 +270,35 @@ def ingest_reference_books(
     del user
     try:
         return ingest_reference_book(db, book_id=req.book_id, source_path=req.source_path)
+    except EpicReferenceError as exc:
+        _bad_request(exc)
+
+
+@router.get("/reference-extraction/cost-estimate")
+def reference_extraction_cost_estimate(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    del user
+    return estimate_reference_extraction_cost(db)
+
+
+@router.get("/reference-extraction/control")
+def reference_extraction_control(
+    user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    del user
+    return get_reference_extraction_control()
+
+
+@router.post("/reference-extraction/control/{state}")
+def update_reference_extraction_control(
+    state: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    del user
+    try:
+        return set_reference_extraction_control(state)
     except EpicReferenceError as exc:
         _bad_request(exc)
 

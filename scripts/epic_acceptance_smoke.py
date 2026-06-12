@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,7 @@ from app.models import (  # noqa: E402
     EpicCharacterState,
     EpicFactionState,
     EpicInstitutionState,
+    EpicNovelProject,
     EpicObjectState,
     EpicRetrievalTrace,
     EpicStateExtract,
@@ -60,18 +63,25 @@ def main() -> int:
     init_db()
     db = SessionLocal()
     try:
-        stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
-        req = EpicNovelCreateRequest(
-            title=f"acceptance smoke {stamp}",
-            premise="A modern forensic clerk transmigrates into an ancient immortal bureaucracy and solves cases that expose a dynasty-spanning conspiracy.",
-            core_pleasures=["case mystery", "bureaucratic pressure", "power progression", "ensemble payoff"],
-            target_volumes=3,
-            target_chapters=10,
-            target_words=300_000,
-            bible_target_words=20_000,
-        )
-        log("creating project")
-        project = create_epic_project(db, req)
+        existing_project_id = os.getenv("EPIC_ACCEPTANCE_PROJECT_ID", "").strip()
+        if existing_project_id:
+            log(f"using existing project {existing_project_id}")
+            project = db.query(EpicNovelProject).filter(EpicNovelProject.id == UUID(existing_project_id)).first()
+            if project is None:
+                raise RuntimeError(f"EPIC_ACCEPTANCE_PROJECT_ID not found: {existing_project_id}")
+        else:
+            stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
+            req = EpicNovelCreateRequest(
+                title=f"acceptance smoke {stamp}",
+                premise="A modern forensic clerk transmigrates into an ancient immortal bureaucracy and solves cases that expose a dynasty-spanning conspiracy.",
+                core_pleasures=["case mystery", "bureaucratic pressure", "power progression", "ensemble payoff"],
+                target_volumes=3,
+                target_chapters=10,
+                target_words=300_000,
+                bible_target_words=20_000,
+            )
+            log("creating project")
+            project = create_epic_project(db, req)
         log(f"project={project.id}")
         log("running worldview tournament")
         run_worldview_tournament(db, project.id)
@@ -95,7 +105,7 @@ def main() -> int:
         log("generating volume contracts")
         generate_volume_contracts(db, project.id)
         log("compiling chapter contracts")
-        for volume_number in range(1, req.target_volumes + 1):
+        for volume_number in range(1, int(project.target_volumes or 3) + 1):
             log(f"compiling chapter contracts for volume {volume_number}")
             compile_chapter_contracts(db, project.id, volume_number)
         for chapter_number in (1, 2, 3):
@@ -115,12 +125,31 @@ def main() -> int:
             .filter(EpicCanonFact.project_id == project.id, EpicCanonFact.source != "acceptedContent")
             .count()
         )
+        bible_failures = [
+            row.section_key
+            for row in db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id).all()
+            if row.status != "accepted"
+            or ((row.content_json or {}).get("_meta") or {}).get("production_quality") is False
+            or (((row.content_json or {}).get("acceptance") or {}).get("status") != "pass")
+        ]
+        coverage_failures = [
+            row.item_key
+            for row in db.query(EpicBibleCoverageItem).filter(EpicBibleCoverageItem.project_id == project.id).all()
+            if row.status != "complete"
+        ]
+        unsafe_traces = [
+            str(row.id)
+            for row in db.query(EpicRetrievalTrace).filter(EpicRetrievalTrace.project_id == project.id).all()
+            if row.raw_text_included is True
+        ]
         summary = {
             "projectId": str(project.id),
             "referenceCards": db.query(ReferencePatternCard).count(),
             "referenceProfiles": db.query(ReferenceMechanismProfile).count(),
             "bibleSections": db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id).count(),
+            "bibleFailures": bible_failures,
             "coverageItems": db.query(EpicBibleCoverageItem).filter(EpicBibleCoverageItem.project_id == project.id).count(),
+            "coverageFailures": coverage_failures,
             "volumes": db.query(EpicVolumeContract).filter(EpicVolumeContract.project_id == project.id).count(),
             "chapterContracts": db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id).count(),
             "acceptedChapters": db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.status == "accepted").count(),
@@ -131,6 +160,7 @@ def main() -> int:
             "factionStates": db.query(EpicFactionState).filter(EpicFactionState.project_id == project.id).count(),
             "institutionStates": db.query(EpicInstitutionState).filter(EpicInstitutionState.project_id == project.id).count(),
             "retrievalTraces": db.query(EpicRetrievalTrace).filter(EpicRetrievalTrace.project_id == project.id).count(),
+            "unsafeRetrievalTraces": unsafe_traces,
             "acceptanceReports": db.query(EpicAcceptanceReport).filter(EpicAcceptanceReport.project_id == project.id).count(),
             "nonAcceptedCanonSources": non_accepted_canon,
             "context2Evidence": context2["contextEvidence"],
@@ -142,12 +172,15 @@ def main() -> int:
         required = [
             summary["referenceCards"] >= 800,
             summary["bibleSections"] >= 20,
+            not summary["bibleFailures"],
             summary["coverageItems"] >= 20,
+            not summary["coverageFailures"],
             summary["volumes"] >= 3,
             summary["chapterContracts"] >= 10,
             summary["acceptedChapters"] == 3,
             summary["stateExtracts"] >= 3,
             summary["retrievalTraces"] >= 3,
+            not summary["unsafeRetrievalTraces"],
             summary["acceptanceReports"] >= 3,
             summary["nonAcceptedCanonSources"] == 0,
             bool(summary["context2Evidence"].get("previousRequiredStateReady")),
