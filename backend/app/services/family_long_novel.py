@@ -44,6 +44,7 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_STATE_EXTRACT_PROMPT,
     render_prompt,
 )
+from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
 from app.schemas.long_novel import (
     FamilyLongNovelBatchRequest,
     FamilyLongNovelCreateRequest,
@@ -1836,7 +1837,7 @@ def generate_family_chapter_plan(
         ZHOULI_CHAPTER_PLAN_PROMPT,
         chapter_context=_context_prompt_json(context, "chapter_plan"),
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}"
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     try:
         data = _call_json(
             db,
@@ -1923,7 +1924,7 @@ def generate_family_chapter(
         ZHOULI_CHAPTER_WRITE_PROMPT,
         chapter_context=_context_prompt_json(context, "chapter_write"),
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}"
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     try:
         content = _call_text(
             db,
@@ -2305,7 +2306,7 @@ def check_family_continuity(
         chapter_context=_context_prompt_json(context, "continuity_check"),
         chapter_text=chapter.content,
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     try:
         data = _call_json(
             db,
@@ -2369,7 +2370,7 @@ def quality_check_family_chapter(
         chapter_context=_context_prompt_json(context, "quality_check"),
         chapter_text=chapter.content,
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}"
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     try:
         return _call_json(
             db,
@@ -2439,7 +2440,7 @@ def repair_family_chapter(
         issues_json=_json_dumps(issues_payload),
         chapter_text=chapter.content,
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}"
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     repaired = _call_text(
         db,
         project_id=project.id,

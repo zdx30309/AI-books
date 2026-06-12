@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 import sys
 
@@ -20,6 +21,7 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
 )
+from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
 from app.schemas.long_novel import LongNovelAssistRequest
 from app.services import family_long_novel
 from app.services.family_long_novel import (
@@ -43,6 +45,35 @@ def test_family_long_novel_prompts_are_dedicated() -> None:
     assert "妯娌" in COMMON_GENRE_RULES
     assert "重生" in COMMON_GENRE_RULES
     assert "系统" in COMMON_GENRE_RULES
+
+
+def test_general_novel_guardrails_cover_editor_ai_prose_complaints() -> None:
+    rules = GENERAL_NOVEL_PROSE_GUARDRAILS
+    for phrase in [
+        "机械复述前文",
+        "滥用煽情",
+        "跳出故事",
+        "疼得不行",
+        "一遍又一遍",
+        "对白必须",
+    ]:
+        assert phrase in rules
+    assert "家长里短" not in rules
+    assert "妯娌" not in rules
+
+
+def test_family_workflow_appends_general_novel_prose_guardrails() -> None:
+    source = "\n".join(
+        inspect.getsource(func)
+        for func in [
+            family_long_novel.generate_family_chapter_plan,
+            family_long_novel.generate_family_chapter,
+            family_long_novel.check_family_continuity,
+            family_long_novel.quality_check_family_chapter,
+            family_long_novel.repair_family_chapter,
+        ]
+    )
+    assert source.count("GENERAL_NOVEL_PROSE_GUARDRAILS") == 5
 
 
 def test_family_long_novel_tables_are_registered() -> None:
