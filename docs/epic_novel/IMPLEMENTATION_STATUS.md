@@ -67,6 +67,7 @@ Strict live acceptance passed on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` 
 | Frontend build | PASS | `npm.cmd run build` in `frontend/` |
 | EPIC frontend Chinese UI scan | PASS | old visible labels such as `Epic Novel`, `Long-form`, `World Bible`, `Pattern Cards`, `Execute chapter`, `Generation logs` have no hits in `frontend/src/pages/EpicNovelWorkspace.tsx` or `frontend/src/components/Sidebar.tsx`; `npm run build` passed after the UI change |
 | EPIC browser UI smoke | PASS | local browser login, created project `ac9f3c28-c725-44cb-bd4b-327bb7b80dc2`, verified project list/detail tabs: 基建流水线, 参考书库, 章节生产, 质检验收, 生成日志; status/action/model values display in Chinese |
+| EPIC Chinese UI GitHub/ECS deploy | PASS | current branch pushed to GitHub; Beijing ECS `/opt/video-plan` received the UI bundle, web/backend restarted, public `/` and `/api/v1/system/health` returned HTTP 200, live asset contains `长篇小说生产控制台` and no old `Epic Novel` / `Long-form control room` labels |
 | DB init | PASS | `init_db_ok` with small pool / short timeout |
 | Reference cost dry-run | PASS | `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`: 57 books, 106,914 sections, 185,567,295 chars, 86,582,220 estimated prompt tokens, 1,444 batches, DeepSeek V4 Pro |
 | Production hardcoded-name scan | PASS for production services | no fixed smoke-story names in `backend/app/services/epic_novel.py` or `backend/app/services/epic_reference.py`; remaining hits are SPEC/test-project docs and negative tests |
