@@ -41,9 +41,9 @@ Legend:
 - Unsafe retrieval traces: `[]`
 - `nonAcceptedCanonSources=0`
 - Chapter 2/3 previous-state readiness: `true`
+- GitHub/ECS delivery: branch `codex/video-source-classical-regenerate` pushed; Beijing ECS `/opt/video-plan` rebuilt; public health checks passed.
 
 ## Remaining Non-Acceptance Work
 
-- Commit/push/deploy current worktree.
 - Continue full DeepSeek section analysis if the user wants all 106,914 estimated sections processed with LLM extraction.
 - Continue SoNovel folder scanning when new files are downloaded; unavailable/failed titles are skipped by instruction.

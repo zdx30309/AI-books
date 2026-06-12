@@ -2,7 +2,7 @@
 
 Updated: 2026-06-12
 
-Status: `ACCEPTANCE READY / DEPLOYMENT PENDING`
+Status: `ACCEPTANCE PASSED / DEPLOYED`
 
 | Gate | Required | Current evidence | Status |
 | --- | --- | --- | --- |
@@ -17,9 +17,9 @@ Status: `ACCEPTANCE READY / DEPLOYMENT PENDING`
 | Chapter execution | chapters 1-3 serial, state ledgers, diff, acceptance, trace/report | strict smoke accepted chapters 1-3 and recorded traces/reports | PASS |
 | Export | Bible/novel file/object export, not giant API response | tests cover metadata; strict smoke exported Bible/novel markdown | PASS |
 | Frontend | workspace controls, dashboard, extraction control | build passes | PASS |
-| GitHub current worktree | current changes committed/pushed | not done after current changes | FAIL |
-| Beijing ECS current worktree | current changes deployed and verified | not done after current changes | FAIL |
+| GitHub current worktree | current changes committed/pushed | branch `codex/video-source-classical-regenerate` pushed to `origin` | PASS |
+| Beijing ECS current worktree | current changes deployed and verified | `/opt/video-plan` rebuilt; public homepage and system health HTTP 200 | PASS |
 
 ## Decision
 
-The current code passes SPEC acceptance smoke but is not delivered until GitHub push and Beijing ECS deployment are completed. Do not claim a completed 300万字 manuscript run; the evidence is acceptance readiness plus deployment pending.
+The current code passes SPEC acceptance smoke and has been deployed. Do not claim a completed 300万字 manuscript run; the evidence is acceptance readiness, deployment verification, and a resumable production pipeline.

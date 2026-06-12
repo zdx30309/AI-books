@@ -132,8 +132,21 @@ Source: `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`
 | chapters generate strictly serially | PASS |
 | frontend workspace and dashboard exist | PASS build |
 
-## Remaining Delivery Work
+## Delivery Evidence
 
-- Commit and push current worktree.
-- Deploy current commit to Beijing ECS.
-- Verify ECS health and public route after deployment.
+| Delivery check | Result |
+| --- | --- |
+| GitHub push | PASS, branch `codex/video-source-classical-regenerate` pushed to `origin` |
+| ECS deploy path | PASS, `/opt/video-plan` |
+| ECS compose | PASS, `backend`, `worker`, `beat`, and `web` running after rebuild |
+| ECS backend health | PASS, backend container `/health` returned ok |
+| ECS router import | PASS, router count `119` |
+| ECS DB counts | PASS, `books 57`, `cards 98581`, `profiles 10` |
+| ECS raw corpus | PASS, 57 files, 296,501,932 bytes |
+| Public homepage | PASS, `http://101.200.48.238/` HTTP 200 |
+| Public system health | PASS, `http://101.200.48.238/api/v1/system/health` HTTP 200, `celery_alive=true` |
+
+## Remaining Non-Blocking Work
+
+- Continue full DeepSeek section extraction if desired.
+- Continue importing additional SoNovel files if unavailable titles become downloadable.

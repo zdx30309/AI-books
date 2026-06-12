@@ -6,7 +6,7 @@ Updated: 2026-06-12
 
 Status: `PASS FOR 09_ACCEPTANCE_CRITERIA IN CURRENT WORKTREE`
 
-Strict live acceptance passed on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` after the hardcoded-service-layer cleanup, Dynamic Context safeguards, reference-intelligence controls, and Bible repair/coverage fixes. The current worktree is not yet pushed/deployed after these changes; GitHub/ECS delivery must still be performed from this worktree.
+Strict live acceptance passed on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` after the hardcoded-service-layer cleanup, Dynamic Context safeguards, reference-intelligence controls, and Bible repair/coverage fixes. The verified worktree has been pushed to GitHub and deployed to the Beijing ECS path `/opt/video-plan`.
 
 ## Completed In Current Worktree
 
@@ -64,6 +64,11 @@ Strict live acceptance passed on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` 
 | Reference cost dry-run | PASS | `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`: 57 books, 106,914 sections, 185,567,295 chars, 86,582,220 estimated prompt tokens, 1,444 batches, DeepSeek V4 Pro |
 | Production hardcoded-name scan | PASS for production services | no fixed smoke-story names in `backend/app/services/epic_novel.py` or `backend/app/services/epic_reference.py`; remaining hits are SPEC/test-project docs and negative tests |
 | Strict live acceptance smoke | PASS | `.local/epic_novel_runs/acceptance_smoke_strict_2026-06-12-resume4.log`, project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63`, exit code 0 |
+| GitHub push | PASS | branch `codex/video-source-classical-regenerate` pushed to `origin` |
+| Beijing ECS deploy | PASS | `/opt/video-plan`, compose services rebuilt/restarted |
+| ECS backend/container health | PASS | backend container `/health` returned ok; router count `119`; DB counts `books 57`, `cards 98581`, `profiles 10` |
+| Public ECS health | PASS | `http://101.200.48.238/` HTTP 200; `http://101.200.48.238/api/v1/system/health` HTTP 200 with `celery_alive=true` |
+| ECS raw corpus | PASS | `/opt/video-plan/.local/novel_ref_corpus/raw`: 57 files, 296,501,932 bytes |
 
 ## Strict Acceptance Summary
 
@@ -89,17 +94,13 @@ Strict live acceptance passed on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` 
 
 ## Current Limits
 
-- Current worktree has not yet been committed, pushed, or deployed to Beijing ECS after these changes.
 - Full 100-book corpus is still limited by source availability: 57 local imported books are available; unavailable/failed titles remain skipped per user instruction.
 - Full DeepSeek LLM section analysis over all estimated 106,914 sections has not been run to completion in this worktree; cost dry-run and controls are implemented.
 - No first-class Alembic migration framework is present; this repo continues to use startup `create_all()` plus self-heal columns.
 - True docx Bible export remains a future enhancement; current acceptance covers markdown/json/file metadata export.
 - Do not claim a completed 300万字 production novel run; current proof is the SPEC acceptance smoke, not a full 300万字 manuscript.
 
-## Remaining Before Delivery
+## Remaining
 
-- Run final local checks after documentation updates.
-- Commit current worktree.
-- Push to GitHub.
-- Deploy the current commit to Beijing ECS.
-- Verify ECS health/API/router/frontend/corpus after deployment.
+- Continue full DeepSeek LLM section analysis if the user wants every estimated section in the 57-file corpus processed by the expensive extraction pipeline.
+- Continue scanning/importing SoNovel downloads if new files become available; unavailable/failed titles remain skipped per user instruction.
