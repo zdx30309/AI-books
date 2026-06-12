@@ -1,5 +1,7 @@
 """Minimal prompt templates for the current workflow."""
 
+from pathlib import Path
+
 from app.services.comic_prompts import (
     COMIC_COPYRIGHT_RULE,
     COMIC_IMAGE_PROMPT,
@@ -16,6 +18,13 @@ from app.prompts.longform_variant_prompts import (
     SOCIAL_SCIENCE_CORE_CONFLICT_FULL_BOOK_WRITER_PROMPT,
     WISDOM_STORIES_CAUSAL_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
 )
+
+PROMPT_DIR = Path(__file__).resolve().parent
+
+
+def _load_prompt_template(filename: str) -> str:
+    return (PROMPT_DIR / filename).read_text(encoding="utf-8").strip()
+
 
 BOOK_TITLE_AND_DESCRIPTION_PROMPT = """【书名与简介专项要求】
 - 最终书名和最终简介要带一点新媒体短视频博眼球的感觉，但不能失去图书书名和图书简介的质感。
@@ -381,6 +390,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "经典·解读",
         "core_feature": "降低门槛，提取精华",
         "directions": "名著、电影、哲学、艺术",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "masterpiece_interpretation",
+        "label": "名作解读",
+        "core_feature": "用经典名著解释现实处境与人性选择",
+        "directions": "名著、文学人物、经典情节、命运转折、现实化解读",
         "prompt_status": "ready",
     },
     {
@@ -1521,6 +1537,10 @@ HEALING_COMIC_FULL_BOOK_WRITER_PROMPT = COMIC_SERIES_FULL_BOOK_WRITER_PROMPT.rep
     f"【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n\n【语言与排版】",
 )
 
+MASTERPIECE_INTERPRETATION_FULL_BOOK_WRITER_PROMPT = _load_prompt_template(
+    "masterpiece_interpretation_writer.md"
+)
+
 
 COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的漫画系列书稿润色得更自然、温柔、短句化，像日本成年人治愈漫画与文创绘本的正文。
 
@@ -1645,6 +1665,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "classic_interpretation": _prompt_set(
         CLASSIC_INTERPRETATION_FULL_BOOK_WRITER_PROMPT,
     ),
+    "masterpiece_interpretation": _prompt_set(
+        MASTERPIECE_INTERPRETATION_FULL_BOOK_WRITER_PROMPT,
+    ),
     # 历史测试版：保留原 category id，前后端入口不变；prompt 与历史小说端口严格同步。
     "web_short_story": HISTORY_CULTURE_PROMPT_SET,
 }
@@ -1690,6 +1713,9 @@ CATEGORY_ALIASES: dict[str, str] = {
     "插画": "comic_series",
     "历史·文化": "history_culture",
     "历史文化": "history_culture",
+    "masterpiece": "masterpiece_interpretation",
+    "masterpiece_interpretation": "masterpiece_interpretation",
+    "名著解读": "masterpiece_interpretation",
 }
 for _category in CATEGORY_OPTIONS:
     CATEGORY_ALIASES[_category["id"]] = _category["id"]

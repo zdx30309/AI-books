@@ -173,6 +173,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "masterpiece_interpretation",
+    label: "名作解读",
+    core_feature: "用经典名著解释现实处境与人性选择",
+    directions: "名著、文学人物、经典情节、命运转折、现实化解读",
+    prompt_status: "ready",
+  },
+  {
     id: "web_short_story",
     label: "历史测试版",
     core_feature: "与历史小说端口同步，用于历史叙事测试",
