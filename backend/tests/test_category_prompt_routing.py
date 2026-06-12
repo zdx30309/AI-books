@@ -96,6 +96,75 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "final_book_format" in prompts
 
 
+def test_masterpiece_interpretation_uses_standard_four_stage_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    category = "masterpiece_interpretation"
+    raw_text = "\u8fd9\u662f\u4e00\u6bb5\u540d\u4f5c\u89e3\u8bfb\u6d4b\u8bd5\u6587\u7a3f\u3002"
+    prompts = get_prompts(category)
+    calls: list[str] = []
+    writer_prompts: list[str] = []
+    polish_instructions: list[str | None] = []
+    refine_instructions: list[str | None] = []
+    format_templates: list[str | None] = []
+    events: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        calls.append("writer")
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    def fake_polish_book_text(text: str, **kwargs: object) -> str:
+        calls.append("polish")
+        polish_instructions.append(kwargs.get("system_instruction"))
+        assert text == MINIMAL_MANUSCRIPT.strip()
+        return text + "\nPOLISHED_MARKER"
+
+    def fake_refine_book_text(text: str, **kwargs: object) -> str:
+        calls.append("refine")
+        refine_instructions.append(kwargs.get("system_instruction"))
+        assert "POLISHED_MARKER" in text
+        return text + "\nREFINED_MARKER"
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        calls.append("format")
+        format_templates.append(kwargs.get("prompt_template"))
+        assert "REFINED_MARKER" in text
+        return text + "\nFORMATTED_MARKER"
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
+    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category=category,
+            output_dir=tmp_path / category,
+            on_stage=lambda stage, info: events.append(stage),
+        )
+    )
+
+    assert calls == ["writer", "polish", "refine", "format"]
+    assert writer_prompts == [prompts["full_book_writer"].format(raw_text=raw_text)]
+    assert "\u540d\u4f5c\u89e3\u8bfb" in writer_prompts[0]
+    assert "\u7545\u9500\u4eba\u6587\u8bfb\u7269\u4f5c\u8005" in writer_prompts[0]
+    assert raw_text in writer_prompts[0]
+    assert polish_instructions == [prompts["gemini_fast_polish"]]
+    assert refine_instructions == [prompts["gemini_fast_refine"]]
+    assert format_templates == [prompts["final_book_format"]]
+    assert "FORMATTED_MARKER" in result
+    assert events[:2] == ["writer_start", "writer_done"]
+    assert "polish_start" in events
+    assert "polish_done" in events
+    assert "refine_start" in events
+    assert "refine_done" in events
+    assert "format_start" in events
+    assert "format_done" in events
+
+
 def test_writer_stream_progress_is_forwarded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
