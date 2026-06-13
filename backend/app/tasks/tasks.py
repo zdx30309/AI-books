@@ -508,7 +508,6 @@ def _should_try_bilibili_fallback(exc: Exception) -> bool:
         "batchstatus': 0",
         "batchstatus=2",
         "batchstatus': 2",
-        "http",
         "connection",
         "connect",
     )
