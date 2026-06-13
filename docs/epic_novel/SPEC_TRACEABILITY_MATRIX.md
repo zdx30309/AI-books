@@ -46,7 +46,7 @@ Legend:
 - Unsafe retrieval traces: `[]`
 - `nonAcceptedCanonSources=0`
 - Chapter 2/3 previous-state readiness: `true`
-- GitHub/ECS delivery: current commit `a1907e8` was pushed to `origin/codex/video-source-classical-regenerate` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan` with public `/`, `/epic-novel`, and `/api/v1/system/health` passing.
+- GitHub/ECS delivery: current commit `f8323d0` was pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan` with public `/`, `/epic-novel`, and `/api/v1/system/health` passing.
 
 ## Remaining Non-Acceptance Work
 

@@ -96,6 +96,6 @@ PASS criteria:
 Current Gate 14 result:
 
 - Report: `docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md`
-- GitHub: current commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main`.
-- Beijing ECS: `/opt/video-plan/.deploy-version = a1907e8`; compose services are up; public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200.
+- GitHub: current commit `f8323d0` pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`.
+- Beijing ECS: `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e`; compose services are up; public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200.
 - Final verdict: `PARTIAL_IMPLEMENTATION`.

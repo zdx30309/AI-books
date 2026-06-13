@@ -146,11 +146,11 @@ Completed gates:
 - Gate 14: DONE / FINAL VERDICT PARTIAL_IMPLEMENTATION
   - Verdict: PARTIAL_IMPLEMENTATION
   - Scope: final SPEC readiness audit, GitHub publish, Beijing ECS deploy, remote verification, and final non-overclaim labels.
-  - GitHub commit: `a1907e8`
-  - ECS deploy version: `/opt/video-plan/.deploy-version = a1907e8`
+  - GitHub commit: `f8323d0`
+  - ECS deploy version: `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e`
   - Evidence:
     - docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md
-    - `origin/codex/video-source-classical-regenerate` pushed
+    - `origin/codex/bilibili-cost-guard-main` pushed
     - `origin/main` pushed
     - ECS compose: `backend`, `worker`, `beat`, `web` Up
     - Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200

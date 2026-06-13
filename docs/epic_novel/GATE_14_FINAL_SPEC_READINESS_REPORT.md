@@ -18,9 +18,9 @@
 
 | 项 | 结果 |
 | --- | --- |
-| 提交 | `a1907e8 Implement epic novel gate compliance` |
-| 当前分支 | `codex/video-source-classical-regenerate` |
-| 推送分支 | `origin/codex/video-source-classical-regenerate` |
+| 提交 | `f8323d0 Continue epic reference Gate 2B extraction` |
+| 当前分支 | `codex/bilibili-cost-guard-main` |
+| 推送分支 | `origin/codex/bilibili-cost-guard-main` |
 | 推送主线 | `origin/main` |
 
 ## 北京 ECS 部署证据
@@ -28,7 +28,7 @@
 | 项 | 结果 |
 | --- | --- |
 | 部署目录 | `/opt/video-plan` |
-| 部署版本 | `.deploy-version = a1907e8` |
+| 部署版本 | `.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
 | 部署方式 | tarball 上传、备份旧目录、保留 `.env` 和 `.local`、`docker compose up -d --build` |
 | compose 服务 | `backend`、`worker`、`beat`、`web` 均 Up |
 | 后端容器健康 | `/health` -> 200 |
@@ -54,8 +54,12 @@
 | --- | ---: |
 | `ReferenceBooklistItem` | 100 |
 | `ReferenceBook` | 57 |
-| `ReferencePatternCard` | 98,617 |
-| `ReferenceMechanismProfile` | 15 |
+| `ReferenceSection` | 27 |
+| `ReferenceSectionAnalysis` | 27 |
+| `ReferencePatternCard` | 98,629 |
+| production-ready `ReferencePatternCard` | 48 |
+| old source-less cards excluded | 98,581 |
+| `ReferenceMechanismProfile` | 21 |
 | `EpicNovelProject` | 13 |
 | `EpicBibleSection` | 192 |
 | `EpicChapter` | 90 |

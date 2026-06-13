@@ -340,7 +340,7 @@ Still not production-ready:
 | Frontend | PASS local | Gate 13 本地浏览器烟测：10/10 中文标签页、导出 metadata 点击、无新增运行时错误 | 远端 ECS UI 仍需部署后复验 |
 | Dashboard | PARTIAL | 有汇总 route | 成本和若干指标简化 |
 | Export | PASS | Gate 12 audit `.local/epic_novel_runs/gate12_export_2026-06-12T224306_008134Z.json`；8 个 metadata 导出、校验和、下载路由、大文件路径、原始参考文本排除 | 默认 metadata，不返回巨大正文体 |
-| GitHub/ECS deploy | PASS current | commit `a1907e8` 已推 `origin/codex/video-source-classical-regenerate` 与 `origin/main`；北京 ECS `/opt/video-plan/.deploy-version=a1907e8`；公网 `/`、`/epic-novel`、`/api/v1/system/health` 200 | 当前发布完成，但不等于 300W-ready |
+| GitHub/ECS deploy | PASS current | commit `f8323d0` 已推 `origin/codex/bilibili-cost-guard-main` 与 `origin/main`；北京 ECS `/opt/video-plan/.deploy-version=f8323d0a81016601dda10dc79c49895d1a2a482e`；公网 `/`、`/epic-novel`、`/api/v1/system/health` 200 | 当前发布完成，但不等于 300W-ready |
 
 ## 不能继续声称的内容
 

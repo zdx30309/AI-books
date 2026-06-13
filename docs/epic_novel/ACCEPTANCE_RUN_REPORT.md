@@ -80,9 +80,9 @@ Chapter 2 and 3 context evidence:
 | `npm.cmd run build` in `frontend/` after Gate 13 fix | PASS |
 | `$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py backend/tests/test_epic_chinese_output.py backend/tests/test_epic_qa.py backend/tests/test_epic_multi_volume.py backend/tests/test_epic_scheduler.py -q` | PASS, `53 passed, 1 warning` |
 | Local browser smoke for Gate 13 | PASS, 10/10 Epic tabs passed, export metadata click passed, no new runtime errors |
-| `git push origin HEAD:codex/video-source-classical-regenerate` | PASS, commit `a1907e8` |
-| `git push origin HEAD:main` | PASS, commit `a1907e8` |
-| Beijing ECS tarball deploy | PASS, `/opt/video-plan/.deploy-version = a1907e8` |
+| `git push origin HEAD:codex/bilibili-cost-guard-main` | PASS, commit `f8323d0` |
+| `git push origin HEAD:main` | PASS, commit `f8323d0` |
+| Beijing ECS tarball deploy | PASS, `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
 | Beijing ECS public checks | PASS, `/`, `/epic-novel`, `/api/v1/system/health` returned 200 |
 
 ## Fixes Applied During Acceptance
@@ -372,15 +372,15 @@ This replaces the Gate 13 pending status for local frontend runtime, but it does
 | --- | ---: |
 | Gate 14 verdict | PARTIAL_IMPLEMENTATION |
 | Report | `docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md` |
-| GitHub commit | `a1907e8` |
-| GitHub branches | `origin/codex/video-source-classical-regenerate`, `origin/main` |
-| ECS deploy version | `a1907e8` |
+| GitHub commit | `f8323d0` |
+| GitHub branches | `origin/codex/bilibili-cost-guard-main`, `origin/main` |
+| ECS deploy version | `f8323d0a81016601dda10dc79c49895d1a2a482e` |
 | ECS compose | backend / worker / beat / web Up |
 | Public root | 200 |
 | Public Epic route | 200 |
 | Public system health | 200, `celery_alive=true` |
 | ECS raw corpus | 57 epub files, 296,501,932 bytes |
-| ECS DB counts | booklist 100, books 57, cards 98,617, profiles 15 |
+| ECS DB counts | booklist 100, books 57, sections 27, analyses 27, success=27, cards 98,629, production-ready cards 48, profiles 21 |
 
 Gate 14 proves current GitHub and ECS publication. It does not change the final SPEC verdict because Gate 2B full corpus extraction, 30 production-quality prose chapters, all-volume generated prose, and real 300万字 quality proof remain incomplete.
 
@@ -419,12 +419,12 @@ Gate 14 proves current GitHub and ECS publication. It does not change the final 
 
 | Delivery check | Result |
 | --- | --- |
-| GitHub push | CURRENT PASS, commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main` |
-| ECS deploy path | CURRENT PASS, `/opt/video-plan/.deploy-version = a1907e8` |
+| GitHub push | CURRENT PASS, commit `f8323d0` pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` |
+| ECS deploy path | CURRENT PASS, `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
 | ECS compose | CURRENT PASS, `backend`, `worker`, `beat`, and `web` Up after rebuild |
 | ECS backend health | CURRENT PASS, backend container `/health` returned 200 |
 | ECS router import | CURRENT PASS, router count `124` |
-| ECS DB counts | CURRENT PASS, `booklist 100`, `books 57`, `cards 98617`, `profiles 15`, `chapters 90` |
+| ECS DB counts | CURRENT PASS, `booklist 100`, `books 57`, `sections 27`, `analyses 27`, `success 27`, `cards 98629`, `production-ready cards 48`, `profiles 21`, `chapters 90` |
 | ECS raw corpus | CURRENT PASS, 57 epub files, 296,501,932 bytes |
 | Public homepage | CURRENT PASS, `http://101.200.48.238/` HTTP 200 |
 | Public Epic route | CURRENT PASS, `http://101.200.48.238/epic-novel` HTTP 200 |
