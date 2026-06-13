@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.models import EpicBibleSection, EpicNovelProject
-from app.services.epic_novel import _bible_acceptance_anchors, _write_draft_from_context, validate_bible_section_content
+from app.services.epic_novel import _bible_acceptance_anchors, _bible_payload_label, _write_draft_from_context, validate_bible_section_content
 
 
 def _mostly_chinese(text: str) -> bool:
@@ -59,6 +59,8 @@ def test_bible_acceptance_anchors_make_planning_sections_concrete() -> None:
     profile_notes = {"version": "test", "sourceCardCount": 10, "mechanisms": ["制度阻力"], "antiCliche": ["不照搬原文"]}
     payload = {
         "_meta": {"status": "generated", "production_quality": True},
+        "主线阶段": "每卷都要推进关键机构、世界规则和伏笔终局。",
+        "执行规则": "章节合同必须绑定行动代价、势力冲突和关系变化。",
         "acceptanceAnchors": _bible_acceptance_anchors(project, section, profile_notes),
     }
     content = "\n".join(f"{key}: {value}" for key, value in payload["acceptanceAnchors"].items())
@@ -77,3 +79,64 @@ def test_bible_acceptance_anchors_make_planning_sections_concrete() -> None:
     )
 
     assert result["status"] == "pass"
+
+
+def test_bible_payload_label_never_exposes_common_english_keys() -> None:
+    assert _bible_payload_label("projectOverview") == "项目总览"
+    assert _bible_payload_label("narrative_present_tension") == "当前叙事张力"
+    assert _bible_payload_label("involved_characters") == "涉及人物"
+
+
+def test_bible_acceptance_rejects_visible_english_keys_and_smoke_markers() -> None:
+    content = "\n".join(
+        [
+            "# 项目总览",
+            "- projectOverview：这是一个具体故事，但标签仍然暴露英文 key。",
+            "- 主角：主角必须承担行动代价。",
+            "- 关键机构：机构规则会推动案件。",
+            "- 世界规则：规则会限制角色。",
+            "- 关系：关系变化有代价。",
+            "- 伏笔：伏笔指向终局。",
+            "- 势力：势力冲突推动章节。",
+            "acceptance smoke 2026-06-12",
+        ]
+    )
+    result = validate_bible_section_content(
+        content,
+        {
+            "sectionKey": "project_overview",
+            "storyPayload": {"项目总览": "具体内容", "主角": "行动代价", "_meta": {"status": "generated", "production_quality": True}},
+            "referenceProfile": {"version": "test"},
+            "referenceUsage": {"usedCardIds": ["card"], "profileVersion": "profile"},
+            "rawTextIncluded": False,
+        },
+    )
+
+    assert result["status"] == "fail"
+    assert "visible_english_key_labels" in result["issues"]
+    assert "hardcoded_fixture_or_smoke_content" in result["issues"]
+
+
+def test_bible_acceptance_rejects_generic_structure_field_overuse() -> None:
+    content = "\n".join(
+        [
+            "# 全局主线",
+            "- 结构字段：主角与关键机构、世界规则、人物关系、伏笔终局、行动代价和势力冲突都在这里。",
+            "- 结构字段：主角与关键机构、世界规则、人物关系、伏笔终局、行动代价和势力冲突继续重复。",
+            "- 结构字段：主角与关键机构、世界规则、人物关系、伏笔终局、行动代价和势力冲突再次重复。",
+            "- 结构字段：主角与关键机构、世界规则、人物关系、伏笔终局、行动代价和势力冲突第四次重复。",
+        ]
+    )
+    result = validate_bible_section_content(
+        content,
+        {
+            "sectionKey": "global_spine",
+            "storyPayload": {"主线": "具体内容", "终局": "具体内容", "_meta": {"status": "generated", "production_quality": True}},
+            "referenceProfile": {"version": "test"},
+            "referenceUsage": {"usedCardIds": ["card"], "profileVersion": "profile"},
+            "rawTextIncluded": False,
+        },
+    )
+
+    assert result["status"] == "fail"
+    assert "generic_structure_field_overuse" in result["issues"]

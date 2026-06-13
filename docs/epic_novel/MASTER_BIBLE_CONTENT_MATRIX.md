@@ -2,7 +2,7 @@
 
 Updated: 2026-06-12
 
-Status: `PASS IN CURRENT STRICT ACCEPTANCE`
+Status: `GATE 4 PASS`
 
 The service now defines 24 Master Bible sections. A section is production-pass only when:
 
@@ -11,6 +11,9 @@ The service now defines 24 Master Bible sections. A section is production-pass o
 - `_meta.production_quality == true`
 - `rawTextIncluded == false`
 - no fallback/placeholder marker is present.
+- no visible English JSON key label is present.
+- no smoke/fixture marker is present.
+- the section has concrete, section-specific payload and reference usage evidence.
 
 | Order | Section key | Required content | Current implementation | Current live status |
 | ---: | --- | --- | --- | --- |
@@ -39,6 +42,11 @@ The service now defines 24 Master Bible sections. A section is production-pass o
 | 23 | `reference_profile_usage` | how ReferenceMechanismProfile can be used safely | model-driven section generator + validator | accepted |
 | 24 | `production_control_rules` | serial chapter execution, context/export/state rules | model-driven section generator + validator | accepted |
 
-## Passing Evidence
+## Gate 4 Evidence
 
-Strict smoke project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` generated 24 accepted Bible sections and 24 complete coverage items. Passing log: `.local/epic_novel_runs/acceptance_smoke_strict_2026-06-12-resume4.log`.
+Gate 4 project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` has 24 accepted Bible sections and 24 complete coverage items after strict Chinese re-render.
+
+- Gate 4 report: `.local/epic_novel_runs/gate4_master_bible_2026-06-12T154950_704943Z.json`
+- Markdown export: `.local/epic_novel_exports/本长篇项目 全书圣经.md`
+- JSON export: `.local/epic_novel_exports/本长篇项目 全书圣经.json`
+- Forbidden marker scan: no `acceptance smoke`, raw English key labels, `结构字段`, `Long-form`, or `Epic Novel Engine` hits in exported markdown.

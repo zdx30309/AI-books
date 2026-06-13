@@ -177,6 +177,8 @@ class ReferencePatternCardResponse(EpicModelBase):
     originality_notes: str | None = None
     tags: list[Any] = Field(default_factory=list)
     source_section_ids: list[Any] = Field(default_factory=list)
+    source_analysis_ids: list[Any] = Field(default_factory=list)
+    source_book_ids: list[Any] = Field(default_factory=list)
     source_card_ids: list[Any] = Field(default_factory=list)
     evidence_count: int = 1
     raw_text_included: bool = False
@@ -295,13 +297,26 @@ class EpicNovelProjectDetailResponse(BaseModel):
     project: EpicNovelProjectResponse
     world_bible: dict[str, Any] | None = None
     world_atlas: dict[str, Any] | None = None
+    bureaucracy_system: dict[str, Any] | None = None
     power_system: dict[str, Any] | None = None
     master_bible: dict[str, Any] | None = None
+    worldview_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    nations: list[dict[str, Any]] = Field(default_factory=list)
+    map_regions: list[dict[str, Any]] = Field(default_factory=list)
+    institutions: list[dict[str, Any]] = Field(default_factory=list)
+    factions: list[dict[str, Any]] = Field(default_factory=list)
+    characters: list[dict[str, Any]] = Field(default_factory=list)
+    character_arcs: list[dict[str, Any]] = Field(default_factory=list)
+    global_spine: dict[str, Any] | None = None
     bible_sections: list[dict[str, Any]] = Field(default_factory=list)
     volume_contracts: list[dict[str, Any]] = Field(default_factory=list)
+    foreshadows: list[dict[str, Any]] = Field(default_factory=list)
+    reader_questions: list[dict[str, Any]] = Field(default_factory=list)
+    pleasure_beats: list[dict[str, Any]] = Field(default_factory=list)
     chapter_contracts: list[EpicChapterContractResponse] = Field(default_factory=list)
     chapters: list[EpicChapterResponse] = Field(default_factory=list)
     acceptance_reports: list[EpicAcceptanceReportResponse] = Field(default_factory=list)
+    issues: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_traces: list[dict[str, Any]] = Field(default_factory=list)
     logs: list[EpicGenerationLogResponse] = Field(default_factory=list)
 
@@ -343,3 +358,8 @@ class EpicDashboardResponse(BaseModel):
     generated_pattern_card_count: int
     repair_count: int
     cost_estimate: float
+    current_job: dict[str, Any] | None = None
+    job_progress: float = 0.0
+    estimated_remaining_cost: float = 0.0
+    job_errors: list[str] = Field(default_factory=list)
+    retry_status: str | None = None

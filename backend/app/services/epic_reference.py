@@ -5,17 +5,20 @@ import csv
 import hashlib
 import html
 import json
+import os
 import re
 import shutil
+import time
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, build_opener
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -32,6 +35,7 @@ from app.models import (
     ReferenceSection,
     ReferenceSectionAnalysis,
 )
+from app.prompts.epic_novel_prompts import get_epic_prompt
 from app.services.epic_model_router import call_epic_model, estimate_tokens, log_epic_generation
 from app.services.epic_storage import (
     compute_file_hash,
@@ -72,6 +76,45 @@ REFERENCE_CARD_CATEGORIES = [
     "anti_cliche",
     "longform_pacing",
 ]
+
+GATE2A_ANALYSIS_KEYS = [
+    "sectionSummary",
+    "plotFunction",
+    "pleasureFunction",
+    "characterArcMove",
+    "heroineAgencyMove",
+    "mysteryClueForeshadowActions",
+    "bureaucracyCourtFactionFunction",
+    "powerSystemMove",
+    "pacingRole",
+    "antiClicheNotes",
+    "reusableMechanisms",
+    "notToCopyNotes",
+]
+
+GATE2A_FORBIDDEN_ENGLISH_LABELS = [
+    "Pleasure Pattern",
+    "reader reward rhythm",
+    "case-to-arc escalation",
+    "institutional obstacle",
+]
+
+REFERENCE_CATEGORY_LABELS = {
+    "pleasure": "读者爽点",
+    "plot_structure": "情节结构",
+    "character_arc": "人物弧线",
+    "heroine_arc": "女性能动性",
+    "villain_arc": "反派压力",
+    "foreshadow": "伏笔回收",
+    "volume_structure": "分卷节奏",
+    "power_system": "战力推进",
+    "bureaucracy": "官僚阻力",
+    "faction": "势力博弈",
+    "map": "地图功能",
+    "worldbuilding": "世界规则",
+    "anti_cliche": "反套路",
+    "longform_pacing": "长篇节奏",
+}
 
 
 class EpicReferenceError(RuntimeError):
@@ -882,13 +925,13 @@ SECTION_ANALYSIS_REQUIRED_KEYS = [
     "pleasureFunction",
     "characterArcMove",
     "heroineAgencyMove",
-    "mysteryActions",
-    "bureaucracyFunction",
+    "mysteryClueForeshadowActions",
+    "bureaucracyCourtFactionFunction",
     "powerSystemMove",
     "pacingRole",
     "antiClicheNotes",
     "reusableMechanisms",
-    "notToCopy",
+    "notToCopyNotes",
 ]
 
 
@@ -908,6 +951,56 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("reference analysis output must be a JSON object")
     return parsed
+
+
+def _has_cjk(value: Any) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", json.dumps(value, ensure_ascii=False, default=str)))
+
+
+def _mostly_chinese_text(value: Any) -> bool:
+    def collect_leaf_text(item: Any) -> list[str]:
+        if isinstance(item, dict):
+            return [part for child in item.values() for part in collect_leaf_text(child)]
+        if isinstance(item, list):
+            return [part for child in item for part in collect_leaf_text(child)]
+        return [str(item)]
+
+    text = value if isinstance(value, str) else " ".join(collect_leaf_text(value))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    return cjk > max(20, latin * 2)
+
+
+def _contains_forbidden_english_label(value: Any) -> bool:
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    lowered = text.casefold()
+    return any(label.casefold() in lowered for label in GATE2A_FORBIDDEN_ENGLISH_LABELS)
+
+
+def _as_list(value: Any, fallback: list[Any] | None = None) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return list(fallback or [])
+
+
+def _stable_source_section_id(book: ReferenceBook, section: dict[str, Any]) -> str:
+    section_hash = str(section.get("sectionHash") or _hash_text(str(section.get("text") or "")))
+    book_hash = (book.file_hash or str(book.id)).replace("-", "")[:12]
+    index = int(section.get("sectionIndex") or 0) + 1
+    return f"book_{book_hash}_section_{index:06d}_{section_hash[:12]}"
+
+
+def _analysis_hash(data: dict[str, Any]) -> str:
+    comparable = {
+        key: data.get(key)
+        for key in GATE2A_ANALYSIS_KEYS
+    }
+    comparable["sourceBookId"] = data.get("sourceBookId")
+    comparable["sourceSectionId"] = data.get("sourceSectionId")
+    comparable["sectionHash"] = data.get("sectionHash")
+    return _json_hash(comparable)
 
 
 def _fallback_section_analysis(book: ReferenceBook, section: dict[str, Any]) -> dict[str, Any]:
@@ -963,17 +1056,107 @@ def _normalize_section_analysis(book: ReferenceBook, section: dict[str, Any], da
 
 
 def _build_section_analysis_prompt(book: ReferenceBook, section: dict[str, Any]) -> str:
-    return (
-        "你是长篇网文参考机制抽象器。只允许把参考文本抽象成机制，不得复述、仿写、复制原文措辞、人物名、机构名、场景、笑点、反转或章节结构。\n"
-        "请用简体中文返回严格 JSON 对象，不要 Markdown，不要解释。\n"
-        "JSON 字段必须包含：sectionSummary, plotFunction, pleasureFunction, characterArcMove, heroineAgencyMove, "
-        "mysteryActions, bureaucracyFunction, powerSystemMove, pacingRole, antiClicheNotes, reusableMechanisms, notToCopy, rawTextIncluded。\n"
-        "reusableMechanisms 是数组，每项包含 name 和 function。rawTextIncluded 必须为 false。\n\n"
-        f"[书籍身份]\nsourceBookId={book.id}\n书名={book.title}\n作者={book.author or ''}\n"
-        f"tier={book.tier}\ncategory={book.category}\n"
-        f"[章节身份]\nsourceSectionId={section.get('sourceSectionId')}\nchapterTitle={section.get('title')}\nsectionHash={section.get('sectionHash')}\n\n"
-        "[参考原文，仅用于本次抽象分析，禁止在输出中复述或保留原文]\n"
-        f"{str(section.get('text') or '')[: int(settings.EPIC_REFERENCE_BATCH_TOKEN_BUDGET or 60000) * 3]}"
+    text_budget_chars = int(settings.EPIC_REFERENCE_BATCH_TOKEN_BUDGET or 60000) * 3
+    return get_epic_prompt("reference_section_analysis_prompt").format(
+        source_book_id=book.id,
+        title=book.title,
+        author=book.author or "",
+        tier=book.tier,
+        category=book.category,
+        source_section_id=section.get("sourceSectionId"),
+        chapter_title=section.get("title"),
+        section_hash=section.get("sectionHash"),
+        reference_text=str(section.get("text") or "")[:text_budget_chars],
+    )
+
+
+# Gate 2A overrides: keep the legacy names so existing callers use the
+# section-aware, Chinese, production/fallback-separated implementation below.
+def _fallback_section_analysis(book: ReferenceBook, section: dict[str, Any]) -> dict[str, Any]:
+    title = str(section.get("title") or "未命名章节")
+    chars = len(str(section.get("text") or ""))
+    density = "高密度" if chars > 3500 else "中密度" if chars > 1200 else "低密度"
+    category_label = {
+        "core_similarity": "小案牵大局与低位破局",
+        "case_mystery": "线索递进与局部真相",
+        "court_power": "官僚流程与势力压迫",
+        "longform_xianxia": "长线升级与世界扩展",
+    }.get(book.category, "长篇结构")
+    section_id = str(section.get("sourceSectionId") or _stable_source_section_id(book, section))
+    section_hash = str(section.get("sectionHash") or _hash_text(str(section.get("text") or "")))
+    analysis = {
+        "sectionSummary": f"《{book.title}》的“{title[:48]}”被本地兜底抽象为{density}结构片段，只能作为烟测占位。",
+        "plotFunction": f"{category_label}中的局部推进节点，用于制造限制、选择和后果。",
+        "pleasureFunction": "通过信息差、制度阻力、阶段反转和可见收益形成读者爽点。",
+        "characterArcMove": "角色在压力中从被动理解规则转为主动利用规则，但必须付出代价。",
+        "heroineAgencyMove": "关键女性角色应有独立目标、资源和选择，不作为奖励或旁观说明。",
+        "mysteryClueForeshadowActions": ["设置可验证线索", "延迟解释关键矛盾", "让局部答案指向更大结构"],
+        "bureaucracyCourtFactionFunction": "程序、档案、职权、规章或派系利益成为情节压力源，而不是背景板。",
+        "powerSystemMove": "能力推进必须受规则、代价和社会承认约束，避免无成本跃迁。",
+        "pacingRole": "小高潮后保留未解问题，为下一节提供钩子，同时不提前揭开主谜底。",
+        "antiClicheNotes": ["不复制原文表达、人物名、场景或反转", "不把单本书当锚点", "不使用天降便利解决冲突"],
+        "reusableMechanisms": [
+            {"name": "制度阻力转线索", "function": "把办事流程中的阻碍转化为推理证据"},
+            {"name": "局部反转挂全局", "function": "章节答案解决眼前问题，同时暴露世界底层矛盾"},
+            {"name": "有代价的爽点兑现", "function": "胜利带来新责任、新敌人或新限制"},
+        ],
+        "notToCopyNotes": ["原书措辞", "原书人物或机构名", "原书案件、笑点、桥段、章节结构"],
+        "rawTextIncluded": False,
+        "sourceBookId": str(book.id),
+        "sourceSectionId": section_id,
+        "sectionHash": section_hash,
+        "language": settings.EPIC_REFERENCE_EXTRACTION_LANGUAGE,
+        "production_quality": False,
+        "status": "fallback",
+    }
+    analysis["mysteryActions"] = analysis["mysteryClueForeshadowActions"]
+    analysis["bureaucracyFunction"] = analysis["bureaucracyCourtFactionFunction"]
+    analysis["notToCopy"] = analysis["notToCopyNotes"]
+    return analysis
+
+
+def _normalize_section_analysis(book: ReferenceBook, section: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    fallback = _fallback_section_analysis(book, section)
+    aliases = {
+        "mysteryClueForeshadowActions": ["mysteryClueForeshadowActions", "mysteryActions"],
+        "bureaucracyCourtFactionFunction": ["bureaucracyCourtFactionFunction", "bureaucracyFunction"],
+        "notToCopyNotes": ["notToCopyNotes", "notToCopy"],
+    }
+    normalized: dict[str, Any] = {}
+    for key in SECTION_ANALYSIS_REQUIRED_KEYS:
+        value = None
+        for candidate in aliases.get(key, [key]):
+            if candidate in data:
+                value = data.get(candidate)
+                break
+        normalized[key] = value if value not in (None, "", []) else fallback[key]
+    for key in ("mysteryClueForeshadowActions", "antiClicheNotes", "reusableMechanisms", "notToCopyNotes"):
+        normalized[key] = _as_list(normalized.get(key), fallback[key])
+    normalized["rawTextIncluded"] = False
+    normalized["sourceBookId"] = str(book.id)
+    normalized["sourceSectionId"] = str(section.get("sourceSectionId") or _stable_source_section_id(book, section))
+    normalized["sectionHash"] = str(section.get("sectionHash") or _hash_text(str(section.get("text") or "")))
+    normalized["language"] = settings.EPIC_REFERENCE_EXTRACTION_LANGUAGE
+    normalized["production_quality"] = _mostly_chinese_text(normalized) and not _contains_forbidden_english_label(normalized)
+    normalized["status"] = "success" if normalized["production_quality"] else "needs_review"
+    normalized["mysteryActions"] = normalized["mysteryClueForeshadowActions"]
+    normalized["bureaucracyFunction"] = normalized["bureaucracyCourtFactionFunction"]
+    normalized["notToCopy"] = normalized["notToCopyNotes"]
+    return normalized
+
+
+def _build_section_analysis_prompt(book: ReferenceBook, section: dict[str, Any]) -> str:
+    text_budget_chars = int(settings.EPIC_REFERENCE_BATCH_TOKEN_BUDGET or 60000) * 3
+    return get_epic_prompt("reference_section_analysis_prompt").format(
+        source_book_id=book.id,
+        title=book.title,
+        author=book.author or "",
+        tier=book.tier,
+        category=book.category,
+        source_section_id=section.get("sourceSectionId"),
+        chapter_title=section.get("title"),
+        section_hash=section.get("sectionHash"),
+        reference_text=str(section.get("text") or "")[:text_budget_chars],
     )
 
 
@@ -1080,9 +1263,10 @@ def analyze_reference_section(
     existing.analysis_json = analysis_json
     existing.output_hash = _json_hash(analysis_json)
     existing.raw_text_included = False
-    existing.prompt_tokens = estimate_tokens(prompt)
+    prompt_token_count = estimate_tokens(prompt)
+    existing.prompt_tokens = prompt_token_count
     existing.completion_tokens = completion_tokens
-    existing.estimated_cost = 0.0
+    existing.estimated_cost = _estimate_reference_model_cost(prompt_token_count, completion_tokens)
     existing.error = error
     section_row.analysis_status = status
     db.flush()
@@ -1382,15 +1566,13 @@ def build_reference_mechanism_profile(
     ]
     use_llm = settings.EPIC_REFERENCE_ENABLE_LLM_EXTRACTION if use_llm_extraction is None else bool(use_llm_extraction)
     if use_llm and cards:
-        prompt = (
-            "你是300万字中文网文参考机制画像总编。只能使用下面的 ReferencePatternCards 抽象信息和全量统计，禁止生成或索要原始参考文本。\n"
-            "请输出严格 JSON，不要 Markdown。所有内容必须是简体中文，必须是机制层总结，不得锚定单本书。\n"
-            "字段：corePleasureMechanisms, caseStructurePatterns, courtPowerPatterns, bureaucracyConflictPatterns, "
-            "heroineAgencyPatterns, characterArcPatterns, foreshadowPatterns, powerProgressionPatterns, "
-            "longformPacingPatterns, antiClicheRules, commonPitfalls, originalityGuidance。\n\n"
-            f"[全量统计]\nsourceBookCount={len(books)}\nsourceCardCount={len(cards)}\ntierWeights={json.dumps(tier_weights, ensure_ascii=False)}\n"
-            f"categoryCounts={json.dumps({key: len(value) for key, value in by_category.items()}, ensure_ascii=False)}\n"
-            f"[抽象样本卡片]\n{json.dumps(sample_cards, ensure_ascii=False)}"
+        prompt = get_epic_prompt("reference_mechanism_profile_prompt").format(
+            source_book_count=len(books),
+            source_card_count=len(cards),
+            source_section_count=len(_unique_strings([sid for card in cards for sid in card.source_section_ids or []])),
+            tier_weights=json.dumps(tier_weights, ensure_ascii=False),
+            category_counts=json.dumps({key: len(value) for key, value in by_category.items()}, ensure_ascii=False),
+            sample_cards=json.dumps(sample_cards, ensure_ascii=False),
         )
         try:
             completion = call_epic_model(
@@ -1500,6 +1682,1355 @@ def _write_profile_artifact(profile: ReferenceMechanismProfile) -> None:
     (out_dir / f"{profile.id}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Gate 2A Reference Intelligence implementation.
+#
+# The functions below intentionally keep the public names used by the existing
+# API/service layer. Python resolves globals at call time, so this block upgrades
+# the reference workflow without touching the short-form generation system.
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _unique_strings(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    source = values if isinstance(values, list) else [values]
+    for value in source:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _plain_text_key(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+
+
+def _analysis_is_production_ready(row: ReferenceSectionAnalysis | None) -> bool:
+    if row is None or row.status != "success" or row.raw_text_included:
+        return False
+    data = row.analysis_json or {}
+    if not isinstance(data, dict):
+        return False
+    return (
+        data.get("production_quality") is True
+        and data.get("rawTextIncluded") is False
+        and bool(data.get("sourceBookId"))
+        and bool(data.get("sourceSectionId"))
+        and _mostly_chinese_text(data)
+        and not _contains_forbidden_english_label(data)
+    )
+
+
+def _card_is_production_ready(card: ReferencePatternCard) -> bool:
+    raw = card.raw_json or {}
+    return (
+        card.raw_text_included is False
+        and raw.get("rawTextIncluded") is False
+        and raw.get("production_quality") is True
+        and bool(card.source_section_ids)
+        and bool(getattr(card, "source_analysis_ids", None))
+        and bool(getattr(card, "source_book_ids", None) or card.source_book_id)
+        and not _contains_forbidden_english_label(
+            {
+                "name": card.name,
+                "function": card.function,
+                "description": card.description,
+                "raw": raw,
+            }
+        )
+    )
+
+
+def _production_ready_cards(db: Session) -> list[ReferencePatternCard]:
+    return [card for card in db.query(ReferencePatternCard).all() if _card_is_production_ready(card)]
+
+
+def _card_book_ids(card: ReferencePatternCard) -> list[str]:
+    ids = _unique_strings(getattr(card, "source_book_ids", None) or [])
+    if card.source_book_id:
+        ids.append(str(card.source_book_id))
+    return _unique_strings(ids)
+
+
+def _card_merge_key(card: ReferencePatternCard) -> str:
+    raw = card.raw_json or {}
+    payload = {
+        "category": card.category,
+        "function": _plain_text_key(card.function),
+        "bestUse": _unique_strings(card.best_use or [])[:5],
+        "tags": _unique_strings(card.tags or [])[:5],
+        "mechanismNames": [
+            _plain_text_key(item.get("name") if isinstance(item, dict) else item)
+            for item in (raw.get("reusableMechanisms") or [])[:3]
+        ],
+    }
+    return _json_hash(payload)
+
+
+def _merge_card_group_data(cards: list[ReferencePatternCard]) -> dict[str, Any]:
+    first = cards[0]
+    source_book_ids: list[str] = []
+    source_section_ids: list[str] = []
+    source_analysis_ids: list[str] = []
+    source_card_ids: list[str] = []
+    conditions: list[str] = []
+    beats: list[str] = []
+    pitfalls: list[str] = []
+    best_use: list[str] = []
+    tags: list[str] = []
+    for card in cards:
+        source_book_ids.extend(_card_book_ids(card))
+        source_section_ids.extend(_unique_strings(card.source_section_ids or []))
+        source_analysis_ids.extend(_unique_strings(getattr(card, "source_analysis_ids", None) or []))
+        source_card_ids.append(str(card.id))
+        conditions.extend(_unique_strings(card.conditions or []))
+        beats.extend(_unique_strings(card.beats or []))
+        pitfalls.extend(_unique_strings(card.common_pitfalls or []))
+        best_use.extend(_unique_strings(card.best_use or []))
+        tags.extend(_unique_strings(card.tags or []))
+    source_book_ids = _unique_strings(source_book_ids)
+    source_section_ids = _unique_strings(source_section_ids)
+    source_analysis_ids = _unique_strings(source_analysis_ids)
+    source_card_ids = _unique_strings(source_card_ids)
+    label = REFERENCE_CATEGORY_LABELS.get(first.category, "参考机制")
+    evidence_count = max(len(source_section_ids), sum(max(1, int(card.evidence_count or 1)) for card in cards))
+    raw_json = {
+        "production_quality": True,
+        "merged": True,
+        "mergeStrategy": "category_function_best_use_tags",
+        "sourceBookIds": source_book_ids,
+        "sourceSectionIds": source_section_ids,
+        "sourceAnalysisIds": source_analysis_ids,
+        "sourceCardIds": source_card_ids,
+        "evidenceCount": evidence_count,
+        "rawTextIncluded": False,
+        "abstractOnly": True,
+        "generatedAt": _utc_now_iso(),
+    }
+    return {
+        "pattern_key": f"gate2a_merged:{_card_merge_key(first)}",
+        "category": first.category,
+        "name": f"{label}合并机制卡-{len(cards)}源",
+        "description": f"由 {len(cards)} 张生产级抽象卡片合并，保留机制层共性和来源证据，不含参考原文。",
+        "genre": first.genre,
+        "function": first.function,
+        "conditions": _unique_strings(conditions)[:12],
+        "beats": _unique_strings(beats)[:12],
+        "common_pitfalls": _unique_strings(pitfalls)[:12],
+        "best_use": _unique_strings(best_use)[:12],
+        "required_global_link": "使用时必须绑定项目原创主线、制度压力、世界规则或角色目标。",
+        "originality_notes": "合并卡只保留抽象机制，不允许回填或推断任何参考原文。",
+        "tags": _unique_strings(tags + ["gate2a", "production_ready", "merged"])[:16],
+        "source_section_ids": source_section_ids,
+        "source_analysis_ids": source_analysis_ids,
+        "source_book_ids": source_book_ids,
+        "source_card_ids": source_card_ids,
+        "evidence_count": evidence_count,
+        "raw_text_included": False,
+        "extraction_model_provider": first.extraction_model_provider,
+        "extraction_model_name": first.extraction_model_name,
+        "output_hash": _json_hash(raw_json),
+        "raw_json": raw_json,
+    }
+
+
+def _build_section_analysis_prompt(book: ReferenceBook, section: dict[str, Any]) -> str:
+    text_budget_chars = int(settings.EPIC_REFERENCE_BATCH_TOKEN_BUDGET or 60000) * 3
+    template = get_epic_prompt("reference_section_analysis_prompt")
+    return template.format(
+        source_book_id=book.id,
+        title=book.title,
+        author=book.author or "",
+        tier=book.tier,
+        category=book.category,
+        source_section_id=section.get("sourceSectionId"),
+        chapter_title=section.get("title"),
+        section_hash=section.get("sectionHash"),
+        reference_text=str(section.get("text") or "")[:text_budget_chars],
+    )
+
+
+def _ensure_reference_section(db: Session, book: ReferenceBook, section: dict[str, Any]) -> ReferenceSection:
+    text = str(section.get("text") or "")
+    section_hash = str(section.get("sectionHash") or _hash_text(text))
+    section["sectionHash"] = section_hash
+    source_section_id = _stable_source_section_id(book, section)
+    section["sourceSectionId"] = source_section_id
+    section_index = int(section.get("sectionIndex") or 0)
+    row = (
+        db.query(ReferenceSection)
+        .filter(ReferenceSection.source_book_id == book.id, ReferenceSection.source_section_id == source_section_id)
+        .first()
+    )
+    if row is None:
+        row = ReferenceSection(source_book_id=book.id, source_section_id=source_section_id)
+        db.add(row)
+    row.chapter_title = str(section.get("title") or "opening")[:500]
+    row.section_index = section_index
+    row.section_hash = section_hash
+    row.start_offset = int(section.get("startOffset")) if section.get("startOffset") is not None else None
+    row.end_offset = int(section.get("endOffset")) if section.get("endOffset") is not None else None
+    row.text_chars = len(text)
+    row.token_estimate = estimate_tokens(text)
+    row.status = "parsed"
+    row.raw_json = {
+        "sourceBookId": str(book.id),
+        "sourceSectionId": source_section_id,
+        "chapterTitle": row.chapter_title,
+        "sectionIndex": section_index,
+        "sectionHash": section_hash,
+        "startOffset": row.start_offset,
+        "endOffset": row.end_offset,
+        "charCount": row.text_chars,
+        "tokenEstimate": row.token_estimate,
+        "rawTextIncluded": False,
+        "rawTextStored": False,
+        "stableIdentity": {
+            "bookHash": book.file_hash,
+            "sectionHash": section_hash,
+        },
+    }
+    db.flush()
+    return row
+
+
+def analyze_reference_section(
+    db: Session,
+    *,
+    book: ReferenceBook,
+    section: dict[str, Any],
+    section_row: ReferenceSection,
+    use_llm: bool | None = None,
+    force: bool | None = None,
+) -> ReferenceSectionAnalysis:
+    use_llm = settings.EPIC_REFERENCE_ENABLE_LLM_EXTRACTION if use_llm is None else bool(use_llm)
+    force = settings.EPIC_REFERENCE_FORCE_REINGEST if force is None else bool(force)
+    provider = settings.EPIC_REFERENCE_MODEL_PROVIDER or "deepseek"
+    model_name = settings.EPIC_REFERENCE_MODEL_NAME or "deepseek-v4-pro"
+    existing = db.query(ReferenceSectionAnalysis).filter(ReferenceSectionAnalysis.section_id == section_row.id).first()
+    if existing is not None and not force and settings.EPIC_REFERENCE_CACHE_BY_HASH and existing.section_hash == section_row.section_hash:
+        if existing.status == "success" or not settings.EPIC_REFERENCE_RETRY_FAILED_ONLY:
+            if isinstance(existing.analysis_json, dict) and not existing.analysis_json.get("sourceAnalysisId"):
+                existing.analysis_json = {**existing.analysis_json, "sourceAnalysisId": str(existing.id)}
+                existing.analysis_hash = _analysis_hash(existing.analysis_json)
+                existing.output_hash = existing.analysis_hash
+            section_row.analysis_status = existing.status
+            db.flush()
+            return existing
+
+    analysis_id = existing.id if existing is not None else uuid4()
+
+    prompt = _build_section_analysis_prompt(book, section)
+    fallback = _fallback_section_analysis(book, section)
+    fallback["sourceAnalysisId"] = str(analysis_id)
+    analysis_json = fallback
+    status = "fallback"
+    error: str | None = None
+    completion_tokens = estimate_tokens(json.dumps(fallback, ensure_ascii=False))
+
+    if use_llm:
+        try:
+            completion = call_epic_model(
+                db,
+                action="reference_section_analysis",
+                role="reference",
+                prompt=prompt,
+                max_output_tokens=0,
+            )
+            parsed = _extract_json_object(completion)
+            normalized = _normalize_section_analysis(book, section, parsed)
+            normalized["sourceAnalysisId"] = str(analysis_id)
+            normalized["modelProvider"] = provider
+            normalized["modelName"] = model_name
+            normalized["rawTextIncluded"] = False
+            analysis_json = normalized
+            status = "success" if normalized.get("production_quality") is True else "error"
+            if status == "error":
+                error = "model_output_not_production_quality"
+            completion_tokens = estimate_tokens(completion)
+        except Exception as exc:  # noqa: BLE001 - section failures must be resumable.
+            error = str(exc)[:1000]
+            log_epic_generation(
+                db,
+                action="reference_section_analysis_fallback",
+                role="reference",
+                prompt="reference section analysis fallback",
+                completion=json.dumps({"sourceSectionId": section_row.source_section_id, "error": error}, ensure_ascii=False),
+                status="error",
+                error=error,
+            )
+    else:
+        error = "llm_disabled"
+
+    if existing is None:
+        existing = ReferenceSectionAnalysis(id=analysis_id, section_id=section_row.id, source_book_id=book.id)
+        db.add(existing)
+
+    analysis_hash = _analysis_hash(analysis_json)
+    existing.source_book_id = book.id
+    existing.section_hash = section_row.section_hash
+    existing.model_provider = provider
+    existing.model_name = model_name
+    existing.status = status
+    existing.analysis_json = {
+        **analysis_json,
+        "analysisHash": analysis_hash,
+        "status": status,
+        "modelProvider": provider,
+        "modelName": model_name,
+        "rawTextIncluded": False,
+    }
+    existing.analysis_hash = analysis_hash
+    existing.output_hash = analysis_hash
+    existing.raw_text_included = False
+    prompt_token_count = estimate_tokens(prompt)
+    existing.prompt_tokens = prompt_token_count
+    existing.completion_tokens = completion_tokens
+    existing.estimated_cost = _estimate_reference_model_cost(prompt_token_count, completion_tokens)
+    existing.error = error
+    section_row.analysis_status = status
+    db.flush()
+    return existing
+
+
+def _abstract_card_data(
+    book: ReferenceBook,
+    section: dict[str, Any],
+    category: str,
+    index: int,
+    analysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    analysis = analysis or _fallback_section_analysis(book, section)
+    source_section_id = str(analysis.get("sourceSectionId") or section.get("sourceSectionId") or _stable_source_section_id(book, section))
+    source_analysis_id = str(analysis.get("sourceAnalysisId") or "")
+    analysis_hash = str(analysis.get("analysisHash") or _analysis_hash(analysis))
+    mechanisms = analysis.get("reusableMechanisms") if isinstance(analysis, dict) else []
+    mechanism_names = [
+        str(item.get("name") if isinstance(item, dict) else item).strip()
+        for item in mechanisms or []
+        if item
+    ]
+    mechanism_functions = [
+        str(item.get("function")).strip()
+        for item in mechanisms or []
+        if isinstance(item, dict) and item.get("function")
+    ]
+    function_map = {
+        "pleasure": analysis.get("pleasureFunction") or "通过压力、反转和兑现形成读者爽点。",
+        "plot_structure": analysis.get("plotFunction") or "把局部问题推进成长期主线压力。",
+        "character_arc": analysis.get("characterArcMove") or "让角色在选择代价中完成阶段变化。",
+        "heroine_arc": analysis.get("heroineAgencyMove") or "让女性角色以独立目标和资源参与主线。",
+        "villain_arc": "反派压力来自目标、资源、制度位置和可见代价。",
+        "foreshadow": "线索、误导、延迟解释和阶段回收形成长期悬念。",
+        "volume_structure": "以阶段目标、阶段兑现和新问题承接分卷节奏。",
+        "power_system": analysis.get("powerSystemMove") or "能力推进必须受规则、代价和社会承认约束。",
+        "bureaucracy": analysis.get("bureaucracyCourtFactionFunction") or "制度流程与派系利益制造情节阻力。",
+        "faction": analysis.get("bureaucracyCourtFactionFunction") or "势力目标冲突推动公开与隐性博弈。",
+        "map": "地点作为限制、线索、资源和风险的组织方式。",
+        "worldbuilding": "世界规则必须转化为角色可感知的压力和机会。",
+        "anti_cliche": "避免复制来源表达、无代价胜利、单本过拟合和解释堆砌。",
+        "longform_pacing": analysis.get("pacingRole") or "在兑现后保留未解问题，维持连载推进。",
+    }
+    label = REFERENCE_CATEGORY_LABELS.get(category, "参考机制")
+    title = str(section.get("title") or "未命名章节")
+    production_quality = analysis.get("production_quality") is True and analysis.get("rawTextIncluded") is False
+    raw_json = {
+        "sectionTitle": title,
+        "sourceBookId": str(book.id),
+        "sourceBookIds": [str(book.id)],
+        "sourceSectionIds": [source_section_id],
+        "sourceAnalysisIds": [source_analysis_id] if source_analysis_id else [],
+        "sectionHash": section.get("sectionHash") or analysis.get("sectionHash"),
+        "analysisHash": analysis_hash,
+        "abstractOnly": True,
+        "rawTextIncluded": False,
+        "production_quality": production_quality,
+        "generatedBy": "ReferenceSectionAnalysis",
+        "reusableMechanisms": mechanisms or [],
+        "generatedAt": _utc_now_iso(),
+    }
+    return {
+        "pattern_key": f"gate2a:{book.id}:{source_section_id}:{analysis_hash[:16]}:{category}",
+        "category": category,
+        "name": f"{label}机制卡-{index + 1:04d}",
+        "description": f"从《{book.title}》的“{title[:40]}”成功分节分析中抽象出的机制卡；仅保留机制层证据，不含参考原文。",
+        "genre": book.genre,
+        "function": str(function_map[category]),
+        "conditions": [
+            f"当前章节需要调用{label}时使用",
+            "必须绑定项目原创世界规则、官僚制度、角色目标或主线谜团",
+        ],
+        "beats": _unique_strings(mechanism_names + mechanism_functions)[:6] or ["建立压力", "制造受限选择", "兑现后留下新问题"],
+        "common_pitfalls": _unique_strings(_as_list(analysis.get("notToCopyNotes")) + _as_list(analysis.get("antiClicheNotes")))[:8]
+        or ["不得复制来源表达", "不得照搬角色、机构、案件、桥段或反转", "不得把单本书当作风格锚点"],
+        "best_use": _unique_strings([book.category, f"tier_{book.tier}", label, "gate2a"]),
+        "required_global_link": "必须接入项目自己的全局主线、官僚系统、战力规则或角色目标。",
+        "originality_notes": "卡片只保留抽象机制；生成 prompt 不可访问原始参考文本。",
+        "tags": _unique_strings([category, book.category, f"tier_{book.tier}", "gate2a", "production_ready"]),
+        "source_section_ids": [source_section_id],
+        "source_analysis_ids": [source_analysis_id] if source_analysis_id else [],
+        "source_book_ids": [str(book.id)],
+        "source_card_ids": [],
+        "evidence_count": 1,
+        "raw_text_included": False,
+        "extraction_model_provider": settings.EPIC_REFERENCE_MODEL_PROVIDER or "deepseek",
+        "extraction_model_name": settings.EPIC_REFERENCE_MODEL_NAME or "deepseek-v4-pro",
+        "output_hash": _json_hash(raw_json),
+        "raw_json": raw_json,
+    }
+
+
+def ingest_reference_book(
+    db: Session,
+    *,
+    book_id: UUID | None = None,
+    source_path: str | None = None,
+    use_llm_extraction: bool | None = None,
+    force_reingest: bool | None = None,
+) -> dict[str, Any]:
+    if book_id is not None:
+        book = db.get(ReferenceBook, book_id)
+        if book is None:
+            raise EpicReferenceError(f"ReferenceBook not found: {book_id}")
+    elif source_path:
+        book = import_reference_file(db, file_path=source_path)
+    else:
+        raise EpicReferenceError("book_id or source_path is required")
+
+    text = parse_reference_text(book.source_path)
+    sections = split_by_chapter(text, limit=settings.EPIC_REFERENCE_INGEST_SECTION_LIMIT)
+    job = ReferenceIngestionJob(source_path=book.source_path, status="processing", total_files=1)
+    db.add(job)
+    db.flush()
+    generated = 0
+    successful_analyses = 0
+    fallback_analyses = 0
+    error_analyses = 0
+    existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+    for index, section in enumerate(sections):
+        control = get_reference_extraction_control().get("state", "running")
+        if control in {"paused", "stopped"}:
+            job.status = control
+            break
+        section_row = _ensure_reference_section(db, book, section)
+        analysis_row = analyze_reference_section(
+            db,
+            book=book,
+            section=section,
+            section_row=section_row,
+            use_llm=use_llm_extraction,
+            force=force_reingest,
+        )
+        if analysis_row.status == "success":
+            successful_analyses += 1
+        elif analysis_row.status == "fallback":
+            fallback_analyses += 1
+        else:
+            error_analyses += 1
+        section_generated = 0
+        if _analysis_is_production_ready(analysis_row):
+            analysis_json = analysis_row.analysis_json or {}
+            for category in _card_categories_for_section(book, index):
+                data = _abstract_card_data(book, section, category, index, analysis_json)
+                if data["pattern_key"] in existing_keys:
+                    continue
+                db.add(ReferencePatternCard(source_book_id=book.id, **data))
+                existing_keys.add(data["pattern_key"])
+                generated += 1
+                section_generated += 1
+        section_row.card_count = section_generated
+        section_row.status = "indexed" if section_generated else "analyzed"
+    if job.status == "processing":
+        job.status = "completed"
+    book.status = "indexed" if generated else "analyzed"
+    if book.download_task is not None:
+        book.download_task.generated_card_count = generated
+    job.processed_files = 1
+    job.generated_cards = generated
+    db.commit()
+    log_epic_generation(
+        db,
+        action="reference_pattern_extract",
+        role="cheap",
+        prompt=f"section-aware abstract-only extraction for {book.title}",
+        completion=json.dumps(
+            {
+                "generatedCards": generated,
+                "successfulAnalyses": successful_analyses,
+                "fallbackAnalyses": fallback_analyses,
+                "errorAnalyses": error_analyses,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.commit()
+    return {
+        "book": {column.name: getattr(book, column.name) for column in book.__table__.columns},
+        "generated_cards": generated,
+        "sections": len(sections),
+        "successful_section_analyses": successful_analyses,
+        "fallback_section_analyses": fallback_analyses,
+        "error_section_analyses": error_analyses,
+        "production_ready_cards": len(
+            [
+                card
+                for card in db.query(ReferencePatternCard).filter(ReferencePatternCard.source_book_id == book.id).all()
+                if _card_is_production_ready(card)
+            ]
+        ),
+        "section_analyses": db.query(ReferenceSectionAnalysis).filter(ReferenceSectionAnalysis.source_book_id == book.id).count(),
+    }
+
+
+def search_pattern_cards(
+    db: Session,
+    *,
+    query: str = "",
+    category: str | None = None,
+    limit: int = 0,
+    production_ready_only: bool = False,
+) -> list[ReferencePatternCard]:
+    q = db.query(ReferencePatternCard)
+    if category:
+        q = q.filter(ReferencePatternCard.category == category)
+    if production_ready_only:
+        q = q.filter(ReferencePatternCard.raw_text_included.is_(False))
+        q = q.filter(ReferencePatternCard.source_section_ids != [])
+        q = q.filter(ReferencePatternCard.source_analysis_ids != [])
+    cards = q.order_by(ReferencePatternCard.created_at.desc()).all()
+    if production_ready_only:
+        cards = [card for card in cards if _card_is_production_ready(card)]
+    if not query:
+        return cards[:limit] if limit and limit > 0 else cards
+    terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
+    scored: list[tuple[int, ReferencePatternCard]] = []
+    for card in cards:
+        haystack = " ".join([card.name, card.description, card.category, " ".join(map(str, card.tags or []))]).casefold()
+        score = sum(1 for term in terms if term in haystack)
+        scored.append((score, card))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    ranked = [card for _, card in scored]
+    return ranked[:limit] if limit and limit > 0 else ranked
+
+
+def dedupe_production_pattern_cards(db: Session, *, card_ids: list[UUID] | None = None) -> dict[str, Any]:
+    candidates = _production_ready_cards(db)
+    if card_ids:
+        allowed = {str(item) for item in card_ids}
+        candidates = [card for card in candidates if str(card.id) in allowed or str((card.raw_json or {}).get("sourceCardIds", "")) in allowed]
+    groups: dict[str, list[ReferencePatternCard]] = {}
+    for card in candidates:
+        if (card.raw_json or {}).get("merged") is True:
+            continue
+        groups.setdefault(_card_merge_key(card), []).append(card)
+    merged = 0
+    merged_source_cards = 0
+    for key, group in groups.items():
+        if len(group) < 2:
+            continue
+        data = _merge_card_group_data(group)
+        existing = db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == data["pattern_key"]).first()
+        if existing is None:
+            existing = ReferencePatternCard(source_book_id=None, **data)
+            db.add(existing)
+            merged += 1
+        else:
+            for field, value in data.items():
+                setattr(existing, field, value)
+        merged_source_cards += len(group)
+    db.commit()
+    return {
+        "candidateCards": len(candidates),
+        "mergeGroups": sum(1 for group in groups.values() if len(group) > 1),
+        "mergedCardsCreatedOrUpdated": merged,
+        "mergedSourceCards": merged_source_cards,
+        "productionReadyCardsAfterDedupe": len(_production_ready_cards(db)),
+    }
+
+
+def _profile_raw_json_payload(
+    *,
+    generation_status: str,
+    source_book_ids: list[str],
+    source_card_ids: list[str],
+    source_section_ids: list[str],
+    categories: dict[str, int],
+    evidence_counts: list[int],
+    production_ready_only: bool,
+) -> dict[str, Any]:
+    return {
+        "generationStatus": generation_status,
+        "profileVersion": _json_hash(
+            {
+                "books": source_book_ids,
+                "cards": source_card_ids,
+                "sections": source_section_ids,
+                "categories": categories,
+                "productionReadyOnly": production_ready_only,
+            }
+        ),
+        "provider": settings.EPIC_REFERENCE_MODEL_PROVIDER,
+        "model": settings.EPIC_REFERENCE_MODEL_NAME,
+        "referenceModelProvider": settings.EPIC_REFERENCE_MODEL_PROVIDER,
+        "referenceModelName": settings.EPIC_REFERENCE_MODEL_NAME,
+        "sourceBookIds": source_book_ids,
+        "sourceBookCount": len(source_book_ids),
+        "sourceCardCount": len(source_card_ids),
+        "sourceCardIdsSample": source_card_ids[:1000],
+        "sourceSectionIdsSample": source_section_ids[:1000],
+        "generatedAt": _utc_now_iso(),
+        "rawTextIncluded": False,
+        "abstractOnly": True,
+        "buildMode": "production_ready_cards" if production_ready_only else "all_cards",
+        "categoriesCovered": sorted(categories),
+        "categories": categories,
+        "evidenceCounts": {
+            "min": min(evidence_counts) if evidence_counts else 0,
+            "max": max(evidence_counts) if evidence_counts else 0,
+            "total": sum(evidence_counts),
+            "cardCount": len(evidence_counts),
+        },
+        "productionReadyOnly": production_ready_only,
+        "productionReadyCardCount": len(source_card_ids) if production_ready_only else None,
+        "oldSourceLessCardsExcluded": bool(production_ready_only),
+    }
+
+
+def build_reference_mechanism_profile(
+    db: Session,
+    *,
+    project_id: UUID | None = None,
+    use_llm_extraction: bool | None = None,
+    production_ready_only: bool = False,
+) -> ReferenceMechanismProfile:
+    cards = _production_ready_cards(db) if production_ready_only else db.query(ReferencePatternCard).all()
+    by_category: dict[str, list[str]] = {}
+    tier_weights: dict[str, int] = {}
+    source_card_ids: list[str] = []
+    source_book_ids: list[str] = []
+    source_section_ids: list[str] = []
+    evidence_counts: list[int] = []
+    for card in cards:
+        card_text = str(card.function or card.name)
+        by_category.setdefault(card.category, []).append(card_text)
+        source_card_ids.append(str(card.id))
+        source_book_ids.extend(_card_book_ids(card))
+        source_section_ids.extend(_unique_strings(card.source_section_ids or []))
+        evidence_counts.append(max(1, int(card.evidence_count or 1)))
+        source = card.source_book
+        if source is not None:
+            key = f"tier_{source.tier}"
+            tier_weights[key] = tier_weights.get(key, 0) + 1
+    source_book_ids = _unique_strings(source_book_ids)
+    source_section_ids = _unique_strings(source_section_ids)
+    source_card_ids = _unique_strings(source_card_ids)
+    fallback_profile = {
+        "corePleasureMechanisms": by_category.get("pleasure", [])[:200] or ["通过压力、反转、代价和阶段兑现形成读者爽点。"],
+        "caseStructurePatterns": by_category.get("plot_structure", [])[:200] or ["局部问题必须牵引更大主线，而不是只解决眼前事件。"],
+        "courtPowerPatterns": (by_category.get("faction", []) + by_category.get("bureaucracy", []))[:200]
+        or ["官僚流程、派系利益和制度身份共同制造可持续阻力。"],
+        "bureaucracyConflictPatterns": by_category.get("bureaucracy", [])[:200] or ["程序、档案、职权和规章要成为情节压力源。"],
+        "heroineAgencyPatterns": by_category.get("heroine_arc", [])[:200] or ["女性角色必须拥有独立目标、资源、判断和后果。"],
+        "characterArcPatterns": by_category.get("character_arc", [])[:200] or ["人物变化来自受限选择及其代价。"],
+        "foreshadowPatterns": by_category.get("foreshadow", [])[:200] or ["线索应可验证、可误导，并在后续以新代价回收。"],
+        "powerProgressionPatterns": by_category.get("power_system", [])[:200] or ["战力推进必须受规则、代价、资源和社会承认限制。"],
+        "longformPacingPatterns": by_category.get("longform_pacing", [])[:200] or ["每次阶段兑现后必须保留新问题和下一步压力。"],
+        "antiClicheRules": by_category.get("anti_cliche", [])[:200]
+        or ["禁止复制参考书人物、机构、桥段、反转或原文表达。", "禁止无代价升级和天降便利。", "禁止把单本书作为风格锚点。"],
+        "commonPitfalls": ["复制来源文本", "证据来源混杂但不保留来源 ID", "只堆设定不制造章节压力", "爽点无代价"],
+        "originalityGuidance": ["只吸收机制层", "每个机制必须绑定原创世界规则、官僚系统或角色目标", "用多书证据抵消单本过拟合"],
+    }
+    llm_profile = fallback_profile
+    llm_status = "local_summary"
+    sample_cards = [
+        {
+            "id": str(card.id),
+            "category": card.category,
+            "name": card.name,
+            "function": card.function,
+            "sourceBookIds": _card_book_ids(card),
+            "sourceSectionIds": card.source_section_ids or [],
+            "sourceAnalysisIds": getattr(card, "source_analysis_ids", None) or [],
+            "evidenceCount": card.evidence_count,
+        }
+        for card in cards[: min(len(cards), 240)]
+    ]
+    use_llm = settings.EPIC_REFERENCE_ENABLE_LLM_EXTRACTION if use_llm_extraction is None else bool(use_llm_extraction)
+    if use_llm and cards:
+        prompt = get_epic_prompt("reference_mechanism_profile_prompt").format(
+            source_book_count=len(source_book_ids),
+            source_card_count=len(cards),
+            source_section_count=len(source_section_ids),
+            tier_weights=json.dumps(tier_weights, ensure_ascii=False),
+            category_counts=json.dumps({key: len(value) for key, value in by_category.items()}, ensure_ascii=False),
+            sample_cards=json.dumps(sample_cards, ensure_ascii=False),
+        )
+        try:
+            completion = call_epic_model(
+                db,
+                action="reference_mechanism_profile_generate",
+                role="reference",
+                prompt=prompt,
+                project_id=project_id,
+                max_output_tokens=0,
+            )
+            parsed = _extract_json_object(completion)
+            for key, value in fallback_profile.items():
+                if key not in parsed or not isinstance(parsed[key], list):
+                    parsed[key] = value
+            if _mostly_chinese_text(parsed) and not _contains_forbidden_english_label(parsed):
+                llm_profile = parsed
+                llm_status = "success"
+            else:
+                llm_status = "fallback"
+        except Exception as exc:  # noqa: BLE001
+            llm_status = "fallback"
+            log_epic_generation(
+                db,
+                action="reference_mechanism_profile_fallback",
+                role="reference",
+                project_id=project_id,
+                prompt="reference mechanism profile fallback",
+                completion=json.dumps({"error": str(exc)[:1000]}, ensure_ascii=False),
+                status="error",
+                error=str(exc)[:1000],
+            )
+    raw_json = _profile_raw_json_payload(
+        generation_status=llm_status,
+        source_book_ids=source_book_ids,
+        source_card_ids=source_card_ids,
+        source_section_ids=source_section_ids,
+        categories={key: len(value) for key, value in by_category.items()},
+        evidence_counts=evidence_counts,
+        production_ready_only=production_ready_only,
+    )
+    profile = ReferenceMechanismProfile(
+        project_id=project_id,
+        profile_name="长篇小说参考机制画像",
+        source_book_count=len(source_book_ids),
+        source_card_count=len(source_card_ids),
+        genre="ancient_transmigration_mystery_xianxia",
+        tier_weights=tier_weights,
+        core_pleasure_mechanisms=llm_profile["corePleasureMechanisms"],
+        case_structure_patterns=llm_profile["caseStructurePatterns"],
+        court_power_patterns=llm_profile["courtPowerPatterns"],
+        bureaucracy_conflict_patterns=llm_profile["bureaucracyConflictPatterns"],
+        heroine_agency_patterns=llm_profile["heroineAgencyPatterns"],
+        character_arc_patterns=llm_profile["characterArcPatterns"],
+        foreshadow_patterns=llm_profile["foreshadowPatterns"],
+        power_progression_patterns=llm_profile["powerProgressionPatterns"],
+        longform_pacing_patterns=llm_profile["longformPacingPatterns"],
+        anti_cliche_rules=llm_profile["antiClicheRules"],
+        common_pitfalls=llm_profile["commonPitfalls"],
+        originality_guidance=llm_profile["originalityGuidance"],
+        raw_json=raw_json,
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    log_epic_generation(
+        db,
+        action="reference_mechanism_profile",
+        role="editor",
+        project_id=project_id,
+        prompt="aggregate production-ready ReferencePatternCards",
+        completion=f"cards={len(source_card_ids)} books={len(source_book_ids)} sections={len(source_section_ids)}",
+    )
+    db.commit()
+    _write_profile_artifact(profile)
+    return profile
+
+
+def _write_profile_artifact(profile: ReferenceMechanismProfile) -> None:
+    out_dir = reference_processed_path() / "mechanism_profiles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "id": str(profile.id),
+        "profileName": profile.profile_name,
+        "sourceBookCount": profile.source_book_count,
+        "sourceCardCount": profile.source_card_count,
+        "tierWeights": profile.tier_weights,
+        "corePleasureMechanisms": profile.core_pleasure_mechanisms,
+        "antiClicheRules": profile.anti_cliche_rules,
+        "originalityGuidance": profile.originality_guidance,
+        "rawTextIncluded": False,
+        "rawJson": profile.raw_json or {},
+    }
+    (out_dir / f"{profile.id}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _deepseek_reference_credentials_available() -> bool:
+    return bool((settings.DEEPSEEK_API_KEY or os.getenv("DEEPSEEK_API_KEY", "")).strip())
+
+
+def _estimate_reference_model_cost(prompt_tokens: int, completion_tokens: int = 0) -> float:
+    input_rate = float(os.getenv("EPIC_REFERENCE_INPUT_COST_PER_1K", "0.00014") or 0.00014)
+    output_rate = float(os.getenv("EPIC_REFERENCE_OUTPUT_COST_PER_1K", "0.00028") or 0.00028)
+    return round((max(0, prompt_tokens) / 1000.0 * input_rate) + (max(0, completion_tokens) / 1000.0 * output_rate), 8)
+
+
+def _gate2b_should_process_section(
+    existing_status: str | None,
+    *,
+    resume: bool,
+    retry_failed_only: bool,
+    force: bool,
+) -> tuple[bool, str]:
+    if force:
+        return True, "force"
+    if retry_failed_only:
+        if existing_status in {"fallback", "error"}:
+            return True, "retry_failed"
+        return False, "retry_failed_only_skip"
+    if resume and existing_status == "success":
+        return False, "already_success"
+    if resume and existing_status in {"fallback", "error"}:
+        return True, "resume_retry_failed"
+    return True, "new_or_uncached"
+
+
+def _gate2b_verdict(metrics: dict[str, Any]) -> str:
+    if metrics.get("useLlmExtraction") and not metrics.get("deepseekCredentialsAvailable"):
+        return "UNKNOWN_NEEDS_EVIDENCE"
+    if metrics.get("dryRun"):
+        return "UNKNOWN_NEEDS_EVIDENCE"
+    staged_ok = (
+        int(metrics.get("cumulativeSuccessfulAnalyses") or 0) > int(metrics.get("gate2aBaselineSuccessfulAnalyses") or 0)
+        and int(metrics.get("cumulativeProductionReadyCards") or 0) > int(metrics.get("gate2aBaselineProductionReadyCards") or 0)
+        and int(metrics.get("sourceBookIdsPreserved") or 0) >= 2
+        and int(metrics.get("sourceSectionIdsPreserved") or 0) > int(metrics.get("gate2aBaselineSourceSections") or 0)
+        and int(metrics.get("sourceAnalysisIdsPreserved") or 0) > int(metrics.get("gate2aBaselineSourceAnalyses") or 0)
+        and metrics.get("profileRawTextIncluded") is False
+        and bool(metrics.get("profileChinese"))
+    )
+    full_done = (
+        int(metrics.get("cumulativeSuccessfulAnalyses") or 0) >= int(metrics.get("estimatedImportedCorpusSections") or 0) > 0
+        and int(metrics.get("processedBookCount") or 0) >= int(metrics.get("importedBookCount") or 0) > 0
+    )
+    if staged_ok and full_done:
+        return "PASS"
+    if staged_ok:
+        return "PARTIAL"
+    if metrics.get("failures") or metrics.get("blockers"):
+        return "PARTIAL"
+    return "FAIL"
+
+
+def run_gate2a_reference_intelligence_proof(
+    db: Session,
+    *,
+    book_limit: int = 1,
+    section_limit: int = 50,
+    use_llm_extraction: bool | None = None,
+    force: bool = False,
+    rebuild_profile: bool = True,
+) -> dict[str, Any]:
+    book_limit = max(1, int(book_limit or 1))
+    section_limit = max(1, int(section_limit or 50))
+    use_llm = settings.EPIC_REFERENCE_ENABLE_LLM_EXTRACTION if use_llm_extraction is None else bool(use_llm_extraction)
+    books = (
+        db.query(ReferenceBook)
+        .filter(ReferenceBook.source_path.isnot(None))
+        .order_by(ReferenceBook.tier.asc(), ReferenceBook.title.asc())
+        .limit(book_limit)
+        .all()
+    )
+    started_at = _utc_now_iso()
+    metrics: dict[str, Any] = {
+        "gate": "2A",
+        "scope": "bounded_reference_intelligence_proof",
+        "startedAt": started_at,
+        "bookLimit": book_limit,
+        "sectionLimit": section_limit,
+        "provider": settings.EPIC_REFERENCE_MODEL_PROVIDER,
+        "model": settings.EPIC_REFERENCE_MODEL_NAME,
+        "deepseekCredentialsAvailable": _deepseek_reference_credentials_available(),
+        "useLlmExtraction": use_llm,
+        "selectedBooks": [],
+        "proofBookCount": len(books),
+        "proofSectionCount": 0,
+        "referenceSectionRows": 0,
+        "referenceSectionAnalysisRows": 0,
+        "successfulDeepSeekAnalyses": 0,
+        "fallbackAnalyses": 0,
+        "errorAnalyses": 0,
+        "productionReadyCardsBeforeDedupe": 0,
+        "productionReadyCardsAfterDedupe": 0,
+        "mergedCardsCreatedOrUpdated": 0,
+        "sourceBookIdsPreserved": 0,
+        "sourceSectionIdsPreserved": 0,
+        "sourceAnalysisIdsPreserved": 0,
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "estimatedCost": 0.0,
+        "failures": [],
+        "blockers": [],
+    }
+    if not books:
+        metrics["blockers"].append("no_imported_reference_books")
+        metrics["verdict"] = "UNKNOWN_NEEDS_EVIDENCE"
+        metrics["finishedAt"] = _utc_now_iso()
+        return metrics
+    if use_llm and not metrics["deepseekCredentialsAvailable"]:
+        metrics["blockers"].append("DEEPSEEK_API_KEY 未配置，不能证明 DeepSeek V4 Pro 分节分析")
+    selected_analysis_ids: list[str] = []
+    selected_card_ids: list[UUID] = []
+    remaining = section_limit
+    for book in books:
+        if remaining <= 0:
+            break
+        try:
+            sections = split_by_chapter(parse_reference_text(book.source_path), limit=remaining)
+        except Exception as exc:  # noqa: BLE001
+            metrics["failures"].append({"bookId": str(book.id), "title": book.title, "error": str(exc)[:500]})
+            continue
+        sections = sections[:remaining]
+        metrics["selectedBooks"].append({"bookId": str(book.id), "title": book.title, "sections": len(sections)})
+        existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+        for index, section in enumerate(sections):
+            control = get_reference_extraction_control().get("state", "running")
+            if control in {"paused", "stopped"}:
+                metrics["blockers"].append(f"reference_extraction_control={control}")
+                remaining = 0
+                break
+            section_row = _ensure_reference_section(db, book, section)
+            metrics["referenceSectionRows"] += 1
+            metrics["proofSectionCount"] += 1
+            analysis_row = analyze_reference_section(
+                db,
+                book=book,
+                section=section,
+                section_row=section_row,
+                use_llm=use_llm,
+                force=force,
+            )
+            selected_analysis_ids.append(str(analysis_row.id))
+            metrics["referenceSectionAnalysisRows"] += 1
+            metrics["promptTokens"] += int(analysis_row.prompt_tokens or 0)
+            metrics["completionTokens"] += int(analysis_row.completion_tokens or 0)
+            metrics["estimatedCost"] += float(analysis_row.estimated_cost or 0.0)
+            if analysis_row.status == "success":
+                metrics["successfulDeepSeekAnalyses"] += 1
+            elif analysis_row.status == "fallback":
+                metrics["fallbackAnalyses"] += 1
+            else:
+                metrics["errorAnalyses"] += 1
+            section_generated = 0
+            if _analysis_is_production_ready(analysis_row):
+                for category in _card_categories_for_section(book, index):
+                    data = _abstract_card_data(book, section, category, index, analysis_row.analysis_json or {})
+                    if data["pattern_key"] in existing_keys:
+                        existing_card = db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == data["pattern_key"]).first()
+                        if existing_card is not None and _card_is_production_ready(existing_card):
+                            selected_card_ids.append(existing_card.id)
+                        continue
+                    card = ReferencePatternCard(source_book_id=book.id, **data)
+                    db.add(card)
+                    db.flush()
+                    existing_keys.add(data["pattern_key"])
+                    selected_card_ids.append(card.id)
+                    section_generated += 1
+            section_row.card_count = section_generated
+            section_row.status = "indexed" if section_generated else "analyzed"
+            remaining -= 1
+            if remaining <= 0:
+                break
+        db.commit()
+    production_cards_before = _production_ready_cards(db)
+    metrics["productionReadyCardsBeforeDedupe"] = len(production_cards_before)
+    selected_card_ids.extend([card.id for card in production_cards_before if card.id not in selected_card_ids])
+    dedupe_result = dedupe_production_pattern_cards(db, card_ids=selected_card_ids)
+    metrics["mergedCardsCreatedOrUpdated"] = dedupe_result["mergedCardsCreatedOrUpdated"]
+    metrics["productionReadyCardsAfterDedupe"] = dedupe_result["productionReadyCardsAfterDedupe"]
+    production_cards_after = _production_ready_cards(db)
+    metrics["sourceBookIdsPreserved"] = len(_unique_strings([book_id for card in production_cards_after for book_id in _card_book_ids(card)]))
+    metrics["sourceSectionIdsPreserved"] = len(_unique_strings([section_id for card in production_cards_after for section_id in card.source_section_ids or []]))
+    metrics["sourceAnalysisIdsPreserved"] = len(
+        _unique_strings([analysis_id for card in production_cards_after for analysis_id in getattr(card, "source_analysis_ids", None) or []])
+    )
+    if rebuild_profile:
+        profile = build_reference_mechanism_profile(db, use_llm_extraction=False, production_ready_only=True)
+        raw = profile.raw_json or {}
+        metrics["profileId"] = str(profile.id)
+        metrics["profileBuildMode"] = "local_from_production_ready_cards"
+        metrics["profileVersion"] = raw.get("profileVersion")
+        metrics["profileGenerationStatus"] = raw.get("generationStatus")
+        metrics["profileSourceBookCount"] = raw.get("sourceBookCount")
+        metrics["profileSourceCardCount"] = raw.get("sourceCardCount")
+        metrics["profileSourceSectionSampleCount"] = len(raw.get("sourceSectionIdsSample") or [])
+        metrics["profileCategoriesCovered"] = raw.get("categoriesCovered") or []
+        metrics["profileEvidenceCounts"] = raw.get("evidenceCounts") or {}
+        metrics["profileRawTextIncluded"] = raw.get("rawTextIncluded")
+        profile_language_payload = {
+            "core": profile.core_pleasure_mechanisms,
+            "case": profile.case_structure_patterns,
+            "court": profile.court_power_patterns,
+            "bureaucracy": profile.bureaucracy_conflict_patterns,
+            "heroine": profile.heroine_agency_patterns,
+            "character": profile.character_arc_patterns,
+            "foreshadow": profile.foreshadow_patterns,
+            "power": profile.power_progression_patterns,
+            "pacing": profile.longform_pacing_patterns,
+            "anti": profile.anti_cliche_rules,
+            "pitfalls": profile.common_pitfalls,
+            "guidance": profile.originality_guidance,
+        }
+        metrics["profileChinese"] = _mostly_chinese_text(profile_language_payload) and not _contains_forbidden_english_label(profile_language_payload)
+    pass_conditions = [
+        metrics["referenceSectionRows"] > 0,
+        metrics["referenceSectionAnalysisRows"] > 0,
+        metrics["successfulDeepSeekAnalyses"] > 0,
+        metrics["productionReadyCardsAfterDedupe"] > 0,
+        metrics["sourceSectionIdsPreserved"] > 0,
+        metrics["sourceAnalysisIdsPreserved"] > 0,
+        metrics.get("profileRawTextIncluded") is False,
+        bool(metrics.get("profileVersion")),
+        bool(metrics.get("profileChinese")),
+    ]
+    if all(pass_conditions):
+        metrics["verdict"] = "PASS"
+    elif use_llm and not metrics["deepseekCredentialsAvailable"]:
+        metrics["verdict"] = "UNKNOWN_NEEDS_EVIDENCE"
+    elif metrics["successfulDeepSeekAnalyses"] <= 0:
+        metrics["verdict"] = "UNKNOWN_NEEDS_EVIDENCE" if use_llm else "PARTIAL"
+    elif any(pass_conditions):
+        metrics["verdict"] = "PARTIAL"
+    else:
+        metrics["verdict"] = "FAIL"
+    metrics["finishedAt"] = _utc_now_iso()
+    return metrics
+
+
+def _reference_section_existing_analysis(
+    db: Session,
+    *,
+    book: ReferenceBook,
+    section: dict[str, Any],
+) -> tuple[ReferenceSection | None, ReferenceSectionAnalysis | None]:
+    section_id = _stable_source_section_id(book, section)
+    section_row = (
+        db.query(ReferenceSection)
+        .filter(ReferenceSection.source_book_id == book.id, ReferenceSection.source_section_id == section_id)
+        .first()
+    )
+    if section_row is None:
+        return None, None
+    analysis_row = db.query(ReferenceSectionAnalysis).filter(ReferenceSectionAnalysis.section_id == section_row.id).first()
+    return section_row, analysis_row
+
+
+def _summarize_reference_scope(db: Session) -> dict[str, Any]:
+    books = db.query(ReferenceBook).order_by(ReferenceBook.tier.asc(), ReferenceBook.title.asc()).all()
+    total_sections = 0
+    failures: list[dict[str, str]] = []
+    for book in books:
+        try:
+            total_sections += len(split_by_chapter(parse_reference_text(book.source_path)))
+        except Exception as exc:  # noqa: BLE001
+            failures.append({"bookId": str(book.id), "title": book.title, "error": str(exc)[:300]})
+    return {
+        "importedBookCount": len(books),
+        "estimatedImportedCorpusSections": total_sections,
+        "estimateFailures": failures[:20],
+    }
+
+
+def run_gate2b_reference_staged_expansion(
+    db: Session,
+    *,
+    book_limit: int = 3,
+    section_limit: int = 200,
+    sections_per_book: int = 0,
+    tier: int | None = None,
+    category: str | None = None,
+    resume: bool = True,
+    retry_failed_only: bool = False,
+    force: bool = False,
+    dry_run: bool = False,
+    max_cost: float | None = None,
+    stop_on_cost_limit: bool = False,
+    max_runtime_seconds: int = 0,
+    rebuild_profile: bool = True,
+    use_llm_extraction: bool | None = None,
+    include_full_estimate: bool = True,
+) -> dict[str, Any]:
+    started_at = _utc_now_iso()
+    start_monotonic = time.monotonic()
+    book_limit = max(1, int(book_limit or 3))
+    section_limit = max(1, int(section_limit or 200))
+    sections_per_book = max(0, int(sections_per_book or 0))
+    use_llm = settings.EPIC_REFERENCE_ENABLE_LLM_EXTRACTION if use_llm_extraction is None else bool(use_llm_extraction)
+    effective_max_cost = max_cost
+    if effective_max_cost is None and float(settings.EPIC_MAX_PROJECT_COST or 0.0) > 0:
+        effective_max_cost = float(settings.EPIC_MAX_PROJECT_COST)
+
+    query = db.query(ReferenceBook).filter(ReferenceBook.source_path.isnot(None))
+    if tier is not None:
+        query = query.filter(ReferenceBook.tier == int(tier))
+    if category:
+        query = query.filter(ReferenceBook.category == category)
+    books = query.order_by(ReferenceBook.tier.asc(), ReferenceBook.title.asc()).limit(book_limit).all()
+
+    all_cards_before = db.query(ReferencePatternCard).count()
+    production_ready_before = len(_production_ready_cards(db))
+    scope_summary = _summarize_reference_scope(db) if include_full_estimate else {
+        "importedBookCount": db.query(ReferenceBook).count(),
+        "estimatedImportedCorpusSections": 0,
+        "estimateFailures": [],
+    }
+    metrics: dict[str, Any] = {
+        "gate": "2B",
+        "scope": "reference_intelligence_staged_expansion",
+        "startedAt": started_at,
+        "bookLimit": book_limit,
+        "sectionLimit": section_limit,
+        "sectionsPerBook": sections_per_book,
+        "tier": tier,
+        "category": category,
+        "resume": resume,
+        "retryFailedOnly": retry_failed_only,
+        "force": force,
+        "dryRun": dry_run,
+        "maxCost": effective_max_cost,
+        "stopOnCostLimit": stop_on_cost_limit,
+        "maxRuntimeSeconds": max_runtime_seconds,
+        "provider": settings.EPIC_REFERENCE_MODEL_PROVIDER,
+        "model": settings.EPIC_REFERENCE_MODEL_NAME,
+        "deepseekCredentialsAvailable": _deepseek_reference_credentials_available(),
+        "useLlmExtraction": use_llm,
+        "gate2aBaselineSuccessfulAnalyses": 5,
+        "gate2aBaselineProductionReadyCards": 18,
+        "gate2aBaselineSourceSections": 5,
+        "gate2aBaselineSourceAnalyses": 5,
+        "importedBookCount": scope_summary["importedBookCount"],
+        "estimatedImportedCorpusSections": scope_summary["estimatedImportedCorpusSections"],
+        "fullEstimateFailures": scope_summary["estimateFailures"],
+        "selectedBooks": [],
+        "candidateBookCount": len(books),
+        "candidateSectionCount": 0,
+        "processedBookIds": [],
+        "processedBookCount": 0,
+        "processedSections": 0,
+        "createdOrTouchedSections": 0,
+        "analysisRowsTouched": 0,
+        "successfulAnalysesThisRun": 0,
+        "fallbackAnalysesThisRun": 0,
+        "errorAnalysesThisRun": 0,
+        "skippedAlreadySuccess": 0,
+        "skippedRetryOnly": 0,
+        "skippedCostLimit": 0,
+        "skippedRuntimeLimit": 0,
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "estimatedCost": 0.0,
+        "estimatedPromptTokensDryRun": 0,
+        "estimatedCostDryRun": 0.0,
+        "productionReadyCardsBefore": production_ready_before,
+        "allCardsBefore": all_cards_before,
+        "newProductionReadyCards": 0,
+        "productionReadyCardsAfterDedupe": production_ready_before,
+        "cumulativeSuccessfulAnalyses": db.query(ReferenceSectionAnalysis).filter(ReferenceSectionAnalysis.status == "success").count(),
+        "cumulativeProductionReadyCards": production_ready_before,
+        "sourceBookIdsPreserved": 0,
+        "sourceSectionIdsPreserved": 0,
+        "sourceAnalysisIdsPreserved": 0,
+        "failures": [],
+        "blockers": [],
+        "stopReason": None,
+    }
+    if not books:
+        metrics["blockers"].append("没有匹配的已导入参考书")
+        metrics["verdict"] = "UNKNOWN_NEEDS_EVIDENCE"
+        metrics["finishedAt"] = _utc_now_iso()
+        return metrics
+    if use_llm and not metrics["deepseekCredentialsAvailable"]:
+        metrics["blockers"].append("DEEPSEEK_API_KEY 未配置，不能证明 DeepSeek V4 Pro 扩展抽取")
+
+    remaining = section_limit
+    selected_card_ids: list[UUID] = []
+    processed_book_ids: set[str] = set()
+    existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+
+    for book in books:
+        if remaining <= 0 or metrics.get("stopReason"):
+            break
+        try:
+            limit_for_book = sections_per_book if sections_per_book > 0 else remaining
+            sections = split_by_chapter(parse_reference_text(book.source_path), limit=limit_for_book)
+        except Exception as exc:  # noqa: BLE001
+            metrics["failures"].append({"bookId": str(book.id), "title": book.title, "error": str(exc)[:500]})
+            continue
+        if sections_per_book > 0:
+            sections = sections[:sections_per_book]
+        else:
+            sections = sections[:remaining]
+        book_summary = {
+            "bookId": str(book.id),
+            "title": book.title,
+            "tier": book.tier,
+            "category": book.category,
+            "candidateSections": len(sections),
+            "processedSections": 0,
+            "skippedAlreadySuccess": 0,
+            "skippedRetryOnly": 0,
+            "failures": [],
+        }
+        metrics["selectedBooks"].append(book_summary)
+        metrics["candidateSectionCount"] += len(sections)
+        for index, section in enumerate(sections):
+            if remaining <= 0:
+                break
+            control = get_reference_extraction_control().get("state", "running")
+            if control in {"paused", "stopped"}:
+                metrics["blockers"].append(f"reference_extraction_control={control}")
+                metrics["stopReason"] = control
+                break
+            if max_runtime_seconds and time.monotonic() - start_monotonic >= max_runtime_seconds:
+                metrics["skippedRuntimeLimit"] += 1
+                metrics["stopReason"] = "runtime_limit"
+                break
+            section["sourceSectionId"] = _stable_source_section_id(book, section)
+            _, existing_analysis = _reference_section_existing_analysis(db, book=book, section=section)
+            existing_status = existing_analysis.status if existing_analysis is not None else None
+            should_process, reason = _gate2b_should_process_section(
+                existing_status,
+                resume=resume,
+                retry_failed_only=retry_failed_only,
+                force=force,
+            )
+            prompt_tokens = estimate_tokens(_build_section_analysis_prompt(book, section))
+            prompt_cost = _estimate_reference_model_cost(prompt_tokens, 0)
+            metrics["estimatedPromptTokensDryRun"] += prompt_tokens
+            metrics["estimatedCostDryRun"] = round(float(metrics["estimatedCostDryRun"]) + prompt_cost, 8)
+            if not should_process:
+                if reason == "already_success":
+                    metrics["skippedAlreadySuccess"] += 1
+                    book_summary["skippedAlreadySuccess"] += 1
+                else:
+                    metrics["skippedRetryOnly"] += 1
+                    book_summary["skippedRetryOnly"] += 1
+                remaining -= 1
+                continue
+            if effective_max_cost is not None and stop_on_cost_limit:
+                projected = float(metrics["estimatedCost"]) + prompt_cost
+                if projected > float(effective_max_cost):
+                    metrics["skippedCostLimit"] += 1
+                    metrics["stopReason"] = "cost_limit"
+                    metrics["blockers"].append(
+                        f"预计成本 {projected:.8f} 超过 max_cost={float(effective_max_cost):.8f}，已安全停止"
+                    )
+                    break
+            if dry_run:
+                remaining -= 1
+                continue
+            section_row = _ensure_reference_section(db, book, section)
+            metrics["createdOrTouchedSections"] += 1
+            analysis_row = analyze_reference_section(
+                db,
+                book=book,
+                section=section,
+                section_row=section_row,
+                use_llm=use_llm,
+                force=force,
+            )
+            metrics["analysisRowsTouched"] += 1
+            metrics["promptTokens"] += int(analysis_row.prompt_tokens or 0)
+            metrics["completionTokens"] += int(analysis_row.completion_tokens or 0)
+            metrics["estimatedCost"] = round(float(metrics["estimatedCost"]) + float(analysis_row.estimated_cost or 0.0), 8)
+            if analysis_row.status == "success":
+                metrics["successfulAnalysesThisRun"] += 1
+            elif analysis_row.status == "fallback":
+                metrics["fallbackAnalysesThisRun"] += 1
+            else:
+                metrics["errorAnalysesThisRun"] += 1
+            section_generated = 0
+            if _analysis_is_production_ready(analysis_row):
+                for card_category in _card_categories_for_section(book, int(section.get("sectionIndex") or index)):
+                    data = _abstract_card_data(book, section, card_category, int(section.get("sectionIndex") or index), analysis_row.analysis_json or {})
+                    if data["pattern_key"] in existing_keys:
+                        existing_card = db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == data["pattern_key"]).first()
+                        if existing_card is not None and _card_is_production_ready(existing_card):
+                            selected_card_ids.append(existing_card.id)
+                        continue
+                    card = ReferencePatternCard(source_book_id=book.id, **data)
+                    db.add(card)
+                    db.flush()
+                    existing_keys.add(data["pattern_key"])
+                    selected_card_ids.append(card.id)
+                    section_generated += 1
+            section_row.card_count = section_generated
+            section_row.status = "indexed" if section_generated else "analyzed"
+            processed_book_ids.add(str(book.id))
+            book_summary["processedSections"] += 1
+            metrics["processedSections"] += 1
+            remaining -= 1
+        db.commit()
+
+    if not dry_run:
+        production_cards_before_dedupe = _production_ready_cards(db)
+        selected_card_ids.extend([card.id for card in production_cards_before_dedupe if card.id not in selected_card_ids])
+        dedupe_result = dedupe_production_pattern_cards(db, card_ids=selected_card_ids)
+        metrics["productionReadyCardsAfterDedupe"] = dedupe_result["productionReadyCardsAfterDedupe"]
+        production_cards_after = _production_ready_cards(db)
+        metrics["cumulativeProductionReadyCards"] = len(production_cards_after)
+        metrics["newProductionReadyCards"] = max(0, len(production_cards_after) - production_ready_before)
+        metrics["cumulativeSuccessfulAnalyses"] = db.query(ReferenceSectionAnalysis).filter(ReferenceSectionAnalysis.status == "success").count()
+        metrics["sourceBookIdsPreserved"] = len(_unique_strings([book_id for card in production_cards_after for book_id in _card_book_ids(card)]))
+        metrics["sourceSectionIdsPreserved"] = len(_unique_strings([section_id for card in production_cards_after for section_id in card.source_section_ids or []]))
+        metrics["sourceAnalysisIdsPreserved"] = len(
+            _unique_strings([analysis_id for card in production_cards_after for analysis_id in getattr(card, "source_analysis_ids", None) or []])
+        )
+        if rebuild_profile:
+            profile = build_reference_mechanism_profile(db, use_llm_extraction=False, production_ready_only=True)
+            raw = profile.raw_json or {}
+            metrics["profileId"] = str(profile.id)
+            metrics["profileBuildMode"] = raw.get("buildMode")
+            metrics["profileGenerationStatus"] = raw.get("generationStatus")
+            metrics["profileVersion"] = raw.get("profileVersion")
+            metrics["profileSourceBookCount"] = raw.get("sourceBookCount")
+            metrics["profileSourceCardCount"] = raw.get("sourceCardCount")
+            metrics["profileSourceSectionSampleCount"] = len(raw.get("sourceSectionIdsSample") or [])
+            metrics["profileCategoriesCovered"] = raw.get("categoriesCovered") or []
+            metrics["profileEvidenceCounts"] = raw.get("evidenceCounts") or {}
+            metrics["profileRawTextIncluded"] = raw.get("rawTextIncluded")
+            metrics["profileProductionReadyCardCount"] = raw.get("productionReadyCardCount")
+            metrics["profileOldSourceLessCardsExcluded"] = raw.get("oldSourceLessCardsExcluded")
+            profile_language_payload = {
+                "core": profile.core_pleasure_mechanisms,
+                "case": profile.case_structure_patterns,
+                "court": profile.court_power_patterns,
+                "bureaucracy": profile.bureaucracy_conflict_patterns,
+                "heroine": profile.heroine_agency_patterns,
+                "character": profile.character_arc_patterns,
+                "foreshadow": profile.foreshadow_patterns,
+                "power": profile.power_progression_patterns,
+                "pacing": profile.longform_pacing_patterns,
+                "anti": profile.anti_cliche_rules,
+                "pitfalls": profile.common_pitfalls,
+                "guidance": profile.originality_guidance,
+            }
+            metrics["profileChinese"] = _mostly_chinese_text(profile_language_payload) and not _contains_forbidden_english_label(profile_language_payload)
+
+    metrics["processedBookIds"] = sorted(processed_book_ids)
+    metrics["processedBookCount"] = len(processed_book_ids)
+    metrics["allCardsAfter"] = db.query(ReferencePatternCard).count()
+    metrics["oldSourceLessCardsExcluded"] = sum(1 for card in db.query(ReferencePatternCard).all() if not (card.source_section_ids or []))
+    metrics["remainingImportedBooks"] = max(0, int(metrics["importedBookCount"]) - int(metrics["processedBookCount"]))
+    metrics["remainingEstimatedSections"] = max(0, int(metrics["estimatedImportedCorpusSections"] or 0) - int(metrics["cumulativeSuccessfulAnalyses"] or 0))
+    metrics["verdict"] = _gate2b_verdict(metrics)
+    metrics["finishedAt"] = _utc_now_iso()
+    return metrics
+
+
 def auto_retrieval_plan(
     db: Session,
     *,
@@ -1511,9 +3042,10 @@ def auto_retrieval_plan(
     section_key: str | None = None,
     limit: int = 0,
 ) -> dict[str, Any]:
-    cards = search_pattern_cards(db, query=query, limit=limit)
+    cards = search_pattern_cards(db, query=query, limit=limit, production_ready_only=True)
     profile = latest_reference_profile(db, project_id=project_id)
     card_ids = [str(card.id) for card in cards]
+    excluded_old_cards = db.query(ReferencePatternCard).filter(ReferencePatternCard.source_section_ids == []).count()
     trace = None
     if project_id is not None:
         profile_sections = []
@@ -1545,7 +3077,7 @@ def auto_retrieval_plan(
             profile_version=profile_version,
             excluded_context=[],
             raw_text_included=False,
-            usage_summary="Use cards as abstract mechanisms only; raw reference text is excluded.",
+            usage_summary="使用 production-ready 抽象机制卡与机制画像；原始参考文本和旧 source-less 卡均不进入生成 prompt。",
             raw_json={
                 "usageSummary": "使用抽象机制卡与机制画像；原始参考文本不进入生成 prompt。",
                 "whyUsed": "为 Bible、规划、章节执行和 QA 提供多书机制层参考，避免单本锚定。",
@@ -1554,6 +3086,8 @@ def auto_retrieval_plan(
                 "usedCardIds": card_ids,
                 "usedProfileSections": profile_sections,
                 "profileVersion": profile_version,
+                "productionReadyOnly": True,
+                "oldSourceLessCardsExcluded": excluded_old_cards,
                 "excludedOrOverflow": [],
             },
         )

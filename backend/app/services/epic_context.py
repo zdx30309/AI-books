@@ -82,6 +82,21 @@ def sanitize_prompt_value(value: Any) -> Any:
     return value
 
 
+def raw_reference_field_paths(value: Any, prefix: str = "") -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key) in RAW_REFERENCE_KEYS and item:
+                paths.append(path)
+                continue
+            paths.extend(raw_reference_field_paths(item, path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            paths.extend(raw_reference_field_paths(item, f"{prefix}[{index}]"))
+    return paths
+
+
 def _token_count(value: Any) -> int:
     return estimate_tokens(json.dumps(value, ensure_ascii=False, default=str))
 
@@ -212,11 +227,31 @@ def compile_dynamic_context(
         "promptOverheadTokens": prompt_overhead_tokens,
         "includedTokens": used,
         "included": included,
+        "includedPaths": [item["path"] for item in included],
         "overflow": overflow,
+        "excluded": overflow,
+        "overflowPaths": [item["path"] for item in overflow],
         "overflowCount": len(overflow),
         "rawReferenceTextIncluded": contains_raw_reference_text(compiled),
         "rawReferenceTextExcluded": contains_raw_reference_text(context),
+        "excludedRawReferenceFields": raw_reference_field_paths(context),
         "allowedPromptSources": ["approved summaries", "ReferencePatternCards", "ReferenceMechanismProfile", "accepted state ledgers"],
+        "selectedCardIds": [
+            str(card.get("id"))
+            for card in (((compiled.get("referenceInspirationPack") or {}).get("cards") or []))
+            if isinstance(card, dict) and card.get("id")
+        ],
+        "profileVersion": (
+            ((compiled.get("referenceInspirationPack") or {}).get("profile") or {}).get("version")
+            or ((compiled.get("referenceInspirationPack") or {}).get("profile") or {}).get("profileVersion")
+            or ((compiled.get("referenceInspirationPack") or {}).get("profile") or {}).get("id")
+        ),
+        "selectedBibleSectionKeys": [
+            str(section.get("sectionKey") or section.get("key"))
+            for section in (compiled.get("bibleSections") or [])
+            if isinstance(section, dict) and (section.get("sectionKey") or section.get("key"))
+        ],
+        "noSilentTruncation": True,
     }
     compiled["contextMetadata"] = metadata
     return {"context": compiled, "metadata": metadata}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -21,14 +21,19 @@ import {
 import { api, ApiError } from "@/api/client";
 import type {
   EpicDashboardResponse,
+  EpicExportMetadata,
   EpicNovelCreateRequest,
   EpicNovelProject,
   EpicNovelProjectDetailResponse,
+  EpicReferenceBooklistItem,
+  EpicReferenceDownloadTask,
   EpicReferenceExtractionControl,
   EpicReferenceExtractionCostEstimate,
+  EpicReferenceMechanismProfile,
+  EpicReferencePatternCard,
 } from "@/api/types";
 
-type TabId = "foundation" | "reference" | "chapters" | "qa" | "logs";
+type TabId = "foundation" | "reference" | "bible" | "planning" | "chapters" | "context" | "qa" | "dashboard" | "export" | "logs";
 
 type CreateFormState = {
   title: string;
@@ -40,11 +45,53 @@ type CreateFormState = {
 };
 
 const tabs: Array<{ id: TabId; label: string }> = [
-  { id: "foundation", label: "基建流水线" },
-  { id: "reference", label: "参考书库" },
+  { id: "foundation", label: "基建总览" },
+  { id: "reference", label: "参考语料" },
+  { id: "bible", label: "圣经世界" },
+  { id: "planning", label: "规划合同" },
   { id: "chapters", label: "章节生产" },
+  { id: "context", label: "上下文检索" },
   { id: "qa", label: "质检验收" },
-  { id: "logs", label: "生成日志" },
+  { id: "dashboard", label: "生产仪表盘" },
+  { id: "export", label: "文件导出" },
+  { id: "logs", label: "调用日志" },
+];
+
+const bibleSectionOptions = [
+  ["project_overview", "项目总览"],
+  ["genre_promise", "类型与爽点承诺"],
+  ["world_law", "世界底层法则"],
+  ["power_system", "战力体系"],
+  ["nation_and_court", "国家与朝堂"],
+  ["bureaucracy", "官僚体系"],
+  ["map_geography", "地图与地理"],
+  ["factions", "势力系统"],
+  ["characters", "人物系统"],
+  ["heroine_arcs", "多女主独立线"],
+  ["relationship_graph", "关系图谱"],
+  ["history_timeline", "历史年表"],
+  ["global_spine", "全书大主线"],
+  ["volume_contracts", "分卷合同"],
+  ["foreshadow_ledger", "伏笔账本"],
+  ["reader_question_ledger", "读者疑问账本"],
+  ["pleasure_curve", "爽点曲线"],
+  ["villain_plan", "反派计划"],
+  ["style_guide", "风格指南"],
+  ["anti_cliche_rules", "禁忌与反俗套"],
+  ["ending_plan", "结局规划"],
+  ["glossary", "术语表"],
+  ["reference_profile_usage", "参考机制画像接入说明"],
+  ["production_control_rules", "生产控制规则"],
+] as const;
+
+type EpicArtifactType = "volume_markdown" | "chapter_bundle" | "qa_reports" | "retrieval_traces" | "acceptance_reports";
+
+const artifactOptions: Array<{ type: EpicArtifactType; label: string; needsVolume?: boolean }> = [
+  { type: "volume_markdown", label: "分卷正文", needsVolume: true },
+  { type: "chapter_bundle", label: "章节包" },
+  { type: "qa_reports", label: "质检报告" },
+  { type: "retrieval_traces", label: "检索轨迹" },
+  { type: "acceptance_reports", label: "验收报告" },
 ];
 
 const initialForm: CreateFormState = {
@@ -196,6 +243,103 @@ function countRows(detail: EpicNovelProjectDetailResponse | null, key: keyof Epi
   return Array.isArray(value) ? value.length : value ? 1 : 0;
 }
 
+function normalizeEpicDetail(detail: EpicNovelProjectDetailResponse): EpicNovelProjectDetailResponse {
+  return {
+    ...detail,
+    bureaucracy_system: detail.bureaucracy_system ?? null,
+    worldview_candidates: detail.worldview_candidates ?? [],
+    nations: detail.nations ?? [],
+    map_regions: detail.map_regions ?? [],
+    institutions: detail.institutions ?? [],
+    factions: detail.factions ?? [],
+    characters: detail.characters ?? [],
+    character_arcs: detail.character_arcs ?? [],
+    global_spine: detail.global_spine ?? null,
+    foreshadows: detail.foreshadows ?? [],
+    reader_questions: detail.reader_questions ?? [],
+    pleasure_beats: detail.pleasure_beats ?? [],
+    issues: detail.issues ?? [],
+    bible_sections: detail.bible_sections ?? [],
+    volume_contracts: detail.volume_contracts ?? [],
+    chapter_contracts: detail.chapter_contracts ?? [],
+    chapters: detail.chapters ?? [],
+    acceptance_reports: detail.acceptance_reports ?? [],
+    retrieval_traces: detail.retrieval_traces ?? [],
+    logs: detail.logs ?? [],
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function fieldText(value: unknown, fallback = "-") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "number") return formatNumber(value);
+  if (Array.isArray(value)) return value.length ? `${value.length} 项` : fallback;
+  if (typeof value === "object") return Object.keys(asRecord(value)).length ? "已记录" : fallback;
+  return String(value);
+}
+
+function fieldCount(value: unknown) {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") return Object.keys(asRecord(value)).length;
+  return value ? 1 : 0;
+}
+
+function jsonPreview(value: unknown, max = 180) {
+  if (value === null || value === undefined) return "-";
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function traceTaskLabel(trace: Record<string, unknown>) {
+  const raw = String(trace.task_type ?? trace.action ?? trace.phase ?? "");
+  return actionLabel(raw) !== "未登记动作" ? actionLabel(raw) : raw || "未登记任务";
+}
+
+function issueSeverityLabel(value: unknown) {
+  const raw = String(value ?? "").toLowerCase();
+  if (raw === "severe") return "严重";
+  if (raw === "high") return "高危";
+  if (raw === "medium") return "中等";
+  if (raw === "low") return "低";
+  return raw || "-";
+}
+
+function exportLabel(metadata: EpicExportMetadata | null) {
+  if (!metadata) return "尚未生成导出元数据";
+  const filename = typeof metadata.filename === "string" && metadata.filename ? metadata.filename : "未返回文件名";
+  const bytes = typeof metadata.bytes === "number" ? formatNumber(metadata.bytes) : "0";
+  const checksum =
+    typeof metadata.sha256 === "string" && metadata.sha256 ? metadata.sha256.slice(0, 12) : "未返回校验和";
+  return `${filename} / ${bytes} 字节 / 校验 ${checksum}`;
+}
+
+function summarizeActionResult(key: string, result: unknown, fallback: string) {
+  if (key === "batch") {
+    const row = asRecord(result);
+    const generated = Array.isArray(row.generated) ? row.generated.length : 0;
+    const failed = Array.isArray(row.failed) ? row.failed.length : 0;
+    const skipped = Array.isArray(row.skipped) ? row.skipped.length : 0;
+    return `批量请求完成：已生成 ${generated} 章，失败 ${failed} 章，跳过 ${skipped} 章。`;
+  }
+  if (key === "check" && Array.isArray(result)) return `章节检查完成：发现 ${result.length} 条问题。`;
+  if (key === "scan" && Array.isArray(result)) return `下载目录扫描完成：发现 ${result.length} 个文件。`;
+  if (key === "booklist-import" && Array.isArray(result)) return `参考书单导入完成：返回 ${result.length} 条记录。`;
+  if (key === "booklist-normalize" && Array.isArray(result)) return `参考书单规范化完成：返回 ${result.length} 条记录。`;
+  if (key === "tasks-refresh" && Array.isArray(result)) return `下载任务已刷新：${result.length} 条。`;
+  if (key === "patterns" && Array.isArray(result)) return `模式卡检索完成：返回 ${result.length} 张卡。`;
+  if (key.startsWith("export-meta") && result && typeof result === "object") {
+    const metadata = result as EpicExportMetadata;
+    const filename = typeof metadata.filename === "string" && metadata.filename ? metadata.filename : "未返回文件名";
+    const bytes = typeof metadata.bytes === "number" ? formatNumber(metadata.bytes) : "0";
+    return `导出元数据已生成：${filename}，${bytes} 字节。`;
+  }
+  return fallback;
+}
+
 function StatusPill({ status }: { status: string }) {
   const ok = ["accepted", "completed", "active", "indexed"].includes(status);
   const warn = ["need_review", "failed", "manual_required"].includes(status);
@@ -222,6 +366,48 @@ function StatCard({ label, value, icon: Icon }: { label: string; value: string; 
         <Icon className="h-4 w-4 text-gold-300" strokeWidth={1.6} />
       </div>
       <div className="font-serif text-2xl text-warm-100">{value}</div>
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  icon: Icon,
+  children,
+  right,
+}: {
+  title: string;
+  icon: typeof BookOpenText;
+  children: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <section className="card-warm rounded-lg px-5 py-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-warm-100">
+          <Icon className="h-4 w-4 text-gold-300" strokeWidth={1.7} />
+          <h2 className="font-serif text-xl">{title}</h2>
+        </div>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function EmptyLine({ text }: { text: string }) {
+  return <div className="rounded-lg border border-gold-500/10 px-4 py-4 text-sm text-warm-500">{text}</div>;
+}
+
+function KeyValueGrid({ rows }: { rows: Array<[string, unknown]> }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {rows.map(([label, value]) => (
+        <div key={label} className="rounded-lg border border-gold-500/10 px-3 py-3">
+          <div className="text-[11px] text-warm-500">{label}</div>
+          <div className="mt-1 break-words text-sm text-warm-200">{fieldText(value)}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -434,43 +620,73 @@ function ProjectList() {
 
 function ProjectDetail({ id }: { id: string }) {
   const navigate = useNavigate();
-  const [detail, setDetail] = useState<EpicNovelProjectDetailResponse | null>(null);
+  const [rawDetail, setDetail] = useState<EpicNovelProjectDetailResponse | null>(null);
   const [dashboard, setDashboard] = useState<EpicDashboardResponse | null>(null);
   const [tab, setTab] = useState<TabId>("foundation");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auxError, setAuxError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [volumeNumber, setVolumeNumber] = useState("1");
   const [batchFrom, setBatchFrom] = useState("1");
   const [batchTo, setBatchTo] = useState("3");
+  const [bibleSectionKey, setBibleSectionKey] = useState<(typeof bibleSectionOptions)[number][0]>("project_overview");
+  const [contextChapter, setContextChapter] = useState("1");
+  const [patternQuery, setPatternQuery] = useState("");
+  const [artifactType, setArtifactType] = useState<EpicArtifactType>("volume_markdown");
   const [scanRows, setScanRows] = useState<Array<Record<string, unknown>>>([]);
+  const [booklistRows, setBooklistRows] = useState<EpicReferenceBooklistItem[]>([]);
+  const [downloadTasks, setDownloadTasks] = useState<EpicReferenceDownloadTask[]>([]);
+  const [patternCards, setPatternCards] = useState<EpicReferencePatternCard[]>([]);
+  const [referenceProfile, setReferenceProfile] = useState<EpicReferenceMechanismProfile | null>(null);
   const [referenceCost, setReferenceCost] = useState<EpicReferenceExtractionCostEstimate | null>(null);
   const [referenceControl, setReferenceControl] = useState<EpicReferenceExtractionControl | null>(null);
+  const [contextPack, setContextPack] = useState<Record<string, unknown> | null>(null);
+  const [exportMetadata, setExportMetadata] = useState<EpicExportMetadata | null>(null);
 
   const load = useCallback(async () => {
+    setLoading(true);
     setError(null);
+    setAuxError(null);
     try {
-      const [projectRes, dashboardRes, costRes, controlRes] = await Promise.all([
-        api.getEpicNovelProject(id),
+      const projectRes = await api.getEpicNovelProject(id);
+      const normalizedProject = normalizeEpicDetail(projectRes);
+      setDetail(normalizedProject);
+      const next = nextChapterNumber(normalizedProject);
+      setBatchFrom(String(next));
+      setBatchTo(String(Math.min(normalizedProject.project.target_chapters, next + 2)));
+      setContextChapter(String(next));
+      void Promise.allSettled([
         api.getEpicNovelDashboard(id),
         api.getEpicReferenceExtractionCostEstimate(),
         api.getEpicReferenceExtractionControl(),
-      ]);
-      setDetail(projectRes);
-      setDashboard(dashboardRes);
-      setReferenceCost(costRes);
-      setReferenceControl(controlRes);
-      const next = nextChapterNumber(projectRes);
-      setBatchFrom(String(next));
-      setBatchTo(String(Math.min(projectRes.project.target_chapters, next + 2)));
+        api.listEpicReferenceDownloadTasks(),
+        api.getEpicReferenceProfile(),
+        api.searchEpicReferencePatterns({ query: "", limit: 8 }),
+      ]).then(([dashboardRes, costRes, controlRes, tasksRes, profileRes, cardsRes]) => {
+        if (dashboardRes.status === "fulfilled") setDashboard(dashboardRes.value);
+        if (costRes.status === "fulfilled") setReferenceCost(costRes.value);
+        if (controlRes.status === "fulfilled") setReferenceControl(controlRes.value);
+        if (tasksRes.status === "fulfilled") setDownloadTasks(tasksRes.value);
+        if (profileRes.status === "fulfilled") setReferenceProfile(profileRes.value);
+        if (cardsRes.status === "fulfilled") setPatternCards(cardsRes.value);
+        if ([dashboardRes, costRes, controlRes, tasksRes, profileRes, cardsRes].some((item) => item.status === "rejected")) {
+          setAuxError("部分参考语料辅助数据暂时不可用，核心项目数据已加载。");
+        }
+      });
     } catch (e) {
       setError(actionError(e));
+    } finally {
+      setLoading(false);
     }
   }, [id]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const detail = useMemo(() => (rawDetail ? normalizeEpicDetail(rawDetail) : null), [rawDetail]);
 
   const runAction = async (key: string, fn: () => Promise<unknown>, message: string) => {
     setBusy(key);
@@ -481,7 +697,25 @@ function ProjectDetail({ id }: { id: string }) {
       if (key === "scan" && Array.isArray(result)) {
         setScanRows(result as Array<Record<string, unknown>>);
       }
-      setNotice(message);
+      if ((key === "booklist-import" || key === "booklist-normalize") && Array.isArray(result)) {
+        setBooklistRows(result as EpicReferenceBooklistItem[]);
+      }
+      if (key === "tasks-refresh" && Array.isArray(result)) {
+        setDownloadTasks(result as EpicReferenceDownloadTask[]);
+      }
+      if (key === "patterns" && Array.isArray(result)) {
+        setPatternCards(result as EpicReferencePatternCard[]);
+      }
+      if (key === "profile" && result && typeof result === "object") {
+        setReferenceProfile(result as EpicReferenceMechanismProfile);
+      }
+      if (key === "context-pack" && result && typeof result === "object") {
+        setContextPack(result as Record<string, unknown>);
+      }
+      if (key.startsWith("export-meta") && result && typeof result === "object") {
+        setExportMetadata(result as EpicExportMetadata);
+      }
+      setNotice(summarizeActionResult(key, result, message));
       await load();
     } catch (e) {
       setError(actionError(e));
@@ -497,12 +731,32 @@ function ProjectDetail({ id }: { id: string }) {
     () => detail?.chapters.find((chapter) => chapter.status === "accepted") ?? detail?.chapters[0] ?? null,
     [detail],
   );
+  const selectedArtifact = artifactOptions.find((item) => item.type === artifactType) ?? artifactOptions[0];
+  const currentJob = asRecord(dashboard?.current_job);
+  const latestTrace = detail?.retrieval_traces[0] ? asRecord(detail.retrieval_traces[0]) : null;
+  const latestIssue = detail?.issues[0] ? asRecord(detail.issues[0]) : null;
 
-  if (!detail || !project) {
+  if (loading && !detail) {
     return (
       <div className="flex items-center gap-2 text-warm-400">
         <Loader2 className="h-4 w-4 animate-spin" />
         正在加载长篇项目
+      </div>
+    );
+  }
+
+  if (!detail || !project) {
+    return (
+      <div className="space-y-4">
+        {error && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-3 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+        <button type="button" className="btn-ghost rounded-lg" onClick={() => void load()}>
+          <RefreshCcw className="h-4 w-4" strokeWidth={1.7} />
+          重新加载
+        </button>
       </div>
     );
   }
@@ -551,6 +805,11 @@ function ProjectDetail({ id }: { id: string }) {
           {notice}
         </div>
       )}
+      {auxError && (
+        <div className="rounded-lg border border-gold-500/25 bg-gold-500/8 px-4 py-3 text-sm text-gold-200">
+          {auxError}
+        </div>
+      )}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard label="已验收字数" value={formatNumber(project.total_words)} icon={BookOpenText} />
@@ -581,7 +840,7 @@ function ProjectDetail({ id }: { id: string }) {
           <div className="card-warm rounded-lg px-5 py-5">
             <div className="mb-4 flex items-center gap-2 text-warm-100">
               <GitBranch className="h-4 w-4 text-gold-300" strokeWidth={1.7} />
-              <h2 className="font-serif text-xl">基建流水线</h2>
+              <h2 className="font-serif text-xl">基建总览</h2>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <ActionButton
@@ -646,6 +905,12 @@ function ProjectDetail({ id }: { id: string }) {
           <div className="space-y-3">
             <StatCard label="世界圣经" value={readyLabel(Boolean(detail.world_bible))} icon={BookOpenText} />
             <StatCard label="世界图谱" value={readyLabel(Boolean(detail.world_atlas))} icon={Database} />
+            <StatCard label="官僚体系" value={readyLabel(Boolean(detail.bureaucracy_system))} icon={ShieldCheck} />
+            <StatCard label="战力体系" value={readyLabel(Boolean(detail.power_system))} icon={ShieldCheck} />
+            <StatCard label="群像人物" value={String(countRows(detail, "characters"))} icon={Layers3} />
+            <StatCard label="角色弧光" value={String(countRows(detail, "character_arcs"))} icon={GitBranch} />
+            <StatCard label="关系图谱" value={String(countRows(detail, "institutions") + countRows(detail, "factions"))} icon={GitBranch} />
+            <StatCard label="全局主线" value={readyLabel(Boolean(detail.global_spine))} icon={GitBranch} />
             <StatCard label="圣经分节" value={String(countRows(detail, "bible_sections"))} icon={FileCheck2} />
             <StatCard label="分卷合同" value={String(countRows(detail, "volume_contracts"))} icon={ScrollText} />
           </div>
@@ -660,6 +925,22 @@ function ProjectDetail({ id }: { id: string }) {
               <h2 className="font-serif text-xl">参考书库</h2>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
+              <ActionButton
+                label="导入参考书单"
+                busy={busy === "booklist-import"}
+                icon={BookOpenText}
+                onClick={() =>
+                  void runAction("booklist-import", () => api.importEpicReferenceBooklist(), "参考书单导入完成。")
+                }
+              />
+              <ActionButton
+                label="规范化书单"
+                busy={busy === "booklist-normalize"}
+                icon={FileCheck2}
+                onClick={() =>
+                  void runAction("booklist-normalize", () => api.normalizeEpicReferenceBooklist(), "参考书单规范化完成。")
+                }
+              />
               <ActionButton
                 label="检测下载器"
                 busy={busy === "detect"}
@@ -702,6 +983,35 @@ function ProjectDetail({ id }: { id: string }) {
                 icon={ShieldCheck}
                 onClick={() => void runAction("reference-stop", () => api.setEpicReferenceExtractionControl("stopped"), "参考抽取已停止。")}
               />
+              <ActionButton
+                label="刷新下载任务"
+                busy={busy === "tasks-refresh"}
+                icon={RefreshCcw}
+                onClick={() => void runAction("tasks-refresh", () => api.listEpicReferenceDownloadTasks(), "下载任务已刷新。")}
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <input
+                className="auth-input min-w-[220px] flex-1"
+                value={patternQuery}
+                onChange={(event) => setPatternQuery(event.target.value)}
+                placeholder="输入机制关键词"
+              />
+              <button
+                type="button"
+                className="btn-ghost rounded-lg"
+                disabled={busy === "patterns"}
+                onClick={() =>
+                  void runAction(
+                    "patterns",
+                    () => api.searchEpicReferencePatterns({ query: patternQuery, limit: 12 }),
+                    "模式卡检索完成。",
+                  )
+                }
+              >
+                {busy === "patterns" ? <Loader2 className="h-4 w-4 animate-spin" /> : <SearchCheck className="h-4 w-4" />}
+                检索模式卡
+              </button>
             </div>
             <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
               <table className="w-full text-left text-sm">
@@ -728,6 +1038,64 @@ function ProjectDetail({ id }: { id: string }) {
                 </tbody>
               </table>
             </div>
+            <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">书名</th>
+                    <th className="px-3 py-2">层级</th>
+                    <th className="px-3 py-2">下载状态</th>
+                    <th className="px-3 py-2">用途</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {booklistRows.slice(0, 12).map((row) => (
+                    <tr key={row.id} className="text-warm-300">
+                      <td className="px-3 py-2">{row.title}</td>
+                      <td className="px-3 py-2">{row.tier}</td>
+                      <td className="px-3 py-2">{statusLabel(row.download_status)}</td>
+                      <td className="px-3 py-2">{jsonPreview(row.likely_use, 80)}</td>
+                    </tr>
+                  ))}
+                  {booklistRows.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={4}>
+                        尚未在本页导入或规范化书单。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">下载任务</th>
+                    <th className="px-3 py-2">提供方</th>
+                    <th className="px-3 py-2">状态</th>
+                    <th className="px-3 py-2">模式卡</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {downloadTasks.slice(0, 12).map((task) => (
+                    <tr key={task.id} className="text-warm-300">
+                      <td className="px-3 py-2">{task.title}</td>
+                      <td className="px-3 py-2">{task.provider}</td>
+                      <td className="px-3 py-2">{statusLabel(task.status)}</td>
+                      <td className="px-3 py-2">{formatNumber(task.generated_card_count)}</td>
+                    </tr>
+                  ))}
+                  {downloadTasks.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={4}>
+                        暂无下载任务。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -737,7 +1105,192 @@ function ProjectDetail({ id }: { id: string }) {
             <StatCard label="预估令牌" value={formatNumber(referenceCost?.estimatedPromptTokens ?? 0)} icon={ScrollText} />
             <StatCard label="引用安全警告" value={String(dashboard?.reference_safety_warnings ?? 0)} icon={AlertTriangle} />
             <StatCard label="过拟合警告" value={String(dashboard?.reference_overfit_warnings ?? 0)} icon={AlertTriangle} />
+            <StatCard label="机制画像书数" value={String(referenceProfile?.source_book_count ?? 0)} icon={BookOpenText} />
+            <StatCard label="机制画像卡数" value={String(referenceProfile?.source_card_count ?? 0)} icon={Database} />
           </div>
+          <Panel title="参考模式卡" icon={Database}>
+            {patternCards.length === 0 ? (
+              <EmptyLine text="暂无模式卡检索结果。" />
+            ) : (
+              <div className="space-y-3">
+                {patternCards.slice(0, 8).map((card) => (
+                  <div key={card.id} className="rounded-lg border border-gold-500/10 px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium text-warm-100">{card.name}</div>
+                      <span className="text-xs text-warm-500">{card.category}</span>
+                    </div>
+                    <div className="mt-2 text-sm leading-6 text-warm-400">{card.description}</div>
+                    <div className="mt-2 text-xs text-warm-500">
+                      来源章节 {card.source_section_ids.length} / 原文进入提示 {card.raw_text_included ? "是" : "否"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+        </section>
+      )}
+
+      {tab === "bible" && (
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Panel
+            title="主圣经与世界资料"
+            icon={BookOpenText}
+            right={
+              <div className="flex flex-wrap gap-2">
+                <select
+                  className="auth-input w-[220px]"
+                  value={bibleSectionKey}
+                  onChange={(event) => setBibleSectionKey(event.target.value as (typeof bibleSectionOptions)[number][0])}
+                >
+                  {bibleSectionOptions.map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-ghost rounded-lg"
+                  disabled={busy === "bible-section"}
+                  onClick={() =>
+                    void runAction(
+                      "bible-section",
+                      () => api.generateEpicBibleSection(project.id, bibleSectionKey),
+                      "圣经分节已生成。",
+                    )
+                  }
+                >
+                  {busy === "bible-section" ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />}
+                  生成分节
+                </button>
+              </div>
+            }
+          >
+            <KeyValueGrid
+              rows={[
+                ["主圣经状态", asRecord(detail.master_bible).status],
+                ["目标字数", asRecord(detail.master_bible).target_words],
+                ["已完成分节", detail.bible_sections.filter((row) => String(row.status ?? "") === "accepted").length],
+                ["覆盖率", pct(dashboard?.bible_coverage_score)],
+                ["世界图谱", detail.world_atlas ? "已记录" : ""],
+                ["官僚体系", detail.bureaucracy_system ? "已记录" : ""],
+                ["战力体系", detail.power_system ? "已记录" : ""],
+                ["全局主线", detail.global_spine ? "已记录" : ""],
+              ]}
+            />
+            <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">圣经分节</th>
+                    <th className="px-3 py-2">状态</th>
+                    <th className="px-3 py-2">字数</th>
+                    <th className="px-3 py-2">更新时间</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {detail.bible_sections.map((section) => (
+                    <tr key={String(section.id ?? section.section_key)} className="text-warm-300">
+                      <td className="px-3 py-2">{fieldText(section.title ?? section.section_key)}</td>
+                      <td className="px-3 py-2">{statusLabel(String(section.status ?? ""))}</td>
+                      <td className="px-3 py-2">{fieldText(section.word_count)}</td>
+                      <td className="px-3 py-2">{asDate(String(section.updated_at ?? ""))}</td>
+                    </tr>
+                  ))}
+                  {detail.bible_sections.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={4}>
+                        暂无圣经分节。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+          <div className="space-y-3">
+            <StatCard label="世界观候选" value={String(countRows(detail, "worldview_candidates"))} icon={Sparkles} />
+            <StatCard label="国家区域" value={String(countRows(detail, "nations") + countRows(detail, "map_regions"))} icon={Database} />
+            <StatCard label="制度势力" value={String(countRows(detail, "institutions") + countRows(detail, "factions"))} icon={ShieldCheck} />
+            <StatCard label="人物角色" value={String(countRows(detail, "characters"))} icon={Layers3} />
+            <StatCard label="角色弧光" value={String(countRows(detail, "character_arcs"))} icon={GitBranch} />
+            <StatCard label="关系图谱" value={String(countRows(detail, "factions") + countRows(detail, "institutions"))} icon={GitBranch} />
+          </div>
+          <Panel title="世界图谱 / 官僚体系 / 战力体系" icon={Database}>
+            <KeyValueGrid
+              rows={[
+                ["世界图谱状态", asRecord(detail.world_atlas).status],
+                ["官僚体系状态", asRecord(detail.bureaucracy_system).status],
+                ["战力体系状态", asRecord(detail.power_system).status],
+                ["国家数量", countRows(detail, "nations")],
+                ["地图区域", countRows(detail, "map_regions")],
+                ["势力数量", countRows(detail, "factions")],
+              ]}
+            />
+          </Panel>
+        </section>
+      )}
+
+      {tab === "planning" && (
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Panel title="分卷合同与章节合同" icon={ScrollText}>
+            <div className="overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">类型</th>
+                    <th className="px-3 py-2">编号</th>
+                    <th className="px-3 py-2">标题</th>
+                    <th className="px-3 py-2">状态</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {detail.volume_contracts.map((row) => (
+                    <tr key={String(row.id)} className="text-warm-300">
+                      <td className="px-3 py-2">分卷合同</td>
+                      <td className="px-3 py-2">{fieldText(row.volume_number)}</td>
+                      <td className="px-3 py-2">{fieldText(row.title)}</td>
+                      <td className="px-3 py-2">{statusLabel(String(row.status ?? "planned"))}</td>
+                    </tr>
+                  ))}
+                  {detail.chapter_contracts.slice(0, 12).map((row) => (
+                    <tr key={row.id} className="text-warm-300">
+                      <td className="px-3 py-2">章节合同</td>
+                      <td className="px-3 py-2">{row.chapter_number}</td>
+                      <td className="px-3 py-2">{row.title}</td>
+                      <td className="px-3 py-2">{statusLabel(row.status)}</td>
+                    </tr>
+                  ))}
+                  {detail.volume_contracts.length === 0 && detail.chapter_contracts.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={4}>
+                        暂无规划合同。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+          <div className="space-y-3">
+            <StatCard label="伏笔账本" value={String(countRows(detail, "foreshadows"))} icon={GitBranch} />
+            <StatCard label="读者疑问" value={String(countRows(detail, "reader_questions"))} icon={SearchCheck} />
+            <StatCard label="爽点曲线" value={String(countRows(detail, "pleasure_beats"))} icon={Sparkles} />
+            <StatCard label="大纲执行率" value={pct(dashboard?.outline_execution_rate)} icon={ShieldCheck} />
+          </div>
+          <Panel title="伏笔 / 读者疑问 / 爽点曲线" icon={GitBranch}>
+            <KeyValueGrid
+              rows={[
+                ["未回收伏笔", dashboard?.unpaid_foreshadows ?? 0],
+                ["爽点缺口警告", dashboard?.pleasure_gap_warnings ?? 0],
+                ["支线漂移警告", dashboard?.side_quest_warnings ?? 0],
+                ["连续性问题", dashboard?.continuity_issues ?? 0],
+                ["最新伏笔", fieldText(asRecord(detail.foreshadows[0]).description ?? asRecord(detail.foreshadows[0]).setup_text)],
+                ["最新读者疑问", fieldText(asRecord(detail.reader_questions[0]).question)],
+              ]}
+            />
+          </Panel>
         </section>
       )}
 
@@ -865,6 +1418,96 @@ function ProjectDetail({ id }: { id: string }) {
         </section>
       )}
 
+      {tab === "context" && (
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Panel
+            title="上下文包"
+            icon={SearchCheck}
+            right={
+              <div className="flex flex-wrap gap-2">
+                <input
+                  className="auth-input w-28"
+                  value={contextChapter}
+                  onChange={(event) => setContextChapter(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-ghost rounded-lg"
+                  disabled={busy === "context-pack"}
+                  onClick={() =>
+                    void runAction(
+                      "context-pack",
+                      () => api.getEpicChapterContextPack(project.id, Number(contextChapter) || nextChapter),
+                      "上下文包已读取。",
+                    )
+                  }
+                >
+                  {busy === "context-pack" ? <Loader2 className="h-4 w-4 animate-spin" /> : <SearchCheck className="h-4 w-4" />}
+                  读取上下文
+                </button>
+              </div>
+            }
+          >
+            {contextPack ? (
+              <KeyValueGrid
+                rows={[
+                  ["章节", asRecord(contextPack).chapterNumber ?? contextChapter],
+                  ["上下文项", fieldCount(asRecord(contextPack).items ?? asRecord(contextPack).sections)],
+                  ["溢出项", fieldCount(asRecord(asRecord(contextPack).metadata).overflowSections)],
+                  ["排除项", fieldCount(asRecord(contextPack).excludedSections ?? asRecord(asRecord(contextPack).metadata).excludedSections)],
+                  ["原始参考文本", fieldText(asRecord(contextPack).rawTextIncluded ?? asRecord(asRecord(contextPack).metadata).rawTextIncluded)],
+                  ["摘要", jsonPreview(contextPack, 140)],
+                ]}
+              />
+            ) : (
+              <EmptyLine text="尚未读取上下文包。" />
+            )}
+          </Panel>
+          <div className="space-y-3">
+            <StatCard label="检索轨迹" value={String(countRows(detail, "retrieval_traces"))} icon={SearchCheck} />
+            <StatCard label="模式卡结果" value={String(patternCards.length)} icon={Database} />
+            <StatCard label="机制画像卡数" value={String(referenceProfile?.source_card_count ?? 0)} icon={BookOpenText} />
+            <StatCard label="引用安全警告" value={String(dashboard?.reference_safety_warnings ?? 0)} icon={AlertTriangle} />
+          </div>
+          <Panel title="检索轨迹" icon={Database}>
+            <div className="overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">任务</th>
+                    <th className="px-3 py-2">章节</th>
+                    <th className="px-3 py-2">用卡</th>
+                    <th className="px-3 py-2">原文</th>
+                    <th className="px-3 py-2">时间</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {detail.retrieval_traces.slice(0, 12).map((trace) => {
+                    const row = asRecord(trace);
+                    return (
+                      <tr key={String(row.id)} className="text-warm-300">
+                        <td className="px-3 py-2">{traceTaskLabel(row)}</td>
+                        <td className="px-3 py-2">{fieldText(row.chapter_number)}</td>
+                        <td className="px-3 py-2">{fieldCount(row.used_card_ids)}</td>
+                        <td className="px-3 py-2">{fieldText(row.raw_text_included)}</td>
+                        <td className="px-3 py-2">{asDate(String(row.created_at ?? ""))}</td>
+                      </tr>
+                    );
+                  })}
+                  {detail.retrieval_traces.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={5}>
+                        暂无检索轨迹。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        </section>
+      )}
+
       {tab === "qa" && (
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="card-warm rounded-lg px-5 py-5">
@@ -905,6 +1548,38 @@ function ProjectDetail({ id }: { id: string }) {
                 </tbody>
               </table>
             </div>
+            <div className="mt-5 overflow-hidden rounded-lg border border-gold-500/10">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-base-800/70 text-xs text-warm-500">
+                  <tr>
+                    <th className="px-3 py-2">章节</th>
+                    <th className="px-3 py-2">级别</th>
+                    <th className="px-3 py-2">问题</th>
+                    <th className="px-3 py-2">状态</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gold-500/8">
+                  {detail.issues.slice(0, 12).map((issue) => {
+                    const row = asRecord(issue);
+                    return (
+                      <tr key={String(row.id)} className="text-warm-300">
+                        <td className="px-3 py-2">{fieldText(row.chapter_number)}</td>
+                        <td className="px-3 py-2">{issueSeverityLabel(row.severity)}</td>
+                        <td className="px-3 py-2">{fieldText(row.message ?? row.issue_type)}</td>
+                        <td className="px-3 py-2">{statusLabel(String(row.status ?? "pending"))}</td>
+                      </tr>
+                    );
+                  })}
+                  {detail.issues.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-4 text-warm-500" colSpan={4}>
+                        暂无问题清单。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -912,6 +1587,166 @@ function ProjectDetail({ id }: { id: string }) {
             <StatCard label="连续性问题" value={String(dashboard?.continuity_issues ?? 0)} icon={AlertTriangle} />
             <StatCard label="未回收伏笔" value={String(dashboard?.unpaid_foreshadows ?? 0)} icon={GitBranch} />
             <StatCard label="修复次数" value={String(dashboard?.repair_count ?? 0)} icon={CheckCircle2} />
+            <StatCard label="问题清单" value={String(countRows(detail, "issues"))} icon={AlertTriangle} />
+          </div>
+        </section>
+      )}
+
+      {tab === "dashboard" && (
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Panel title="生产仪表盘" icon={Database}>
+            <KeyValueGrid
+              rows={[
+                ["当前字数", dashboard?.current_words ?? 0],
+                ["已完成章节", dashboard?.completed_chapters ?? 0],
+                ["已完成分卷", dashboard?.completed_volumes ?? 0],
+                ["圣经覆盖率", pct(dashboard?.bible_coverage_score)],
+                ["大纲执行率", pct(dashboard?.outline_execution_rate)],
+                ["世界图谱使用率", pct(dashboard?.world_atlas_usage_rate)],
+                ["剩余预估费用", `$${(dashboard?.estimated_remaining_cost ?? 0).toFixed(3)}`],
+                ["重试状态", statusLabel(dashboard?.retry_status)],
+              ]}
+            />
+            <div className="mt-5">
+              {Object.keys(currentJob).length > 0 ? (
+                <KeyValueGrid
+                  rows={[
+                    ["当前任务", fieldText(currentJob.job_type ?? currentJob.role)],
+                    ["任务状态", statusLabel(String(currentJob.status ?? ""))],
+                    ["进度", pct(dashboard?.job_progress)],
+                    ["已完成步骤", currentJob.completed_steps],
+                    ["总步骤", currentJob.total_steps],
+                    ["最新错误", jsonPreview(dashboard?.job_errors?.[0], 120)],
+                  ]}
+                />
+              ) : (
+                <EmptyLine text="暂无运行中的生产任务。" />
+              )}
+            </div>
+          </Panel>
+          <div className="space-y-3">
+            <StatCard label="官僚一致性问题" value={String(dashboard?.bureaucracy_consistency_issues ?? 0)} icon={AlertTriangle} />
+            <StatCard label="角色弧光缺口" value={String(dashboard?.character_arc_gaps ?? 0)} icon={AlertTriangle} />
+            <StatCard label="女主挂件风险" value={String(dashboard?.heroine_appendage_risk ?? 0)} icon={AlertTriangle} />
+            <StatCard label="核心角色消失" value={String(dashboard?.a_tier_disappearance_warnings ?? 0)} icon={AlertTriangle} />
+            <StatCard label="存储状态错误" value={String(dashboard?.storage_state_errors ?? 0)} icon={AlertTriangle} />
+            <StatCard label="过拟合警告" value={String(dashboard?.reference_overfit_warnings ?? 0)} icon={AlertTriangle} />
+          </div>
+          <Panel title="最新运行证据" icon={ShieldCheck}>
+            <KeyValueGrid
+              rows={[
+                ["最新检索任务", latestTrace ? traceTaskLabel(latestTrace) : ""],
+                ["最新检索章节", latestTrace?.chapter_number],
+                ["最新问题级别", issueSeverityLabel(latestIssue?.severity)],
+                ["最新问题", latestIssue?.message ?? latestIssue?.issue_type],
+                ["下载导入状态", jsonPreview(dashboard?.download_import_status, 120)],
+                ["模式卡数量", dashboard?.generated_pattern_card_count ?? 0],
+              ]}
+            />
+          </Panel>
+        </section>
+      )}
+
+      {tab === "export" && (
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Panel title="文件导出" icon={Download}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ActionButton
+                label="全书圣经元数据"
+                busy={busy === "export-meta-bible"}
+                icon={FileCheck2}
+                onClick={() =>
+                  void runAction(
+                    "export-meta-bible",
+                    () => api.getEpicBibleExportMetadata(project.id, "markdown"),
+                    "全书圣经导出元数据已生成。",
+                  )
+                }
+              />
+              <ActionButton
+                label="正文元数据"
+                busy={busy === "export-meta-novel"}
+                icon={ScrollText}
+                onClick={() =>
+                  void runAction(
+                    "export-meta-novel",
+                    () => api.getEpicNovelExportMetadata(project.id, "markdown"),
+                    "正文导出元数据已生成。",
+                  )
+                }
+              />
+              <ActionButton
+                label="下载全书圣经"
+                busy={busy === "download-bible"}
+                icon={Download}
+                onClick={() => void runAction("download-bible", () => api.downloadEpicBibleExport(project.id), "全书圣经下载已触发。")}
+              />
+              <ActionButton
+                label="下载正文"
+                busy={busy === "download-novel"}
+                icon={Download}
+                onClick={() => void runAction("download-novel", () => api.downloadEpicNovelExport(project.id), "正文下载已触发。")}
+              />
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <select
+                className="auth-input min-w-[180px]"
+                value={artifactType}
+                onChange={(event) => setArtifactType(event.target.value as EpicArtifactType)}
+              >
+                {artifactOptions.map((item) => (
+                  <option key={item.type} value={item.type}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              {selectedArtifact.needsVolume && (
+                <input
+                  className="auth-input w-24"
+                  value={volumeNumber}
+                  onChange={(event) => setVolumeNumber(event.target.value)}
+                />
+              )}
+              <button
+                type="button"
+                className="btn-ghost rounded-lg"
+                disabled={busy === "export-meta-artifact"}
+                onClick={() =>
+                  void runAction(
+                    "export-meta-artifact",
+                    () => api.getEpicArtifactExportMetadata(project.id, artifactType, selectedArtifact.needsVolume ? volume : undefined),
+                    "导出元数据已生成。",
+                  )
+                }
+              >
+                {busy === "export-meta-artifact" ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />}
+                生成元数据
+              </button>
+              <button
+                type="button"
+                className="btn-gold rounded-lg"
+                disabled={busy === "download-artifact"}
+                onClick={() =>
+                  void runAction(
+                    "download-artifact",
+                    () => api.downloadEpicArtifactExport(project.id, artifactType, selectedArtifact.needsVolume ? volume : undefined),
+                    "文件下载已触发。",
+                  )
+                }
+              >
+                {busy === "download-artifact" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                下载文件
+              </button>
+            </div>
+            <div className="mt-5 rounded-lg border border-gold-500/10 px-4 py-4 text-sm leading-7 text-warm-300">
+              {exportLabel(exportMetadata)}
+            </div>
+          </Panel>
+          <div className="space-y-3">
+            <StatCard label="圣经分节" value={String(countRows(detail, "bible_sections"))} icon={FileCheck2} />
+            <StatCard label="已验收章节" value={String(countRows(detail, "chapters"))} icon={ScrollText} />
+            <StatCard label="验收报告" value={String(countRows(detail, "acceptance_reports"))} icon={ShieldCheck} />
+            <StatCard label="检索轨迹" value={String(countRows(detail, "retrieval_traces"))} icon={SearchCheck} />
           </div>
         </section>
       )}

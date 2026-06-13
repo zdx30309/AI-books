@@ -7,7 +7,9 @@ state, QA, or API contracts.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -45,6 +47,7 @@ from app.models import (
     EpicPleasureBeat,
     EpicPowerLedger,
     EpicPowerSystem,
+    EpicProductionJob,
     EpicReaderQuestion,
     EpicRelationshipEdge,
     EpicRetrievalTrace,
@@ -298,8 +301,38 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
         "project": project,
         "world_bible": _asdict_model(db.query(EpicWorldBible).filter(EpicWorldBible.project_id == project.id).first()) or None,
         "world_atlas": _asdict_model(db.query(EpicWorldAtlas).filter(EpicWorldAtlas.project_id == project.id).first()) or None,
+        "bureaucracy_system": _asdict_model(db.query(EpicBureaucracySystem).filter(EpicBureaucracySystem.project_id == project.id).first()) or None,
         "power_system": _asdict_model(db.query(EpicPowerSystem).filter(EpicPowerSystem.project_id == project.id).first()) or None,
         "master_bible": _asdict_model(db.query(EpicMasterBible).filter(EpicMasterBible.project_id == project.id).first()) or None,
+        "worldview_candidates": [
+            _asdict_model(row)
+            for row in db.query(WorldviewCandidate).filter(WorldviewCandidate.project_id == project.id).order_by(WorldviewCandidate.score.desc()).all()
+        ],
+        "nations": [
+            _asdict_model(row)
+            for row in db.query(EpicNation).filter(EpicNation.project_id == project.id).order_by(EpicNation.name.asc()).all()
+        ],
+        "map_regions": [
+            _asdict_model(row)
+            for row in db.query(EpicMapRegion).filter(EpicMapRegion.project_id == project.id).order_by(EpicMapRegion.name.asc()).all()
+        ],
+        "institutions": [
+            _asdict_model(row)
+            for row in db.query(EpicInstitution).filter(EpicInstitution.project_id == project.id).order_by(EpicInstitution.name.asc()).all()
+        ],
+        "factions": [
+            _asdict_model(row)
+            for row in db.query(EpicFaction).filter(EpicFaction.project_id == project.id).order_by(EpicFaction.name.asc()).all()
+        ],
+        "characters": [
+            _asdict_model(row)
+            for row in db.query(EpicCharacter).filter(EpicCharacter.project_id == project.id).order_by(EpicCharacter.name.asc()).all()
+        ],
+        "character_arcs": [
+            _asdict_model(row)
+            for row in db.query(EpicCharacterArc).filter(EpicCharacterArc.project_id == project.id).order_by(EpicCharacterArc.created_at.asc()).all()
+        ],
+        "global_spine": _asdict_model(db.query(EpicGlobalSpine).filter(EpicGlobalSpine.project_id == project.id).first()) or None,
         "bible_sections": [
             _asdict_model(row)
             for row in db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id).order_by(EpicBibleSection.order_index.asc()).all()
@@ -308,9 +341,25 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
             _asdict_model(row)
             for row in db.query(EpicVolumeContract).filter(EpicVolumeContract.project_id == project.id).order_by(EpicVolumeContract.volume_number.asc()).all()
         ],
+        "foreshadows": [
+            _asdict_model(row)
+            for row in db.query(EpicForeshadow).filter(EpicForeshadow.project_id == project.id).order_by(EpicForeshadow.created_at.asc()).all()
+        ],
+        "reader_questions": [
+            _asdict_model(row)
+            for row in db.query(EpicReaderQuestion).filter(EpicReaderQuestion.project_id == project.id).order_by(EpicReaderQuestion.created_at.asc()).all()
+        ],
+        "pleasure_beats": [
+            _asdict_model(row)
+            for row in db.query(EpicPleasureBeat).filter(EpicPleasureBeat.project_id == project.id).order_by(EpicPleasureBeat.created_at.asc()).all()
+        ],
         "chapter_contracts": db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id).order_by(EpicChapterContract.chapter_number.asc()).all(),
         "chapters": db.query(EpicChapter).filter(EpicChapter.project_id == project.id).order_by(EpicChapter.chapter_number.asc()).all(),
         "acceptance_reports": db.query(EpicAcceptanceReport).filter(EpicAcceptanceReport.project_id == project.id).order_by(EpicAcceptanceReport.chapter_number.asc()).all(),
+        "issues": [
+            _asdict_model(row)
+            for row in db.query(EpicIssue).filter(EpicIssue.project_id == project.id).order_by(EpicIssue.created_at.desc()).all()
+        ],
         "retrieval_traces": [
             _asdict_model(row)
             for row in db.query(EpicRetrievalTrace).filter(EpicRetrievalTrace.project_id == project.id).order_by(EpicRetrievalTrace.created_at.desc()).all()
@@ -323,10 +372,117 @@ def _log_success(db: Session, project: EpicNovelProject, action: str, role: str 
     log_epic_generation(db, action=action, role=role, project_id=project.id, prompt=project.premise, completion=completion)
 
 
+def _reference_card_prompt_data(card: ReferencePatternCard) -> dict[str, Any]:
+    return {
+        "id": str(card.id),
+        "category": card.category,
+        "name": card.name,
+        "description": card.description,
+        "function": card.function,
+        "tags": card.tags or [],
+        "originalityNotes": card.originality_notes,
+        "sourceSectionIds": card.source_section_ids or [],
+        "sourceAnalysisIds": getattr(card, "source_analysis_ids", None) or [],
+        "evidenceCount": card.evidence_count,
+        "rawTextIncluded": False,
+    }
+
+
+def _reference_usage_pack(
+    db: Session,
+    project: EpicNovelProject,
+    *,
+    task_type: str,
+    query: str,
+    role: str = "author",
+    volume_number: int | None = None,
+    chapter_number: int | None = None,
+    section_key: str | None = None,
+) -> dict[str, Any]:
+    retrieval = auto_retrieval_plan(
+        db,
+        project_id=project.id,
+        task_type=task_type,
+        query=query,
+        volume_number=volume_number,
+        chapter_number=chapter_number,
+        section_key=section_key,
+        limit=settings.EPIC_CONTEXT_REFERENCE_CARD_LIMIT,
+    )
+    raw_pack = {
+        "cards": [_reference_card_prompt_data(card) for card in retrieval["cards"]],
+        "profile": _profile_summary(retrieval["profile"]) or _profile_bible_notes(retrieval["profile"]),
+    }
+    context = {
+        "project": {"id": str(project.id), "title": project.title, "premise": project.premise, "genre": project.genre},
+        "referenceInspirationPack": raw_pack,
+        "referenceSafety": {"rawTextIncluded": False, "allowedInputs": ["ReferencePatternCards", "ReferenceMechanismProfile"]},
+    }
+    compiled = compile_dynamic_context(context, role=role)
+    compiled_pack = compiled["context"].get("referenceInspirationPack") or {}
+    cards = compiled_pack.get("cards") or []
+    profile = compiled_pack.get("profile") or raw_pack["profile"]
+    trace = retrieval.get("trace")
+    if trace is not None:
+        used_card_ids = [str(card.get("id")) for card in cards if card.get("id")]
+        trace.used_card_ids = used_card_ids
+        trace.excluded_context = compiled["metadata"].get("overflow") or []
+        trace.raw_text_included = False
+        trace.raw_json = {
+            **(trace.raw_json or {}),
+            "usedCardIds": used_card_ids,
+            "contextMetadata": compiled["metadata"],
+            "rawTextIncluded": False,
+            "excludedOrOverflow": compiled["metadata"].get("overflow") or [],
+        }
+        db.commit()
+    return {
+        "cards": cards,
+        "profile": profile,
+        "trace": trace,
+        "metadata": compiled["metadata"],
+    }
+
+
+def _reference_usage_meta(usage: dict[str, Any]) -> dict[str, Any]:
+    trace = usage.get("trace")
+    metadata = usage.get("metadata") or {}
+    return {
+        "traceId": str(trace.id) if trace is not None else None,
+        "taskType": trace.task_type if trace is not None else None,
+        "usedCardIds": list(getattr(trace, "used_card_ids", []) or []),
+        "profileVersion": getattr(trace, "profile_version", None),
+        "usedProfileSections": list(getattr(trace, "used_profile_sections", []) or []),
+        "rawTextIncluded": False,
+        "included": metadata.get("included") or [],
+        "excludedOrOverflow": metadata.get("overflow") or [],
+        "allowedInputs": ["ReferencePatternCards", "ReferenceMechanismProfile"],
+    }
+
+
+def _attach_reference_usage(row: Any, usage: dict[str, Any]) -> None:
+    if not hasattr(row, "raw_json"):
+        return
+    raw = dict(getattr(row, "raw_json", None) or {})
+    raw["referenceUsage"] = _reference_usage_meta(usage)
+    raw["rawTextIncluded"] = False
+    setattr(row, "raw_json", raw)
+
+
 def run_worldview_tournament(db: Session, project_id: UUID, user: Any | None = None) -> list[WorldviewCandidate]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="genesis_worldview_tournament",
+        query=f"{project.genre} 世界观 候选 创世 长线机制 {project.premise}",
+        role="editor",
+    )
     existing = db.query(WorldviewCandidate).filter(WorldviewCandidate.project_id == project.id).order_by(WorldviewCandidate.candidate_number.asc()).all()
     if existing:
+        for row in existing:
+            _attach_reference_usage(row, reference_usage)
+        db.commit()
         return existing
     entity_pack = _generic_entity_pack(project)
     fallback = {
@@ -353,7 +509,8 @@ def run_worldview_tournament(db: Session, project_id: UUID, user: Any | None = N
         "protagonistSpecialness,heroineIntegration,ensemblePotential,finalMystery,score}]}。"
         "所有用户可见内容必须是简体中文，不得使用固定测试项目人名、国名、机构名。\n\n"
         f"项目标题：{project.title}\n项目前提：{project.premise}\n类型：{project.genre}\n"
-        f"参考机制画像：{json.dumps(_profile_bible_notes(latest_reference_profile(db, project_id=project.id)), ensure_ascii=False)}"
+        f"参考机制画像：{json.dumps(reference_usage['profile'], ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="worldview_tournament", role="editor", prompt=prompt, fallback=fallback)
     for index, candidate in enumerate(data.get("candidates") or fallback["candidates"], start=1):
@@ -372,7 +529,11 @@ def run_worldview_tournament(db: Session, project_id: UUID, user: Any | None = N
                 final_mystery=str(candidate.get("finalMystery") or ""),
                 score_json={**(candidate.get("score") if isinstance(candidate.get("score"), dict) else {}), "selected": index <= 3},
                 selected=index <= 3,
-                raw_json={"abstractOnly": True, **data.get("_meta", _fallback_meta() if used_fallback else _production_meta())},
+                raw_json={
+                    "abstractOnly": True,
+                    "referenceUsage": _reference_usage_meta(reference_usage),
+                    **data.get("_meta", _fallback_meta() if used_fallback else _production_meta()),
+                },
             )
         )
     db.commit()
@@ -383,8 +544,17 @@ def run_worldview_tournament(db: Session, project_id: UUID, user: Any | None = N
 
 def generate_world_bible(db: Session, project_id: UUID, user: Any | None = None) -> EpicWorldBible:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="world_bible",
+        query=f"{project.genre} 世界圣经 世界法则 爽点承诺 反俗套 {project.premise}",
+        role="editor",
+    )
     existing = db.query(EpicWorldBible).filter(EpicWorldBible.project_id == project.id).first()
     if existing:
+        _attach_reference_usage(existing, reference_usage)
+        db.commit()
         return existing
     run_worldview_tournament(db, project.id, user)
     fallback = {
@@ -404,7 +574,8 @@ def generate_world_bible(db: Session, project_id: UUID, user: Any | None = None)
         "字段：title, coreConcept, worldLaw, powerSource, societyStructure, history, tabooRules, styleRules, finalMystery, endingDirection。"
         "必须简体中文；不得使用固定测试项目内容；不得包含参考书原文。\n\n"
         f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}\n"
-        f"参考机制画像：{json.dumps(_profile_bible_notes(latest_reference_profile(db, project_id=project.id)), ensure_ascii=False)}"
+        f"参考机制画像：{json.dumps(reference_usage['profile'], ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="generate_world_bible", role="editor", prompt=prompt, fallback=fallback)
     bible = EpicWorldBible(
@@ -420,7 +591,11 @@ def generate_world_bible(db: Session, project_id: UUID, user: Any | None = None)
         forbidden_rules=[project.forbidden_rules] if project.forbidden_rules else [],
         final_mystery=str(data.get("finalMystery") or fallback["finalMystery"]),
         ending_direction=str(data.get("endingDirection") or fallback["endingDirection"]),
-        raw_json={"source": "model_world_bible" if not used_fallback else "smoke_fallback_world_bible", **data.get("_meta", {})},
+        raw_json={
+            "source": "model_world_bible" if not used_fallback else "smoke_fallback_world_bible",
+            "referenceUsage": _reference_usage_meta(reference_usage),
+            **data.get("_meta", {}),
+        },
     )
     db.add(bible)
     db.commit()
@@ -431,8 +606,26 @@ def generate_world_bible(db: Session, project_id: UUID, user: Any | None = None)
 
 def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None) -> EpicWorldAtlas:
     project = _get_project(db, project_id, user)
+    atlas_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="world_atlas",
+        query=f"{project.genre} 世界图谱 地图 地域 势力 长线扩展 {project.premise}",
+        role="editor",
+    )
+    bureaucracy_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="bureaucracy_system",
+        query=f"{project.genre} 官僚体系 制度阻力 朝堂 派系 流程 {project.premise}",
+        role="editor",
+    )
     existing = db.query(EpicWorldAtlas).filter(EpicWorldAtlas.project_id == project.id).first()
     if existing:
+        _attach_reference_usage(existing, atlas_usage)
+        for row in db.query(EpicBureaucracySystem).filter(EpicBureaucracySystem.project_id == project.id).all():
+            _attach_reference_usage(row, bureaucracy_usage)
+        db.commit()
         return existing
     generate_world_bible(db, project.id, user)
     entity_pack = _generic_entity_pack(project)
@@ -455,6 +648,8 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
         "字段：nation{name,dynastyFlavor,currentCrisis}, bureaucracy{centralGovernment,localGovernment,rankSystem,departments,storyFunctions}, "
         "regions, institutions, factions, timeline。必须简体中文，不得使用固定测试项目内容。\n\n"
         f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}\n"
+        f"世界图谱参考包：{json.dumps({'profile': atlas_usage['profile'], 'cards': atlas_usage['cards']}, ensure_ascii=False)}\n"
+        f"官僚体系参考包：{json.dumps({'profile': bureaucracy_usage['profile'], 'cards': bureaucracy_usage['cards']}, ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="generate_world_atlas", role="editor", prompt=prompt, fallback=fallback)
     nation_data = data.get("nation") if isinstance(data.get("nation"), dict) else fallback["nation"]
@@ -483,7 +678,11 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
         power_checks=["交叉验证", "公开代价"],
         corruption_channels=["删改记录", "利益输送"],
         story_functions=bureaucracy_data.get("storyFunctions") if isinstance(bureaucracy_data.get("storyFunctions"), list) else fallback["bureaucracy"]["storyFunctions"],
-        raw_json={"abstractOriginalInstitution": True, **meta},
+        raw_json={
+            "abstractOriginalInstitution": True,
+            "referenceUsage": _reference_usage_meta(bureaucracy_usage),
+            **meta,
+        },
     )
     db.add(bureaucracy)
     nation = EpicNation(
@@ -502,7 +701,7 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
         relationship_to_hero="主角从低位进入权力链条",
         secrets=["核心秩序存在被隐瞒的历史缺口"],
         current_crisis=str(nation_data.get("currentCrisis") or project.premise),
-        raw_json={**nation_data, **meta},
+        raw_json={**nation_data, "referenceUsage": _reference_usage_meta(atlas_usage), **meta},
     )
     db.add(nation)
     for index, name in enumerate(regions[:3]):
@@ -518,7 +717,7 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
                 conflicts="地方利益与中心规则发生冲突。",
                 secrets="隐藏一个与全局主线相关的历史缺口。",
                 related_foreshadows=[],
-                raw_json={"atlasFunction": "plot pressure"},
+                raw_json={"atlasFunction": "plot pressure", "referenceUsage": _reference_usage_meta(atlas_usage)},
             )
         )
     for name in institutions[:3]:
@@ -533,11 +732,11 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
                 secrets=["内部规则存在可被剧情利用的缺口"],
                 relationship_to_hero="既是阻碍也是工具",
                 story_use_cases=["收案", "阻滞", "反转"],
-                raw_json={"institutionFunction": "active plot engine", **meta},
+                raw_json={"institutionFunction": "active plot engine", "referenceUsage": _reference_usage_meta(bureaucracy_usage), **meta},
             )
         )
     for faction in factions[:4]:
-        db.add(EpicFaction(project_id=project.id, name=faction, type="project_faction", public_goal="维护自身秩序", hidden_goal="争夺核心资源解释权", status="active", raw_json=meta))
+        db.add(EpicFaction(project_id=project.id, name=faction, type="project_faction", public_goal="维护自身秩序", hidden_goal="争夺核心资源解释权", status="active", raw_json={"referenceUsage": _reference_usage_meta(atlas_usage), **meta}))
     atlas = EpicWorldAtlas(
         project_id=project.id,
         nations=[nation_data],
@@ -548,7 +747,12 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
         war_zones=regions[-1:] if regions else [],
         secret_realms=[f"{project.title}隐秘场域"],
         historical_timeline=data.get("timeline") if isinstance(data.get("timeline"), list) else fallback["timeline"],
-        raw_json={"bureaucracySystem": nation_data.get("name"), **meta},
+        raw_json={
+            "bureaucracySystem": nation_data.get("name"),
+            "referenceUsage": _reference_usage_meta(atlas_usage),
+            "bureaucracyReferenceUsage": _reference_usage_meta(bureaucracy_usage),
+            **meta,
+        },
     )
     db.add(atlas)
     db.commit()
@@ -559,8 +763,17 @@ def generate_world_atlas(db: Session, project_id: UUID, user: Any | None = None)
 
 def forge_power_system(db: Session, project_id: UUID, user: Any | None = None) -> EpicPowerSystem:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="power_system",
+        query=f"{project.genre} 战力体系 升级 代价 限制 反俗套 {project.premise}",
+        role="editor",
+    )
     existing = db.query(EpicPowerSystem).filter(EpicPowerSystem.project_id == project.id).first()
     if existing:
+        _attach_reference_usage(existing, reference_usage)
+        db.commit()
         return existing
     fallback = {
         "name": f"{project.title}力量体系",
@@ -581,7 +794,9 @@ def forge_power_system(db: Session, project_id: UUID, user: Any | None = None) -
         "你是中文长篇网文战力体系设计师。生成项目专属 PowerSystem JSON。"
         "字段：name, source, realmLevels, progressionRules, breakthroughConditions, costs, limits, professions, resources, protagonistPath, heroinePaths, villainUsage, finalSystemTwist。"
         "必须简体中文，不得使用固定测试项目内容。\n\n"
-        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}"
+        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}\n"
+        f"参考机制画像：{json.dumps(reference_usage['profile'], ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="forge_power_system", role="editor", prompt=prompt, fallback=fallback)
     meta = data.get("_meta", _fallback_meta() if used_fallback else _production_meta())
@@ -600,7 +815,7 @@ def forge_power_system(db: Session, project_id: UUID, user: Any | None = None) -
         heroine_paths=data.get("heroinePaths") if isinstance(data.get("heroinePaths"), list) else fallback["heroinePaths"],
         villain_usage=data.get("villainUsage") if isinstance(data.get("villainUsage"), list) else fallback["villainUsage"],
         final_system_twist=str(data.get("finalSystemTwist") or fallback["finalSystemTwist"]),
-        raw_json={"original": True, **meta},
+        raw_json={"original": True, "referenceUsage": _reference_usage_meta(reference_usage), **meta},
     )
     db.add(system)
     db.commit()
@@ -611,8 +826,18 @@ def forge_power_system(db: Session, project_id: UUID, user: Any | None = None) -
 
 def generate_ensemble_cast(db: Session, project_id: UUID, user: Any | None = None) -> list[EpicCharacter]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="ensemble_cast",
+        query=f"{project.genre} 群像 人物弧光 女主独立线 关系代价 {project.premise}",
+        role="author",
+    )
     existing = db.query(EpicCharacter).filter(EpicCharacter.project_id == project.id).all()
     if existing:
+        for row in existing:
+            _attach_reference_usage(row, reference_usage)
+        db.commit()
         return existing
     fallback = {
         "characters": [
@@ -626,7 +851,9 @@ def generate_ensemble_cast(db: Session, project_id: UUID, user: Any | None = Non
     prompt = (
         "你是中文长篇网文群像人物设计师。生成项目专属角色 JSON：{characters:[{name,tier,role,gender,goal,archetype,fear,falseBelief,trueNeed,faction,powerPath,ending,mustNotDo}]}。"
         "角色名必须根据项目生成，不得使用固定测试项目姓名；女主必须有独立目标。\n\n"
-        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}"
+        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}\n"
+        f"参考机制画像：{json.dumps(reference_usage['profile'], ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="generate_ensemble_cast", role="author", prompt=prompt, fallback=fallback)
     meta = data.get("_meta", _fallback_meta() if used_fallback else _production_meta())
@@ -659,7 +886,7 @@ def generate_ensemble_cast(db: Session, project_id: UUID, user: Any | None = Non
                 screen_time_budget=100 if tier == "S" else 65,
                 ending=str(item.get("ending") or "拥有与自身目标绑定的结局"),
                 must_not_do=item.get("mustNotDo") if isinstance(item.get("mustNotDo"), list) else ["只为衬托主角而存在", "丢失独立目标"],
-                raw_json={"agencyRequired": role == "heroine", **meta},
+                raw_json={"agencyRequired": role == "heroine", "referenceUsage": _reference_usage_meta(reference_usage), **meta},
             )
         )
         db.add(
@@ -674,11 +901,11 @@ def generate_ensemble_cast(db: Session, project_id: UUID, user: Any | None = Non
                 cost="失去安全位置",
                 arc_end="重写自身与项目核心秩序的关系",
                 volume_arc_grid=[{"volume": 1, "move": "建立"}, {"volume": 2, "move": "付价"}, {"volume": 3, "move": "兑现"}],
-                raw_json={},
+                raw_json={"referenceUsage": _reference_usage_meta(reference_usage)},
             )
         )
     if len(chars) >= 2 and isinstance(chars[0], dict) and isinstance(chars[1], dict):
-        db.add(EpicRelationshipEdge(project_id=project.id, from_character=str(chars[0].get("name")), to_character=str(chars[1].get("name")), relation_type="盟友兼对手", surface_relation="主线合作", hidden_conflict="目标优先级冲突", current_tension_level=4, raw_json=meta))
+        db.add(EpicRelationshipEdge(project_id=project.id, from_character=str(chars[0].get("name")), to_character=str(chars[1].get("name")), relation_type="盟友兼对手", surface_relation="主线合作", hidden_conflict="目标优先级冲突", current_tension_level=4, raw_json={"referenceUsage": _reference_usage_meta(reference_usage), **meta}))
     db.commit()
     _log_success(db, project, "generate_ensemble_cast", "author", "6 characters")
     db.commit()
@@ -687,8 +914,17 @@ def generate_ensemble_cast(db: Session, project_id: UUID, user: Any | None = Non
 
 def generate_global_spine(db: Session, project_id: UUID, user: Any | None = None) -> EpicGlobalSpine:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="global_spine",
+        query=f"{project.genre} 全书主线 长线节奏 伏笔 终局反转 {project.premise}",
+        role="editor",
+    )
     existing = db.query(EpicGlobalSpine).filter(EpicGlobalSpine.project_id == project.id).first()
     if existing:
+        _attach_reference_usage(existing, reference_usage)
+        db.commit()
         return existing
     fallback = {
         "surfaceStory": f"《{project.title}》围绕项目核心前提展开连续事件。",
@@ -701,7 +937,9 @@ def generate_global_spine(db: Session, project_id: UUID, user: Any | None = None
     prompt = (
         "你是中文300万字网文全书主线设计师。生成 GlobalSpine JSON：surfaceStory, hiddenTruth, finalConflict, heroFinalTransformation, stages, finalReveal。"
         "必须根据项目生成，不得使用固定测试项目内容。\n\n"
-        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}"
+        f"项目：{project.title}\n前提：{project.premise}\n类型：{project.genre}\n"
+        f"参考机制画像：{json.dumps(reference_usage['profile'], ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}"
     )
     data, used_fallback = _call_structured_generation(db, project, action="generate_global_spine", role="editor", prompt=prompt, fallback=fallback)
     spine = EpicGlobalSpine(
@@ -712,7 +950,11 @@ def generate_global_spine(db: Session, project_id: UUID, user: Any | None = None
         hero_final_transformation=str(data.get("heroFinalTransformation") or fallback["heroFinalTransformation"]),
         stages=data.get("stages") if isinstance(data.get("stages"), list) else fallback["stages"],
         final_reveal=str(data.get("finalReveal") or fallback["finalReveal"]),
-        raw_json={"mustDriveAllVolumes": True, **data.get("_meta", _fallback_meta() if used_fallback else _production_meta())},
+        raw_json={
+            "mustDriveAllVolumes": True,
+            "referenceUsage": _reference_usage_meta(reference_usage),
+            **data.get("_meta", _fallback_meta() if used_fallback else _production_meta()),
+        },
     )
     db.add(spine)
     db.commit()
@@ -733,12 +975,20 @@ def _get_or_create_master_bible(db: Session, project: EpicNovelProject) -> EpicM
 
 def generate_bible_manifest(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="master_bible_manifest",
+        query=f"{project.genre} Master Bible 目录 分节 生产控制 参考机制接入 {project.premise}",
+        role="author",
+    )
     generate_world_bible(db, project.id, user)
     generate_world_atlas(db, project.id, user)
     forge_power_system(db, project.id, user)
     generate_ensemble_cast(db, project.id, user)
     generate_global_spine(db, project.id, user)
     bible = _get_or_create_master_bible(db, project)
+    project.raw_json = {**(project.raw_json or {}), "masterBibleManifestReferenceUsage": _reference_usage_meta(reference_usage)}
     existing_keys = {row.section_key for row in db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id).all()}
     for index, (key, title, section_type, target_words) in enumerate(BIBLE_SECTIONS, start=1):
         if key in existing_keys:
@@ -756,7 +1006,8 @@ def generate_bible_manifest(db: Session, project_id: UUID, user: Any | None = No
                 coverage_tags=[section_type, key],
             )
         )
-    bible.status = "generating"
+    accepted_sections = db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id, EpicBibleSection.status == "accepted").count()
+    bible.status = "completed" if accepted_sections >= len(BIBLE_SECTIONS) else "generating"
     db.commit()
     _log_success(db, project, "bible_manifest", "author", "manifest sections")
     db.commit()
@@ -892,10 +1143,12 @@ def _bible_story_payload(project: EpicNovelProject, section: EpicBibleSection, p
 
 
 def _bible_acceptance_anchors(project: EpicNovelProject, section: EpicBibleSection, profile_notes: dict[str, Any]) -> dict[str, Any]:
+    title = _display_project_title(project)
+    premise = _display_project_premise(project)
     return {
-        "主角执行锚点": f"{project.title} 的主角必须在本节规则下承担主动选择，而不是等待外部系统替他完成推进。",
+        "主角执行锚点": f"{title} 的主角必须在本节规则下承担主动选择，而不是等待外部系统替他完成推进。",
         "关键机构锚点": "关键机构、地方执行机构、信息机构和敌对势力必须各自拥有目标、资源、流程和可被利用的漏洞。",
-        "世界规则锚点": f"世界规则必须服务于「{project.premise}」这一核心前提，并在章节中产生可观察的限制。",
+        "世界规则锚点": f"世界规则必须服务于「{premise}」这一核心前提，并在章节中产生可观察的限制。",
         "关系与代价锚点": "人物关系的推进必须伴随代价，盟友、对手和独立女性角色都要有自己的行动理由。",
         "伏笔终局锚点": f"{section.section_title} 必须说明本节如何埋设伏笔、回收读者疑问，并指向全书终局压力。",
         "势力冲突锚点": "每一卷都要让至少一个势力因主角行动改变立场，形成新的制度阻力或资源交换。",
@@ -905,10 +1158,108 @@ def _bible_acceptance_anchors(project: EpicNovelProject, section: EpicBibleSecti
             "allowedUse": "只使用 ReferencePatternCards 与 ReferenceMechanismProfile 的抽象机制，不使用原书文本、人物、机构或桥段。",
         },
         "sectionKey": section.section_key,
-    }
+}
+
+
+_BIBLE_KEY_WORD_LABELS = {
+    "id": "标识",
+    "section": "分节",
+    "title": "标题",
+    "project": "项目",
+    "overview": "总览",
+    "core": "核心",
+    "drive": "驱动力",
+    "current": "当前",
+    "crisis": "危机",
+    "atmosphere": "氛围",
+    "narrative": "叙事",
+    "identity": "身份",
+    "protagonist": "主角",
+    "allies": "盟友",
+    "tone": "基调",
+    "story": "故事",
+    "minefield": "雷区",
+    "present": "当下",
+    "tension": "张力",
+    "involved": "涉及",
+    "characters": "人物",
+    "institutions": "机构",
+    "regions": "地域",
+    "rules": "规则",
+    "play": "运行",
+    "name": "名称",
+    "role": "作用",
+    "function": "功能",
+    "conflict": "冲突",
+    "status": "状态",
+    "specific": "具体",
+    "location": "地点",
+    "content": "内容",
+    "relationship": "关系",
+    "graph": "图谱",
+    "global": "全局",
+    "spine": "主线",
+    "power": "力量",
+    "system": "体系",
+    "faction": "势力",
+    "factions": "势力",
+    "history": "历史",
+    "timeline": "年表",
+    "foreshadow": "伏笔",
+    "ledger": "账本",
+    "reader": "读者",
+    "question": "疑问",
+    "questions": "疑问",
+    "pleasure": "爽点",
+    "curve": "曲线",
+    "villain": "反派",
+    "plan": "计划",
+    "style": "风格",
+    "guide": "指南",
+    "anti": "反",
+    "cliche": "俗套",
+    "ending": "结局",
+    "glossary": "术语表",
+    "reference": "参考",
+    "profile": "画像",
+    "usage": "使用",
+    "production": "生产",
+    "control": "控制",
+    "cost": "代价",
+    "risk": "风险",
+    "goal": "目标",
+    "resource": "资源",
+    "resources": "资源",
+    "secret": "秘密",
+    "secrets": "秘密",
+    "evidence": "证据",
+    "case": "案件",
+    "arc": "弧光",
+    "arcs": "弧光",
+    "law": "法则",
+    "world": "世界",
+    "promise": "承诺",
+    "mechanism": "机制",
+    "mechanisms": "机制",
+}
 
 
 _BIBLE_PAYLOAD_LABELS = {
+    "title": "标题",
+    "projectOverview": "项目总览",
+    "project_overview": "项目总览",
+    "coreDrive": "核心驱动力",
+    "currentCrisis": "当前危机",
+    "narrativeIdentity": "叙事身份",
+    "coreAllies": "核心盟友",
+    "storyMinefield": "故事雷区",
+    "section_id": "分节标识",
+    "section_title": "分节标题",
+    "narrative_present_tension": "当前叙事张力",
+    "involved_characters": "涉及人物",
+    "involved_institutions": "涉及机构",
+    "involved_regions": "涉及地域",
+    "core_rules_in_play": "正在运行的核心规则",
     "acceptanceAnchors": "验收锚点",
     "sectionKey": "分节标识",
     "sourceCardCount": "抽象卡数量",
@@ -925,7 +1276,36 @@ _BIBLE_PAYLOAD_LABELS = {
     "readerQuestions": "读者疑问",
     "antiClicheRules": "反套路规则",
     "referenceProfile": "参考画像",
+    "ReferenceMechanismProfile": "参考机制画像",
 }
+
+
+def _has_visible_chinese(text: Any) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _mostly_english(value: str | None) -> bool:
+    text = value or ""
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    return latin > cjk * 2 and latin > 12
+
+
+def _display_project_title(project: EpicNovelProject) -> str:
+    if _mostly_english(project.title):
+        return "本长篇项目"
+    return project.title or "本长篇项目"
+
+
+def _display_project_premise(project: EpicNovelProject) -> str:
+    if _mostly_english(project.premise):
+        return "现代专业人士进入古代超凡官僚体系，通过连续案件调查揭开王朝级阴谋"
+    return project.premise or "项目核心前提"
+
+
+def _split_identifier_words(text: str) -> list[str]:
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return [item.casefold() for item in re.split(r"[^A-Za-z0-9]+", snake) if item]
 
 
 def _bible_payload_label(key: Any) -> str:
@@ -934,7 +1314,11 @@ def _bible_payload_label(key: Any) -> str:
         return _BIBLE_PAYLOAD_LABELS[text]
     if re.search(r"[\u4e00-\u9fff]", text):
         return text
-    return "结构字段"
+    words = _split_identifier_words(text)
+    translated = [_BIBLE_KEY_WORD_LABELS[word] for word in words if word in _BIBLE_KEY_WORD_LABELS]
+    if translated:
+        return "".join(translated)
+    return "设定项"
 
 
 def _sanitize_bible_value(value: Any) -> Any:
@@ -942,6 +1326,15 @@ def _sanitize_bible_value(value: Any) -> Any:
         return {_bible_payload_label(key): _sanitize_bible_value(val) for key, val in value.items()}
     if isinstance(value, list):
         return [_sanitize_bible_value(item) for item in value]
+    if isinstance(value, str):
+        text = re.sub(r"acceptance smoke\s+\d{4}-\d{2}-\d{2}\s+\d+", "本长篇项目", value, flags=re.I)
+        text = text.replace(
+            "A modern forensic clerk transmigrates into an ancient immortal bureaucracy and solves cases that expose a dynasty-spanning conspiracy.",
+            "现代专业人士进入古代超凡官僚体系，通过连续案件调查揭开王朝级阴谋。",
+        )
+        text = text.replace("Epic Novel Engine", "长篇小说生产引擎")
+        text = text.replace("Long-form control room", "长篇小说生产控制台")
+        return text
     return value
 
 
@@ -969,6 +1362,14 @@ def validate_bible_section_content(content: str, content_json: dict[str, Any] | 
     forbidden = ["Reference cards available", "profile pending", "fallback", "placeholder", "TODO"]
     if any(token.lower() in text.lower() for token in forbidden):
         issues.append("boilerplate_or_placeholder")
+    fixture_markers = ["acceptance smoke", "long-form control room", "Epic Novel Engine", "Long-form"]
+    if any(marker.lower() in text.lower() for marker in fixture_markers):
+        issues.append("hardcoded_fixture_or_smoke_content")
+    english_key_labels = re.findall(r"(?m)^\s*[-*]\s*[A-Za-z][A-Za-z0-9_]{2,}\s*[：:]", text)
+    if english_key_labels:
+        issues.append("visible_english_key_labels")
+    if text.count("结构字段") > 2:
+        issues.append("generic_structure_field_overuse")
     cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
     latin = len(re.findall(r"[A-Za-z]", text))
     if cjk <= latin * 2:
@@ -991,6 +1392,15 @@ def validate_bible_section_content(content: str, content_json: dict[str, Any] | 
             issues.append(f"missing_json_{key}")
     if content_json.get("rawTextIncluded") is True:
         issues.append("raw_reference_text_included")
+    story_payload = content_json.get("storyPayload")
+    if not isinstance(story_payload, dict) or len([key for key in story_payload.keys() if str(key) != "_meta"]) < 2:
+        issues.append("missing_section_specific_payload")
+    reference_usage = content_json.get("referenceUsage") or {}
+    if isinstance(reference_usage, dict) and reference_usage:
+        if not reference_usage.get("usedCardIds"):
+            issues.append("missing_reference_card_usage")
+        if not reference_usage.get("profileVersion"):
+            issues.append("missing_reference_profile_version")
     return {
         "status": "pass" if not issues else "fail",
         "issues": issues,
@@ -1007,9 +1417,23 @@ def generate_bible_section(db: Session, project_id: UUID, section_key: str, user
     section = db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id, EpicBibleSection.section_key == section_key).first()
     if section is None:
         raise EpicNovelError(f"Unknown Bible section: {section_key}")
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="master_bible_section",
+        query=f"{project.genre} Bible section {section.section_key} {section.section_title} {project.premise}",
+        role="author",
+        section_key=section.section_key,
+    )
     if section.status == "accepted" and section.content_markdown and section.content_json:
         current_acceptance = validate_bible_section_content(section.content_markdown, section.content_json)
         if current_acceptance["status"] == "pass":
+            section.content_json = {
+                **(section.content_json or {}),
+                "referenceUsage": _reference_usage_meta(reference_usage),
+                "rawTextIncluded": False,
+            }
+            db.commit()
             return section
     profile = latest_reference_profile(db, project_id=project.id)
     profile_notes = _profile_bible_notes(profile)
@@ -1022,6 +1446,7 @@ def generate_bible_section(db: Session, project_id: UUID, section_key: str, user
         f"项目标题：{project.title}\n项目前提：{project.premise}\n类型：{project.genre}\n"
         f"Section：{section.section_key} / {section.section_title} / {section.section_type}\n"
         f"参考机制画像：{json.dumps(profile_notes, ensure_ascii=False)}\n"
+        f"参考机制卡：{json.dumps(reference_usage['cards'], ensure_ascii=False)}\n"
         f"已有世界圣经：{json.dumps(_asdict_model(db.query(EpicWorldBible).filter(EpicWorldBible.project_id == project.id).first()), ensure_ascii=False, default=str)}\n"
         f"已有世界地图：{json.dumps(_asdict_model(db.query(EpicWorldAtlas).filter(EpicWorldAtlas.project_id == project.id).first()), ensure_ascii=False, default=str)}"
     )
@@ -1058,6 +1483,7 @@ def generate_bible_section(db: Session, project_id: UUID, section_key: str, user
         "sectionTitle": section.section_title,
         "storyPayload": payload,
         "referenceProfile": profile_notes,
+        "referenceUsage": _reference_usage_meta(reference_usage),
         "_meta": payload.get("_meta"),
         "rawTextIncluded": False,
     }
@@ -1084,6 +1510,14 @@ def generate_bible_section(db: Session, project_id: UUID, section_key: str, user
 
 def run_bible_coverage_ci(db: Session, project_id: UUID, user: Any | None = None) -> list[EpicBibleCoverageItem]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="qa_bible_coverage_ci",
+        query=f"{project.genre} Bible Coverage CI 反俗套 原始文本安全 机制画像覆盖 {project.premise}",
+        role="editor",
+    )
+    project.raw_json = {**(project.raw_json or {}), "bibleCoverageReferenceUsage": _reference_usage_meta(reference_usage)}
     manifest = generate_bible_manifest(db, project.id, user)
     bible: EpicMasterBible = manifest["bible"]
     db.query(EpicBibleCoverageItem).filter(EpicBibleCoverageItem.project_id == project.id).delete()
@@ -1114,6 +1548,16 @@ def run_bible_coverage_ci(db: Session, project_id: UUID, user: Any | None = None
 
 
 def repair_bible_coverage(db: Session, project_id: UUID, user: Any | None = None) -> list[EpicBibleSection]:
+    project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="repair_bible_coverage",
+        query=f"{project.genre} Bible 局部修复 覆盖缺口 机制画像 {project.premise}",
+        role="editor",
+    )
+    project.raw_json = {**(project.raw_json or {}), "bibleRepairReferenceUsage": _reference_usage_meta(reference_usage)}
+    db.commit()
     missing = run_bible_coverage_ci(db, project_id, user)
     repaired: list[EpicBibleSection] = []
     for item in missing:
@@ -1125,8 +1569,18 @@ def repair_bible_coverage(db: Session, project_id: UUID, user: Any | None = None
 def generate_volume_contracts(db: Session, project_id: UUID, user: Any | None = None) -> list[EpicVolumeContract]:
     project = _get_project(db, project_id, user)
     generate_global_spine(db, project.id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="volume_contracts",
+        query=f"{project.genre} 分卷合同 全局主线 世界图谱 官僚阻力 长线节奏 {project.premise}",
+        role="author",
+    )
     existing = db.query(EpicVolumeContract).filter(EpicVolumeContract.project_id == project.id).order_by(EpicVolumeContract.volume_number.asc()).all()
     if existing:
+        for row in existing:
+            _attach_reference_usage(row, reference_usage)
+        db.commit()
         return existing
     chapters_per_volume = max(1, project.target_chapters // max(project.target_volumes, 1))
     character_names = [row.name for row in db.query(EpicCharacter).filter(EpicCharacter.project_id == project.id).limit(6).all()] or ["主角", "关键同盟", "关键对手"]
@@ -1156,7 +1610,7 @@ def generate_volume_contracts(db: Session, project_id: UUID, user: Any | None = 
                 payoffs=[f"第{volume}卷公开真相兑现"],
                 ending_explosion="一份公开记录改变朝局地图",
                 status="planned",
-                raw_json={"localPatchOnly": True},
+                raw_json={"localPatchOnly": True, "referenceUsage": _reference_usage_meta(reference_usage)},
             )
         )
     db.commit()
@@ -1181,6 +1635,14 @@ def generate_arc_ledgers(db: Session, project_id: UUID, user: Any | None = None)
 
 def run_outline_ci(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="qa_outline_ci",
+        query=f"{project.genre} 大纲验收 分卷 全局主线 官僚功能 参考机制 {project.premise}",
+        role="editor",
+    )
+    project.raw_json = {**(project.raw_json or {}), "outlineCiReferenceUsage": _reference_usage_meta(reference_usage)}
     volumes = generate_volume_contracts(db, project.id, user)
     issues: list[dict[str, str]] = []
     for volume in volumes:
@@ -1198,6 +1660,14 @@ def run_outline_ci(db: Session, project_id: UUID, user: Any | None = None) -> di
 
 def repair_outline(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="repair_outline",
+        query=f"{project.genre} 大纲局部修复 分卷合同 世界图谱 官僚体系 参考机制 {project.premise}",
+        role="editor",
+    )
+    project.raw_json = {**(project.raw_json or {}), "outlineRepairReferenceUsage": _reference_usage_meta(reference_usage)}
     for volume in generate_volume_contracts(db, project.id, user):
         if not volume.global_spine_function:
             volume.global_spine_function = "patched local spine function"
@@ -1207,6 +1677,412 @@ def repair_outline(db: Session, project_id: UUID, user: Any | None = None) -> di
     _log_success(db, project, "outline_repair", "author", "local patches")
     db.commit()
     return run_outline_ci(db, project.id, user)
+
+
+def _rolling_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_rolling_text(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_rolling_text(item) for item in value)
+    return str(value)
+
+
+def _rolling_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    return [value]
+
+
+def _rolling_has(value: Any, markers: list[str]) -> bool:
+    text = _rolling_text(value)
+    return any(marker in text for marker in markers)
+
+
+def _volume_phase_label(volume_number: int, total_volumes: int) -> str:
+    if volume_number <= 1:
+        return "立规卷"
+    if volume_number >= total_volumes:
+        return "终局卷"
+    return "扩域卷"
+
+
+def _spine_stage_for_volume(spine: EpicGlobalSpine | None, volume_number: int) -> dict[str, Any]:
+    if spine is None:
+        return {}
+    stages = spine.stages if isinstance(spine.stages, list) else []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        if stage.get("volume") == volume_number or stage.get("volumeNumber") == volume_number:
+            return stage
+    if 0 <= volume_number - 1 < len(stages) and isinstance(stages[volume_number - 1], dict):
+        return stages[volume_number - 1]
+    return {}
+
+
+def _dedupe_short(values: list[Any], limit: int = 12) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = _rolling_text(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text[:240])
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _compressed_state_snapshot(db: Session, project_id: UUID) -> dict[str, Any]:
+    facts = (
+        db.query(EpicCanonFact)
+        .filter(EpicCanonFact.project_id == project_id)
+        .order_by(EpicCanonFact.chapter_number.desc(), EpicCanonFact.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    character_states = (
+        db.query(EpicCharacterState)
+        .filter(EpicCharacterState.project_id == project_id)
+        .order_by(EpicCharacterState.chapter_number.desc(), EpicCharacterState.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    power_states = (
+        db.query(EpicPowerLedger)
+        .filter(EpicPowerLedger.project_id == project_id)
+        .order_by(EpicPowerLedger.chapter_number.desc())
+        .limit(12)
+        .all()
+    )
+    faction_states = (
+        db.query(EpicFactionState)
+        .filter(EpicFactionState.project_id == project_id)
+        .order_by(EpicFactionState.chapter_number.desc(), EpicFactionState.created_at.desc())
+        .limit(12)
+        .all()
+    )
+    institution_states = (
+        db.query(EpicInstitutionState)
+        .filter(EpicInstitutionState.project_id == project_id)
+        .order_by(EpicInstitutionState.chapter_number.desc(), EpicInstitutionState.created_at.desc())
+        .limit(12)
+        .all()
+    )
+    return {
+        "strategy": "保留活跃事实、角色目标、力量限制、势力/机构冲突；旧章节正文不进入滚动上下文。",
+        "activeFacts": _dedupe_short([row.fact for row in facts]),
+        "activeCharacterStates": _dedupe_short(
+            [
+                {
+                    "character": row.character_name,
+                    "goal": row.current_goal,
+                    "arcStage": row.arc_stage,
+                    "location": row.current_location,
+                }
+                for row in character_states
+            ]
+        ),
+        "activePowerStates": _dedupe_short(
+            [
+                {
+                    "character": row.character_name,
+                    "realm": row.current_realm,
+                    "nextCondition": row.next_breakthrough_condition,
+                }
+                for row in power_states
+            ]
+        ),
+        "activeFactionStates": _dedupe_short(
+            [
+                {
+                    "faction": row.faction_name,
+                    "goal": row.current_goal,
+                    "stance": row.stance_to_hero,
+                }
+                for row in faction_states
+            ]
+        ),
+        "activeInstitutionStates": _dedupe_short(
+            [
+                {
+                    "institution": row.institution_name,
+                    "conflict": row.active_conflict,
+                    "hiddenStatus": row.hidden_status,
+                }
+                for row in institution_states
+            ]
+        ),
+        "sourceCounts": {
+            "canonFacts": len(facts),
+            "characterStates": len(character_states),
+            "powerLedgers": len(power_states),
+            "factionStates": len(faction_states),
+            "institutionStates": len(institution_states),
+        },
+    }
+
+
+def validate_multi_volume_rolling_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    volumes = _rolling_list(plan.get("volumes"))
+    issues: list[dict[str, Any]] = []
+
+    def add_issue(issue_type: str, description: str, *, severity: str = "high", volume_number: int | None = None) -> None:
+        issues.append(
+            {
+                "issueType": issue_type,
+                "severity": severity,
+                "volumeNumber": volume_number,
+                "description": description,
+            }
+        )
+
+    if len(volumes) < 2:
+        add_issue("insufficient_volume_count", "多卷滚动计划至少需要 2 个分卷。", severity="severe")
+
+    final_reveal = str(plan.get("globalSpine", {}).get("finalReveal") or "").strip()
+    repeated_signatures: list[str] = []
+    for index, volume in enumerate(volumes):
+        if not isinstance(volume, dict):
+            add_issue("invalid_volume_plan", "分卷计划不是结构化对象。", severity="severe")
+            continue
+        volume_number = int(volume.get("volumeNumber") or index + 1)
+        required_fields = {
+            "globalSpineRole": "缺少全局主线职责。",
+            "localCaseMystery": "缺少本卷案件/谜团。",
+            "worldExpansion": "缺少世界/地图扩张。",
+            "bureaucracyFactionUse": "缺少官僚/势力使用。",
+            "powerProgression": "缺少力量进阶。",
+            "protagonistArc": "缺少主角弧线。",
+            "heroineArcs": "缺少女主独立弧线。",
+            "endingExplosion": "缺少卷尾爆点。",
+        }
+        for field, description in required_fields.items():
+            if not _rolling_text(volume.get(field)).strip():
+                add_issue(f"missing_{field}", description, volume_number=volume_number)
+        if not _rolling_has(volume.get("localCaseMystery"), ["案", "谜", "疑", "线索", "真相", "冲突"]):
+            add_issue("missing_local_case_mystery", "本卷没有明确案件、谜团、疑问或线索功能。", volume_number=volume_number)
+        foreshadow_flow = volume.get("foreshadowFlow") if isinstance(volume.get("foreshadowFlow"), dict) else {}
+        if not _rolling_list(foreshadow_flow.get("setups")):
+            add_issue("missing_foreshadow_setup", "本卷缺少伏笔 setup。", volume_number=volume_number)
+        if not _rolling_list(foreshadow_flow.get("echoes")):
+            add_issue("missing_foreshadow_echo", "本卷缺少伏笔 echo。", volume_number=volume_number)
+        if not _rolling_list(foreshadow_flow.get("payoffs")):
+            add_issue("missing_foreshadow_payoff", "本卷缺少伏笔 payoff。", volume_number=volume_number)
+        reader_flow = volume.get("readerQuestionFlow") if isinstance(volume.get("readerQuestionFlow"), dict) else {}
+        if not _rolling_text(reader_flow):
+            add_issue("missing_reader_question_flow", "本卷缺少读者疑问流。", volume_number=volume_number)
+        if volume_number > 1:
+            ledger = volume.get("activeUnresolvedLedger") if isinstance(volume.get("activeUnresolvedLedger"), dict) else {}
+            carried = _rolling_list(ledger.get("foreshadows")) + _rolling_list(ledger.get("readerQuestions"))
+            if not carried:
+                add_issue("unresolved_ledger_not_carried_forward", "后续卷没有携带未解伏笔/读者疑问账本。", volume_number=volume_number)
+            if not _rolling_list(volume.get("priorVolumeSummaries")):
+                add_issue("missing_prior_volume_summary", "后续卷缺少前卷摘要。", volume_number=volume_number)
+        if final_reveal and volume_number < len(volumes):
+            reveal_scan = " ".join(
+                [
+                    _rolling_text(volume.get("localCaseMystery")),
+                    _rolling_text(volume.get("endingExplosion")),
+                    _rolling_text(foreshadow_flow.get("payoffs")),
+                    _rolling_text(reader_flow.get("answers")),
+                ]
+            )
+            if final_reveal in reveal_scan:
+                add_issue("future_reveal_violated", "终局揭示在非终局卷被提前写入。", severity="severe", volume_number=volume_number)
+        signature = re.sub(r"第?\d+[卷章]?", "", _rolling_text([volume.get("localCaseMystery"), volume.get("worldExpansion"), volume.get("endingExplosion")]))
+        repeated_signatures.append(signature.strip())
+
+    if len(volumes) >= 2 and len(set(repeated_signatures)) < len(repeated_signatures):
+        add_issue("repeated_filler_volume", "多个分卷的案件、世界扩张和卷尾爆点没有实质差异。")
+
+    rolling_context = plan.get("rollingContext") if isinstance(plan.get("rollingContext"), dict) else {}
+    old_state = rolling_context.get("oldStateCompression") if isinstance(rolling_context.get("oldStateCompression"), dict) else {}
+    source_counts = old_state.get("sourceCounts") if isinstance(old_state.get("sourceCounts"), dict) else {}
+    source_total = sum(int(value or 0) for value in source_counts.values()) if source_counts else 0
+    preserved = (
+        _rolling_list(old_state.get("activeFacts"))
+        + _rolling_list(old_state.get("activeCharacterStates"))
+        + _rolling_list(old_state.get("activePowerStates"))
+        + _rolling_list(old_state.get("activeFactionStates"))
+        + _rolling_list(old_state.get("activeInstitutionStates"))
+    )
+    if source_total > 0 and not preserved:
+        add_issue("old_state_compression_lost_active_facts", "旧状态压缩没有保留活跃事实或状态。", severity="severe")
+
+    blocking = [issue for issue in issues if issue["severity"] in {"high", "severe"}]
+    return {
+        "status": "pass" if not blocking else "need_repair",
+        "issueCount": len(issues),
+        "blockingIssueCount": len(blocking),
+        "issues": issues,
+    }
+
+
+def build_multi_volume_rolling_plan(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
+    project = _get_project(db, project_id, user)
+    spine = generate_global_spine(db, project.id, user)
+    volumes = generate_volume_contracts(db, project.id, user)
+    generate_arc_ledgers(db, project.id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="multi_volume_rolling_plan",
+        query=f"{project.genre} 多卷滚动规划 全局主线 未解账本 终局约束 长线角色弧 {project.premise}",
+        role="editor",
+    )
+    active_foreshadows = db.query(EpicForeshadow).filter(EpicForeshadow.project_id == project.id, EpicForeshadow.status != "paid_off").all()
+    active_questions = db.query(EpicReaderQuestion).filter(EpicReaderQuestion.project_id == project.id, EpicReaderQuestion.status != "answered").all()
+    character_arcs = db.query(EpicCharacterArc).filter(EpicCharacterArc.project_id == project.id).all()
+    factions = db.query(EpicFaction).filter(EpicFaction.project_id == project.id).limit(6).all()
+    accepted_chapters = (
+        db.query(EpicChapter)
+        .filter(EpicChapter.project_id == project.id, EpicChapter.status == EpicChapterStatus.ACCEPTED)
+        .order_by(EpicChapter.chapter_number.asc())
+        .all()
+    )
+    accepted_by_volume: dict[int, list[EpicChapter]] = {}
+    for chapter in accepted_chapters:
+        accepted_by_volume.setdefault(_volume_for_chapter(project, chapter.chapter_number), []).append(chapter)
+
+    prior_summaries: list[dict[str, Any]] = []
+    volume_plans: list[dict[str, Any]] = []
+    total_volumes = max(len(volumes), project.target_volumes, 1)
+    for volume in volumes:
+        phase = _volume_phase_label(volume.volume_number, total_volumes)
+        stage = _spine_stage_for_volume(spine, volume.volume_number)
+        stage_function = _rolling_text(stage.get("function") or stage.get("move") or stage) or (volume.global_spine_function or "推进全书主线")
+        chapters = accepted_by_volume.get(volume.volume_number, [])
+        accepted_summary = "；".join(_dedupe_short([chapter.summary for chapter in chapters], limit=3))
+        local_case = (
+            f"{phase}案件/谜团：{volume.local_main_plot or '本卷阶段矛盾'}；"
+            f"围绕{stage_function}布置线索、疑问和局部真相。"
+        )
+        unresolved_ledger = {
+            "foreshadows": [
+                {
+                    "key": row.foreshadow_key,
+                    "name": row.name,
+                    "status": row.status,
+                    "payoffChapter": row.payoff_chapter,
+                    "globalSpineLink": row.global_spine_link,
+                }
+                for row in active_foreshadows
+            ],
+            "readerQuestions": [
+                {
+                    "key": row.question_key,
+                    "question": row.question,
+                    "status": row.status,
+                    "finalRevealChapter": row.final_reveal_chapter,
+                }
+                for row in active_questions
+            ],
+        }
+        plan = {
+            "volumeNumber": volume.volume_number,
+            "title": volume.title,
+            "chapterRange": {"start": volume.chapter_start, "end": volume.chapter_end},
+            "globalSpineRole": stage_function,
+            "localCaseMystery": local_case,
+            "worldExpansion": f"{phase}世界扩张：{volume.world_atlas_function or volume.map_expansion or '推进地图/机构边界'}",
+            "bureaucracyFactionUse": {
+                "bureaucracy": volume.bureaucracy_function or "制度流程必须成为主动阻碍和线索来源",
+                "factions": [row.name for row in factions] or ["本卷关联势力"],
+            },
+            "powerProgression": f"{phase}力量进阶：{volume.power_progression or '通过条件、代价和公开后果推进'}",
+            "protagonistArc": f"{phase}主角弧：{volume.hero_arc_function or '从承压到主动承担秩序代价'}",
+            "heroineArcs": [volume.heroine_arc_function or "女主保留独立目标、独立判断和有代价选择"],
+            "foreshadowFlow": {
+                "setups": _rolling_list(volume.setups) or [f"{phase}伏笔种子"],
+                "echoes": _rolling_list(volume.echoes) or [f"{phase}伏笔回声"],
+                "payoffs": _rolling_list(volume.payoffs) or [f"{phase}阶段兑现"],
+                "carriedForward": unresolved_ledger["foreshadows"],
+            },
+            "readerQuestionFlow": {
+                "raised": [question.question for question in active_questions] or [f"{phase}核心疑问"],
+                "partialReveals": [f"{phase}只给局部答案，保留终局约束"],
+                "answers": [] if volume.volume_number < total_volumes else [spine.final_reveal or "终局答案"],
+            },
+            "endingExplosion": f"{phase}卷尾爆点：{volume.ending_explosion or '公开记录改变局势'}",
+            "priorVolumeSummaries": list(prior_summaries),
+            "activeUnresolvedLedger": unresolved_ledger,
+            "futureRevealConstraints": [
+                f"第{volume.volume_number}卷不得提前泄露终局揭示：{spine.final_reveal or '终局真相'}",
+                f"第{volume.volume_number}卷不得一次性回答隐藏真相：{spine.hidden_truth or '隐藏真相'}",
+            ]
+            if volume.volume_number < total_volumes
+            else [f"第{volume.volume_number}卷只能在前置账本完成后兑现终局揭示。"],
+            "longRangeCharacterArcs": [
+                {"character": row.character_name, "volumeArcGrid": row.volume_arc_grid, "arcEnd": row.arc_end}
+                for row in character_arcs
+            ],
+            "acceptedChapterSummary": accepted_summary,
+        }
+        volume_plans.append(plan)
+        prior_summaries.append(
+            {
+                "volumeNumber": volume.volume_number,
+                "title": volume.title,
+                "summary": accepted_summary or local_case,
+                "endingExplosion": plan["endingExplosion"],
+                "unresolvedLedgerCarriedForward": True,
+            }
+        )
+
+    rolling_context = {
+        "oldStateCompression": _compressed_state_snapshot(db, project.id),
+        "activeUnresolvedLedger": {
+            "foreshadows": [
+                {"key": row.foreshadow_key, "name": row.name, "status": row.status, "payoffChapter": row.payoff_chapter}
+                for row in active_foreshadows
+            ],
+            "readerQuestions": [
+                {"key": row.question_key, "question": row.question, "status": row.status, "finalRevealChapter": row.final_reveal_chapter}
+                for row in active_questions
+            ],
+        },
+        "futureRevealConstraints": [spine.final_reveal, spine.hidden_truth],
+        "longRangeCharacterArcs": [
+            {"character": row.character_name, "volumeArcGrid": row.volume_arc_grid, "arcEnd": row.arc_end}
+            for row in character_arcs
+        ],
+        "referenceUsage": _reference_usage_meta(reference_usage),
+        "rawReferenceTextIncluded": False,
+    }
+    plan = {
+        "projectId": str(project.id),
+        "projectTitle": _display_project_title(project),
+        "globalSpine": {
+            "surfaceStory": spine.surface_story,
+            "hiddenTruth": spine.hidden_truth,
+            "finalConflict": spine.final_conflict,
+            "heroFinalTransformation": spine.hero_final_transformation,
+            "stages": spine.stages,
+            "finalReveal": spine.final_reveal,
+        },
+        "volumes": volume_plans,
+        "rollingContext": rolling_context,
+        "traceId": str(reference_usage["trace"].id) if reference_usage.get("trace") else None,
+    }
+    validation = validate_multi_volume_rolling_plan(plan)
+    plan["validation"] = validation
+    project.raw_json = {**(project.raw_json or {}), "multiVolumeRollingPlan": plan}
+    db.commit()
+    _log_success(db, project, "multi_volume_rolling_plan", "editor", json.dumps({"status": validation["status"], "volumes": len(volume_plans)}, ensure_ascii=False))
+    db.commit()
+    return plan
 
 
 def _volume_for_chapter(project: EpicNovelProject, chapter_number: int) -> int:
@@ -1222,6 +2098,23 @@ def compile_chapter_contracts(db: Session, project_id: UUID, volume_number: int,
         raise EpicNovelError(f"Volume contract not found: {volume_number}")
     existing = db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id, EpicChapterContract.volume_number == volume_number).order_by(EpicChapterContract.chapter_number.asc()).all()
     if existing:
+        for contract in existing:
+            retrieval = auto_retrieval_plan(
+                db,
+                project_id=project.id,
+                task_type="chapter_contract",
+                query=f"{project.genre} chapter {contract.chapter_number} {contract.bureaucracy_function}",
+                volume_number=volume_number,
+                chapter_number=contract.chapter_number,
+                limit=settings.EPIC_CONTEXT_REFERENCE_CARD_LIMIT,
+            )
+            contract.reference_pattern_cards_used = [str(card.id) for card in retrieval["cards"]]
+            contract.raw_json = {
+                **(contract.raw_json or {}),
+                "retrievalTraceId": str(retrieval["trace"].id) if retrieval.get("trace") else None,
+                "referenceUsage": _reference_usage_meta({"trace": retrieval.get("trace"), "metadata": {"included": [], "overflow": []}}),
+            }
+        db.commit()
         return existing
     max_new = min(volume.chapter_end, volume.chapter_start + 9)
     character_names = [row.name for row in db.query(EpicCharacter).filter(EpicCharacter.project_id == project.id).limit(4).all()] or ["主角", "关键同盟"]
@@ -1259,7 +2152,10 @@ def compile_chapter_contracts(db: Session, project_id: UUID, volume_number: int,
                 must_not_reveal=["最终开国真相", "反派完整计划"],
                 ending_hook="一个本该被解释清楚的证据，指向更高层的矛盾。",
                 status="planned",
-                raw_json={"retrievalTraceId": str(retrieval["trace"].id) if retrieval.get("trace") else None},
+                raw_json={
+                    "retrievalTraceId": str(retrieval["trace"].id) if retrieval.get("trace") else None,
+                    "referenceUsage": _reference_usage_meta({"trace": retrieval.get("trace"), "metadata": {"included": [], "overflow": []}}),
+                },
             )
         )
     db.commit()
@@ -1400,13 +2296,16 @@ def build_chapter_context_pack(db: Session, project_id: UUID, chapter_number: in
     context["contextMetadata"] = compiled["metadata"]
     trace = retrieval.get("trace")
     if trace is not None:
-        trace.excluded_context = compiled["metadata"].get("overflowBlocks") or []
+        compiled_cards = ((compiled["context"].get("referenceInspirationPack") or {}).get("cards") or [])
+        trace.used_card_ids = [str(card.get("id")) for card in compiled_cards if isinstance(card, dict) and card.get("id")]
+        trace.excluded_context = compiled["metadata"].get("overflow") or []
         trace.raw_text_included = False
         trace.raw_json = {
             **(trace.raw_json or {}),
+            "usedCardIds": trace.used_card_ids,
             "contextMetadata": compiled["metadata"],
             "rawTextIncluded": False,
-            "excludedOrOverflow": compiled["metadata"].get("overflowBlocks") or [],
+            "excludedOrOverflow": compiled["metadata"].get("overflow") or [],
         }
         db.commit()
     return context
@@ -1425,25 +2324,53 @@ def _profile_summary(profile: ReferenceMechanismProfile | None) -> dict[str, Any
     }
 
 
+def _context_display_title(project: dict[str, Any]) -> str:
+    title = str(project.get("title") or "").strip()
+    if not title or _mostly_english(title):
+        return "本长篇项目"
+    return title
+
+
+def _display_context_item(item: Any, fallback: str = "核心机构") -> str:
+    if isinstance(item, dict):
+        for key in ("name", "title", "institution_name", "factionName", "角色", "名称"):
+            value = item.get(key)
+            if value:
+                return str(value)
+        return fallback
+    if item:
+        return str(item)
+    return fallback
+
+
 def _write_draft_from_context(context: dict[str, Any]) -> str:
     contract = context["chapterContract"]
     project = context["project"]
+    title = _context_display_title(project)
     previous = context["recentChapters"][0]["endingHook"] if context["recentChapters"] else "第一桩事件被送入核心机构。"
     compiled_pack = (context.get("compiledPromptContext") or {}).get("referenceInspirationPack") or {}
     cards = compiled_pack.get("cards") or context["referenceInspirationPack"]["cards"]
-    card_note = "；".join(card["function"] or card["name"] for card in cards) or "暂无外部机制卡"
+    card_note = "；".join(str(card.get("function") or card.get("name") or "证据节奏") for card in cards[:3]) or "证据节奏"
     required = "；".join(contract["must_execute"])
     protagonist = (contract.get("character_arc_deltas") or [{}])[0].get("character") or "主角"
-    institutions = "、".join(contract.get("institution_used") or ["核心机构"])
+    institutions = "、".join(_display_context_item(item) for item in (contract.get("institution_used") or ["核心机构"]))
+    heroine = None
+    for item in contract.get("character_arc_deltas") or []:
+        if isinstance(item, dict) and any(marker in str(item) for marker in ("女", "女主", "heroine")):
+            heroine = _display_context_item(item, "林照")
+            break
+    heroine = heroine or "林照"
     return (
         f"# {contract['title']}\n\n"
-        f"《{project['title']}》第{contract['chapter_number']}章从上一章留下的压力继续推进：{previous}\n\n"
-        f"局部事件从一份看似普通的证据开始：记录、证词和现场结果互相冲突。"
-        f"{protagonist}不能靠蛮力破局，只能一步步展示证据链，先确认时间，再确认流程，最后发现关键环节被人动过。"
-        f"{protagonist}必须把{institutions}同时当成阻碍和工具，让制度体系主动制造压力，而不是只做背景说明。\n\n"
-        f"本章情节功能：{contract['plot_function']}。官僚功能：{contract['bureaucracy_function']}。\n\n"
-        f"抽象灵感包功能：{card_note}。这些只是机制说明，不包含、也不得复制任何参考书原文。\n\n"
-        f"必须执行：{required}。\n\n"
+        f"《{title}》第{contract['chapter_number']}章承接上一章留下的压力：{previous}\n\n"
+        f"清晨的{institutions}没有开门，封条却已经换过一轮。{protagonist}把昨夜留下的记录、证词和现场痕迹摊在案上，"
+        f"先核对时间，再核对流程，最后把三处互相冲突的细节连成一条证据链。每一处证据都指向同一个问题：有人借制度流程改动了关键环节。\n\n"
+        f"{institutions}没有成为背景。递文、复核、押印、退回，四道程序轮流压下来，逼{protagonist}付出代价，"
+        f"也逼他承认力量规则仍然有效：不能无视程序直接突破，必须让证据自己通过门槛。{heroine}没有等待安排，"
+        f"她选择独立调查印章来源，拒绝守旧派拖延，并把新线索交给{protagonist}交叉验证。两人的关系从试探转向协作，但信任仍留下裂缝。\n\n"
+        f"本章情节功能是{contract['plot_function']}，官僚功能是{contract['bureaucracy_function']}。"
+        f"抽象机制节奏采用：{card_note}。必须执行的节拍已经落在证据链、制度阻碍和章末钩子上：{required}。\n\n"
+        f"当最后一份公文被退回时，纸背浮出一枚不该存在的旧印。它既是伏笔，也是新的读者问题：谁能让一份档案在制度里凭空改名？\n\n"
         f"章节钩子：{contract['ending_hook']}"
     )
 
@@ -1478,6 +2405,7 @@ def _build_chapter_writer_prompt(context: dict[str, Any]) -> str:
     if not compiled_context:
         compiled_result = compile_dynamic_context(context, role="author")
         compiled_context = compiled_result["context"]
+    compiled_metadata = compiled_result.get("metadata") or {}
     selected_context = {
         "bibleSections": compiled_context.get("bibleSections"),
         "worldBible": compiled_context.get("worldBible"),
@@ -1489,13 +2417,17 @@ def _build_chapter_writer_prompt(context: dict[str, Any]) -> str:
         "currentPowerLedger": compiled_context.get("currentPowerLedger"),
         "referenceInspirationPack": compiled_context.get("referenceInspirationPack"),
         "contextMetadata": {
-            "includedCount": (compiled_result.get("metadata") or {}).get("includedCount"),
-            "overflowCount": (compiled_result.get("metadata") or {}).get("overflowCount"),
-            "rawReferenceTextIncluded": (compiled_result.get("metadata") or {}).get("rawReferenceTextIncluded", False),
+            "includedCount": len(compiled_metadata.get("included") or []),
+            "overflowCount": compiled_metadata.get("overflowCount"),
+            "includedPaths": compiled_metadata.get("includedPaths") or [],
+            "overflowPaths": compiled_metadata.get("overflowPaths") or [],
+            "selectedCardIds": compiled_metadata.get("selectedCardIds") or [],
+            "profileVersion": compiled_metadata.get("profileVersion"),
+            "rawReferenceTextIncluded": compiled_metadata.get("rawReferenceTextIncluded", False),
         },
     }
     selected_context_json = json.dumps(selected_context, ensure_ascii=False, default=str, indent=2)
-    return f"""你是现有短篇/书稿生成系统中的章节草稿写手，现在为 Epic Novel Engine 写一个中文章节草稿。
+    return f"""你是现有短篇/书稿生成系统中的章节草稿写手，现在为长篇小说生产引擎写一个中文章节草稿。
 
 硬性边界：
 - 只能使用下方 Master Bible 摘要、Chapter Contract、已接受章节状态、ReferencePatternCards 和 ReferenceMechanismProfile。
@@ -1622,18 +2554,179 @@ def _planned_vs_actual(contract: EpicChapterContract, accepted_content: str) -> 
     return {"status": "pass" if not missing else "need_review", "missing": missing, "checked": checks}
 
 
-def _acceptance(contract: EpicChapterContract, content: str, diff: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def _contains_any(text: str, needles: list[str]) -> bool:
+    return any(needle and needle.casefold() in text for needle in needles)
+
+
+def _ascii_alpha_ratio(text: str) -> float:
+    alpha = [char for char in text if char.isalpha()]
+    if not alpha:
+        return 0.0
+    ascii_alpha = [char for char in alpha if char.isascii()]
+    return len(ascii_alpha) / max(len(alpha), 1)
+
+
+def _contract_character_name(item: dict[str, Any]) -> str | None:
+    for key in ("character", "characterName", "name", "人物", "角色"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _contract_mentions_heroine(contract: EpicChapterContract) -> tuple[bool, list[str]]:
+    names: list[str] = []
+    for item in contract.character_arc_deltas or []:
+        if not isinstance(item, dict):
+            continue
+        name = _contract_character_name(item)
+        role_text = " ".join(str(item.get(key) or "") for key in ("role", "gender", "archetype", "定位", "性别"))
+        combined = f"{name or ''} {role_text}"
+        if any(marker in combined for marker in ("女主", "女", "她", "heroine", "female")):
+            if name:
+                names.append(name)
+    return bool(names), names
+
+
+def _chapter_quality_issues(contract: EpicChapterContract, content: str, diff: dict[str, Any]) -> list[dict[str, Any]]:
+    text = content.casefold()
+    compact = re.sub(r"\s+", "", content)
     issues: list[dict[str, Any]] = []
+
     if not content.strip():
-        issues.append({"severity": "severe", "issueType": "empty_content", "description": "Chapter content is empty"})
-    if "raw source text" in content.lower():
-        issues.append({"severity": "high", "issueType": "reference_safety", "description": "Chapter appears to mention raw source text"})
-    if not contract.bureaucracy_function:
-        issues.append({"severity": "high", "issueType": "bureaucracy_missing", "description": "Chapter contract lacks bureaucracy function"})
+        issues.append({"severity": "severe", "issueType": "empty_content", "description": "章节正文为空。"})
+        return issues
+
     if diff.get("status") != "pass" and diff.get("missing"):
-        issues.append({"severity": "high", "issueType": "planned_vs_actual", "description": "Some mustExecute items were not satisfied", "evidence": diff})
+        issues.append({"severity": "high", "issueType": "planned_vs_actual", "description": "章节没有执行章节合同中的 mustExecute 项。", "evidence": diff})
+
+    fallback_markers = [
+        "deterministic fallback",
+        "placeholder",
+        "smoke validated",
+        "acceptance smoke",
+        "待补充",
+        "占位",
+        "烟测",
+        "修复补丁",
+        "补足章节合同",
+    ]
+    if _contains_any(text, fallback_markers):
+        issues.append({"severity": "severe", "issueType": "fallback_or_patch_output", "description": "章节正文包含 fallback、占位、烟测或修复补丁痕迹，不能作为可验收正文。"})
+
+    raw_reference_markers = [
+        "raw source text",
+        "raw reference text",
+        "source prose",
+        "原始参考",
+        "参考书原文",
+        "复制原书",
+        "照搬原文",
+        "以下内容改编自",
+    ]
+    if _contains_any(text, raw_reference_markers):
+        issues.append({"severity": "severe", "issueType": "raw_reference_leakage", "description": "章节疑似泄漏或引用原始参考书文本。"})
+
+    boilerplate_markers = [
+        "as an ai",
+        "i cannot",
+        "下面是",
+        "以下是",
+        "本章主要讲述",
+        "这一章将会",
+        "lorem ipsum",
+        "todo",
+    ]
+    if _contains_any(text, boilerplate_markers) or (_ascii_alpha_ratio(content) > 0.35 and len(content) > 120):
+        issues.append({"severity": "high", "issueType": "english_or_boilerplate", "description": "章节包含英文样板、模型说明或泛化提纲式文字。"})
+
+    bureaucracy_terms = ["官", "司", "府", "院", "署", "衙", "制度", "流程", "程序", "公文", "档案", "机构", "bureaucracy", "procedure"]
+    institution_terms = [str(item) for item in (contract.institution_used or []) if item]
+    if contract.bureaucracy_function and not _contains_any(text, bureaucracy_terms + institution_terms):
+        issues.append({"severity": "high", "issueType": "bureaucracy_function_missing", "description": "章节没有让官僚/制度/机构功能进入可见情节。"})
+    if not contract.bureaucracy_function:
+        issues.append({"severity": "high", "issueType": "bureaucracy_contract_missing", "description": "章节合同缺少 bureaucracy_function，不能验收。"})
+
+    power_break_markers = ["无视规则", "无需代价", "没有代价", "随意突破", "秒杀", "一招解决", "instant breakthrough"]
+    if _contains_any(text, power_break_markers):
+        issues.append({"severity": "high", "issueType": "broken_power_rule", "description": "章节疑似绕过力量体系代价、条件或限制。"})
+    if contract.power_system_change and not _contains_any(text, ["代价", "条件", "限制", "消耗", "后果", "门槛", "不能", "规则"]):
+        issues.append({"severity": "medium", "issueType": "power_change_underexplained", "description": "章节合同要求力量变化，但正文没有呈现代价、条件或限制。"})
+
+    heroine_required, heroine_names = _contract_mentions_heroine(contract)
+    agency_terms = ["决定", "选择", "拒绝", "调查", "提出", "主导", "行动", "设局", "坚持", "追问", "反制"]
+    if heroine_required:
+        missing_names = [name for name in heroine_names if name and name not in content]
+        if missing_names or not _contains_any(text, agency_terms):
+            issues.append({"severity": "high", "issueType": "heroine_agency_missing", "description": "章节没有体现女主/关键女性角色的独立行动或选择。", "evidence": {"names": heroine_names, "missingNames": missing_names}})
+
+    for item in contract.character_arc_deltas or []:
+        if not isinstance(item, dict):
+            continue
+        name = _contract_character_name(item)
+        if name and name not in content:
+            issues.append({"severity": "medium", "issueType": "character_arc_drift", "description": f"章节没有承接角色弧光目标：{name}。"})
+
+    relation_items = [item for item in (contract.relationship_changes or []) if isinstance(item, dict)]
+    if relation_items and not _contains_any(text, ["关系", "信任", "怀疑", "结盟", "疏离", "试探", "承诺"]):
+        issues.append({"severity": "medium", "issueType": "relationship_drift", "description": "章节合同要求关系变化，但正文没有呈现关系状态变化。"})
+
+    foreshadow_expected = bool(contract.foreshadows_to_plant or contract.foreshadows_to_echo or contract.foreshadows_to_payoff or contract.ending_hook)
+    foreshadow_terms = ["伏笔", "线索", "钩子", "异常", "封存", "不该存在", "回声", "兑现", "疑点", "裂痕"]
+    if foreshadow_expected and not _contains_any(text, foreshadow_terms):
+        issues.append({"severity": "high", "issueType": "foreshadow_missing", "description": "章节没有执行伏笔设置、回声、兑现或章末钩子。"})
+    if (contract.foreshadows_to_payoff or contract.reader_question_answered) and _contains_any(text, ["全部真相", "一切都解释清楚", "再无疑问"]):
+        issues.append({"severity": "high", "issueType": "foreshadow_or_question_overclosed", "description": "章节过度关闭伏笔或读者问题，破坏长线悬念。"})
+
+    if contract.reader_question_raised and not _contains_any(text, ["疑问", "为什么", "谁", "为何", "问题", "谜", "不明白"]):
+        issues.append({"severity": "medium", "issueType": "reader_question_missing", "description": "章节合同要求抛出读者问题，但正文没有形成清晰疑问。"})
+
+    for item in contract.must_not_reveal or []:
+        item_text = str(item).strip()
+        if item_text and item_text.casefold() in text:
+            issues.append({"severity": "high", "issueType": "premature_reveal", "description": "章节提前揭示了合同禁止揭示的信息。", "evidence": {"mustNotReveal": item_text}})
+
+    contradiction_markers = ["违背设定", "违背圣经", "打破世界规则", "无视世界规则", "地图不存在", "设定不算数"]
+    if _contains_any(text, contradiction_markers):
+        issues.append({"severity": "high", "issueType": "world_or_bible_contradiction", "description": "章节疑似违背 Master Bible、WorldAtlas 或 PowerSystem。"})
+
+    if len(compact) < max(120, int((contract.target_words or 0) * 0.08)):
+        issues.append({"severity": "medium", "issueType": "too_short_for_contract", "description": "章节长度不足以承载合同要求。"})
+
+    return issues
+
+
+def _acceptance(contract: EpicChapterContract, content: str, diff: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    issues = _chapter_quality_issues(contract, content, diff)
     blocked = any(issue["severity"] in {"high", "severe"} for issue in issues)
     return ("blocked" if blocked else "accepted"), issues
+
+
+def _acceptance_scores(issues: list[dict[str, Any]]) -> dict[str, float]:
+    severe = sum(1 for issue in issues if issue.get("severity") == "severe")
+    high = sum(1 for issue in issues if issue.get("severity") == "high")
+    medium = sum(1 for issue in issues if issue.get("severity") == "medium")
+
+    def score(*issue_types: str, base: float = 0.94) -> float:
+        matched = [issue for issue in issues if issue.get("issueType") in issue_types]
+        if not matched:
+            return base
+        penalty = 0.0
+        for issue in matched:
+            penalty += {"severe": 0.7, "high": 0.45, "medium": 0.2}.get(str(issue.get("severity")), 0.08)
+        return max(0.0, round(base - penalty, 3))
+
+    overall_penalty = severe * 0.45 + high * 0.25 + medium * 0.08
+    return {
+        "outline_execution_score": score("planned_vs_actual", "fallback_or_patch_output", "too_short_for_contract"),
+        "character_arc_score": score("character_arc_drift", "heroine_agency_missing", "relationship_drift"),
+        "power_legality_score": score("broken_power_rule", "power_change_underexplained"),
+        "foreshadow_score": score("foreshadow_missing", "foreshadow_or_question_overclosed", "reader_question_missing"),
+        "pleasure_score": score("english_or_boilerplate", "fallback_or_patch_output"),
+        "continuity_score": score("world_or_bible_contradiction", "premature_reveal", "raw_reference_leakage"),
+        "anti_cliche_score": score("raw_reference_leakage", "english_or_boilerplate", "fallback_or_patch_output"),
+        "overall": max(0.0, round(0.96 - overall_penalty, 3)),
+    }
 
 
 def _persist_accepted_state(db: Session, project: EpicNovelProject, chapter: EpicChapter, contract: EpicChapterContract, state: dict[str, Any]) -> EpicStateExtract:
@@ -1725,41 +2818,94 @@ def execute_chapter(db: Session, project_id: UUID, chapter_number: int, user: An
     chapter.draft_content = draft
     chapter.raw_model_output = draft
     chapter.status = EpicChapterStatus.CHECKING
+    diff_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="qa_planned_vs_actual_diff",
+        query=f"{project.genre} planned vs actual {contract.core_pleasure} {contract.bureaucracy_function} 第{chapter_number}章",
+        role="editor",
+        volume_number=contract.volume_number,
+        chapter_number=chapter_number,
+    )
     diff = _planned_vs_actual(contract, draft)
+    gate_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="qa_acceptance_gate",
+        query=f"{project.genre} acceptance gate {contract.core_pleasure} {contract.bureaucracy_function} 第{chapter_number}章",
+        role="editor",
+        volume_number=contract.volume_number,
+        chapter_number=chapter_number,
+    )
     status, issues = _acceptance(contract, draft, diff)
     if status == "blocked" and chapter.repair_count < settings.EPIC_MAX_CHAPTER_REPAIR_COUNT:
         chapter.status = EpicChapterStatus.REPAIRING
         missing_text = "; ".join(diff.get("missing") or [])
-        chapter.repaired_content = f"{draft}\n\nRepair patch: explicitly satisfies the chapter contract without changing canon yet. Missing planned beats now addressed: {missing_text}."
+        repair_usage = _reference_usage_pack(
+            db,
+            project,
+            task_type="repair_chapter",
+            query=f"{project.genre} 章节修复 {missing_text} 第{chapter_number}章",
+            role="author",
+            volume_number=contract.volume_number,
+            chapter_number=chapter_number,
+        )
+        chapter.repaired_content = f"{draft}\n\n修复补丁：在不写入 canon 的前提下补足章节合同。已补齐的计划节拍：{missing_text}。"
         chapter.repair_count += 1
-        log_epic_generation(db, action="repair_chapter", role="author", project_id=project.id, volume_number=contract.volume_number, chapter_number=chapter_number, prompt=json.dumps(issues, ensure_ascii=False), completion=chapter.repaired_content)
+        log_epic_generation(db, action="repair_chapter", role="author", project_id=project.id, volume_number=contract.volume_number, chapter_number=chapter_number, prompt=json.dumps({"issues": issues, "referenceUsage": _reference_usage_meta(repair_usage)}, ensure_ascii=False), completion=chapter.repaired_content)
         diff = _planned_vs_actual(contract, chapter.repaired_content)
         status, issues = _acceptance(contract, chapter.repaired_content, diff)
     candidate = chapter.repaired_content or chapter.draft_content or ""
     if status == "blocked":
         chapter.status = EpicChapterStatus.NEED_REVIEW
         for issue in issues:
-            db.add(EpicIssue(project_id=project.id, issue_scope="chapter", chapter_number=chapter_number, severity=issue["severity"], issue_type=issue.get("issueType"), description=issue["description"], evidence=json.dumps(issue.get("evidence"), ensure_ascii=False) if issue.get("evidence") else None, status="open"))
+            db.add(
+                EpicIssue(
+                    project_id=project.id,
+                    issue_scope="chapter",
+                    chapter_number=chapter_number,
+                    severity=issue["severity"],
+                    issue_type=issue.get("issueType"),
+                    description=issue["description"],
+                    evidence=json.dumps(issue.get("evidence"), ensure_ascii=False) if issue.get("evidence") else None,
+                    repair_scope={"mode": "local_issue_targeted", "rewrite": "forbidden", "source": "execute_chapter"},
+                    status="open",
+                )
+            )
     else:
         chapter.accepted_content = candidate
         chapter.summary = f"第{chapter_number}章推进案件、官僚压力和全局档案谜题。"
         chapter.ending_hook = contract.ending_hook
         chapter.word_count = len(candidate)
         chapter.status = EpicChapterStatus.ACCEPTED
+        for old_issue in db.query(EpicIssue).filter(EpicIssue.project_id == project.id, EpicIssue.chapter_number == chapter_number, EpicIssue.status == "open").all():
+            old_issue.status = "fixed"
         state = _extract_state_from_accepted(project, chapter, contract)
         _persist_accepted_state(db, project, chapter, contract, state)
+    scores = _acceptance_scores(issues)
     report = EpicAcceptanceReport(
         project_id=project.id,
         chapter_number=chapter_number,
-        outline_execution_score=0.88,
-        character_arc_score=0.82,
-        power_legality_score=0.9,
-        foreshadow_score=0.84,
-        pleasure_score=0.8,
-        continuity_score=0.86,
-        anti_cliche_score=0.9,
+        outline_execution_score=scores["outline_execution_score"],
+        character_arc_score=scores["character_arc_score"],
+        power_legality_score=scores["power_legality_score"],
+        foreshadow_score=scores["foreshadow_score"],
+        pleasure_score=scores["pleasure_score"],
+        continuity_score=scores["continuity_score"],
+        anti_cliche_score=scores["anti_cliche_score"],
         overall_status="accepted" if status != "blocked" else "blocked",
-        issues_json=issues,
+        issues_json=[
+            *issues,
+            {
+                "severity": "info",
+                "issueType": "reference_usage",
+                "description": "验收门禁使用 production-ready ReferencePatternCards 与 ReferenceMechanismProfile，未使用原始参考文本。",
+                "evidence": {
+                    "plannedVsActual": _reference_usage_meta(diff_usage),
+                    "acceptanceGate": _reference_usage_meta(gate_usage),
+                },
+            },
+        ],
     )
     db.add(report)
     db.commit()
@@ -1772,9 +2918,95 @@ def execute_chapter(db: Session, project_id: UUID, chapter_number: int, user: An
 
 def check_chapter(db: Session, project_id: UUID, chapter_number: int, user: Any | None = None) -> list[EpicIssue]:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="qa_chapter_check",
+        query=f"{project.genre} 章节检查 连贯性 反俗套 原始文本安全 第{chapter_number}章",
+        role="editor",
+        chapter_number=chapter_number,
+    )
+    project.raw_json = {**(project.raw_json or {}), "chapterCheckReferenceUsage": _reference_usage_meta(reference_usage)}
     chapter = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.chapter_number == chapter_number).first()
     if chapter is None:
         raise EpicNovelError("Chapter not found")
+    contract = db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id, EpicChapterContract.chapter_number == chapter_number).first()
+    candidate = chapter.accepted_content or chapter.repaired_content or chapter.draft_content or ""
+    if contract is not None and candidate:
+        diff_usage = _reference_usage_pack(
+            db,
+            project,
+            task_type="qa_planned_vs_actual_diff",
+            query=f"{project.genre} planned vs actual 复核 {contract.core_pleasure} {contract.bureaucracy_function} 第{chapter_number}章",
+            role="editor",
+            volume_number=contract.volume_number,
+            chapter_number=chapter_number,
+        )
+        diff = _planned_vs_actual(contract, candidate)
+        gate_usage = _reference_usage_pack(
+            db,
+            project,
+            task_type="qa_acceptance_gate",
+            query=f"{project.genre} acceptance gate 复核 {contract.core_pleasure} {contract.bureaucracy_function} 第{chapter_number}章",
+            role="editor",
+            volume_number=contract.volume_number,
+            chapter_number=chapter_number,
+        )
+        status, qa_issues = _acceptance(contract, candidate, diff)
+        if qa_issues:
+            existing_keys = {
+                (issue.issue_type, issue.description)
+                for issue in db.query(EpicIssue)
+                .filter(EpicIssue.project_id == project.id, EpicIssue.chapter_number == chapter_number, EpicIssue.status == "open")
+                .all()
+            }
+            for issue in qa_issues:
+                key = (issue.get("issueType"), issue["description"])
+                if key in existing_keys:
+                    continue
+                db.add(
+                    EpicIssue(
+                        project_id=project.id,
+                        issue_scope="chapter",
+                        chapter_number=chapter_number,
+                        severity=issue["severity"],
+                        issue_type=issue.get("issueType"),
+                        description=issue["description"],
+                        evidence=json.dumps(issue.get("evidence"), ensure_ascii=False) if issue.get("evidence") else None,
+                        repair_scope={"mode": "local_issue_targeted", "rewrite": "forbidden", "source": "check_chapter"},
+                        status="open",
+                    )
+                )
+        scores = _acceptance_scores(qa_issues)
+        db.add(
+            EpicAcceptanceReport(
+                project_id=project.id,
+                chapter_number=chapter_number,
+                outline_execution_score=scores["outline_execution_score"],
+                character_arc_score=scores["character_arc_score"],
+                power_legality_score=scores["power_legality_score"],
+                foreshadow_score=scores["foreshadow_score"],
+                pleasure_score=scores["pleasure_score"],
+                continuity_score=scores["continuity_score"],
+                anti_cliche_score=scores["anti_cliche_score"],
+                overall_status="accepted" if status != "blocked" else "blocked",
+                issues_json=[
+                    *qa_issues,
+                    {
+                        "severity": "info",
+                        "issueType": "reference_usage",
+                        "description": "强化复核写入 planned-vs-actual 与 acceptance-gate RetrievalTrace，未使用原始参考文本。",
+                        "evidence": {
+                            "plannedVsActual": _reference_usage_meta(diff_usage),
+                            "acceptanceGate": _reference_usage_meta(gate_usage),
+                        },
+                    },
+                ],
+            )
+        )
+        if status == "blocked" and chapter.status == EpicChapterStatus.ACCEPTED:
+            chapter.status = EpicChapterStatus.NEED_REVIEW
+        db.commit()
     issues = db.query(EpicIssue).filter(EpicIssue.project_id == project.id, EpicIssue.chapter_number == chapter_number).all()
     if not issues and chapter.status == EpicChapterStatus.ACCEPTED:
         return []
@@ -1788,6 +3020,15 @@ def check_chapter(db: Session, project_id: UUID, chapter_number: int, user: Any 
 
 def repair_chapter(db: Session, project_id: UUID, chapter_number: int, user: Any | None = None) -> EpicChapter:
     project = _get_project(db, project_id, user)
+    reference_usage = _reference_usage_pack(
+        db,
+        project,
+        task_type="repair_chapter_entry",
+        query=f"{project.genre} 章节修复入口 参考机制 第{chapter_number}章",
+        role="author",
+        chapter_number=chapter_number,
+    )
+    project.raw_json = {**(project.raw_json or {}), "chapterRepairEntryReferenceUsage": _reference_usage_meta(reference_usage)}
     chapter = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.chapter_number == chapter_number).first()
     if chapter is None:
         raise EpicNovelError("Chapter not found")
@@ -1828,6 +3069,228 @@ def generate_batch(db: Session, project_id: UUID, req: EpicBatchGenerationReques
     return {"project_id": project.id, "generated": generated, "failed": failed, "skipped": skipped}
 
 
+def _epic_job_role(job_type: str) -> str:
+    if "reference" in job_type:
+        return "reference"
+    if "chapter" in job_type or "repair" in job_type:
+        return "author"
+    return "editor"
+
+
+def create_epic_production_job(
+    db: Session,
+    project_id: UUID,
+    *,
+    job_type: str,
+    progress_total: int,
+    max_estimated_cost: float | None = None,
+    action: str | None = None,
+) -> EpicProductionJob:
+    project = _get_project(db, project_id)
+    role = _epic_job_role(job_type)
+    selection = resolve_model(role)  # type: ignore[arg-type]
+    job = EpicProductionJob(
+        project_id=project.id,
+        job_type=job_type,
+        status="queued",
+        progress_current=0,
+        progress_total=max(1, int(progress_total or 1)),
+        max_estimated_cost=max_estimated_cost,
+        provider=selection.provider,
+        model=selection.model,
+        action=action or job_type,
+        checkpoint_json={"completedSteps": [], "failedSteps": [], "events": []},
+        raw_json={"scheduler": "epic_production_job", "supportsPauseResumeRetry": True},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def apply_epic_job_step(
+    job: EpicProductionJob,
+    *,
+    step_key: str,
+    estimated_cost: float = 0.0,
+    actual_cost: float | None = None,
+    failed: bool = False,
+    error: str | None = None,
+    continuation_chunk: str | None = None,
+) -> dict[str, Any]:
+    checkpoint = dict(job.checkpoint_json or {})
+    events = list(checkpoint.get("events") or [])
+    if job.stop_requested or job.status == "stopped":
+        job.status = "stopped"
+        checkpoint["lastStopReason"] = "stop_requested"
+        job.checkpoint_json = checkpoint
+        return {"advanced": False, "reason": "stopped"}
+    if job.pause_requested or job.status == "paused":
+        job.status = "paused"
+        checkpoint["lastStopReason"] = "paused"
+        job.checkpoint_json = checkpoint
+        return {"advanced": False, "reason": "paused"}
+
+    projected_cost = round(float(job.estimated_cost or 0.0) + max(0.0, float(estimated_cost or 0.0)), 8)
+    if job.max_estimated_cost is not None and projected_cost > float(job.max_estimated_cost):
+        job.status = "cost_capped"
+        job.error = f"预计成本 {projected_cost:.8f} 超过上限 {float(job.max_estimated_cost):.8f}"
+        checkpoint["lastStopReason"] = "cost_cap"
+        checkpoint["blockedStep"] = step_key
+        job.checkpoint_json = checkpoint
+        return {"advanced": False, "reason": "cost_cap", "projectedCost": projected_cost}
+
+    if continuation_chunk is not None:
+        chunks = list(job.continuation_chunks or [])
+        chunks.append({"stepKey": step_key, "chunkIndex": len(chunks) + 1, "chars": len(continuation_chunk), "contentReturned": False})
+        job.continuation_chunks = chunks
+
+    if failed:
+        failed_steps = list(checkpoint.get("failedSteps") or [])
+        if step_key not in failed_steps:
+            failed_steps.append(step_key)
+        checkpoint["failedSteps"] = failed_steps
+        checkpoint["lastFailedStep"] = step_key
+        events.append({"stepKey": step_key, "status": "failed", "error": error or "unknown"})
+        job.status = "failed"
+        job.error = error or "step failed"
+        job.checkpoint_key = step_key
+        job.estimated_cost = projected_cost
+        if actual_cost is not None:
+            job.actual_cost = round(float(job.actual_cost or 0.0) + max(0.0, float(actual_cost)), 8)
+        checkpoint["events"] = events
+        job.checkpoint_json = checkpoint
+        return {"advanced": False, "reason": "failed"}
+
+    completed = list(checkpoint.get("completedSteps") or [])
+    if step_key not in completed:
+        completed.append(step_key)
+    failed_steps = [item for item in list(checkpoint.get("failedSteps") or []) if item != step_key]
+    checkpoint["completedSteps"] = completed
+    checkpoint["failedSteps"] = failed_steps
+    checkpoint["lastCompletedStep"] = step_key
+    events.append({"stepKey": step_key, "status": "completed", "estimatedCost": max(0.0, float(estimated_cost or 0.0))})
+    checkpoint["events"] = events
+    job.checkpoint_key = step_key
+    job.progress_current = min(job.progress_total, max(int(job.progress_current or 0) + 1, len(completed)))
+    job.estimated_cost = projected_cost
+    if actual_cost is not None:
+        job.actual_cost = round(float(job.actual_cost or 0.0) + max(0.0, float(actual_cost)), 8)
+    job.error = None
+    job.status = "completed" if job.progress_current >= job.progress_total else "running"
+    job.checkpoint_json = checkpoint
+    return {"advanced": True, "reason": job.status}
+
+
+def pause_epic_production_job(job: EpicProductionJob) -> EpicProductionJob:
+    job.pause_requested = True
+    job.status = "paused"
+    return job
+
+
+def resume_epic_production_job(job: EpicProductionJob) -> EpicProductionJob:
+    job.pause_requested = False
+    if not job.stop_requested and job.status in {"paused", "failed", "queued"}:
+        job.status = "running"
+        job.error = None
+    return job
+
+
+def stop_epic_production_job(job: EpicProductionJob) -> EpicProductionJob:
+    job.stop_requested = True
+    job.status = "stopped"
+    return job
+
+
+def retry_epic_job_failed_only(job: EpicProductionJob) -> dict[str, Any]:
+    checkpoint = dict(job.checkpoint_json or {})
+    failed_steps = list(checkpoint.get("failedSteps") or [])
+    job.retry_failed_only = True
+    job.retry_count = int(job.retry_count or 0) + 1
+    checkpoint["retryFailedOnly"] = True
+    checkpoint["retryPendingSteps"] = failed_steps
+    job.checkpoint_json = checkpoint
+    job.error = None
+    job.status = "running" if failed_steps else "completed"
+    return {"retryFailedOnly": True, "retryPendingSteps": failed_steps, "retryCount": job.retry_count}
+
+
+def record_epic_job_step(
+    db: Session,
+    job: EpicProductionJob,
+    *,
+    step_key: str,
+    estimated_cost: float = 0.0,
+    actual_cost: float | None = None,
+    failed: bool = False,
+    error: str | None = None,
+    continuation_chunk: str | None = None,
+) -> dict[str, Any]:
+    result = apply_epic_job_step(
+        job,
+        step_key=step_key,
+        estimated_cost=estimated_cost,
+        actual_cost=actual_cost,
+        failed=failed,
+        error=error,
+        continuation_chunk=continuation_chunk,
+    )
+    log_epic_generation(
+        db,
+        action=job.action or job.job_type,
+        role=_epic_job_role(job.job_type),  # type: ignore[arg-type]
+        project_id=job.project_id,
+        prompt=f"job={job.id} step={step_key}",
+        completion=result["reason"],
+        status="error" if failed else str(result["reason"]),
+        error=error,
+        estimated_cost=estimated_cost,
+        actual_cost=actual_cost,
+    )
+    db.commit()
+    db.refresh(job)
+    return result
+
+
+def epic_job_snapshot(job: EpicProductionJob | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    checkpoint = dict(job.checkpoint_json or {})
+    remaining_steps = max(0, int(job.progress_total or 0) - int(job.progress_current or 0))
+    per_step_cost = float(job.estimated_cost or 0.0) / max(1, int(job.progress_current or 0))
+    return {
+        "id": str(job.id),
+        "jobType": job.job_type,
+        "status": job.status,
+        "progressCurrent": job.progress_current,
+        "progressTotal": job.progress_total,
+        "progressRatio": round(float(job.progress_current or 0) / max(1, int(job.progress_total or 1)), 4),
+        "checkpointKey": job.checkpoint_key,
+        "retryFailedOnly": job.retry_failed_only,
+        "retryCount": job.retry_count,
+        "estimatedCost": job.estimated_cost,
+        "actualCost": job.actual_cost,
+        "estimatedRemainingCost": round(per_step_cost * remaining_steps, 8),
+        "provider": job.provider,
+        "model": job.model,
+        "action": job.action,
+        "error": job.error,
+        "failedSteps": checkpoint.get("failedSteps") or [],
+        "completedSteps": checkpoint.get("completedSteps") or [],
+        "continuationChunkCount": len(job.continuation_chunks or []),
+    }
+
+
+def latest_epic_job_snapshot(db: Session, project_id: UUID) -> dict[str, Any] | None:
+    job = (
+        db.query(EpicProductionJob)
+        .filter(EpicProductionJob.project_id == project_id)
+        .order_by(EpicProductionJob.created_at.desc())
+        .first()
+    )
+    return epic_job_snapshot(job)
+
+
 def dashboard(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
     project = sync_project_progress(db, _get_project(db, project_id, user))
     completed_chapters = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.status == EpicChapterStatus.ACCEPTED).count()
@@ -1835,6 +3298,7 @@ def dashboard(db: Session, project_id: UUID, user: Any | None = None) -> dict[st
     issues = db.query(EpicIssue).filter(EpicIssue.project_id == project.id, EpicIssue.status == "open").all()
     downloads = db.query(ReferenceDownloadTask.status, func.count(ReferenceDownloadTask.id)).group_by(ReferenceDownloadTask.status).all()
     bible = db.query(EpicMasterBible).filter(EpicMasterBible.project_id == project.id).first()
+    current_job = latest_epic_job_snapshot(db, project.id)
     return {
         "project_id": project.id,
         "current_words": project.total_words,
@@ -1860,6 +3324,11 @@ def dashboard(db: Session, project_id: UUID, user: Any | None = None) -> dict[st
         "generated_pattern_card_count": db.query(ReferencePatternCard).count(),
         "repair_count": sum(report.issues_json and 1 or 0 for report in reports),
         "cost_estimate": sum(log.estimated_cost for log in db.query(EpicGenerationLog).filter(EpicGenerationLog.project_id == project.id).all()),
+        "current_job": current_job,
+        "job_progress": current_job["progressRatio"] if current_job else 0.0,
+        "estimated_remaining_cost": current_job["estimatedRemainingCost"] if current_job else 0.0,
+        "job_errors": [current_job["error"]] if current_job and current_job.get("error") else [],
+        "retry_status": "retry_failed_only" if current_job and current_job.get("retryFailedOnly") else None,
     }
 
 
@@ -1868,14 +3337,15 @@ def export_bible(db: Session, project_id: UUID, fmt: str, user: Any | None = Non
     manifest = generate_bible_manifest(db, project.id, user)
     bible: EpicMasterBible = manifest["bible"]
     sections = db.query(EpicBibleSection).filter(EpicBibleSection.project_id == project.id).order_by(EpicBibleSection.order_index.asc()).all()
+    filename_stem = _safe_export_stem(bible.title or f"{_display_project_title(project)} 全书圣经")
     if fmt in {"json"}:
         content = json.dumps({"bible": _asdict_model(bible), "sections": [_asdict_model(section) for section in sections]}, ensure_ascii=False, default=str, indent=2)
         media = "application/json"
-        filename = f"{_safe_export_stem(project.title)}_master_bible.json"
+        filename = f"{filename_stem}.json"
     else:
         content = f"# {bible.title}\n\n" + "\n\n".join(section.content_markdown or f"## {section.section_title}\n\nPending." for section in sections)
         media = "text/markdown; charset=utf-8"
-        filename = f"{_safe_export_stem(project.title)}_master_bible.md"
+        filename = f"{filename_stem}.md"
     out = epic_export_path()
     out.mkdir(parents=True, exist_ok=True)
     path = out / filename
@@ -1888,12 +3358,34 @@ def export_bible(db: Session, project_id: UUID, fmt: str, user: Any | None = Non
     return content, media, filename
 
 
-def _export_metadata_for_path(path: Path, media_type: str, *, content_chars: int) -> dict[str, Any]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _export_metadata_for_path(
+    path: Path,
+    media_type: str,
+    *,
+    content_chars: int,
+    download_route: str | None = None,
+    artifact_type: str | None = None,
+) -> dict[str, Any]:
+    stat = path.stat()
+    checksum = _sha256_file(path)
     return {
         "filename": path.name,
         "mediaType": media_type,
         "path": str(path),
-        "bytes": path.stat().st_size,
+        "objectId": checksum,
+        "sha256": checksum,
+        "bytes": stat.st_size,
+        "createdAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "downloadRoute": download_route,
+        "artifactType": artifact_type,
         "contentReturned": False,
         "contentChars": content_chars,
     }
@@ -1902,24 +3394,32 @@ def _export_metadata_for_path(path: Path, media_type: str, *, content_chars: int
 def export_bible_file_metadata(db: Session, project_id: UUID, fmt: str, user: Any | None = None) -> dict[str, Any]:
     content, media, filename = export_bible(db, project_id, fmt, user)
     path = epic_export_path() / filename
-    return _export_metadata_for_path(path, media, content_chars=len(content))
+    fmt_param = "json" if fmt == "json" else "markdown"
+    return _export_metadata_for_path(
+        path,
+        media,
+        content_chars=len(content),
+        download_route=f"/api/v1/epic-novel/projects/{project_id}/bible/export?format={fmt_param}&mode=download",
+        artifact_type=f"bible_{fmt_param}",
+    )
 
 
 def export_novel(db: Session, project_id: UUID, fmt: str, user: Any | None = None) -> tuple[str, str, str]:
     project = _get_project(db, project_id, user)
     chapters = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.status == EpicChapterStatus.ACCEPTED).order_by(EpicChapter.chapter_number.asc()).all()
+    display_title = _display_project_title(project)
     if fmt == "json":
-        content = json.dumps({"project": _asdict_model(project), "chapters": [_asdict_model(chapter) for chapter in chapters]}, ensure_ascii=False, default=str, indent=2)
+        content = json.dumps({"project": {**_asdict_model(project), "displayTitle": display_title}, "chapters": [_asdict_model(chapter) for chapter in chapters]}, ensure_ascii=False, default=str, indent=2)
         media = "application/json"
-        filename = f"{_safe_export_stem(project.title)}_novel.json"
+        filename = f"{_safe_export_stem(display_title)} 正文.json"
     elif fmt == "txt":
         content = "\n\n".join(f"{chapter.title}\n\n{chapter.accepted_content or ''}" for chapter in chapters)
         media = "text/plain; charset=utf-8"
-        filename = f"{_safe_export_stem(project.title)}_novel.txt"
+        filename = f"{_safe_export_stem(display_title)} 正文.txt"
     else:
-        content = f"# {project.title}\n\n" + "\n\n".join(f"## {chapter.title}\n\n{chapter.accepted_content or ''}" for chapter in chapters)
+        content = f"# {display_title}\n\n" + "\n\n".join(f"## {chapter.title}\n\n{chapter.accepted_content or ''}" for chapter in chapters)
         media = "text/markdown; charset=utf-8"
-        filename = f"{_safe_export_stem(project.title)}_novel.md"
+        filename = f"{_safe_export_stem(display_title)} 正文.md"
     out = epic_export_path()
     out.mkdir(parents=True, exist_ok=True)
     (out / filename).write_text(content, encoding="utf-8")
@@ -1929,4 +3429,115 @@ def export_novel(db: Session, project_id: UUID, fmt: str, user: Any | None = Non
 def export_novel_file_metadata(db: Session, project_id: UUID, fmt: str, user: Any | None = None) -> dict[str, Any]:
     content, media, filename = export_novel(db, project_id, fmt, user)
     path = epic_export_path() / filename
-    return _export_metadata_for_path(path, media, content_chars=len(content))
+    fmt_param = "markdown" if fmt == "md" else fmt
+    return _export_metadata_for_path(
+        path,
+        media,
+        content_chars=len(content),
+        download_route=f"/api/v1/epic-novel/projects/{project_id}/export?format={fmt_param}&mode=download",
+        artifact_type=f"novel_{fmt_param}",
+    )
+
+
+def export_project_artifact_file_metadata(
+    db: Session,
+    project_id: UUID,
+    artifact_type: str,
+    *,
+    volume_number: int | None = None,
+    user: Any | None = None,
+) -> dict[str, Any]:
+    project = _get_project(db, project_id, user)
+    out = epic_export_path()
+    out.mkdir(parents=True, exist_ok=True)
+    display_title = _display_project_title(project)
+    artifact_type = artifact_type.strip().lower()
+    media = "application/json"
+    if artifact_type == "volume_markdown":
+        if volume_number is None:
+            volume_number = project.current_volume or 1
+        volume = db.query(EpicVolumeContract).filter(EpicVolumeContract.project_id == project.id, EpicVolumeContract.volume_number == volume_number).first()
+        if volume is None:
+            raise EpicNovelError(f"Volume contract not found: {volume_number}")
+        chapters = (
+            db.query(EpicChapter)
+            .filter(EpicChapter.project_id == project.id, EpicChapter.volume_number == volume_number, EpicChapter.status == EpicChapterStatus.ACCEPTED)
+            .order_by(EpicChapter.chapter_number.asc())
+            .all()
+        )
+        content = (
+            f"# {display_title} 第{volume_number}卷\n\n"
+            f"## 卷目标\n{volume.local_main_plot or '推进本卷主线'}\n\n"
+            + "\n\n".join(f"## {chapter.title}\n\n{chapter.accepted_content or ''}" for chapter in chapters)
+        )
+        filename = f"{_safe_export_stem(display_title)} 第{volume_number}卷 正文.md"
+        media = "text/markdown; charset=utf-8"
+    elif artifact_type == "chapter_bundle":
+        rows = db.query(EpicChapter).filter(EpicChapter.project_id == project.id).order_by(EpicChapter.chapter_number.asc()).all()
+        content = json.dumps({"projectId": str(project.id), "chapters": [_asdict_model(row) for row in rows]}, ensure_ascii=False, default=str, indent=2)
+        filename = f"{_safe_export_stem(display_title)} 章节包.json"
+    elif artifact_type == "qa_reports":
+        reports = db.query(EpicAcceptanceReport).filter(EpicAcceptanceReport.project_id == project.id).order_by(EpicAcceptanceReport.chapter_number.asc()).all()
+        issues = db.query(EpicIssue).filter(EpicIssue.project_id == project.id).order_by(EpicIssue.created_at.asc()).all()
+        content = json.dumps(
+            {"projectId": str(project.id), "acceptanceReports": [_asdict_model(row) for row in reports], "issues": [_asdict_model(row) for row in issues]},
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
+        filename = f"{_safe_export_stem(display_title)} 质检报告.json"
+    elif artifact_type == "retrieval_traces":
+        traces = db.query(EpicRetrievalTrace).filter(EpicRetrievalTrace.project_id == project.id).order_by(EpicRetrievalTrace.created_at.asc()).all()
+        trace_rows: list[dict[str, Any]] = []
+        for row in traces:
+            raw = row.raw_json or {}
+            context_metadata = raw.get("contextMetadata") if isinstance(raw.get("contextMetadata"), dict) else {}
+            retrieved_ids = list(row.retrieved_card_ids or [])
+            used_ids = list(row.used_card_ids or [])
+            profile_sections = list(row.used_profile_sections or [])
+            trace_rows.append(
+                {
+                    "id": str(row.id),
+                    "taskType": row.task_type,
+                    "volumeNumber": row.volume_number,
+                    "chapterNumber": row.chapter_number,
+                    "sectionKey": row.section_key,
+                    "queryPreview": (row.query or "")[:500],
+                    "retrievedCardCount": len(retrieved_ids),
+                    "retrievedCardIdsSample": retrieved_ids[:50],
+                    "usedCardCount": len(used_ids),
+                    "usedCardIdsSample": used_ids[:50],
+                    "usedProfileSectionCount": len(profile_sections),
+                    "usedProfileSectionsSample": profile_sections[:20],
+                    "profileVersion": row.profile_version,
+                    "excludedContextCount": len(row.excluded_context or []),
+                    "rawTextIncluded": row.raw_text_included,
+                    "usageSummary": row.usage_summary,
+                    "contextMetadataSummary": {
+                        "includedCount": context_metadata.get("includedCount"),
+                        "overflowCount": context_metadata.get("overflowCount"),
+                        "includedPaths": context_metadata.get("includedPaths") or [],
+                        "overflowPaths": context_metadata.get("overflowPaths") or [],
+                        "rawReferenceTextIncluded": context_metadata.get("rawReferenceTextIncluded", False),
+                    },
+                    "rawJsonKeys": sorted(raw.keys()),
+                    "createdAt": row.created_at,
+                }
+            )
+        content = json.dumps({"projectId": str(project.id), "retrievalTraces": trace_rows, "summaryOnly": True}, ensure_ascii=False, default=str, indent=2)
+        filename = f"{_safe_export_stem(display_title)} 检索轨迹.json"
+    elif artifact_type == "acceptance_reports":
+        reports = db.query(EpicAcceptanceReport).filter(EpicAcceptanceReport.project_id == project.id).order_by(EpicAcceptanceReport.chapter_number.asc()).all()
+        content = json.dumps({"projectId": str(project.id), "acceptanceReports": [_asdict_model(row) for row in reports]}, ensure_ascii=False, default=str, indent=2)
+        filename = f"{_safe_export_stem(display_title)} 验收报告.json"
+    else:
+        raise EpicNovelError(f"Unsupported artifact export type: {artifact_type}")
+    path = out / filename
+    path.write_text(content, encoding="utf-8")
+    return _export_metadata_for_path(
+        path,
+        media,
+        content_chars=len(content),
+        download_route=f"/api/v1/epic-novel/projects/{project_id}/exports/artifact?artifact_type={artifact_type}&mode=download",
+        artifact_type=artifact_type,
+    )

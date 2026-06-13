@@ -26,14 +26,18 @@ import type {
   EpicChapter,
   EpicChapterContract,
   EpicDashboardResponse,
+  EpicExportMetadata,
   EpicNovelCreateRequest,
   EpicNovelProject,
   EpicNovelProjectDetailResponse,
   EpicNovelProjectListResponse,
   EpicReferenceBook,
+  EpicReferenceBooklistItem,
+  EpicReferenceDownloadTask,
   EpicReferenceExtractionControl,
   EpicReferenceExtractionCostEstimate,
   EpicReferenceMechanismProfile,
+  EpicReferencePatternCard,
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
@@ -589,8 +593,25 @@ export const api = {
     request<EpicReferenceBook[]>("/epic-novel/reference-downloader/import-downloaded", {
       method: "POST",
     }),
+  importEpicReferenceBooklist: (body: { seed_path?: string | null; raw_markdown?: string | null } = {}) =>
+    request<EpicReferenceBooklistItem[]>("/epic-novel/reference-booklist/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  normalizeEpicReferenceBooklist: (body: { seed_path?: string | null; raw_markdown?: string | null } = {}) =>
+    request<EpicReferenceBooklistItem[]>("/epic-novel/reference-booklist/normalize", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listEpicReferenceDownloadTasks: () =>
+    request<EpicReferenceDownloadTask[]>("/epic-novel/reference-download-tasks"),
   ingestEpicReferenceBook: (body: { book_id?: string; source_path?: string }) =>
     request<Record<string, unknown>>("/epic-novel/reference-books/ingest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  searchEpicReferencePatterns: (body: { query?: string; category?: string | null; limit?: number } = {}) =>
+    request<EpicReferencePatternCard[]>("/epic-novel/reference-patterns/search", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -665,6 +686,12 @@ export const api = {
       `/epic-novel/projects/${id}/volumes/${volumeNumber}/compile-chapters`,
       { method: "POST" },
     ),
+  generateEpicBibleSection: (id: string, sectionKey: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/bible/sections/${sectionKey}/generate`, {
+      method: "POST",
+    }),
+  getEpicChapterContextPack: (id: string, chapterNumber: number) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/chapters/${chapterNumber}/context-pack`),
   executeEpicChapter: (id: string, chapterNumber: number) =>
     request<EpicChapter>(`/epic-novel/projects/${id}/chapters/${chapterNumber}/execute`, {
       method: "POST",
@@ -689,14 +716,37 @@ export const api = {
     }),
   downloadEpicBibleExport: async (id: string, format: "markdown" | "json" = "markdown") => {
     const { blob, filename } = await download(
-      `/epic-novel/projects/${id}/bible/export?format=${format}`,
+      `/epic-novel/projects/${id}/bible/export?format=${format}&mode=download`,
     );
     saveBlob(blob, filename);
   },
   downloadEpicNovelExport: async (id: string, format: "markdown" | "txt" | "json" = "markdown") => {
     const { blob, filename } = await download(
-      `/epic-novel/projects/${id}/export?format=${format}`,
+      `/epic-novel/projects/${id}/export?format=${format}&mode=download`,
     );
+    saveBlob(blob, filename);
+  },
+  getEpicBibleExportMetadata: (id: string, format: "markdown" | "json" = "markdown") =>
+    request<EpicExportMetadata>(`/epic-novel/projects/${id}/bible/export?format=${format}&mode=metadata`),
+  getEpicNovelExportMetadata: (id: string, format: "markdown" | "txt" | "json" = "markdown") =>
+    request<EpicExportMetadata>(`/epic-novel/projects/${id}/export?format=${format}&mode=metadata`),
+  getEpicArtifactExportMetadata: (
+    id: string,
+    artifactType: "volume_markdown" | "chapter_bundle" | "qa_reports" | "retrieval_traces" | "acceptance_reports",
+    volumeNumber?: number,
+  ) => {
+    const params = new URLSearchParams({ artifact_type: artifactType, mode: "metadata" });
+    if (volumeNumber) params.set("volume_number", String(volumeNumber));
+    return request<EpicExportMetadata>(`/epic-novel/projects/${id}/exports/artifact?${params.toString()}`);
+  },
+  downloadEpicArtifactExport: async (
+    id: string,
+    artifactType: "volume_markdown" | "chapter_bundle" | "qa_reports" | "retrieval_traces" | "acceptance_reports",
+    volumeNumber?: number,
+  ) => {
+    const params = new URLSearchParams({ artifact_type: artifactType, mode: "download" });
+    if (volumeNumber) params.set("volume_number", String(volumeNumber));
+    const { blob, filename } = await download(`/epic-novel/projects/${id}/exports/artifact?${params.toString()}`);
     saveBlob(blob, filename);
   },
 

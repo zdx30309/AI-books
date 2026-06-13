@@ -121,6 +121,8 @@ def log_epic_generation(
     completion: str | None = None,
     status: str = "success",
     error: str | None = None,
+    estimated_cost: float | None = None,
+    actual_cost: float | None = None,
 ) -> EpicGenerationLog:
     selection = resolve_model(role)
     log = EpicGenerationLog(
@@ -134,7 +136,8 @@ def log_epic_generation(
         chapter_number=chapter_number,
         prompt_tokens=estimate_tokens(prompt),
         completion_tokens=estimate_tokens(completion),
-        estimated_cost=0.0,
+        estimated_cost=float(estimated_cost or 0.0),
+        actual_cost=actual_cost,
         status=status,
         error=error,
     )

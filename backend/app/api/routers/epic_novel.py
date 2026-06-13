@@ -1,6 +1,7 @@
 """Epic Novel Engine API routes."""
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
@@ -45,6 +46,7 @@ from app.services.epic_novel import (
     export_bible_file_metadata,
     export_novel,
     export_novel_file_metadata,
+    export_project_artifact_file_metadata,
     forge_power_system,
     generate_arc_ledgers,
     generate_batch,
@@ -416,7 +418,7 @@ def bible_repair(project_id: UUID, db: Session = Depends(get_db), user: User = D
 def bible_export(
     project_id: UUID,
     format: str = Query(default="markdown", pattern="^(markdown|md|json|docx)$"),
-    mode: str = Query(default="download", pattern="^(download|metadata)$"),
+    mode: str = Query(default="metadata", pattern="^(download|metadata)$"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response | dict[str, object]:
@@ -531,7 +533,7 @@ def project_dashboard(project_id: UUID, db: Session = Depends(get_db), user: Use
 def project_export(
     project_id: UUID,
     format: str = Query(default="markdown", pattern="^(markdown|md|txt|json)$"),
-    mode: str = Query(default="download", pattern="^(download|metadata)$"),
+    mode: str = Query(default="metadata", pattern="^(download|metadata)$"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response | dict[str, object]:
@@ -544,3 +546,25 @@ def project_export(
         _bad_request(exc)
     quoted = quote(filename)
     return Response(content=content.encode("utf-8"), media_type=media_type, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+
+
+@router.get("/projects/{project_id}/exports/artifact", response_model=None)
+def project_artifact_export(
+    project_id: UUID,
+    artifact_type: str = Query(pattern="^(volume_markdown|chapter_bundle|qa_reports|retrieval_traces|acceptance_reports)$"),
+    volume_number: int | None = Query(default=None, ge=1),
+    mode: str = Query(default="metadata", pattern="^(download|metadata)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response | dict[str, object]:
+    try:
+        metadata = export_project_artifact_file_metadata(db, project_id, artifact_type, volume_number=volume_number, user=user)
+    except EpicNovelError as exc:
+        _bad_request(exc)
+    if mode == "metadata":
+        return metadata
+    file_path = Path(str(metadata.get("path") or ""))
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="导出文件不存在")
+    quoted = quote(file_path.name)
+    return Response(content=file_path.read_bytes(), media_type=str(metadata.get("mediaType") or "application/octet-stream"), headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})

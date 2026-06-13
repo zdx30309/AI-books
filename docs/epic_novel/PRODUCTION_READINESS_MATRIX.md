@@ -1,8 +1,8 @@
 # Epic Novel Engine Production Readiness Matrix
 
-Updated: 2026-06-12
+Updated: 2026-06-13
 
-Status: `ACCEPTANCE PASSED / DEPLOYED`
+Status: `PARTIAL_IMPLEMENTATION`
 
 | Gate | Required | Current evidence | Status |
 | --- | --- | --- | --- |
@@ -10,16 +10,25 @@ Status: `ACCEPTANCE PASSED / DEPLOYED`
 | Chinese-only user-facing generation | Generated story/Bible/fallback content must be Simplified Chinese | tests cover fallback and Bible acceptance; strict live Bible passed | PASS |
 | Fallback labeling | deterministic fallback must be `fallback/placeholder`, `production_quality=false` | implemented and tested | PASS |
 | Live LLM production path | production generation must use configured LLM instead of smoke fixtures | strict live run used providers and passed; structured fallback to editor/GPT is available | PASS |
-| DeepSeek V4 Pro reference intelligence | reference role defaults to DeepSeek V4 Pro; extraction cost/control exists | tests and dry-run pass | PASS |
-| Full-corpus LLM reference extraction | all available sections analyzed with source identity and no mixing | dry-run estimates 106,914 sections; full LLM extraction not complete | PARTIAL |
-| Dynamic Context safety | no infinite prompt explosion, overflow metadata, no raw reference text | tests pass | PASS |
-| Master Bible | accepted sections, complete coverage, no fallback | 24 sections accepted, 24 coverage complete | PASS |
-| Chapter execution | chapters 1-3 serial, state ledgers, diff, acceptance, trace/report | strict smoke accepted chapters 1-3 and recorded traces/reports | PASS |
-| Export | Bible/novel file/object export, not giant API response | tests cover metadata; strict smoke exported Bible/novel markdown | PASS |
-| Frontend | workspace controls, dashboard, extraction control | build passes | PASS |
-| GitHub current worktree | current changes committed/pushed | branch `codex/video-source-classical-regenerate` pushed to `origin` | PASS |
-| Beijing ECS current worktree | current changes deployed and verified | `/opt/video-plan` rebuilt; public homepage and system health HTTP 200 | PASS |
+| DeepSeek V4 Pro reference intelligence | reference role defaults to DeepSeek V4 Pro; staged extraction evidence exists | Gate 2B: 3 books / 15 sections / 15 successful analyses / 36 production-ready cards | PARTIAL |
+| Full-corpus LLM reference extraction | all available sections analyzed with source identity and no mixing | dry-run estimates 106,914 sections; current successful analyses=15 | PARTIAL |
+| Reference usage depth | all required layers consume production-ready cards/profile and record RetrievalTrace | Gate 3: 19/19 task types PASS, 69 new traces, 36 production-ready cards used, rawTextIncluded=false | PASS |
+| Dynamic Context safety | no infinite prompt explosion, overflow metadata, no raw reference text | Gate 5 audit `.local/epic_novel_runs/gate5_dynamic_context_2026-06-12T200323_839412Z.json`; context tests 8 passed | PASS |
+| Master Bible | accepted sections, complete coverage, no fallback, Chinese-only visible rendering | Gate 4: 24/24 accepted, Bible `completed`, markdown/json exported as `本长篇项目 全书圣经.*` | PASS |
+| QA Acceptance Gate | bad outputs blocked, high/severe issues block, issue-driven reports, local repair scope, canon boundary | Gate 6 audit `.local/epic_novel_runs/gate6_qa_acceptance_2026-06-12T202046_749120Z.json`; QA tests 11 passed | PASS |
+| Chapter execution | chapters serial, state ledgers, diff, acceptance, trace/report | strict smoke accepted chapters 1-3; Gate 3 chapter 4 accepted with QA traces and acceptedContent-only canon source | PASS |
+| Canon-state chapters 1-3 | strengthened QA rerun, context metadata, prior state consumption, acceptedContent-only canon ledgers | Gate 7 audit `.local/epic_novel_runs/gate7_canon_state_2026-06-12T205822_873613Z.json`; `nonAcceptedCanonSources=0` | PASS |
+| 30-chapter continuity simulation | 30 serial chapters or equivalent deterministic state behavior | Gate 8 audit `.local/epic_novel_runs/gate8_thirty_chapter_2026-06-12T211746_940280Z.json`; 30/30 simulated chapters accepted; retry idempotent | PASS_SIMULATION |
+| Full configured-volume acceptance | one complete configured live test volume with accepted chapters, traces, reports, state ledgers, and file-backed manuscript export | Gate 9 audit `.local/epic_novel_runs/gate9_full_volume_2026-06-12T214212_737800Z.json`; volume 1 chapter range 1-3 accepted; `nonAcceptedCanonSources=0`; volume markdown exported | PASS_CONFIGURED_VOLUME |
+| Multi-volume rolling plan | 2-3+ planned volumes with GlobalSpine linkage, active ledgers, old-state compression, future reveal constraints, and file-backed report/export | Gate 10 audit `.local/epic_novel_runs/gate10_multi_volume_2026-06-12T220227_446447Z.json`; 3 volumes; 0 issues; trace `8fd0f399-9ce8-4566-8f1c-3246a5577df6`; plan export written | PASS |
+| Scheduler / cost / recovery | long-run job controls, pause/resume/stop, retry failed only, checkpointing, continuation chunks, cost logs, dashboard exposure, safe retry | Gate 11 audit `.local/epic_novel_runs/gate11_scheduler_2026-06-12T221941_023711Z.json`; main job completed; cost cap/stopped/paused/retry checks pass; canon facts stayed 1->1 | PASS |
+| Export | Bible/novel/volume/chapter/report/trace file/object export, not giant API response by default | Gate 12 audit `.local/epic_novel_runs/gate12_export_2026-06-12T224306_008134Z.json`; 8 metadata exports; checksums/download routes; large probe; raw reference excluded | PASS |
+| Frontend | Chinese workspace controls, dashboard, extraction control, export metadata UI, loading/error/empty states | Gate 13 local browser smoke: 10/10 tabs PASS, export metadata click PASS, no new runtime errors; build passes | PASS |
+| GitHub current worktree | current changes committed/pushed | Gate 5-13 changes are local and not yet pushed in this run | NEEDS_REPUBLISH |
+| Beijing ECS current worktree | current changes deployed and verified | Gate 5-13 changes are local and not yet redeployed in this run | NEEDS_REDEPLOY |
 
 ## Decision
 
-The current code passes SPEC acceptance smoke and has been deployed. Do not claim a completed 300万字 manuscript run; the evidence is acceptance readiness, deployment verification, and a resumable production pipeline.
+Current verdict: `PARTIAL_IMPLEMENTATION`.
+
+The current code has a staged, resumable production pipeline, Gate 3 reference-usage evidence, Gate 4 Master Bible evidence, Gate 5 dynamic-context evidence, Gate 6 QA evidence, Gate 7 chapters 1-3 canon-state evidence, Gate 8 deterministic continuity evidence, Gate 9 configured-volume evidence, Gate 10 multi-volume rolling-plan evidence, Gate 11 scheduler/cost/recovery evidence, Gate 12 large-export evidence, and Gate 13 local frontend runtime evidence, but it does not prove full Reference Intelligence, all-volume generated prose, 30 production-quality prose chapters, current remote deployment, or 300万字 readiness.

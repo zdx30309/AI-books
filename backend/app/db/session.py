@@ -111,6 +111,10 @@ def _ensure_epic_schema_columns() -> None:
         ddl: list[str] = []
         if "source_section_ids" not in columns:
             ddl.append("ADD COLUMN IF NOT EXISTS source_section_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "source_analysis_ids" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS source_analysis_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        if "source_book_ids" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS source_book_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
         if "source_card_ids" not in columns:
             ddl.append("ADD COLUMN IF NOT EXISTS source_card_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
         if "evidence_count" not in columns:
@@ -133,6 +137,30 @@ def _ensure_epic_schema_columns() -> None:
                         "ON reference_pattern_cards(output_hash)"
                     )
                 )
+    if inspector.has_table("reference_sections"):
+        columns = {c["name"] for c in inspector.get_columns("reference_sections")}
+        ddl = []
+        if "token_estimate" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS token_estimate INTEGER NOT NULL DEFAULT 0")
+        if ddl:
+            with engine.begin() as conn:
+                for fragment in ddl:
+                    conn.execute(text(f"ALTER TABLE reference_sections {fragment}"))
+    if inspector.has_table("reference_section_analyses"):
+        columns = {c["name"] for c in inspector.get_columns("reference_section_analyses")}
+        ddl = []
+        if "analysis_hash" not in columns:
+            ddl.append("ADD COLUMN IF NOT EXISTS analysis_hash VARCHAR(128)")
+        if ddl:
+            with engine.begin() as conn:
+                for fragment in ddl:
+                    conn.execute(text(f"ALTER TABLE reference_section_analyses {fragment}"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_reference_section_analyses_analysis_hash "
+                        "ON reference_section_analyses(analysis_hash)"
+                    )
+                )
     if inspector.has_table("epic_retrieval_traces"):
         columns = {c["name"] for c in inspector.get_columns("epic_retrieval_traces")}
         ddl = []
@@ -150,3 +178,8 @@ def _ensure_epic_schema_columns() -> None:
             with engine.begin() as conn:
                 for fragment in ddl:
                     conn.execute(text(f"ALTER TABLE epic_retrieval_traces {fragment}"))
+    if inspector.has_table("epic_generation_logs"):
+        columns = {c["name"] for c in inspector.get_columns("epic_generation_logs")}
+        if "actual_cost" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE epic_generation_logs ADD COLUMN IF NOT EXISTS actual_cost FLOAT"))

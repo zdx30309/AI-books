@@ -750,6 +750,79 @@ export interface EpicReferenceBook {
   updated_at: string;
 }
 
+export interface EpicReferenceBooklistItem {
+  id: string;
+  title: string;
+  author: string | null;
+  tier: number;
+  category: string;
+  genre: string | null;
+  source_type: string;
+  source_path: string | null;
+  source_url: string | null;
+  corpus_role: unknown[];
+  priority: number;
+  tags: unknown[];
+  notes: string | null;
+  likely_use: unknown[];
+  confidence: number;
+  ingest_allowed: boolean;
+  needs_verification: boolean;
+  download_status: string;
+  local_raw_path: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicReferenceDownloadTask {
+  id: string;
+  booklist_item_id: string | null;
+  provider: string;
+  title: string;
+  author: string | null;
+  query: string;
+  status: string;
+  search_results: unknown[];
+  selected_result: Record<string, unknown> | null;
+  local_download_path: string | null;
+  imported_raw_path: string | null;
+  file_hash: string | null;
+  generated_card_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EpicReferencePatternCard {
+  id: string;
+  source_book_id: string | null;
+  pattern_key: string;
+  category: string;
+  name: string;
+  description: string;
+  genre: string | null;
+  function: string | null;
+  conditions: unknown[];
+  beats: unknown[];
+  common_pitfalls: unknown[];
+  best_use: unknown[];
+  required_global_link: string | null;
+  originality_notes: string | null;
+  tags: unknown[];
+  source_section_ids: unknown[];
+  source_analysis_ids: unknown[];
+  source_book_ids: unknown[];
+  source_card_ids: unknown[];
+  evidence_count: number;
+  raw_text_included: boolean;
+  extraction_model_provider: string | null;
+  extraction_model_name: string | null;
+  output_hash: string | null;
+  raw_json: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface EpicReferenceMechanismProfile {
   id: string;
   project_id: string | null;
@@ -797,13 +870,26 @@ export interface EpicNovelProjectDetailResponse {
   project: EpicNovelProject;
   world_bible: Record<string, unknown> | null;
   world_atlas: Record<string, unknown> | null;
+  bureaucracy_system: Record<string, unknown> | null;
   power_system: Record<string, unknown> | null;
   master_bible: Record<string, unknown> | null;
+  worldview_candidates: Array<Record<string, unknown>>;
+  nations: Array<Record<string, unknown>>;
+  map_regions: Array<Record<string, unknown>>;
+  institutions: Array<Record<string, unknown>>;
+  factions: Array<Record<string, unknown>>;
+  characters: Array<Record<string, unknown>>;
+  character_arcs: Array<Record<string, unknown>>;
+  global_spine: Record<string, unknown> | null;
   bible_sections: Array<Record<string, unknown>>;
   volume_contracts: Array<Record<string, unknown>>;
+  foreshadows: Array<Record<string, unknown>>;
+  reader_questions: Array<Record<string, unknown>>;
+  pleasure_beats: Array<Record<string, unknown>>;
   chapter_contracts: EpicChapterContract[];
   chapters: EpicChapter[];
   acceptance_reports: EpicAcceptanceReport[];
+  issues: Array<Record<string, unknown>>;
   retrieval_traces: Array<Record<string, unknown>>;
   logs: EpicGenerationLog[];
 }
@@ -833,6 +919,11 @@ export interface EpicDashboardResponse {
   generated_pattern_card_count: number;
   repair_count: number;
   cost_estimate: number;
+  current_job: Record<string, unknown> | null;
+  job_progress: number;
+  estimated_remaining_cost: number;
+  job_errors: string[];
+  retry_status: string | null;
 }
 
 export interface EpicBatchGenerationRequest {
@@ -845,4 +936,18 @@ export interface EpicBatchGenerationResponse {
   generated: number[];
   failed: Array<{ chapter_number?: number; error: string }>;
   skipped: number[];
+}
+
+export interface EpicExportMetadata {
+  filename: string;
+  mediaType: string;
+  path: string;
+  objectId: string;
+  sha256: string;
+  bytes: number;
+  createdAt: string;
+  downloadRoute: string;
+  artifactType: string;
+  contentReturned: boolean;
+  contentChars: number;
 }
