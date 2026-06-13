@@ -69,6 +69,8 @@ def test_extract_bilibili_text_prefers_existing_subtitle(monkeypatch: pytest.Mon
 
 
 def test_extract_bilibili_text_uses_audio_when_subtitle_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    gates: list[tuple[str, int]] = []
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
@@ -104,17 +106,31 @@ def test_extract_bilibili_text_uses_audio_when_subtitle_empty(monkeypatch: pytes
         assert kwargs["model"] == "test-transcribe-model"
         return "音频转写第一句\n音频转写第二句"
 
+    class FakeGate:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_gate(name: str, **kwargs):
+        gates.append((name, kwargs["limit"]))
+        return FakeGate()
+
     monkeypatch.setattr(bilibili.httpx, "Client", FakeClient)
     monkeypatch.setattr(bilibili, "transcribe_media_url", ok_transcribe)
+    monkeypatch.setattr(bilibili, "distributed_semaphore", fake_gate)
 
     result = bilibili.extract_bilibili_text(
         "https://www.bilibili.com/video/BV1xx411c7mD",
         config={
             "bilibili_transcript_min_chars": 2,
             "bilibili_audio_transcription_model": "test-transcribe-model",
+            "bilibili_audio_transcription_max_concurrent": 1,
         },
     )
 
     assert result.provider == "openai_audio"
     assert "视频标题：无字幕视频" in result.text
     assert "音频转写第一句" in result.text
+    assert gates == [("bilibili_audio_transcription", 1)]

@@ -12,6 +12,7 @@ import httpx
 from app.core.config import settings
 from app.services.media_transcription import MediaTranscriptionError, transcribe_media_url
 from app.services.video_sources import canonical_source_url
+from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
@@ -73,25 +74,38 @@ def extract_bilibili_text(source_url: str, *, config: dict[str, Any] | None = No
         raise BilibiliTranscriptError(f"Bilibili metadata/subtitle fetch failed: {exc}") from exc
 
     try:
-        text = transcribe_media_url(
-            audio_url,
-            request_headers=headers,
-            download_timeout=int(
-                config.get("bilibili_media_download_timeout_seconds")
-                or settings.BILIBILI_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
+        with distributed_semaphore(
+            "bilibili_audio_transcription",
+            limit=int(
+                config.get("bilibili_audio_transcription_max_concurrent")
+                or settings.BILIBILI_AUDIO_TRANSCRIPTION_MAX_CONCURRENT
+                or 1
             ),
-            transcribe_timeout=int(
-                config.get("bilibili_transcription_timeout_seconds")
-                or settings.BILIBILI_TRANSCRIPTION_TIMEOUT_SECONDS
+            wait_timeout_seconds=int(
+                config.get("bilibili_audio_gate_wait_timeout_seconds")
+                or settings.BILIBILI_AUDIO_GATE_WAIT_TIMEOUT_SECONDS
+                or settings.PAID_API_GATE_WAIT_TIMEOUT_SECONDS
             ),
-            max_media_bytes=int(config.get("bilibili_media_max_bytes") or settings.BILIBILI_MEDIA_MAX_BYTES),
-            max_audio_bytes=int(config.get("bilibili_audio_max_bytes") or settings.BILIBILI_AUDIO_MAX_BYTES),
-            model=str(
-                config.get("bilibili_audio_transcription_model")
-                or settings.BILIBILI_AUDIO_TRANSCRIPTION_MODEL
-                or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL
-            ),
-        )
+        ):
+            text = transcribe_media_url(
+                audio_url,
+                request_headers=headers,
+                download_timeout=int(
+                    config.get("bilibili_media_download_timeout_seconds")
+                    or settings.BILIBILI_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
+                ),
+                transcribe_timeout=int(
+                    config.get("bilibili_transcription_timeout_seconds")
+                    or settings.BILIBILI_TRANSCRIPTION_TIMEOUT_SECONDS
+                ),
+                max_media_bytes=int(config.get("bilibili_media_max_bytes") or settings.BILIBILI_MEDIA_MAX_BYTES),
+                max_audio_bytes=int(config.get("bilibili_audio_max_bytes") or settings.BILIBILI_AUDIO_MAX_BYTES),
+                model=str(
+                    config.get("bilibili_audio_transcription_model")
+                    or settings.BILIBILI_AUDIO_TRANSCRIPTION_MODEL
+                    or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL
+                ),
+            )
     except MediaTranscriptionError as exc:
         if errors:
             raise BilibiliTranscriptError(
