@@ -26,10 +26,10 @@ Completed gates:
 
 - Gate 2B: DONE / PARTIAL
   - Verdict: PARTIAL, staged expansion only
-  - Scope: 3 imported books / 15 sections
-  - DeepSeek V4 Pro successful analyses: 15 cumulative
+  - Scope: 3 source books / 27 successful section analyses
+  - DeepSeek V4 Pro successful analyses: 27 cumulative
   - fallback analyses: 0
-  - production-ready cards: 36 cumulative
+  - production-ready cards: 48 cumulative
   - Evidence:
     - docs/epic_novel/GATE_2B_REFERENCE_FULL_RUN_REPORT.md
     - docs/epic_novel/REFERENCE_INTELLIGENCE_EVIDENCE.md
@@ -177,7 +177,7 @@ Important boundaries:
 - Gate 13 proves local frontend runtime only; it does not prove current ECS deployment, full generated manuscript, or 300万字 readiness.
 - Gate 14 proves current GitHub/ECS publication only; it does not remove Gate 2B/full manuscript/300万字 evidence gaps.
 - Old 98,581 source-less cards remain excluded from production-ready counts.
-- Full 57-book section analysis is not complete; current successful analyses: 15.
+- Full 57-book section analysis is not complete; current successful analyses: 27.
 - 100-book corpus is not fully available.
 - 30 production-quality prose chapters are not proven.
 - 300W-ready: NO.

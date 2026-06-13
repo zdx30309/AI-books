@@ -129,16 +129,37 @@ Source: `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`
 | Metric | Value |
 | --- | ---: |
 | Gate 2B verdict | PARTIAL |
-| Staged report | `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T142226_539531_0000.json` |
+| Staged report | latest `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T153012_468370_0000.json` |
 | Production-ready source books | 3 |
-| ReferenceSection rows | 15 |
-| ReferenceSectionAnalysis rows | 15 |
-| Successful DeepSeek analyses | 15 |
+| ReferenceSection rows | 27 |
+| ReferenceSectionAnalysis rows | 27 |
+| Successful DeepSeek analyses | 27 |
 | Fallback/error analyses | 0 / 0 |
-| Production-ready cards | 36 |
+| Production-ready cards | 48 |
 | Old source-less cards excluded | 98,581 |
 
 This does not replace the need for Gate 12-14 evidence and does not prove 300万字 readiness.
+
+### 2026-06-13 Gate 2B Continuation
+
+Commands run:
+
+```powershell
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 5 --section-limit 200 --sections-per-book 40 --dry-run --max-cost 5 --stop-on-cost-limit --max-runtime-seconds 0
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 5 --section-limit 200 --sections-per-book 40 --max-cost 0.05 --stop-on-cost-limit --max-runtime-seconds 600
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 10 --retry-failed-only --max-cost 0.01 --stop-on-cost-limit --max-runtime-seconds 120 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 15 --sections-per-book 15 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 180 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 18 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 240 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 22 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 240 --skip-full-estimate
+```
+
+Results:
+
+- Latest normal report: `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T153012_468370_0000.json`.
+- Runtime DB evidence after continuation: `ReferenceSection=27`, `ReferenceSectionAnalysis=27`, success=27, fallback=0, error=0, production-ready cards=48, old source-less cards excluded=98,581.
+- Fixes applied: production-ready card query narrowing, per-key pattern lookup, production-ready search narrowing, and skipped-success sections no longer consume Gate 2B `section_limit`.
+- Validation: compileall PASS, targeted Epic pytest `53 passed`, `git diff --check` PASS with CRLF warnings only, frontend build PASS.
+- Remaining: full 57-book / estimated 106,914-section extraction is not complete; final verdict remains `PARTIAL_IMPLEMENTATION`.
 
 ## Gate 3 Reference Usage Depth Update
 

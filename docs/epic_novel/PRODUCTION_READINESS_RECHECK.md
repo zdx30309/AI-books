@@ -6,7 +6,7 @@ Final verdict: `PARTIAL_IMPLEMENTATION`
 
 Gate 2A update on 2026-06-12: `PASS` for bounded section-aware Reference Intelligence proof only.
 
-Gate 2B update on 2026-06-12: `PARTIAL` for staged Reference Intelligence expansion. The staged run expanded production-ready evidence to 3 books / 15 sections / 36 production-ready cards, but full 57-book extraction is not complete.
+Gate 2B update on 2026-06-13: `PARTIAL` for staged Reference Intelligence expansion. The latest staged evidence covers 3 source books / 27 successful section analyses / 48 production-ready cards, but full 57-book extraction is not complete.
 
 Gate 3 update on 2026-06-12: `PASS` for Reference Usage Depth. All required generation layers, QA checks and repair entrypoints now have `EpicRetrievalTrace` evidence using production-ready cards/profile with raw reference text excluded.
 
@@ -81,12 +81,12 @@ Result:
 | selected books | 3 |
 | newly processed books | 2 |
 | newly processed sections | 10 |
-| cumulative successful DeepSeek analyses | 15 |
+| cumulative successful DeepSeek analyses | 27 |
 | fallback / error analyses | 0 / 0 |
-| cumulative production-ready cards | 36 |
+| cumulative production-ready cards | 48 |
 | production source books | 3 |
-| production source sections | 15 |
-| production source analyses | 15 |
+| production source sections | 27 |
+| production source analyses | 27 |
 | latest profile rawTextIncluded | false |
 | latest profile sourceBookCount | 3 |
 | verdict | PARTIAL |
@@ -94,7 +94,7 @@ Result:
 Remaining Reference Intelligence blocker:
 
 - Full imported corpus estimate remains 57 books / about 106,914 sections.
-- Current successful analyses: 15.
+- Current successful analyses: 27.
 - Estimated remaining sections: about 106,899.
 - Full run must remain staged with cost/time controls.
 
@@ -317,10 +317,10 @@ Still not production-ready:
 | 生产代码只读 | PASS | 本轮未改生产代码 | 符合 Gate 0 |
 | 100 本书单 | PARTIAL | 100 booklist items | 仅书单存在 |
 | 100 本下载/导入 | FAIL | 57 indexed；43 not_found；45 pending；2 downloaded；1 found；1 downloading | 不能称全 100 本完成 |
-| Reference section analysis | PARTIAL | `ReferenceSection=15`、`ReferenceSectionAnalysis=15`、success=15、fallback/error=0 | 已证明 staged expansion，未完成 57 本全量 |
-| Pattern cards | PARTIAL | 36 张 production-ready cards 有 sourceBookIds/sourceSectionIds/sourceAnalysisIds；98,581 旧卡继续排除 | 不能称全语料完成 |
-| Mechanism profile | PARTIAL | 最新 profile sourceBookCount=3、sourceCardCount=36、rawTextIncluded=false、oldSourceLessCardsExcluded=true | 仍是分阶段画像，不是全语料生产画像 |
-| Reference usage depth | PASS | Gate 3 smoke：19/19 required task types；69 new traces；36 production-ready cards used；rawTextIncluded=false | 只证明 wiring/trace，不证明后续 Gate |
+| Reference section analysis | PARTIAL | `ReferenceSection=27`、`ReferenceSectionAnalysis=27`、success=27、fallback/error=0 | 已证明 staged expansion，未完成 57 本全量 |
+| Pattern cards | PARTIAL | 48 张 production-ready cards 有 sourceBookIds/sourceSectionIds/sourceAnalysisIds；98,581 旧卡继续排除 | 不能称全语料完成 |
+| Mechanism profile | PARTIAL | 最新 profile sourceBookCount=3、sourceCardCount=48、rawTextIncluded=false、oldSourceLessCardsExcluded=true | 仍是分阶段画像，不是全语料生产画像 |
+| Reference usage depth | PASS | Gate 3 smoke：19/19 required task types；69 new traces；latest Gate 2B production-ready card pool is 48；rawTextIncluded=false | 只证明 wiring/trace，不证明后续 Gate |
 | Raw reference safety | PASS | live `raw_text_included=true` 为 0；ContextPack 清洗 | 安全边界存在 |
 | Dynamic Context overflow | PASS | Gate 5 audit `.local/epic_novel_runs/gate5_dynamic_context_2026-06-12T200323_839412Z.json`；live ContextPack trace `fa6ed1e5-c1bf-4a15-b2a7-b257d28c3f1d` | 上下文安全机制存在 |
 | QA Acceptance Gate | PASS | Gate 6 audit `.local/epic_novel_runs/gate6_qa_acceptance_2026-06-12T202046_749120Z.json`；bad chapter blocked；canon/state counts unchanged | 高危阻断与 canon 边界已证明 |

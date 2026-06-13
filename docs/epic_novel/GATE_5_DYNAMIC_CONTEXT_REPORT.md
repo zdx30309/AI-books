@@ -39,6 +39,6 @@ This proves the Dynamic Context Compiler and chapter writer prompt safety path f
 ## Remaining Boundaries
 
 - Live Gate 5 project has provider-window metadata and safe prompt compilation, but this is not a 30-chapter or full-volume run.
-- Gate 2B remains partial: only 3 books / 15 sections / 36 production-ready cards are proven.
+- Gate 2B remains partial: latest evidence covers 3 source books / 27 successful section analyses / 48 production-ready cards.
 - Gate 12 export scale has since passed. Gate 13 frontend runtime and Gate 14 final readiness still remain.
 - 300万字-ready: `NO`.

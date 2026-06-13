@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from urllib.request import ProxyHandler, build_opener
 from uuid import UUID, uuid4
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import PROJECT_ROOT, settings
@@ -1440,12 +1441,7 @@ def ingest_reference_book(
     db.add(job)
     db.flush()
     generated = 0
-    existing_keys = {
-        row[0]
-        for row in db.query(ReferencePatternCard.pattern_key)
-        .filter(ReferencePatternCard.source_book_id == book.id)
-        .all()
-    }
+    existing_keys: set[str] = set()
     for index, section in enumerate(sections):
         section_row = _ensure_reference_section(db, book, section)
         analysis_row = analyze_reference_section(
@@ -1462,6 +1458,9 @@ def ingest_reference_book(
         for category in categories:
             data = _abstract_card_data(book, section, category, index, analysis_json)
             if data["pattern_key"] in existing_keys:
+                continue
+            if _find_pattern_card_by_key(db, data["pattern_key"]) is not None:
+                existing_keys.add(data["pattern_key"])
                 continue
             db.add(ReferencePatternCard(source_book_id=book.id, **data))
             existing_keys.add(data["pattern_key"])
@@ -1750,8 +1749,39 @@ def _card_is_production_ready(card: ReferencePatternCard) -> bool:
     )
 
 
+def _production_ready_card_query(db: Session):
+    # Gate 2B can coexist with a large legacy card table. Narrow the DB query to
+    # cards that have the new source metadata before applying the stricter
+    # Python-side production-quality predicate.
+    return (
+        db.query(ReferencePatternCard)
+        .filter(ReferencePatternCard.raw_text_included.is_(False))
+        .filter(ReferencePatternCard.output_hash.isnot(None))
+        .filter(ReferencePatternCard.extraction_model_provider.isnot(None))
+        .filter(ReferencePatternCard.evidence_count > 0)
+        .filter(ReferencePatternCard.source_section_ids.isnot(None))
+        .filter(ReferencePatternCard.source_analysis_ids.isnot(None))
+        .filter(ReferencePatternCard.source_book_ids.isnot(None))
+    )
+
+
 def _production_ready_cards(db: Session) -> list[ReferencePatternCard]:
-    return [card for card in db.query(ReferencePatternCard).all() if _card_is_production_ready(card)]
+    return [card for card in _production_ready_card_query(db).yield_per(500) if _card_is_production_ready(card)]
+
+
+def _find_pattern_card_by_key(db: Session, pattern_key: str) -> ReferencePatternCard | None:
+    return db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == pattern_key).first()
+
+
+def _old_source_less_card_count(db: Session) -> int:
+    return db.query(ReferencePatternCard).filter(
+        or_(
+            ReferencePatternCard.output_hash.is_(None),
+            ReferencePatternCard.source_section_ids.is_(None),
+            ReferencePatternCard.source_analysis_ids.is_(None),
+            ReferencePatternCard.source_book_ids.is_(None),
+        )
+    ).count()
 
 
 def _card_book_ids(card: ReferencePatternCard) -> list[str]:
@@ -2115,7 +2145,7 @@ def ingest_reference_book(
     successful_analyses = 0
     fallback_analyses = 0
     error_analyses = 0
-    existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+    existing_keys: set[str] = set()
     for index, section in enumerate(sections):
         control = get_reference_extraction_control().get("state", "running")
         if control in {"paused", "stopped"}:
@@ -2142,6 +2172,9 @@ def ingest_reference_book(
             for category in _card_categories_for_section(book, index):
                 data = _abstract_card_data(book, section, category, index, analysis_json)
                 if data["pattern_key"] in existing_keys:
+                    continue
+                if _find_pattern_card_by_key(db, data["pattern_key"]) is not None:
+                    existing_keys.add(data["pattern_key"])
                     continue
                 db.add(ReferencePatternCard(source_book_id=book.id, **data))
                 existing_keys.add(data["pattern_key"])
@@ -2199,14 +2232,14 @@ def search_pattern_cards(
     limit: int = 0,
     production_ready_only: bool = False,
 ) -> list[ReferencePatternCard]:
-    q = db.query(ReferencePatternCard)
+    q = _production_ready_card_query(db) if production_ready_only else db.query(ReferencePatternCard)
     if category:
         q = q.filter(ReferencePatternCard.category == category)
-    if production_ready_only:
-        q = q.filter(ReferencePatternCard.raw_text_included.is_(False))
-        q = q.filter(ReferencePatternCard.source_section_ids != [])
-        q = q.filter(ReferencePatternCard.source_analysis_ids != [])
-    cards = q.order_by(ReferencePatternCard.created_at.desc()).all()
+    if production_ready_only and not query and limit and limit > 0:
+        candidates = q.order_by(ReferencePatternCard.created_at.desc()).limit(max(limit * 4, limit)).all()
+    else:
+        candidates = q.order_by(ReferencePatternCard.created_at.desc()).all()
+    cards = candidates
     if production_ready_only:
         cards = [card for card in cards if _card_is_production_ready(card)]
     if not query:
@@ -2595,7 +2628,7 @@ def run_gate2a_reference_intelligence_proof(
             continue
         sections = sections[:remaining]
         metrics["selectedBooks"].append({"bookId": str(book.id), "title": book.title, "sections": len(sections)})
-        existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+        existing_keys: set[str] = set()
         for index, section in enumerate(sections):
             control = get_reference_extraction_control().get("state", "running")
             if control in {"paused", "stopped"}:
@@ -2632,6 +2665,12 @@ def run_gate2a_reference_intelligence_proof(
                         existing_card = db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == data["pattern_key"]).first()
                         if existing_card is not None and _card_is_production_ready(existing_card):
                             selected_card_ids.append(existing_card.id)
+                        continue
+                    existing_card = _find_pattern_card_by_key(db, data["pattern_key"])
+                    if existing_card is not None:
+                        if _card_is_production_ready(existing_card):
+                            selected_card_ids.append(existing_card.id)
+                        existing_keys.add(data["pattern_key"])
                         continue
                     card = ReferencePatternCard(source_book_id=book.id, **data)
                     db.add(card)
@@ -2858,7 +2897,7 @@ def run_gate2b_reference_staged_expansion(
     remaining = section_limit
     selected_card_ids: list[UUID] = []
     processed_book_ids: set[str] = set()
-    existing_keys = {row[0] for row in db.query(ReferencePatternCard.pattern_key).all()}
+    existing_keys: set[str] = set()
 
     for book in books:
         if remaining <= 0 or metrics.get("stopReason"):
@@ -2918,7 +2957,6 @@ def run_gate2b_reference_staged_expansion(
                 else:
                     metrics["skippedRetryOnly"] += 1
                     book_summary["skippedRetryOnly"] += 1
-                remaining -= 1
                 continue
             if effective_max_cost is not None and stop_on_cost_limit:
                 projected = float(metrics["estimatedCost"]) + prompt_cost
@@ -2957,9 +2995,15 @@ def run_gate2b_reference_staged_expansion(
                 for card_category in _card_categories_for_section(book, int(section.get("sectionIndex") or index)):
                     data = _abstract_card_data(book, section, card_category, int(section.get("sectionIndex") or index), analysis_row.analysis_json or {})
                     if data["pattern_key"] in existing_keys:
-                        existing_card = db.query(ReferencePatternCard).filter(ReferencePatternCard.pattern_key == data["pattern_key"]).first()
+                        existing_card = _find_pattern_card_by_key(db, data["pattern_key"])
                         if existing_card is not None and _card_is_production_ready(existing_card):
                             selected_card_ids.append(existing_card.id)
+                        continue
+                    existing_card = _find_pattern_card_by_key(db, data["pattern_key"])
+                    if existing_card is not None:
+                        if _card_is_production_ready(existing_card):
+                            selected_card_ids.append(existing_card.id)
+                        existing_keys.add(data["pattern_key"])
                         continue
                     card = ReferencePatternCard(source_book_id=book.id, **data)
                     db.add(card)
@@ -3023,7 +3067,7 @@ def run_gate2b_reference_staged_expansion(
     metrics["processedBookIds"] = sorted(processed_book_ids)
     metrics["processedBookCount"] = len(processed_book_ids)
     metrics["allCardsAfter"] = db.query(ReferencePatternCard).count()
-    metrics["oldSourceLessCardsExcluded"] = sum(1 for card in db.query(ReferencePatternCard).all() if not (card.source_section_ids or []))
+    metrics["oldSourceLessCardsExcluded"] = _old_source_less_card_count(db)
     metrics["remainingImportedBooks"] = max(0, int(metrics["importedBookCount"]) - int(metrics["processedBookCount"]))
     metrics["remainingEstimatedSections"] = max(0, int(metrics["estimatedImportedCorpusSections"] or 0) - int(metrics["cumulativeSuccessfulAnalyses"] or 0))
     metrics["verdict"] = _gate2b_verdict(metrics)

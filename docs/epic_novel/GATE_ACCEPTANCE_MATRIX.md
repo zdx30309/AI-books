@@ -35,7 +35,7 @@ Updated: 2026-06-13
 - Gate 11 is `PASS` for scheduler/cost/recovery controls.
 - Gate 12 is `PASS` for file-backed metadata exports and download-route separation.
 - Gate 13 is `PASS` for local browser-verified Chinese Epic workspace and export metadata UI; remote ECS UI is not yet reverified.
-- Current production-ready reference evidence covers 3 books / 15 sections / 36 cards.
+- Current production-ready reference evidence covers 3 source books / 27 successful section analyses / 48 cards.
 - Old 98,581 source-less cards remain excluded from production-ready counts.
 - 30 production-quality prose chapters are not proven.
 - 300万字-ready: NO.

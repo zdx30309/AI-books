@@ -1,8 +1,82 @@
 # Gate 2B 参考智能分阶段扩展报告
 
-Updated: 2026-06-12
+Updated: 2026-06-13
 
 Gate 2B verdict: `PARTIAL`
+
+## 2026-06-13 续跑更新
+
+本轮继续 Gate 2B 参考智能切片抽取，并修复了旧卡表导致的续跑性能问题。结论仍为 `PARTIAL`：分阶段证据增加了，但 57 本已导入书的全量 DeepSeek 分节抽取仍未完成。
+
+### 代码修复
+
+- `ReferencePatternCard` 生产级计数改为先按 DB 条件收窄，再做 Python 侧严格判定，避免每次扫描 98,581 张旧 source-less 卡。
+- Gate 2A / Gate 2B 生成卡片前不再加载全表 `pattern_key`，改为只查询本批候选键。
+- `search_pattern_cards(..., production_ready_only=True)` 只检索生产级候选卡，不再拉取旧卡全表。
+- Gate 2B 续跑中，已成功或非 retry 目标片段只计入 skipped，不再消耗 `section_limit` 处理预算。
+
+### 续跑命令与报告
+
+```powershell
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 5 --section-limit 200 --sections-per-book 40 --dry-run --max-cost 5 --stop-on-cost-limit --max-runtime-seconds 0
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 5 --section-limit 200 --sections-per-book 40 --max-cost 0.05 --stop-on-cost-limit --max-runtime-seconds 600
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 10 --retry-failed-only --max-cost 0.01 --stop-on-cost-limit --max-runtime-seconds 120 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 15 --sections-per-book 15 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 180 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 18 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 240 --skip-full-estimate
+$env:PYTHONPATH='backend'; python scripts/epic_gate2b_reference_staged_run.py --book-limit 1 --section-limit 2 --sections-per-book 22 --max-cost 0.02 --stop-on-cost-limit --max-runtime-seconds 240 --skip-full-estimate
+```
+
+| 报告 | 结果 |
+| --- | --- |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T135855_593864_0000.json` | dry-run 估算：5 本候选书、186 个候选片段、估算 prompt tokens 151,594、DeepSeek 凭据可用 |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T140132_691002_0000.json` | 实跑 `PARTIAL`：累计 success 22、fallback 2、production-ready cards 43，停止原因为 `runtime_limit` |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T151458_913030_0000.json` | retry-only 控制：成功片段不重跑，累计 production-ready cards 43 |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T152121_794340_0000.json` | 实跑 `PARTIAL`：新增 success 1，累计 success 23、production-ready cards 44 |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T152603_855147_0000.json` | 实跑 `PARTIAL`：新增 success 2，累计 success 25、production-ready cards 46 |
+| `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T153012_468370_0000.json` | 实跑 `PARTIAL`：新增 success 2，累计 success 27、production-ready cards 48 |
+
+### 最新本地 DB 证据
+
+| 指标 | 结果 |
+| --- | ---: |
+| `ReferenceSection` | 27 |
+| `ReferenceSectionAnalysis` | 27 |
+| `ReferenceSectionAnalysis.status=success` | 27 |
+| `ReferenceSectionAnalysis.status=fallback` | 0 |
+| `ReferenceSectionAnalysis.status=error` | 0 |
+| `ReferencePatternCard` total | 98,629 |
+| production-ready cards | 48 |
+| old source-less cards excluded | 98,581 |
+| `ReferenceMechanismProfile` | 21 |
+| 最新 profile id | `846e11e2-385d-4c94-b122-793f84112f5e` |
+| 最新 profile sourceBookCount | 3 |
+| 最新 profile sourceCardCount | 48 |
+| 最新 profile rawTextIncluded | false |
+| 最新 profile oldSourceLessCardsExcluded | true |
+
+最新证据仍不能升级为 full Reference Intelligence PASS，因为 dry-run 仍显示 57 本已导入书约 106,914 个片段，当前只完成 27 个成功分析。
+
+### 本轮验证
+
+```powershell
+$env:PYTHONPATH='backend'; python -m compileall backend/app/services/epic_reference.py backend/app/services/epic_novel.py backend/app/services/epic_context.py backend/app/api/routers/epic_novel.py
+$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py backend/tests/test_epic_chinese_output.py backend/tests/test_epic_qa.py backend/tests/test_epic_multi_volume.py backend/tests/test_epic_scheduler.py -q
+git diff --check
+npm.cmd run build
+```
+
+结果：
+
+- compileall: PASS。
+- targeted Epic pytest: `53 passed in 3.24s`。
+- `git diff --check`: PASS，仅输出 CRLF 工作区提示。
+- frontend build: PASS，产物 `assets/index-fDlnf_9C.js` / `assets/index-BhZCB9ho.css`。
+
+### 本轮失败与修复
+
+- 初始 5 本 / 200 片段实跑超过工具层等待时间，但脚本已写出 `gate2b_reference_staged_2026-06-13T140132_691002_0000.json`，结论为 `PARTIAL`。
+- 后续 retry-only 曾被旧 `idle in transaction` 连接和旧卡全表扫描拖住；本轮清理了过期事务，并将生产级卡片计数、pattern-key 去重、production-ready 搜索改为收窄查询。
+- 发现 `section_limit` 会被已成功片段消耗，导致续跑难以前进；已改为 skipped 不消耗处理预算，并用 `gate2b_reference_staged_2026-06-13T152603_855147_0000.json` 与 `gate2b_reference_staged_2026-06-13T153012_468370_0000.json` 证明 `section-limit=2` 可实际处理后续 2 个片段。
 
 结论边界：本轮完成了 Gate 2B 要求的“分阶段扩展”，但没有完成 57 本已导入书的全量 DeepSeek 分节抽取，因此不能标记为 full Reference Intelligence PASS，也不能声称 100 本书或 300万字生产就绪。
 

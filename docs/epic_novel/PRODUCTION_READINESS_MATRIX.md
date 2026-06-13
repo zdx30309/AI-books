@@ -10,9 +10,9 @@ Status: `PARTIAL_IMPLEMENTATION`
 | Chinese-only user-facing generation | Generated story/Bible/fallback content must be Simplified Chinese | tests cover fallback and Bible acceptance; strict live Bible passed | PASS |
 | Fallback labeling | deterministic fallback must be `fallback/placeholder`, `production_quality=false` | implemented and tested | PASS |
 | Live LLM production path | production generation must use configured LLM instead of smoke fixtures | strict live run used providers and passed; structured fallback to editor/GPT is available | PASS |
-| DeepSeek V4 Pro reference intelligence | reference role defaults to DeepSeek V4 Pro; staged extraction evidence exists | Gate 2B: 3 books / 15 sections / 15 successful analyses / 36 production-ready cards | PARTIAL |
-| Full-corpus LLM reference extraction | all available sections analyzed with source identity and no mixing | dry-run estimates 106,914 sections; current successful analyses=15 | PARTIAL |
-| Reference usage depth | all required layers consume production-ready cards/profile and record RetrievalTrace | Gate 3: 19/19 task types PASS, 69 new traces, 36 production-ready cards used, rawTextIncluded=false | PASS |
+| DeepSeek V4 Pro reference intelligence | reference role defaults to DeepSeek V4 Pro; staged extraction evidence exists | Gate 2B: 3 source books / 27 successful section analyses / 48 production-ready cards | PARTIAL |
+| Full-corpus LLM reference extraction | all available sections analyzed with source identity and no mixing | dry-run estimates 106,914 sections; current successful analyses=27 | PARTIAL |
+| Reference usage depth | all required layers consume production-ready cards/profile and record RetrievalTrace | Gate 3: 19/19 task types PASS, 69 new traces; latest Gate 2B production-ready card pool is 48, rawTextIncluded=false | PASS |
 | Dynamic Context safety | no infinite prompt explosion, overflow metadata, no raw reference text | Gate 5 audit `.local/epic_novel_runs/gate5_dynamic_context_2026-06-12T200323_839412Z.json`; context tests 8 passed | PASS |
 | Master Bible | accepted sections, complete coverage, no fallback, Chinese-only visible rendering | Gate 4: 24/24 accepted, Bible `completed`, markdown/json exported as `本长篇项目 全书圣经.*` | PASS |
 | QA Acceptance Gate | bad outputs blocked, high/severe issues block, issue-driven reports, local repair scope, canon boundary | Gate 6 audit `.local/epic_novel_runs/gate6_qa_acceptance_2026-06-12T202046_749120Z.json`; QA tests 11 passed | PASS |

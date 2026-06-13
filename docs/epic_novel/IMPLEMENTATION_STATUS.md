@@ -10,9 +10,9 @@ Gate 2A update on 2026-06-12: bounded section-aware Reference Intelligence proof
 
 The Gate 2A pass is deliberately narrow: 1 imported book / 5 sections were processed with real DeepSeek V4 Pro section analysis. This proves the corrected pipeline shape, not full 57-book extraction, not full 100-book corpus completion, and not 300万字 production readiness.
 
-Gate 2B update on 2026-06-12: staged Reference Intelligence expansion is `PARTIAL`.
+Gate 2B update on 2026-06-13: staged Reference Intelligence expansion is `PARTIAL`.
 
-The Gate 2B staged run expanded evidence to 3 books / 15 sections / 15 successful DeepSeek V4 Pro analyses / 36 production-ready cards. Full 57-book extraction is still incomplete, so full Reference Intelligence remains PARTIAL.
+The latest Gate 2B staged evidence covers 3 source books / 27 successful DeepSeek V4 Pro section analyses / 48 production-ready cards. Full 57-book extraction is still incomplete, so full Reference Intelligence remains PARTIAL.
 
 Gate 3 update on 2026-06-12: Reference Usage Depth is `PASS`.
 
@@ -67,9 +67,9 @@ Gate 0 adversarial recheck on 2026-06-12 found that the previous “PASS FOR 09_
 The current implementation has meaningful Epic modules in place, but it is not `PRODUCTION_READY` and must not be described as 300万字-ready. Blocking evidence:
 
 - Live DB has 100 booklist items but only 57 indexed imported books.
-- Gate 2B staged run now has 15 stable `ReferenceSection` rows and 15 successful `ReferenceSectionAnalysis` rows.
-- Gate 0 baseline had 98,581 old `ReferencePatternCard` rows with empty `source_section_ids`; Gate 2B staged run now has 36 production-ready cards with non-empty `source_section_ids`, `source_analysis_ids`, and `source_book_ids`. Old cards remain excluded from production-ready counts.
-- Gate 0 baseline profile lacked source metadata; Gate 2B profile `f376caf3-1a3b-4694-b78b-90c9bbafc96b` now has `generationStatus`, `buildMode`, `profileVersion`, provider/model trace fields, source book/card/section samples, `rawTextIncluded=false`, categories, evidence counts, and `oldSourceLessCardsExcluded=true`.
+- Gate 2B staged run now has 27 stable `ReferenceSection` rows and 27 successful `ReferenceSectionAnalysis` rows.
+- Gate 0 baseline had 98,581 old `ReferencePatternCard` rows with empty `source_section_ids`; Gate 2B staged run now has 48 production-ready cards with non-empty `source_section_ids`, `source_analysis_ids`, and `source_book_ids`. Old cards remain excluded from production-ready counts.
+- Gate 0 baseline profile lacked source metadata; latest Gate 2B profile `846e11e2-385d-4c94-b122-793f84112f5e` now has `generationStatus`, `buildMode`, `profileVersion`, provider/model trace fields, source book/card/section samples, `rawTextIncluded=false`, categories, evidence counts, and `oldSourceLessCardsExcluded=true`.
 - The live project is a 30万字 / 3卷 / 10章 smoke project with only 3 accepted chapters and 15,018 current words.
 - Acceptance gate now blocks the current high/severe test cases and persists issue-driven reports, but long-run false-positive/false-negative behavior is not proven beyond the current Gate 6-10 evidence.
 - GitHub/ECS deployment state was not reverified in this Gate 0 audit and is not counted as current evidence.
@@ -239,6 +239,13 @@ Gate 2A remains bounded proof only. Full Reference Intelligence is still `PARTIA
   - cumulative successful analyses: 15
   - cumulative production-ready cards: 36
   - fallback/error: 0
+- 2026-06-13 continuation:
+  - optimized production-ready card counting and pattern-key lookup so Gate 2B no longer scans the old 98,581 source-less card table on each small batch
+  - fixed Gate 2B resume budget so skipped already-successful sections do not consume `section_limit`
+  - latest staged report: `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T153012_468370_0000.json`
+  - cumulative successful analyses: 27
+  - cumulative production-ready cards: 48
+  - fallback/error: 0
 - Ran dry-run controls:
   - full estimate dry-run for 3 books / 15 candidate sections
   - retry-failed-only dry-run
@@ -248,12 +255,12 @@ Gate 2A remains bounded proof only. Full Reference Intelligence is still `PARTIA
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Gate 2B staged run | PARTIAL | `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T142226_539531_0000.json` |
+| Gate 2B staged run | PARTIAL | latest `.local/epic_novel_runs/gate2b_reference_staged_2026-06-13T153012_468370_0000.json`; prior expansion `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T142226_539531_0000.json` |
 | Dry-run estimate | PASS | `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T142024_203143_0000.json` |
 | Retry-failed-only control | PASS | `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T143247_517259_0000.json` |
 | Cost cap control | PASS | `.local/epic_novel_runs/gate2b_reference_staged_2026-06-12T143259_386938_0000.json`, `stopReason=cost_limit` |
-| Runtime DB evidence | PASS | `ReferenceSection=15`, `ReferenceSectionAnalysis=15`, success=15, fallback=0, error=0, production-ready cards=36 |
-| Targeted tests | PASS | `$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py -q` -> 22 passed |
+| Runtime DB evidence | PASS | `ReferenceSection=27`, `ReferenceSectionAnalysis=27`, success=27, fallback=0, error=0, production-ready cards=48 |
+| Targeted tests | PASS | `$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py backend/tests/test_epic_chinese_output.py backend/tests/test_epic_qa.py backend/tests/test_epic_multi_volume.py backend/tests/test_epic_scheduler.py -q` -> 53 passed |
 
 Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections have not all been processed.
 
@@ -291,7 +298,7 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 | Gate 3 smoke | PASS | `.local/epic_novel_runs/gate3_reference_usage_depth_2026-06-12T152527_937305Z.json` |
 | Required task types | PASS | 19/19 required task types present |
 | Trace quality | PASS | every required trace has non-empty `usedCardIds`, `usedProfileSections`, `profileVersion`, `usageSummary` |
-| Production-card filter | PASS | 36 production-ready cards used; 98,581 old source-less cards excluded |
+| Production-card filter | PASS | Gate 3 smoke used 36 production-ready cards at run time; latest Gate 2B card pool is 48; 98,581 old source-less cards excluded |
 | Raw text safety | PASS | `rawTextIncluded=false` for required traces |
 | QA trace live evidence | PASS | chapter 4 `qa_planned_vs_actual_diff` and `qa_acceptance_gate` each used 36 cards |
 | Canon boundary | PASS | chapter 4 accepted; state ledgers persisted; canon source is `acceptedContent` only |
@@ -548,7 +555,7 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 | EPIC Chinese UI GitHub/ECS deploy | PASS current | commit `a1907e8` deployed to ECS; web bundle contains Gate 13 Chinese labels including `文件导出`, `参考语料`, `生产仪表盘`, `长篇小说工业引擎` |
 | DB init | PASS | `init_db_ok` with small pool / short timeout |
 | Reference cost dry-run | PASS | `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`: 57 books, 106,914 sections, 185,567,295 chars, 86,582,220 estimated prompt tokens, 1,444 batches, DeepSeek V4 Pro |
-| Gate 2B staged expansion | PARTIAL | 3 books / 15 sections / 15 success analyses / 36 production-ready cards; full 57-book extraction incomplete |
+| Gate 2B staged expansion | PARTIAL | 3 source books / 27 successful section analyses / 48 production-ready cards; full 57-book extraction incomplete |
 | Production hardcoded-name scan | PASS for production services | no fixed smoke-story names in `backend/app/services/epic_novel.py` or `backend/app/services/epic_reference.py`; remaining hits are SPEC/test-project docs and negative tests |
 | Strict live acceptance smoke | PASS | `.local/epic_novel_runs/acceptance_smoke_strict_2026-06-12-resume4.log`, project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63`, exit code 0 |
 | GitHub push | PASS current | commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main` |
@@ -582,7 +589,7 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 
 ## Current Limits
 
-- Gate 2B staged expansion covers 3 books / 15 sections only; do not treat it as full Reference Intelligence PASS for all imported books or the 100-book corpus.
+- Gate 2B staged expansion covers 3 source books / 27 successful section analyses only; do not treat it as full Reference Intelligence PASS for all imported books or the 100-book corpus.
 - Gate 3 is PASS for reference usage wiring only; it does not prove full Master Bible quality, 30-chapter continuity, full-volume acceptance, or 300万字 readiness.
 - Gate 4 is PASS for Master Bible content only; it does not prove 30-chapter continuity, full-volume acceptance, or 300万字 readiness.
 - Gate 5 is PASS for dynamic context and prompt safety only; it does not prove 30-chapter continuity, full-volume acceptance, or 300万字 readiness.
@@ -596,14 +603,14 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 - Gate 13 is PASS for local frontend runtime only; it does not prove current ECS deployment, full generated manuscript, or 300万字 readiness.
 - Gate 14 is PASS for current GitHub/ECS publication, but the final SPEC verdict remains `PARTIAL_IMPLEMENTATION` because full corpus extraction and real 300万字 quality evidence are missing.
 - Full 100-book corpus is still limited by source availability: 57 local imported books are available; unavailable/failed titles remain skipped per user instruction.
-- Full DeepSeek LLM section analysis over all estimated 106,914 sections has not been run to completion in this worktree; Gate 2B proved 3 books / 15 sections only, and cost dry-run plus controls are implemented.
+- Full DeepSeek LLM section analysis over all estimated 106,914 sections has not been run to completion in this worktree; Gate 2B currently proves 3 source books / 27 successful section analyses, and cost dry-run plus controls are implemented.
 - No first-class Alembic migration framework is present; this repo continues to use startup `create_all()` plus self-heal columns.
 - True docx Bible export remains a future enhancement; current acceptance covers markdown/json/file metadata export.
 - Do not claim a completed 300万字 production novel run; current proof is the SPEC acceptance smoke, not a full 300万字 manuscript.
 
 ## Remaining
 
-- Expand Gate 2B to 200 sections or 5 books when cost/time is approved; fallback analyses must remain excluded from production evidence.
+- Continue Gate 2B staged extraction in small resumable batches; fallback analyses must remain excluded from production evidence.
 - Continue full DeepSeek LLM section analysis if the user wants every estimated section in the 57-file corpus processed by the expensive extraction pipeline.
 - Continue scanning/importing SoNovel downloads if new files become available; unavailable/failed titles remain skipped per user instruction.
 - Continue full Reference Intelligence extraction and real long-run generation only when cost/time is approved; do not claim `PRODUCTION_READY` or 300万字-ready from the current evidence.

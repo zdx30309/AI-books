@@ -1,6 +1,6 @@
 # Reference Intelligence 证据复核
 
-Updated: 2026-06-12
+Updated: 2026-06-13
 
 Gate 0 verdict: `PARTIAL_IMPLEMENTATION`
 
@@ -8,7 +8,35 @@ Reference Intelligence production status: PARTIAL
 
 Gate 2A bounded proof status: `PASS` on 2026-06-12.
 
-Gate 2B staged expansion status: `PARTIAL` on 2026-06-12.
+Gate 2B staged expansion status: `PARTIAL`; latest staged evidence updated on 2026-06-13.
+
+## 2026-06-13 Gate 2B 续跑摘要
+
+本轮继续使用 DeepSeek V4 Pro 参考切片抽取，并修复了 Gate 2B 续跑时扫描旧卡全表的问题。最新可复核报告为：
+
+```text
+E:\video-plan\.local\epic_novel_runs\gate2b_reference_staged_2026-06-13T153012_468370_0000.json
+```
+
+最新本地 DB 证据：
+
+| 指标 | 结果 |
+| --- | ---: |
+| `ReferenceSection` | 27 |
+| `ReferenceSectionAnalysis` | 27 |
+| DeepSeek successful analyses | 27 |
+| fallback / error analyses | 0 / 0 |
+| `ReferencePatternCard` total | 98,629 |
+| production-ready cards | 48 |
+| old source-less cards excluded | 98,581 |
+| `ReferenceMechanismProfile` | 21 |
+| latest profile id | `846e11e2-385d-4c94-b122-793f84112f5e` |
+| latest profile sourceBookCount | 3 |
+| latest profile sourceCardCount | 48 |
+| latest profile rawTextIncluded | false |
+| latest profile oldSourceLessCardsExcluded | true |
+
+边界：这仍是分阶段扩展，不是全 57 本 / 全 100 本书单完成。dry-run 估算仍为约 106,914 个导入语料片段，当前只完成 27 个成功分析。
 
 Important boundary: Gate 2A proves the section-aware Reference Intelligence pipeline on a bounded proof batch only. It does not mean the full 57 imported books, all 100 listed books, the full Master Bible, 30 serial chapters, ECS deployment, or 300万字 production readiness are complete.
 
@@ -86,25 +114,25 @@ Gate 2B verdict: `PARTIAL`.
 | 指标 | Gate 2A 后 | Gate 2B 后 |
 | --- | ---: | ---: |
 | 生产级覆盖书数 | 1 | 3 |
-| `ReferenceSection` | 5 | 15 |
-| `ReferenceSectionAnalysis` | 5 | 15 |
-| DeepSeek 成功分析 | 5 | 15 |
+| `ReferenceSection` | 5 | 27 |
+| `ReferenceSectionAnalysis` | 5 | 27 |
+| DeepSeek 成功分析 | 5 | 27 |
 | fallback / error | 0 / 0 | 0 / 0 |
-| 生产级卡片 | 18 | 36 |
-| 生产级来源 section | 5 | 15 |
-| 生产级来源 analysis | 5 | 15 |
+| 生产级卡片 | 18 | 48 |
+| 生产级来源 section | 5 | 27 |
+| 生产级来源 analysis | 5 | 27 |
 | 旧无来源卡片 | 98,581 | 98,581，继续排除 |
 
 最新 profile:
 
 | 字段 | 结果 |
 | --- | --- |
-| id | `f376caf3-1a3b-4694-b78b-90c9bbafc96b` |
+| id | `846e11e2-385d-4c94-b122-793f84112f5e` |
 | generationStatus | `local_summary` |
 | buildMode | `production_ready_cards` |
 | sourceBookCount | 3 |
-| sourceCardCount | 36 |
-| productionReadyCardCount | 36 |
+| sourceCardCount | 48 |
+| productionReadyCardCount | 48 |
 | oldSourceLessCardsExcluded | true |
 | rawTextIncluded | false |
 | profileVersion | `83fa8d6a8e570d48ce3b3d3a786535731f05a3837226b7f8c86381ba0bf23bd8` |

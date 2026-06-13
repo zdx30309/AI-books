@@ -83,7 +83,7 @@ web 容器内构建产物：
 | Gate 0 | DONE / PARTIAL_IMPLEMENTATION audit |
 | Gate 1 | no current blocker found in Epic production paths |
 | Gate 2A | PASS bounded proof |
-| Gate 2B | PARTIAL staged, 3 books / 15 sections / 36 production-ready cards |
+| Gate 2B | PARTIAL staged, latest 3 source books / 27 successful section analyses / 48 production-ready cards |
 | Gate 3 | PASS |
 | Gate 4 | PASS |
 | Gate 5 | PASS |
