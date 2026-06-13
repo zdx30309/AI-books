@@ -515,11 +515,12 @@ def _should_try_bilibili_fallback(exc: Exception) -> bool:
     if any(token in text for token in transient_or_uncertain):
         return False
     return (
-        ("batchstatus=-2" in text or "batchstatus': -2" in text)
-        and ("status=1113" in text or "'status': 1113" in text)
+        ("batchstatus=-2" in text or "batchstatus': -2" in text or '"batchstatus": -2' in text)
+        and ("status=1113" in text or "'status': 1113" in text or '"status": 1113' in text)
         and (
             "videocontent: none" in text
             or "videocontent': none" in text
+            or '"videocontent": none' in text
             or "未返回 videocontent" in text
             or "未返回videocontent" in text
         )

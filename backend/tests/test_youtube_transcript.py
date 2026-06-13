@@ -280,5 +280,8 @@ def test_bilibili_fallback_is_not_used_for_pure_qingdou_busy_error() -> None:
         RuntimeError("batchStatus=-2 status=1113 videoContent: None")
     )
     assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
+        RuntimeError('{"batchStatus": -2, "status": 1113, "videoContent": None}')
+    )
+    assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
         RuntimeError("batchStatus=-2 status=1113 videoContent: None; QingdouBusyError: 返回繁忙")
     ) is False
