@@ -173,23 +173,83 @@ def _transcribe_audio(audio_path: Path, *, timeout: int, model: str) -> str:
     if proxy:
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, int(timeout or 30)))
     client = OpenAI(**client_kwargs)
+    models = _transcription_model_sequence(model)
     try:
-        with audio_path.open("rb") as audio_file:
-            response = client.audio.transcriptions.create(
-                model=(model or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL or "gpt-4o-mini-transcribe"),
-                file=audio_file,
-                response_format="text",
-            )
-    except Exception as exc:
-        raise MediaTranscriptionError(f"OpenAI audio transcription failed: {exc}") from exc
+        for index, selected_model in enumerate(models):
+            try:
+                with audio_path.open("rb") as audio_file:
+                    response = client.audio.transcriptions.create(
+                        model=selected_model,
+                        file=audio_file,
+                        response_format="text",
+                    )
+                if isinstance(response, str):
+                    return response.strip()
+                return str(getattr(response, "text", "") or response or "").strip()
+            except Exception as exc:
+                if index >= len(models) - 1 or not _is_transcription_model_fallback_error(exc):
+                    raise MediaTranscriptionError(f"OpenAI audio transcription failed: {exc}") from exc
+                logger.warning(
+                    "OpenAI audio transcription model unavailable; trying fallback model next "
+                    "(model=%s, fallback=%s, error=%s)",
+                    selected_model,
+                    models[index + 1],
+                    _safe_error_message(exc),
+                )
     finally:
         http_client = client_kwargs.get("http_client")
         if http_client is not None:
             http_client.close()
 
-    if isinstance(response, str):
-        return response.strip()
-    return str(getattr(response, "text", "") or response or "").strip()
+    raise MediaTranscriptionError("OpenAI audio transcription failed: no model attempted")
+
+
+def _transcription_model_sequence(primary_model: str) -> list[str]:
+    primary = primary_model or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL or "gpt-4o-mini-transcribe"
+    configured = ",".join(
+        value
+        for value in (
+            primary,
+            settings.AUDIO_TRANSCRIPTION_FALLBACK_MODELS,
+        )
+        if value
+    )
+    models: list[str] = []
+    seen: set[str] = set()
+    for raw in configured.split(","):
+        model = raw.strip()
+        key = model.lower()
+        if not model or key in seen:
+            continue
+        seen.add(key)
+        models.append(model)
+    return models or ["gpt-4o-mini-transcribe"]
+
+
+def _is_transcription_model_fallback_error(exc: Exception) -> bool:
+    normalized = f"{type(exc).__name__}: {exc}".lower()
+    if "incorrect api key" in normalized or "invalid api key provided" in normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "401",
+            "403",
+            "unauthorized",
+            "not authorized",
+            "permission",
+            "not have access",
+            "does not exist",
+            "model_not_found",
+            "invalid model",
+            "unsupported model",
+        )
+    )
+
+
+def _safe_error_message(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    return message[:300]
 
 
 def _download_proxy() -> str | None:

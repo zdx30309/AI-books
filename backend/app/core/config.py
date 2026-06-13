@@ -186,6 +186,7 @@ class Settings(BaseSettings):
     YOUTUBE_YT_DLP_EXTRACTOR_ARGS: str = ""
     YOUTUBE_AUDIO_TRANSCRIPTION_ENABLED: bool = True
     YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    AUDIO_TRANSCRIPTION_FALLBACK_MODELS: str = "whisper-1"
     YOUTUBE_AUDIO_MAX_BYTES: int = 25_000_000
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
 
