@@ -498,24 +498,32 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
 
 def _should_try_bilibili_fallback(exc: Exception) -> bool:
     text = str(exc).lower()
-    no_transcript = any(
-        token in text
-        for token in (
-            "batchstatus=-2",
-            "batchstatus': -2",
-            "status=1113",
-            "'status': 1113",
-            "videocontent: none",
-            "videocontent': none",
-            "未返回 videocontent",
-            "未返回videocontent",
+    transient_or_uncertain = (
+        "qingdoubusyerror",
+        "返回繁忙",
+        "等待轻抖",
+        "timeout",
+        "timed out",
+        "batchstatus=0",
+        "batchstatus': 0",
+        "batchstatus=2",
+        "batchstatus': 2",
+        "http",
+        "connection",
+        "connect",
+    )
+    if any(token in text for token in transient_or_uncertain):
+        return False
+    return (
+        ("batchstatus=-2" in text or "batchstatus': -2" in text)
+        and ("status=1113" in text or "'status': 1113" in text)
+        and (
+            "videocontent: none" in text
+            or "videocontent': none" in text
+            or "未返回 videocontent" in text
+            or "未返回videocontent" in text
         )
     )
-    if no_transcript:
-        return True
-    if any(token in text for token in ("qingdoubusyerror", "返回繁忙", "等待轻抖", "timeout", "timed out")):
-        return False
-    return False
 
 
 def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> bool:
