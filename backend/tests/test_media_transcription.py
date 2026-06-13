@@ -73,3 +73,52 @@ def test_transcribe_audio_does_not_fallback_for_invalid_api_key(
         )
 
     assert calls == ["gpt-4o-mini-transcribe"]
+
+
+def test_transcribe_audio_chunks_and_reuses_working_fallback_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeTranscriptions:
+        def create(self, *, model: str, file, response_format: str) -> str:
+            filename = Path(file.name).name
+            calls.append((model, filename))
+            if model == "gpt-4o-mini-transcribe":
+                raise RuntimeError("model_not_found: you do not have access to this model")
+            return f"text from {filename}"
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            self.audio = SimpleNamespace(transcriptions=FakeTranscriptions())
+
+    first = tmp_path / "segment_001.mp3"
+    second = tmp_path / "segment_002.mp3"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"source")
+
+    monkeypatch.setattr(media_transcription, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(media_transcription.settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(media_transcription.settings, "OPENAI_HTTPS_PROXY", "")
+    monkeypatch.setattr(media_transcription.settings, "AUDIO_TRANSCRIPTION_FALLBACK_MODELS", "whisper-1")
+    monkeypatch.setattr(
+        media_transcription,
+        "_prepare_audio_segments",
+        lambda audio_path, *, timeout: ([first, second], None),
+    )
+
+    text = media_transcription._transcribe_audio(  # noqa: SLF001
+        audio_path,
+        timeout=30,
+        model="gpt-4o-mini-transcribe",
+    )
+
+    assert text == "text from segment_001.mp3\ntext from segment_002.mp3"
+    assert calls == [
+        ("gpt-4o-mini-transcribe", "segment_001.mp3"),
+        ("whisper-1", "segment_001.mp3"),
+        ("whisper-1", "segment_002.mp3"),
+    ]

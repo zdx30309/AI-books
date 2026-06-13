@@ -174,34 +174,162 @@ def _transcribe_audio(audio_path: Path, *, timeout: int, model: str) -> str:
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, int(timeout or 30)))
     client = OpenAI(**client_kwargs)
     models = _transcription_model_sequence(model)
+    segments_dir: Path | None = None
     try:
-        for index, selected_model in enumerate(models):
-            try:
-                with audio_path.open("rb") as audio_file:
-                    response = client.audio.transcriptions.create(
-                        model=selected_model,
-                        file=audio_file,
-                        response_format="text",
-                    )
-                if isinstance(response, str):
-                    return response.strip()
-                return str(getattr(response, "text", "") or response or "").strip()
-            except Exception as exc:
-                if index >= len(models) - 1 or not _is_transcription_model_fallback_error(exc):
-                    raise MediaTranscriptionError(f"OpenAI audio transcription failed: {exc}") from exc
-                logger.warning(
-                    "OpenAI audio transcription model unavailable; trying fallback model next "
-                    "(model=%s, fallback=%s, error=%s)",
-                    selected_model,
-                    models[index + 1],
-                    _safe_error_message(exc),
-                )
+        segments, segments_dir = _prepare_audio_segments(audio_path, timeout=timeout)
+        texts: list[str] = []
+        model_order = list(models)
+        for segment_index, segment_path in enumerate(segments, start=1):
+            text, used_model = _transcribe_audio_segment(
+                client,
+                segment_path,
+                models=model_order,
+                segment_index=segment_index,
+                segment_total=len(segments),
+            )
+            if text.strip():
+                texts.append(text.strip())
+            model_order = [used_model] + [candidate for candidate in models if candidate != used_model]
+        return "\n".join(texts).strip()
     finally:
+        if segments_dir is not None:
+            for path in segments_dir.glob("*"):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    logger.debug("failed to remove temporary audio segment %s", path, exc_info=True)
+            try:
+                segments_dir.rmdir()
+            except Exception:
+                logger.debug("failed to remove temporary audio segments dir %s", segments_dir, exc_info=True)
         http_client = client_kwargs.get("http_client")
         if http_client is not None:
             http_client.close()
 
     raise MediaTranscriptionError("OpenAI audio transcription failed: no model attempted")
+
+
+def _transcribe_audio_segment(
+    client: OpenAI,
+    audio_path: Path,
+    *,
+    models: list[str],
+    segment_index: int,
+    segment_total: int,
+) -> tuple[str, str]:
+    for index, selected_model in enumerate(models):
+        try:
+            with audio_path.open("rb") as audio_file:
+                response = client.audio.transcriptions.create(
+                    model=selected_model,
+                    file=audio_file,
+                    response_format="text",
+                )
+            if isinstance(response, str):
+                return response.strip(), selected_model
+            return str(getattr(response, "text", "") or response or "").strip(), selected_model
+        except Exception as exc:
+            if index >= len(models) - 1 or not _is_transcription_model_fallback_error(exc):
+                raise MediaTranscriptionError(
+                    f"OpenAI audio transcription failed on segment {segment_index}/{segment_total}: {exc}"
+                ) from exc
+            logger.warning(
+                "OpenAI audio transcription model unavailable; trying fallback model next "
+                "(model=%s, fallback=%s, segment=%d/%d, error=%s)",
+                selected_model,
+                models[index + 1],
+                segment_index,
+                segment_total,
+                _safe_error_message(exc),
+            )
+    raise MediaTranscriptionError(f"OpenAI audio transcription failed on segment {segment_index}/{segment_total}")
+
+
+def _prepare_audio_segments(audio_path: Path, *, timeout: int) -> tuple[list[Path], Path | None]:
+    chunk_seconds = max(60, int(settings.AUDIO_TRANSCRIPTION_CHUNK_SECONDS or 600))
+    duration = _audio_duration_seconds(audio_path, timeout=timeout)
+    if duration is None or duration <= chunk_seconds:
+        return [audio_path], None
+
+    segments_dir = audio_path.parent / f"{audio_path.stem}_segments"
+    segments_dir.mkdir(exist_ok=True)
+    output_template = segments_dir / "segment_%03d.mp3"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(audio_path),
+        "-f",
+        "segment",
+        "-segment_time",
+        str(chunk_seconds),
+        "-reset_timestamps",
+        "1",
+        "-c",
+        "copy",
+        str(output_template),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(30, int(timeout or 30)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MediaTranscriptionError(f"ffmpeg audio segmentation timed out after {timeout}s") from exc
+    if completed.returncode != 0:
+        stderr = (completed.stderr or completed.stdout or "").strip()
+        raise MediaTranscriptionError(f"ffmpeg audio segmentation failed: {stderr[-700:]}")
+
+    segments = sorted(path for path in segments_dir.glob("segment_*.mp3") if path.stat().st_size > 0)
+    if not segments:
+        raise MediaTranscriptionError("ffmpeg audio segmentation produced no files")
+    logger.info(
+        "split audio for transcription: duration=%.1fs chunk_seconds=%d segments=%d",
+        duration,
+        chunk_seconds,
+        len(segments),
+    )
+    return segments, segments_dir
+
+
+def _audio_duration_seconds(audio_path: Path, *, timeout: int) -> float | None:
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(audio_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(10, min(60, int(timeout or 30))),
+        )
+    except FileNotFoundError:
+        logger.warning("ffprobe is not installed; audio transcription will use single-file mode")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("ffprobe timed out; audio transcription will use single-file mode")
+        return None
+    if completed.returncode != 0:
+        logger.warning("ffprobe failed; audio transcription will use single-file mode: %s", (completed.stderr or "")[-300:])
+        return None
+    try:
+        return float((completed.stdout or "").strip())
+    except ValueError:
+        return None
 
 
 def _transcription_model_sequence(primary_model: str) -> list[str]:
