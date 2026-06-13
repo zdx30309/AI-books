@@ -18,7 +18,7 @@
 
 | 项 | 结果 |
 | --- | --- |
-| 提交 | `f8323d0 Continue epic reference Gate 2B extraction` |
+| 提交 | current pushed HEAD |
 | 当前分支 | `codex/bilibili-cost-guard-main` |
 | 推送分支 | `origin/codex/bilibili-cost-guard-main` |
 | 推送主线 | `origin/main` |
@@ -28,7 +28,7 @@
 | 项 | 结果 |
 | --- | --- |
 | 部署目录 | `/opt/video-plan` |
-| 部署版本 | `.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
+| 部署版本 | `.deploy-version` verified against deployed HEAD |
 | 部署方式 | tarball 上传、备份旧目录、保留 `.env` 和 `.local`、`docker compose up -d --build` |
 | compose 服务 | `backend`、`worker`、`beat`、`web` 均 Up |
 | 后端容器健康 | `/health` -> 200 |

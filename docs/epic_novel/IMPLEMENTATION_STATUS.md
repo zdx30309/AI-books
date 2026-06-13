@@ -60,7 +60,7 @@ Gate 13 proves the local Epic workspace is Chinese, loads real API panels, expos
 
 Gate 14 update on 2026-06-13: Final SPEC Readiness is `PARTIAL_IMPLEMENTATION` with current GitHub/ECS deployment complete.
 
-Commit `f8323d0` was pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan` with `.deploy-version=f8323d0a81016601dda10dc79c49895d1a2a482e`. Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200, ECS retained 57 epub raw reference files, and live DB evidence shows `ReferenceSection=27`, success analyses=27, production-ready cards=48. This proves current publication/deployment, not 300万字 readiness.
+Current pushed HEAD was pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan`; `.deploy-version` was verified against deployed HEAD. Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200, ECS retained 57 epub raw reference files, and live DB evidence shows `ReferenceSection=27`, success analyses=27, production-ready cards=48. This proves current publication/deployment, not 300万字 readiness.
 
 Gate 0 adversarial recheck on 2026-06-12 found that the previous “PASS FOR 09_ACCEPTANCE_CRITERIA” statement overstated production readiness. The historical strict smoke run on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` proves a DB-backed smoke/control-plane flow, not full SPEC production acceptance.
 
@@ -552,14 +552,14 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 | Frontend build | PASS | `npm.cmd run build` in `frontend/` |
 | EPIC frontend Chinese UI scan | PASS | old visible labels such as `Epic Novel`, `Long-form`, `World Bible`, `Pattern Cards`, `Execute chapter`, `Generation logs` have no hits in `frontend/src/pages/EpicNovelWorkspace.tsx` or `frontend/src/components/Sidebar.tsx`; `npm run build` passed after the UI change |
 | EPIC browser UI smoke | PASS | local browser project `ac9f3c28-c725-44cb-bd4b-327bb7b80dc2`; verified 10 tabs: 基建总览, 参考语料, 圣经世界, 规划合同, 章节生产, 上下文检索, 质检验收, 生产仪表盘, 文件导出, 调用日志 |
-| EPIC Chinese UI GitHub/ECS deploy | PASS current | commit `f8323d0` deployed to ECS; web bundle contains Gate 13 Chinese labels including `文件导出`, `参考语料`, `生产仪表盘`, `长篇小说工业引擎` |
+| EPIC Chinese UI GitHub/ECS deploy | PASS current | current pushed HEAD deployed to ECS; web bundle contains Gate 13 Chinese labels including `文件导出`, `参考语料`, `生产仪表盘`, `长篇小说工业引擎` |
 | DB init | PASS | `init_db_ok` with small pool / short timeout |
 | Reference cost dry-run | PASS | `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`: 57 books, 106,914 sections, 185,567,295 chars, 86,582,220 estimated prompt tokens, 1,444 batches, DeepSeek V4 Pro |
 | Gate 2B staged expansion | PARTIAL | 3 source books / 27 successful section analyses / 48 production-ready cards; full 57-book extraction incomplete |
 | Production hardcoded-name scan | PASS for production services | no fixed smoke-story names in `backend/app/services/epic_novel.py` or `backend/app/services/epic_reference.py`; remaining hits are SPEC/test-project docs and negative tests |
 | Strict live acceptance smoke | PASS | `.local/epic_novel_runs/acceptance_smoke_strict_2026-06-12-resume4.log`, project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63`, exit code 0 |
-| GitHub push | PASS current | commit `f8323d0` pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` |
-| Beijing ECS deploy | PASS current | `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e`; `docker compose up -d --build` completed |
+| GitHub push | PASS current | current HEAD pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` |
+| Beijing ECS deploy | PASS current | `/opt/video-plan/.deploy-version` verified against deployed HEAD; `docker compose up -d --build` completed |
 | ECS backend/container health | PASS current | `backend`, `worker`, `beat`, `web` Up; backend `/health` returned 200; router count 124 |
 | Public ECS health | PASS current | public `/` 200, `/epic-novel` 200, `/api/v1/system/health` 200 with `celery_alive=true` |
 | ECS raw corpus | PASS current | `/opt/video-plan/.local/novel_ref_corpus/raw`: 57 epub files, 296,501,932 bytes |

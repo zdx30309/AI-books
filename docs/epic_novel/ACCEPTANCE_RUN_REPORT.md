@@ -80,9 +80,9 @@ Chapter 2 and 3 context evidence:
 | `npm.cmd run build` in `frontend/` after Gate 13 fix | PASS |
 | `$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py backend/tests/test_epic_chinese_output.py backend/tests/test_epic_qa.py backend/tests/test_epic_multi_volume.py backend/tests/test_epic_scheduler.py -q` | PASS, `53 passed, 1 warning` |
 | Local browser smoke for Gate 13 | PASS, 10/10 Epic tabs passed, export metadata click passed, no new runtime errors |
-| `git push origin HEAD:codex/bilibili-cost-guard-main` | PASS, commit `f8323d0` |
-| `git push origin HEAD:main` | PASS, commit `f8323d0` |
-| Beijing ECS tarball deploy | PASS, `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
+| `git push origin HEAD:codex/bilibili-cost-guard-main` | PASS, current pushed HEAD |
+| `git push origin HEAD:main` | PASS, current pushed HEAD |
+| Beijing ECS tarball deploy | PASS, `/opt/video-plan/.deploy-version` verified against deployed HEAD |
 | Beijing ECS public checks | PASS, `/`, `/epic-novel`, `/api/v1/system/health` returned 200 |
 
 ## Fixes Applied During Acceptance
@@ -372,9 +372,9 @@ This replaces the Gate 13 pending status for local frontend runtime, but it does
 | --- | ---: |
 | Gate 14 verdict | PARTIAL_IMPLEMENTATION |
 | Report | `docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md` |
-| GitHub commit | `f8323d0` |
+| GitHub commit | current pushed HEAD |
 | GitHub branches | `origin/codex/bilibili-cost-guard-main`, `origin/main` |
-| ECS deploy version | `f8323d0a81016601dda10dc79c49895d1a2a482e` |
+| ECS deploy version | `/opt/video-plan/.deploy-version` verified against deployed HEAD |
 | ECS compose | backend / worker / beat / web Up |
 | Public root | 200 |
 | Public Epic route | 200 |
@@ -419,8 +419,8 @@ Gate 14 proves current GitHub and ECS publication. It does not change the final 
 
 | Delivery check | Result |
 | --- | --- |
-| GitHub push | CURRENT PASS, commit `f8323d0` pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` |
-| ECS deploy path | CURRENT PASS, `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e` |
+| GitHub push | CURRENT PASS, current HEAD pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` |
+| ECS deploy path | CURRENT PASS, `/opt/video-plan/.deploy-version` verified against deployed HEAD |
 | ECS compose | CURRENT PASS, `backend`, `worker`, `beat`, and `web` Up after rebuild |
 | ECS backend health | CURRENT PASS, backend container `/health` returned 200 |
 | ECS router import | CURRENT PASS, router count `124` |

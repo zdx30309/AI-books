@@ -146,8 +146,8 @@ Completed gates:
 - Gate 14: DONE / FINAL VERDICT PARTIAL_IMPLEMENTATION
   - Verdict: PARTIAL_IMPLEMENTATION
   - Scope: final SPEC readiness audit, GitHub publish, Beijing ECS deploy, remote verification, and final non-overclaim labels.
-  - GitHub commit: `f8323d0`
-  - ECS deploy version: `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e`
+  - GitHub commit: current pushed HEAD
+  - ECS deploy version: `/opt/video-plan/.deploy-version` verified against deployed HEAD
   - Evidence:
     - docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md
     - `origin/codex/bilibili-cost-guard-main` pushed

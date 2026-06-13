@@ -24,8 +24,8 @@ Status: `PARTIAL_IMPLEMENTATION`
 | Scheduler / cost / recovery | long-run job controls, pause/resume/stop, retry failed only, checkpointing, continuation chunks, cost logs, dashboard exposure, safe retry | Gate 11 audit `.local/epic_novel_runs/gate11_scheduler_2026-06-12T221941_023711Z.json`; main job completed; cost cap/stopped/paused/retry checks pass; canon facts stayed 1->1 | PASS |
 | Export | Bible/novel/volume/chapter/report/trace file/object export, not giant API response by default | Gate 12 audit `.local/epic_novel_runs/gate12_export_2026-06-12T224306_008134Z.json`; 8 metadata exports; checksums/download routes; large probe; raw reference excluded | PASS |
 | Frontend | Chinese workspace controls, dashboard, extraction control, export metadata UI, loading/error/empty states | Gate 13 local browser smoke: 10/10 tabs PASS, export metadata click PASS, no new runtime errors; build passes | PASS |
-| GitHub current worktree | current changes committed/pushed | commit `f8323d0` pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` | PASS |
-| Beijing ECS current worktree | current changes deployed and verified | `/opt/video-plan/.deploy-version = f8323d0a81016601dda10dc79c49895d1a2a482e`; compose services Up; public `/`, `/epic-novel`, `/api/v1/system/health` 200; raw corpus 57 epub; live DB production-ready cards 48 | PASS |
+| GitHub current worktree | current changes committed/pushed | current HEAD pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main` | PASS |
+| Beijing ECS current worktree | current changes deployed and verified | `/opt/video-plan/.deploy-version` verified against deployed HEAD; compose services Up; public `/`, `/epic-novel`, `/api/v1/system/health` 200; raw corpus 57 epub; live DB production-ready cards 48 | PASS |
 
 ## Decision
 

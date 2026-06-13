@@ -73,4 +73,4 @@ $env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py
 
 ## 边界
 
-本地浏览器证据不等同于远端交互验收。Gate 14 已将 commit `f8323d0` 部署到北京 ECS，并验证公网 `/epic-novel` 返回 200、web 容器包含 Gate 13 中文工作台文案；后续若前端继续改动仍需重新部署并复验。
+本地浏览器证据不等同于远端交互验收。Gate 14 已将当前 pushed HEAD 部署到北京 ECS，并验证公网 `/epic-novel` 返回 200、web 容器包含 Gate 13 中文工作台文案；后续若前端继续改动仍需重新部署并复验。
