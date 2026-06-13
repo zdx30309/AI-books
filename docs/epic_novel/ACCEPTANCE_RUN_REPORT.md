@@ -8,7 +8,7 @@ Status: `HISTORICAL SMOKE PASS / CURRENT GATE PLAN PARTIAL`
 
 Strict live acceptance smoke previously passed after the hardcoded-service cleanup, Dynamic Context safeguards, reference-intelligence controls, Chinese Master Bible validation, and structured-generation fallback fixes.
 
-Current gate-plan status is `PARTIAL_IMPLEMENTATION`: Gate 2B staged Reference Intelligence expansion is PARTIAL, Gate 3 Reference Usage Depth is PASS, Gate 4 Real Chinese Master Bible is PASS, Gate 5 Dynamic Context Compiler is PASS, Gate 6 QA / Acceptance Gate is PASS, Gate 7 Canon-State Execution 1-3 is PASS, Gate 8 Thirty-Chapter Continuity is PASS by deterministic simulation, Gate 9 Full Volume Acceptance is PASS for the configured live test volume, Gate 10 Multi-Volume Rolling Plan is PASS, Gate 11 Scheduler / Cost / Recovery is PASS, Gate 12 Large Export System is PASS, Gate 13 Frontend Workspace is PASS for local browser runtime, and Gate 14 remains pending.
+Current gate-plan status is `PARTIAL_IMPLEMENTATION`: Gate 2B staged Reference Intelligence expansion is PARTIAL, Gate 3 Reference Usage Depth is PASS, Gate 4 Real Chinese Master Bible is PASS, Gate 5 Dynamic Context Compiler is PASS, Gate 6 QA / Acceptance Gate is PASS, Gate 7 Canon-State Execution 1-3 is PASS, Gate 8 Thirty-Chapter Continuity is PASS by deterministic simulation, Gate 9 Full Volume Acceptance is PASS for the configured live test volume, Gate 10 Multi-Volume Rolling Plan is PASS, Gate 11 Scheduler / Cost / Recovery is PASS, Gate 12 Large Export System is PASS, Gate 13 Frontend Workspace is PASS for local browser runtime, and Gate 14 completed with final verdict `PARTIAL_IMPLEMENTATION`.
 
 ## Final Passing Run
 
@@ -80,6 +80,10 @@ Chapter 2 and 3 context evidence:
 | `npm.cmd run build` in `frontend/` after Gate 13 fix | PASS |
 | `$env:PYTHONPATH='backend'; python -m pytest backend/tests/test_epic_reference.py backend/tests/test_epic_context.py backend/tests/test_epic_chinese_output.py backend/tests/test_epic_qa.py backend/tests/test_epic_multi_volume.py backend/tests/test_epic_scheduler.py -q` | PASS, `53 passed, 1 warning` |
 | Local browser smoke for Gate 13 | PASS, 10/10 Epic tabs passed, export metadata click passed, no new runtime errors |
+| `git push origin HEAD:codex/video-source-classical-regenerate` | PASS, commit `a1907e8` |
+| `git push origin HEAD:main` | PASS, commit `a1907e8` |
+| Beijing ECS tarball deploy | PASS, `/opt/video-plan/.deploy-version = a1907e8` |
+| Beijing ECS public checks | PASS, `/`, `/epic-novel`, `/api/v1/system/health` returned 200 |
 
 ## Fixes Applied During Acceptance
 
@@ -341,6 +345,24 @@ This replaces the Gate 12 pending status for file-backed export safety. Gate 13 
 
 This replaces the Gate 13 pending status for local frontend runtime, but it does not prove current ECS deployment, full generated prose, full corpus extraction, or 300万字 readiness.
 
+## Gate 14 Final SPEC Readiness Update
+
+| Metric | Value |
+| --- | ---: |
+| Gate 14 verdict | PARTIAL_IMPLEMENTATION |
+| Report | `docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md` |
+| GitHub commit | `a1907e8` |
+| GitHub branches | `origin/codex/video-source-classical-regenerate`, `origin/main` |
+| ECS deploy version | `a1907e8` |
+| ECS compose | backend / worker / beat / web Up |
+| Public root | 200 |
+| Public Epic route | 200 |
+| Public system health | 200, `celery_alive=true` |
+| ECS raw corpus | 57 epub files, 296,501,932 bytes |
+| ECS DB counts | booklist 100, books 57, cards 98,617, profiles 15 |
+
+Gate 14 proves current GitHub and ECS publication. It does not change the final SPEC verdict because Gate 2B full corpus extraction, 30 production-quality prose chapters, all-volume generated prose, and real 300万字 quality proof remain incomplete.
+
 ## Acceptance Checklist Status
 
 | Criterion from `09_ACCEPTANCE_CRITERIA.md` | Current status |
@@ -376,15 +398,16 @@ This replaces the Gate 13 pending status for local frontend runtime, but it does
 
 | Delivery check | Result |
 | --- | --- |
-| GitHub push | HISTORICAL PASS, branch `codex/video-source-classical-regenerate` pushed to `origin` before the current Gate 5-13 local changes |
-| ECS deploy path | HISTORICAL PASS, `/opt/video-plan`; must be redeployed before claiming current remote PASS |
-| ECS compose | HISTORICAL PASS, `backend`, `worker`, `beat`, and `web` were running after rebuild |
-| ECS backend health | HISTORICAL PASS, backend container `/health` returned ok |
-| ECS router import | HISTORICAL PASS, router count `119` |
-| ECS DB counts | HISTORICAL PASS, `books 57`, `cards 98581`, `profiles 10` |
-| ECS raw corpus | HISTORICAL PASS, 57 files, 296,501,932 bytes |
-| Public homepage | HISTORICAL PASS, `http://101.200.48.238/` HTTP 200 |
-| Public system health | HISTORICAL PASS, `http://101.200.48.238/api/v1/system/health` HTTP 200, `celery_alive=true` |
+| GitHub push | CURRENT PASS, commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main` |
+| ECS deploy path | CURRENT PASS, `/opt/video-plan/.deploy-version = a1907e8` |
+| ECS compose | CURRENT PASS, `backend`, `worker`, `beat`, and `web` Up after rebuild |
+| ECS backend health | CURRENT PASS, backend container `/health` returned 200 |
+| ECS router import | CURRENT PASS, router count `124` |
+| ECS DB counts | CURRENT PASS, `booklist 100`, `books 57`, `cards 98617`, `profiles 15`, `chapters 90` |
+| ECS raw corpus | CURRENT PASS, 57 epub files, 296,501,932 bytes |
+| Public homepage | CURRENT PASS, `http://101.200.48.238/` HTTP 200 |
+| Public Epic route | CURRENT PASS, `http://101.200.48.238/epic-novel` HTTP 200 |
+| Public system health | CURRENT PASS, `http://101.200.48.238/api/v1/system/health` HTTP 200, `celery_alive=true` |
 
 ## Remaining Non-Blocking Work
 

@@ -143,8 +143,23 @@ Completed gates:
     - Epic targeted pytest suite -> `53 passed, 1 warning`
     - Local browser smoke: 10 / 10 tabs PASS, export metadata click PASS, new runtime errors 0
 
-Next gate:
-- Gate 14: Final SPEC Readiness, GitHub publish, Beijing ECS deploy, remote verification
+- Gate 14: DONE / FINAL VERDICT PARTIAL_IMPLEMENTATION
+  - Verdict: PARTIAL_IMPLEMENTATION
+  - Scope: final SPEC readiness audit, GitHub publish, Beijing ECS deploy, remote verification, and final non-overclaim labels.
+  - GitHub commit: `a1907e8`
+  - ECS deploy version: `/opt/video-plan/.deploy-version = a1907e8`
+  - Evidence:
+    - docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md
+    - `origin/codex/video-source-classical-regenerate` pushed
+    - `origin/main` pushed
+    - ECS compose: `backend`, `worker`, `beat`, `web` Up
+    - Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200
+    - ECS raw corpus: 57 epub files, 296,501,932 bytes
+
+Next work:
+- Continue full Reference Intelligence extraction only if cost/time is approved.
+- Continue SoNovel scans if new books become available.
+- Do not claim 300W-ready until a real long-run generation and quality gate proves it.
 
 Important boundaries:
 - Gate 2A does not mean full Reference Intelligence PASS.
@@ -160,6 +175,7 @@ Important boundaries:
 - Gate 11 proves scheduler/cost/recovery control behavior only; it does not prove full generated manuscript, frontend runtime, remote deployment, or 300万字 readiness.
 - Gate 12 proves file-backed export safety only; Gate 13 later proves local frontend runtime, but Gate 12 alone does not prove current deployment, full generated manuscript, or 300万字 readiness.
 - Gate 13 proves local frontend runtime only; it does not prove current ECS deployment, full generated manuscript, or 300万字 readiness.
+- Gate 14 proves current GitHub/ECS publication only; it does not remove Gate 2B/full manuscript/300万字 evidence gaps.
 - Old 98,581 source-less cards remain excluded from production-ready counts.
 - Full 57-book section analysis is not complete; current successful analyses: 15.
 - 100-book corpus is not fully available.

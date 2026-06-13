@@ -53,7 +53,7 @@ pytest 警告为 `.pytest_cache` 目录已存在，未造成测试失败。
 
 ## 仍需 Gate 14 处理
 
-- 当前改动尚未作为最新提交发布到 GitHub。
-- 当前改动尚未部署到北京 ECS 并做远端浏览器/API 验收。
+- Gate 14 已将当前改动以 commit `a1907e8` 推送到 GitHub。
+- Gate 14 已将 commit `a1907e8` 部署到北京 ECS，并验证公网 `/epic-novel` 返回 200、web 容器包含 Gate 13 中文工作台文案。
 - Gate 2B 仍是 staged PARTIAL，100 本全量参考抽象没有完成。
 - 300 万字生产级正文质量没有被证明，不能宣称 `PRODUCTION_READY`。

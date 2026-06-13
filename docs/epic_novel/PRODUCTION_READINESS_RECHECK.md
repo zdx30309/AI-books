@@ -340,7 +340,7 @@ Still not production-ready:
 | Frontend | PASS local | Gate 13 本地浏览器烟测：10/10 中文标签页、导出 metadata 点击、无新增运行时错误 | 远端 ECS UI 仍需部署后复验 |
 | Dashboard | PARTIAL | 有汇总 route | 成本和若干指标简化 |
 | Export | PASS | Gate 12 audit `.local/epic_novel_runs/gate12_export_2026-06-12T224306_008134Z.json`；8 个 metadata 导出、校验和、下载路由、大文件路径、原始参考文本排除 | 默认 metadata，不返回巨大正文体 |
-| GitHub/ECS deploy | UNKNOWN_NEEDS_EVIDENCE | 本轮未重验远端 | 不能沿用历史 PASS |
+| GitHub/ECS deploy | PASS current | commit `a1907e8` 已推 `origin/codex/video-source-classical-regenerate` 与 `origin/main`；北京 ECS `/opt/video-plan/.deploy-version=a1907e8`；公网 `/`、`/epic-novel`、`/api/v1/system/health` 200 | 当前发布完成，但不等于 300W-ready |
 
 ## 不能继续声称的内容
 
@@ -366,7 +366,7 @@ Still not production-ready:
 4. 验证章 2-30 都读取前章 summary、endingHook、state ledgers、Bible、WorldAtlas、bureaucracy、ReferenceMechanismProfile。
 5. 验证 draft/repaired 永不写 canon，acceptedContent 才写 canon。
 6. 导出 Bible/novel 时默认走文件/对象存储 metadata，不返回巨型 JSON/body。
-7. ECS/GitHub 当前状态重验、远端浏览器/API 验收、Gate 14 最终矩阵复核。
+7. GitHub/ECS 当前状态已重验；继续全量参考抽象和真实长跑生成前，必须重新计算成本/时间预算。
 
 ## 最终判定
 

@@ -24,11 +24,11 @@ Status: `PARTIAL_IMPLEMENTATION`
 | Scheduler / cost / recovery | long-run job controls, pause/resume/stop, retry failed only, checkpointing, continuation chunks, cost logs, dashboard exposure, safe retry | Gate 11 audit `.local/epic_novel_runs/gate11_scheduler_2026-06-12T221941_023711Z.json`; main job completed; cost cap/stopped/paused/retry checks pass; canon facts stayed 1->1 | PASS |
 | Export | Bible/novel/volume/chapter/report/trace file/object export, not giant API response by default | Gate 12 audit `.local/epic_novel_runs/gate12_export_2026-06-12T224306_008134Z.json`; 8 metadata exports; checksums/download routes; large probe; raw reference excluded | PASS |
 | Frontend | Chinese workspace controls, dashboard, extraction control, export metadata UI, loading/error/empty states | Gate 13 local browser smoke: 10/10 tabs PASS, export metadata click PASS, no new runtime errors; build passes | PASS |
-| GitHub current worktree | current changes committed/pushed | Gate 5-13 changes are local and not yet pushed in this run | NEEDS_REPUBLISH |
-| Beijing ECS current worktree | current changes deployed and verified | Gate 5-13 changes are local and not yet redeployed in this run | NEEDS_REDEPLOY |
+| GitHub current worktree | current changes committed/pushed | commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main` | PASS |
+| Beijing ECS current worktree | current changes deployed and verified | `/opt/video-plan/.deploy-version = a1907e8`; compose services Up; public `/`, `/epic-novel`, `/api/v1/system/health` 200; raw corpus 57 epub | PASS |
 
 ## Decision
 
 Current verdict: `PARTIAL_IMPLEMENTATION`.
 
-The current code has a staged, resumable production pipeline, Gate 3 reference-usage evidence, Gate 4 Master Bible evidence, Gate 5 dynamic-context evidence, Gate 6 QA evidence, Gate 7 chapters 1-3 canon-state evidence, Gate 8 deterministic continuity evidence, Gate 9 configured-volume evidence, Gate 10 multi-volume rolling-plan evidence, Gate 11 scheduler/cost/recovery evidence, Gate 12 large-export evidence, and Gate 13 local frontend runtime evidence, but it does not prove full Reference Intelligence, all-volume generated prose, 30 production-quality prose chapters, current remote deployment, or 300万字 readiness.
+The current code has a staged, resumable production pipeline, Gate 3 reference-usage evidence, Gate 4 Master Bible evidence, Gate 5 dynamic-context evidence, Gate 6 QA evidence, Gate 7 chapters 1-3 canon-state evidence, Gate 8 deterministic continuity evidence, Gate 9 configured-volume evidence, Gate 10 multi-volume rolling-plan evidence, Gate 11 scheduler/cost/recovery evidence, Gate 12 large-export evidence, Gate 13 local frontend runtime evidence, and Gate 14 current GitHub/ECS publication evidence, but it does not prove full Reference Intelligence, all-volume generated prose, 30 production-quality prose chapters, or 300万字 readiness.

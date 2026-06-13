@@ -58,6 +58,10 @@ Gate 13 update on 2026-06-13: Frontend Workspace is `PASS` for local browser run
 
 Gate 13 proves the local Epic workspace is Chinese, loads real API panels, exposes dashboard/export controls, handles empty/error/loading states, and no longer crashes on missing export metadata fields. It does not prove Beijing ECS has the latest build, full corpus extraction, full generated manuscript, or 300万字 readiness.
 
+Gate 14 update on 2026-06-13: Final SPEC Readiness is `PARTIAL_IMPLEMENTATION` with current GitHub/ECS deployment complete.
+
+Commit `a1907e8` was pushed to `origin/codex/video-source-classical-regenerate` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan` with `.deploy-version=a1907e8`. Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200, and ECS retained 57 epub raw reference files. This proves current publication/deployment, not 300万字 readiness.
+
 Gate 0 adversarial recheck on 2026-06-12 found that the previous “PASS FOR 09_ACCEPTANCE_CRITERIA” statement overstated production readiness. The historical strict smoke run on project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63` proves a DB-backed smoke/control-plane flow, not full SPEC production acceptance.
 
 The current implementation has meaningful Epic modules in place, but it is not `PRODUCTION_READY` and must not be described as 300万字-ready. Blocking evidence:
@@ -135,6 +139,10 @@ New Gate 13 docs:
 - `docs/epic_novel/GATE_13_FRONTEND_REPORT.md`
 - `docs/epic_novel/FRONTEND_WORKSPACE_REPORT.md`
 - `docs/epic_novel/gates/GATE_13_FRONTEND_WORKSPACE.md`
+
+New Gate 14 doc:
+
+- `docs/epic_novel/GATE_14_FINAL_SPEC_READINESS_REPORT.md`
 
 The old smoke evidence below is retained as historical evidence only.
 
@@ -537,17 +545,18 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 | Frontend build | PASS | `npm.cmd run build` in `frontend/` |
 | EPIC frontend Chinese UI scan | PASS | old visible labels such as `Epic Novel`, `Long-form`, `World Bible`, `Pattern Cards`, `Execute chapter`, `Generation logs` have no hits in `frontend/src/pages/EpicNovelWorkspace.tsx` or `frontend/src/components/Sidebar.tsx`; `npm run build` passed after the UI change |
 | EPIC browser UI smoke | PASS | local browser project `ac9f3c28-c725-44cb-bd4b-327bb7b80dc2`; verified 10 tabs: 基建总览, 参考语料, 圣经世界, 规划合同, 章节生产, 上下文检索, 质检验收, 生产仪表盘, 文件导出, 调用日志 |
-| EPIC Chinese UI GitHub/ECS deploy | HISTORICAL PASS | UI bundle was previously pushed/deployed, but current Gate 5-13 changes are local and must be republished/redeployed before current remote PASS |
+| EPIC Chinese UI GitHub/ECS deploy | PASS current | commit `a1907e8` deployed to ECS; web bundle contains Gate 13 Chinese labels including `文件导出`, `参考语料`, `生产仪表盘`, `长篇小说工业引擎` |
 | DB init | PASS | `init_db_ok` with small pool / short timeout |
 | Reference cost dry-run | PASS | `.local/epic_novel_runs/reference_cost_dry_run_2026-06-12.json`: 57 books, 106,914 sections, 185,567,295 chars, 86,582,220 estimated prompt tokens, 1,444 batches, DeepSeek V4 Pro |
 | Gate 2B staged expansion | PARTIAL | 3 books / 15 sections / 15 success analyses / 36 production-ready cards; full 57-book extraction incomplete |
 | Production hardcoded-name scan | PASS for production services | no fixed smoke-story names in `backend/app/services/epic_novel.py` or `backend/app/services/epic_reference.py`; remaining hits are SPEC/test-project docs and negative tests |
 | Strict live acceptance smoke | PASS | `.local/epic_novel_runs/acceptance_smoke_strict_2026-06-12-resume4.log`, project `44ce72be-a423-4f3b-895b-ad8a0fbb5e63`, exit code 0 |
-| GitHub push | HISTORICAL PASS | branch `codex/video-source-classical-regenerate` was pushed before current Gate 5-13 changes |
-| Beijing ECS deploy | HISTORICAL PASS | `/opt/video-plan` was deployed before current Gate 5-13 changes |
-| ECS backend/container health | HISTORICAL PASS | backend container `/health` returned ok in historical deploy; must be rechecked after current deploy |
-| Public ECS health | HISTORICAL PASS | public `/` and `/api/v1/system/health` returned HTTP 200 historically; must be rechecked after current deploy |
-| ECS raw corpus | HISTORICAL PASS | `/opt/video-plan/.local/novel_ref_corpus/raw`: 57 files, 296,501,932 bytes historically |
+| GitHub push | PASS current | commit `a1907e8` pushed to `origin/codex/video-source-classical-regenerate` and `origin/main` |
+| Beijing ECS deploy | PASS current | `/opt/video-plan/.deploy-version = a1907e8`; `docker compose up -d --build` completed |
+| ECS backend/container health | PASS current | `backend`, `worker`, `beat`, `web` Up; backend `/health` returned 200; router count 124 |
+| Public ECS health | PASS current | public `/` 200, `/epic-novel` 200, `/api/v1/system/health` 200 with `celery_alive=true` |
+| ECS raw corpus | PASS current | `/opt/video-plan/.local/novel_ref_corpus/raw`: 57 epub files, 296,501,932 bytes |
+| ECS DB counts | PASS current | booklist 100, books 57, cards 98,617, profiles 15, projects 13, bible sections 192, chapters 90 |
 
 ## Strict Acceptance Summary
 
@@ -585,6 +594,7 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 - Gate 11 is PASS for scheduler/cost/recovery controls only; it does not prove frontend readiness, current deployment, or 300万字 readiness.
 - Gate 12 is PASS for file-backed export safety only; Gate 13 later proves local frontend runtime, but Gate 12 alone does not prove current deployment, full generated manuscript, or 300万字 readiness.
 - Gate 13 is PASS for local frontend runtime only; it does not prove current ECS deployment, full generated manuscript, or 300万字 readiness.
+- Gate 14 is PASS for current GitHub/ECS publication, but the final SPEC verdict remains `PARTIAL_IMPLEMENTATION` because full corpus extraction and real 300万字 quality evidence are missing.
 - Full 100-book corpus is still limited by source availability: 57 local imported books are available; unavailable/failed titles remain skipped per user instruction.
 - Full DeepSeek LLM section analysis over all estimated 106,914 sections has not been run to completion in this worktree; Gate 2B proved 3 books / 15 sections only, and cost dry-run plus controls are implemented.
 - No first-class Alembic migration framework is present; this repo continues to use startup `create_all()` plus self-heal columns.
@@ -596,4 +606,4 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 - Expand Gate 2B to 200 sections or 5 books when cost/time is approved; fallback analyses must remain excluded from production evidence.
 - Continue full DeepSeek LLM section analysis if the user wants every estimated section in the 57-file corpus processed by the expensive extraction pipeline.
 - Continue scanning/importing SoNovel downloads if new files become available; unavailable/failed titles remain skipped per user instruction.
-- Continue with Gate 14 final SPEC readiness, GitHub publish, Beijing ECS deployment, and remote verification next.
+- Continue full Reference Intelligence extraction and real long-run generation only when cost/time is approved; do not claim `PRODUCTION_READY` or 300万字-ready from the current evidence.

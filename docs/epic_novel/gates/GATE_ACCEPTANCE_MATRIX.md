@@ -15,4 +15,4 @@
 | Gate 11 | Scheduler / Cost / Recovery | DONE / PASS | Do not rerun unless scheduler/cost/recovery code changes |
 | Gate 12 | Large Export System | DONE / PASS | Do not rerun unless export/router metadata code changes |
 | Gate 13 | Frontend Workspace | DONE / PASS local browser | Do not rerun unless frontend/API shape changes |
-| Gate 14 | Final SPEC Readiness | NEXT | Final audit, GitHub publish, Beijing ECS deploy, remote verification |
+| Gate 14 | Final SPEC Readiness | DONE / PARTIAL final verdict | Do not claim 300W-ready; continue full corpus extraction and real long-run generation when approved |

@@ -46,10 +46,10 @@ Legend:
 - Unsafe retrieval traces: `[]`
 - `nonAcceptedCanonSources=0`
 - Chapter 2/3 previous-state readiness: `true`
-- GitHub/ECS delivery: historical branch/deploy evidence exists, but current Gate 5-13 changes are local and must be republished/redeployed before claiming current remote PASS.
+- GitHub/ECS delivery: current commit `a1907e8` was pushed to `origin/codex/video-source-classical-regenerate` and `origin/main`, then deployed to Beijing ECS `/opt/video-plan` with public `/`, `/epic-novel`, and `/api/v1/system/health` passing.
 
 ## Remaining Non-Acceptance Work
 
 - Continue full DeepSeek section analysis if the user wants all 106,914 estimated sections processed with LLM extraction.
 - Continue SoNovel folder scanning when new files are downloaded; unavailable/failed titles are skipped by instruction.
-- Continue Gate 14 for final readiness, GitHub/ECS current deployment, and remote verification.
+- Continue full Reference Intelligence extraction and real long-run generation when cost/time is approved.
