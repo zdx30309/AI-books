@@ -232,7 +232,9 @@ def source_url_candidates(source_url: str, platform: str | None = None) -> list[
     elif detected == "bilibili":
         video_url = _bilibili_video_url(canonical or original)
         if video_url:
-            return [video_url]
+            add(video_url)
+            video_id = video_url.rstrip("/").rsplit("/", 1)[-1]
+            add(f"https://m.bilibili.com/video/{video_id}")
 
     extracted = extract_source_url(original)
     add(extracted)

@@ -235,3 +235,46 @@ def test_qingdou_wrapper_tries_wechat_channel_candidates(
         "https://weixin.qq.com/sph/A8yYHFLFrB",
         "https://channels.weixin.qq.com/platform/post/A8yYHFLFrB",
     ]
+
+
+def test_fetch_video_text_uses_bilibili_fallback_when_qingdou_has_no_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail_qingdou(*args, **kwargs):
+        raise RuntimeError(
+            "B站 video parse failed after 3 candidate URL(s): "
+            "QingdouError: 轻抖任务失败 batchId=1, batchStatus=-2, "
+            "raw={'result': {'list': [{'status': 1113, 'videoContent': None}]}}"
+        )
+
+    def ok_bilibili(source_url: str, **kwargs):
+        calls.append(source_url)
+        return type(
+            "Result",
+            (),
+            {
+                "text": "bilibili fallback transcript",
+                "provider": "openai_audio",
+                "bvid": "BV1xx411c7mD",
+            },
+        )()
+
+    monkeypatch.setattr(task_tasks, "extract_video_text_with_qingdou", fail_qingdou)
+    monkeypatch.setattr(task_tasks, "extract_bilibili_text", ok_bilibili)
+
+    text = task_tasks._fetch_video_text(  # noqa: SLF001
+        "https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web",
+        {"source_platform": "bilibili"},
+    )
+
+    assert text == "bilibili fallback transcript"
+    assert calls == ["https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web"]
+
+
+def test_bilibili_fallback_is_not_used_for_pure_qingdou_busy_error() -> None:
+    assert task_tasks._should_try_bilibili_fallback(RuntimeError("QingdouBusyError: 返回繁忙")) is False  # noqa: SLF001
+    assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
+        RuntimeError("batchStatus=-2 status=1113 videoContent: None; QingdouBusyError: 返回繁忙")
+    )

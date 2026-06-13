@@ -206,6 +206,15 @@ class Settings(BaseSettings):
     WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
     WECHAT_CHANNELS_TRANSCRIPT_MIN_CHARS: int = 20
 
+    # --- Bilibili transcript fallback ---
+    BILIBILI_TRANSCRIPT_FALLBACK_ENABLED: bool = True
+    BILIBILI_MEDIA_DOWNLOAD_TIMEOUT_SECONDS: int = 300
+    BILIBILI_TRANSCRIPTION_TIMEOUT_SECONDS: int = 900
+    BILIBILI_MEDIA_MAX_BYTES: int = 300_000_000
+    BILIBILI_AUDIO_MAX_BYTES: int = 25_000_000
+    BILIBILI_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    BILIBILI_TRANSCRIPT_MIN_CHARS: int = 20
+
     # --- 古文白话 ---
     CLASSICAL_DICTIONARY_PATH: str = "backend/output/classical_dictionary/dict-revised.json.xz"
     CLASSICAL_DICTIONARY_CONTEXT_MAX_CHARS: int = 4500

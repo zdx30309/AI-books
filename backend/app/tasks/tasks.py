@@ -26,6 +26,7 @@ from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.classical_chinese import classical_final_title
+from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
 from app.services.comic_series import parse_healing_comic_panel_count
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import (
@@ -359,7 +360,9 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
 
     parser_url = source_canonical_url or source_url
     if source_platform == "bilibili":
-        parser_url = resolve_bilibili_source_url(parser_url)
+        parser_url = source_url or parser_url
+        if "b23.tv" in parser_url.lower():
+            parser_url = resolve_bilibili_source_url(parser_url)
     if settings.YOUTUBE_TRANSCRIPT_ENABLED and (source_platform == "youtube" or is_youtube_url(parser_url)):
         try:
             logger.info("调用 YouTube 多入口字幕解析: source_url=%s", source_url)
@@ -413,6 +416,27 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
                     "请配置 WECHAT_CHANNELS_TIKHUB_API_KEY、WECHAT_CHANNELS_DOWNLOADER_API_KEY "
                     "或 WECHAT_CHANNELS_GENERIC_RESOLVER_URL 后重试。"
                 ) from resolver_exc
+        if (
+            source_platform == "bilibili"
+            and not isinstance(exc, QingdouDurationExceededError)
+            and _should_try_bilibili_fallback(exc)
+        ):
+            try:
+                logger.warning("Bilibili Qingdou parse returned no transcript; trying Bilibili fallback: %s", exc)
+                fallback = extract_bilibili_text(parser_url, config=config)
+                logger.warning(
+                    "Bilibili fallback completed: provider=%s bvid=%s chars=%d",
+                    fallback.provider,
+                    fallback.bvid,
+                    len(fallback.text),
+                )
+                return fallback.text
+            except BilibiliTranscriptError as fallback_exc:
+                logger.warning("Bilibili fallback failed", exc_info=True)
+                raise RuntimeError(
+                    "B站解析失败：轻抖未返回视频正文，B站字幕/音频兜底也失败。"
+                    f"轻抖错误：{exc}；兜底错误：{fallback_exc}"
+                ) from fallback_exc
         raise
     logger.info(
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
@@ -470,6 +494,28 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
         raise ValueError("上传的 Word 正文文件为空，请重新上传")
     logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
     return text
+
+
+def _should_try_bilibili_fallback(exc: Exception) -> bool:
+    text = str(exc).lower()
+    no_transcript = any(
+        token in text
+        for token in (
+            "batchstatus=-2",
+            "batchstatus': -2",
+            "status=1113",
+            "'status': 1113",
+            "videocontent: none",
+            "videocontent': none",
+            "未返回 videocontent",
+            "未返回videocontent",
+        )
+    )
+    if no_transcript:
+        return True
+    if any(token in text for token in ("qingdoubusyerror", "返回繁忙", "等待轻抖", "timeout", "timed out")):
+        return False
+    return False
 
 
 def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> bool:

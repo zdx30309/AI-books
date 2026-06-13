@@ -67,7 +67,11 @@ def test_bilibili_video_url_is_canonicalized() -> None:
     url = "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333&vd_source=abc"
 
     assert canonical_source_url(url) == "https://www.bilibili.com/video/BV1xx411c7mD"
-    assert source_url_candidates(url, "bilibili") == ["https://www.bilibili.com/video/BV1xx411c7mD"]
+    assert source_url_candidates(url, "bilibili") == [
+        "https://www.bilibili.com/video/BV1xx411c7mD",
+        "https://m.bilibili.com/video/BV1xx411c7mD",
+        "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333&vd_source=abc",
+    ]
 
 
 def test_b23_short_url_resolves_to_bilibili_video(monkeypatch: pytest.MonkeyPatch) -> None:
