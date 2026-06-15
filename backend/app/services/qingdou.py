@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ class QingdouTaskResult:
     status_msg: str
     video_time: int | None
     video_content: str | None
+    content_source: str | None
     raw: dict[str, Any]
 
 
@@ -258,13 +260,21 @@ class QingdouClient:
         result = data.get("result") or {}
         items = result.get("list") or []
         first = items[0] if items else {}
+        video_content = first.get("videoContent") or None
+        content_source = "videoContent" if video_content else None
+        if not video_content:
+            fallback_text = self._extract_xiaohongshu_note_text(first)
+            if fallback_text:
+                video_content = fallback_text
+                content_source = "xiaohongshu.videoTitle"
         return QingdouTaskResult(
             batch_id=int(result.get("batchId") or batch_id),
             task_id=self._safe_int(first.get("taskId")),
             status_code=self._safe_int((data.get("status") or {}).get("code"), default=-1),
             status_msg=str((data.get("status") or {}).get("msg") or ""),
             video_time=self._safe_int(first.get("videoTime")),
-            video_content=(first.get("videoContent") or None),
+            video_content=video_content,
+            content_source=content_source,
             raw=data,
         )
 
@@ -298,6 +308,15 @@ class QingdouClient:
             if batch_status == 0 or item_status in (None, 0):
                 time.sleep(poll_interval_seconds)
                 continue
+
+            if result.content_source == "xiaohongshu.videoTitle" and result.video_content:
+                logger.info(
+                    "轻抖小红书结果未返回 videoContent，已使用 videoTitle 笔记正文兜底 batchId=%s status=%s batchStatus=%s",
+                    batch_id,
+                    item_status,
+                    batch_status,
+                )
+                return result
 
             if item_status == 1000 or batch_status == 1000:
                 if not result.video_content:
@@ -385,6 +404,28 @@ class QingdouClient:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _extract_xiaohongshu_note_text(item: dict[str, Any]) -> str | None:
+        platform = str(item.get("platformName") or item.get("platform") or "").strip().lower()
+        if "xiaohongshu" not in platform and "小红书" not in platform:
+            return None
+
+        raw_text = item.get("videoTitle")
+        if not isinstance(raw_text, str):
+            return None
+        text = raw_text.replace("\r\n", "\n").replace("\r", "\n").replace("||", "\n")
+        text = re.sub(r"[ \t]+", " ", text)
+        lines: list[str] = []
+        seen: set[str] = set()
+        for line in text.splitlines():
+            normalized = line.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            lines.append(normalized)
+        cleaned = "\n".join(lines).strip()
+        return cleaned if len(cleaned) >= 10 else None
 
     @staticmethod
     def _extract_item_status(data: dict[str, Any]) -> int | None:

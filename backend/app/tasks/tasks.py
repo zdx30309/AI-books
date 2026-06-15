@@ -137,11 +137,13 @@ _NON_RETRYABLE_ERROR_TOKENS = (
     "duplicate billing",
     "insufficient_quota",
     "exceeded your current quota",
-    "unauthorized",
-    "401",
-    "api key",
     "duration exceeded",
     "超过限制",
+)
+_AUTH_ERROR_RE = re.compile(
+    r"(?:http|status(?:_code| code)?|error code|code)\s*[:= ]+\s*(?:401|403)\b"
+    r"|\b(?:401|403)\s+(?:unauthorized|forbidden)\b"
+    r"|\b(?:unauthorized|forbidden)\s+(?:401|403)\b"
 )
 
 
@@ -539,6 +541,8 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
     normalized = f"{type(exc).__name__}: {exc}".lower()
+    if _is_auth_error_message(normalized):
+        return False
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
         return False
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
@@ -553,9 +557,15 @@ def _is_retryable_error_message(message: str | None) -> bool:
     normalized = (message or "").lower()
     if not normalized:
         return False
+    if _is_auth_error_message(normalized):
+        return False
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
         return False
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
+
+
+def _is_auth_error_message(normalized: str) -> bool:
+    return "api key" in normalized or "unauthorized" in normalized or bool(_AUTH_ERROR_RE.search(normalized))
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -732,7 +742,7 @@ def _user_facing_generation_error(exc: Exception) -> str:
         return "上游接口连接中断，系统会自动断点重试；若重试耗尽仍失败，请稍后继续生成。"
     if "timeout" in normalized or "timed out" in normalized:
         return "模型调用超时，任务已停止。可以稍后点击继续生成重试。"
-    if "api key" in normalized or "unauthorized" in normalized or "401" in normalized:
+    if _is_auth_error_message(normalized):
         return "模型 API Key 无效或未授权，请检查服务器环境变量后重试。"
     return raw[:2000]
 
