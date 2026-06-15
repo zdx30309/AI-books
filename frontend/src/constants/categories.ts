@@ -192,6 +192,7 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "social_science_core_conflict",
   "life_philosophy_self_rescue",
   "popular_science_cognitive_upgrade",
+  "finance_technology",
   "wisdom_stories_causal_philosophy",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
