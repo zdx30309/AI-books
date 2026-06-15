@@ -109,3 +109,70 @@ def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation()
     assert " " not in prose
     for punct in [",", ".", ":", ";", "?", "!", '"']:
         assert punct not in prose
+
+
+def test_normalize_removes_bold_prefix_pseudo_heading_from_body() -> None:
+    markdown = """@正文
+@1. 健康观察
+**年龄的真相**30岁后的状态下滑，常被大家简单理解成衰老。
+这是**重要**的一点，不应该留下 Markdown 标记。
+"""
+
+    result = normalize_final_markdown(markdown, category="health_wellness")
+
+    assert "**" not in result
+    assert "年龄的真相" not in result
+    assert "30岁后的状态下滑" in result
+    assert "这是重要的一点" in result
+    assert "@1. 健康观察" in result
+
+
+def test_normalize_removes_repeated_naked_pseudo_heading_without_gluing_text() -> None:
+    markdown = """@正文
+@1. 财富底气
+财富自由的三种诉求
+财富自由背后藏着三种完全不同的诉求。第一种是消费上的底气。
+健康四件事
+每天记录四个关键点，起床后、吃午饭前、下午四点和睡前。
+"""
+
+    result = normalize_final_markdown(markdown, category="social_science")
+
+    assert "财富自由的三种诉求财富自由背后" not in result
+    assert "财富自由的三种诉求\n" not in result
+    assert "财富自由背后藏着三种完全不同的诉求" in result
+    assert "健康四件事。\n每天记录四个关键点" in result
+
+
+def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> None:
+    markdown = """@正文
+@1. 焦虑出口
+@这几句话逻辑自洽，让普通人积压多年的焦虑，仿佛瞬间找到了一个可以量化、可以解决的出口。
+# 身体的能量账本
+1. 起床之后
+起床之后先记录昨晚睡了几个小时。
+@普通段落应该只去掉非法 at 符号。
+"""
+
+    result = normalize_final_markdown(markdown, category="popular_science")
+
+    assert "这几句话逻辑自洽" not in result
+    assert "#" not in result
+    assert "\n1. 起床之后\n" not in result
+    assert "身体的能量账本。" in result
+    assert "起床之后。\n起床之后先记录" not in result
+    assert "起床之后先记录昨晚睡了几个小时" in result
+    assert "普通段落应该只去掉非法 at 符号" in result
+    assert "@普通段落" not in result
+
+
+def test_comic_normalize_keeps_image_markdown_unchanged() -> None:
+    markdown = """@正文
+@1. 第一辑
+![配图](comic_images/comic_section_01.png)
+短语：今晚月亮放下了手里的活。
+"""
+
+    result = normalize_final_markdown(markdown, category="comic_series")
+
+    assert "![配图](comic_images/comic_section_01.png)" in result

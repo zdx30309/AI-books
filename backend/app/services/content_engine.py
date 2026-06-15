@@ -275,6 +275,7 @@ def _remove_intro_duplicate_from_body(text: str) -> str:
 _SOFT_LINE_ENDINGS = "，,、；;：:"
 _HARD_LINE_ENDINGS = "。."
 _SENTENCE_ENDINGS = "。.!！?？；;：:」』”’）)]"
+_TITLE_ENDINGS = "。.!！?？；;：:，,、」』”’）)]"
 _CONTINUATION_PREFIXES = (
     "以及",
     "和",
@@ -302,6 +303,13 @@ _CONTINUATION_PREFIXES = (
     "这些",
     "这种",
     "这类",
+)
+_EDITORIAL_COMMENT_RE = re.compile(
+    r"^@?\s*(?:"
+    r"这几句话|这句话|这段|这一段|这里|这部分|"
+    r"逻辑自洽|普通人.*出口|可以量化.*解决|读者可以|"
+    r"AI习惯|AI式|审稿|批注|修改建议|改成|建议改"
+    r")"
 )
 
 
@@ -354,6 +362,151 @@ def _is_structural_markdown_line(line: str) -> bool:
     if re.match(r"^(?:[-*+]\s+|\d+[.．、]\s+)", stripped):
         return True
     return False
+
+
+def _is_body_chapter_heading(line: str) -> bool:
+    return bool(re.match(r"^@\s*\d+[.．、]\s*.+$", line.strip()))
+
+
+def _normalize_body_chapter_heading(line: str) -> str | None:
+    match = re.match(r"^@\s*(\d+)[.．、]\s*(.+?)\s*$", line.strip())
+    if not match:
+        return None
+    title = _strip_title_colons(match.group(2).strip().strip("*`# "))
+    return f"@{match.group(1)}. {title or f'第{match.group(1)}章'}"
+
+
+def _is_image_markdown_line(line: str) -> bool:
+    return bool(re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line.strip()))
+
+
+def _cjk_ratio(text: str) -> float:
+    stripped = text.strip()
+    if not stripped:
+        return 0.0
+    cjk = sum(1 for char in stripped if "\u3400" <= char <= "\u9fff")
+    return cjk / max(len(stripped), 1)
+
+
+def _strip_inline_markdown_marks(line: str) -> str:
+    cleaned = line.replace("**", "").replace("__", "").replace("`", "")
+    cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_editorial_comment(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("@"):
+        return bool(_EDITORIAL_COMMENT_RE.search(stripped))
+    return bool(re.search(r"逻辑自洽|审稿|批注|修改建议|建议改|AI习惯|AI式", stripped))
+
+
+def _looks_like_pseudo_heading_text(text: str) -> bool:
+    stripped = _strip_inline_markdown_marks(text).strip()
+    if not stripped:
+        return False
+    if len(stripped) > 16:
+        return False
+    if _cjk_ratio(stripped) < 0.55:
+        return False
+    if re.search(r"[。！？；，、,.!?;：:]", stripped):
+        return False
+    if stripped.startswith(_CONTINUATION_PREFIXES):
+        return False
+    if stripped.endswith(("的", "和", "与", "及", "或", "把", "被", "让", "在", "对", "给")):
+        return False
+    return True
+
+
+def _looks_like_bold_prefix_heading(title: str, rest: str) -> bool:
+    clean_title = _strip_inline_markdown_marks(title)
+    clean_rest = rest.strip()
+    if not clean_rest or not _looks_like_pseudo_heading_text(clean_title):
+        return False
+    if clean_rest.startswith(tuple(_TITLE_ENDINGS)):
+        return False
+    return len(clean_title) <= 16 and len(clean_rest) >= 8
+
+
+def _line_repeats_heading(heading: str, line: str) -> bool:
+    heading_key = _canonical_duplicate_text(heading)
+    line_key = _canonical_duplicate_text(line)[:80]
+    if len(heading_key) < 4 or not line_key:
+        return False
+    if line_key.startswith(heading_key):
+        return True
+    return len(heading_key) >= 6 and line_key.startswith(heading_key[:4])
+
+
+def _strip_body_noise_line(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if _is_image_markdown_line(stripped):
+        return stripped
+
+    chapter_heading = _normalize_body_chapter_heading(stripped)
+    if chapter_heading is not None:
+        return chapter_heading
+
+    if _looks_like_editorial_comment(stripped):
+        return None
+
+    if stripped.startswith("@"):
+        stripped = stripped.lstrip("@").strip()
+        if _looks_like_editorial_comment(stripped):
+            return None
+
+    stripped = re.sub(r"^\s{0,3}#{1,6}\s*", "", stripped).strip()
+
+    bold_prefix = re.match(r"^\*\*([^*\n]{1,24})\*\*\s*(.*?)\s*$", stripped)
+    if bold_prefix:
+        title = bold_prefix.group(1).strip()
+        rest = bold_prefix.group(2).strip()
+        if _looks_like_bold_prefix_heading(title, rest):
+            stripped = rest
+        elif rest:
+            stripped = f"{title}{rest}"
+        else:
+            stripped = title
+
+    numbered = re.match(r"^(?:\d+|[一二三四五六七八九十百]+)[.．、]\s*(.+?)\s*$", stripped)
+    if numbered:
+        stripped = numbered.group(1).strip()
+
+    stripped = _strip_inline_markdown_marks(stripped)
+    if _looks_like_editorial_comment(stripped):
+        return None
+    return stripped or None
+
+
+def _remove_body_format_noise(lines: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    pending = [_strip_body_noise_line(line) for line in lines]
+    for index, line in enumerate(pending):
+        if line is None:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
+            cleaned.append(stripped)
+            continue
+
+        if _looks_like_pseudo_heading_text(stripped):
+            next_line = ""
+            for candidate in pending[index + 1 :]:
+                if candidate:
+                    next_line = candidate.strip()
+                    break
+            if next_line and _line_repeats_heading(stripped, next_line):
+                continue
+            if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
+                stripped = f"{stripped}。"
+        cleaned.append(stripped)
+    return cleaned
 
 
 def _looks_like_wisdom_story_subheading(line: str) -> bool:
@@ -586,9 +739,10 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     is_wisdom_story = normalized == "wisdom_stories"
     if is_wisdom_story:
         body_lines = _split_wisdom_story_body_subheadings(body_lines)
+    body_lines = _remove_body_format_noise(body_lines)
     body_lines = _join_broken_body_lines(
         body_lines,
-        preserve_short_subheadings=is_wisdom_story,
+        preserve_short_subheadings=False,
     )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()

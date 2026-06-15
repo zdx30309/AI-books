@@ -352,6 +352,16 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
             assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
                 "final_book_format"
             ].find("{text}")
+            assert "不得出现正文内小节标题" in prompts["final_book_format"]
+            assert "正文内小节标题，标题正文必须限制" not in prompts["final_book_format"]
+
+
+def test_section_title_rules_forbid_body_subheadings() -> None:
+    prompt = get_prompts("social_science")["full_book_writer"]
+
+    assert "正文只允许使用正式章节标题" in prompt
+    assert "不得在章节内部再生成小节标题" in prompt
+    assert "Markdown 粗体标题" in prompt
 
 
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:

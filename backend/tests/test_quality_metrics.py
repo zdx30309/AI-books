@@ -79,6 +79,29 @@ def test_half_width_punct_and_marks() -> None:
     assert report.mark_double_excl == 1
 
 
+def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 正式章节
+**年龄的真相**30岁后的状态下滑。
+@这几句话逻辑自洽，让普通人找到了出口。
+# 身体的能量账本
+1. 起床之后
+财富自由的三种诉求
+"""
+
+    report = measure_quality(markdown)
+
+    assert report.format_noise_hits["Markdown 粗体残留"]
+    assert report.format_noise_hits["非法正文 @ 段首"]
+    assert report.format_noise_hits["审稿批注式残留"]
+    assert report.format_noise_hits["# 标题残留"]
+    assert report.format_noise_hits["正文内编号伪标题"]
+    assert report.format_noise_hits["裸短小标题"]
+    assert report.total_violations >= 6
+
+
 def test_decimal_not_counted() -> None:
     report = measure_quality("GDP 增长 3.5% 。")
     assert report.half_width_punct_count == 0

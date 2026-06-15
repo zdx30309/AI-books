@@ -38,6 +38,9 @@ class QualityReport:
     mark_tilde: int = 0
     mark_brackets: int = 0
 
+    # ===== 排版污染 =====
+    format_noise_hits: dict[str, list[str]] = field(default_factory=dict)
+
     # ===== 文本统计 =====
     total_chars: int = 0
     total_paragraphs: int = 0
@@ -335,6 +338,99 @@ def _count_marks(text: str) -> dict[str, int]:
     }
 
 
+_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$")
+_BODY_CHAPTER_RE = re.compile(r"^@\s*\d+[.．、]\s*.+$")
+_EDITORIAL_COMMENT_RE = re.compile(
+    r"^@?\s*(?:"
+    r"这几句话|这句话|这段|这一段|这里|这部分|"
+    r"逻辑自洽|普通人.*出口|可以量化.*解决|读者可以|"
+    r"AI习惯|AI式|审稿|批注|修改建议|改成|建议改"
+    r")"
+)
+_CONTINUATION_PREFIXES = (
+    "以及",
+    "和",
+    "与",
+    "还有",
+    "包括",
+    "比如",
+    "例如",
+    "尤其",
+    "同时",
+    "并且",
+    "但",
+    "但是",
+    "而",
+    "却",
+    "其中",
+    "这些",
+    "这种",
+    "这类",
+)
+
+
+def _cjk_ratio(text: str) -> float:
+    stripped = text.strip()
+    if not stripped:
+        return 0.0
+    cjk = sum(1 for char in stripped if "\u3400" <= char <= "\u9fff")
+    return cjk / max(len(stripped), 1)
+
+
+def _add_noise_hit(results: dict[str, list[str]], name: str, sample: str) -> None:
+    bucket = results.setdefault(name, [])
+    if len(bucket) < 10:
+        bucket.append(sample[:120])
+
+
+def _looks_like_naked_subheading(line: str) -> bool:
+    stripped = line.strip().strip("*`# ")
+    if not stripped or len(stripped) > 16:
+        return False
+    if _cjk_ratio(stripped) < 0.6:
+        return False
+    if re.search(r"[。！？；，、,.!?;：:]", stripped):
+        return False
+    if stripped.startswith(_CONTINUATION_PREFIXES):
+        return False
+    if stripped.endswith(("的", "和", "与", "及", "或", "把", "被", "让", "在", "对", "给")):
+        return False
+    return True
+
+
+def _detect_format_noise(text: str) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    in_body = False
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+        if _BODY_CHAPTER_RE.match(line) or re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line):
+            continue
+        if "**" in line or "__" in line:
+            _add_noise_hit(results, "Markdown 粗体残留", line)
+        if line.startswith("#"):
+            _add_noise_hit(results, "# 标题残留", line)
+        if line.startswith("@"):
+            _add_noise_hit(results, "非法正文 @ 段首", line)
+        if re.match(r"^(?:\d+|[一二三四五六七八九十百]+)[.．、]\s*\S+", line):
+            _add_noise_hit(results, "正文内编号伪标题", line)
+        if (line.startswith("@") and _EDITORIAL_COMMENT_RE.search(line)) or re.search(
+            r"逻辑自洽|审稿|批注|修改建议|建议改|AI习惯|AI式",
+            line,
+        ):
+            _add_noise_hit(results, "审稿批注式残留", line)
+        if _looks_like_naked_subheading(line):
+            _add_noise_hit(results, "裸短小标题", line)
+    return results
+
+
 def _calc_total(report: QualityReport) -> None:
     total = (
         sum(len(v) for v in report.a1_pattern_hits.values())
@@ -347,6 +443,7 @@ def _calc_total(report: QualityReport) -> None:
         + sum(len(v) for v in report.a2_cliche_metaphor_hits.values())
         + sum(len(v) for v in report.award_word_hits.values())
         + sum(len(v) for v in report.llm_residual_hits.values())
+        + sum(len(v) for v in report.format_noise_hits.values())
     )
     report.total_violations = total
     report.violation_density_per_kchar = total / max(report.total_chars, 1) * 1000
@@ -404,6 +501,7 @@ def measure_quality(markdown: str) -> QualityReport:
             report.llm_residual_hits[name] = hits
 
     report.half_width_punct_count, report.half_width_punct_samples = _detect_half_width_punct(markdown)
+    report.format_noise_hits = _detect_format_noise(markdown)
 
     marks = _count_marks(markdown)
     report.mark_double_excl = marks["double_excl"]
@@ -451,6 +549,7 @@ def format_report(report: QualityReport, *, top_k: int = 5) -> str:
     _render_section("A2 套路化比喻", report.a2_cliche_metaphor_hits)
     _render_section("颁奖词 / 神坛化", report.award_word_hits)
     _render_section("大模型残留口癖 (任一命中即说明洗稿不彻底)", report.llm_residual_hits)
+    _render_section("排版污染（小标题 / Markdown / 批注残留）", report.format_noise_hits)
 
     lines.append("--- 排版加工符号使用统计 ---")
     lines.append(f"  ！！      : {report.mark_double_excl} 处")
