@@ -155,6 +155,12 @@ def test_masterpiece_interpretation_uses_standard_four_stage_workflow(
     assert raw_text in writer_prompts[0]
     assert polish_instructions == [prompts["gemini_fast_polish"]]
     assert refine_instructions == [prompts["gemini_fast_refine"]]
+    assert "名作解读文风保护" in polish_instructions[0]
+    assert "严禁新增或保留儿化音" in polish_instructions[0]
+    assert "不得中途变成聊天、唠嗑、口播" in polish_instructions[0]
+    assert "文风一致性硬约束" in refine_instructions[0]
+    assert "全文必须保持正式、冷静、克制、连贯的正常叙述文风" in refine_instructions[0]
+    assert "这事儿" in refine_instructions[0]
     assert format_templates == [prompts["final_book_format"]]
     assert "FORMATTED_MARKER" in result
     assert events[:2] == ["writer_start", "writer_done"]
