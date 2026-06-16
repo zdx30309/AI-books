@@ -615,106 +615,6 @@ def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: boo
     return repaired
 
 
-_MASTERPIECE_COLLOQUIAL_LITERAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
-    ("这事儿", "这件事"),
-    ("那事儿", "那件事"),
-    ("事儿", "事"),
-    ("这味儿", "这种意味"),
-    ("那味儿", "那种意味"),
-    ("味儿", "意味"),
-    ("一点儿", "一点"),
-    ("有点儿", "有点"),
-    ("没啥", "没有什么"),
-    ("啥", "什么"),
-    ("咱们", "读者"),
-    ("我觉得", "可以认为"),
-    ("你会发现", "可以看到"),
-    ("我们不妨", "可以"),
-    ("聊一聊", "讨论"),
-)
-_MASTERPIECE_PROTECTED_PAIRS = {"“": "”", "‘": "’", "《": "》", "「": "」", "『": "』"}
-_MASTERPIECE_FILLER_RE = re.compile(
-    r"(?:(?<=^)|(?<=[。！？；，,、\s]))(?:说白了|说实话|老实说|坦白说|其实吧)[，,、\s]*"
-)
-_MASTERPIECE_YOU_SEE_RE = re.compile(r"(?:(?<=^)|(?<=[。！？；，,、\s]))你看[，,、\s]*")
-_MASTERPIECE_TAIL_RE = re.compile(r"[，,、\s]*(?:对吧|是不是)[，,、\s]*")
-
-
-def _apply_masterpiece_outside_protected_text(text: str, transform: Callable[[str], str]) -> str:
-    """Apply a transform outside quotes/book-title brackets to avoid changing cited source text."""
-    pieces: list[str] = []
-    index = 0
-    while index < len(text):
-        opener = text[index]
-        closer = _MASTERPIECE_PROTECTED_PAIRS.get(opener)
-        if closer:
-            end = text.find(closer, index + 1)
-            if end != -1:
-                pieces.append(text[index : end + 1])
-                index = end + 1
-                continue
-
-        start = index
-        while index < len(text) and text[index] not in _MASTERPIECE_PROTECTED_PAIRS:
-            index += 1
-        pieces.append(transform(text[start:index]))
-    return "".join(pieces)
-
-
-def _clean_masterpiece_colloquial_segment(segment: str) -> str:
-    cleaned = segment
-    for source, target in _MASTERPIECE_COLLOQUIAL_LITERAL_REPLACEMENTS:
-        cleaned = cleaned.replace(source, target)
-    cleaned = _MASTERPIECE_FILLER_RE.sub("", cleaned)
-    cleaned = _MASTERPIECE_YOU_SEE_RE.sub("", cleaned)
-    cleaned = _MASTERPIECE_TAIL_RE.sub("", cleaned)
-    cleaned = re.sub(r"挺([^。！？；，,\n]{1,16})的", r"相当\1", cleaned)
-    cleaned = re.sub(r"[，,、]\s*([。！？；])", r"\1", cleaned)
-    cleaned = re.sub(r"\s+([，。！？；])", r"\1", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    return cleaned
-
-
-def _clean_masterpiece_colloquial_line(line: str) -> str:
-    stripped = line.strip()
-    if not stripped:
-        return ""
-    if _FRONT_SECTION_RE.match(stripped) or _is_body_chapter_heading(stripped) or _is_image_markdown_line(stripped):
-        return line.rstrip()
-
-    cleaned = _apply_masterpiece_outside_protected_text(line.rstrip(), _clean_masterpiece_colloquial_segment).strip()
-    if not cleaned.strip("，,、。！？； \t"):
-        return ""
-    return cleaned
-
-
-def _clean_masterpiece_interpretation_style(markdown: str) -> str:
-    """Clean only high-confidence colloquial residues in masterpiece interpretation intro/body."""
-    cleaned_lines: list[str] = []
-    current_section: str | None = None
-    for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.rstrip()
-        section = _FRONT_SECTION_RE.match(line.strip())
-        if section:
-            current_section = section.group(1)
-            cleaned_lines.append(line)
-            continue
-        if current_section in {"导言", "正文"}:
-            cleaned = _clean_masterpiece_colloquial_line(line)
-            if cleaned:
-                cleaned_lines.append(cleaned)
-            continue
-        cleaned_lines.append(line)
-    return "\n".join(cleaned_lines).strip()
-
-
-def _finish_final_markdown_result(result: str, normalized_category: str) -> str:
-    if normalized_category == "masterpiece_interpretation":
-        result = _clean_masterpiece_interpretation_style(result)
-    result = result.strip()
-    return result + ("\n" if result else "")
-
-
 _CLASSICAL_BODY_PUNCT_TRANSLATION = str.maketrans(
     {
         ",": "，",
@@ -823,7 +723,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
         compact = [line for line in lines if line.strip()]
-        return _finish_final_markdown_result("\n".join(compact), normalized)
+        return "\n".join(compact).strip() + ("\n" if compact else "")
 
     front = text[: match.end()]
     body = text[match.end() :]
@@ -831,11 +731,11 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     if normalized == "classical_chinese":
         body_lines = _clean_classical_body_lines(body)
         result = "\n".join(front_lines + body_lines).strip()
-        return _finish_final_markdown_result(result, normalized)
+        return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
     if normalized in {"comic_series", "healing_comic"}:
         result = "\n".join(front_lines + body_lines).strip()
-        return _finish_final_markdown_result(result, normalized)
+        return result + ("\n" if result else "")
     is_wisdom_story = normalized == "wisdom_stories"
     if is_wisdom_story:
         body_lines = _split_wisdom_story_body_subheadings(body_lines)
@@ -846,7 +746,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
-    return _finish_final_markdown_result(result, normalized)
+    return result + ("\n" if result else "")
 
 
 def enforce_classical_title(markdown: str, original_title: object) -> str:
