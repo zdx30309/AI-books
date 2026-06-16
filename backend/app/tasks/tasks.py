@@ -1082,7 +1082,7 @@ def process_video(_self, task_id: str) -> dict:
         _patch_config(task, markdown=markdown, title=book_title)
 
         _update_progress(db, task, progress=94, step="正在写入质量报告", run_id=run_id)
-        report = measure_quality(markdown)
+        report = measure_quality(markdown, category=category)
         report_text = format_report(report)
         report_path = output_dir / "quality_report.txt"
         report_path.write_text(report_text, encoding="utf-8")

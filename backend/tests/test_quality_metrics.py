@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.quality_metrics import measure_quality
+from app.core.quality_metrics import format_report, measure_quality
 
 
 def test_empty_string_all_zero() -> None:
@@ -100,6 +100,30 @@ def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None
     assert report.format_noise_hits["正文内编号伪标题"]
     assert report.format_noise_hits["裸短小标题"]
     assert report.total_violations >= 6
+
+
+def test_masterpiece_colloquial_hits_are_category_scoped() -> None:
+    markdown = """@最终书名
+咱们说白了这事儿
+@正文
+@1. 正式章节
+说白了，这事儿挺复杂的，对吧。
+原句说“这事儿”。
+"""
+
+    report = measure_quality(markdown, category="masterpiece_interpretation")
+    rendered = format_report(report)
+    other_report = measure_quality(markdown, category="social_science")
+
+    assert report.masterpiece_colloquial_hits["说白了"]
+    assert report.masterpiece_colloquial_hits["这事儿"]
+    assert report.masterpiece_colloquial_hits["挺...的"]
+    assert report.masterpiece_colloquial_hits["对吧"]
+    assert "名作解读口语化残留" in rendered
+    assert not other_report.masterpiece_colloquial_hits
+    assert "咱们说白了这事儿" not in "\n".join(
+        sample for samples in report.masterpiece_colloquial_hits.values() for sample in samples
+    )
 
 
 def test_decimal_not_counted() -> None:

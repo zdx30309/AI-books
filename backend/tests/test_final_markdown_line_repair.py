@@ -176,3 +176,45 @@ def test_comic_normalize_keeps_image_markdown_unchanged() -> None:
     result = normalize_final_markdown(markdown, category="comic_series")
 
     assert "![配图](comic_images/comic_section_01.png)" in result
+
+
+def test_masterpiece_interpretation_cleans_high_confidence_colloquial_body_only() -> None:
+    markdown = """@最终书名
+咱们说白了这事儿
+@最终简介
+咱们说白了这事儿。
+@目录
+1. 咱们说白了这事儿
+@导言
+说白了，这事儿挺复杂的，对吧。
+原句说“这事儿”。
+@正文
+@1. 咱们说白了这事儿
+你看，咱们一点儿也不能把那味儿写成唠嗑。
+这事儿是不是已经说清楚。
+"""
+
+    result = normalize_final_markdown(markdown, category="masterpiece_interpretation")
+
+    assert "@最终书名\n咱们说白了这事儿" in result
+    assert "@最终简介\n咱们说白了这事儿。" in result
+    assert "@1. 咱们说白了这事儿" in result
+    assert "这件事相当复杂。" in result
+    assert "原句说“这事儿”。" in result
+    assert "读者一点也不能把那种意味写成唠嗑。" in result
+    assert "这件事已经说清楚。" in result
+    assert "说白了，这事儿挺复杂的" not in result
+
+
+def test_masterpiece_colloquial_cleanup_does_not_affect_other_categories() -> None:
+    markdown = """@导言
+说白了，这事儿挺复杂的，对吧。
+@正文
+@1. 测试章节
+咱们一点儿也不能把那味儿写成唠嗑。
+"""
+
+    result = normalize_final_markdown(markdown, category="social_science")
+
+    assert "说白了，这事儿挺复杂的，对吧。" in result
+    assert "咱们一点儿也不能把那味儿写成唠嗑。" in result

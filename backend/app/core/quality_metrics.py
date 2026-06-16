@@ -41,6 +41,9 @@ class QualityReport:
     # ===== 排版污染 =====
     format_noise_hits: dict[str, list[str]] = field(default_factory=dict)
 
+    # ===== 名作解读专项文风污染 =====
+    masterpiece_colloquial_hits: dict[str, list[str]] = field(default_factory=dict)
+
     # ===== 文本统计 =====
     total_chars: int = 0
     total_paragraphs: int = 0
@@ -241,6 +244,29 @@ LLM_RESIDUAL_TOKENS: dict[str, str] = {
     "</thinking>": "</thinking>",
 }
 
+MASTERPIECE_COLLOQUIAL_RULES: dict[str, str] = {
+    "这事儿": "这事儿",
+    "那事儿": "那事儿",
+    "一点儿": "一点儿",
+    "有点儿": "有点儿",
+    "那味儿": "那味儿",
+    "这味儿": "这味儿",
+    "咱们": "咱们",
+    "没啥": "没啥",
+    "啥": "啥",
+    "说白了": "说白了",
+    "说实话": "说实话",
+    "老实说": "老实说",
+    "坦白说": "坦白说",
+    "其实吧": "其实吧",
+    "你看": "你看",
+    "对吧": "对吧",
+    "是不是": "是不是",
+    "挺...的": r"re:挺[^。！？；，,\n]{1,16}的",
+    "聊一聊": "聊一聊",
+}
+MASTERPIECE_PROTECTED_PAIRS = {"“": "”", "‘": "’", "《": "》", "「": "」", "『": "』"}
+
 
 def _extract_containing_sentence(text: str, hit_start: int, hit_end: int) -> str:
     left = hit_start
@@ -431,6 +457,66 @@ def _detect_format_noise(text: str) -> dict[str, list[str]]:
     return results
 
 
+def _masterpiece_narrative_text(markdown: str) -> str:
+    lines: list[str] = []
+    in_target_section = False
+    for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_target_section = section.group(1) in {"导言", "正文"}
+            continue
+        if not in_target_section:
+            continue
+        if _BODY_CHAPTER_RE.match(line) or re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _outside_masterpiece_protected_segments(text: str) -> list[str]:
+    segments: list[str] = []
+    index = 0
+    while index < len(text):
+        opener = text[index]
+        closer = MASTERPIECE_PROTECTED_PAIRS.get(opener)
+        if closer:
+            end = text.find(closer, index + 1)
+            if end != -1:
+                index = end + 1
+                continue
+
+        start = index
+        while index < len(text) and text[index] not in MASTERPIECE_PROTECTED_PAIRS:
+            index += 1
+        if index > start:
+            segments.append(text[start:index])
+    return segments
+
+
+def _detect_masterpiece_colloquial(markdown: str) -> dict[str, list[str]]:
+    target_text = _masterpiece_narrative_text(markdown)
+    if not target_text:
+        return {}
+
+    results: dict[str, list[str]] = {}
+    for segment in _outside_masterpiece_protected_segments(target_text):
+        if not segment.strip():
+            continue
+        for name, pattern in MASTERPIECE_COLLOQUIAL_RULES.items():
+            hits = _detect(segment, pattern)
+            if not hits:
+                continue
+            bucket = results.setdefault(name, [])
+            for sample in hits:
+                if len(bucket) >= 10:
+                    break
+                bucket.append(sample[:120])
+    return results
+
+
 def _calc_total(report: QualityReport) -> None:
     total = (
         sum(len(v) for v in report.a1_pattern_hits.values())
@@ -444,12 +530,13 @@ def _calc_total(report: QualityReport) -> None:
         + sum(len(v) for v in report.award_word_hits.values())
         + sum(len(v) for v in report.llm_residual_hits.values())
         + sum(len(v) for v in report.format_noise_hits.values())
+        + sum(len(v) for v in report.masterpiece_colloquial_hits.values())
     )
     report.total_violations = total
     report.violation_density_per_kchar = total / max(report.total_chars, 1) * 1000
 
 
-def measure_quality(markdown: str) -> QualityReport:
+def measure_quality(markdown: str, *, category: str | None = None) -> QualityReport:
     report = QualityReport()
     report.total_chars = len(markdown)
     paragraphs = [p for p in markdown.split("\n") if p.strip()]
@@ -502,6 +589,8 @@ def measure_quality(markdown: str) -> QualityReport:
 
     report.half_width_punct_count, report.half_width_punct_samples = _detect_half_width_punct(markdown)
     report.format_noise_hits = _detect_format_noise(markdown)
+    if (category or "").strip().lower() == "masterpiece_interpretation":
+        report.masterpiece_colloquial_hits = _detect_masterpiece_colloquial(markdown)
 
     marks = _count_marks(markdown)
     report.mark_double_excl = marks["double_excl"]
@@ -550,6 +639,7 @@ def format_report(report: QualityReport, *, top_k: int = 5) -> str:
     _render_section("颁奖词 / 神坛化", report.award_word_hits)
     _render_section("大模型残留口癖 (任一命中即说明洗稿不彻底)", report.llm_residual_hits)
     _render_section("排版污染（小标题 / Markdown / 批注残留）", report.format_noise_hits)
+    _render_section("名作解读口语化残留", report.masterpiece_colloquial_hits)
 
     lines.append("--- 排版加工符号使用统计 ---")
     lines.append(f"  ！！      : {report.mark_double_excl} 处")
