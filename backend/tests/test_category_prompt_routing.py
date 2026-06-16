@@ -96,13 +96,14 @@ def test_every_supported_category_has_ready_prompt_metadata() -> None:
         assert "final_book_format" in prompts
 
 
-def test_masterpiece_interpretation_uses_standard_four_stage_workflow(
+def test_masterpiece_interpretation_uses_requested_writer_prompt_and_generic_later_stages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     category = "masterpiece_interpretation"
     raw_text = "\u8fd9\u662f\u4e00\u6bb5\u540d\u4f5c\u89e3\u8bfb\u6d4b\u8bd5\u6587\u7a3f\u3002"
     prompts = get_prompts(category)
+    generic_prompts = get_prompts("social_science")
     calls: list[str] = []
     writer_prompts: list[str] = []
     polish_instructions: list[str | None] = []
@@ -152,19 +153,20 @@ def test_masterpiece_interpretation_uses_standard_four_stage_workflow(
     assert "\u540d\u4f5c\u89e3\u8bfb" in writer_prompts[0]
     assert "\u6210\u719f\u7684\u4eba\u6587\u8bfb\u7269\u5199\u4f5c\u8005" in writer_prompts[0]
     assert "\u76f4\u63a5\u751f\u6210\u4e00\u7bc7\u5b8c\u6574\u7684\u6df1\u5ea6\u957f\u6587" in writer_prompts[0]
+    assert "只能作为“参照材料”，不能作为逐段改写的底稿" in writer_prompts[0]
+    assert "写作要把文学人物、经典情节、作品主题，放回今天普通人的处境" in writer_prompts[0]
     assert "不要过于口语化" in writer_prompts[0]
+    assert "不要像唠嗑，不要空话，不要学术腔，不要翻译腔" in writer_prompts[0]
+    assert "不要做心理和情绪刻画，不要使用比喻修辞" in writer_prompts[0]
     assert "不要使用“咱们”“说实话”“挺……的”" in writer_prompts[0]
     assert raw_text in writer_prompts[0]
     assert polish_instructions == [prompts["gemini_fast_polish"]]
     assert refine_instructions == [prompts["gemini_fast_refine"]]
-    assert "名作解读文风保护" in polish_instructions[0]
-    assert "严禁新增或保留儿化音" in polish_instructions[0]
-    assert "不得中途变成聊天、唠嗑、口播" in polish_instructions[0]
-    assert "去口语化不是写成论文" in polish_instructions[0]
-    assert "文风一致性硬约束" in refine_instructions[0]
-    assert "有阅读感的名作解读文风" in refine_instructions[0]
-    assert "去口语化不能变成论文腔" in refine_instructions[0]
-    assert "这事儿" in refine_instructions[0]
+    assert prompts["gemini_fast_polish"] == generic_prompts["gemini_fast_polish"]
+    assert prompts["gemini_fast_refine"] == generic_prompts["gemini_fast_refine"]
+    assert prompts["final_book_format"] == generic_prompts["final_book_format"]
+    assert "名作解读文风保护" not in polish_instructions[0]
+    assert "文风一致性硬约束" not in refine_instructions[0]
     assert format_templates == [prompts["final_book_format"]]
     assert "FORMATTED_MARKER" in result
     assert events[:2] == ["writer_start", "writer_done"]
