@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, build_opener
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import PROJECT_ROOT, settings
@@ -120,6 +121,54 @@ REFERENCE_CATEGORY_LABELS = {
 
 class EpicReferenceError(RuntimeError):
     """Raised for expected reference workflow errors."""
+
+
+def _is_retryable_disconnect(exc: OperationalError) -> bool:
+    if getattr(exc, "connection_invalidated", False):
+        return True
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(
+        marker in message
+        for marker in (
+            "ssl connection has been closed unexpectedly",
+            "server closed the connection unexpectedly",
+            "connection not open",
+            "connection refused",
+            "connection reset",
+            "connection was closed",
+        )
+    )
+
+
+def _reset_db_session(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    invalidate = getattr(db, "invalidate", None)
+    if callable(invalidate):
+        try:
+            invalidate()
+            return
+        except Exception:
+            pass
+    db.close()
+
+
+def _run_db_retry(db: Session, fn: Callable[[], Any], *, attempts: int = 3) -> Any:
+    last_error: OperationalError | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return fn()
+        except OperationalError as exc:
+            last_error = exc
+            if attempt >= attempts or not _is_retryable_disconnect(exc):
+                raise
+            _reset_db_session(db)
+            time.sleep(min(0.6, 0.15 * attempt))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("database retry helper exited unexpectedly")
 
 
 @dataclass(frozen=True)
@@ -715,7 +764,58 @@ def download_reference_task(
 
 
 def list_reference_download_tasks(db: Session, limit: int = 500) -> list[ReferenceDownloadTask]:
-    return db.query(ReferenceDownloadTask).order_by(ReferenceDownloadTask.created_at.desc()).limit(limit).all()
+    return _run_db_retry(
+        db,
+        lambda: db.query(ReferenceDownloadTask).order_by(ReferenceDownloadTask.created_at.desc()).limit(limit).all(),
+    )
+
+
+def list_reference_download_task_summaries(db: Session, limit: int = 120) -> list[dict[str, Any]]:
+    rows = _run_db_retry(
+        db,
+        lambda: (
+            db.query(
+                ReferenceDownloadTask.id,
+                ReferenceDownloadTask.booklist_item_id,
+                ReferenceDownloadTask.provider,
+                ReferenceDownloadTask.title,
+                ReferenceDownloadTask.author,
+                ReferenceDownloadTask.query,
+                ReferenceDownloadTask.status,
+                ReferenceDownloadTask.local_download_path,
+                ReferenceDownloadTask.imported_raw_path,
+                ReferenceDownloadTask.file_hash,
+                ReferenceDownloadTask.generated_card_count,
+                ReferenceDownloadTask.error,
+                ReferenceDownloadTask.created_at,
+                ReferenceDownloadTask.updated_at,
+            )
+            .order_by(ReferenceDownloadTask.created_at.desc())
+            .limit(limit)
+            .all()
+        ),
+    )
+    return [
+        {
+            "id": row.id,
+            "booklist_item_id": row.booklist_item_id,
+            "provider": row.provider,
+            "title": row.title,
+            "author": row.author,
+            "query": row.query,
+            "status": row.status,
+            "search_results": [],
+            "selected_result": None,
+            "local_download_path": row.local_download_path,
+            "imported_raw_path": row.imported_raw_path,
+            "file_hash": row.file_hash,
+            "generated_card_count": row.generated_card_count,
+            "error": row.error,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]
 
 
 def scan_sonovel_downloads(db: Session | None = None) -> list[dict[str, Any]]:

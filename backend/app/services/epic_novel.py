@@ -306,7 +306,12 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
         "master_bible": _asdict_model(db.query(EpicMasterBible).filter(EpicMasterBible.project_id == project.id).first()) or None,
         "worldview_candidates": [
             _asdict_model(row)
-            for row in db.query(WorldviewCandidate).filter(WorldviewCandidate.project_id == project.id).order_by(WorldviewCandidate.score.desc()).all()
+            for row in (
+                db.query(WorldviewCandidate)
+                .filter(WorldviewCandidate.project_id == project.id)
+                .order_by(WorldviewCandidate.selected.desc(), WorldviewCandidate.candidate_number.asc())
+                .all()
+            )
         ],
         "nations": [
             _asdict_model(row)
@@ -330,7 +335,7 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
         ],
         "character_arcs": [
             _asdict_model(row)
-            for row in db.query(EpicCharacterArc).filter(EpicCharacterArc.project_id == project.id).order_by(EpicCharacterArc.created_at.asc()).all()
+            for row in db.query(EpicCharacterArc).filter(EpicCharacterArc.project_id == project.id).order_by(EpicCharacterArc.character_name.asc()).all()
         ],
         "global_spine": _asdict_model(db.query(EpicGlobalSpine).filter(EpicGlobalSpine.project_id == project.id).first()) or None,
         "bible_sections": [
@@ -343,15 +348,34 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
         ],
         "foreshadows": [
             _asdict_model(row)
-            for row in db.query(EpicForeshadow).filter(EpicForeshadow.project_id == project.id).order_by(EpicForeshadow.created_at.asc()).all()
+            for row in (
+                db.query(EpicForeshadow)
+                .filter(EpicForeshadow.project_id == project.id)
+                .order_by(EpicForeshadow.setup_chapter.asc(), EpicForeshadow.foreshadow_key.asc())
+                .all()
+            )
         ],
         "reader_questions": [
             _asdict_model(row)
-            for row in db.query(EpicReaderQuestion).filter(EpicReaderQuestion.project_id == project.id).order_by(EpicReaderQuestion.created_at.asc()).all()
+            for row in (
+                db.query(EpicReaderQuestion)
+                .filter(EpicReaderQuestion.project_id == project.id)
+                .order_by(EpicReaderQuestion.introduced_chapter.asc(), EpicReaderQuestion.question_key.asc())
+                .all()
+            )
         ],
         "pleasure_beats": [
             _asdict_model(row)
-            for row in db.query(EpicPleasureBeat).filter(EpicPleasureBeat.project_id == project.id).order_by(EpicPleasureBeat.created_at.asc()).all()
+            for row in (
+                db.query(EpicPleasureBeat)
+                .filter(EpicPleasureBeat.project_id == project.id)
+                .order_by(
+                    EpicPleasureBeat.volume_number.asc(),
+                    EpicPleasureBeat.chapter_number.asc(),
+                    EpicPleasureBeat.pleasure_type.asc(),
+                )
+                .all()
+            )
         ],
         "chapter_contracts": db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id).order_by(EpicChapterContract.chapter_number.asc()).all(),
         "chapters": db.query(EpicChapter).filter(EpicChapter.project_id == project.id).order_by(EpicChapter.chapter_number.asc()).all(),

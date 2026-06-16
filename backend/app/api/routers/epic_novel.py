@@ -79,6 +79,7 @@ from app.services.epic_reference import (
     import_reference_file,
     ingest_reference_book,
     list_reference_download_tasks,
+    list_reference_download_task_summaries,
     latest_reference_profile,
     normalize_booklist,
     scan_sonovel_downloads,
@@ -229,7 +230,7 @@ def get_reference_download_tasks(
     user: User = Depends(get_current_user),
 ) -> list[ReferenceDownloadTaskResponse]:
     del user
-    return list_reference_download_tasks(db)
+    return list_reference_download_task_summaries(db)
 
 
 @router.get("/reference-download-tasks/{task_id}", response_model=ReferenceDownloadTaskResponse)
