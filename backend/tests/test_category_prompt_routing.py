@@ -328,6 +328,8 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "不要做具体投资预测" in prompt
     assert "如果美元走弱" in prompt
     assert "每个重要概念、事件、政策、技术、公司动作或市场变化" in prompt
+    assert "正文字数不设人为上限" in prompt
+    assert "最终正文长度控制在约12000字" not in prompt
     assert "【小节标题全局要求】" in prompt
     assert "【导言与正文分工全局要求】" in prompt
     assert "原始视频文稿" in rendered
