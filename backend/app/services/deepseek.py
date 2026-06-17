@@ -71,8 +71,8 @@ def generate_text(
         "messages": messages,
         "temperature": 0.1 if temperature is None else temperature,
     }
-    if max_output_tokens is not None:
-        kwargs["max_tokens"] = max_output_tokens
+    if max_output_tokens is not None and int(max_output_tokens) > 0:
+        kwargs["max_tokens"] = int(max_output_tokens)
 
     chunks: list[str] = []
     generated_chars = 0

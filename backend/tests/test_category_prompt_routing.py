@@ -342,6 +342,127 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("finance_tech") == "finance_technology"
 
 
+def test_finance_dynamic_target_words_by_duration() -> None:
+    assert 16_000 <= content_engine._finance_dynamic_target_words(
+        "财经科技测试文稿",
+        source_duration_seconds=10 * 60,
+    ) <= 17_000
+    assert content_engine._finance_dynamic_target_words(
+        "财经科技测试文稿",
+        source_duration_seconds=30 * 60,
+    ) == 50_000
+    assert content_engine._finance_dynamic_target_words(
+        "财经科技测试文稿",
+        source_duration_seconds=45 * 60,
+    ) == 50_000
+    assert content_engine._finance_dynamic_target_words(
+        "财经科技测试文稿",
+        source_duration_seconds=90 * 60,
+    ) == 75_000
+    assert content_engine._finance_dynamic_target_words("财" * 8400) == 50_000
+
+
+def _long_finance_manuscript(repeat: int = 5200) -> str:
+    body = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
+    return MINIMAL_MANUSCRIPT.replace("测试正文。", body)
+
+
+def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "视频提到芯片价格、云厂商资本开支、政策约束和普通人的设备成本变化。"
+    writer_prompts: list[str] = []
+    writer_kwargs: list[dict[str, object]] = []
+    polish_kwargs: list[dict[str, object]] = []
+    refine_kwargs: list[dict[str, object]] = []
+    format_kwargs: list[dict[str, object]] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        writer_kwargs.append(dict(kwargs))
+        return _long_finance_manuscript()
+
+    def fake_polish_book_text(text: str, **kwargs: object) -> str:
+        polish_kwargs.append(dict(kwargs))
+        return text
+
+    def fake_refine_book_text(text: str, **kwargs: object) -> str:
+        refine_kwargs.append(dict(kwargs))
+        return text
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        format_kwargs.append(dict(kwargs))
+        return text
+
+    async def fail_chunked_gemini(*_: object, **__: object) -> str:
+        raise AssertionError("finance longform must not use chunked Gemini path")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
+    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fail_chunked_gemini)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="finance_technology",
+            output_dir=tmp_path / "finance_longform",
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert "@最终书名" in result
+    assert len(writer_prompts) == 1
+    assert "财经科技长视频动态长文强约束" in writer_prompts[0]
+    assert "一次性输出完整书稿" in writer_prompts[0]
+    assert "不要分章分批生成" in writer_prompts[0]
+    assert "必须按视频信息点展开" in writer_prompts[0]
+    assert "禁止重复观点" in writer_prompts[0]
+    assert "禁止为了凑字数堆无关信息" in writer_prompts[0]
+    assert writer_kwargs[0]["max_output_tokens"] == 0
+    assert polish_kwargs[0]["disable_max_output_tokens"] is True
+    assert refine_kwargs[0]["disable_max_output_tokens"] is True
+    assert format_kwargs[0]["max_output_tokens"] == 0
+    assert format_kwargs[0]["fail_on_max_tokens"] is True
+
+
+def test_finance_longform_below_threshold_triggers_whole_book_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_prompts: list[str] = []
+    writer_kwargs: list[dict[str, object]] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        writer_kwargs.append(dict(kwargs))
+        if len(writer_prompts) == 1:
+            return MINIMAL_MANUSCRIPT
+        return _long_finance_manuscript()
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "视频讲到算力价格、AI 服务器供应链、政策条件和企业投入节奏。",
+            category="finance_technology",
+            output_dir=tmp_path / "finance_completion",
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert len(writer_prompts) == 2
+    assert "财经科技长文完整补足任务" in writer_prompts[1]
+    assert "新增章节" not in writer_prompts[1]
+    assert all(kwargs["max_output_tokens"] == 0 for kwargs in writer_kwargs)
+    assert content_engine._finance_body_chars(result) >= int(50_000 * 0.85)
+
+
 def test_writer_prompts_include_punctuation_usage_rules() -> None:
     prompt = get_prompts("social_science")["full_book_writer"]
 

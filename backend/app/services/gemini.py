@@ -232,8 +232,8 @@ def generate_text(
     }
     if temperature is not None:
         config_kwargs["temperature"] = temperature
-    if max_output_tokens is not None:
-        config_kwargs["maxOutputTokens"] = max_output_tokens
+    if max_output_tokens is not None and int(max_output_tokens) > 0:
+        config_kwargs["maxOutputTokens"] = int(max_output_tokens)
 
     contents = prompt
     system_instruction = (system_instruction or "").strip() or None

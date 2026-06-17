@@ -336,8 +336,34 @@ def extract_video_text_with_qingdou(
     )
 
 
+def _duration_seconds_from_config(config: dict[str, Any]) -> int | None:
+    for key in (
+        "video_duration_seconds",
+        "source_duration_seconds",
+        "duration_seconds",
+        "video_duration",
+        "duration",
+    ):
+        value = config.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            seconds = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            return seconds
+    return None
+
+
 def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     """Step 1: 获取视频纯文本文案。"""
+    text, _duration = _fetch_video_text_with_duration(source_url, config)
+    return text
+
+
+def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> tuple[str, int | None]:
+    """Step 1: 获取视频纯文本文案，同时尽量保留视频时长。"""
     category = str(config.get("category") or "").strip()
     source_canonical_url = str(config.get("source_canonical_url") or canonical_source_url(source_url))
     detected_platform = detect_video_source_platform(source_canonical_url or source_url)
@@ -345,9 +371,10 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
     if source_platform == "unknown" and detected_platform != "unknown":
         source_platform = detected_platform
     source_platform_label = str(config.get("source_platform_label") or platform_label(source_platform))
+    config_duration = _duration_seconds_from_config(config)
     cached_text = _source_text_from_config(config, task_label="fetch")
     if cached_text:
-        return cached_text
+        return cached_text, config_duration
 
     if category == "classical_chinese":
         raise ValueError("古文白话题材请直接粘贴文言文原文，不需要填写视频链接")
@@ -377,7 +404,7 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
                 result.is_generated,
                 len(result.text),
             )
-            return result.text
+            return result.text, config_duration
         except YouTubeTranscriptError as exc:
             if not settings.QINGDOU_API_KEY or not settings.QINGDOU_BASE_URL:
                 raise
@@ -410,7 +437,7 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
                     fallback.source_id,
                     len(fallback.text),
                 )
-                return fallback.text
+                return fallback.text, config_duration
             except WeChatChannelsError as resolver_exc:
                 logger.warning("WeChat Channels media resolver fallback failed", exc_info=True)
                 raise RuntimeError(
@@ -432,7 +459,7 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
                     fallback.bvid,
                     len(fallback.text),
                 )
-                return fallback.text
+                return fallback.text, getattr(fallback, "duration", None) or config_duration
             except BilibiliTranscriptError as fallback_exc:
                 logger.warning("Bilibili fallback failed", exc_info=True)
                 raise RuntimeError(
@@ -444,7 +471,7 @@ def _fetch_video_text(source_url: str, config: dict[str, Any]) -> str:
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
         result.batch_id, result.task_id, duration,
     )
-    return text
+    return text, duration or config_duration
 
 
 def _has_resume_artifact(output_dir: Path) -> bool:
@@ -454,17 +481,18 @@ def _has_resume_artifact(output_dir: Path) -> bool:
     )
 
 
-def _resolve_video_text_for_run(task: Task, output_dir: Path) -> str:
+def _resolve_video_text_for_run(task: Task, output_dir: Path) -> tuple[str, int | None]:
     config = dict(task.config or {})
+    config_duration = _duration_seconds_from_config(config)
     cached_text = _source_text_from_config(config, task_label=str(task.id))
     if cached_text:
-        return cached_text
+        return cached_text, config_duration
 
     if _has_resume_artifact(output_dir):
         logger.info("[task %s] stage artifact exists; skip video text fetch and resume from disk", task.id)
-        return ""
+        return "", config_duration
 
-    return _fetch_video_text(task.source_url, config)
+    return _fetch_video_text_with_duration(task.source_url, config)
 
 
 def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
@@ -927,12 +955,17 @@ def process_video(_self, task_id: str) -> dict:
         fetch_start_step = "正在读取参考文章" if is_reference_article else "正在获取视频文案"
         _update_progress(db, task, progress=8, step=fetch_start_step, run_id=run_id)
         db.flush()
-        video_text = _resolve_video_text_for_run(task, output_dir)
+        video_text, video_duration_seconds = _resolve_video_text_for_run(task, output_dir)
         if video_text:
+            duration_patch = (
+                {"video_duration_seconds": int(video_duration_seconds)}
+                if video_duration_seconds
+                else {}
+            )
             if str((task.config or {}).get("source_text_path") or "").strip():
-                _patch_config(task, raw_text_chars=len(video_text))
+                _patch_config(task, raw_text_chars=len(video_text), **duration_patch)
             else:
-                _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text))
+                _patch_config(task, raw_text=video_text, raw_text_chars=len(video_text), **duration_patch)
             fetch_step = (
                 f"参考文章就绪 ({len(video_text)} 字符)"
                 if is_reference_article
@@ -1065,6 +1098,7 @@ def process_video(_self, task_id: str) -> dict:
                     (task.config or {}).get("comic_panel_count")
                 ),
                 input_source=input_source,
+                source_duration_seconds=_duration_seconds_from_config(task.config or {}),
             )
         )
         _ensure_active_run(db, task, run_id)

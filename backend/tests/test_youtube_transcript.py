@@ -181,6 +181,27 @@ def test_fetch_video_text_falls_back_to_qingdou_when_youtube_transcript_fails(
     assert calls == ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
 
 
+def test_fetch_video_text_with_duration_preserves_qingdou_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def ok_qingdou(source_url: str, **kwargs):
+        return "轻抖文案", 1800, type("Result", (), {"batch_id": 1, "task_id": 2})()
+
+    monkeypatch.setattr(task_tasks, "extract_video_text_with_qingdou", ok_qingdou)
+
+    text, duration = task_tasks._fetch_video_text_with_duration(  # noqa: SLF001
+        "https://www.douyin.com/video/123",
+        {"source_platform": "douyin"},
+    )
+
+    assert text == "轻抖文案"
+    assert duration == 1800
+    assert task_tasks._fetch_video_text(  # noqa: SLF001
+        "https://www.douyin.com/video/123",
+        {"source_platform": "douyin"},
+    ) == "轻抖文案"
+
+
 def test_fetch_video_text_sends_canonical_youtube_url_to_qingdou(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
