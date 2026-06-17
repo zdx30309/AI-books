@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import (
     EpicAcceptanceReport,
+    EpicArtifactRecord,
+    EpicAuthorityLedger,
     EpicBibleCoverageItem,
     EpicBibleSection,
     EpicBureaucracySystem,
@@ -29,6 +31,8 @@ from app.models import (
     EpicChapterStatus,
     EpicCharacter,
     EpicCharacterArc,
+    EpicCharacterGrowthLedger,
+    EpicCharacterKnowledgeLedger,
     EpicCharacterState,
     EpicFaction,
     EpicFactionState,
@@ -49,8 +53,12 @@ from app.models import (
     EpicPowerSystem,
     EpicProductionJob,
     EpicReaderQuestion,
+    EpicReaderQuestionLedger,
     EpicRelationshipEdge,
+    EpicRelationshipLedger,
     EpicRetrievalTrace,
+    EpicSecretExposurePolicy,
+    EpicSecretLedger,
     EpicStateExtract,
     EpicVolumeContract,
     EpicWorldAtlas,
@@ -218,6 +226,212 @@ def _apply_query_limit(query: Any, value: int | None) -> Any:
 def _take(items: list[Any], value: int | None) -> list[Any]:
     limit = _positive_limit(value)
     return items[:limit] if limit is not None else items
+
+
+def _listify(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    return [value]
+
+
+def _compact_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_compact_text(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_compact_text(item) for item in value)
+    return str(value)
+
+
+def _string_items(value: Any) -> list[str]:
+    result: list[str] = []
+    for item in _listify(value):
+        text = _compact_text(item).strip()
+        if text:
+            result.append(text)
+    return result
+
+
+CONSISTENCY_CONTRACT_FIELDS = [
+    "allowedKnowledgeReveals",
+    "forbiddenKnowledgeReveals",
+    "allowedSecretExposureChanges",
+    "forbiddenSecretExposureChanges",
+    "allowedGrowthEvents",
+    "forbiddenGrowthEvents",
+    "allowedPowerUse",
+    "forbiddenPowerUse",
+    "allowedAuthorityUse",
+    "forbiddenAuthorityUse",
+    "requiredReaderQuestions",
+    "forbiddenEarlyAnswers",
+    "allowedRelationshipChanges",
+    "forbiddenRelationshipChanges",
+    "maxNewNamedCharacters",
+    "allowedNewMajorCharacters",
+    "forbiddenMajorCharacterIntroductions",
+    "heroineEntryRules",
+    "antagonistExposureRules",
+    "professionalTermsAllowed",
+    "professionalTermsForbiddenUnlessSourced",
+]
+
+
+def _contract_constraint(contract: EpicChapterContract, key: str, default: Any = None) -> Any:
+    raw = contract.raw_json if isinstance(contract.raw_json, dict) else {}
+    consistency = raw.get("consistencyContract") if isinstance(raw.get("consistencyContract"), dict) else {}
+    if key in consistency:
+        return consistency[key]
+    if key in raw:
+        return raw[key]
+    return default
+
+
+def _chapter_consistency_contract(contract: EpicChapterContract) -> dict[str, Any]:
+    allowed_growth = _listify(_contract_constraint(contract, "allowedGrowthEvents", None))
+    if not allowed_growth and contract.character_arc_deltas:
+        allowed_growth = _listify(contract.character_arc_deltas)
+    allowed_relationship = _listify(_contract_constraint(contract, "allowedRelationshipChanges", None))
+    if not allowed_relationship and contract.relationship_changes:
+        allowed_relationship = _listify(contract.relationship_changes)
+    allowed_power = _listify(_contract_constraint(contract, "allowedPowerUse", None))
+    if not allowed_power and contract.power_system_change:
+        allowed_power = _listify(contract.power_system_change)
+    return {
+        "allowedKnowledgeReveals": _listify(_contract_constraint(contract, "allowedKnowledgeReveals", [])),
+        "forbiddenKnowledgeReveals": _listify(_contract_constraint(contract, "forbiddenKnowledgeReveals", contract.must_not_reveal or [])),
+        "allowedSecretExposureChanges": _listify(_contract_constraint(contract, "allowedSecretExposureChanges", [])),
+        "forbiddenSecretExposureChanges": _listify(_contract_constraint(contract, "forbiddenSecretExposureChanges", [])),
+        "allowedGrowthEvents": allowed_growth,
+        "forbiddenGrowthEvents": _listify(_contract_constraint(contract, "forbiddenGrowthEvents", [])),
+        "allowedPowerUse": allowed_power,
+        "forbiddenPowerUse": _listify(_contract_constraint(contract, "forbiddenPowerUse", [])),
+        "allowedAuthorityUse": _listify(_contract_constraint(contract, "allowedAuthorityUse", [])),
+        "forbiddenAuthorityUse": _listify(_contract_constraint(contract, "forbiddenAuthorityUse", [])),
+        "requiredReaderQuestions": _listify(_contract_constraint(contract, "requiredReaderQuestions", [contract.reader_question_raised] if contract.reader_question_raised else [])),
+        "forbiddenEarlyAnswers": _listify(_contract_constraint(contract, "forbiddenEarlyAnswers", [])),
+        "allowedRelationshipChanges": allowed_relationship,
+        "forbiddenRelationshipChanges": _listify(_contract_constraint(contract, "forbiddenRelationshipChanges", [])),
+        "maxNewNamedCharacters": _contract_constraint(contract, "maxNewNamedCharacters", 0),
+        "allowedNewMajorCharacters": _listify(_contract_constraint(contract, "allowedNewMajorCharacters", [])),
+        "forbiddenMajorCharacterIntroductions": _listify(_contract_constraint(contract, "forbiddenMajorCharacterIntroductions", [])),
+        "heroineEntryRules": _listify(_contract_constraint(contract, "heroineEntryRules", [])),
+        "antagonistExposureRules": _listify(_contract_constraint(contract, "antagonistExposureRules", [])),
+        "professionalTermsAllowed": _listify(_contract_constraint(contract, "professionalTermsAllowed", [])),
+        "professionalTermsForbiddenUnlessSourced": _listify(_contract_constraint(contract, "professionalTermsForbiddenUnlessSourced", [])),
+    }
+
+
+def _ensure_contract_consistency_defaults(contract: EpicChapterContract) -> None:
+    raw = contract.raw_json if isinstance(contract.raw_json, dict) else {}
+    current = raw.get("consistencyContract") if isinstance(raw.get("consistencyContract"), dict) else {}
+    raw["consistencyContract"] = {**_chapter_consistency_contract(contract), **current}
+    contract.raw_json = raw
+
+
+def _issue(
+    severity: str,
+    issue_type: str,
+    description: str,
+    *,
+    field: str | None = None,
+    evidence: Any = None,
+    affected_characters: list[str] | None = None,
+    affected_secrets: list[str] | None = None,
+    affected_reader_questions: list[str] | None = None,
+    affected_ledgers: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "severity": severity,
+        "issueType": issue_type,
+        "description": description,
+        "violatedContractFields": [field] if field else [],
+        "affectedCharacters": affected_characters or [],
+        "affectedSecrets": affected_secrets or [],
+        "affectedReaderQuestions": affected_reader_questions or [],
+        "affectedLedgers": affected_ledgers or [],
+        "recommendedRepairInstructions": "只局部修补违规句段，保留已合格内容，不新增合同未允许的角色、揭秘、成长或能力使用。",
+        "evidence": evidence,
+    }
+
+
+def _contains_forbidden_term(content: str, terms: Any, allowed: Any = None) -> list[str]:
+    allowed_text = _compact_text(allowed)
+    found: list[str] = []
+    for term in _string_items(terms):
+        if term and term in content and term not in allowed_text:
+            found.append(term)
+    return found
+
+
+def _has_in_world_source(content: str, term: str) -> bool:
+    source_markers = [
+        "档案",
+        "卷宗",
+        "记录",
+        "公文",
+        "律令",
+        "法典",
+        "旧案",
+        "证人",
+        "目击",
+        "师父",
+        "导师",
+        "经文",
+        "碑文",
+        "文书",
+        "机构",
+        "敌人说",
+        "亲眼",
+        "观察到",
+    ]
+    index = content.find(term)
+    if index < 0:
+        return False
+    window = content[max(0, index - 40) : index + len(term) + 40]
+    return any(marker in window for marker in source_markers)
+
+
+def _latest_ledger_rows(db: Session, model: Any, project_id: UUID, limit: int = 80) -> list[Any]:
+    query = db.query(model).filter(model.project_id == project_id)
+    if hasattr(model, "chapter_number"):
+        query = query.order_by(model.chapter_number.desc())
+    elif hasattr(model, "created_at"):
+        query = query.order_by(model.created_at.desc())
+    return query.limit(limit).all()
+
+
+def _consistency_ledger_snapshot(db: Session | None, project: EpicNovelProject | None) -> dict[str, list[dict[str, Any]]]:
+    if db is None or project is None:
+        return {
+            "characterKnowledge": [],
+            "secretExposurePolicies": [],
+            "readerQuestionLedger": [],
+            "characterGrowth": [],
+            "currentPowerLedger": [],
+            "authorityLedger": [],
+            "relationshipLedger": [],
+            "secretLedger": [],
+        }
+    return {
+        "characterKnowledge": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicCharacterKnowledgeLedger, project.id)],
+        "secretExposurePolicies": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicSecretExposurePolicy, project.id)],
+        "readerQuestionLedger": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicReaderQuestionLedger, project.id)],
+        "characterGrowth": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicCharacterGrowthLedger, project.id)],
+        "currentPowerLedger": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicPowerLedger, project.id)],
+        "authorityLedger": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicAuthorityLedger, project.id)],
+        "relationshipLedger": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicRelationshipLedger, project.id)],
+        "secretLedger": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicSecretLedger, project.id)],
+    }
 
 
 def _get_project(db: Session, project_id: UUID, user: Any | None = None) -> EpicNovelProject:
@@ -388,7 +602,120 @@ def project_detail(db: Session, project_id: UUID, user: Any | None = None) -> di
             _asdict_model(row)
             for row in db.query(EpicRetrievalTrace).filter(EpicRetrievalTrace.project_id == project.id).order_by(EpicRetrievalTrace.created_at.desc()).all()
         ],
+        "character_knowledge_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicCharacterKnowledgeLedger).filter(EpicCharacterKnowledgeLedger.project_id == project.id).order_by(EpicCharacterKnowledgeLedger.chapter_number.desc()).all()
+        ],
+        "secret_exposure_policies": [
+            _asdict_model(row)
+            for row in db.query(EpicSecretExposurePolicy).filter(EpicSecretExposurePolicy.project_id == project.id).order_by(EpicSecretExposurePolicy.updated_at.desc()).all()
+        ],
+        "reader_question_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicReaderQuestionLedger).filter(EpicReaderQuestionLedger.project_id == project.id).order_by(EpicReaderQuestionLedger.created_at.desc()).all()
+        ],
+        "character_growth_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicCharacterGrowthLedger).filter(EpicCharacterGrowthLedger.project_id == project.id).order_by(EpicCharacterGrowthLedger.chapter_number.desc()).all()
+        ],
+        "authority_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicAuthorityLedger).filter(EpicAuthorityLedger.project_id == project.id).order_by(EpicAuthorityLedger.chapter_number.desc()).all()
+        ],
+        "relationship_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicRelationshipLedger).filter(EpicRelationshipLedger.project_id == project.id).order_by(EpicRelationshipLedger.chapter_number.desc()).all()
+        ],
+        "secret_ledgers": [
+            _asdict_model(row)
+            for row in db.query(EpicSecretLedger).filter(EpicSecretLedger.project_id == project.id).order_by(EpicSecretLedger.chapter_number.desc()).all()
+        ],
+        "artifacts": [
+            _asdict_model(row)
+            for row in db.query(EpicArtifactRecord).filter(EpicArtifactRecord.project_id == project.id).order_by(EpicArtifactRecord.updated_at.desc()).all()
+        ],
         "logs": logs,
+    }
+
+
+def delete_epic_project(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
+    project = _get_project(db, project_id, user)
+    db.delete(project)
+    db.commit()
+    return {"status": "deleted", "projectId": str(project_id)}
+
+
+def project_status_summary(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
+    project = sync_project_progress(db, _get_project(db, project_id, user))
+    accepted_chapters = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.status == EpicChapterStatus.ACCEPTED).count()
+    latest_issue = (
+        db.query(EpicIssue)
+        .filter(EpicIssue.project_id == project.id, EpicIssue.status == "open")
+        .order_by(EpicIssue.created_at.desc())
+        .first()
+    )
+    latest_job = latest_epic_job_snapshot(db, project.id)
+    profile = latest_reference_profile(db)
+    bible = db.query(EpicMasterBible).filter(EpicMasterBible.project_id == project.id).first()
+    artifacts = db.query(EpicArtifactRecord).filter(EpicArtifactRecord.project_id == project.id).all()
+    downloads = db.query(ReferenceDownloadTask.status, func.count(ReferenceDownloadTask.id)).group_by(ReferenceDownloadTask.status).all()
+    return {
+        "projectId": str(project.id),
+        "title": project.title,
+        "status": project.status,
+        "targetWords": project.target_words,
+        "currentWords": project.total_words,
+        "targetChapters": project.target_chapters,
+        "acceptedChapters": accepted_chapters,
+        "currentVolume": project.current_volume,
+        "currentChapter": project.current_chapter,
+        "latestTask": latest_job,
+        "lastError": latest_issue.description if latest_issue else None,
+        "reference": {
+            "profileReady": bool(profile),
+            "sourceBookCount": profile.source_book_count if profile else 0,
+            "sourceCardCount": profile.source_card_count if profile else 0,
+            "downloads": {status: count for status, count in downloads},
+        },
+        "bible": {
+            "ready": bool(bible),
+            "coverageScore": bible.coverage_score if bible else 0.0,
+        },
+        "qa": {
+            "openIssues": db.query(EpicIssue).filter(EpicIssue.project_id == project.id, EpicIssue.status == "open").count(),
+            "blockingIssues": db.query(EpicIssue).filter(EpicIssue.project_id == project.id, EpicIssue.status == "open", EpicIssue.severity.in_(["high", "severe"])).count(),
+        },
+        "exports": {
+            "readyArtifacts": sum(1 for row in artifacts if row.status == "ready"),
+            "artifacts": [_asdict_model(row) for row in artifacts],
+        },
+        "updatedAt": project.updated_at,
+    }
+
+
+def list_project_artifacts(db: Session, project_id: UUID, user: Any | None = None) -> list[dict[str, Any]]:
+    project = _get_project(db, project_id, user)
+    rows = (
+        db.query(EpicArtifactRecord)
+        .filter(EpicArtifactRecord.project_id == project.id)
+        .order_by(EpicArtifactRecord.updated_at.desc())
+        .all()
+    )
+    return [_asdict_model(row) for row in rows]
+
+
+def list_epic_ledgers(db: Session, project_id: UUID, user: Any | None = None) -> dict[str, Any]:
+    project = _get_project(db, project_id, user)
+    return {
+        "projectId": str(project.id),
+        "characterKnowledge": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicCharacterKnowledgeLedger, project.id, limit=200)],
+        "secretExposurePolicies": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicSecretExposurePolicy, project.id, limit=200)],
+        "readerQuestions": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicReaderQuestionLedger, project.id, limit=200)],
+        "characterGrowth": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicCharacterGrowthLedger, project.id, limit=200)],
+        "power": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicPowerLedger, project.id, limit=200)],
+        "authority": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicAuthorityLedger, project.id, limit=200)],
+        "relationships": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicRelationshipLedger, project.id, limit=200)],
+        "secrets": [_asdict_model(row) for row in _latest_ledger_rows(db, EpicSecretLedger, project.id, limit=200)],
     }
 
 
@@ -2123,6 +2450,7 @@ def compile_chapter_contracts(db: Session, project_id: UUID, volume_number: int,
     existing = db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id, EpicChapterContract.volume_number == volume_number).order_by(EpicChapterContract.chapter_number.asc()).all()
     if existing:
         for contract in existing:
+            _ensure_contract_consistency_defaults(contract)
             retrieval = auto_retrieval_plan(
                 db,
                 project_id=project.id,
@@ -2137,6 +2465,7 @@ def compile_chapter_contracts(db: Session, project_id: UUID, volume_number: int,
                 **(contract.raw_json or {}),
                 "retrievalTraceId": str(retrieval["trace"].id) if retrieval.get("trace") else None,
                 "referenceUsage": _reference_usage_meta({"trace": retrieval.get("trace"), "metadata": {"included": [], "overflow": []}}),
+                "consistencyContract": _chapter_consistency_contract(contract),
             }
         db.commit()
         return existing
@@ -2182,6 +2511,9 @@ def compile_chapter_contracts(db: Session, project_id: UUID, volume_number: int,
                 },
             )
         )
+    db.flush()
+    for contract in db.query(EpicChapterContract).filter(EpicChapterContract.project_id == project.id, EpicChapterContract.volume_number == volume_number).all():
+        _ensure_contract_consistency_defaults(contract)
     db.commit()
     _log_success(db, project, "chapter_contracts", "author", f"volume={volume_number}")
     db.commit()
@@ -2284,6 +2616,22 @@ def build_chapter_context_pack(db: Session, project_id: UUID, chapter_number: in
     latest_object_states = [_asdict_model(row) for row in _apply_query_limit(db.query(EpicObjectState).filter(EpicObjectState.project_id == project.id).order_by(EpicObjectState.chapter_number.desc()), state_limit).all()]
     latest_faction_states = [_asdict_model(row) for row in _apply_query_limit(db.query(EpicFactionState).filter(EpicFactionState.project_id == project.id).order_by(EpicFactionState.chapter_number.desc()), state_limit).all()]
     latest_institution_states = [_asdict_model(row) for row in _apply_query_limit(db.query(EpicInstitutionState).filter(EpicInstitutionState.project_id == project.id).order_by(EpicInstitutionState.chapter_number.desc()), state_limit).all()]
+    consistency_contract = _chapter_consistency_contract(contract)
+    ledger_snapshot = _consistency_ledger_snapshot(db, project)
+    unlocked_abilities = _string_items([row.get("abilities") for row in current_power_ledger])
+    locked_abilities = _string_items(
+        [
+            (row.get("raw_json") or {}).get("lockedAbilities") if isinstance(row.get("raw_json"), dict) else None
+            for row in current_power_ledger
+        ]
+        + consistency_contract.get("forbiddenPowerUse", [])
+    )
+    current_limits = _string_items(
+        [
+            (row.get("raw_json") or {}).get("limitation") if isinstance(row.get("raw_json"), dict) else None
+            for row in current_power_ledger
+        ]
+    )
     profile_summary = _profile_summary(retrieval["profile"])
     context = {
         "project": {"id": str(project.id), "title": project.title, "premise": project.premise, "genre": project.genre},
@@ -2297,12 +2645,31 @@ def build_chapter_context_pack(db: Session, project_id: UUID, chapter_number: in
         "volumeContract": _asdict_model(db.query(EpicVolumeContract).filter(EpicVolumeContract.project_id == project.id, EpicVolumeContract.volume_number == contract.volume_number).first()),
         "recentChapters": [{"chapterNumber": row.chapter_number, "summary": row.summary, "endingHook": row.ending_hook} for row in recent],
         "latestCharacterStates": latest_character_states,
+        "currentCharacterKnowledgeStates": ledger_snapshot["characterKnowledge"],
+        "currentSecretExposureLevels": ledger_snapshot["secretExposurePolicies"],
+        "unresolvedReaderQuestions": ledger_snapshot["readerQuestionLedger"],
+        "currentGrowthStates": ledger_snapshot["characterGrowth"],
+        "currentRelationshipStates": ledger_snapshot["relationshipLedger"],
         "currentPowerLedger": current_power_ledger,
+        "unlockedAbilities": unlocked_abilities,
+        "lockedAbilities": locked_abilities,
+        "currentInjuriesDebtsLimitations": current_limits,
+        "currentAuthorityPermissions": ledger_snapshot["authorityLedger"],
         "latestObjectStates": latest_object_states,
         "latestFactionStates": latest_faction_states,
         "latestInstitutionStates": latest_institution_states,
         "activeForeshadows": [_asdict_model(row) for row in db.query(EpicForeshadow).filter(EpicForeshadow.project_id == project.id, EpicForeshadow.status != "paid_off").all()],
         "activeReaderQuestions": [_asdict_model(row) for row in db.query(EpicReaderQuestion).filter(EpicReaderQuestion.project_id == project.id, EpicReaderQuestion.status != "answered").all()],
+        "allowedRevealsForThisChapter": consistency_contract["allowedKnowledgeReveals"] + consistency_contract["allowedSecretExposureChanges"],
+        "forbiddenRevealsForThisChapter": consistency_contract["forbiddenKnowledgeReveals"] + consistency_contract["forbiddenSecretExposureChanges"],
+        "allowedGrowthForThisChapter": consistency_contract["allowedGrowthEvents"],
+        "forbiddenGrowthForThisChapter": consistency_contract["forbiddenGrowthEvents"],
+        "allowedPowerUseForThisChapter": consistency_contract["allowedPowerUse"],
+        "forbiddenPowerUseForThisChapter": consistency_contract["forbiddenPowerUse"],
+        "allowedAuthorityUseForThisChapter": consistency_contract["allowedAuthorityUse"],
+        "forbiddenAuthorityUseForThisChapter": consistency_contract["forbiddenAuthorityUse"],
+        "professionalTermsAllowed": consistency_contract["professionalTermsAllowed"],
+        "professionalTermsForbiddenUnlessSourced": consistency_contract["professionalTermsForbiddenUnlessSourced"],
         "referenceInspirationPack": {"cards": cards, "profile": profile_summary},
         "contextEvidence": {
             "previousStateCounts": _previous_state_counts(db, project, chapter_number) if chapter_number > 1 else {},
@@ -2314,8 +2681,14 @@ def build_chapter_context_pack(db: Session, project_id: UUID, chapter_number: in
             "referenceCardCount": len(cards),
         },
         "referenceSafety": {"rawTextIncluded": False, "allowedInputs": ["ReferencePatternCards", "ReferenceMechanismProfile"]},
+        "consistencyContract": consistency_contract,
     }
     compiled = compile_dynamic_context(context, role="author")
+    context["overflowSummary"] = {
+        "overflowCount": compiled["metadata"].get("overflowCount", 0),
+        "overflowPaths": compiled["metadata"].get("overflowPaths", []),
+        "reason": "provider_context_window_budget",
+    }
     context["compiledPromptContext"] = compiled["context"]
     context["contextMetadata"] = compiled["metadata"]
     trace = retrieval.get("trace")
@@ -2438,7 +2811,21 @@ def _build_chapter_writer_prompt(context: dict[str, Any]) -> str:
         "powerSystem": compiled_context.get("powerSystem"),
         "globalSpine": compiled_context.get("globalSpine"),
         "latestCharacterStates": compiled_context.get("latestCharacterStates"),
+        "currentCharacterKnowledgeStates": compiled_context.get("currentCharacterKnowledgeStates"),
+        "currentSecretExposureLevels": compiled_context.get("currentSecretExposureLevels"),
+        "unresolvedReaderQuestions": compiled_context.get("unresolvedReaderQuestions"),
+        "currentGrowthStates": compiled_context.get("currentGrowthStates"),
+        "currentRelationshipStates": compiled_context.get("currentRelationshipStates"),
         "currentPowerLedger": compiled_context.get("currentPowerLedger"),
+        "unlockedAbilities": compiled_context.get("unlockedAbilities"),
+        "lockedAbilities": compiled_context.get("lockedAbilities"),
+        "currentInjuriesDebtsLimitations": compiled_context.get("currentInjuriesDebtsLimitations"),
+        "currentAuthorityPermissions": compiled_context.get("currentAuthorityPermissions"),
+        "allowedRevealsForThisChapter": compiled_context.get("allowedRevealsForThisChapter"),
+        "forbiddenRevealsForThisChapter": compiled_context.get("forbiddenRevealsForThisChapter"),
+        "allowedGrowthForThisChapter": compiled_context.get("allowedGrowthForThisChapter"),
+        "forbiddenGrowthForThisChapter": compiled_context.get("forbiddenGrowthForThisChapter"),
+        "consistencyContract": context.get("consistencyContract"),
         "referenceInspirationPack": compiled_context.get("referenceInspirationPack"),
         "contextMetadata": {
             "includedCount": len(compiled_metadata.get("included") or []),
@@ -2612,7 +2999,233 @@ def _contract_mentions_heroine(contract: EpicChapterContract) -> tuple[bool, lis
     return bool(names), names
 
 
-def _chapter_quality_issues(contract: EpicChapterContract, content: str, diff: dict[str, Any]) -> list[dict[str, Any]]:
+def _ledger_text_candidates(row: dict[str, Any], keys: list[str]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        values.extend(_string_items(value))
+    return [value for value in values if value]
+
+
+def _planned_window_allows(chapter_number: int | None, window: Any) -> bool:
+    if chapter_number is None:
+        return False
+    if not isinstance(window, dict):
+        return False
+    start = window.get("from") or window.get("start") or window.get("minChapter")
+    end = window.get("to") or window.get("end") or window.get("maxChapter")
+    try:
+        if start is not None and chapter_number < int(start):
+            return False
+        if end is not None and chapter_number > int(end):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return start is not None or end is not None
+
+
+def _consistency_quality_issues(
+    contract: EpicChapterContract,
+    content: str,
+    *,
+    db: Session | None = None,
+    project: EpicNovelProject | None = None,
+    chapter_number: int | None = None,
+) -> list[dict[str, Any]]:
+    rules = _chapter_consistency_contract(contract)
+    snapshot = _consistency_ledger_snapshot(db, project)
+    issues: list[dict[str, Any]] = []
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenKnowledgeReveals"), rules.get("allowedKnowledgeReveals")):
+        issues.append(
+            _issue(
+                "high",
+                "knowledge_leak",
+                "章节正文出现了本章合同禁止释放的知识点。",
+                field="forbiddenKnowledgeReveals",
+                evidence={"term": term},
+                affected_ledgers=["CharacterKnowledgeLedger"],
+            )
+        )
+
+    for row in snapshot.get("characterKnowledge", []):
+        character = str(row.get("character_name") or row.get("character_id") or "")
+        forbidden_terms = _ledger_text_candidates(row, ["does_not_know", "forbidden_dialogue"])
+        for term in _contains_forbidden_term(content, forbidden_terms, rules.get("allowedKnowledgeReveals")):
+            issues.append(
+                _issue(
+                    "high",
+                    "knowledge_leak",
+                    "角色说出或使用了当前知识账本中尚未获得的信息。",
+                    field="currentCharacterKnowledgeStates",
+                    evidence={"term": term, "ledger": row},
+                    affected_characters=[character] if character else [],
+                    affected_ledgers=["CharacterKnowledgeLedger"],
+                )
+            )
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenSecretExposureChanges"), rules.get("allowedSecretExposureChanges")):
+        issues.append(
+            _issue(
+                "high",
+                "early_secret_exposure",
+                "章节正文提前曝光了合同禁止曝光的秘密。",
+                field="forbiddenSecretExposureChanges",
+                evidence={"term": term},
+                affected_secrets=[term],
+                affected_ledgers=["SecretExposurePolicy", "SecretLedger"],
+            )
+        )
+
+    for row in snapshot.get("secretExposurePolicies", []):
+        forbidden_before = row.get("forbidden_reveal_before")
+        secret_terms = _ledger_text_candidates(row, ["true_name", "public_name", "secret_id"])
+        found_terms = _contains_forbidden_term(content, secret_terms, rules.get("allowedSecretExposureChanges"))
+        if not found_terms:
+            continue
+        before_limit = False
+        try:
+            before_limit = chapter_number is not None and forbidden_before is not None and chapter_number < int(forbidden_before)
+        except (TypeError, ValueError):
+            before_limit = False
+        if before_limit or not rules.get("allowedSecretExposureChanges"):
+            for term in found_terms:
+                issues.append(
+                    _issue(
+                        "high",
+                        "early_secret_exposure",
+                        "秘密曝光不在本章允许窗口内。",
+                        field="currentSecretExposureLevels",
+                        evidence={"term": term, "ledger": row},
+                        affected_secrets=[str(row.get("secret_id") or term)],
+                        affected_ledgers=["SecretExposurePolicy", "SecretLedger"],
+                    )
+                )
+
+    forbidden_answers = list(rules.get("forbiddenEarlyAnswers") or [])
+    for row in snapshot.get("readerQuestionLedger", []):
+        question_terms = _ledger_text_candidates(row, ["payoff_target", "partial_answers"])
+        if row.get("forbidden_early_answer", True) and not _planned_window_allows(chapter_number, row.get("planned_reveal_window")):
+            forbidden_answers.extend(question_terms)
+    for term in _contains_forbidden_term(content, forbidden_answers, rules.get("requiredReaderQuestions")):
+        issues.append(
+            _issue(
+                "high",
+                "reader_question_early_answer",
+                "章节提前回答了仍应悬置的读者问题。",
+                field="forbiddenEarlyAnswers",
+                evidence={"term": term},
+                affected_reader_questions=[term],
+                affected_ledgers=["ReaderQuestionLedger"],
+            )
+        )
+
+    for term in _contains_forbidden_term(content, rules.get("professionalTermsForbiddenUnlessSourced"), rules.get("professionalTermsAllowed")):
+        if not _has_in_world_source(content, term):
+            issues.append(
+                _issue(
+                    "high",
+                    "professional_term_without_source",
+                    "章节使用了未建立世界内来源的专业术语。",
+                    field="professionalTermsForbiddenUnlessSourced",
+                    evidence={"term": term},
+                    affected_ledgers=["CharacterKnowledgeLedger", "AuthorityLedger"],
+                )
+            )
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenGrowthEvents"), rules.get("allowedGrowthEvents")):
+        issues.append(
+            _issue(
+                "high",
+                "unauthorized_growth",
+                "章节出现了合同未允许的成长、晋升或关系跃迁。",
+                field="forbiddenGrowthEvents",
+                evidence={"term": term},
+                affected_ledgers=["CharacterGrowthLedger"],
+            )
+        )
+
+    generic_growth_terms = ["突然突破", "当场晋升", "顿悟", "关系突飞猛进", "获得权限", "解锁"]
+    allowed_growth_text = _compact_text(rules.get("allowedGrowthEvents")) + " " + _compact_text(rules.get("allowedPowerUse"))
+    for term in generic_growth_terms:
+        if term in content and term not in allowed_growth_text:
+            issues.append(
+                _issue(
+                    "high",
+                    "unauthorized_growth",
+                    "章节包含未由合同授权的成长或解锁表述。",
+                    field="allowedGrowthEvents",
+                    evidence={"term": term},
+                    affected_ledgers=["CharacterGrowthLedger", "PowerLedger", "AuthorityLedger"],
+                )
+            )
+
+    forbidden_power = list(rules.get("forbiddenPowerUse") or [])
+    for row in snapshot.get("currentPowerLedger", []):
+        raw = row.get("raw_json") if isinstance(row.get("raw_json"), dict) else {}
+        forbidden_power.extend(_listify(raw.get("lockedAbilities")))
+    for term in _contains_forbidden_term(content, forbidden_power, rules.get("allowedPowerUse")):
+        issues.append(
+            _issue(
+                "high",
+                "locked_ability_used",
+                "章节使用了尚未解锁或合同禁止使用的能力。",
+                field="forbiddenPowerUse",
+                evidence={"term": term},
+                affected_ledgers=["PowerLedger"],
+            )
+        )
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenAuthorityUse"), rules.get("allowedAuthorityUse")):
+        issues.append(
+            _issue(
+                "high",
+                "unauthorized_authority_use",
+                "章节使用了合同未授权的身份、职权或机构权限。",
+                field="forbiddenAuthorityUse",
+                evidence={"term": term},
+                affected_ledgers=["AuthorityLedger"],
+            )
+        )
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenRelationshipChanges"), rules.get("allowedRelationshipChanges")):
+        issues.append(
+            _issue(
+                "high",
+                "relationship_jump",
+                "章节发生了合同未允许的关系跃迁。",
+                field="forbiddenRelationshipChanges",
+                evidence={"term": term},
+                affected_ledgers=["RelationshipLedger"],
+            )
+        )
+
+    for term in _contains_forbidden_term(content, rules.get("forbiddenMajorCharacterIntroductions"), rules.get("allowedNewMajorCharacters")):
+        issues.append(
+            _issue(
+                "high",
+                "forbidden_major_character",
+                "章节引入了合同未允许的新核心角色。",
+                field="forbiddenMajorCharacterIntroductions",
+                evidence={"term": term},
+                affected_ledgers=["CharacterGrowthLedger"],
+            )
+        )
+
+    return issues
+
+
+def _chapter_quality_issues(
+    contract: EpicChapterContract,
+    content: str,
+    diff: dict[str, Any],
+    *,
+    db: Session | None = None,
+    project: EpicNovelProject | None = None,
+    chapter_number: int | None = None,
+) -> list[dict[str, Any]]:
     text = content.casefold()
     compact = re.sub(r"\s+", "", content)
     issues: list[dict[str, Any]] = []
@@ -2717,11 +3330,28 @@ def _chapter_quality_issues(contract: EpicChapterContract, content: str, diff: d
     if len(compact) < max(120, int((contract.target_words or 0) * 0.08)):
         issues.append({"severity": "medium", "issueType": "too_short_for_contract", "description": "章节长度不足以承载合同要求。"})
 
+    issues.extend(
+        _consistency_quality_issues(
+            contract,
+            content,
+            db=db,
+            project=project,
+            chapter_number=chapter_number,
+        )
+    )
     return issues
 
 
-def _acceptance(contract: EpicChapterContract, content: str, diff: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    issues = _chapter_quality_issues(contract, content, diff)
+def _acceptance(
+    contract: EpicChapterContract,
+    content: str,
+    diff: dict[str, Any],
+    *,
+    db: Session | None = None,
+    project: EpicNovelProject | None = None,
+    chapter_number: int | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    issues = _chapter_quality_issues(contract, content, diff, db=db, project=project, chapter_number=chapter_number)
     blocked = any(issue["severity"] in {"high", "severe"} for issue in issues)
     return ("blocked" if blocked else "accepted"), issues
 
@@ -2743,19 +3373,33 @@ def _acceptance_scores(issues: list[dict[str, Any]]) -> dict[str, float]:
     overall_penalty = severe * 0.45 + high * 0.25 + medium * 0.08
     return {
         "outline_execution_score": score("planned_vs_actual", "fallback_or_patch_output", "too_short_for_contract"),
-        "character_arc_score": score("character_arc_drift", "heroine_agency_missing", "relationship_drift"),
-        "power_legality_score": score("broken_power_rule", "power_change_underexplained"),
+        "character_arc_score": score("character_arc_drift", "heroine_agency_missing", "relationship_drift", "unauthorized_growth", "relationship_jump"),
+        "power_legality_score": score("broken_power_rule", "power_change_underexplained", "locked_ability_used", "unauthorized_authority_use", "unauthorized_growth"),
         "foreshadow_score": score("foreshadow_missing", "foreshadow_or_question_overclosed", "reader_question_missing"),
         "pleasure_score": score("english_or_boilerplate", "fallback_or_patch_output"),
-        "continuity_score": score("world_or_bible_contradiction", "premature_reveal", "raw_reference_leakage"),
+        "continuity_score": score("world_or_bible_contradiction", "premature_reveal", "raw_reference_leakage", "knowledge_leak", "early_secret_exposure", "reader_question_early_answer", "professional_term_without_source", "relationship_jump", "forbidden_major_character"),
         "anti_cliche_score": score("raw_reference_leakage", "english_or_boilerplate", "fallback_or_patch_output"),
         "overall": max(0.0, round(0.96 - overall_penalty, 3)),
     }
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _persist_accepted_state(db: Session, project: EpicNovelProject, chapter: EpicChapter, contract: EpicChapterContract, state: dict[str, Any]) -> EpicStateExtract:
     protagonist = (contract.character_arc_deltas or [{}])[0].get("character") or "主角"
     institution = (contract.institution_used or ["核心机构"])[0]
+    consistency = _chapter_consistency_contract(contract)
+    allowed_power = _listify(consistency.get("allowedPowerUse"))
+    forbidden_power = _listify(consistency.get("forbiddenPowerUse"))
+    allowed_authority = _listify(consistency.get("allowedAuthorityUse"))
+    forbidden_authority = _listify(consistency.get("forbiddenAuthorityUse"))
+    allowed_secrets = _listify(consistency.get("allowedSecretExposureChanges"))
+    forbidden_knowledge = _listify(consistency.get("forbiddenKnowledgeReveals"))
     extract = EpicStateExtract(
         project_id=project.id,
         chapter_number=chapter.chapter_number,
@@ -2778,13 +3422,169 @@ def _persist_accepted_state(db: Session, project: EpicNovelProject, chapter: Epi
         db.add(EpicCanonFact(project_id=project.id, chapter_number=chapter.chapter_number, fact=fact["fact"], fact_type=fact.get("factType"), entities=[], source="acceptedContent", confidence=1.0))
     for item in state["characterStateDeltas"]:
         db.add(EpicCharacterState(project_id=project.id, chapter_number=chapter.chapter_number, character_name=item["characterName"], current_goal=item.get("currentGoal"), emotion=item.get("emotion"), knowledge=["案件矛盾"], secrets=[], relationships={}, power_state={}, arc_stage="案件压力", current_location=institution, raw_json=item))
+        db.add(
+            EpicCharacterKnowledgeLedger(
+                project_id=project.id,
+                character_name=item["characterName"],
+                chapter_number=chapter.chapter_number,
+                knows=_listify(item.get("knowledge") or item.get("knows") or contract.must_execute),
+                suspects=_listify(item.get("suspects")),
+                does_not_know=_listify(item.get("doesNotKnow") or forbidden_knowledge),
+                allowed_dialogue=_listify(consistency.get("allowedKnowledgeReveals")),
+                forbidden_dialogue=_listify(item.get("forbiddenDialogue") or forbidden_knowledge),
+                evidence_source=["acceptedContent"],
+                first_learned_chapter=chapter.chapter_number,
+                last_updated_chapter=chapter.chapter_number,
+                canon_source="acceptedContent",
+                raw_json={**item, "canonSource": "acceptedContent"},
+            )
+        )
     for item in state["powerChanges"]:
-        db.add(EpicPowerLedger(project_id=project.id, chapter_number=chapter.chapter_number, character_name=item["characterName"], current_realm=item.get("currentRealm"), abilities=["读档辨名"], next_breakthrough_condition=item.get("condition"), raw_json=item))
+        db.add(
+            EpicPowerLedger(
+                project_id=project.id,
+                chapter_number=chapter.chapter_number,
+                character_name=item["characterName"],
+                current_realm=item.get("currentRealm"),
+                abilities=_listify(item.get("abilities") or item.get("unlockedAbilities") or allowed_power),
+                injuries=_listify(item.get("injuries") or item.get("limitations")),
+                cannot_defeat=_listify(item.get("cannotDefeat")),
+                next_breakthrough_condition=item.get("condition"),
+                raw_json={
+                    **item,
+                    "unlockedAbilities": _listify(item.get("unlockedAbilities") or allowed_power),
+                    "lockedAbilities": _listify(item.get("lockedAbilities") or forbidden_power),
+                    "trigger": item.get("trigger") or contract.chapter_goal,
+                    "cost": item.get("cost"),
+                    "limitation": item.get("limitation") or item.get("condition"),
+                    "evidenceInText": "acceptedContent",
+                    "canonSource": "acceptedContent",
+                },
+            )
+        )
     for item in state["objectStateChanges"]:
         db.add(EpicObjectState(project_id=project.id, chapter_number=chapter.chapter_number, object_name=item["objectName"], holder=item.get("holder"), location=f"{institution}相关地点", known_by=[protagonist], status=item.get("status"), related_foreshadow="global_truth_gap", raw_json=item))
     for item in state["factionChanges"]:
         db.add(EpicFactionState(project_id=project.id, chapter_number=chapter.chapter_number, faction_name=item["factionName"], current_goal="控制记录矛盾", stance_to_hero=item.get("stanceToHero"), raw_json=item))
     db.add(EpicInstitutionState(project_id=project.id, chapter_number=chapter.chapter_number, institution_name=institution, public_status="调查中", hidden_status="关键通道已激活", active_conflict=contract.bureaucracy_function, relationship_to_hero="工作场域与压力来源", known_secrets=["关键证物矛盾"], raw_json={}))
+    for item in contract.character_arc_deltas or []:
+        if not isinstance(item, dict):
+            continue
+        character_name = _contract_character_name(item)
+        if not character_name:
+            continue
+        character_row = db.query(EpicCharacter).filter(EpicCharacter.project_id == project.id, EpicCharacter.name == character_name).first()
+        db.add(
+            EpicCharacterGrowthLedger(
+                project_id=project.id,
+                character_id=str(getattr(character_row, "id", "")) or None,
+                character_name=character_name,
+                role_tier=str(item.get("roleTier") or item.get("tier") or getattr(character_row, "tier", None) or "D"),
+                chapter_number=chapter.chapter_number,
+                growth_axis=str(item.get("growthAxis") or item.get("axis") or "chapter_arc"),
+                before=item.get("before") or item.get("from"),
+                after=item.get("after") or item.get("to") or _compact_text(item),
+                trigger=item.get("trigger") or contract.chapter_goal,
+                cost=item.get("cost"),
+                evidence_in_text="acceptedContent",
+                future_impact=item.get("futureImpact"),
+                allowed_by_chapter_contract=True,
+                canon_source="acceptedContent",
+                raw_json={**item, "canonSource": "acceptedContent"},
+            )
+        )
+    for item in state["relationshipChanges"] or []:
+        if not isinstance(item, dict):
+            continue
+        from_character = item.get("fromCharacter") or item.get("from") or item.get("source") or protagonist
+        to_character = item.get("toCharacter") or item.get("to") or item.get("target")
+        if not to_character:
+            continue
+        db.add(
+            EpicRelationshipLedger(
+                project_id=project.id,
+                from_character=str(from_character),
+                to_character=str(to_character),
+                chapter_number=chapter.chapter_number,
+                before_state=item.get("before") or item.get("beforeState"),
+                after_state=item.get("after") or item.get("afterState") or _compact_text(item),
+                trigger_event=item.get("trigger") or contract.chapter_goal,
+                trust_delta=_safe_float(item.get("trustDelta")),
+                conflict_delta=_safe_float(item.get("conflictDelta")),
+                unresolved_tension=item.get("unresolvedTension"),
+                canon_source="acceptedContent",
+                raw_json={**item, "canonSource": "acceptedContent"},
+            )
+        )
+    if allowed_authority or forbidden_authority or contract.institution_used:
+        db.add(
+            EpicAuthorityLedger(
+                project_id=project.id,
+                character_name=str(protagonist),
+                chapter_number=chapter.chapter_number,
+                official_role=_compact_text(allowed_authority[:1]) or _compact_text(contract.institution_used[:1]),
+                permissions=allowed_authority,
+                limitations=forbidden_authority,
+                used_authority_correctly=True,
+                evidence_in_text="acceptedContent",
+                canon_source="acceptedContent",
+                raw_json={
+                    "institutionUsed": contract.institution_used,
+                    "allowedAuthorityUse": allowed_authority,
+                    "forbiddenAuthorityUse": forbidden_authority,
+                    "canonSource": "acceptedContent",
+                },
+            )
+        )
+    for secret_item in allowed_secrets:
+        secret_data = secret_item if isinstance(secret_item, dict) else {"secret": str(secret_item)}
+        secret_text = _compact_text(secret_data)
+        if not secret_text:
+            continue
+        secret_id = str(secret_data.get("secretId") or secret_data.get("id") or hashlib.sha256(secret_text.encode("utf-8")).hexdigest()[:16])
+        who_knows = _listify(secret_data.get("whoKnows") or secret_data.get("who_knows") or [protagonist])
+        who_suspects = _listify(secret_data.get("whoSuspects") or secret_data.get("who_suspects"))
+        policy = db.query(EpicSecretExposurePolicy).filter(EpicSecretExposurePolicy.project_id == project.id, EpicSecretExposurePolicy.secret_id == secret_id).first()
+        reveal_entry = {"chapter": chapter.chapter_number, "source": "acceptedContent", "change": secret_data}
+        if policy is None:
+            policy = EpicSecretExposurePolicy(
+                project_id=project.id,
+                secret_id=secret_id,
+                owner_character_id=str(secret_data.get("ownerCharacterId") or ""),
+                secret_type=secret_data.get("secretType"),
+                true_name=secret_data.get("trueName") or secret_data.get("secret"),
+                public_name=secret_data.get("publicName"),
+                current_exposure_level=int(secret_data.get("exposureLevel") or 1),
+                exposure_levels=_listify(secret_data.get("exposureLevels")),
+                who_knows=who_knows,
+                who_suspects=who_suspects,
+                forbidden_reveal_before=secret_data.get("forbiddenRevealBefore"),
+                allowed_reveal_conditions=_listify(secret_data.get("allowedRevealConditions")),
+                reveal_history=[reveal_entry],
+                canon_source="acceptedContent",
+                raw_json={**secret_data, "canonSource": "acceptedContent"},
+            )
+            db.add(policy)
+        else:
+            policy.current_exposure_level = max(policy.current_exposure_level or 0, int(secret_data.get("exposureLevel") or policy.current_exposure_level or 1))
+            policy.who_knows = sorted({*(_listify(policy.who_knows)), *who_knows})
+            policy.who_suspects = sorted({*(_listify(policy.who_suspects)), *who_suspects})
+            policy.reveal_history = [*(_listify(policy.reveal_history)), reveal_entry]
+            policy.raw_json = {**(policy.raw_json or {}), **secret_data, "canonSource": "acceptedContent"}
+        db.add(
+            EpicSecretLedger(
+                project_id=project.id,
+                secret_id=secret_id,
+                chapter_number=chapter.chapter_number,
+                who_knows=who_knows,
+                who_suspects=who_suspects,
+                who_is_wrong=_listify(secret_data.get("whoIsWrong")),
+                who_is_deceived=_listify(secret_data.get("whoIsDeceived")),
+                reveal_history=[reveal_entry],
+                canon_source="acceptedContent",
+                raw_json={**secret_data, "canonSource": "acceptedContent"},
+            )
+        )
     for item in state["foreshadowActions"]:
         existing = db.query(EpicForeshadow).filter(EpicForeshadow.project_id == project.id, EpicForeshadow.foreshadow_key == item["key"]).first()
         if existing is None:
@@ -2802,9 +3602,26 @@ def _persist_accepted_state(db: Session, project: EpicNovelProject, chapter: Epi
     for item in state["readerQuestionChanges"]:
         existing = db.query(EpicReaderQuestion).filter(EpicReaderQuestion.project_id == project.id, EpicReaderQuestion.question_key == item["questionKey"]).first()
         if existing is None:
-            existing = EpicReaderQuestion(project_id=project.id, question_key=item["questionKey"], question="Who decides which names become power?", introduced_chapter=chapter.chapter_number)
+            existing = EpicReaderQuestion(project_id=project.id, question_key=item["questionKey"], question=item.get("question") or contract.reader_question_raised or item["questionKey"], introduced_chapter=chapter.chapter_number)
             db.add(existing)
         existing.status = item.get("status") or existing.status
+        db.add(
+            EpicReaderQuestionLedger(
+                project_id=project.id,
+                question_key=item.get("questionKey"),
+                question=item.get("question") or existing.question,
+                introduced_chapter=existing.introduced_chapter or chapter.chapter_number,
+                introduced_by_event=contract.chapter_goal,
+                current_status=item.get("status") or existing.status,
+                planned_reveal_window=item.get("plannedRevealWindow") or {},
+                partial_answers=_listify(item.get("partialAnswers")),
+                forbidden_early_answer=bool(item.get("forbiddenEarlyAnswer", True)),
+                payoff_target=item.get("payoffTarget"),
+                resolved_chapter=item.get("resolvedChapter"),
+                canon_source="acceptedContent",
+                raw_json={**item, "canonSource": "acceptedContent"},
+            )
+        )
     for item in state["pleasureExecution"]:
         db.add(
             EpicPleasureBeat(
@@ -2861,7 +3678,7 @@ def execute_chapter(db: Session, project_id: UUID, chapter_number: int, user: An
         volume_number=contract.volume_number,
         chapter_number=chapter_number,
     )
-    status, issues = _acceptance(contract, draft, diff)
+    status, issues = _acceptance(contract, draft, diff, db=db, project=project, chapter_number=chapter_number)
     if status == "blocked" and chapter.repair_count < settings.EPIC_MAX_CHAPTER_REPAIR_COUNT:
         chapter.status = EpicChapterStatus.REPAIRING
         missing_text = "; ".join(diff.get("missing") or [])
@@ -2878,7 +3695,7 @@ def execute_chapter(db: Session, project_id: UUID, chapter_number: int, user: An
         chapter.repair_count += 1
         log_epic_generation(db, action="repair_chapter", role="author", project_id=project.id, volume_number=contract.volume_number, chapter_number=chapter_number, prompt=json.dumps({"issues": issues, "referenceUsage": _reference_usage_meta(repair_usage)}, ensure_ascii=False), completion=chapter.repaired_content)
         diff = _planned_vs_actual(contract, chapter.repaired_content)
-        status, issues = _acceptance(contract, chapter.repaired_content, diff)
+        status, issues = _acceptance(contract, chapter.repaired_content, diff, db=db, project=project, chapter_number=chapter_number)
     candidate = chapter.repaired_content or chapter.draft_content or ""
     if status == "blocked":
         chapter.status = EpicChapterStatus.NEED_REVIEW
@@ -2976,7 +3793,7 @@ def check_chapter(db: Session, project_id: UUID, chapter_number: int, user: Any 
             volume_number=contract.volume_number,
             chapter_number=chapter_number,
         )
-        status, qa_issues = _acceptance(contract, candidate, diff)
+        status, qa_issues = _acceptance(contract, candidate, diff, db=db, project=project, chapter_number=chapter_number)
         if qa_issues:
             existing_keys = {
                 (issue.issue_type, issue.description)
@@ -3415,22 +4232,51 @@ def _export_metadata_for_path(
     }
 
 
+def _record_artifact_metadata(db: Session, project_id: UUID, metadata: dict[str, Any]) -> dict[str, Any]:
+    artifact_type = str(metadata.get("artifactType") or "artifact")
+    filename = str(metadata.get("filename") or "")
+    path = str(metadata.get("path") or "")
+    row = (
+        db.query(EpicArtifactRecord)
+        .filter(EpicArtifactRecord.project_id == project_id, EpicArtifactRecord.artifact_type == artifact_type, EpicArtifactRecord.filename == filename)
+        .first()
+    )
+    if row is None:
+        row = EpicArtifactRecord(project_id=project_id, artifact_type=artifact_type, filename=filename, path=path)
+        db.add(row)
+    row.path = path
+    row.media_type = str(metadata.get("mediaType") or "application/octet-stream")
+    row.bytes = int(metadata.get("bytes") or 0)
+    row.sha256 = metadata.get("sha256")
+    row.status = "ready"
+    row.error = None
+    row.raw_json = metadata
+    db.commit()
+    db.refresh(row)
+    metadata["artifactRecordId"] = str(row.id)
+    metadata["status"] = row.status
+    return metadata
+
+
 def export_bible_file_metadata(db: Session, project_id: UUID, fmt: str, user: Any | None = None) -> dict[str, Any]:
     content, media, filename = export_bible(db, project_id, fmt, user)
     path = epic_export_path() / filename
     fmt_param = "json" if fmt == "json" else "markdown"
-    return _export_metadata_for_path(
+    metadata = _export_metadata_for_path(
         path,
         media,
         content_chars=len(content),
         download_route=f"/api/v1/epic-novel/projects/{project_id}/bible/export?format={fmt_param}&mode=download",
         artifact_type=f"bible_{fmt_param}",
     )
+    return _record_artifact_metadata(db, project_id, metadata)
 
 
 def export_novel(db: Session, project_id: UUID, fmt: str, user: Any | None = None) -> tuple[str, str, str]:
     project = _get_project(db, project_id, user)
     chapters = db.query(EpicChapter).filter(EpicChapter.project_id == project.id, EpicChapter.status == EpicChapterStatus.ACCEPTED).order_by(EpicChapter.chapter_number.asc()).all()
+    if not chapters:
+        raise EpicNovelError("Novel artifact not ready: accepted chapters missing")
     display_title = _display_project_title(project)
     if fmt == "json":
         content = json.dumps({"project": {**_asdict_model(project), "displayTitle": display_title}, "chapters": [_asdict_model(chapter) for chapter in chapters]}, ensure_ascii=False, default=str, indent=2)
@@ -3454,13 +4300,14 @@ def export_novel_file_metadata(db: Session, project_id: UUID, fmt: str, user: An
     content, media, filename = export_novel(db, project_id, fmt, user)
     path = epic_export_path() / filename
     fmt_param = "markdown" if fmt == "md" else fmt
-    return _export_metadata_for_path(
+    metadata = _export_metadata_for_path(
         path,
         media,
         content_chars=len(content),
         download_route=f"/api/v1/epic-novel/projects/{project_id}/export?format={fmt_param}&mode=download",
         artifact_type=f"novel_{fmt_param}",
     )
+    return _record_artifact_metadata(db, project_id, metadata)
 
 
 def export_project_artifact_file_metadata(
@@ -3558,10 +4405,11 @@ def export_project_artifact_file_metadata(
         raise EpicNovelError(f"Unsupported artifact export type: {artifact_type}")
     path = out / filename
     path.write_text(content, encoding="utf-8")
-    return _export_metadata_for_path(
+    metadata = _export_metadata_for_path(
         path,
         media,
         content_chars=len(content),
         download_route=f"/api/v1/epic-novel/projects/{project_id}/exports/artifact?artifact_type={artifact_type}&mode=download",
         artifact_type=artifact_type,
     )
+    return _record_artifact_metadata(db, project_id, metadata)

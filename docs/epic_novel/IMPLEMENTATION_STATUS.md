@@ -6,6 +6,33 @@ Updated: 2026-06-13
 
 Status: `PARTIAL_IMPLEMENTATION`
 
+Post-gate hardening update on 2026-06-18: consistency/API/frontend hardening is `HARDENED_PARTIAL`.
+
+This pass added generic Knowledge / Secret / Reader Question / Growth / Power / Authority / Relationship ledgers, strengthened ChapterContract and ContextPack consistency constraints, and expanded the Acceptance Gate to block knowledge leaks, early secret exposure, early reader-question answers, professional terms without in-world source, unauthorized growth, locked ability use, unauthorized authority, relationship jumps, and forbidden major-character introductions.
+
+Only `acceptedContent` persists the new ledgers. `draftContent` and `repairedContent` remain non-canon candidates.
+
+API/frontend hardening in this pass added project deletion, project status, project artifact records, project ledgers, reference book list/delete, reference task retry, reference readiness, structured business errors, frontend project deletion, reference book management, task retry, readiness display, and artifact record display.
+
+Validation run on 2026-06-18:
+
+- `python -m compileall backend/app`
+- `python -m pytest backend/tests/test_epic_qa.py backend/tests/test_epic_context.py backend/tests/test_epic_reference.py backend/tests/test_epic_scheduler.py -q` -> 46 passed
+- `npm.cmd run build` in `frontend` -> passed
+
+New post-gate hardening docs:
+
+- `docs/epic_novel/POST_GATE_HARDENING_AUDIT.md`
+- `docs/epic_novel/KNOWLEDGE_SECRET_GROWTH_CONSISTENCY_REPORT.md`
+- `docs/epic_novel/PROTAGONIST_GROWTH_TRAJECTORY_REPORT.md`
+- `docs/epic_novel/CHARACTER_ARC_LEDGER_REPORT.md`
+- `docs/epic_novel/READER_QUESTION_LEDGER_REPORT.md`
+- `docs/epic_novel/API_CONTRACT_REPORT.md`
+- `docs/epic_novel/FRONTEND_WORKSPACE_FUNCTIONALITY_REPORT.md`
+- `docs/epic_novel/ARTIFACT_DOWNLOAD_REPORT.md`
+
+This does not change the overall production-readiness verdict: the system is still not proven 300万字-ready because full 100-book production extraction, full-corpus `ReferenceMechanismProfile`, and real long-run manuscript generation remain incomplete.
+
 Gate 2A update on 2026-06-12: bounded section-aware Reference Intelligence proof is `PASS`.
 
 The Gate 2A pass is deliberately narrow: 1 imported book / 5 sections were processed with real DeepSeek V4 Pro section analysis. This proves the corrected pipeline shape, not full 57-book extraction, not full 100-book corpus completion, and not 300万字 production readiness.

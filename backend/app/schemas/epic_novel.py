@@ -288,6 +288,7 @@ class EpicGenerationLogResponse(EpicModelBase):
     prompt_tokens: int
     completion_tokens: int
     estimated_cost: float
+    actual_cost: float | None = None
     status: str
     error: str | None = None
     created_at: datetime
@@ -318,6 +319,14 @@ class EpicNovelProjectDetailResponse(BaseModel):
     acceptance_reports: list[EpicAcceptanceReportResponse] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_traces: list[dict[str, Any]] = Field(default_factory=list)
+    character_knowledge_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    secret_exposure_policies: list[dict[str, Any]] = Field(default_factory=list)
+    reader_question_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    character_growth_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    authority_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    relationship_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    secret_ledgers: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
     logs: list[EpicGenerationLogResponse] = Field(default_factory=list)
 
 

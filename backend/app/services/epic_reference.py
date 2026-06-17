@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 from urllib.request import ProxyHandler, build_opener
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -768,6 +768,78 @@ def list_reference_download_tasks(db: Session, limit: int = 500) -> list[Referen
         db,
         lambda: db.query(ReferenceDownloadTask).order_by(ReferenceDownloadTask.created_at.desc()).limit(limit).all(),
     )
+
+
+def list_reference_books(db: Session, limit: int = 500) -> list[ReferenceBook]:
+    return _run_db_retry(
+        db,
+        lambda: (
+            db.query(ReferenceBook)
+            .filter(ReferenceBook.status != "detached")
+            .order_by(ReferenceBook.updated_at.desc(), ReferenceBook.created_at.desc())
+            .limit(limit)
+            .all()
+        ),
+    )
+
+
+def delete_reference_book(db: Session, book_id: UUID) -> dict[str, Any]:
+    book = db.get(ReferenceBook, book_id)
+    if book is None:
+        raise EpicReferenceError(f"ReferenceBook not found: {book_id}")
+    source_path = book.source_path
+    title = book.title
+    booklist_item = book.booklist_item
+    if booklist_item is not None and booklist_item.local_raw_path == source_path:
+        booklist_item.local_raw_path = None
+        booklist_item.download_status = ReferenceDownloadStatus.PENDING
+    db.delete(book)
+    db.commit()
+    return {
+        "status": "deleted",
+        "bookId": str(book_id),
+        "title": title,
+        "localFilePreserved": True,
+        "sourcePath": source_path,
+    }
+
+
+def retry_reference_download_task(db: Session, task_id: UUID) -> ReferenceDownloadTask:
+    task = db.get(ReferenceDownloadTask, task_id)
+    if task is None:
+        raise EpicReferenceError(f"ReferenceDownloadTask not found: {task_id}")
+    task.status = ReferenceDownloadStatus.PENDING
+    task.error = None
+    task.generated_card_count = 0
+    if task.booklist_item is not None:
+        task.booklist_item.download_status = ReferenceDownloadStatus.PENDING
+        task.booklist_item.error = None
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def reference_readiness_summary(db: Session) -> dict[str, Any]:
+    profile = latest_reference_profile(db)
+    total_books = db.query(ReferenceBook).filter(ReferenceBook.status != "detached").count()
+    total_cards = db.query(ReferencePatternCard).count()
+    production_ready_cards = len(_production_ready_cards(db))
+    downloads = db.query(ReferenceDownloadTask.status, func.count(ReferenceDownloadTask.id)).group_by(ReferenceDownloadTask.status).all()
+    imported_books = db.query(ReferenceBook).filter(ReferenceBook.status != "detached").count()
+    return {
+        "ready": bool(profile and production_ready_cards > 0),
+        "profileReady": bool(profile),
+        "profileId": str(profile.id) if profile else None,
+        "sourceBookCount": profile.source_book_count if profile else total_books,
+        "sourceCardCount": profile.source_card_count if profile else total_cards,
+        "totalBooks": total_books,
+        "importedBooks": imported_books,
+        "totalCards": total_cards,
+        "productionReadyCards": production_ready_cards,
+        "downloadStatus": {status: count for status, count in downloads},
+        "rawTextIncludedInGeneration": False,
+        "minimumViable": production_ready_cards > 0,
+    }
 
 
 def list_reference_download_task_summaries(db: Session, limit: int = 120) -> list[dict[str, Any]]:

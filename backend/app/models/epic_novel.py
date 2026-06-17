@@ -930,6 +930,168 @@ class EpicInstitutionState(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class EpicCharacterKnowledgeLedger(Base):
+    __tablename__ = "epic_character_knowledge_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    character_id = Column(String(255), nullable=True, index=True)
+    character_name = Column(String(255), nullable=False, index=True)
+    chapter_number = Column(Integer, nullable=False, index=True)
+    knows = Column(JSONB, nullable=False, default=list)
+    suspects = Column(JSONB, nullable=False, default=list)
+    does_not_know = Column(JSONB, nullable=False, default=list)
+    allowed_dialogue = Column(JSONB, nullable=False, default=list)
+    forbidden_dialogue = Column(JSONB, nullable=False, default=list)
+    evidence_source = Column(JSONB, nullable=False, default=list)
+    first_learned_chapter = Column(Integer, nullable=True)
+    confidence_level = Column(Float, nullable=False, default=1.0)
+    last_updated_chapter = Column(Integer, nullable=False, default=0)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicSecretExposurePolicy(Base):
+    __tablename__ = "epic_secret_exposure_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    secret_id = Column(String(255), nullable=False, index=True)
+    owner_character_id = Column(String(255), nullable=True, index=True)
+    secret_type = Column(String(128), nullable=True)
+    true_name = Column(Text, nullable=True)
+    public_name = Column(Text, nullable=True)
+    current_exposure_level = Column(Integer, nullable=False, default=0)
+    exposure_levels = Column(JSONB, nullable=False, default=list)
+    per_volume_exposure_limit = Column(Integer, nullable=True)
+    who_knows = Column(JSONB, nullable=False, default=list)
+    who_suspects = Column(JSONB, nullable=False, default=list)
+    forbidden_reveal_before = Column(Integer, nullable=True)
+    allowed_reveal_conditions = Column(JSONB, nullable=False, default=list)
+    reveal_history = Column(JSONB, nullable=False, default=list)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (Index("ix_epic_secret_policy_project_secret", "project_id", "secret_id"),)
+
+
+class EpicReaderQuestionLedger(Base):
+    __tablename__ = "epic_reader_question_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_key = Column(String(255), nullable=True, index=True)
+    question = Column(Text, nullable=False)
+    introduced_chapter = Column(Integer, nullable=True, index=True)
+    introduced_by_event = Column(Text, nullable=True)
+    current_status = Column(String(64), nullable=False, default="open", index=True)
+    planned_reveal_window = Column(JSONB, nullable=False, default=dict)
+    partial_answers = Column(JSONB, nullable=False, default=list)
+    forbidden_early_answer = Column(Boolean, nullable=False, default=True)
+    payoff_target = Column(Text, nullable=True)
+    resolved_chapter = Column(Integer, nullable=True, index=True)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicCharacterGrowthLedger(Base):
+    __tablename__ = "epic_character_growth_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    character_id = Column(String(255), nullable=True, index=True)
+    character_name = Column(String(255), nullable=False, index=True)
+    role_tier = Column(String(16), nullable=False, default="D", index=True)
+    chapter_number = Column(Integer, nullable=False, index=True)
+    growth_axis = Column(String(128), nullable=False, index=True)
+    before = Column(Text, nullable=True)
+    after = Column(Text, nullable=True)
+    trigger = Column(Text, nullable=True)
+    cost = Column(Text, nullable=True)
+    evidence_in_text = Column(Text, nullable=True)
+    future_impact = Column(Text, nullable=True)
+    allowed_by_chapter_contract = Column(Boolean, nullable=False, default=False)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicAuthorityLedger(Base):
+    __tablename__ = "epic_authority_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    character_id = Column(String(255), nullable=True, index=True)
+    character_name = Column(String(255), nullable=False, index=True)
+    chapter_number = Column(Integer, nullable=False, index=True)
+    official_role = Column(Text, nullable=True)
+    permissions = Column(JSONB, nullable=False, default=list)
+    limitations = Column(JSONB, nullable=False, default=list)
+    used_authority_correctly = Column(Boolean, nullable=False, default=True)
+    evidence_in_text = Column(Text, nullable=True)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicRelationshipLedger(Base):
+    __tablename__ = "epic_relationship_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_character = Column(String(255), nullable=False, index=True)
+    to_character = Column(String(255), nullable=False, index=True)
+    chapter_number = Column(Integer, nullable=False, index=True)
+    before_state = Column(Text, nullable=True)
+    after_state = Column(Text, nullable=True)
+    trigger_event = Column(Text, nullable=True)
+    trust_delta = Column(Float, nullable=False, default=0.0)
+    conflict_delta = Column(Float, nullable=False, default=0.0)
+    unresolved_tension = Column(Text, nullable=True)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicSecretLedger(Base):
+    __tablename__ = "epic_secret_ledgers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    secret_id = Column(String(255), nullable=False, index=True)
+    chapter_number = Column(Integer, nullable=False, index=True)
+    who_knows = Column(JSONB, nullable=False, default=list)
+    who_suspects = Column(JSONB, nullable=False, default=list)
+    who_is_wrong = Column(JSONB, nullable=False, default=list)
+    who_is_deceived = Column(JSONB, nullable=False, default=list)
+    reveal_history = Column(JSONB, nullable=False, default=list)
+    canon_source = Column(String(64), nullable=False, default="acceptedContent", index=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EpicArtifactRecord(Base):
+    __tablename__ = "epic_artifact_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("epic_novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    artifact_type = Column(String(128), nullable=False, index=True)
+    filename = Column(Text, nullable=False)
+    path = Column(Text, nullable=False)
+    media_type = Column(String(255), nullable=False, default="application/octet-stream")
+    bytes = Column(Integer, nullable=False, default=0)
+    sha256 = Column(String(128), nullable=True, index=True)
+    status = Column(String(64), nullable=False, default="ready", index=True)
+    error = Column(Text, nullable=True)
+    raw_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class EpicRetrievalTrace(Base):
     __tablename__ = "epic_retrieval_traces"
 

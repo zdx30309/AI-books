@@ -4,6 +4,18 @@ Updated: 2026-06-13
 
 Final verdict: `PARTIAL_IMPLEMENTATION`
 
+Post-gate hardening update on 2026-06-18: `HARDENED_PARTIAL`.
+
+The engine now has generic Knowledge / Secret / Reader Question / Growth / Power / Authority / Relationship consistency ledgers, strengthened ChapterContract/ContextPack consistency fields, stronger Acceptance Gate blocking for knowledge leak / early secret reveal / early reader-question answer / professional term without source / unauthorized growth / locked ability / unauthorized authority / relationship jump / forbidden major character introduction, structured Epic API errors, project/reference/artifact management endpoints, and frontend controls for project deletion, reference book management, task retry, readiness and artifact records.
+
+Validation for this hardening pass:
+
+- `python -m compileall backend/app`
+- `python -m pytest backend/tests/test_epic_qa.py backend/tests/test_epic_context.py backend/tests/test_epic_reference.py backend/tests/test_epic_scheduler.py -q` -> 46 passed
+- `npm.cmd run build` -> passed
+
+This hardening does not satisfy full production readiness by itself. Full 100-book corpus processing, full-corpus mechanism profile evidence, and real long-run 300万字 manuscript production remain incomplete.
+
 Gate 2A update on 2026-06-12: `PASS` for bounded section-aware Reference Intelligence proof only.
 
 Gate 2B update on 2026-06-13: `PARTIAL` for staged Reference Intelligence expansion. The latest staged evidence covers 3 source books / 27 successful section analyses / 48 production-ready cards, but full 57-book extraction is not complete.

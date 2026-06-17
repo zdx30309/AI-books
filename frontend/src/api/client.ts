@@ -31,6 +31,7 @@ import type {
   EpicNovelProject,
   EpicNovelProjectDetailResponse,
   EpicNovelProjectListResponse,
+  EpicProjectStatusSummary,
   EpicReferenceBook,
   EpicReferenceBooklistItem,
   EpicReferenceDownloadTask,
@@ -38,6 +39,7 @@ import type {
   EpicReferenceExtractionCostEstimate,
   EpicReferenceMechanismProfile,
   EpicReferencePatternCard,
+  EpicReferenceReadiness,
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
@@ -87,6 +89,23 @@ class ApiError extends Error {
   }
 }
 
+function errorMessageFromBody(body: unknown, fallback: string) {
+  if (body && typeof body === "object" && "detail" in body) {
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === "string" && message) return message;
+    }
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 export const tokenStore = {
   get(): string | null {
     return localStorage.getItem(TOKEN_KEY);
@@ -112,7 +131,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = errorMessageFromBody(body, detail);
     } catch {
       /* ignore */
     }
@@ -139,7 +158,7 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = errorMessageFromBody(body, detail);
     } catch {
       /* ignore */
     }
@@ -178,7 +197,7 @@ async function uploadFile<T>(
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = errorMessageFromBody(body, detail);
     } catch {
       /* ignore */
     }
@@ -207,7 +226,7 @@ async function downloadWithBody(
     let detail = res.statusText;
     try {
       const errorBody = await res.json();
-      detail = errorBody?.detail ?? detail;
+      detail = errorMessageFromBody(errorBody, detail);
     } catch {
       /* ignore */
     }
@@ -237,7 +256,7 @@ async function fetchBlob(path: string): Promise<Blob> {
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = errorMessageFromBody(body, detail);
     } catch {
       /* ignore */
     }
@@ -267,7 +286,7 @@ async function uploadFiles<T>(
     let detail = res.statusText;
     try {
       const errorBody = await res.json();
-      detail = errorBody?.detail ?? detail;
+      detail = errorMessageFromBody(errorBody, detail);
     } catch {
       /* ignore */
     }
@@ -297,7 +316,7 @@ async function uploadFilesForDownload(
     let detail = res.statusText;
     try {
       const errorBody = await res.json();
-      detail = errorBody?.detail ?? detail;
+      detail = errorMessageFromBody(errorBody, detail);
     } catch {
       /* ignore */
     }
@@ -579,6 +598,14 @@ export const api = {
     ),
   getEpicNovelProject: (id: string) =>
     request<EpicNovelProjectDetailResponse>(`/epic-novel/projects/${id}`),
+  deleteEpicNovelProject: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}`, { method: "DELETE" }),
+  getEpicNovelProjectStatus: (id: string) =>
+    request<EpicProjectStatusSummary>(`/epic-novel/projects/${id}/status`),
+  listEpicNovelProjectArtifacts: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/epic-novel/projects/${id}/artifacts`),
+  listEpicNovelProjectLedgers: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/projects/${id}/ledgers`),
   getEpicNovelDashboard: (id: string) =>
     request<EpicDashboardResponse>(`/epic-novel/projects/${id}/dashboard`),
   detectEpicReferenceDownloader: () =>
@@ -605,6 +632,16 @@ export const api = {
     }),
   listEpicReferenceDownloadTasks: () =>
     request<EpicReferenceDownloadTask[]>("/epic-novel/reference-download-tasks"),
+  retryEpicReferenceDownloadTask: (id: string) =>
+    request<EpicReferenceDownloadTask>(`/epic-novel/reference-download-tasks/${id}/retry`, {
+      method: "POST",
+    }),
+  listEpicReferenceBooks: (limit = 500) =>
+    request<EpicReferenceBook[]>(`/epic-novel/reference-books?limit=${limit}`),
+  deleteEpicReferenceBook: (id: string) =>
+    request<Record<string, unknown>>(`/epic-novel/reference-books/${id}`, { method: "DELETE" }),
+  getEpicReferenceReadiness: () =>
+    request<EpicReferenceReadiness>("/epic-novel/reference-readiness"),
   ingestEpicReferenceBook: (body: { book_id?: string; source_path?: string }) =>
     request<Record<string, unknown>>("/epic-novel/reference-books/ingest", {
       method: "POST",

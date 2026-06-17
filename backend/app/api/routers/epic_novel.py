@@ -41,6 +41,7 @@ from app.services.epic_novel import (
     compile_chapter_contracts,
     create_epic_project,
     dashboard,
+    delete_epic_project,
     execute_chapter,
     export_bible,
     export_bible_file_metadata,
@@ -58,8 +59,11 @@ from app.services.epic_novel import (
     generate_volume_contracts,
     generate_world_atlas,
     generate_world_bible,
+    list_epic_ledgers,
     list_epic_projects,
+    list_project_artifacts,
     project_detail,
+    project_status_summary,
     repair_bible_coverage,
     repair_chapter,
     repair_outline,
@@ -71,6 +75,7 @@ from app.services.epic_reference import (
     EpicReferenceError,
     build_reference_mechanism_profile,
     create_reference_search_task,
+    delete_reference_book,
     detect_sonovel,
     download_reference_task,
     estimate_reference_extraction_cost,
@@ -78,9 +83,12 @@ from app.services.epic_reference import (
     import_downloaded_references,
     import_reference_file,
     ingest_reference_book,
+    list_reference_books,
     list_reference_download_tasks,
     list_reference_download_task_summaries,
     latest_reference_profile,
+    reference_readiness_summary,
+    retry_reference_download_task,
     normalize_booklist,
     scan_sonovel_downloads,
     search_reference_download_task,
@@ -92,8 +100,38 @@ from app.services.epic_reference import (
 router = APIRouter(prefix="/api/v1/epic-novel", tags=["EpicNovel"])
 
 
-def _bad_request(exc: Exception) -> None:
-    raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _error_status(message: str) -> int:
+    lowered = message.lower()
+    if "not found" in lowered:
+        return 404
+    if "not ready" in lowered or "missing" in lowered or "blocked" in lowered:
+        return 409
+    return 400
+
+
+def _error_code(exc: Exception, message: str) -> str:
+    lowered = message.lower()
+    if "not found" in lowered:
+        return "NOT_FOUND"
+    if "not ready" in lowered:
+        return "ARTIFACT_NOT_READY"
+    if "missing" in lowered:
+        return "PRECONDITION_MISSING"
+    if isinstance(exc, EpicReferenceError):
+        return "REFERENCE_ERROR"
+    return "EPIC_NOVEL_ERROR"
+
+
+def _bad_request(exc: Exception, *, details: dict[str, object] | None = None) -> None:
+    message = str(exc)
+    raise HTTPException(
+        status_code=_error_status(message),
+        detail={
+            "errorCode": _error_code(exc, message),
+            "message": message,
+            "details": details or {},
+        },
+    ) from exc
 
 
 def _row(row: object) -> dict[str, object]:
@@ -131,6 +169,54 @@ def get_project(
 ) -> EpicNovelProjectDetailResponse:
     try:
         return EpicNovelProjectDetailResponse(**project_detail(db, project_id, user))
+    except EpicNovelError as exc:
+        _bad_request(exc)
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    try:
+        return delete_epic_project(db, project_id, user)
+    except EpicNovelError as exc:
+        _bad_request(exc)
+
+
+@router.get("/projects/{project_id}/status")
+def get_project_status(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    try:
+        return project_status_summary(db, project_id, user)
+    except EpicNovelError as exc:
+        _bad_request(exc)
+
+
+@router.get("/projects/{project_id}/artifacts")
+def get_project_artifacts(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, object]]:
+    try:
+        return list_project_artifacts(db, project_id, user)
+    except EpicNovelError as exc:
+        _bad_request(exc)
+
+
+@router.get("/projects/{project_id}/ledgers")
+def get_project_ledgers(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    try:
+        return list_epic_ledgers(db, project_id, user)
     except EpicNovelError as exc:
         _bad_request(exc)
 
@@ -242,8 +328,31 @@ def get_reference_download_task(
     del user
     task = db.get(ReferenceDownloadTask, task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="ReferenceDownloadTask not found")
+        _bad_request(EpicReferenceError("ReferenceDownloadTask not found"))
     return task
+
+
+@router.post("/reference-download-tasks/{task_id}/retry", response_model=ReferenceDownloadTaskResponse)
+def retry_reference_task(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ReferenceDownloadTaskResponse:
+    del user
+    try:
+        return retry_reference_download_task(db, task_id)
+    except EpicReferenceError as exc:
+        _bad_request(exc)
+
+
+@router.get("/reference-books", response_model=list[ReferenceBookResponse])
+def get_reference_books(
+    limit: int = Query(default=500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[ReferenceBookResponse]:
+    del user
+    return list_reference_books(db, limit=limit)
 
 
 @router.post("/reference-books/import", response_model=list[ReferenceBookResponse])
@@ -257,7 +366,7 @@ def import_reference_books(
     if req.path:
         paths.append(req.path)
     if not paths:
-        raise HTTPException(status_code=400, detail="path or paths required")
+        _bad_request(EpicReferenceError("path or paths required"))
     try:
         return [import_reference_file(db, file_path=path) for path in paths]
     except EpicReferenceError as exc:
@@ -275,6 +384,28 @@ def ingest_reference_books(
         return ingest_reference_book(db, book_id=req.book_id, source_path=req.source_path)
     except EpicReferenceError as exc:
         _bad_request(exc)
+
+
+@router.delete("/reference-books/{book_id}")
+def remove_reference_book(
+    book_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    del user
+    try:
+        return delete_reference_book(db, book_id)
+    except EpicReferenceError as exc:
+        _bad_request(exc)
+
+
+@router.get("/reference-readiness")
+def get_reference_readiness(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    del user
+    return reference_readiness_summary(db)
 
 
 @router.get("/reference-extraction/cost-estimate")
@@ -566,6 +697,6 @@ def project_artifact_export(
         return metadata
     file_path = Path(str(metadata.get("path") or ""))
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="导出文件不存在")
+        _bad_request(EpicNovelError("Artifact not found: export file missing"))
     quoted = quote(file_path.name)
     return Response(content=file_path.read_bytes(), media_type=str(metadata.get("mediaType") or "application/octet-stream"), headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})

@@ -133,6 +133,76 @@ def test_acceptance_scores_are_issue_driven_not_fixed_constants() -> None:
     assert clean_scores["overall"] > blocked_scores["overall"]
 
 
+def test_forbidden_knowledge_reveal_blocks_acceptance() -> None:
+    contract = _contract(
+        raw_json={
+            "consistencyContract": {
+                "forbiddenKnowledgeReveals": ["禁库钥印"],
+            }
+        }
+    )
+    status, issue_types = _issue_types(_good_content() + "他忽然说出禁库钥印就在内廷。", contract)
+
+    assert status == "blocked"
+    assert "knowledge_leak" in issue_types
+
+
+def test_early_secret_exposure_blocks_acceptance() -> None:
+    contract = _contract(
+        raw_json={
+            "consistencyContract": {
+                "forbiddenSecretExposureChanges": ["幕后真名"],
+            }
+        }
+    )
+    status, issue_types = _issue_types(_good_content() + "旁人提前听见幕后真名。", contract)
+
+    assert status == "blocked"
+    assert "early_secret_exposure" in issue_types
+
+
+def test_professional_term_without_in_world_source_blocks_acceptance() -> None:
+    contract = _contract(
+        raw_json={
+            "consistencyContract": {
+                "professionalTermsForbiddenUnlessSourced": ["命簿核验术"],
+            }
+        }
+    )
+    status, issue_types = _issue_types(_good_content() + "他走到雨棚下，众人沉默，灯火晃动，风声压住脚步。末尾有人直接喊出命簿核验术。", contract)
+
+    assert status == "blocked"
+    assert "professional_term_without_source" in issue_types
+
+
+def test_unauthorized_growth_blocks_acceptance() -> None:
+    contract = _contract(
+        raw_json={
+            "consistencyContract": {
+                "forbiddenGrowthEvents": ["突然突破"],
+            }
+        }
+    )
+    status, issue_types = _issue_types(_good_content() + "他在没有合同许可的情况下突然突破。", contract)
+
+    assert status == "blocked"
+    assert "unauthorized_growth" in issue_types
+
+
+def test_locked_ability_blocks_acceptance() -> None:
+    contract = _contract(
+        raw_json={
+            "consistencyContract": {
+                "forbiddenPowerUse": ["天眼通"],
+            }
+        }
+    )
+    status, issue_types = _issue_types(_good_content() + "他当场动用天眼通看穿所有卷册。", contract)
+
+    assert status == "blocked"
+    assert "locked_ability_used" in issue_types
+
+
 def test_deterministic_chapter_draft_is_chinese_story_text_not_meta_placeholder() -> None:
     contract = _contract().__dict__.copy()
     contract["institution_used"] = [{"name": "档案司", "purpose": "审查公文"}]

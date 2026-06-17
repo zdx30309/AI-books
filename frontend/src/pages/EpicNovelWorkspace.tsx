@@ -17,6 +17,7 @@ import {
   SearchCheck,
   ShieldCheck,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type {
@@ -25,12 +26,15 @@ import type {
   EpicNovelCreateRequest,
   EpicNovelProject,
   EpicNovelProjectDetailResponse,
+  EpicProjectStatusSummary,
+  EpicReferenceBook,
   EpicReferenceBooklistItem,
   EpicReferenceDownloadTask,
   EpicReferenceExtractionControl,
   EpicReferenceExtractionCostEstimate,
   EpicReferenceMechanismProfile,
   EpicReferencePatternCard,
+  EpicReferenceReadiness,
 } from "@/api/types";
 
 type TabId = "foundation" | "reference" | "bible" | "planning" | "chapters" | "context" | "qa" | "dashboard" | "export" | "logs";
@@ -265,6 +269,14 @@ function normalizeEpicDetail(detail: EpicNovelProjectDetailResponse): EpicNovelP
     chapters: detail.chapters ?? [],
     acceptance_reports: detail.acceptance_reports ?? [],
     retrieval_traces: detail.retrieval_traces ?? [],
+    character_knowledge_ledgers: detail.character_knowledge_ledgers ?? [],
+    secret_exposure_policies: detail.secret_exposure_policies ?? [],
+    reader_question_ledgers: detail.reader_question_ledgers ?? [],
+    character_growth_ledgers: detail.character_growth_ledgers ?? [],
+    authority_ledgers: detail.authority_ledgers ?? [],
+    relationship_ledgers: detail.relationship_ledgers ?? [],
+    secret_ledgers: detail.secret_ledgers ?? [],
+    artifacts: detail.artifacts ?? [],
     logs: detail.logs ?? [],
   };
 }
@@ -442,6 +454,7 @@ function ProjectList() {
   const [form, setForm] = useState<CreateFormState>(initialForm);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -488,6 +501,20 @@ function ProjectList() {
     }
   };
 
+  const deleteProject = async (project: EpicNovelProject) => {
+    if (!window.confirm(`确认删除项目「${project.title}」？此操作会删除该项目的长篇规划、章节、QA 和导出记录。`)) return;
+    setDeletingId(project.id);
+    setError(null);
+    try {
+      await api.deleteEpicNovelProject(project.id);
+      await load();
+    } catch (e) {
+      setError(actionError(e));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <section className="flex flex-wrap items-start justify-between gap-4">
@@ -523,10 +550,14 @@ function ProjectList() {
             </div>
           ) : (
             items.map((project) => (
-              <button
+              <div
                 key={project.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => navigate(`/epic-novel/${project.id}`)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") navigate(`/epic-novel/${project.id}`);
+                }}
                 className="card-warm block w-full rounded-lg px-5 py-4 text-left transition hover:border-gold-400/30"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -536,10 +567,24 @@ function ProjectList() {
                       {formatNumber(project.total_words)} 字 / 当前第 {project.current_chapter} 章
                     </div>
                   </div>
-                  <StatusPill status={project.status} />
+                  <div className="flex items-center gap-2">
+                    <StatusPill status={project.status} />
+                    <button
+                      type="button"
+                      className="btn-ghost rounded-lg px-3 py-2 text-red-200 hover:border-red-400/40 hover:text-red-100"
+                      disabled={deletingId === project.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteProject(project);
+                      }}
+                      title="删除项目"
+                    >
+                      {deletingId === project.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-3 line-clamp-2 text-sm leading-6 text-warm-400">{project.premise}</div>
-              </button>
+              </div>
             ))
           )}
         </section>
@@ -637,11 +682,15 @@ function ProjectDetail({ id }: { id: string }) {
   const [artifactType, setArtifactType] = useState<EpicArtifactType>("volume_markdown");
   const [scanRows, setScanRows] = useState<Array<Record<string, unknown>>>([]);
   const [booklistRows, setBooklistRows] = useState<EpicReferenceBooklistItem[]>([]);
+  const [referenceBooks, setReferenceBooks] = useState<EpicReferenceBook[]>([]);
+  const [referenceReadiness, setReferenceReadiness] = useState<EpicReferenceReadiness | null>(null);
   const [downloadTasks, setDownloadTasks] = useState<EpicReferenceDownloadTask[]>([]);
   const [patternCards, setPatternCards] = useState<EpicReferencePatternCard[]>([]);
   const [referenceProfile, setReferenceProfile] = useState<EpicReferenceMechanismProfile | null>(null);
   const [referenceCost, setReferenceCost] = useState<EpicReferenceExtractionCostEstimate | null>(null);
   const [referenceControl, setReferenceControl] = useState<EpicReferenceExtractionControl | null>(null);
+  const [projectStatus, setProjectStatus] = useState<EpicProjectStatusSummary | null>(null);
+  const [projectArtifacts, setProjectArtifacts] = useState<Array<Record<string, unknown>>>([]);
   const [contextPack, setContextPack] = useState<Record<string, unknown> | null>(null);
   const [exportMetadata, setExportMetadata] = useState<EpicExportMetadata | null>(null);
 
@@ -659,19 +708,27 @@ function ProjectDetail({ id }: { id: string }) {
       setContextChapter(String(next));
       void Promise.allSettled([
         api.getEpicNovelDashboard(id),
+        api.getEpicNovelProjectStatus(id),
+        api.listEpicNovelProjectArtifacts(id),
         api.getEpicReferenceExtractionCostEstimate(),
         api.getEpicReferenceExtractionControl(),
         api.listEpicReferenceDownloadTasks(),
+        api.listEpicReferenceBooks(),
+        api.getEpicReferenceReadiness(),
         api.getEpicReferenceProfile(),
         api.searchEpicReferencePatterns({ query: "", limit: 8 }),
-      ]).then(([dashboardRes, costRes, controlRes, tasksRes, profileRes, cardsRes]) => {
+      ]).then(([dashboardRes, statusRes, artifactsRes, costRes, controlRes, tasksRes, booksRes, readinessRes, profileRes, cardsRes]) => {
         if (dashboardRes.status === "fulfilled") setDashboard(dashboardRes.value);
+        if (statusRes.status === "fulfilled") setProjectStatus(statusRes.value);
+        if (artifactsRes.status === "fulfilled") setProjectArtifacts(artifactsRes.value);
         if (costRes.status === "fulfilled") setReferenceCost(costRes.value);
         if (controlRes.status === "fulfilled") setReferenceControl(controlRes.value);
         if (tasksRes.status === "fulfilled") setDownloadTasks(tasksRes.value);
+        if (booksRes.status === "fulfilled") setReferenceBooks(booksRes.value);
+        if (readinessRes.status === "fulfilled") setReferenceReadiness(readinessRes.value);
         if (profileRes.status === "fulfilled") setReferenceProfile(profileRes.value);
         if (cardsRes.status === "fulfilled") setPatternCards(cardsRes.value);
-        if ([dashboardRes, costRes, controlRes, tasksRes, profileRes, cardsRes].some((item) => item.status === "rejected")) {
+        if ([dashboardRes, statusRes, artifactsRes, costRes, controlRes, tasksRes, booksRes, readinessRes, profileRes, cardsRes].some((item) => item.status === "rejected")) {
           setAuxError("部分参考语料辅助数据暂时不可用，核心项目数据已加载。");
         }
       });
@@ -703,6 +760,12 @@ function ProjectDetail({ id }: { id: string }) {
       if (key === "tasks-refresh" && Array.isArray(result)) {
         setDownloadTasks(result as EpicReferenceDownloadTask[]);
       }
+      if (key === "books-refresh" && Array.isArray(result)) {
+        setReferenceBooks(result as EpicReferenceBook[]);
+      }
+      if (key === "readiness-refresh" && result && typeof result === "object") {
+        setReferenceReadiness(result as EpicReferenceReadiness);
+      }
       if (key === "patterns" && Array.isArray(result)) {
         setPatternCards(result as EpicReferencePatternCard[]);
       }
@@ -717,6 +780,22 @@ function ProjectDetail({ id }: { id: string }) {
       }
       setNotice(summarizeActionResult(key, result, message));
       await load();
+    } catch (e) {
+      setError(actionError(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteCurrentProject = async () => {
+    const current = rawDetail?.project;
+    if (!current) return;
+    if (!window.confirm(`确认删除项目「${current.title}」？此操作会删除该项目的长篇规划、章节、QA 和导出记录。`)) return;
+    setBusy("delete-project");
+    setError(null);
+    try {
+      await api.deleteEpicNovelProject(current.id);
+      navigate("/epic-novel");
     } catch (e) {
       setError(actionError(e));
     } finally {
@@ -784,11 +863,11 @@ function ProjectDetail({ id }: { id: string }) {
             <RefreshCcw className="h-4 w-4" strokeWidth={1.7} />
             刷新
           </button>
-          <button type="button" className="btn-ghost rounded-lg" onClick={() => void api.downloadEpicBibleExport(project.id)}>
+          <button type="button" className="btn-ghost rounded-lg" onClick={() => void runAction("download-bible-top", () => api.downloadEpicBibleExport(project.id), "设定圣经下载已触发。")}>
             <FileCheck2 className="h-4 w-4" strokeWidth={1.7} />
             导出设定
           </button>
-          <button type="button" className="btn-gold rounded-lg" onClick={() => void api.downloadEpicNovelExport(project.id)}>
+          <button type="button" className="btn-gold rounded-lg" onClick={() => void runAction("download-novel-top", () => api.downloadEpicNovelExport(project.id), "正文下载已触发。")}>
             <Download className="h-4 w-4" strokeWidth={1.7} />
             导出正文
           </button>
@@ -813,7 +892,7 @@ function ProjectDetail({ id }: { id: string }) {
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard label="已验收字数" value={formatNumber(project.total_words)} icon={BookOpenText} />
-        <StatCard label="章节进度" value={`${dashboard?.completed_chapters ?? 0}/${project.target_chapters}`} icon={Layers3} />
+        <StatCard label="章节进度" value={`${dashboard?.completed_chapters ?? projectStatus?.acceptedChapters ?? 0}/${project.target_chapters}`} icon={Layers3} />
         <StatCard label="圣经覆盖率" value={pct(dashboard?.bible_coverage_score)} icon={ShieldCheck} />
         <StatCard label="预估费用" value={`$${(dashboard?.cost_estimate ?? 0).toFixed(3)}`} icon={Database} />
       </section>
@@ -989,6 +1068,18 @@ function ProjectDetail({ id }: { id: string }) {
                 icon={RefreshCcw}
                 onClick={() => void runAction("tasks-refresh", () => api.listEpicReferenceDownloadTasks(), "下载任务已刷新。")}
               />
+              <ActionButton
+                label="刷新引用书"
+                busy={busy === "books-refresh"}
+                icon={BookOpenText}
+                onClick={() => void runAction("books-refresh", () => api.listEpicReferenceBooks(), "引用书列表已刷新。")}
+              />
+              <ActionButton
+                label="刷新就绪度"
+                busy={busy === "readiness-refresh"}
+                icon={ShieldCheck}
+                onClick={() => void runAction("readiness-refresh", () => api.getEpicReferenceReadiness(), "引用语料就绪度已刷新。")}
+              />
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <input
@@ -1078,15 +1169,59 @@ function ProjectDetail({ id }: { id: string }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gold-500/8">
+                  {referenceBooks.slice(0, 8).map((book) => (
+                    <tr key={`reference-book-${book.id}`} className="text-warm-300">
+                      <td className="px-3 py-2">{book.title}</td>
+                      <td className="px-3 py-2">引用书</td>
+                      <td className="px-3 py-2">{statusLabel(book.status)}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-ghost rounded-lg px-2 py-1 text-xs text-red-200 hover:border-red-400/40 hover:text-red-100"
+                          disabled={busy === `delete-reference-book-${book.id}`}
+                          onClick={() => {
+                            if (!window.confirm(`确认移除引用书「${book.title}」？本地原始文件会保留。`)) return;
+                            void runAction(
+                              `delete-reference-book-${book.id}`,
+                              () => api.deleteEpicReferenceBook(book.id),
+                              "引用书已移除。",
+                            );
+                          }}
+                        >
+                          {busy === `delete-reference-book-${book.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                          移除
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                   {downloadTasks.slice(0, 12).map((task) => (
                     <tr key={task.id} className="text-warm-300">
                       <td className="px-3 py-2">{task.title}</td>
                       <td className="px-3 py-2">{task.provider}</td>
                       <td className="px-3 py-2">{statusLabel(task.status)}</td>
-                      <td className="px-3 py-2">{formatNumber(task.generated_card_count)}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span>{formatNumber(task.generated_card_count)}</span>
+                          <button
+                            type="button"
+                            className="btn-ghost rounded-lg px-2 py-1 text-xs"
+                            disabled={busy === `retry-task-${task.id}`}
+                            onClick={() =>
+                              void runAction(
+                                `retry-task-${task.id}`,
+                                () => api.retryEpicReferenceDownloadTask(task.id),
+                                "下载任务已重置。",
+                              )
+                            }
+                          >
+                            {busy === `retry-task-${task.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
+                            重试
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
-                  {downloadTasks.length === 0 && (
+                  {downloadTasks.length === 0 && referenceBooks.length === 0 && (
                     <tr>
                       <td className="px-3 py-4 text-warm-500" colSpan={4}>
                         暂无下载任务。
@@ -1105,8 +1240,8 @@ function ProjectDetail({ id }: { id: string }) {
             <StatCard label="预估令牌" value={formatNumber(referenceCost?.estimatedPromptTokens ?? 0)} icon={ScrollText} />
             <StatCard label="引用安全警告" value={String(dashboard?.reference_safety_warnings ?? 0)} icon={AlertTriangle} />
             <StatCard label="过拟合警告" value={String(dashboard?.reference_overfit_warnings ?? 0)} icon={AlertTriangle} />
-            <StatCard label="机制画像书数" value={String(referenceProfile?.source_book_count ?? 0)} icon={BookOpenText} />
-            <StatCard label="机制画像卡数" value={String(referenceProfile?.source_card_count ?? 0)} icon={Database} />
+            <StatCard label="机制画像书数" value={String(referenceReadiness?.sourceBookCount ?? referenceProfile?.source_book_count ?? 0)} icon={BookOpenText} />
+            <StatCard label="生产可用卡" value={String(referenceReadiness?.productionReadyCards ?? referenceProfile?.source_card_count ?? 0)} icon={Database} />
           </div>
           <Panel title="参考模式卡" icon={Database}>
             {patternCards.length === 0 ? (
@@ -1746,7 +1881,7 @@ function ProjectDetail({ id }: { id: string }) {
             <StatCard label="圣经分节" value={String(countRows(detail, "bible_sections"))} icon={FileCheck2} />
             <StatCard label="已验收章节" value={String(countRows(detail, "chapters"))} icon={ScrollText} />
             <StatCard label="验收报告" value={String(countRows(detail, "acceptance_reports"))} icon={ShieldCheck} />
-            <StatCard label="检索轨迹" value={String(countRows(detail, "retrieval_traces"))} icon={SearchCheck} />
+            <StatCard label="产物记录" value={String(projectArtifacts.length || countRows(detail, "artifacts"))} icon={SearchCheck} />
           </div>
         </section>
       )}

@@ -571,6 +571,7 @@ export interface LongNovelGenerationLog {
   prompt_tokens: number;
   completion_tokens: number;
   estimated_cost: number;
+  actual_cost?: number | null;
   status: string;
   error: string | null;
   created_at: string;
@@ -866,6 +867,40 @@ export interface EpicReferenceExtractionControl {
   state: "running" | "paused" | "stopped";
 }
 
+export interface EpicReferenceReadiness {
+  ready: boolean;
+  profileReady: boolean;
+  profileId: string | null;
+  sourceBookCount: number;
+  sourceCardCount: number;
+  totalBooks: number;
+  importedBooks: number;
+  totalCards: number;
+  productionReadyCards: number;
+  downloadStatus: Record<string, number>;
+  rawTextIncludedInGeneration: boolean;
+  minimumViable: boolean;
+}
+
+export interface EpicProjectStatusSummary {
+  projectId: string;
+  title: string;
+  status: string;
+  targetWords: number;
+  currentWords: number;
+  targetChapters: number;
+  acceptedChapters: number;
+  currentVolume: number;
+  currentChapter: number;
+  latestTask: Record<string, unknown> | null;
+  lastError: string | null;
+  reference: Record<string, unknown>;
+  bible: Record<string, unknown>;
+  qa: Record<string, unknown>;
+  exports: Record<string, unknown>;
+  updatedAt: string;
+}
+
 export interface EpicNovelProjectDetailResponse {
   project: EpicNovelProject;
   world_bible: Record<string, unknown> | null;
@@ -891,6 +926,14 @@ export interface EpicNovelProjectDetailResponse {
   acceptance_reports: EpicAcceptanceReport[];
   issues: Array<Record<string, unknown>>;
   retrieval_traces: Array<Record<string, unknown>>;
+  character_knowledge_ledgers: Array<Record<string, unknown>>;
+  secret_exposure_policies: Array<Record<string, unknown>>;
+  reader_question_ledgers: Array<Record<string, unknown>>;
+  character_growth_ledgers: Array<Record<string, unknown>>;
+  authority_ledgers: Array<Record<string, unknown>>;
+  relationship_ledgers: Array<Record<string, unknown>>;
+  secret_ledgers: Array<Record<string, unknown>>;
+  artifacts: Array<Record<string, unknown>>;
   logs: EpicGenerationLog[];
 }
 
@@ -950,4 +993,6 @@ export interface EpicExportMetadata {
   artifactType: string;
   contentReturned: boolean;
   contentChars: number;
+  artifactRecordId?: string;
+  status?: string;
 }
