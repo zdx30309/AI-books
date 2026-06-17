@@ -371,6 +371,11 @@ def _long_finance_manuscript(repeat: int = 5200) -> str:
     return MINIMAL_MANUSCRIPT.replace("测试正文。", body)
 
 
+def _finance_continuation_fragment(repeat: int = 1800) -> str:
+    body = "这一层需要补足产业链、公司行为、政策条件、资金周期、普通人影响和风险边界之间的传导关系。" * repeat
+    return f"@1. 全局传导\n{body}"
+
+
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,7 +461,7 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     assert "不能只输出前半部分或前 20000 字" in str(format_kwargs[0]["prompt_template"])
 
 
-def test_finance_longform_short_writer_does_not_call_openai_twice_or_fail(
+def test_finance_longform_short_writer_uses_targeted_continuation_not_redraft(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -466,7 +471,9 @@ def test_finance_longform_short_writer_does_not_call_openai_twice_or_fail(
     async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
         writer_prompts.append(prompt)
         writer_kwargs.append(dict(kwargs))
-        return MINIMAL_MANUSCRIPT
+        if len(writer_prompts) == 1:
+            return MINIMAL_MANUSCRIPT
+        return _finance_continuation_fragment()
 
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
@@ -483,11 +490,17 @@ def test_finance_longform_short_writer_does_not_call_openai_twice_or_fail(
     )
 
     assert "@最终书名" in result
-    assert len(writer_prompts) == 1
-    assert "财经科技长文完整补足任务" not in writer_prompts[0]
+    assert len(writer_prompts) == 2
+    assert "财经科技长视频动态长文强约束" in writer_prompts[0]
+    assert "财经科技长文同阶段定向续写任务" in writer_prompts[1]
+    assert "全局扩写蓝图" in writer_prompts[1]
+    assert "只输出“新增正文正式章节”" in writer_prompts[1]
+    assert "财经科技长文完整补足任务" not in "\n".join(writer_prompts)
     assert all(kwargs["max_output_tokens"] == 0 for kwargs in writer_kwargs)
     assert all(kwargs["retry_on_failure"] is False for kwargs in writer_kwargs)
-    assert content_engine._finance_body_chars(result) < 50_000
+    assert content_engine._finance_body_chars(result) >= 50_000
+    assert "@目录" in result
+    assert "2. 全局传导" in result
 
 
 def test_finance_longform_deepseek_compression_keeps_refined_full_text(
@@ -538,6 +551,51 @@ def test_finance_openai_writer_failure_is_non_retryable(
                 source_duration_seconds=30 * 60,
             )
         )
+
+
+def test_finance_short_final_resume_is_not_reused_before_writer_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "finance_stale_resume"
+    output_dir.mkdir()
+    (output_dir / "01_writer.md").write_text(MINIMAL_MANUSCRIPT, encoding="utf-8")
+    (output_dir / "04_format.md").write_text(MINIMAL_MANUSCRIPT, encoding="utf-8")
+    writer_prompts: list[str] = []
+    polish_inputs: list[str] = []
+    format_inputs: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        return _finance_continuation_fragment()
+
+    def fake_polish_book_text(text: str, **kwargs: object) -> str:
+        polish_inputs.append(text)
+        return text
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        format_inputs.append(text)
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "视频讲到算力价格、AI 服务器供应链、政策条件和企业投入节奏。",
+            category="finance_technology",
+            output_dir=output_dir,
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert writer_prompts
+    assert "财经科技长文同阶段定向续写任务" in writer_prompts[0]
+    assert content_engine._finance_body_chars(result) >= 50_000
+    assert polish_inputs and format_inputs
+    assert (output_dir / "04_format_stale_short.md").exists()
 
 
 def test_writer_prompts_include_punctuation_usage_rules() -> None:

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -49,6 +50,8 @@ FINANCE_LONGFORM_VERY_DENSE_SOURCE_CPM = 560
 FINANCE_LONGFORM_DENSE_TARGET_MULTIPLIER = 1.10
 FINANCE_LONGFORM_VERY_DENSE_TARGET_MULTIPLIER = 1.20
 FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
+FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
+FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
 
 
@@ -1867,6 +1870,305 @@ def _finance_format_template(base_template: str) -> str:
     return f"{template}\n\n{guard}"
 
 
+def _finance_body_target_reached(markdown: str, target_words: int) -> bool:
+    return _finance_body_chars(markdown) >= max(1, int(target_words))
+
+
+def _finance_chapter_titles_from_body(body: str) -> list[tuple[int, str]]:
+    titles: list[tuple[int, str]] = []
+    for line in (body or "").splitlines():
+        match = re.match(r"^\s*@?\s*(\d+)\.\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        title = _strip_title_colons(match.group(2).strip())
+        if title:
+            titles.append((int(match.group(1)), title))
+    return titles
+
+
+def _finance_next_chapter_number(markdown: str) -> int:
+    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
+    if not titles:
+        return 1
+    return max(number for number, _title in titles) + 1
+
+
+def _finance_build_toc_from_body(body: str) -> str:
+    titles = _finance_chapter_titles_from_body(body)
+    if not titles:
+        return ""
+    return "\n".join(f"{idx}. {title}" for idx, title in titles)
+
+
+def _finance_strip_continuation_noise(fragment: str) -> str:
+    text = (fragment or "").strip()
+    text = re.sub(r"^```(?:markdown|md)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    body = _finance_section_content(text, "正文")
+    if body:
+        text = body
+    lines: list[str] = []
+    skip_front_content = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^@?\s*(最终书名|最终简介|目录|导言)\s*$", stripped):
+            skip_front_content = True
+            continue
+        if re.match(r"^@?\s*正文\s*$", stripped):
+            skip_front_content = False
+            continue
+        if skip_front_content:
+            if re.match(r"^@?\s*(\d+)\.\s+", stripped):
+                skip_front_content = False
+            else:
+                continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
+
+
+def _finance_renumber_continuation_body(fragment_body: str, *, start_number: int) -> str:
+    lines = (fragment_body or "").splitlines()
+    next_number = max(1, start_number)
+    found_heading = False
+    output: list[str] = []
+    heading_patterns = (
+        re.compile(r"^\s*@?\s*\d+\.\s*(.+?)\s*$"),
+        re.compile(r"^\s*@?\s*\d+、\s*(.+?)\s*$"),
+        re.compile(r"^\s*@?\s*第[一二三四五六七八九十百千万\d]+章\s*[：:、.\s]*(.+?)\s*$"),
+    )
+    for line in lines:
+        stripped = line.strip()
+        title: str | None = None
+        for pattern in heading_patterns:
+            match = pattern.match(stripped)
+            if match:
+                title = match.group(1).strip()
+                break
+        if title:
+            title = _strip_title_colons(title)
+            output.append(f"@{next_number}. {title}")
+            next_number += 1
+            found_heading = True
+        else:
+            output.append(line.rstrip())
+    body = "\n".join(output).strip()
+    if not found_heading and body:
+        body = f"@{start_number}. 补全现实链条\n{body}"
+    return body
+
+
+def _finance_rebuild_markdown_with_body(markdown: str, body: str) -> str:
+    title = _finance_section_content(markdown, "最终书名")
+    intro = _finance_section_content(markdown, "最终简介")
+    guide = _finance_section_content(markdown, "导言")
+    if not (title and intro and guide and body.strip()):
+        return f"{(markdown or '').strip()}\n\n{body.strip()}".strip()
+    toc = _finance_build_toc_from_body(body) or _finance_section_content(markdown, "目录")
+    return (
+        f"@最终书名\n{title.strip()}\n\n"
+        f"@最终简介\n{intro.strip()}\n\n"
+        f"@目录\n{toc.strip()}\n\n"
+        f"@导言\n{guide.strip()}\n\n"
+        f"@正文\n{body.strip()}"
+    )
+
+
+def _finance_append_continuation(markdown: str, continuation: str) -> str:
+    current_body = _finance_body_text(markdown)
+    fragment_body = _finance_strip_continuation_noise(continuation)
+    if not fragment_body:
+        return markdown
+    fragment_body = _finance_renumber_continuation_body(
+        fragment_body,
+        start_number=_finance_next_chapter_number(markdown),
+    )
+    merged_body = "\n\n".join(part.strip() for part in (current_body, fragment_body) if part.strip())
+    return _finance_rebuild_markdown_with_body(markdown, merged_body)
+
+
+def _finance_existing_chapter_map(markdown: str) -> str:
+    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
+    if not titles:
+        return "当前正文没有稳定章节标题。"
+    return "\n".join(f"- {number}. {title}" for number, title in titles[-20:])
+
+
+def _finance_continuation_prompt(
+    base_writer_prompt: str,
+    raw_text: str,
+    current_markdown: str,
+    *,
+    target_words: int,
+    duration_seconds: int,
+    round_index: int,
+    batch_target: int,
+) -> str:
+    current_body_chars = _finance_body_chars(current_markdown)
+    remaining = max(0, int(target_words) - current_body_chars)
+    minutes = round(duration_seconds / 60.0, 1)
+    focus_points = _finance_source_focus_points(raw_text, max_points=55)
+    chapter_map = _finance_existing_chapter_map(current_markdown)
+    return f"""{base_writer_prompt.rstrip()}
+
+【财经科技长文同阶段定向续写任务】
+当前仍属于 OpenAI Writer 初稿阶段，不是新 workflow，不是 Gemini 润色，不是 DeepSeek 格式层。
+你会看到原视频文稿、当前已完成书稿和已有章节目录。请只输出“新增正文正式章节”，后端会把新增章节拼回 @正文 并重建目录。
+
+【当前篇幅状态】
+- 视频时长约 {minutes} 分钟。
+- 动态目标正文字数约 {target_words} 字。
+- 当前正文约 {current_body_chars} 字。
+- 仍需补足约 {remaining} 字。
+- 本轮新增正文目标约 {batch_target} 字；如果内容密度足够，可以更多，不设人为上限。
+- 当前是第 {round_index} 轮定向续写。
+
+【全局扩写蓝图】
+前文如果已经把表层事实说完，不要重复前文结论，也不要沿着最后一段空转。必须从更高一层的全局视角补足前文没有讲透的内容：
+- 产业链结构：上游资源、核心零部件、云厂商、应用公司、终端用户之间的传导关系。
+- 技术机制：算力、模型、芯片、能源、数据、软件生态、效率提升之间怎样互相制约。
+- 公司行为：资本开支、库存、采购节奏、价格谈判、竞争策略、财务压力和商业模式。
+- 政策与地缘：监管条件、产业政策、出口限制、补贴、标准制定和安全边界。
+- 资金与周期：利率、融资、估值、现金流、产能周期、价格周期和市场预期如何改变判断。
+- 普通人影响：工作机会、消费成本、设备价格、教育选择、投资误判、行业迁移和生活成本。
+- 条件推演：如果关键条件变化，结论怎样变化；哪些判断成立，哪些判断失效。
+- 风险边界：哪些说法不能写成确定预测，哪些只是机制可能性，哪些是市场常见误读。
+
+【反重复与质量要求】
+- 只补充当前书稿未充分展开的层次，不能复述已有章节，不能换说法重复同一判断。
+- 每个新增章节都必须围绕原视频信息点展开，并提供新增内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判或风险边界。
+- 不能为了凑字数堆无关知识，不能写百科，不能写研究报告，不能写投资建议。
+- 不做具体投资预测，不写涨跌结论，不给买卖建议。
+- 语言仍然要保持财经科技分类原 prompt 的正式书稿质量，不要口语化，不要论文腔，不要总结腔。
+
+【输出格式】
+- 只输出新增的正文正式章节，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
+- 每个新增章节必须以 @N. 章节名 开头，N 可从 1 开始，后端会自动重排编号。
+- 章节标题不得出现中文冒号或英文冒号，不要命名为“结语”。
+- 不要解释，不要代码块，不要元信息，不要输出“续写如下”。
+
+[已有章节目录]
+{chapter_map}
+
+[视频信息点观察清单]
+{focus_points}
+
+[原始视频文稿]
+{raw_text.strip()}
+
+[当前已完成书稿]
+{current_markdown.strip()}
+"""
+
+
+async def _finance_expand_writer_to_target(
+    current_markdown: str,
+    *,
+    base_writer_prompt: str,
+    raw_text: str,
+    target_words: int,
+    duration_seconds: int,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+) -> tuple[str, bool]:
+    current_markdown = normalize_final_markdown(current_markdown, category="finance_technology")
+    current_body_chars = _finance_body_chars(current_markdown)
+    if _finance_body_target_reached(current_markdown, target_words):
+        return current_markdown, False
+
+    deficit = max(0, int(target_words) - current_body_chars)
+    max_rounds = max(
+        1,
+        int(math.ceil(deficit / FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET)) + 2,
+    )
+    expanded = False
+    no_gain_rounds = 0
+
+    for round_index in range(1, max_rounds + 1):
+        if _finance_body_target_reached(current_markdown, target_words):
+            break
+        before_body_chars = _finance_body_chars(current_markdown)
+        remaining = max(0, int(target_words) - before_body_chars)
+        batch_target = max(
+            8_000,
+            min(FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET, remaining + 2_000),
+        )
+        prompt = _finance_continuation_prompt(
+            base_writer_prompt,
+            raw_text,
+            current_markdown,
+            target_words=target_words,
+            duration_seconds=duration_seconds,
+            round_index=round_index,
+            batch_target=batch_target,
+        )
+        _dump_stage(output_dir, f"01c_finance_continuation_prompt_{round_index:02d}.md", prompt)
+        logger.warning(
+            "财经科技初稿低于动态目标，启动同阶段定向续写 round=%d/%d body_chars=%d target=%d",
+            round_index,
+            max_rounds,
+            before_body_chars,
+            target_words,
+        )
+        try:
+            continuation = await _route_writer_call(
+                prompt,
+                max_output_tokens=0,
+                retry_on_failure=False,
+                on_progress=(
+                    (
+                        lambda chars, base=before_body_chars, round_idx=round_index: on_stage(
+                            "writer_progress",
+                            {"chars": base + chars, "continuation_round": round_idx},
+                        )
+                    )
+                    if on_stage
+                    else None
+                ),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
+                f"finance OpenAI continuation failed after 01_writer.md was saved: {exc}"
+            ) from exc
+        _dump_stage(output_dir, f"01c_finance_continuation_{round_index:02d}.md", continuation)
+        current_markdown = _finance_append_continuation(current_markdown, continuation)
+        current_markdown = normalize_final_markdown(current_markdown, category="finance_technology")
+        after_body_chars = _finance_body_chars(current_markdown)
+        gain = after_body_chars - before_body_chars
+        logger.info(
+            "财经科技定向续写完成 round=%d gain=%d body_chars=%d target=%d",
+            round_index,
+            gain,
+            after_body_chars,
+            target_words,
+        )
+        if gain >= FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS:
+            expanded = True
+            no_gain_rounds = 0
+            _dump_stage(output_dir, "01_writer.md", current_markdown)
+            if on_stage:
+                on_stage(
+                    "writer_progress",
+                    {"chars": after_body_chars, "continuation_round": round_index, "target_words": target_words},
+                )
+        else:
+            no_gain_rounds += 1
+        if no_gain_rounds >= 2:
+            raise RuntimeError(
+                f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
+                "finance OpenAI continuation did not add enough non-repetitive content; "
+                f"body_chars={after_body_chars} target={target_words}"
+            )
+
+    if not _finance_body_target_reached(current_markdown, target_words):
+        raise RuntimeError(
+            f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
+            f"finance writer could not reach dynamic target without quality risk; "
+            f"body_chars={_finance_body_chars(current_markdown)} target={target_words}"
+        )
+    return current_markdown, expanded
+
+
 def _finance_stage_looks_compressed(source: str, candidate: str) -> bool:
     if not source or len(source) < 10_000:
         return False
@@ -1910,9 +2212,9 @@ async def _generate_finance_longform_book(
     metadata = {
         "targetWords": target_words,
         "durationSeconds": duration_seconds,
-        "targetMode": "guidance_only_no_hard_retry",
+        "targetMode": "writer_stage_expand_to_dynamic_target",
         "stageMinRetainRatio": FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO,
-        "mode": "single_pass_whole_manuscript",
+        "mode": "whole_workflow_with_writer_stage_continuations",
         "outputCaps": {
             "openai": "disabled",
             "gemini": "disabled",
@@ -1928,11 +2230,18 @@ async def _generate_finance_longform_book(
 
     final_resume_markdown = _read_stage_file(output_dir, "04_format.md")
     if final_resume_markdown:
-        logger.info("复用已存在的财经长文 04_format.md")
-        _log_stage("finance 4/4 format (resume)", final_resume_markdown)
-        if on_stage:
-            on_stage("format_done", {"chars": len(final_resume_markdown)})
-        return final_resume_markdown
+        if _finance_body_target_reached(final_resume_markdown, target_words):
+            logger.info("复用已存在的财经长文 04_format.md")
+            _log_stage("finance 4/4 format (resume)", final_resume_markdown)
+            if on_stage:
+                on_stage("format_done", {"chars": len(final_resume_markdown)})
+            return final_resume_markdown
+        logger.warning(
+            "已有财经长文 04_format.md 低于动态目标，忽略短终稿并回到 writer 阶段续写: body_chars=%d target=%d",
+            _finance_body_chars(final_resume_markdown),
+            target_words,
+        )
+        _dump_stage(output_dir, "04_format_stale_short.md", final_resume_markdown)
 
     resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
     resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
@@ -1991,16 +2300,30 @@ async def _generate_finance_longform_book(
                 target_words,
             )
 
-        if on_stage:
-            on_stage(
-                "writer_done",
-                {
-                    "chars": len(generated_markdown),
-                    "body_chars": _finance_body_chars(generated_markdown),
-                    "target_words": target_words,
-                    "target_mode": "guidance_only",
-                },
-            )
+    generated_markdown, writer_expanded = await _finance_expand_writer_to_target(
+        generated_markdown,
+        base_writer_prompt=base_writer_prompt,
+        raw_text=raw_text,
+        target_words=target_words,
+        duration_seconds=duration_seconds,
+        output_dir=output_dir,
+        on_stage=on_stage,
+    )
+    if writer_expanded:
+        resume_polished_markdown = None
+        resume_refined_markdown = None
+        _dump_stage(output_dir, "01_writer.md", generated_markdown)
+
+    if on_stage:
+        on_stage(
+            "writer_done",
+            {
+                "chars": len(generated_markdown),
+                "body_chars": _finance_body_chars(generated_markdown),
+                "target_words": target_words,
+                "target_mode": "expanded_to_target",
+            },
+        )
 
     writer_chars = len(generated_markdown)
 
