@@ -20,6 +20,15 @@ Validation run on 2026-06-18:
 - `python -m pytest backend/tests/test_epic_qa.py backend/tests/test_epic_context.py backend/tests/test_epic_reference.py backend/tests/test_epic_scheduler.py -q` -> 46 passed
 - `npm.cmd run build` in `frontend` -> passed
 
+Publication/deployment on 2026-06-18:
+
+- Post-gate hardening HEAD was pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`.
+- Beijing ECS `/opt/video-plan` was updated through tarball deployment while preserving `.env` and `.local`.
+- `.deploy-version` was verified against deployed HEAD.
+- `docker compose ps` showed `backend`, `worker`, `beat`, and `web` Up.
+- Public `http://101.200.48.238/`, `http://101.200.48.238/epic-novel`, and `http://101.200.48.238/api/v1/system/health` returned 200 after startup.
+- Remote `init_db()` confirmed the new hardening tables, including `epic_character_knowledge_ledgers` and `epic_artifact_records`.
+
 New post-gate hardening docs:
 
 - `docs/epic_novel/POST_GATE_HARDENING_AUDIT.md`

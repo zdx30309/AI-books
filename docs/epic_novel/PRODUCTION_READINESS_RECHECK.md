@@ -14,6 +14,14 @@ Validation for this hardening pass:
 - `python -m pytest backend/tests/test_epic_qa.py backend/tests/test_epic_context.py backend/tests/test_epic_reference.py backend/tests/test_epic_scheduler.py -q` -> 46 passed
 - `npm.cmd run build` -> passed
 
+Publication/deployment for this hardening pass:
+
+- Pushed to `origin/codex/bilibili-cost-guard-main` and `origin/main`.
+- Deployed to Beijing ECS `/opt/video-plan` by tarball replacement while preserving `.env` and `.local`.
+- `.deploy-version` matched deployed HEAD.
+- Compose services `backend`, `worker`, `beat`, and `web` were Up.
+- Public `/`, `/epic-novel`, and `/api/v1/system/health` returned 200 after startup.
+
 This hardening does not satisfy full production readiness by itself. Full 100-book corpus processing, full-corpus mechanism profile evidence, and real long-run 300万字 manuscript production remain incomplete.
 
 Gate 2A update on 2026-06-12: `PASS` for bounded section-aware Reference Intelligence proof only.
