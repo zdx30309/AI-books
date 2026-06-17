@@ -43,7 +43,13 @@ FINANCE_LONGFORM_CHARS_PER_MINUTE = 280
 FINANCE_LONGFORM_BASE_TARGET_WORDS = 50_000
 FINANCE_LONGFORM_MIN_TARGET_WORDS = 8_000
 FINANCE_LONGFORM_STANDARD_WORDS = 12_000
-FINANCE_LONGFORM_MIN_COMPLETION_RATIO = 0.85
+FINANCE_LONGFORM_SHORT_VIDEO_WORDS_PER_MINUTE = 1_750
+FINANCE_LONGFORM_DENSE_SOURCE_CPM = 420
+FINANCE_LONGFORM_VERY_DENSE_SOURCE_CPM = 560
+FINANCE_LONGFORM_DENSE_TARGET_MULTIPLIER = 1.10
+FINANCE_LONGFORM_VERY_DENSE_TARGET_MULTIPLIER = 1.20
+FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
+FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
@@ -1024,6 +1030,7 @@ def _openai_writer_call(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     on_progress: Callable[[int], None] | None = None,
+    retry_on_failure: bool = True,
 ) -> str:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
@@ -1033,7 +1040,7 @@ def _openai_writer_call(
     response: Any | None = None
     text = ""
     first_stream_exc: Exception | None = None
-    attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1))
+    attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1)) if retry_on_failure else 1
     backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
 
     for attempt in range(1, attempts + 1):
@@ -1052,6 +1059,8 @@ def _openai_writer_call(
                             on_progress=on_progress,
                         )
                     except Exception as stream_exc:
+                        if not retry_on_failure:
+                            raise
                         if first_stream_exc is None:
                             first_stream_exc = stream_exc
                         _reset_openai_writer_client()
@@ -1094,28 +1103,28 @@ def _openai_writer_call(
 
     if not text or not text.strip():
         logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
-        client = _get_openai_writer_client()
-        for retry_effort in _openai_writer_retry_efforts(effort):
-            logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
-            try:
-                response = _create_openai_writer_response(
-                    rendered_prompt,
-                    effort=retry_effort,
-                    verb=verb,
-                    max_tok=max_tok,
+        if retry_on_failure:
+            for retry_effort in _openai_writer_retry_efforts(effort):
+                logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
+                try:
+                    response = _create_openai_writer_response(
+                        rendered_prompt,
+                        effort=retry_effort,
+                        verb=verb,
+                        max_tok=max_tok,
+                    )
+                except Exception as exc:
+                    _reset_openai_writer_client()
+                    raise RuntimeError(
+                        _openai_writer_connection_error_message(exc, first_stream_exc)
+                    ) from exc
+                text = _extract_openai_response_text(response)
+                if text.strip():
+                    break
+                logger.warning(
+                    "OpenAI Writer retry returned empty response: %s",
+                    _openai_response_debug_summary(response),
                 )
-            except Exception as exc:
-                _reset_openai_writer_client()
-                raise RuntimeError(
-                    _openai_writer_connection_error_message(exc, first_stream_exc)
-                ) from exc
-            text = _extract_openai_response_text(response)
-            if text.strip():
-                break
-            logger.warning(
-                "OpenAI Writer retry returned empty response: %s",
-                _openai_response_debug_summary(response),
-            )
 
     if not text or not text.strip():
         raise ValueError("OpenAI Writer 返回空响应")
@@ -1130,6 +1139,7 @@ async def _route_writer_call(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     on_progress: Callable[[int], None] | None = None,
+    retry_on_failure: bool = True,
 ) -> str:
     return await asyncio.to_thread(
         _openai_writer_call,
@@ -1138,6 +1148,7 @@ async def _route_writer_call(
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
         on_progress=on_progress,
+        retry_on_failure=retry_on_failure,
     )
 
 
@@ -1714,6 +1725,17 @@ def _finance_duration_seconds_from_text(raw_text: str) -> int:
     return int(round(minutes * 60))
 
 
+def _finance_content_density_multiplier(raw_text: str, minutes: float) -> float:
+    if minutes <= 0:
+        return 1.0
+    source_chars_per_minute = len((raw_text or "").strip()) / minutes
+    if source_chars_per_minute >= FINANCE_LONGFORM_VERY_DENSE_SOURCE_CPM:
+        return FINANCE_LONGFORM_VERY_DENSE_TARGET_MULTIPLIER
+    if source_chars_per_minute >= FINANCE_LONGFORM_DENSE_SOURCE_CPM:
+        return FINANCE_LONGFORM_DENSE_TARGET_MULTIPLIER
+    return 1.0
+
+
 def _finance_dynamic_target_words(
     raw_text: str,
     *,
@@ -1730,14 +1752,19 @@ def _finance_dynamic_target_words(
 
     minutes = max(seconds / 60.0, 1.0)
     if minutes < 30:
-        target = round(minutes / 30.0 * FINANCE_LONGFORM_BASE_TARGET_WORDS)
-        return max(FINANCE_LONGFORM_MIN_TARGET_WORDS, int(target))
-    if minutes <= 60:
-        return FINANCE_LONGFORM_BASE_TARGET_WORDS
-    return max(
-        FINANCE_LONGFORM_BASE_TARGET_WORDS,
-        int(round(minutes / 60.0 * FINANCE_LONGFORM_BASE_TARGET_WORDS)),
-    )
+        base_target = min(
+            FINANCE_LONGFORM_BASE_TARGET_WORDS,
+            round(minutes * FINANCE_LONGFORM_SHORT_VIDEO_WORDS_PER_MINUTE),
+        )
+    elif minutes <= 60:
+        base_target = FINANCE_LONGFORM_BASE_TARGET_WORDS
+    else:
+        base_target = max(
+            FINANCE_LONGFORM_BASE_TARGET_WORDS,
+            int(round(minutes / 60.0 * FINANCE_LONGFORM_BASE_TARGET_WORDS)),
+        )
+    target = int(round(base_target * _finance_content_density_multiplier(raw_text, minutes)))
+    return max(FINANCE_LONGFORM_MIN_TARGET_WORDS, target)
 
 
 def _should_use_finance_longform(
@@ -1776,10 +1803,6 @@ def _finance_body_chars(markdown: str) -> int:
     return len(_finance_body_text(markdown).strip())
 
 
-def _finance_below_target(markdown: str, target_words: int) -> bool:
-    return _finance_body_chars(markdown) < int(target_words * FINANCE_LONGFORM_MIN_COMPLETION_RATIO)
-
-
 def _finance_source_focus_points(raw_text: str, *, max_points: int = 40) -> str:
     chunks = _split_long_text_by_sentence(raw_text or "", target_chars=260)
     points = [chunk.strip() for chunk in chunks if chunk.strip()]
@@ -1797,7 +1820,7 @@ def _finance_whole_book_prompt(
     duration_seconds: int | None,
 ) -> str:
     minutes = round((duration_seconds or _finance_duration_seconds_from_text(raw_text)) / 60, 1)
-    floor_words = int(target_words * FINANCE_LONGFORM_MIN_COMPLETION_RATIO)
+    source_cpm = int(round(len((raw_text or "").strip()) / max(minutes, 1.0)))
     focus_points = _finance_source_focus_points(raw_text)
     focus_block = f"\n[视频信息点观察清单]\n{focus_points}\n" if focus_points else ""
     return f"""{base_writer_prompt.rstrip()}
@@ -1806,8 +1829,9 @@ def _finance_whole_book_prompt(
 - 以上财经科技分类 prompt 全部继续生效；本段只增加长视频篇幅、质量和链路约束，不替换原分类规则。
 - 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
 - 这里的“一次性”指模型调用链路一次性整稿生成；成稿内部仍然必须按 @目录 和 @正文 组织章节。
-- 视频时长约 {minutes} 分钟，目标正文字数约 {target_words} 字，最低完成线约 {floor_words} 字；不设置人为上限，不要自我压缩。
-- 如果视频时长 30 到 60 分钟，正文应达到约 50000 字的信息密度；超过 60 分钟继续按内容量上探，不设硬封顶。
+- 视频时长约 {minutes} 分钟，文稿信息密度约每分钟 {source_cpm} 字，建议正文字数目标约 {target_words} 字；这是写作目标和篇幅引导，不是后处理硬截断，最终以视频内容密度、逻辑完整和不灌水为准。
+- 如果视频时长约 20 分钟，正文尽量写到 35000 字以上；如果视频时长 30 分钟以上，正文尽量接近或超过 50000 字；超过 60 分钟继续按内容量上探，不设硬封顶。
+- 如果服务端实际输出能力限制了篇幅，优先保证完整结构、核心信息点覆盖、论证密度和语言质量，不要回头重写已完成内容，不要为了达标堆砌无关信息。
 - 必须按视频信息点展开，围绕原视频里的事实、数字、概念、事件、公司动作、产业变化、政策条件和市场语境组织。
 - 禁止重复观点，禁止为了凑字数堆无关信息，禁止把同一判断换说法，禁止空泛铺陈和概念堆砌。
 - 扩写只能来自内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判、风险边界和普通人会受到的具体影响。
@@ -1818,39 +1842,44 @@ def _finance_whole_book_prompt(
 """
 
 
-def _finance_expand_whole_book_prompt(
-    base_writer_prompt: str,
-    raw_text: str,
-    current_markdown: str,
-    *,
-    target_words: int,
-) -> str:
-    floor_words = int(target_words * FINANCE_LONGFORM_MIN_COMPLETION_RATIO)
-    return f"""{base_writer_prompt.rstrip()}
+def _finance_stage_instruction(base_instruction: str, stage_name: str) -> str:
+    return f"""{base_instruction.rstrip()}
 
-【财经科技长文完整补足任务】
-当前书稿低于动态篇幅目标。请基于原视频文稿和当前书稿，重新输出一版完整书稿，而不是追加片段。
-
-硬性要求：
-- 目标正文字数约 {target_words} 字，最低完成线约 {floor_words} 字；不设置人为上限。
-- 必须按视频信息点展开，补足当前书稿没有讲透的背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判和风险边界。
-- 禁止重复观点，禁止为了凑字数堆无关信息，禁止总结前文，禁止把同一判断换说法。
-- 不要改变五段输出顺序：@最终书名、@最终简介、@目录、@导言、@正文。
-- 只输出补足后的完整成稿，不要解释，不要代码块。
-
-[当前书稿]
-{current_markdown.strip()}
+【财经科技超长文整稿处理保护】
+- 当前阶段是 {stage_name}，只执行本阶段原有 workflow，不改变分工，不重写成新稿，不改成摘要。
+- 你会收到上一阶段产出的完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
+- 必须保留完整正文、完整章节、完整段落和全部视频信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
+- 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
+- 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
 """
 
 
-def _finance_format_looks_truncated(source: str, formatted: str) -> bool:
-    if not source or not formatted or len(source) < 10_000:
+def _finance_format_template(base_template: str) -> str:
+    guard = """【财经科技超长文整稿格式保护】
+- 你会收到上一阶段完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
+- 本阶段只做格式整理和标题规范，不得摘要、缩写、删减、合并章节、重排论证或压缩正文。
+- 输出应保留上一阶段的完整篇幅和全部视频信息点，不能只输出前半部分或前 20000 字。
+"""
+    template = base_template.rstrip()
+    marker = "\n【文本】"
+    if marker in template:
+        return template.replace(marker, f"\n{guard}\n{marker}", 1)
+    return f"{template}\n\n{guard}"
+
+
+def _finance_stage_looks_compressed(source: str, candidate: str) -> bool:
+    if not source or len(source) < 10_000:
         return False
-    if _front_matter_missing(formatted):
+    if not candidate or not candidate.strip():
+        return True
+    if _front_matter_missing(candidate):
         return True
     source_body_chars = _finance_body_chars(source)
-    formatted_body_chars = _finance_body_chars(formatted)
-    if source_body_chars >= 10_000 and formatted_body_chars < max(5000, int(source_body_chars * 0.75)):
+    candidate_body_chars = _finance_body_chars(candidate)
+    if source_body_chars >= 10_000 and candidate_body_chars < max(
+        5000,
+        int(source_body_chars * FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO),
+    ):
         return True
     return False
 
@@ -1881,7 +1910,8 @@ async def _generate_finance_longform_book(
     metadata = {
         "targetWords": target_words,
         "durationSeconds": duration_seconds,
-        "completionThreshold": FINANCE_LONGFORM_MIN_COMPLETION_RATIO,
+        "targetMode": "guidance_only_no_hard_retry",
+        "stageMinRetainRatio": FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO,
         "mode": "single_pass_whole_manuscript",
         "outputCaps": {
             "openai": "disabled",
@@ -1934,50 +1964,43 @@ async def _generate_finance_longform_book(
             duration_seconds=duration_seconds,
         )
         _dump_stage(output_dir, "01_finance_whole_prompt.md", writer_prompt)
-        generated_markdown = await _route_writer_call(
-            writer_prompt,
-            max_output_tokens=0,
-            on_progress=(
-                (lambda chars: on_stage("writer_progress", {"chars": chars}))
-                if on_stage
-                else None
-            ),
-        )
-        generated_markdown = normalize_final_markdown(generated_markdown, category="finance_technology")
-        _log_stage("finance 1/4 writer", generated_markdown)
-        _dump_stage(output_dir, "01_writer.md", generated_markdown)
-
-        if _finance_below_target(generated_markdown, target_words):
-            logger.warning(
-                "财经科技整稿低于动态目标 85%%，触发一次性整稿补足: body_chars=%d target=%d",
-                _finance_body_chars(generated_markdown),
-                target_words,
-            )
-            expanded_markdown = await _route_writer_call(
-                _finance_expand_whole_book_prompt(
-                    base_writer_prompt,
-                    raw_text,
-                    generated_markdown,
-                    target_words=target_words,
-                ),
+        try:
+            generated_markdown = await _route_writer_call(
+                writer_prompt,
                 max_output_tokens=0,
+                retry_on_failure=False,
                 on_progress=(
-                    (lambda chars: on_stage("writer_progress", {"chars": chars, "repair": True}))
+                    (lambda chars: on_stage("writer_progress", {"chars": chars}))
                     if on_stage
                     else None
                 ),
             )
-            expanded_markdown = normalize_final_markdown(expanded_markdown, category="finance_technology")
-            if _finance_body_chars(expanded_markdown) > _finance_body_chars(generated_markdown):
-                generated_markdown = expanded_markdown
-                _dump_stage(output_dir, "01b_finance_expanded_writer.md", generated_markdown)
-            if _finance_below_target(generated_markdown, target_words):
-                raise RuntimeError(
-                    "财经科技长文低于动态目标 85%，拒绝保存疑似被服务端截断或压缩的稿件"
-                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
+                f"finance OpenAI whole-book writer failed before 01_writer.md was saved: {exc}"
+            ) from exc
+        generated_markdown = normalize_final_markdown(generated_markdown, category="finance_technology")
+        _log_stage("finance 1/4 writer", generated_markdown)
+        _dump_stage(output_dir, "01_writer.md", generated_markdown)
+        generated_body_chars = _finance_body_chars(generated_markdown)
+        if generated_body_chars < target_words:
+            logger.warning(
+                "财经科技整稿低于动态篇幅目标但不触发二次整稿生成: body_chars=%d target=%d",
+                generated_body_chars,
+                target_words,
+            )
 
         if on_stage:
-            on_stage("writer_done", {"chars": len(generated_markdown), "target_words": target_words})
+            on_stage(
+                "writer_done",
+                {
+                    "chars": len(generated_markdown),
+                    "body_chars": _finance_body_chars(generated_markdown),
+                    "target_words": target_words,
+                    "target_mode": "guidance_only",
+                },
+            )
 
     writer_chars = len(generated_markdown)
 
@@ -1995,19 +2018,38 @@ async def _generate_finance_longform_book(
     else:
         if on_stage:
             on_stage("polish_start", {})
-        polished_markdown = await _to_thread_with_optional_timeout(
-            polish_book_text,
-            generated_markdown,
-            system_instruction=prompts["gemini_fast_polish"],
-            disable_max_output_tokens=True,
-            request_timeout_seconds=max(
-                int(settings.GEMINI_REQUEST_TIMEOUT or 0),
-                int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
-                1800,
-            ),
-            timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
-        )
+        polish_instruction = _finance_stage_instruction(prompts["gemini_fast_polish"], "Gemini 一润")
+        logger.info("财经科技 Gemini 一润整稿输入: chars=%d body_chars=%d", len(generated_markdown), _finance_body_chars(generated_markdown))
+        try:
+            polished_markdown = await _to_thread_with_optional_timeout(
+                polish_book_text,
+                generated_markdown,
+                system_instruction=polish_instruction,
+                disable_max_output_tokens=True,
+                request_timeout_seconds=max(
+                    int(settings.GEMINI_REQUEST_TIMEOUT or 0),
+                    int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
+                    1800,
+                ),
+                retries=1,
+                timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(
+                "财经科技 Gemini 一润失败，保留 OpenAI 完整初稿继续后续链路: %s",
+                exc,
+            )
+            _dump_stage(output_dir, "02_polish_error.txt", f"{exc.__class__.__name__}: {exc}")
+            polished_markdown = generated_markdown
         polished_markdown = normalize_final_markdown(polished_markdown, category="finance_technology")
+        if _finance_stage_looks_compressed(generated_markdown, polished_markdown):
+            logger.warning(
+                "财经科技 Gemini 一润疑似压缩，保留 OpenAI 完整初稿: source_body=%d candidate_body=%d",
+                _finance_body_chars(generated_markdown),
+                _finance_body_chars(polished_markdown),
+            )
+            _dump_stage(output_dir, "02_polish_rejected_compressed.md", polished_markdown)
+            polished_markdown = generated_markdown
         _log_stage("finance 2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         if on_stage:
@@ -2024,19 +2066,38 @@ async def _generate_finance_longform_book(
     else:
         if on_stage:
             on_stage("refine_start", {})
-        refined_markdown = await _to_thread_with_optional_timeout(
-            refine_book_text,
-            polished_markdown,
-            system_instruction=prompts["gemini_fast_refine"],
-            disable_max_output_tokens=True,
-            request_timeout_seconds=max(
-                int(settings.GEMINI_REFINE_REQUEST_TIMEOUT or 0),
-                int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
-                1800,
-            ),
-            timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
-        )
+        refine_instruction = _finance_stage_instruction(prompts["gemini_fast_refine"], "Gemini 二润")
+        logger.info("财经科技 Gemini 二润整稿输入: chars=%d body_chars=%d", len(polished_markdown), _finance_body_chars(polished_markdown))
+        try:
+            refined_markdown = await _to_thread_with_optional_timeout(
+                refine_book_text,
+                polished_markdown,
+                system_instruction=refine_instruction,
+                disable_max_output_tokens=True,
+                request_timeout_seconds=max(
+                    int(settings.GEMINI_REFINE_REQUEST_TIMEOUT or 0),
+                    int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
+                    1800,
+                ),
+                retries=1,
+                timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(
+                "财经科技 Gemini 二润失败，保留上一阶段完整稿继续后续链路: %s",
+                exc,
+            )
+            _dump_stage(output_dir, "03_refine_error.txt", f"{exc.__class__.__name__}: {exc}")
+            refined_markdown = polished_markdown
         refined_markdown = normalize_final_markdown(refined_markdown, category="finance_technology")
+        if _finance_stage_looks_compressed(polished_markdown, refined_markdown):
+            logger.warning(
+                "财经科技 Gemini 二润疑似压缩，保留一润完整稿: source_body=%d candidate_body=%d",
+                _finance_body_chars(polished_markdown),
+                _finance_body_chars(refined_markdown),
+            )
+            _dump_stage(output_dir, "03_refine_rejected_compressed.md", refined_markdown)
+            refined_markdown = polished_markdown
         _log_stage("finance 3/4 refine", refined_markdown, prev_chars=polish_chars)
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         if on_stage:
@@ -2046,14 +2107,17 @@ async def _generate_finance_longform_book(
 
     if on_stage:
         on_stage("format_start", {})
+    format_template = _finance_format_template(prompts["final_book_format"])
+    logger.info("财经科技 DeepSeek 格式层整稿输入: chars=%d body_chars=%d", len(refined_markdown), _finance_body_chars(refined_markdown))
     try:
         final_markdown = await asyncio.wait_for(
             asyncio.to_thread(
                 format_book_text,
                 refined_markdown,
-                prompt_template=prompts["final_book_format"],
+                prompt_template=format_template,
                 max_output_tokens=0,
                 fail_on_max_tokens=True,
+                retries=1,
                 on_progress=(
                     (lambda chars: on_stage("format_progress", {"chars": chars}))
                     if on_stage
@@ -2063,19 +2127,36 @@ async def _generate_finance_longform_book(
             timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
         )
     except DeepSeekMaxTokensError as exc:
-        raise RuntimeError(
-            "DeepSeek 财经科技整稿格式化触达服务端长度上限，拒绝保存截断稿"
-        ) from exc
+        _dump_stage(output_dir, "04_format_deepseek_partial.md", exc.partial_text)
+        logger.warning(
+            "DeepSeek 财经科技整稿格式化触达服务端长度上限，保留 Gemini 二润完整稿继续: partial_chars=%d",
+            len(exc.partial_text or ""),
+        )
+        final_markdown = refined_markdown
     except asyncio.TimeoutError as exc:
-        raise TimeoutError(
-            f"DeepSeek 财经科技整稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"
-        ) from exc
+        _dump_stage(output_dir, "04_format_error.txt", f"{exc.__class__.__name__}: {exc}")
+        logger.warning(
+            "DeepSeek 财经科技整稿格式化超过 %s 秒未返回，保留 Gemini 二润完整稿继续",
+            settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+        )
+        final_markdown = refined_markdown
+    except Exception as exc:
+        _dump_stage(output_dir, "04_format_error.txt", f"{exc.__class__.__name__}: {exc}")
+        logger.warning(
+            "DeepSeek 财经科技整稿格式化失败，保留 Gemini 二润完整稿继续: %s",
+            exc,
+        )
+        final_markdown = refined_markdown
 
     final_markdown = normalize_final_markdown(final_markdown, category="finance_technology")
-    if _finance_format_looks_truncated(refined_markdown, final_markdown):
-        raise RuntimeError("DeepSeek 财经科技整稿格式化疑似压缩或截断，拒绝保存")
-    if _finance_below_target(final_markdown, target_words):
-        raise RuntimeError("财经科技终稿低于动态目标 85%，拒绝保存疑似压缩稿")
+    if _finance_stage_looks_compressed(refined_markdown, final_markdown):
+        logger.warning(
+            "DeepSeek 财经科技整稿格式化疑似压缩或截断，保留 Gemini 二润完整稿: source_body=%d candidate_body=%d",
+            _finance_body_chars(refined_markdown),
+            _finance_body_chars(final_markdown),
+        )
+        _dump_stage(output_dir, "04_format_rejected_compressed.md", final_markdown)
+        final_markdown = refined_markdown
     _log_stage("finance 4/4 format", final_markdown, prev_chars=refine_chars)
     _dump_stage(output_dir, "04_format.md", final_markdown)
     if on_stage:

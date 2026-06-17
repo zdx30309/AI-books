@@ -130,13 +130,17 @@ def format_book_text(
     max_output_tokens: int | None = None,
     fail_on_max_tokens: bool = False,
     on_progress: Callable[[int], None] | None = None,
+    retries: int | None = None,
 ) -> str:
     """格式整理。Prompt 来源: goal_driven_templates.FINAL_BOOK_FORMAT_PROMPT"""
     logger.info("DeepSeek 格式层开始: input_chars=%d model=%s", len(text or ""), settings.DEEPSEEK_MODEL)
     rendered = (prompt_template or FINAL_BOOK_FORMAT_PROMPT).format(text=text)
     effective_max_tokens = settings.DEEPSEEK_FORMAT_MAX_TOKENS if max_output_tokens is None else max_output_tokens
     effective_max_tokens = int(effective_max_tokens) if int(effective_max_tokens) > 0 else None
-    return generate_text(
+    generator = generate_text
+    if retries is not None:
+        generator = generate_text.retry_with(stop=stop_after_attempt(max(1, int(retries))))
+    return generator(
         rendered,
         model=settings.DEEPSEEK_MODEL,
         temperature=0.0,
