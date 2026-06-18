@@ -1342,6 +1342,8 @@ BIOGRAPHY_FULL_BOOK_WRITER_PROMPT = """你是一名人物传记类非虚构作�
 
 请直接输出完整书稿。"""
 
+BIOGRAPHY_FULL_BOOK_WRITER_PROMPT = _load_prompt_template("biography_writer.md")
+
 
 HISTORY_CULTURE_DEDUP_CLOSING_REQUIREMENTS = """去重与收束要求：
 • 导言和正文开头不要重复。导言只负责提出核心悬念、历史处境和阅读入口，不要提前把主要事件完整讲完；正文开头要在导言基础上继续推进，而不是原样复述。

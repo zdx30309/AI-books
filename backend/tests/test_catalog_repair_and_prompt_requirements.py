@@ -39,10 +39,13 @@ def test_normalize_final_markdown_backfills_blank_catalog_titles() -> None:
 def test_biography_prompt_requires_complete_catalog_titles() -> None:
     prompt = get_prompts("biography")["full_book_writer"]
 
-    assert "@目录必须列出完整章节标题，不得只写数字" in prompt
-    assert "不能写成“早年经历”“事业发展”“晚年生活”这种百科式标题" in prompt
-    assert "导言和正文开头不要重复" in prompt
-    assert "如素材缺少关键信息，不要自行补编" in prompt
+    assert "你是一名成熟的传记文章写作者" in prompt
+    assert "负责说明传记主人公的人生切入点和核心概括" in prompt
+    assert "传记类：抓住人物的核心特质与核心事件" in prompt
+    assert "不要用“按照多篇报道的说法”“有报道记载”“公开报道中”“据多篇报道”“公开资料多记载”之类的语言" in prompt
+    assert "最终正文长度控制在约12000字" in prompt
+    assert "用细节破题、用悬念推进、用时代和制度解释命运" not in prompt
+    assert "默认 8000字以上，无上限" not in prompt
 
 
 def test_history_prompt_includes_docx_revision_rules() -> None:
