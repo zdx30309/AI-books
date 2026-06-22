@@ -1296,7 +1296,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    只需要输入书名和章节数；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。
+                    输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。
                   </p>
                 </div>
                 <div>
@@ -1320,6 +1320,30 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会根据叙事生成多张同系列漫画图。
                   </p>
                 </div>
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="healing-comic-character-prompt"
+                      className="block text-[11px] tracking-widest text-warm-300"
+                    >
+                      主角形象（可选）
+                    </label>
+                    <span className="text-[10px] tracking-widest text-warm-500">
+                      {comicThemeRequirement.trim().length} 字
+                    </span>
+                  </div>
+                  <textarea
+                    id="healing-comic-character-prompt"
+                    value={comicThemeRequirement}
+                    onChange={(e) => setComicThemeRequirement(e.target.value)}
+                    placeholder="例如：一只米白色原创小熊，圆耳朵，蓝灰围巾，小帆布包，眼神安静，所有章节保持同一形象。"
+                    rows={4}
+                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
+                  </p>
+                </div>
                 </>
               ) : (
                 <>
@@ -1341,32 +1365,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   系统会直接使用你输入的书名，不再自动生成或改写书名。
                 </p>
               </div>
-              {category === "healing_comic" && (
-                <div>
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <label
-                      htmlFor="comic-theme-requirement"
-                      className="block text-[11px] tracking-widest text-warm-300"
-                    >
-                      主角形象（可选）
-                    </label>
-                    <span className="text-[10px] tracking-widest text-warm-500">
-                      {comicThemeRequirement.trim().length} 字
-                    </span>
-                  </div>
-                  <textarea
-                    id="comic-theme-requirement"
-                    value={comicThemeRequirement}
-                    onChange={(e) => setComicThemeRequirement(e.target.value)}
-                    placeholder="例如：一只米白色原创小熊，圆耳朵，蓝灰围巾，小帆布包，眼神安静，所有章节保持同一形象。"
-                    rows={3}
-                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
-                  />
-                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
-                  </p>
-                </div>
-              )}
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label

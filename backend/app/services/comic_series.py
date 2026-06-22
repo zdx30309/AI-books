@@ -68,6 +68,12 @@ from app.services.comic_prompts import (  # noqa: E402
     HEALING_COMIC_REFERENCE,
 )
 
+HEALING_COMIC_STYLE_GUARD = """- 漫画端必须保留治愈插画链路中已经验证有效的视觉质量基座：出版感、温暖感、白底留白、低压力阅读、轻水彩或蜡笔颗粒、统一主色、统一线条、统一角色气质。
+- 这里的治愈插画只作为视觉语言和稳定质量基座；最终产物必须是原创治愈漫画图文书，不得变成单张插画合集。
+- 每一章都要有同一主角参与的轻叙事推进，章节内多张图要铺平成开场、变化和收束，不能只是同一画面换角度。
+- 全书封面、章节图片、图上短句、正文短语必须属于同一套治愈系列，温暖、克制、柔和、有成年人日常感。
+- 避免鸡汤、口号、儿童寓言、平台段子、功能化标题和模板化安慰。"""
+
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.、．)]|第[一二三四五六]辑[：:、.]?)\s*")
 COMIC_PREFACE_IMAGE_PLACEHOLDER = "{{COMIC_PREFACE_IMAGE}}"
 COMIC_COVER_IMAGE_FILENAME = "comic_cover.png"
@@ -475,6 +481,9 @@ def build_healing_comic_writer_prompt(
 服务端参考数据库摘要：
 {research_context}
 
+【治愈系列风格基座】
+{HEALING_COMIC_STYLE_GUARD}
+
 硬性要求：
 - 只根据书名自动推导一类适合的漫画系列，不需要用户再输入短语、角色或剧情。
 - 需要正好输出 {panel_count} 条章节；不要固定成 32 条，也不要自行增减。
@@ -712,6 +721,9 @@ def build_healing_comic_panel_prompt(
 {image_text}
 - 正文短语参考：{phrase_text}
 
+【治愈系列风格基座】
+{HEALING_COMIC_STYLE_GUARD}
+
 【视觉要求】
 - 画面必须把上面的短句自然写进图里，像手写小对白、旁白或气泡文字；不要漏字，不要换成英文。
 - 只绘制“本张内容”，但要承接“本章完整图像叙事”，让同章多张图铺成一个清楚的小叙事，不要每张都画成同一构图。
@@ -769,6 +781,9 @@ def build_healing_comic_cover_prompt(
 【章节气质样本】
 标题：{sample_titles}
 短句：{sample_text}
+
+【治愈系列风格基座】
+{HEALING_COMIC_STYLE_GUARD}
 
 【封面要求】
 - 必须出现书名“{final_title}”，字要清楚、像出版物封面标题。

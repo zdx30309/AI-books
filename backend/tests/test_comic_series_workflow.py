@@ -402,6 +402,8 @@ def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
     def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
         image_prompts.append(prompt)
         assert long_character in prompt
+        assert "治愈系列风格基座" in prompt
+        assert "不得变成单张插画合集" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(PNG_1X1)
         return output_path
@@ -410,6 +412,9 @@ def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
         writer_prompts.append(prompt)
         assert kwargs["max_output_tokens"] == 0
         assert long_character in prompt
+        assert "治愈系列风格基座" in prompt
+        assert "最终产物必须是原创治愈漫画图文书" in prompt
+        assert "不得变成单张插画合集" in prompt
         panels = [
             {
                 "title": "今天轻一点",

@@ -308,8 +308,8 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "comic_series",
         "label": "插画",
-        "core_feature": "目录加文前封面和五或六辑治愈漫画绘本，短语、配图、故事成套生成",
-        "directions": "目录短语、出版感封面、章节配图、成人情绪漫画、治愈对话绘本",
+        "core_feature": "目录加文前封面和五或六辑治愈插画绘本，短语、配图、故事成套生成",
+        "directions": "目录短语、出版感封面、章节配图、成人情绪插画、治愈图文绘本",
         "prompt_status": "ready",
     },
     {
@@ -1445,7 +1445,7 @@ def _prompt_set(
     }
 
 
-COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘本主编，负责把创作者提供的 1 条文前短语 + 5 或 6 条目录章节短语，扩写成一本有目录、文前和多辑正文的成年人治愈系情绪绘本书稿。
+COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系插画绘本主编，负责把创作者提供的 1 条文前短语 + 5 或 6 条目录章节短语，扩写成一本有目录、文前和多辑正文的成年人治愈系情绪绘本书稿。
 
 这不是普通长文书稿。输入里已经包含创作者指定书名、文前短语、每一辑的目录短语和图片占位符。你必须围绕这些短语创作，不要根据封面主体生成内容，不要假设封面里一定有人物或动物，不要改动占位符。
 
@@ -1467,7 +1467,7 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 - 文前图像占位符对应整本书的出版感治愈系封面；文稿内容不要根据这张图的主体来写。
 - 文前图像占位符下面写 4 行短句，像样例里的文前页：轻、空、温柔，有一点诗意和留白感。
 - 每行 8 到 18 个字左右，不能写成长段，不能写成说明书。
-- 文前要服务整本漫画系列的气质，不要总结每一辑剧情。
+- 文前要服务整本插画绘本系列的气质，不要总结每一辑剧情。
 - 输出顺序必须是：@目录 → @文前 → 文前短语 → 文前图像占位符 → 文前正文短句 → @正文。
 
 【正文结构】
@@ -1500,22 +1500,41 @@ COMIC_SERIES_FULL_BOOK_WRITER_PROMPT = f"""你是一名日韩治愈系漫画绘�
 - 不要模仿具体在世作者、画师或商业 IP 的标志性表达，只能保持原创治愈绘本气质。
 
 【语言与排版】
-- 故事正文以短句和对话为主，适合漫画分镜和绘本排版。
+- 故事正文以短句和对话为主，适合插画绘本排版。
 - 对白自然克制，像成年人朋友聊天，不要写成英语课本或儿童双语绘本。
 - 不要鸡汤，不要大道理，不要低龄幼教口吻，不要网络段子感，不要 AI 重复套路感。
 - 不要使用中文冒号或英文冒号作为章节标题的一部分；“短语：”这一固定标签可以保留。
 - 只输出成稿，不要解释，不要代码块，不要元信息。
 
 输入：
-[漫画系列文前短语、目录短语与图像占位符]
+[插画系列文前短语、目录短语与图像占位符]
 {{raw_text}}
 
-请直接输出完整漫画系列书稿。"""
+请直接输出完整插画绘本书稿。"""
 
 
-HEALING_COMIC_FULL_BOOK_WRITER_PROMPT = COMIC_SERIES_FULL_BOOK_WRITER_PROMPT.replace(
+HEALING_COMIC_STYLE_BASE_PROMPT = """【治愈系列风格基座】
+- 漫画端必须保留治愈插画链路中已经验证有效的系列约束：出版感、温暖感、白底留白、低压力阅读、轻水彩或蜡笔颗粒、统一主色、统一线条、统一角色气质。
+- 这里的“治愈插画”只作为视觉语言和质量基座，不把漫画降级成单张插画合集；最终产物必须是有章节叙事、多图推进、同一主角延续的原创治愈漫画图文书。
+- 每一章都要温暖、柔和、有成年人日常感，但不能写成鸡汤、口号、儿童寓言或平台段子。
+- 全书必须像同一套治愈系列作品：封面、白底留白页、章节图片、图上短句和正文短语互相咬合，不能各画各的。
+- 章节标题要更治愈温暖，不要功能化，不要像任务列表，不要像普通文章标题。"""
+
+
+HEALING_COMIC_FULL_BOOK_WRITER_PROMPT = (
+    COMIC_SERIES_FULL_BOOK_WRITER_PROMPT
+    .replace("日韩治愈系插画绘本主编", "日韩治愈系漫画绘本主编")
+    .replace("成年人治愈系情绪插画绘本 / 对话图文书稿", "成年人治愈系情绪漫画 / 图文书稿")
+    .replace("整本插画绘本系列", "整本漫画系列")
+    .replace("适合插画绘本排版", "适合漫画分镜和绘本排版")
+    .replace("治愈插画、LOFT文创插画、小红书高赞情绪图文", "治愈漫画、LOFT文创插画、小红书高赞情绪漫画")
+    .replace("任何现成治愈漫画、商业插画系列", "任何现成治愈漫画、商业漫画系列")
+    .replace("[插画系列文前短语、目录短语与图像占位符]", "[漫画系列文前短语、目录短语与图像占位符]")
+    .replace("完整插画绘本书稿", "完整漫画系列书稿")
+)
+HEALING_COMIC_FULL_BOOK_WRITER_PROMPT = HEALING_COMIC_FULL_BOOK_WRITER_PROMPT.replace(
     "【语言与排版】",
-    f"【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n\n【语言与排版】",
+    f"{HEALING_COMIC_STYLE_BASE_PROMPT}\n\n【漫画端口长期参考与防抄袭规范】\n{HEALING_COMIC_REFERENCE}\n\n【语言与排版】",
 )
 
 MASTERPIECE_INTERPRETATION_FULL_BOOK_WRITER_PROMPT = _load_prompt_template(
@@ -1526,7 +1545,7 @@ MASTERPIECE_INTERPRETATION_PROMPT_SET = _prompt_set(
 )
 
 
-COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的漫画系列书稿润色得更自然、温柔、短句化，像日本成年人治愈漫画与文创绘本的正文。
+COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的插画绘本书稿润色得更自然、温柔、短句化，像日本成年人治愈插画与文创绘本的正文。
 
 【结构保护】
 - 必须保留 @最终书名、@最终简介、@目录、@文前、@正文 五个部分，顺序不变。
@@ -1538,14 +1557,14 @@ COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的漫画系列书稿润
 - 不要把内容改成根据封面主体生成；正文仍按目录短语与章节短语展开。
 
 【润色目标】
-- 让对白更口语、更短、更适合漫画气泡。
+- 让对白更口语、更短、更适合插画绘本。
 - 让每一辑的互动逻辑、情绪切口、小反转更清楚，但不要改成鸡汤。
 - 保留原文内容，不要大幅删减，不要把不同辑写成同一种结尾。
 
 直接输出润色后的全文，不要解释。"""
 
 
-COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT = """二次润色漫画系列书稿。只做微调，不要重写成普通散文。
+COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT = """二次润色插画绘本书稿。只做微调，不要重写成普通散文。
 
 【硬性要求】
 - 保留 @最终书名、@最终简介、@目录、@文前、@正文。
@@ -1563,6 +1582,22 @@ COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT = """二次润色漫画系列书稿。只
 - 短句化、口语化、轻微双语可以保留，但不要幼稚化。
 
 直接输出最终可交付全文，不要解释。"""
+
+
+HEALING_COMIC_GEMINI_FAST_POLISH_PROMPT = (
+    COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT
+    .replace("插画绘本书稿", "漫画系列书稿")
+    .replace("治愈插画与文创绘本", "治愈漫画与文创绘本")
+    .replace("更适合插画绘本", "更适合漫画气泡")
+    .replace("【润色目标】", f"{HEALING_COMIC_STYLE_BASE_PROMPT}\n\n【润色目标】")
+)
+
+
+HEALING_COMIC_GEMINI_FAST_REFINE_PROMPT = (
+    COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT
+    .replace("插画绘本书稿", "漫画系列书稿")
+    .replace("【微调方向】", f"{HEALING_COMIC_STYLE_BASE_PROMPT}\n\n【微调方向】")
+)
 
 
 SOCIAL_SCIENCE_PROMPT_SET = _prompt_set(SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT)
@@ -1638,8 +1673,8 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     ),
     "healing_comic": _prompt_set(
         HEALING_COMIC_FULL_BOOK_WRITER_PROMPT,
-        polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
-        refine=COMIC_SERIES_GEMINI_FAST_REFINE_PROMPT,
+        polish=HEALING_COMIC_GEMINI_FAST_POLISH_PROMPT,
+        refine=HEALING_COMIC_GEMINI_FAST_REFINE_PROMPT,
         formatter="",
     ),
     "health_wellness": _prompt_set(
