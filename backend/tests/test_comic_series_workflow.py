@@ -817,6 +817,40 @@ def test_docx_export_keeps_comic_image_native_pixel_extent(tmp_path: Path) -> No
         assert docx.read("word/media/image1.png") == original_bytes
 
 
+def test_docx_preview_export_embeds_compressed_comic_images(tmp_path: Path) -> None:
+    from PIL import Image
+
+    image_dir = tmp_path / "comic_images"
+    image_dir.mkdir()
+    image_path = image_dir / "comic_section_01_01.png"
+    Image.new("RGB", (2450, 3500), "white").save(image_path, format="PNG")
+    original_bytes = image_path.read_bytes()
+
+    data = _markdown_to_docx(
+        "@正文\n@1. 第一章\n![配图](comic_images/comic_section_01_01.png)\n",
+        image_base_dir=tmp_path,
+        category="healing_comic",
+        comic_preview_images=True,
+    )
+
+    expected_cx = 700 * _DOCX_EMU_PER_PIXEL
+    expected_cy = 1000 * _DOCX_EMU_PER_PIXEL
+    preview_path = tmp_path / "comic_previews" / "comic_section_01_01.jpg"
+    assert preview_path.exists()
+    with Image.open(preview_path) as preview:
+        assert preview.size == (700, 1000)
+    assert image_path.read_bytes() == original_bytes
+    with zipfile.ZipFile(BytesIO(data)) as docx:
+        assert "word/media/image1.jpg" in docx.namelist()
+        assert "word/media/image1.png" not in docx.namelist()
+        assert docx.read("word/media/image1.jpg") == preview_path.read_bytes()
+        content_types = docx.read("[Content_Types].xml").decode("utf-8")
+        assert 'Extension="jpg" ContentType="image/jpeg"' in content_types
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+        assert f'<wp:extent cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
+        assert f'<a:ext cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
+
+
 def test_comic_preview_uses_compressed_copy_without_touching_original(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

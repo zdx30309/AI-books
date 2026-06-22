@@ -444,10 +444,10 @@ export function BookDetail() {
   }, [id, task, refresh, restartPolling]);
 
   const handleDownload = useCallback(
-    async (fmt: "md" | "docx") => {
+    async (fmt: "md" | "docx", preview = false) => {
       if (!id) return;
       try {
-        await api.downloadFile(id, fmt);
+        await api.downloadFile(id, fmt, preview);
       } catch (e) {
         const msg =
           e instanceof ApiError
@@ -520,6 +520,7 @@ export function BookDetail() {
   const isActive = ACTIVE_STATUSES.has(task.status);
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
+  const isHealingComic = task.category === "healing_comic";
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
   const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
@@ -697,6 +698,16 @@ export function BookDetail() {
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Word
                 </button>
+                {isHealingComic && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownload("docx", true)}
+                    className="btn-ghost"
+                  >
+                    <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    预览 Word
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleDownloadCover}

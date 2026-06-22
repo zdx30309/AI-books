@@ -477,12 +477,21 @@ _COMIC_PREVIEW_QUALITY = 82
 
 
 def _task_comic_image_preview_path(task_id: UUID, filename: str) -> Path | None:
-    original = _task_comic_image_path(task_id, filename)
-    if original is None:
+    return _comic_image_preview_path_from_output_dir(_task_output_dir(task_id), filename)
+
+
+def _comic_image_preview_path_from_output_dir(output_dir: Path, filename: str) -> Path | None:
+    if not re.fullmatch(r"(?:comic_cover|comic_preface|comic_section_\d+(?:_\d+)?)\.png", filename):
         return None
-    preview_dir = _task_output_dir(task_id) / "comic_previews"
+    resolved_output_dir = output_dir.resolve()
+    original = (output_dir / "comic_images" / filename).resolve()
+    if resolved_output_dir not in original.parents or not original.exists():
+        return None
+    preview_dir = output_dir / "comic_previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
     preview_path = (preview_dir / f"{original.stem}.jpg").resolve()
+    if resolved_output_dir not in preview_path.parents:
+        return None
     if preview_path.exists() and preview_path.stat().st_mtime >= original.stat().st_mtime:
         return preview_path
     try:
@@ -1542,10 +1551,12 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     )
 
 
-def _safe_download_name(task: Task, fmt: str) -> str:
+def _safe_download_name(task: Task, fmt: str, *, suffix: str = "") -> str:
     title = task.title or f"book_{task.id}"
     safe = re.sub(r'[\\/:*?"<>|\r\n]+', "_", title).strip(" ._") or f"book_{task.id}"
-    return f"{safe[:80]}.{fmt}"
+    clean_suffix = re.sub(r'[\\/:*?"<>|\r\n]+', "_", suffix).strip(" ._")
+    base = f"{safe[:80]}_{clean_suffix}" if clean_suffix else safe[:80]
+    return f"{base}.{fmt}"
 
 
 def _unique_zip_name(filename: str, used: set[str]) -> str:
@@ -1588,6 +1599,13 @@ def _docx_image_size_emu(path: Path) -> tuple[int, int]:
     except Exception:
         return _DOCX_FALLBACK_IMAGE_SIZE_EMU
     return max(1, int(width)) * _DOCX_EMU_PER_PIXEL, max(1, int(height)) * _DOCX_EMU_PER_PIXEL
+
+
+def _docx_media_extension(path: Path) -> str:
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix in {"jpg", "jpeg"}:
+        return "jpg"
+    return "png"
 
 
 def _docx_image_paragraph(
@@ -1665,11 +1683,13 @@ def _markdown_to_docx(
     *,
     image_base_dir: Path | None = None,
     category: str | None = None,
+    comic_preview_images: bool = False,
 ) -> bytes:
     """Build a minimal .docx, embedding comic images when markdown references them."""
     paragraphs: list[str] = []
-    image_entries: list[tuple[str, Path]] = []
-    if _docx_category(category) == "classical_chinese":
+    image_entries: list[tuple[str, Path, str]] = []
+    normalized_category = _docx_category(category)
+    if normalized_category == "classical_chinese":
         docx_lines = _classical_chinese_docx_lines(markdown)
     else:
         docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
@@ -1680,12 +1700,17 @@ def _markdown_to_docx(
             candidate = image_base_dir / "comic_images" / image_filename
             if candidate.exists():
                 image_path = candidate
+            if comic_preview_images and normalized_category == "healing_comic":
+                preview_path = _comic_image_preview_path_from_output_dir(image_base_dir, image_filename)
+                if preview_path is not None:
+                    image_path = preview_path
         if image_filename and image_path is not None:
             rel_id = f"rIdImage{len(image_entries) + 1}"
             alt_match = re.match(r"\s*!\[([^\]]*)\]", line)
             alt = alt_match.group(1).strip() if alt_match else image_filename
             cx, cy = _docx_image_size_emu(image_path)
-            image_entries.append((image_filename, image_path))
+            image_ext = _docx_media_extension(image_path)
+            image_entries.append((image_filename, image_path, image_ext))
             paragraphs.append(
                 _docx_image_paragraph(
                     rel_id=rel_id,
@@ -1719,6 +1744,8 @@ def _markdown_to_docx(
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
         '<Default Extension="png" ContentType="image/png"/>'
+        '<Default Extension="jpg" ContentType="image/jpeg"/>'
+        '<Default Extension="jpeg" ContentType="image/jpeg"/>'
         '<Override PartName="/word/document.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         "</Types>"
@@ -1735,11 +1762,11 @@ def _markdown_to_docx(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
     ]
-    for idx, (filename, _) in enumerate(image_entries, start=1):
+    for idx, (filename, _, image_ext) in enumerate(image_entries, start=1):
         document_rels.append(
             f'<Relationship Id="rIdImage{idx}" '
             'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
-            f'Target="media/image{idx}.png"/>'
+            f'Target="media/image{idx}.{image_ext}"/>'
         )
     document_rels.append("</Relationships>")
     buffer = BytesIO()
@@ -1749,8 +1776,8 @@ def _markdown_to_docx(
         docx.writestr("word/document.xml", document_xml)
         if image_entries:
             docx.writestr("word/_rels/document.xml.rels", "".join(document_rels))
-        for idx, (_, path) in enumerate(image_entries, start=1):
-            docx.writestr(f"word/media/image{idx}.png", path.read_bytes())
+        for idx, (_, path, image_ext) in enumerate(image_entries, start=1):
+            docx.writestr(f"word/media/image{idx}.{image_ext}", path.read_bytes())
     return buffer.getvalue()
 
 
@@ -2404,12 +2431,19 @@ def download_batch_direct(
     return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 
-def _build_single_download_response(db: Session, task: Task, fmt: str) -> Response:
+def _build_single_download_response(
+    db: Session,
+    task: Task,
+    fmt: str,
+    *,
+    comic_preview_images: bool = False,
+) -> Response:
     md = _read_task_markdown(db, task)
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
+    use_preview_docx = bool(comic_preview_images and category == "healing_comic" and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -2418,10 +2452,11 @@ def _build_single_download_response(db: Session, task: Task, fmt: str) -> Respon
             md,
             image_base_dir=output_dir,
             category=category,
+            comic_preview_images=use_preview_docx,
         )
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        filename = _safe_download_name(task, "docx")
-        file_path = download_dir / "final.docx"
+        filename = _safe_download_name(task, "docx", suffix="预览") if use_preview_docx else _safe_download_name(task, "docx")
+        file_path = download_dir / ("final_preview.docx" if use_preview_docx else "final.docx")
         file_path.write_bytes(content)
     else:
         content = normalize_final_markdown(md, category=category)
@@ -2447,13 +2482,14 @@ def _build_single_download_response(db: Session, task: Task, fmt: str) -> Respon
 def download_markdown(
     task_id: UUID,
     fmt: str = Query("md", pattern="^(md|docx|txt)$"),
+    preview: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response:
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    return _build_single_download_response(db, task, fmt)
+    return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
 
 
 @router.get(
@@ -2463,6 +2499,7 @@ def download_markdown(
 def download_markdown_direct(
     task_id: UUID,
     fmt: str = Query("md", pattern="^(md|docx|txt)$"),
+    preview: bool = Query(False),
     token: str | None = Query(None),
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
@@ -2475,7 +2512,7 @@ def download_markdown_direct(
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    return _build_single_download_response(db, task, fmt)
+    return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
 
 
 @router.get(
