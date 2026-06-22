@@ -452,7 +452,14 @@ def _task_cover_path(task: Task) -> Path | None:
     if configured and configured.exists():
         return configured
     fallback = _task_output_dir(task.id) / "cover.png"
-    return fallback if fallback.exists() else None
+    if fallback.exists():
+        return fallback
+    comic_dir = _task_output_dir(task.id) / "comic_images"
+    for name in ("comic_cover.png", "comic_preface.png", "comic_section_01.png", "comic_section_01_01.png"):
+        candidate = comic_dir / name
+        if candidate.exists():
+            return candidate
+    return next(iter(sorted(comic_dir.glob("comic_section_*.png"))), None) if comic_dir.exists() else None
 
 
 def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:

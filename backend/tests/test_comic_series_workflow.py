@@ -5,6 +5,7 @@ import json
 from io import BytesIO
 from pathlib import Path
 import sys
+from uuid import uuid4
 import zipfile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 
-from app.api.routers.tasks import _markdown_to_docx
+from app.api.routers.tasks import _markdown_to_docx, _task_cover_path
+from app.models import Task
 from app.services import comic_series, content_engine, cover
 
 PNG_1X1 = bytes.fromhex(
@@ -539,20 +541,48 @@ def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:
     image_dir.mkdir()
     (image_dir / "comic_preface.png").write_bytes(PNG_1X1)
     (image_dir / "comic_section_01.png").write_bytes(PNG_1X1)
+    (image_dir / "comic_section_01_01.png").write_bytes(PNG_1X1)
+    (image_dir / "comic_section_01_02.png").write_bytes(PNG_1X1)
 
     data = _markdown_to_docx(
         "@文前\n文前短语：想和你一起发会儿呆。\n"
         "![配图](comic_images/comic_preface.png)\n想和你一起发会儿呆。\n"
         "@正文\n@1. 第一辑\n短语：今晚月亮放下了手里的活。\n"
-        "![配图](comic_images/comic_section_01.png)\n小熊说：No rush.\n",
+        "![配图](comic_images/comic_section_01.png)\n"
+        "![配图](comic_images/comic_section_01_01.png)\n"
+        "![配图](comic_images/comic_section_01_02.png)\n小熊说：No rush.\n",
         image_base_dir=tmp_path,
     )
 
     with zipfile.ZipFile(BytesIO(data)) as docx:
         assert "word/media/image1.png" in docx.namelist()
         assert "word/media/image2.png" in docx.namelist()
+        assert "word/media/image3.png" in docx.namelist()
+        assert "word/media/image4.png" in docx.namelist()
         assert "word/_rels/document.xml.rels" in docx.namelist()
         document_xml = docx.read("word/document.xml")
         assert b"rIdImage1" in document_xml
         assert b"rIdImage2" in document_xml
+        assert b"rIdImage3" in document_xml
+        assert b"rIdImage4" in document_xml
         assert b"![" not in document_xml
+
+
+def test_comic_cover_path_falls_back_to_generated_comic_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    task_id = uuid4()
+    monkeypatch.setattr("app.api.routers.tasks.PROJECT_ROOT", tmp_path)
+    image_dir = tmp_path / "backend" / "output" / f"task_{task_id}" / "comic_images"
+    image_dir.mkdir(parents=True)
+    section_image = image_dir / "comic_section_01_01.png"
+    section_image.write_bytes(PNG_1X1)
+    task = Task(
+        id=task_id,
+        source_url="manual://healing_comic",
+        config={"category": "healing_comic", "title": "漫画封面兜底"},
+    )
+
+    assert _task_cover_path(task) == section_image
+
+    cover_image = image_dir / "comic_cover.png"
+    cover_image.write_bytes(PNG_1X1)
+    assert _task_cover_path(task) == cover_image

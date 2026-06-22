@@ -54,7 +54,7 @@ const ACTIVE_STATUSES = new Set([
   "fact_checking",
 ]);
 
-const COMIC_IMAGE_RE = /^\s*!\[([^\]]*)\]\((?:comic_images\/)?(comic_preface\.png|comic_section_\d{2}\.png)\)\s*$/;
+const COMIC_IMAGE_RE = /^\s*!\[([^\]]*)\]\((?:comic_images\/)?(comic_preface\.png|comic_section_\d+(?:_\d+)?\.png)\)\s*$/;
 
 function friendlyTaskError(message: string | null | undefined) {
   if (!message) return null;
