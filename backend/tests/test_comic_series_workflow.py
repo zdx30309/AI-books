@@ -267,7 +267,7 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
         return json.dumps(
             {
                 "title": title,
-                "intro": "一组成年人也会偷偷点头的治愈短漫画。",
+                "intro": "一组普通读者也会轻轻点头的治愈短漫画。",
                 "series_style": "白底留白，原创松弛小角色，轻水彩颗粒，短句直接写在画面上。",
                 "cover_visual": "原创小角色站在空白页面边缘，书名像手写标题。",
                 "panels": panels,
