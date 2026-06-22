@@ -113,60 +113,7 @@ SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文
 请直接输出完整书稿。"""
 
 
-LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的人生哲学类非虚构长文写作者。
-
-任务：参考我的视频文稿，直接生成一篇完整的人生哲学类深度长文。
-
-输出要求：
-- 严格按以下顺序输出，不得打乱：
-  1. @最终书名
-  2. @最终简介
-  3. @目录
-  4. @导言
-  5. @正文
-- 最终书名、最终简介、目录、导言、正文，五块必须都单独成节，且标题文字必须原样保留为：
-  - @最终书名
-  - @最终简介
-  - @目录
-  - @导言
-  - @正文
-- 导言必须放在目录之后、正文之前，长度 100~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言，不要和正文太相似。
-- 导言要带钩子，但要和正文区分开：第一段先抛出一个能抓住读者的问题、冲突、反常识判断或现实困境；后面只搭建阅读入口和判断框架，不要提前展开正文里的完整论证。
-- 导言的钩子要冷静、有分寸、有现实感，不要写成标题党、悬疑营销、鸡汤口号或夸张情绪。
-- 导言排版要求：标题独立一行，下面 2~4 个自然段；段落之间可以保留一个空行，整体要像正式书稿开篇。
-- 正文必须紧接在导言之后，不要插入额外说明
-- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程
-
-""" + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
-
-内容要求：
-- 文章需与原始视频文稿有一定差别，可做合理的拓展延伸
-- 保持自然、清晰、连贯
-- 写作要有叙事张力和阅读钩子：开篇先抛出一个清晰的问题、冲突或反常识判断，让读者愿意继续读；正文推进要有轻重、转折和层次，不要只平铺分析现象。
-- 第一次内容生成时，不要让每章都按“现象—原因—建议—总结”的固定模板推进；可以少量穿插故事、问答、反例、短章、场景切片或观点急转，让整本书有起伏。
-- 章节之间要有节奏变化：有的章节可以偏叙事，有的章节偏分析，有的章节可以用一个普通人的处境打开，不要像一套分析模板从头写到底。
-- 观点要有深度和洞察力：不只描述一个人为什么痛苦、焦虑、失败、犹豫或失控，还要解释背后的认知结构、情绪惯性、利益牵引、长期代价和替代选择。
-- 要能把具体问题提炼成可长期反复阅读的人生原则，但不要写成口号、鸡汤、励志语录或成功学模板。
-- 对于人生困境和提出和解决，应尽量形成一个清晰闭环：现实处境 → 常见反应 → 隐含误区 → 长期代价 → 替代认知 → 行动原则。
-- 不要空话，不要学术腔，不要翻译腔，不要做心理和情绪刻画，不要使用比喻修辞
-- 不要使用“不是……而是……”句式，不要使用破折号——
-- 允许你自行组织结构，不必预设固定章节层级
-- 最终正文长度控制在约12000字，允许小幅度缩减，增加是可以的
-- 所有书名、目录标题和正文章节标题都不要出现冒号（包括中文冒号和英文冒号）。
-- 正文最后一章不要命名为“结语”，也不要出现“结语”两个字作为章节标题；把它作为普通章节自然收束即可。
-
-输出顺序：
-1. @最终书名
-2. @最终简介
-3. @目录
-4. @导言
-5. @正文
-
-输入：
-[原始视频文稿]
-{raw_text}
-
-请直接输出完整书稿。"""
+LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT = _load_prompt_template("life_philosophy_writer.md")
 
 
 GEMINI_FAST_POLISH_PROMPT = """请把下面的文字重写成自然流畅、适合大众阅读的现代汉语。
@@ -536,9 +483,17 @@ POPULAR_SCIENCE_FULL_BOOK_WRITER_PROMPT = """你是一名面向大众读者的�
 
 
 
+FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT = """【财经科技来源表述专项要求】
+- 成稿绝对不得暴露创作过程、输入来源或任务来源，不得出现“视频材料中提到”“视频材料提到”“视频里提到”“视频中提到”“视频文稿提到”“原视频提到”“文稿中提到”“材料中提到”“参考材料显示”“素材里说”“这段文稿显示”“输入材料显示”等表述。
+- 成稿不得用“材料、素材、文稿、输入、任务、模型、上一阶段、这一阶段”等词解释信息来源；这些词只能存在于提示词内部，不能出现在最终书稿正文里。
+- 对于有明确来源名称的资料，表述为“根据《来源名》……”，例如“根据《招股书》……”。
+- 对于没有明确来源名称的资料，表述为“根据公开资料……”，不要写“视频里说”“材料显示”“素材提到”。
+- 如果一句话需要交代来源，只能使用“根据《来源名》”或“根据公开资料”这两类正式书稿表达；不要使用任何会让读者看出这是由视频或文稿改写而来的元叙述。"""
+
+
 FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文写作者。
 
-任务：参考我的视频文稿，直接生成一篇完整的深度长文。
+任务：参考我提供的资料，直接生成一篇完整的深度长文。
 
 输出要求：
 - 严格按以下顺序输出，不得打乱：
@@ -562,8 +517,10 @@ FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构�
 
 """ + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
 
+""" + FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT + """
+
 内容要求：
-- 我提供的文章、视频或视频文稿，只能作为“参照材料”，不能作为逐段改写的底稿。写作时不得沿用原文的开篇方式、段落顺序、案例组合、论证路径、表达节奏和关键句式，不能让成稿看起来像是在原文基础上换词、扩写或重排。
+- 我提供的文章、资料或文稿，只能作为“参照材料”，不能作为逐段改写的底稿。写作时不得沿用原文的开篇方式、段落顺序、案例组合、论证路径、表达节奏和关键句式，不能让成稿看起来像是在原文基础上换词、扩写或重排。
 - 你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。保留的是“问题意识”和“思考方向”，不是原文的结构、例子和讲述方式。
 - 写作内容不需要大包大揽，不必把这个话题相关的所有方面都写全。重点是抓住1个主矛盾和2—4个核心问题，把它们讲清楚、讲透彻，宁可集中深入，也不要面面俱到。
 - 写作要像给小白讲财经·科技内容一样，先把背景讲明白，再推进分析；不要一上来堆术语、数据、机构名称和结论；不要写成研究报告。
@@ -592,7 +549,7 @@ FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构�
 5. @正文
 
 输入：
-[原始视频文稿]
+[参考资料全文]
 {raw_text}
 
 请直接输出完整书稿。"""
@@ -1199,12 +1156,15 @@ LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这是
 【需要完成的工作】
 1. 仅删除"字面完全重复"的句子：同一句话重复出现两次以上时，去掉重复出现的那一份。除此之外的任何"语义近似""主题相关""观点相同"都不算重复，必须保留。严禁使用"如前文所述"这类一笔带过的写法去合并段落。
 2. 对少量措辞做自然微调，保持原意不变，不要引入新的说法。
-3. 修改章节序号，将【第N章：】改为【N.】。
-4. 在保留全部内容、不破坏逻辑连贯性的前提下，可对原文进行分段调整。每段建议控制在 50–200 字之间，若某段内容逻辑特别紧密或篇幅较长，可酌情放宽字数限制（例如到 300 字或更多）。分段仅用于将长段落拆短，绝不可删减内容或强行拆散未完结的语句。优先保证语义完整与阅读顺畅，字数不作为硬性约束。
+3. 修改章节序号，将【第N章：】改为【N.】，如【第一章：名校仍有价值，但终极目标需要重排】改为【1.名校仍有价值，但终极目标需要重排】。
+4. 在不删减内容的前提下重新分段，每段 50~100 字；如内容偏多或逻辑紧密不适合分段，可宽限到 200 字。分段只是把长段落拆短，不是把长段落删短。
 
 【输出要求】
 - 直接输出微调后的全文，不要解释，不要总结，不要省略号代替正文。
 """
+
+
+LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT = _load_prompt_template("life_philosophy_format.md")
 
 
 CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT = """你是一名古文白话大板块的专职加工编辑，擅长把文言文、古代小说、武侠旧文、诗歌和经典片段转成准确、自然、好读的现代汉语。
@@ -1406,6 +1366,12 @@ INTRO_BODY_REFINE_GUARD_PROMPT = """【导言与正文重复兜底】
 - 如果输入中 @正文 开头已经与 @导言 完全重复，只允许删除正文开头的重复段落，后续正文必须完整保留。"""
 
 
+POLISH_FIXED_PHRASE_GUARD_PROMPT = """【一润固定化表述删改要求】
+- 这是一润环节，需要顺手删改明显 AI 味、模板化、固定化的表达。
+- 如果原文中出现“很硬的”“……的边界”“并不神秘”这类固定化表述，必须删除或改写成通顺、自然、具体的句子。
+- 不要机械替换，不要额外解释，不要为了回避这些词而新增空话；只在保留原意和内容完整的前提下，把句子改顺。"""
+
+
 def _insert_prompt_before_input(prompt: str, addition: str) -> str:
     for marker in ("\n输入：", "\n输入:", "\n【文本】"):
         if marker in prompt:
@@ -1444,28 +1410,37 @@ def _with_intro_body_refine_guard(prompt: str) -> str:
     return prompt.rstrip() + "\n\n" + INTRO_BODY_REFINE_GUARD_PROMPT
 
 
+def _with_polish_fixed_phrase_guard(prompt: str) -> str:
+    if not prompt or "【一润固定化表述删改要求】" in prompt:
+        return prompt
+    return prompt.rstrip() + "\n\n" + POLISH_FIXED_PHRASE_GUARD_PROMPT
+
+
 def _prompt_set(
     full_book_writer: str,
     *,
     polish: str | None = None,
     refine: str | None = None,
     formatter: str | None = None,
+    formatter_section_title_rules: bool = True,
 ) -> dict[str, str]:
     polish_prompt = polish or GEMINI_FAST_POLISH_PROMPT
     refine_prompt = refine or GEMINI_FAST_REFINE_PROMPT
     formatter_prompt = formatter or FINAL_BOOK_FORMAT_PROMPT
+    if formatter_section_title_rules:
+        formatter_prompt = _with_section_title_rules(formatter_prompt)
     return {
         "full_book_writer": _with_intro_body_separation_rules(
             _with_section_title_rules(_with_writer_punctuation_rules(full_book_writer))
         ),
         "gemini_fast_polish": _with_intro_body_refine_guard(
-            _with_section_title_rules(polish_prompt)
+            _with_polish_fixed_phrase_guard(_with_section_title_rules(polish_prompt))
         ),
         "gemini_fast_refine": _with_intro_body_refine_guard(
             _with_section_title_refine_guard(refine_prompt)
         ),
         "final_book_format": _with_intro_body_separation_rules(
-            _with_section_title_rules(formatter_prompt)
+            formatter_prompt
         ),
     }
 
@@ -1609,6 +1584,8 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
         polish=LIFE_PHILOSOPHY_GEMINI_FAST_POLISH_PROMPT,
         refine=LIFE_PHILOSOPHY_GEMINI_FAST_REFINE_PROMPT,
+        formatter=LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT,
+        formatter_section_title_rules=False,
     ),
     "life_philosophy_self_rescue": _prompt_set(
         LIFE_PHILOSOPHY_SELF_RESCUE_FULL_BOOK_WRITER_PROMPT,
@@ -1758,7 +1735,9 @@ __all__ = [
     "BOOK_TITLE_AND_DESCRIPTION_PROMPT",
     "SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT",
     "LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT",
+    "LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
+    "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",
     "GEMINI_FAST_POLISH_PROMPT",
     "GEMINI_FAST_REFINE_PROMPT",
     "FINAL_BOOK_FORMAT_PROMPT",
@@ -1766,6 +1745,7 @@ __all__ = [
     "SECTION_TITLE_REFINE_GUARD_PROMPT",
     "INTRO_BODY_SEPARATION_PROMPT",
     "INTRO_BODY_REFINE_GUARD_PROMPT",
+    "POLISH_FIXED_PHRASE_GUARD_PROMPT",
     "CATEGORY_OPTIONS",
     "PROMPT_REGISTRY",
     "SUPPORTED_CATEGORIES",

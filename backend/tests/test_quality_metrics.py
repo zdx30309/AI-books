@@ -102,6 +102,53 @@ def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None
     assert report.total_violations >= 6
 
 
+def test_life_philosophy_centered_markers_are_not_counted_as_double_excl_noise() -> None:
+    markdown = """！！！@三个备选书名
+测试书
+！！！@正文
+！！！1. 正式章节
+正文内容。
+"""
+
+    report = measure_quality(markdown, category="life_philosophy")
+
+    assert report.mark_double_excl == 0
+    assert not report.format_noise_hits
+
+
+def test_finance_source_leak_hits_are_category_scoped() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 正式章节
+视频材料中提到，SpaceX 正在扩大算力投入。
+根据《招股书》显示，SpaceX 设置了投票权安排。
+根据公开资料，AI 服务器价格仍受供应链影响。
+"""
+
+    report = measure_quality(markdown, category="finance_technology")
+    rendered = format_report(report)
+    other_report = measure_quality(markdown, category="social_science")
+
+    assert report.finance_source_leak_hits["财经来源穿帮表述残留"]
+    assert "财经来源穿帮表述残留" in rendered
+    assert not other_report.finance_source_leak_hits
+
+
+def test_finance_source_leak_cleaned_text_no_longer_triggers_quality_hit() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 正式章节
+根据公开资料，SpaceX 正在扩大算力投入。
+根据《招股书》，SpaceX 同时建立地球轨道数据中心。
+"""
+
+    report = measure_quality(markdown, category="finance_technology")
+
+    assert not report.finance_source_leak_hits
+
+
 def test_masterpiece_colloquial_hits_are_category_scoped() -> None:
     markdown = """@最终书名
 咱们说白了这事儿

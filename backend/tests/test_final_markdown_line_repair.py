@@ -48,6 +48,70 @@ def test_normalize_final_markdown_preserves_chapter_boundaries() -> None:
     assert "这是第一段。\n@2. 第二章\n人物传记等。" in result
 
 
+def test_life_philosophy_normalize_keeps_centered_delivery_markers() -> None:
+    markdown = """！！！@三个备选书名
+1. 清醒的人生
+2. 长期的选择
+3. 边界的代价
+！！！@三个备选简介
+1. 测试简介。
+2. 测试简介。
+3. 测试简介。
+！！！@目录
+1. 第一章
+！！！@导言
+导言内容。
+！！！@正文
+！！！1. 第一章
+这是第一段。
+@2. 第二章
+这是第二段。
+"""
+
+    result = normalize_final_markdown(markdown, category="life_philosophy")
+
+    assert "！！！@三个备选书名" in result
+    assert "！！！@三个备选简介" in result
+    assert "！！！@目录" in result
+    assert "！！！@导言" in result
+    assert "！！！@正文" in result
+    assert "！！！1. 第一章" in result
+    assert "！！！2. 第二章" in result
+    assert "\n@正文\n" not in result
+    assert "\n@2. 第二章\n" not in result
+
+
+def test_finance_normalize_rewrites_source_leak_attribution() -> None:
+    markdown = """@最终书名
+测试书
+@最终简介
+视频材料中提到，SpaceX 正在扩大算力投入。
+@目录
+1. 产业变化
+@导言
+参考材料显示，AI版计划同样极端。
+@正文
+@1. 产业变化
+视频材料中提到，SpaceX 市值达到 5.565 万亿美元。
+视频里提到《招股书》，SpaceX 同时建立地球轨道数据中心。
+根据《招股书》显示，B 类股票有特殊安排。
+参考材料显示，AI版计划同样极端。
+前文提到，现金流才是更硬的约束。
+"""
+
+    result = normalize_final_markdown(markdown, category="finance_technology")
+
+    assert "根据公开资料，SpaceX 正在扩大算力投入" in result
+    assert "根据公开资料，AI版计划同样极端" in result
+    assert "根据公开资料，SpaceX 市值达到 5.565 万亿美元" in result
+    assert "根据《招股书》，SpaceX 同时建立地球轨道数据中心" in result
+    assert "根据《招股书》，B 类股票有特殊安排" in result
+    assert "前文提到，现金流才是更硬的约束" in result
+    assert "视频材料中提到" not in result
+    assert "视频里提到" not in result
+    assert "参考材料显示" not in result
+
+
 def test_normalize_final_markdown_removes_intro_copied_at_body_start() -> None:
     intro = "很多人第一次听到这个问题时，会以为答案很简单。真正麻烦的是，生活里的选择往往没有标准答案。"
     markdown = f"""@最终书名

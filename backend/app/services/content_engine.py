@@ -17,6 +17,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
+    FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     SECTION_TITLE_REQUIREMENT_PROMPT,
     get_prompts,
@@ -56,7 +57,9 @@ FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid dupli
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
-_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$")
+_FRONT_SECTION_RE = re.compile(
+    r"^(?:！！！)?@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$"
+)
 
 
 def _strip_title_colons(title: str) -> str:
@@ -68,7 +71,7 @@ def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
     if not stripped:
         return line.rstrip()
 
-    marker = re.match(r"^@\s*(.+?)\s*$", stripped)
+    marker = re.match(r"^(?:！！！)?@?\s*(.+?)\s*$", stripped)
     if marker and marker.group(1).strip() in _FRONT_SECTION_TITLES:
         return "@" + marker.group(1).strip()
 
@@ -76,7 +79,7 @@ def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
     prefix = ""
     title = stripped
 
-    chapter = re.match(r"^(@?\s*\d+\.\s*)(.+?)\s*$", stripped)
+    chapter = re.match(r"^((?:！！！)?@?\s*\d+\.\s*)(.+?)\s*$", stripped)
     if chapter:
         should_clean = True
         prefix = chapter.group(1).strip()
@@ -87,10 +90,17 @@ def _clean_delivery_title_line(line: str, current_section: str | None) -> str:
         if numbered:
             prefix = numbered.group(1)
             title = numbered.group(2).strip()
-    elif stripped.startswith("@"):
+    elif stripped.startswith("@") or stripped.startswith("！！！"):
         should_clean = True
-        prefix = "@"
-        title = stripped[1:].strip()
+        if stripped.startswith("！！！"):
+            prefix = "！！！"
+            title = stripped.removeprefix("！！！").strip()
+            if title.startswith("@"):
+                prefix = "！！！@"
+                title = title[1:].strip()
+        else:
+            prefix = "@"
+            title = stripped[1:].strip()
 
     if not should_clean:
         return line.rstrip()
@@ -130,7 +140,7 @@ def _chapter_title_map_from_body(lines: list[str]) -> dict[str, str]:
         if not in_body:
             continue
 
-        chapter = re.match(r"^@?\s*(\d+)[.．、]\s*(.+?)\s*$", stripped)
+        chapter = re.match(r"^(?:！！！@?|@)\s*(\d+)[.．、]\s*(.+?)\s*$", stripped)
         if not chapter:
             continue
         title = re.sub(r"\b结语\b|结语", "", chapter.group(2)).strip()
@@ -189,7 +199,7 @@ def _front_section_ranges(lines: list[str]) -> dict[str, tuple[int, int]]:
 
 
 def _is_chapter_heading_line(line: str) -> bool:
-    return bool(re.match(r"^@?\s*\d+[.．、]\s+.+$", line.strip()))
+    return bool(re.match(r"^(?:！！！@?|@)\s*\d+[.．、]\s+.+$", line.strip()))
 
 
 def _has_remaining_body_content(
@@ -372,7 +382,7 @@ def _is_structural_markdown_line(line: str) -> bool:
         return True
     if re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", stripped):
         return True
-    if stripped.startswith(("@", "#", "```", "|", ">")):
+    if stripped.startswith(("@", "！！！", "#", "```", "|", ">")):
         return True
     if re.match(r"^(?:[-*+]\s+|\d+[.．、]\s+)", stripped):
         return True
@@ -380,11 +390,11 @@ def _is_structural_markdown_line(line: str) -> bool:
 
 
 def _is_body_chapter_heading(line: str) -> bool:
-    return bool(re.match(r"^@\s*\d+[.．、]\s*.+$", line.strip()))
+    return bool(re.match(r"^(?:！！！@?|@)\s*\d+[.．、]\s*.+$", line.strip()))
 
 
 def _normalize_body_chapter_heading(line: str) -> str | None:
-    match = re.match(r"^@\s*(\d+)[.．、]\s*(.+?)\s*$", line.strip())
+    match = re.match(r"^(?:！！！@?|@)\s*(\d+)[.．、]\s*(.+?)\s*$", line.strip())
     if not match:
         return None
     title = _strip_title_colons(match.group(2).strip().strip("*`# "))
@@ -728,17 +738,49 @@ def _classical_format_fallback_text(source: str, partial: str | None = None) -> 
     return source
 
 
+_LIFE_PHILOSOPHY_CENTERED_SECTIONS = {"三个备选书名", "三个备选简介", "目录", "导言", "正文"}
+
+
+def _apply_life_philosophy_delivery_markers(text: str) -> str:
+    lines: list[str] = []
+    in_body = False
+    for raw_line in (text or "").split("\n"):
+        stripped = raw_line.strip()
+        section = _FRONT_SECTION_RE.match(stripped)
+        if section:
+            section_name = section.group(1)
+            in_body = section_name == "正文"
+            if section_name in _LIFE_PHILOSOPHY_CENTERED_SECTIONS:
+                lines.append(f"！！！@{section_name}")
+            else:
+                lines.append("@" + section_name)
+            continue
+
+        if in_body:
+            chapter = re.match(r"^(?:！！！@?|@)\s*(\d+)[.．、]\s*(.+?)\s*$", stripped)
+            if chapter:
+                title = _strip_title_colons(chapter.group(2).strip())
+                lines.append(f"！！！{chapter.group(1)}. {title or f'第{chapter.group(1)}章'}")
+                continue
+
+        lines.append(raw_line)
+    return "\n".join(lines)
+
+
 def normalize_final_markdown(markdown: str, *, category: str | None = None) -> str:
     """Remove blank spacer lines only from the body, preserving front matter layout."""
     text = _postprocess_delivery_markdown(markdown).replace("\r\n", "\n").replace("\r", "\n")
     text = _repair_blank_catalog_titles(text)
     text = _remove_intro_duplicate_from_body(text)
     normalized = normalize_category(category or "")
-    match = re.search(r"(?m)^@?\s*正文\s*$", text)
+    match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", text)
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
         compact = [line for line in lines if line.strip()]
-        return "\n".join(compact).strip() + ("\n" if compact else "")
+        result = "\n".join(compact).strip()
+        if normalized == "finance_technology":
+            result = _clean_finance_source_leaks(result).strip()
+        return result + ("\n" if result else "")
 
     front = text[: match.end()]
     body = text[match.end() :]
@@ -761,13 +803,17 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
+    if normalized == "finance_technology":
+        result = _clean_finance_source_leaks(result).strip()
+    if normalized == "life_philosophy":
+        result = _apply_life_philosophy_delivery_markers(result).strip()
     return result + ("\n" if result else "")
 
 
 def enforce_classical_title(markdown: str, original_title: object) -> str:
     final_title = classical_final_title(original_title)
     title_re = re.compile(
-        r"^@?\s*(最终书名|三个备选书名)\s*$[\s\S]*?(?=^@?\s*(?:"
+        r"^(?:！！！)?@?\s*(最终书名|三个备选书名)\s*$[\s\S]*?(?=^(?:！！！)?@?\s*(?:"
         + "|".join(map(re.escape, _FRONT_SECTION_TITLES))
         + r")\s*$|\Z)",
         re.MULTILINE,
@@ -1806,6 +1852,69 @@ def _finance_body_chars(markdown: str) -> int:
     return len(_finance_body_text(markdown).strip())
 
 
+_FINANCE_SOURCE_OBJECT_RE = (
+    r"这段文稿|这份材料|这份素材|这份资料|原始视频文稿|视频材料|视频文稿|原视频|"
+    r"公开资料|参考资料|参考材料|输入材料|视频|文稿|材料|素材|资料"
+)
+_FINANCE_SOURCE_LEAK_RE = re.compile(
+    rf"(?P<lead>^|[。！？；，,、\s])"
+    rf"(?:根据|据|按照)?\s*"
+    rf"(?P<object>{_FINANCE_SOURCE_OBJECT_RE})"
+    rf"(?:中|里)?"
+    rf"(?:提到|提及|指出|显示|写到|说到|说|认为|表明|给出|呈现|说明)"
+    rf"(?:[，,、：:\s]*(?P<source>《[^》]{{1,80}}》))?"
+    rf"[，,、：:\s]*"
+)
+_FINANCE_NAMED_SOURCE_LEAK_RE = re.compile(
+    r"(?P<lead>^|[。！？；，,、\s])"
+    r"(?:根据|据|按照)?\s*"
+    r"(?P<source>《[^》]{1,80}》)"
+    r"(?:中|里)?"
+    r"(?:提到|提及|指出|显示|写到|说到|说|认为|表明|给出|呈现|说明)"
+    r"[，,、：:\s]*"
+)
+
+
+def _finance_nearby_named_source(line: str, start: int, end: int) -> str | None:
+    window = line[max(0, start - 40) : min(len(line), end + 80)]
+    match = re.search(r"《[^》]{1,80}》", window)
+    return match.group(0) if match else None
+
+
+def _clean_finance_source_leak_line(line: str) -> str:
+    stripped = line.strip()
+    if (
+        not stripped
+        or _FRONT_SECTION_RE.match(stripped)
+        or _is_chapter_heading_line(stripped)
+        or _is_image_markdown_line(stripped)
+    ):
+        return line
+
+    def replace(match: re.Match[str]) -> str:
+        source = match.group("source") or _finance_nearby_named_source(
+            line,
+            match.start(),
+            match.end(),
+        )
+        attribution = f"根据{source}" if source else "根据公开资料"
+        return f"{match.group('lead')}{attribution}，"
+
+    cleaned = _FINANCE_NAMED_SOURCE_LEAK_RE.sub(
+        lambda match: f"{match.group('lead')}根据{match.group('source')}，",
+        line,
+    )
+    cleaned = _FINANCE_SOURCE_LEAK_RE.sub(replace, cleaned)
+    cleaned = re.sub(r"(根据公开资料，)\s*(?:根据公开资料，)+", r"\1", cleaned)
+    cleaned = re.sub(r"(根据《[^》]{1,80}》，)\s*(?:根据《[^》]{1,80}》，)+", r"\1", cleaned)
+    cleaned = re.sub(r"，\s*，+", "，", cleaned)
+    return cleaned.rstrip()
+
+
+def _clean_finance_source_leaks(text: str) -> str:
+    return "\n".join(_clean_finance_source_leak_line(line) for line in (text or "").split("\n"))
+
+
 def _finance_source_focus_points(raw_text: str, *, max_points: int = 40) -> str:
     chunks = _split_long_text_by_sentence(raw_text or "", target_chars=260)
     points = [chunk.strip() for chunk in chunks if chunk.strip()]
@@ -1825,17 +1934,18 @@ def _finance_whole_book_prompt(
     minutes = round((duration_seconds or _finance_duration_seconds_from_text(raw_text)) / 60, 1)
     source_cpm = int(round(len((raw_text or "").strip()) / max(minutes, 1.0)))
     focus_points = _finance_source_focus_points(raw_text)
-    focus_block = f"\n[视频信息点观察清单]\n{focus_points}\n" if focus_points else ""
+    focus_block = f"\n[参考资料信息点观察清单]\n{focus_points}\n" if focus_points else ""
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长视频动态长文强约束】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
 - 以上财经科技分类 prompt 全部继续生效；本段只增加长视频篇幅、质量和链路约束，不替换原分类规则。
 - 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
-- 这里的“一次性”指模型调用链路一次性整稿生成；成稿内部仍然必须按 @目录 和 @正文 组织章节。
-- 视频时长约 {minutes} 分钟，文稿信息密度约每分钟 {source_cpm} 字，建议正文字数目标约 {target_words} 字；这是写作目标和篇幅引导，不是后处理硬截断，最终以视频内容密度、逻辑完整和不灌水为准。
-- 如果视频时长约 20 分钟，正文尽量写到 35000 字以上；如果视频时长 30 分钟以上，正文尽量接近或超过 50000 字；超过 60 分钟继续按内容量上探，不设硬封顶。
-- 如果服务端实际输出能力限制了篇幅，优先保证完整结构、核心信息点覆盖、论证密度和语言质量，不要回头重写已完成内容，不要为了达标堆砌无关信息。
-- 必须按视频信息点展开，围绕原视频里的事实、数字、概念、事件、公司动作、产业变化、政策条件和市场语境组织。
+- 这里的“一次性”指本轮直接整稿生成；成稿内部仍然必须按 @目录 和 @正文 组织章节。
+- 参考资料对应时长约 {minutes} 分钟，参考资料信息密度约每分钟 {source_cpm} 字，建议正文字数目标约 {target_words} 字；这是写作目标和篇幅引导，不是后处理硬截断，最终以参考资料内容密度、逻辑完整和不灌水为准。
+- 如果参考资料对应时长约 20 分钟，正文尽量写到 35000 字以上；如果参考资料对应时长 30 分钟以上，正文尽量接近或超过 50000 字；超过 60 分钟继续按内容量上探，不设硬封顶。
+- 如果实际可写篇幅低于目标，优先保证完整结构、核心信息点覆盖、论证密度和语言质量，不要回头重写已完成内容，不要为了达标堆砌无关信息。
+- 必须按参考资料中的事实与信息点展开，围绕其中的事实、数字、概念、事件、公司动作、产业变化、政策条件和市场语境组织。
 - 禁止重复观点，禁止为了凑字数堆无关信息，禁止把同一判断换说法，禁止空泛铺陈和概念堆砌。
 - 扩写只能来自内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判、风险边界和普通人会受到的具体影响。
 - 不做具体投资预测，不写涨跌结论，不给买卖建议；所有判断只能写成条件、机制、约束和可能影响。
@@ -1849,19 +1959,21 @@ def _finance_stage_instruction(base_instruction: str, stage_name: str) -> str:
     return f"""{base_instruction.rstrip()}
 
 【财经科技超长文整稿处理保护】
-- 当前阶段是 {stage_name}，只执行本阶段原有 workflow，不改变分工，不重写成新稿，不改成摘要。
-- 你会收到上一阶段产出的完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
-- 必须保留完整正文、完整章节、完整段落和全部视频信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+- 当前环节只执行原有 workflow 的对应处理，不改变分工，不重写成新稿，不改成摘要。
+- 你会收到待处理完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
+- 必须保留完整正文、完整章节、完整段落和全部参考资料信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
 - 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
 - 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
 """
 
 
 def _finance_format_template(base_template: str) -> str:
-    guard = """【财经科技超长文整稿格式保护】
-- 你会收到上一阶段完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
+    guard = f"""【财经科技超长文整稿格式保护】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+- 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
 - 本阶段只做格式整理和标题规范，不得摘要、缩写、删减、合并章节、重排论证或压缩正文。
-- 输出应保留上一阶段的完整篇幅和全部视频信息点，不能只输出前半部分或前 20000 字。
+- 输出应保留完整篇幅和全部参考资料信息点，不能只输出前半部分或前 20000 字。
 """
     template = base_template.rstrip()
     marker = "\n【文本】"
@@ -2011,11 +2123,12 @@ def _finance_continuation_prompt(
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长文同阶段定向续写任务】
-当前仍属于 OpenAI Writer 初稿阶段，不是新 workflow，不是 Gemini 润色，不是 DeepSeek 格式层。
-你会看到原视频文稿、当前已完成书稿和已有章节目录。请只输出“新增正文正式章节”，后端会把新增章节拼回 @正文 并重建目录。
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+当前仍属于初稿补写环节，不是重写任务，不是润色任务，也不是格式整理。
+你会看到参考资料全文、当前已完成书稿和已有章节目录。请只输出“新增正文正式章节”，新增章节会拼回 @正文 并重建目录。
 
 【当前篇幅状态】
-- 视频时长约 {minutes} 分钟。
+- 参考资料对应时长约 {minutes} 分钟。
 - 动态目标正文字数约 {target_words} 字。
 - 当前正文约 {current_body_chars} 字。
 - 仍需补足约 {remaining} 字。
@@ -2035,24 +2148,24 @@ def _finance_continuation_prompt(
 
 【反重复与质量要求】
 - 只补充当前书稿未充分展开的层次，不能复述已有章节，不能换说法重复同一判断。
-- 每个新增章节都必须围绕原视频信息点展开，并提供新增内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判或风险边界。
+- 每个新增章节都必须围绕参考资料中的事实与信息点展开，并提供新增内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判或风险边界。
 - 不能为了凑字数堆无关知识，不能写百科，不能写研究报告，不能写投资建议。
 - 不做具体投资预测，不写涨跌结论，不给买卖建议。
 - 语言仍然要保持财经科技分类原 prompt 的正式书稿质量，不要口语化，不要论文腔，不要总结腔。
 
 【输出格式】
 - 只输出新增的正文正式章节，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
-- 每个新增章节必须以 @N. 章节名 开头，N 可从 1 开始，后端会自动重排编号。
+- 每个新增章节必须以 @N. 章节名 开头，N 可从 1 开始，章节编号会在最终正文中统一重排。
 - 章节标题不得出现中文冒号或英文冒号，不要命名为“结语”。
 - 不要解释，不要代码块，不要元信息，不要输出“续写如下”。
 
 [已有章节目录]
 {chapter_map}
 
-[视频信息点观察清单]
+[参考资料信息点观察清单]
 {focus_points}
 
-[原始视频文稿]
+[参考资料全文]
 {raw_text.strip()}
 
 [当前已完成书稿]
@@ -2492,7 +2605,20 @@ def _front_matter_missing(text: str) -> bool:
     return not all(marker in text for marker in required_sections)
 
 
-async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
+async def _repair_front_matter(
+    raw_text: str,
+    generated_markdown: str,
+    *,
+    category: str | None = None,
+) -> str:
+    is_finance = normalize_category(category or "") == "finance_technology"
+    source_label = "参考资料全文" if is_finance else "原始视频文稿"
+    source_instruction = (
+        "- 如果前置块缺失，请根据下方参考资料全文和当前书稿内容补齐\n"
+        if is_finance
+        else "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
+    )
+    finance_guard = f"{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}\n" if is_finance else ""
     repair_prompt = (
         "你现在只负责修复书稿的前置块，不要重写全文。\n"
         "必须补齐并保留以下五个部分，标题前的 @ 加工符号也必须保留：\n"
@@ -2507,12 +2633,13 @@ async def _repair_front_matter(raw_text: str, generated_markdown: str) -> str:
         "- 导言第一段要带钩子：用问题、冲突、反常识判断或现实困境把读者带入；但只搭建阅读入口，不提前展开正文完整论证\n"
         "- 导言钩子要冷静克制，不要标题党、悬疑营销、鸡汤口号或夸张情绪\n"
         f"{INTRO_BODY_SEPARATION_PROMPT}\n"
+        f"{finance_guard}"
         "- 正文尽量沿用原稿，不要大幅改写\n"
-        "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
+        f"{source_instruction}"
         "- 所有书名、目录标题和正文章节标题都不要出现冒号；最后一章不要命名为“结语”\n"
         f"{SECTION_TITLE_REQUIREMENT_PROMPT}\n"
         "- 不要解释，不要输出分析\n\n"
-        f"[原始视频文稿]\n{raw_text.strip()}\n\n"
+        f"[{source_label}]\n{raw_text.strip()}\n\n"
         f"[当前书稿]\n{generated_markdown.strip()}\n"
     )
     return await _route_writer_call(repair_prompt)
@@ -2956,7 +3083,11 @@ async def generate_full_book(
 
     if _front_matter_missing(generated_markdown):
         logger.warning("主模型初稿缺少前置块，尝试修复。")
-        repaired_markdown = await _repair_front_matter(raw_text, generated_markdown)
+        repaired_markdown = await _repair_front_matter(
+            raw_text,
+            generated_markdown,
+            category=normalized_category,
+        )
         if repaired_markdown.strip():
             generated_markdown = repaired_markdown
             _log_stage("1b/4 writer-repaired", generated_markdown)

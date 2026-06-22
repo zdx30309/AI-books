@@ -44,6 +44,9 @@ class QualityReport:
     # ===== 名作解读专项文风污染 =====
     masterpiece_colloquial_hits: dict[str, list[str]] = field(default_factory=dict)
 
+    # ===== 财经科技专项来源穿帮 =====
+    finance_source_leak_hits: dict[str, list[str]] = field(default_factory=dict)
+
     # ===== 文本统计 =====
     total_chars: int = 0
     total_paragraphs: int = 0
@@ -364,8 +367,17 @@ def _count_marks(text: str) -> dict[str, int]:
     }
 
 
-_FRONT_SECTION_RE = re.compile(r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$")
-_BODY_CHAPTER_RE = re.compile(r"^@\s*\d+[.．、]\s*.+$")
+_FRONT_SECTION_RE = re.compile(
+    r"^(?:！！！)?@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$"
+)
+_BODY_CHAPTER_RE = re.compile(r"^(?:！！！@?|@)\s*\d+[.．、]\s*.+$")
+_FINANCE_SOURCE_LEAK_RE = re.compile(
+    r"(?:^|[。！？；，,、\s])"
+    r"(?:(?:根据|据|按照)?\s*(?:《[^》]{1,80}》)(?:中|里)?"
+    r"|(?:根据|据|按照)?\s*(?:这段文稿|这份材料|这份素材|这份资料|原始视频文稿|视频材料|视频文稿|原视频|"
+    r"参考资料|参考材料|输入材料|视频|文稿|材料|素材|资料)(?:中|里)?)"
+    r"(?:提到|提及|指出|显示|写到|说到|说|认为|表明|给出|呈现|说明)"
+)
 _EDITORIAL_COMMENT_RE = re.compile(
     r"^@?\s*(?:"
     r"这几句话|这句话|这段|这一段|这里|这部分|"
@@ -517,6 +529,26 @@ def _detect_masterpiece_colloquial(markdown: str) -> dict[str, list[str]]:
     return results
 
 
+def _detect_finance_source_leaks(markdown: str) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    in_target_section = False
+    for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_target_section = section.group(1) in {"最终简介", "导言", "正文"}
+            continue
+        if not in_target_section:
+            continue
+        if _BODY_CHAPTER_RE.match(line) or re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line):
+            continue
+        if _FINANCE_SOURCE_LEAK_RE.search(line):
+            _add_noise_hit(results, "财经来源穿帮表述残留", line)
+    return results
+
+
 def _calc_total(report: QualityReport) -> None:
     total = (
         sum(len(v) for v in report.a1_pattern_hits.values())
@@ -531,6 +563,7 @@ def _calc_total(report: QualityReport) -> None:
         + sum(len(v) for v in report.llm_residual_hits.values())
         + sum(len(v) for v in report.format_noise_hits.values())
         + sum(len(v) for v in report.masterpiece_colloquial_hits.values())
+        + sum(len(v) for v in report.finance_source_leak_hits.values())
     )
     report.total_violations = total
     report.violation_density_per_kchar = total / max(report.total_chars, 1) * 1000
@@ -589,10 +622,16 @@ def measure_quality(markdown: str, *, category: str | None = None) -> QualityRep
 
     report.half_width_punct_count, report.half_width_punct_samples = _detect_half_width_punct(markdown)
     report.format_noise_hits = _detect_format_noise(markdown)
-    if (category or "").strip().lower() == "masterpiece_interpretation":
+    category_key = (category or "").strip().lower()
+    if category_key == "masterpiece_interpretation":
         report.masterpiece_colloquial_hits = _detect_masterpiece_colloquial(markdown)
+    if category_key == "finance_technology":
+        report.finance_source_leak_hits = _detect_finance_source_leaks(markdown)
 
     marks = _count_marks(markdown)
+    if category_key == "life_philosophy":
+        centered_markers = len(re.findall(r"^！！！(?:@|\d+[.．、])", markdown, re.MULTILINE))
+        marks["double_excl"] = max(0, marks["double_excl"] - centered_markers)
     report.mark_double_excl = marks["double_excl"]
     report.mark_excl_paren = marks["excl_paren"]
     report.mark_at = marks["at"]
@@ -640,6 +679,7 @@ def format_report(report: QualityReport, *, top_k: int = 5) -> str:
     _render_section("大模型残留口癖 (任一命中即说明洗稿不彻底)", report.llm_residual_hits)
     _render_section("排版污染（小标题 / Markdown / 批注残留）", report.format_noise_hits)
     _render_section("名作解读口语化残留", report.masterpiece_colloquial_hits)
+    _render_section("财经来源穿帮表述残留", report.finance_source_leak_hits)
 
     lines.append("--- 排版加工符号使用统计 ---")
     lines.append(f"  ！！      : {report.mark_double_excl} 处")

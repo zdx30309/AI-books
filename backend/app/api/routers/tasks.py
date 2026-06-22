@@ -92,9 +92,9 @@ _STAGE_FILES = {
     "format": "04_format.md",
 }
 _FRONT_SECTION_NAMES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
-_BODY_SECTION_RE = re.compile(r"^@?\s*正文\s*$", re.MULTILINE)
+_BODY_SECTION_RE = re.compile(r"^(?:！！！)?@?\s*正文\s*$", re.MULTILINE)
 _FINAL_TITLE_SECTION_RE = re.compile(
-    r"^@?\s*(最终书名|三个备选书名)\s*$([\s\S]*?)(?=^@?\s*(?:"
+    r"^(?:！！！)?@?\s*(最终书名|三个备选书名)\s*$([\s\S]*?)(?=^(?:！！！)?@?\s*(?:"
     + "|".join(map(re.escape, _FRONT_SECTION_NAMES))
     + r")\s*$|\Z)",
     re.MULTILINE,
@@ -1512,9 +1512,9 @@ def _docx_image_paragraph(*, rel_id: str, filename: str, alt: str, doc_pr_id: in
 
 
 _DOCX_FRONT_SECTION_RE = re.compile(
-    r"^@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$"
+    r"^(?:！！！)?@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$"
 )
-_DOCX_NUMBERED_LINE_RE = re.compile(r"^(@?\s*)?\d+[.．、]\s*(.+?)\s*$")
+_DOCX_NUMBERED_LINE_RE = re.compile(r"^((?:！！！)?@?\s*)?\d+[.．、]\s*(.+?)\s*$")
 
 
 def _docx_category(markdown_category: str | None) -> str:

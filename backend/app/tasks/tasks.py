@@ -48,10 +48,10 @@ from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_CHAPTER_HEADING_RE = re.compile(r"^@\s*(\d+)\.\s*(.+?)\s*$", re.MULTILINE)
-_BODY_SECTION_RE = re.compile(r"^@?\s*正文\s*$", re.MULTILINE)
+_CHAPTER_HEADING_RE = re.compile(r"^(?:！！！@?|@)\s*(\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+_BODY_SECTION_RE = re.compile(r"^(?:！！！)?@?\s*正文\s*$", re.MULTILINE)
 _BOOK_TITLE_SECTION_RE = re.compile(
-    r"^@?\s*(?:最终书名|三个备选书名)\s*$([\s\S]*?)(?=^@?\s*(?:最终简介|三个备选简介|目录)\s*$|^@|\Z)",
+    r"^(?:！！！)?@?\s*(?:最终书名|三个备选书名)\s*$([\s\S]*?)(?=^(?:！！！)?@?\s*(?:最终简介|三个备选简介|目录)\s*$|^(?:！！！)?@|\Z)",
     re.MULTILINE,
 )
 _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")

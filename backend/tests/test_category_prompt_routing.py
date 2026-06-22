@@ -13,6 +13,7 @@ import pytest
 from app.prompts.goal_driven_templates import (
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
+    POLISH_FIXED_PHRASE_GUARD_PROMPT,
     SECTION_TITLE_REFINE_GUARD_PROMPT,
     SECTION_TITLE_REQUIREMENT_PROMPT,
     SUPPORTED_CATEGORIES,
@@ -255,6 +256,38 @@ def test_social_science_test_prompt_sync() -> None:
     assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
 
 
+def test_life_philosophy_category_uses_three_alternative_prompt_flow() -> None:
+    prompts = get_prompts("life_philosophy")
+    writer = prompts["full_book_writer"]
+    polish = prompts["gemini_fast_polish"]
+    refine = prompts["gemini_fast_refine"]
+    formatter = prompts["final_book_format"]
+    rendered = writer.format(raw_text="原始视频文稿")
+
+    assert "@三个备选书名" in writer
+    assert "@三个备选简介" in writer
+    assert "@最终书名" not in writer
+    assert "@最终简介" not in writer
+    assert "导言必须放在目录之后、正文之前，长度 200~400 字" in writer
+    assert "最终正文长度控制在约12000字，允许小幅浮动" in writer
+    assert "原始视频文稿" in rendered
+
+    assert "将我的文本重新表达为自然流畅的现代汉语" in polish
+    assert "在不删减内容的前提下重新分段，每段 50~100 字" in refine
+    assert "三个备选书名（小节标题：@三个备选书名）" in formatter
+    assert "每个章节的标题统一格式为：！！！N. 章节名" in formatter
+    assert "每一个标题文字前面加一个 ！！！ 符号作为居中标记" in formatter
+    assert "正文只允许使用正式章节标题：@N. 章节名" not in formatter
+
+
+def test_life_philosophy_self_rescue_keeps_dedicated_writer() -> None:
+    prompt = get_prompts("life_philosophy_self_rescue")["full_book_writer"]
+
+    assert "人生哲学（困境自救版）" in prompt
+    assert "@最终书名" in prompt
+    assert "@三个备选书名" not in prompt
+
+
 def test_longform_variant_categories_use_dedicated_prompts() -> None:
     cases = [
         (
@@ -318,7 +351,7 @@ def test_longform_variant_aliases_resolve() -> None:
 def test_finance_technology_category_uses_dedicated_prompt() -> None:
     meta = get_category_meta("finance_technology")
     prompt = get_prompts("finance_technology")["full_book_writer"]
-    rendered = prompt.format(raw_text="原始视频文稿")
+    rendered = prompt.format(raw_text="测试参考资料")
 
     assert meta["label"] == "财经·科技"
     assert "直接生成一篇完整的深度长文" in prompt
@@ -330,9 +363,15 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "每个重要概念、事件、政策、技术、公司动作或市场变化" in prompt
     assert "正文字数不设人为上限" in prompt
     assert "最终正文长度控制在约12000字" not in prompt
+    assert "财经科技来源表述专项要求" in prompt
+    assert "视频材料中提到" in prompt
+    assert "根据《来源名》" in prompt
+    assert "根据公开资料" in prompt
+    assert "[参考资料全文]" in prompt
+    assert "[原始视频文稿]" not in prompt
     assert "【小节标题全局要求】" in prompt
     assert "【导言与正文分工全局要求】" in prompt
-    assert "原始视频文稿" in rendered
+    assert "测试参考资料" in rendered
 
 
 def test_finance_technology_aliases_resolve() -> None:
@@ -434,7 +473,10 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     assert "财经科技长视频动态长文强约束" in writer_prompts[0]
     assert "一次性输出完整书稿" in writer_prompts[0]
     assert "不要分章分批生成" in writer_prompts[0]
-    assert "必须按视频信息点展开" in writer_prompts[0]
+    assert "财经科技来源表述专项要求" in writer_prompts[0]
+    assert "参考资料信息点观察清单" in writer_prompts[0]
+    assert "必须按参考资料中的事实与信息点展开" in writer_prompts[0]
+    assert "视频信息点观察清单" not in writer_prompts[0]
     assert "禁止重复观点" in writer_prompts[0]
     assert "禁止为了凑字数堆无关信息" in writer_prompts[0]
     expected_writer_output = content_engine.normalize_final_markdown(
@@ -449,15 +491,18 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     assert polish_kwargs[0]["disable_max_output_tokens"] is True
     assert polish_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
+    assert "财经科技来源表述专项要求" in str(polish_kwargs[0]["system_instruction"])
     assert "不能只处理开头、前半部分或前 20000 字" in str(polish_kwargs[0]["system_instruction"])
     assert refine_kwargs[0]["disable_max_output_tokens"] is True
     assert refine_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿处理保护" in str(refine_kwargs[0]["system_instruction"])
+    assert "财经科技来源表述专项要求" in str(refine_kwargs[0]["system_instruction"])
     assert "不能只处理开头、前半部分或前 20000 字" in str(refine_kwargs[0]["system_instruction"])
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert format_kwargs[0]["fail_on_max_tokens"] is True
     assert format_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
+    assert "财经科技来源表述专项要求" in str(format_kwargs[0]["prompt_template"])
     assert "不能只输出前半部分或前 20000 字" in str(format_kwargs[0]["prompt_template"])
 
 
@@ -493,8 +538,12 @@ def test_finance_longform_short_writer_uses_targeted_continuation_not_redraft(
     assert len(writer_prompts) == 2
     assert "财经科技长视频动态长文强约束" in writer_prompts[0]
     assert "财经科技长文同阶段定向续写任务" in writer_prompts[1]
+    assert "财经科技来源表述专项要求" in writer_prompts[1]
     assert "全局扩写蓝图" in writer_prompts[1]
     assert "只输出“新增正文正式章节”" in writer_prompts[1]
+    assert "[参考资料全文]" in writer_prompts[1]
+    assert "[参考资料信息点观察清单]" in writer_prompts[1]
+    assert "[原始视频文稿]" not in writer_prompts[1]
     assert "财经科技长文完整补足任务" not in "\n".join(writer_prompts)
     assert all(kwargs["max_output_tokens"] == 0 for kwargs in writer_kwargs)
     assert all(kwargs["retry_on_failure"] is False for kwargs in writer_kwargs)
@@ -618,6 +667,10 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
         assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["gemini_fast_polish"]
         assert SECTION_TITLE_REFINE_GUARD_PROMPT in prompts["gemini_fast_refine"]
         if prompts["final_book_format"]:
+            if category == "life_philosophy":
+                assert "每个章节的标题统一格式为：！！！N. 章节名" in prompts["final_book_format"]
+                assert "不得改写、增删、合并、拆分、改序、重述任何正文内容" in prompts["final_book_format"]
+                continue
             assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["final_book_format"]
             assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
                 "final_book_format"
@@ -646,6 +699,20 @@ def test_all_category_generation_prompts_include_intro_body_separation_rules() -
             assert prompts["final_book_format"].find(INTRO_BODY_SEPARATION_PROMPT) < prompts[
                 "final_book_format"
             ].find("{text}")
+
+
+def test_all_category_gemini_polish_includes_fixed_phrase_guard_only_once() -> None:
+    for category in SUPPORTED_CATEGORIES:
+        prompts = get_prompts(category)
+
+        assert POLISH_FIXED_PHRASE_GUARD_PROMPT in prompts["gemini_fast_polish"]
+        assert prompts["gemini_fast_polish"].count("【一润固定化表述删改要求】") == 1
+        assert "很硬的" in prompts["gemini_fast_polish"]
+        assert "……的边界" in prompts["gemini_fast_polish"]
+        assert "并不神秘" in prompts["gemini_fast_polish"]
+        assert POLISH_FIXED_PHRASE_GUARD_PROMPT not in prompts["full_book_writer"]
+        assert POLISH_FIXED_PHRASE_GUARD_PROMPT not in prompts["gemini_fast_refine"]
+        assert POLISH_FIXED_PHRASE_GUARD_PROMPT not in prompts["final_book_format"]
 
 
 def test_front_matter_repair_prompt_includes_section_title_rules(
