@@ -1507,12 +1507,32 @@ def _docx_text_paragraph(line: str) -> str:
     )
 
 
-def _docx_image_paragraph(*, rel_id: str, filename: str, alt: str, doc_pr_id: int) -> str:
+_DOCX_EMU_PER_PIXEL = 9525
+_DOCX_FALLBACK_IMAGE_SIZE_EMU = (5486400, 3291840)
+
+
+def _docx_image_size_emu(path: Path) -> tuple[int, int]:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:
+        return _DOCX_FALLBACK_IMAGE_SIZE_EMU
+    return max(1, int(width)) * _DOCX_EMU_PER_PIXEL, max(1, int(height)) * _DOCX_EMU_PER_PIXEL
+
+
+def _docx_image_paragraph(
+    *,
+    rel_id: str,
+    filename: str,
+    alt: str,
+    doc_pr_id: int,
+    cx: int,
+    cy: int,
+) -> str:
     safe_filename = escape(filename, {'"': "&quot;"})
     safe_alt = escape(alt or filename, {'"': "&quot;"})
-    # 6.0in x 3.6in in EMUs, fitting the comic landscape images inside Word margins.
-    cx = 5486400
-    cy = 3291840
     return (
         "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:drawing>"
         "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
@@ -1596,6 +1616,7 @@ def _markdown_to_docx(
             rel_id = f"rIdImage{len(image_entries) + 1}"
             alt_match = re.match(r"\s*!\[([^\]]*)\]", line)
             alt = alt_match.group(1).strip() if alt_match else image_filename
+            cx, cy = _docx_image_size_emu(image_path)
             image_entries.append((image_filename, image_path))
             paragraphs.append(
                 _docx_image_paragraph(
@@ -1603,6 +1624,8 @@ def _markdown_to_docx(
                     filename=image_filename,
                     alt=alt,
                     doc_pr_id=len(image_entries),
+                    cx=cx,
+                    cy=cy,
                 )
             )
             continue

@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 
-from app.api.routers.tasks import _markdown_to_docx, _task_cover_path
+from app.api.routers.tasks import _DOCX_EMU_PER_PIXEL, _markdown_to_docx, _task_cover_path
 from app.models import Task
 from app.services import comic_series, content_engine, cover
 
@@ -566,6 +566,31 @@ def test_docx_export_embeds_comic_images(tmp_path: Path) -> None:
         assert b"rIdImage3" in document_xml
         assert b"rIdImage4" in document_xml
         assert b"![" not in document_xml
+
+
+def test_docx_export_keeps_comic_image_native_pixel_extent(tmp_path: Path) -> None:
+    from PIL import Image
+
+    image_dir = tmp_path / "comic_images"
+    image_dir.mkdir()
+    image_path = image_dir / "comic_section_01_01.png"
+    image = Image.new("RGB", (2450, 3500), "white")
+    image.save(image_path, format="PNG")
+    original_bytes = image_path.read_bytes()
+
+    data = _markdown_to_docx(
+        "@正文\n@1. 第一章\n![配图](comic_images/comic_section_01_01.png)\n",
+        image_base_dir=tmp_path,
+        category="healing_comic",
+    )
+
+    expected_cx = 2450 * _DOCX_EMU_PER_PIXEL
+    expected_cy = 3500 * _DOCX_EMU_PER_PIXEL
+    with zipfile.ZipFile(BytesIO(data)) as docx:
+        document_xml = docx.read("word/document.xml").decode("utf-8")
+        assert f'<wp:extent cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
+        assert f'<a:ext cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
+        assert docx.read("word/media/image1.png") == original_bytes
 
 
 def test_comic_cover_path_falls_back_to_generated_comic_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
