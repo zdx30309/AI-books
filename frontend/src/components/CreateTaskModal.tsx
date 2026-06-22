@@ -24,7 +24,6 @@ const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
 const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
 const HEALING_COMIC_DEFAULT_PANEL_COUNT = 32;
 const HEALING_COMIC_MIN_PANEL_COUNT = 1;
-const HEALING_COMIC_MAX_PANEL_COUNT = 64;
 const CLASSICAL_VARIANTS = [
   { id: "plain", label: "通俗白话" },
   { id: "zhiguai_web", label: "志怪小说爽读版" },
@@ -106,7 +105,7 @@ function parseComicPhrases(text: string) {
         .trim(),
     )
     .filter(Boolean)
-    .map((line) => line.slice(0, 120));
+    .map((line) => line);
 }
 
 function parsePanelCount(value: string) {
@@ -389,12 +388,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         const panelCount = parsePanelCount(comicPanelCount);
         if (
           !Number.isInteger(panelCount) ||
-          panelCount < HEALING_COMIC_MIN_PANEL_COUNT ||
-          panelCount > HEALING_COMIC_MAX_PANEL_COUNT
+          panelCount < HEALING_COMIC_MIN_PANEL_COUNT
         ) {
-          setError(`漫画章节数需要在 ${HEALING_COMIC_MIN_PANEL_COUNT} 到 ${HEALING_COMIC_MAX_PANEL_COUNT} 之间`);
+          setError(`漫画章节数需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
           return;
         }
+        const characterPrompt = comicThemeRequirement.trim();
         setSubmitting(true);
         try {
           const res = await api.createTask({
@@ -403,8 +402,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               category: "healing_comic",
               comic_title: cleanedTitle,
               comic_panel_count: panelCount,
+              comic_character_prompt: characterPrompt || undefined,
+              comic_theme_requirement: characterPrompt || undefined,
               title: cleanedTitle,
-              raw_text: `书名：${cleanedTitle}`,
+              raw_text: characterPrompt
+                ? `书名：${cleanedTitle}\n主角形象：${characterPrompt}`
+                : `书名：${cleanedTitle}`,
             },
           });
           onCreated(res.task_id);
@@ -426,7 +429,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         setError(`${comicCategoryLabel}需要输入书名`);
         return;
       }
-      const cleanedPrefacePhrase = comicPrefacePhrase.trim().slice(0, 120);
+      const cleanedPrefacePhrase = comicPrefacePhrase.trim();
       if (!cleanedPrefacePhrase) {
         setError(`${comicCategoryLabel}需要输入 1 条文前短语`);
         return;
@@ -1307,7 +1310,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     id="healing-comic-panel-count"
                     type="number"
                     min={HEALING_COMIC_MIN_PANEL_COUNT}
-                    max={HEALING_COMIC_MAX_PANEL_COUNT}
                     step={1}
                     value={comicPanelCount}
                     onChange={(e) => setComicPanelCount(e.target.value.replace(/[^\d]/g, ""))}
@@ -1315,7 +1317,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义 {HEALING_COMIC_MIN_PANEL_COUNT} 到 {HEALING_COMIC_MAX_PANEL_COUNT} 章；每章会生成一张同系列漫画图。
+                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会根据叙事生成多张同系列漫画图。
                   </p>
                 </div>
                 </>
@@ -1346,22 +1348,22 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       htmlFor="comic-theme-requirement"
                       className="block text-[11px] tracking-widest text-warm-300"
                     >
-                      主题要求（可选）
+                      主角形象（可选）
                     </label>
                     <span className="text-[10px] tracking-widest text-warm-500">
-                      {Math.min(comicThemeRequirement.trim().length, 240)}/240
+                      {comicThemeRequirement.trim().length} 字
                     </span>
                   </div>
                   <textarea
                     id="comic-theme-requirement"
                     value={comicThemeRequirement}
-                    onChange={(e) => setComicThemeRequirement(e.target.value.slice(0, 240))}
-                    placeholder="例如：想用一只原创小熊作为主角。不要填写真实 IP 名称，系统会自动转成原创动物主题。"
+                    onChange={(e) => setComicThemeRequirement(e.target.value)}
+                    placeholder="例如：一只米白色原创小熊，圆耳朵，蓝灰围巾，小帆布包，眼神安静，所有章节保持同一形象。"
                     rows={3}
                     className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    可留空；填写后只作为原创角色方向，不会复刻或暗示现成 IP。
+                    可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
                   </p>
                 </div>
               )}
@@ -1378,13 +1380,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       comicPrefacePhrase.trim() ? "text-gold-300" : "text-warm-500"
                     }`}
                   >
-                    {Math.min(comicPrefacePhrase.trim().length, 120)}/120
+                    {comicPrefacePhrase.trim().length} 字
                   </span>
                 </div>
                 <input
                   id="comic-preface-phrase"
                   value={comicPrefacePhrase}
-                  onChange={(e) => setComicPrefacePhrase(e.target.value.slice(0, 120))}
+                  onChange={(e) => setComicPrefacePhrase(e.target.value)}
                   placeholder="今晚，月亮把安静放在窗边。"
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />

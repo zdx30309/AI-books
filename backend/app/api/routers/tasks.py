@@ -37,6 +37,7 @@ from app.services.comic_series import (
     parse_comic_preface_phrase,
     parse_comic_theme_requirement,
     parse_comic_title,
+    parse_healing_comic_character_prompt,
     parse_healing_comic_panel_count,
     validate_comic_phrases,
 )
@@ -244,14 +245,29 @@ def _normalize_task_config(config: dict | None) -> dict:
             or cfg.get("chapter_count")
             or cfg.get("panel_count")
         )
+        character_prompt = parse_healing_comic_character_prompt(
+            cfg.get("comic_character_prompt")
+            or cfg.get("character_prompt")
+            or cfg.get("protagonist_prompt")
+            or cfg.get("comic_theme_requirement")
+            or cfg.get("comic_requirement")
+            or cfg.get("theme_requirement")
+            or ""
+        )
         cfg["comic_title"] = title
         cfg["comic_panel_count"] = panel_count
+        if character_prompt:
+            cfg["comic_character_prompt"] = character_prompt
+        else:
+            cfg.pop("comic_character_prompt", None)
         cfg["title"] = title
         cfg.pop("comic_preface_phrase", None)
         cfg.pop("comic_phrases", None)
-        cfg.pop("comic_theme_requirement", None)
         cfg.pop("comic_requirement", None)
-        cfg["raw_text"] = f"书名：{title}"
+        raw_lines = [f"书名：{title}"]
+        if character_prompt:
+            raw_lines.append(f"主角形象：{character_prompt}")
+        cfg["raw_text"] = "\n".join(raw_lines)
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     if category == "comic_series":
         comic_label = category_meta["label"]
@@ -440,7 +456,7 @@ def _task_cover_path(task: Task) -> Path | None:
 
 
 def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:
-    if not re.fullmatch(r"(?:comic_cover|comic_preface|comic_section_\d{2})\.png", filename):
+    if not re.fullmatch(r"(?:comic_cover|comic_preface|comic_section_\d+(?:_\d+)?)\.png", filename):
         return None
     path = (_task_output_dir(task_id) / "comic_images" / filename).resolve()
     output_dir = _task_output_dir(task_id).resolve()

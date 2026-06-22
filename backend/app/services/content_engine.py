@@ -2778,12 +2778,15 @@ async def _generate_healing_comic_book(
     output_dir: Path | None,
     on_stage: StageCallback | None,
     panel_count: int = 32,
+    character_prompt: str | None = None,
 ) -> str:
     from app.services.comic_series import (
         assemble_healing_comic_markdown,
         build_healing_comic_writer_prompt,
+        build_healing_comic_character_bible,
         generate_healing_comic_images,
         inject_comic_images,
+        parse_healing_comic_character_prompt,
         parse_healing_comic_panel_count,
         parse_healing_comic_title,
         parse_healing_comic_writer_output,
@@ -2791,6 +2794,7 @@ async def _generate_healing_comic_book(
 
     comic_title = parse_healing_comic_title(raw_text) or "今天也不用很厉害"
     panel_count = parse_healing_comic_panel_count(panel_count)
+    character_prompt = parse_healing_comic_character_prompt(character_prompt)
     if output_dir is None:
         raise ValueError("漫画需要 output_dir 以保存每张配图")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2800,14 +2804,19 @@ async def _generate_healing_comic_book(
     if on_stage:
         on_stage("comic_structure_done", {"chars": len(research_context), "research_done": True})
 
-    writer_prompt = build_healing_comic_writer_prompt(comic_title, research_context, panel_count=panel_count)
+    writer_prompt = build_healing_comic_writer_prompt(
+        comic_title,
+        research_context,
+        panel_count=panel_count,
+        character_prompt=character_prompt,
+    )
     _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
     try:
         writer_output = await _route_writer_call(
             writer_prompt,
             reasoning_effort="medium",
             verbosity="low",
-            max_output_tokens=12000,
+            max_output_tokens=0,
         )
     except Exception as exc:
         logger.warning("ChatGPT healing comic writer fallback: %s", exc)
@@ -2824,11 +2833,14 @@ async def _generate_healing_comic_book(
         indent=2,
     )
     _dump_stage(output_dir, "02_healing_comic_script.json", script_json)
+    character_bible = build_healing_comic_character_bible(character_prompt, series_meta)
+    _dump_stage(output_dir, "02_healing_comic_character_bible.md", character_bible)
 
     refined_markdown = assemble_healing_comic_markdown(title, intro, panels)
     _dump_stage(output_dir, "03_refine.md", refined_markdown)
     if on_stage:
-        on_stage("comic_images_start", {"total": len(panels) + 1})
+        total_images = 1 + sum(len(panel.get("images") or []) for panel in panels)
+        on_stage("comic_images_start", {"total": total_images})
 
     def _image_progress(index: int, total: int) -> None:
         if on_stage:
@@ -2842,6 +2854,7 @@ async def _generate_healing_comic_book(
         title=title,
         intro=intro,
         series_meta=series_meta,
+        character_bible=character_bible,
         allow_uncertain=True,
         retry_uncertain=True,
         on_progress=_image_progress,
@@ -2968,6 +2981,7 @@ async def generate_full_book(
     classical_variant: str | None = None,
     classical_original_title: str | None = None,
     healing_comic_panel_count: int | None = None,
+    healing_comic_character_prompt: str | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
 ) -> str:
@@ -2999,6 +3013,7 @@ async def generate_full_book(
             output_dir=output_dir,
             on_stage=on_stage,
             panel_count=healing_comic_panel_count or 32,
+            character_prompt=healing_comic_character_prompt,
         )
 
     if normalized_category == "comic_series":

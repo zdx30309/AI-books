@@ -27,7 +27,7 @@ from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.classical_chinese import classical_final_title
 from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
-from app.services.comic_series import parse_healing_comic_panel_count
+from app.services.comic_series import parse_healing_comic_character_prompt, parse_healing_comic_panel_count
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import (
     QingdouDurationExceededError,
@@ -1097,6 +1097,12 @@ def process_video(_self, task_id: str) -> dict:
                 healing_comic_panel_count=parse_healing_comic_panel_count(
                     (task.config or {}).get("comic_panel_count")
                 ),
+                healing_comic_character_prompt=parse_healing_comic_character_prompt(
+                    (task.config or {}).get("comic_character_prompt")
+                    or (task.config or {}).get("character_prompt")
+                    or (task.config or {}).get("comic_theme_requirement")
+                    or (task.config or {}).get("comic_requirement")
+                ),
                 input_source=input_source,
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
             )
@@ -1137,6 +1143,11 @@ def process_video(_self, task_id: str) -> dict:
                 comic_cover_image = output_dir / "comic_images" / "comic_preface.png"
             if not comic_cover_image.exists():
                 comic_cover_image = output_dir / "comic_images" / "comic_section_01.png"
+            if not comic_cover_image.exists():
+                comic_cover_image = next(
+                    iter(sorted((output_dir / "comic_images").glob("comic_section_*.png"))),
+                    comic_cover_image,
+                )
             if comic_cover_image.exists():
                 _patch_config(
                     task,

@@ -315,8 +315,8 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "healing_comic",
         "label": "漫画",
-        "core_feature": "只输入书名，自动生成 32 页同系列原创治愈漫画",
-        "directions": "出版感封面、白底留白、图上短句、原创角色、同系列配图",
+        "core_feature": "只输入书名，可自定义章节数和主角形象，自动生成同系列原创治愈漫画",
+        "directions": "出版感封面、白底留白、图上短句、原创角色一致、多图叙事、同系列配图",
         "prompt_status": "ready",
     },
     {

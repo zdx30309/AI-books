@@ -31,13 +31,13 @@ def test_comic_series_requires_five_or_six_phrases() -> None:
     preface, phrases = comic_series.parse_comic_input(
         "文前短语：想和你一起发会儿呆。\n第一辑：今晚月亮很忙\n第二辑：云路过窗外"
     )
-    assert preface == "想和你一起发会儿呆"
+    assert preface == "想和你一起发会儿呆。"
     assert phrases == ["今晚月亮很忙", "云路过窗外"]
     title, preface, phrases = comic_series.parse_comic_input_parts(
         "书名：今晚不用变厉害\n文前短语：想和你一起发会儿呆。\n第一辑：今晚月亮很忙\n第二辑：云路过窗外"
     )
     assert title == "今晚不用变厉害"
-    assert preface == "想和你一起发会儿呆"
+    assert preface == "想和你一起发会儿呆。"
     assert phrases == ["今晚月亮很忙", "云路过窗外"]
     with pytest.raises(ValueError):
         comic_series.validate_comic_phrases(["只有一条"])
@@ -193,7 +193,7 @@ def test_comic_series_generates_images_and_skips_deepseek_format(
     assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
 
 
-def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
+def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_chapters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,6 +210,8 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
             assert "封面" in prompt
         else:
             assert "必须写在图上的短句" in prompt
+            assert "本章完整图像叙事" in prompt
+            assert "主角形象圣经" in prompt
             assert "微信读书" in prompt
             assert "白底" in prompt or "留白" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,9 +222,12 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
         writer_called.append(prompt)
         assert title in prompt
         assert "服务端参考数据库摘要" in prompt
+        assert "主角形象圣经" in prompt
         assert "image_text" in prompt
+        assert "images" in prompt
         assert "正好输出 32" in prompt
-        assert "标题正文限制在 10 个字以内" in prompt
+        assert "每章至少 2 张" in prompt
+        assert "温暖、治愈、柔和" in prompt
         assert "禁止使用“把”字句、“被”字句" in prompt
         panels = [
             {
@@ -263,12 +268,14 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_32_panels(
     assert f"@最终书名\n{title}" in result
     assert "comic_images/comic_preface.png" not in result
     assert "comic_images/comic_cover.png" not in result
-    assert "comic_images/comic_section_32.png" in result
+    assert "comic_images/comic_section_32_01.png" in result
+    assert "comic_images/comic_section_32_02.png" in result
     assert "第1次发呆" in result
-    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT + 1
+    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT * 2 + 1
     assert image_prompts[0][0] == "comic_cover.png"
     assert (output_dir / "comic_images" / "comic_cover.png").exists()
-    assert (output_dir / "comic_images" / "comic_section_32.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_01.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_02.png").exists()
 
 
 def test_healing_comic_category_accepts_custom_panel_count(
@@ -289,6 +296,7 @@ def test_healing_comic_category_accepts_custom_panel_count(
         writer_prompts.append(prompt)
         assert "正好输出 12 条章节" in prompt
         assert "不要固定成 32 条" in prompt
+        assert "每章至少 2 张" in prompt
         panels = [
             {
                 "title": f"第{index}张",
@@ -315,11 +323,13 @@ def test_healing_comic_category_accepts_custom_panel_count(
     )
 
     assert writer_prompts
-    assert len(image_prompts) == 13
-    assert "comic_images/comic_section_12.png" in result
-    assert "comic_images/comic_section_13.png" not in result
-    assert (output_dir / "comic_images" / "comic_section_12.png").exists()
-    assert not (output_dir / "comic_images" / "comic_section_13.png").exists()
+    assert len(image_prompts) == 25
+    assert "comic_images/comic_section_12_01.png" in result
+    assert "comic_images/comic_section_12_02.png" in result
+    assert "comic_images/comic_section_13_01.png" not in result
+    assert (output_dir / "comic_images" / "comic_section_12_01.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_12_02.png").exists()
+    assert not (output_dir / "comic_images" / "comic_section_13_01.png").exists()
 
 
 def test_healing_comic_uncertain_image_does_not_fail_manuscript(
@@ -363,11 +373,86 @@ def test_healing_comic_uncertain_image_does_not_fail_manuscript(
     )
 
     assert f"@最终书名\n{title}" in result
-    assert "comic_images/comic_section_32.png" in result
+    assert "comic_images/comic_section_32_01.png" in result
+    assert "comic_images/comic_section_32_02.png" in result
     assert not (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_cover_uncertain.json").exists()
-    assert (output_dir / "comic_images" / "comic_section_32.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_01.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_02.png").exists()
     assert (output_dir / "04_format.md").exists()
+
+
+def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = "很长的主角也要被记住"
+    long_character = "一只米白色原创小熊，圆耳朵，蓝灰围巾，小帆布包，眼神安静。" * 80
+    image_prompts: list[str] = []
+    writer_prompts: list[str] = []
+    long_title = "很长标题" * 200
+
+    assert comic_series.parse_healing_comic_panel_count(120) == 120
+    assert comic_series.parse_healing_comic_character_prompt(long_character) == long_character
+    assert comic_series.parse_healing_comic_title(f"书名：{long_title}") == long_title
+    assert comic_series.parse_comic_phrases([long_character]) == [long_character]
+    assert comic_series.parse_comic_preface_phrase(long_character) == long_character
+    assert comic_series.parse_comic_theme_requirement(long_character) == long_character
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        image_prompts.append(prompt)
+        assert long_character in prompt
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    async def fake_writer(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        assert kwargs["max_output_tokens"] == 0
+        assert long_character in prompt
+        panels = [
+            {
+                "title": "今天轻一点",
+                "image_text": ["今天轻一点"],
+                "phrases": ["今天轻一点"],
+                "visual": "同一个原创小熊在窗边放下帆布包。",
+                "images": [
+                    {
+                        "scene_role": "开场停顿",
+                        "image_text": ["今天轻一点"],
+                        "visual": "米白色原创小熊站在窗边，蓝灰围巾和小帆布包保持一致。",
+                        "narrative": "打开本章日常场景。",
+                    },
+                    {
+                        "scene_role": "温柔收束",
+                        "image_text": ["慢慢也可以"],
+                        "visual": "同一只小熊坐在窗边，围巾和帆布包不变，动作变得更松弛。",
+                        "narrative": "完成本章情绪落点。",
+                    },
+                ],
+            }
+        ]
+        return json.dumps({"title": title, "intro": "治愈短漫画。", "panels": panels}, ensure_ascii=False)
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+
+    output_dir = tmp_path / "healing_comic_unlimited"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            f"书名：{title}",
+            category="healing_comic",
+            output_dir=output_dir,
+            healing_comic_panel_count=1,
+            healing_comic_character_prompt=long_character,
+        )
+    )
+
+    assert writer_prompts
+    assert len(image_prompts) == 3
+    assert "comic_images/comic_section_01_01.png" in result
+    assert "comic_images/comic_section_01_02.png" in result
+    assert long_character in (output_dir / "02_healing_comic_character_bible.md").read_text(encoding="utf-8")
 
 
 def test_healing_comic_retries_previous_uncertain_marker(
