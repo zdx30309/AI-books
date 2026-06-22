@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core.config import settings
-from app.services.cover import ImageApiUncertainError, generate_image_file_from_prompt
+from app.services.cover import ImageApiPermanentError, ImageApiUncertainError, generate_image_file_from_prompt
 
 COMIC_IMAGE_PROMPT = """根据主题与书名，先生成一张具有出版感的治愈系封面。
 整体偏日韩治愈系与文艺插画风格，简洁、有留白、有情绪氛围。
@@ -32,18 +32,18 @@ COMIC_SECTION_IMAGE_PROMPT = """生成封面后，再根据目录中的5-6个章
 
 每张配图根据章节短语表达不同情绪与意境，但仍属于同一本书的视觉体系。
 画面不必重复角色，也不必强行出现人物，可根据短语自由选择意象。
-重点是“短句的情绪可视化”，像一本成年人阅读的治愈系情绪绘本。
+重点是“短句的情绪可视化”，像一本普通读者也能轻松阅读的治愈系情绪绘本。
 避免重复构图、重复元素、重复情绪表达。
 整体克制、安静、松弛、有生活感与余味。"""
 
-COMIC_STORY_PROMPT = """根据文前短语与5-6个目录章节短语，创作简短温柔的成年人治愈系情绪绘本 / 对话漫画书稿。
+COMIC_STORY_PROMPT = """根据文前短语与5-6个目录章节短语，创作简短温柔的日常治愈系情绪绘本 / 对话漫画书稿。
 文稿内容不根据封面主体生成，也不要假设封面里一定有人物或动物。
 每一辑围绕对应短语展开，必须有新的互动逻辑、情绪切口或小反转，避免重复固定套路。
-故事可偏孤独、幽默、误会、社恐、嘴硬、疲惫、笨拙、小聪明、小失落、小幸运等真实成年人情绪。
+故事可偏孤独、幽默、误会、社恐、嘴硬、疲惫、笨拙、小聪明、小失落、小幸运等真实日常情绪。
 对白自然、克制、像朋友聊天，不过度鸡汤，不过度治愈。
 画面感聚焦生活小事与情绪瞬间。
 结尾保留一点余味、反差或轻微情绪回弹，不强行升华。
-整体像日本成年人治愈漫画、LOFT文创插画、小红书高赞情绪漫画。
+整体像温暖治愈漫画、LOFT文创插画、小红书高赞情绪漫画。
 避免低龄化、避免儿童寓言感、避免网络段子感、避免AI重复套路感。
 角色形象与情节表达需原创化处理，避免直接模仿已有IP或现成卡通形象。"""
 
@@ -53,7 +53,7 @@ COMIC_COPYRIGHT_RULE = (
 )
 
 COMIC_SERIES_STYLE_BIBLE = (
-    "统一系列风格：封面与所有章节配图必须像同一本成年人治愈系情绪绘本。"
+    "统一系列风格：封面与所有章节配图必须像同一本日常治愈系情绪绘本。"
     "全系列共享统一配色体系、笔触质感、构图语言、情绪氛围、留白方式、光影风格和插画颗粒感。"
     "每张图可根据短语自由选择人物、动物、风景、房间、街道、天气、植物、光影、食物、日常物件或抽象意象。"
     "不要重复构图、重复元素或重复情绪表达；整体克制、安静、松弛、有生活感与余味。"
@@ -71,7 +71,7 @@ from app.services.comic_prompts import (  # noqa: E402
 HEALING_COMIC_STYLE_GUARD = """- 漫画端必须保留治愈插画链路中已经验证有效的视觉质量基座：出版感、温暖感、白底留白、低压力阅读、轻水彩或蜡笔颗粒、统一主色、统一线条、统一角色气质。
 - 这里的治愈插画只作为视觉语言和稳定质量基座；最终产物必须是原创治愈漫画图文书，不得变成单张插画合集。
 - 每一章相当于一个温暖分类，章节内至少 6 张图，但 6 只是硬性下限，不是固定数量；具体张数由模型根据本章分类、短句密度和可展开的小故事自然决定，最多不超过 20 张；不能全书每章都只有 6 张；每张图都要是同一主角参与的独立小故事；多张图合在一起是本章分类下的小故事汇总，不能只是同一画面换角度。
-- 全书封面、章节图片、图上短句、正文短语必须属于同一套治愈系列，温暖、克制、柔和、有成年人日常感。
+- 全书封面、章节图片、图上短句、正文短语必须属于同一套治愈系列，温暖、克制、柔和、有日常生活感。
 - 避免鸡汤、口号、儿童寓言、平台段子、功能化标题和模板化安慰。"""
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.、．)]|第[一二三四五六]辑[：:、.]?)\s*")
@@ -480,7 +480,7 @@ def build_healing_comic_character_bible(
     elif generated_profile:
         source = f"模型规划的原创主角形象：\n{generated_profile}"
     else:
-        source = "未提供主角形象时，必须先设计一个完全原创、温柔、适合成年人治愈漫画的固定主角。"
+        source = "未提供主角形象时，必须先设计一个完全原创、温柔、适合治愈漫画的固定主角。"
     return f"""{source}
 
 主角一致性硬约束：
@@ -500,7 +500,7 @@ def build_healing_comic_writer_prompt(
     book_title = parse_healing_comic_title(title) or "今天也不用很厉害"
     panel_count = parse_healing_comic_panel_count(panel_count)
     character_bible = build_healing_comic_character_bible(character_prompt)
-    return f"""你是原创成年人治愈系漫画主编。请根据用户给定书名，参考服务端漫画数据库的抽象规律，创作一本 {panel_count} 章的原创成年人治愈漫画图文书。
+    return f"""你是原创温暖治愈系漫画主编。请根据用户给定书名，参考服务端漫画数据库的抽象规律，创作一本 {panel_count} 章的原创温暖治愈漫画图文书。
 
 用户书名：
 {book_title}
@@ -518,7 +518,7 @@ def build_healing_comic_writer_prompt(
 - 只根据书名自动推导一类适合的漫画系列，不需要用户再输入短语、角色或剧情。
 - 需要正好输出 {panel_count} 条章节；不要固定成 32 条，也不要自行增减。
 - {panel_count} 是本次用户指定章节数，不是系统上限；不得因为超过 32 或 64 就截断章节。
-- 每条必须自拟章节标题，标题正文建议 4 到 12 个中文字符，必须温暖、治愈、柔和，有成年人日常感；不要写成“第1张”“第2章”这类功能标题；禁止使用“把”字句、“被”字句等复杂句式。
+- 每条必须自拟章节标题，标题正文建议 4 到 12 个中文字符，必须温暖、治愈、柔和，有日常生活感；不要写成“第1张”“第2章”这类功能标题；禁止使用“把”字句、“被”字句等复杂句式。
 - 每条必须给出 image_text：这是要直接写在配图上的中文短语，1 到 3 行，每行 4 到 12 个中文字符，短、轻、好读。
 - 每条必须给出 phrases：章节正文使用的几句短语，必须与 image_text 一致或高度一致；正文只是短语，不要写故事长文。
 - 每条必须给出 visual：画面设计必须先服务 image_text，让图片和短语天然绑定。
@@ -666,7 +666,7 @@ def fallback_healing_comic_panels(
                 ],
             }
         )
-    return final_title, "一本原创成年人情绪漫画，关于日常里的小小松弛。", panels
+    return final_title, "一本原创日常情绪漫画，关于日常里的小小松弛。", panels
 
 
 def _short_text_lines(value: object, *, fallback: str) -> list[str]:
@@ -731,7 +731,7 @@ def parse_healing_comic_writer_output(
             }
             return (
                 requested_title,
-                str(data.get("intro") or "一本原创成年人情绪短漫画。").strip()[:160],
+                str(data.get("intro") or "一本原创日常情绪短漫画。").strip()[:160],
                 panels[:panel_count],
                 series,
             )
@@ -767,7 +767,7 @@ def build_healing_comic_panel_prompt(
         f"- 图{sub.get('sub_index') or pos}：{sub.get('scene_role') or ''}；{sub.get('visual') or ''}"
         for pos, sub in enumerate(chapter_images, start=1)
     )
-    return f"""生成一张原创成年人治愈系短漫画单页图，属于同一组 {total} 章漫画中的第 {index} 章分类下第 {sub_index} 个小故事。
+    return f"""生成一张原创温暖治愈系短漫画单页图，属于同一组 {total} 章漫画中的第 {index} 章分类下第 {sub_index} 个小故事。
 
 【系列方向】
 {series_context}
@@ -825,7 +825,7 @@ def build_healing_comic_cover_prompt(
         for panel in panels[:8]
         for line in _short_text_lines(panel.get("image_text") or panel.get("phrases"), fallback=str(panel.get("title") or ""))
     )
-    return f"""根据书名生成一张原创成年人治愈漫画封面，作为后续 {len(panels)} 张同系列漫画页的视觉母版。
+    return f"""根据书名生成一张原创温暖治愈漫画封面，作为后续 {len(panels)} 张同系列漫画页的视觉母版。
 
 【书名】
 {final_title}
@@ -932,6 +932,163 @@ def plan_healing_comic_images(
     return results
 
 
+def _read_image_error_marker(path: Path, fallback: str) -> str:
+    try:
+        marker = json.loads(path.read_text(encoding="utf-8"))
+        return str(marker.get("error") or marker.get("fallback_error") or fallback)
+    except Exception:
+        return fallback
+
+
+def _write_image_error_marker(
+    path: Path,
+    image: ComicSectionImage,
+    *,
+    error: str,
+    prompt_path: str | None = None,
+    fallback_error: str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "index": image.index,
+        "sub_index": image.sub_index,
+        "phrase": image.phrase,
+        "filename": image.filename,
+        "error": error,
+    }
+    if prompt_path:
+        payload["prompt_path"] = prompt_path
+    if fallback_error:
+        payload["fallback_error"] = fallback_error
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_comic_image_prompt(image: ComicSectionImage) -> str:
+    if image.index < 0:
+        purpose = "封面"
+        content = f"书名：{image.phrase or image.title}"
+    elif image.index == 0:
+        purpose = "文前开场图"
+        content = f"短句：{image.phrase}"
+    else:
+        purpose = f"第 {image.index} 章分类下第 {image.sub_index} 个独立小故事"
+        content = f"章节：{image.title}\n短句：{image.phrase}"
+    return f"""生成一张原创温暖治愈漫画{purpose}，竖版 2450x3500。
+
+【内容】
+{content}
+
+【安全保守版本】
+- 只画普通日常生活里的安静小场景：窗边、桌面、杯子、纸张、植物、路灯、云、门口、椅子、书页或一个完全原创的小角色。
+- 如果出现主角，保持柔和、原创、非写实、非品牌、非现成 IP；不要出现真实人物、名人、商标、平台标识或可识别角色。
+- 不出现暴力、恐惧、医疗、伤口、血迹、裸露、亲密暗示、政治符号、宗教符号、酒精、烟草、武器、危险动作或任何刺激性画面。
+- 画面必须是白底或浅色大留白、轻水彩或蜡笔颗粒、细线条、低压力阅读、出版感、温暖克制。
+- 图上可以自然写入短句，但不要写编号、页码、水印、logo、任务说明、提示词说明或多余文字。
+
+【版权】
+必须是原创角色和原创画面，不复刻、暗示或模仿任何已有漫画、绘本、动画、游戏、品牌角色、真实出版物页面或现成分镜。
+"""
+
+
+def _generate_image_with_comic_protection(
+    image: ComicSectionImage,
+    *,
+    image_dir: Path,
+    stem: str,
+    response_path: Path,
+    uncertain_path: Path,
+    permanent_path: Path,
+    force: bool,
+    allow_uncertain: bool,
+    retry_uncertain: bool = False,
+) -> ComicSectionImage:
+    if image.path.exists() and image.path.stat().st_size > 0 and not force:
+        if uncertain_path.exists():
+            uncertain_path.unlink()
+        if permanent_path.exists():
+            permanent_path.unlink()
+        return replace(image, status="completed", error=None)
+
+    if permanent_path.exists() and not image.path.exists() and not force:
+        message = _read_image_error_marker(permanent_path, "previous permanent image request failure")
+        if not allow_uncertain:
+            raise ImageApiPermanentError(message)
+        return replace(image, status="permanent_error", error=message)
+
+    if uncertain_path.exists() and not image.path.exists() and not force and not retry_uncertain:
+        message = _read_image_error_marker(uncertain_path, "previous uncertain image request")
+        if not allow_uncertain:
+            raise ImageApiUncertainError(message)
+        return replace(image, status="uncertain", error=message)
+
+    try:
+        generate_image_file_from_prompt(
+            image.prompt,
+            image.path,
+            response_cache_path=response_path,
+            force=force,
+            gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
+        )
+        if uncertain_path.exists():
+            uncertain_path.unlink()
+        if permanent_path.exists():
+            permanent_path.unlink()
+        return replace(image, status="completed", error=None)
+    except ImageApiUncertainError as exc:
+        message = str(exc)
+        _write_image_error_marker(
+            uncertain_path,
+            image,
+            prompt_path=f"{stem}_prompt.txt",
+            error=message,
+        )
+        if not allow_uncertain:
+            raise
+        return replace(image, status="uncertain", error=message)
+    except ImageApiPermanentError as exc:
+        original_message = str(exc)
+        safe_prompt = _safe_comic_image_prompt(image)
+        safe_prompt_path = image_dir / f"{stem}_safe_prompt.txt"
+        safe_response_path = image_dir / f"{stem}_safe_response.json"
+        safe_prompt_path.write_text(safe_prompt, encoding="utf-8")
+        try:
+            generate_image_file_from_prompt(
+                safe_prompt,
+                image.path,
+                response_cache_path=safe_response_path,
+                force=force,
+                gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
+            )
+            if uncertain_path.exists():
+                uncertain_path.unlink()
+            if permanent_path.exists():
+                permanent_path.unlink()
+            return replace(image, status="completed", error=None)
+        except ImageApiUncertainError as fallback_exc:
+            message = str(fallback_exc)
+            _write_image_error_marker(
+                uncertain_path,
+                image,
+                prompt_path=f"{stem}_safe_prompt.txt",
+                error=message,
+                fallback_error=original_message,
+            )
+            if not allow_uncertain:
+                raise
+            return replace(image, status="uncertain", error=message)
+        except ImageApiPermanentError as fallback_exc:
+            fallback_message = str(fallback_exc)
+            _write_image_error_marker(
+                permanent_path,
+                image,
+                prompt_path=f"{stem}_safe_prompt.txt",
+                error=original_message,
+                fallback_error=fallback_message,
+            )
+            if not allow_uncertain:
+                raise ImageApiPermanentError(f"{original_message}; safe fallback also failed: {fallback_message}") from fallback_exc
+            return replace(image, status="permanent_error", error=fallback_message)
+
+
 def generate_healing_comic_images(
     panels: list[dict[str, object]],
     output_dir: Path,
@@ -965,35 +1122,18 @@ def generate_healing_comic_images(
         stem = _stem_for(image)
         response_path = image_dir / f"{stem}_response.json"
         uncertain_path = image_dir / f"{stem}_uncertain.json"
-        if uncertain_path.exists() and not image.path.exists() and not force and not retry_uncertain:
-            try:
-                marker = json.loads(uncertain_path.read_text(encoding="utf-8"))
-                message = str(marker.get("error") or "previous uncertain image request")
-            except Exception:
-                message = "previous uncertain image request"
-            if not allow_uncertain:
-                raise ImageApiUncertainError(message)
-            return replace(image, status="uncertain", error=message)
-        try:
-            generate_image_file_from_prompt(
-                image.prompt,
-                image.path,
-                response_cache_path=response_path,
-                force=force,
-                gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
-            )
-            if uncertain_path.exists():
-                uncertain_path.unlink()
-            return replace(image, status="completed", error=None)
-        except ImageApiUncertainError as exc:
-            message = str(exc)
-            uncertain_path.write_text(
-                json.dumps({"index": image.index, "filename": image.filename, "error": message}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            if not allow_uncertain:
-                raise
-            return replace(image, status="uncertain", error=message)
+        permanent_path = image_dir / f"{stem}_permanent.json"
+        return _generate_image_with_comic_protection(
+            image,
+            image_dir=image_dir,
+            stem=stem,
+            response_path=response_path,
+            uncertain_path=uncertain_path,
+            permanent_path=permanent_path,
+            force=force,
+            allow_uncertain=allow_uncertain,
+            retry_uncertain=retry_uncertain,
+        )
 
     if results:
         try:
@@ -1045,7 +1185,7 @@ def generate_healing_comic_images(
 
 def assemble_healing_comic_markdown(title: str, intro: str, panels: list[dict[str, object]]) -> str:
     final_title = (title or "治愈漫画").strip() or "治愈漫画"
-    final_intro = (intro or "一本原创成年人情绪短漫画。").strip()[:180]
+    final_intro = (intro or "一本原创日常情绪短漫画。").strip()[:180]
     lines = ["@最终书名", final_title, "@最终简介", final_intro, "@目录"]
     for index, panel in enumerate(panels, start=1):
         lines.append(f"{index}. {str(panel.get('title') or f'第{index}张')}")
@@ -1326,56 +1466,28 @@ def generate_comic_section_images(
             stem = f"comic_section_{image.index:02d}"
         response_path = image_dir / f"{stem}_response.json"
         uncertain_path = image_dir / f"{stem}_uncertain.json"
-        if uncertain_path.exists() and not image.path.exists() and not force:
-            try:
-                marker = json.loads(uncertain_path.read_text(encoding="utf-8"))
-                message = str(marker.get("error") or "previous uncertain image request")
-            except Exception:
-                message = "previous uncertain image request"
-            image = replace(image, status="uncertain", error=message)
-            results[offset] = image
-            if on_progress is not None:
-                on_progress(offset + 1, total)
-            if not allow_uncertain:
-                _write_manifest(image_dir, results)
-                raise ImageApiUncertainError(message)
-            _mark_remaining_pending(
-                offset + 1,
-                "Skipped after an uncertain image request to avoid duplicate billing.",
-            )
-            break
+        permanent_path = image_dir / f"{stem}_permanent.json"
         try:
-            generate_image_file_from_prompt(
-                image.prompt,
-                image.path,
-                response_cache_path=response_path,
+            image = _generate_image_with_comic_protection(
+                image,
+                image_dir=image_dir,
+                stem=stem,
+                response_path=response_path,
+                uncertain_path=uncertain_path,
+                permanent_path=permanent_path,
                 force=force,
-                gate_wait_timeout_seconds=_comic_image_gate_wait_timeout_seconds(),
+                allow_uncertain=allow_uncertain,
             )
-            if uncertain_path.exists():
-                uncertain_path.unlink()
-            image = replace(image, status="completed", error=None)
-        except ImageApiUncertainError as exc:
-            message = str(exc)
-            uncertain_path.write_text(
-                json.dumps(
-                    {
-                        "index": image.index,
-                        "phrase": image.phrase,
-                        "filename": image.filename,
-                        "prompt_path": f"{stem}_prompt.txt",
-                        "error": message,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            image = replace(image, status="uncertain", error=message)
+        except ImageApiUncertainError:
+            results[offset] = replace(image, status="uncertain", error="image API request result is uncertain")
+            _write_manifest(image_dir, results)
+            raise
+        except ImageApiPermanentError:
+            results[offset] = replace(image, status="permanent_error", error="image API request failed permanently")
+            _write_manifest(image_dir, results)
+            raise
+        if image.status == "uncertain" and allow_uncertain:
             results[offset] = image
-            if not allow_uncertain:
-                _write_manifest(image_dir, results)
-                raise
             if on_progress is not None:
                 on_progress(offset + 1, total)
             _mark_remaining_pending(
@@ -1506,6 +1618,8 @@ def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
     image_by_index: dict[int, ComicSectionImage] = {}
     image_by_position: dict[tuple[int, int], ComicSectionImage] = {}
     for image in images:
+        if not image.path.exists() or image.path.stat().st_size <= 0:
+            continue
         image_by_position[(image.index, image.sub_index)] = image
         image_by_index.setdefault(image.index, image)
     preface_image = image_by_index.get(0)
@@ -1527,8 +1641,13 @@ def inject_comic_images(markdown: str, images: list[ComicSectionImage]) -> str:
         return image.markdown if image else match.group(0)
 
     result = _PLACEHOLDER_RE.sub(_replace_placeholder, result)
+    result = _PREFACE_PLACEHOLDER_RE.sub("", result)
+    result = _MULTI_IMAGE_PLACEHOLDER_RE.sub("", result)
+    result = _PLACEHOLDER_RE.sub("", result)
 
     for image in images:
+        if not image.path.exists() or image.path.stat().st_size <= 0:
+            continue
         if image.filename in result:
             continue
         if image.index < 0:

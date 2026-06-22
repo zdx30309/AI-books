@@ -81,7 +81,7 @@ def test_comic_image_prompt_hides_section_labels_and_locks_series_style() -> Non
     assert "儿童绘本封面" not in prompt
     assert "原创 Q 版" not in prompt
     assert "封面主体：" not in prompt
-    assert "同一本成年人治愈系情绪绘本" in prompt
+    assert "同一本日常治愈系情绪绘本" in prompt
     assert "漫画端口长期参考" not in prompt
 
 
@@ -114,7 +114,7 @@ def test_comic_image_prompts_keep_required_cover_and_series_constraints(
             assert constraint in prompt
         assert "每张配图根据章节短语表达不同情绪与意境，但仍属于同一本书的视觉体系" in prompt
         assert "画面不必重复角色，也不必强行出现人物，可根据短语自由选择意象" in prompt
-        assert "重点是“短句的情绪可视化”，像一本成年人阅读的治愈系情绪绘本" in prompt
+        assert "重点是“短句的情绪可视化”，像一本普通读者也能轻松阅读的治愈系情绪绘本" in prompt
         assert "避免重复构图、重复元素、重复情绪表达" in prompt
         assert "整体克制、安静、松弛、有生活感与余味" in prompt
         assert "已经生成的封面保持同一视觉系统" in prompt
@@ -559,6 +559,94 @@ def test_healing_comic_retries_previous_uncertain_marker(
     assert not (image_dir / "comic_cover_uncertain.json").exists()
 
 
+def test_healing_comic_reuses_existing_images_without_api_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_existing"
+    image_dir = output_dir / "comic_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "comic_cover.png").write_bytes(PNG_1X1)
+    for index in range(1, 7):
+        (image_dir / f"comic_section_01_{index:02d}.png").write_bytes(PNG_1X1)
+
+    def fail_image(*_: object, **__: object) -> Path:
+        raise AssertionError("existing comic images must be reused without another API call")
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fail_image)
+    images = comic_series.generate_healing_comic_images(
+        [{"title": "窗边小事", "image_count": 6, "image_text": ["慢慢来"], "visual": "留白日常。"}],
+        output_dir,
+        title="今天也可以",
+        allow_uncertain=True,
+    )
+
+    assert len(images) == 7
+    assert {image.status for image in images} == {"completed"}
+
+
+def test_healing_comic_permanent_error_uses_safe_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_permanent_fallback"
+    calls: list[tuple[str, bool]] = []
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        is_safe = "安全保守版本" in prompt
+        calls.append((output_path.name, is_safe))
+        if output_path.name == "comic_section_01_01.png" and not is_safe:
+            raise cover.ImageApiPermanentError("moderation_blocked")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    images = comic_series.generate_healing_comic_images(
+        [{"title": "窗边小事", "image_count": 6, "image_text": ["慢慢来"], "visual": "留白日常。"}],
+        output_dir,
+        title="今天也可以",
+        allow_uncertain=True,
+    )
+
+    assert (output_dir / "comic_images" / "comic_section_01_01.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_01_01_safe_prompt.txt").exists()
+    assert not (output_dir / "comic_images" / "comic_section_01_01_permanent.json").exists()
+    assert {image.status for image in images} == {"completed"}
+    assert ("comic_section_01_01.png", False) in calls
+    assert ("comic_section_01_01.png", True) in calls
+
+
+def test_healing_comic_permanent_marker_skips_duplicate_api_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_permanent_skip"
+    image_dir = output_dir / "comic_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "comic_cover_permanent.json").write_text(
+        '{"error": "moderation_blocked"}',
+        encoding="utf-8",
+    )
+    for index in range(1, 7):
+        (image_dir / f"comic_section_01_{index:02d}.png").write_bytes(PNG_1X1)
+
+    def fail_image(*_: object, **__: object) -> Path:
+        raise AssertionError("permanent marker should prevent duplicate API calls")
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fail_image)
+    images = comic_series.generate_healing_comic_images(
+        [{"title": "窗边小事", "image_count": 6, "image_text": ["慢慢来"], "visual": "留白日常。"}],
+        output_dir,
+        title="今天也可以",
+        allow_uncertain=True,
+    )
+
+    assert images[0].status == "permanent_error"
+    assert all(image.status == "completed" for image in images[1:])
+    assert not (image_dir / "comic_cover.png").exists()
+
+
 def test_comic_series_uncertain_image_does_not_fail_manuscript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -589,8 +677,9 @@ def test_comic_series_uncertain_image_does_not_fail_manuscript(
         )
     )
 
-    assert "comic_images/comic_preface.png" in result
-    assert "comic_images/comic_section_01.png" in result
+    assert "comic_images/comic_preface.png" not in result
+    assert "comic_images/comic_section_01.png" not in result
+    assert "{{COMIC_IMAGE_" not in result
     assert not (output_dir / "comic_images" / "comic_cover.png").exists()
     assert not (output_dir / "comic_images" / "comic_preface.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_01.png").exists()
