@@ -217,7 +217,7 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
             assert "封面" in prompt
         else:
             assert "必须写在图上的短句" in prompt
-            assert "本章完整图像叙事" in prompt
+            assert "本章分类下的小故事汇总" in prompt
             assert "主角形象圣经" in prompt
             assert "微信读书" in prompt
             assert "白底" in prompt or "留白" in prompt
@@ -233,7 +233,8 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
         assert "image_text" in prompt
         assert "images" in prompt
         assert "正好输出 32" in prompt
-        assert "每章至少 2 张" in prompt
+        assert "每章至少 6 张" in prompt
+        assert "章节本身相当于一个温暖分类" in prompt
         assert "温暖、治愈、柔和" in prompt
         assert "禁止使用“把”字句、“被”字句" in prompt
         panels = [
@@ -276,13 +277,13 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
     assert "comic_images/comic_preface.png" not in result
     assert "comic_images/comic_cover.png" not in result
     assert "comic_images/comic_section_32_01.png" in result
-    assert "comic_images/comic_section_32_02.png" in result
+    assert "comic_images/comic_section_32_06.png" in result
     assert "第1次发呆" in result
-    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT * 2 + 1
+    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT * comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
     assert image_prompts[0][0] == "comic_cover.png"
     assert (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_section_32_01.png").exists()
-    assert (output_dir / "comic_images" / "comic_section_32_02.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_06.png").exists()
 
 
 def test_healing_comic_category_accepts_custom_panel_count(
@@ -303,7 +304,8 @@ def test_healing_comic_category_accepts_custom_panel_count(
         writer_prompts.append(prompt)
         assert "正好输出 12 条章节" in prompt
         assert "不要固定成 32 条" in prompt
-        assert "每章至少 2 张" in prompt
+        assert "每章至少 6 张" in prompt
+        assert "每张图都要单独讲完一个很短的小故事" in prompt
         panels = [
             {
                 "title": f"第{index}张",
@@ -330,12 +332,12 @@ def test_healing_comic_category_accepts_custom_panel_count(
     )
 
     assert writer_prompts
-    assert len(image_prompts) == 25
+    assert len(image_prompts) == 12 * comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
     assert "comic_images/comic_section_12_01.png" in result
-    assert "comic_images/comic_section_12_02.png" in result
+    assert "comic_images/comic_section_12_06.png" in result
     assert "comic_images/comic_section_13_01.png" not in result
     assert (output_dir / "comic_images" / "comic_section_12_01.png").exists()
-    assert (output_dir / "comic_images" / "comic_section_12_02.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_12_06.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_13_01.png").exists()
 
 
@@ -381,11 +383,11 @@ def test_healing_comic_uncertain_image_does_not_fail_manuscript(
 
     assert f"@最终书名\n{title}" in result
     assert "comic_images/comic_section_32_01.png" in result
-    assert "comic_images/comic_section_32_02.png" in result
+    assert "comic_images/comic_section_32_06.png" in result
     assert not (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_cover_uncertain.json").exists()
     assert (output_dir / "comic_images" / "comic_section_32_01.png").exists()
-    assert (output_dir / "comic_images" / "comic_section_32_02.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_06.png").exists()
     assert (output_dir / "04_format.md").exists()
 
 
@@ -461,9 +463,9 @@ def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
     )
 
     assert writer_prompts
-    assert len(image_prompts) == 3
+    assert len(image_prompts) == comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
     assert "comic_images/comic_section_01_01.png" in result
-    assert "comic_images/comic_section_01_02.png" in result
+    assert "comic_images/comic_section_01_06.png" in result
     assert long_character in (output_dir / "02_healing_comic_character_bible.md").read_text(encoding="utf-8")
 
 

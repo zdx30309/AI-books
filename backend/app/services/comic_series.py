@@ -70,7 +70,7 @@ from app.services.comic_prompts import (  # noqa: E402
 
 HEALING_COMIC_STYLE_GUARD = """- 漫画端必须保留治愈插画链路中已经验证有效的视觉质量基座：出版感、温暖感、白底留白、低压力阅读、轻水彩或蜡笔颗粒、统一主色、统一线条、统一角色气质。
 - 这里的治愈插画只作为视觉语言和稳定质量基座；最终产物必须是原创治愈漫画图文书，不得变成单张插画合集。
-- 每一章都要有同一主角参与的轻叙事推进，章节内多张图要铺平成开场、变化和收束，不能只是同一画面换角度。
+- 每一章相当于一个温暖分类，章节内至少 6 张图，每张图都要是同一主角参与的独立小故事；多张图合在一起是本章分类下的小故事汇总，不能只是同一画面换角度。
 - 全书封面、章节图片、图上短句、正文短语必须属于同一套治愈系列，温暖、克制、柔和、有成年人日常感。
 - 避免鸡汤、口号、儿童寓言、平台段子、功能化标题和模板化安慰。"""
 
@@ -100,11 +100,19 @@ HEALING_COMIC_DEFAULT_PANEL_COUNT = 32
 HEALING_COMIC_PANEL_COUNT = HEALING_COMIC_DEFAULT_PANEL_COUNT
 HEALING_COMIC_MIN_PANEL_COUNT = 1
 HEALING_COMIC_MAX_PANEL_COUNT: int | None = None
-HEALING_COMIC_MIN_IMAGES_PER_CHAPTER = 2
+HEALING_COMIC_MIN_IMAGES_PER_CHAPTER = 6
 HEALING_COMIC_MAX_IMAGES_PER_CHAPTER: int | None = None
 REFERENCE_ASSET_DIR = Path(__file__).with_name("reference_assets") / "healing_comic"
 HEALING_COMIC_REFERENCE_EPUB = REFERENCE_ASSET_DIR / "kan_ni_yi_yan_jiu_hui_xiao.epub"
 HEALING_COMIC_REFERENCE_COVERS_ZIP = REFERENCE_ASSET_DIR / "reference_covers.zip"
+HEALING_COMIC_STORY_ROLES = (
+    "清晨小故事",
+    "路上小故事",
+    "停顿小故事",
+    "误会小故事",
+    "松口气小故事",
+    "收住光小故事",
+)
 
 
 def _comic_image_gate_wait_timeout_seconds() -> int:
@@ -425,15 +433,16 @@ def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> l
     target_count = max(_healing_image_count_for_chapter(panel), len(images))
     while len(images) < target_count:
         sub_index = len(images) + 1
-        role = "开场停顿" if sub_index == 1 else ("情绪转折" if sub_index == 2 else "温柔收束")
-        text_lines = phrases if sub_index == 1 else list(reversed(phrases))
+        role = HEALING_COMIC_STORY_ROLES[(sub_index - 1) % len(HEALING_COMIC_STORY_ROLES)]
+        text_seed = phrases[(sub_index - 1) % len(phrases)]
+        text_lines = [text_seed] if text_seed else phrases[:1]
         images.append(
             {
                 "sub_index": sub_index,
                 "scene_role": role,
                 "image_text": text_lines[:3],
-                "visual": f"{base_visual}；本章第{sub_index}张图，承担“{role}”，不要复用上一张构图。",
-                "narrative": f"本章第{sub_index}张图推进“{title}”的{role}，让情绪从日常动作里自然落下。",
+                "visual": f"{base_visual}；本章是一个分类，本图是分类下第{sub_index}个完整小故事，主题为“{role}”，必须换成新的生活场景、新动作和新情绪落点，不要复用上一张构图。",
+                "narrative": f"本图单独讲完一个很短的小故事：{title}分类下的{role}，有起因、动作和轻微落点，但保持单页治愈漫画的克制。",
             }
         )
     return images
@@ -492,8 +501,9 @@ def build_healing_comic_writer_prompt(
 - 每条必须给出 image_text：这是要直接写在配图上的中文短语，1 到 3 行，每行 4 到 12 个中文字符，短、轻、好读。
 - 每条必须给出 phrases：章节正文使用的几句短语，必须与 image_text 一致或高度一致；正文只是短语，不要写故事长文。
 - 每条必须给出 visual：画面设计必须先服务 image_text，让图片和短语天然绑定。
-- 每条必须给出 images：这是该章节完整叙事需要生成的所有图片，绝对不能只给 1 张；每章至少 2 张，具体数量由该章节叙事是否铺平决定，不设人为上限。
-- images 里的每一张都必须有 scene_role、image_text、visual、narrative；它们要铺平本章叙事的开场、转折和收束，不能只是同一画面换说法。
+- 每条必须给出 images：这是该章节分类下的所有小故事图片，绝对不能只给 1 张；每章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张，6 张是硬性下限，具体数量可以继续增加，不设人为上限。
+- 章节本身相当于一个温暖分类，不是一张图的标题；该章节下的每一张图片都必须是一个独立小故事，所有图片合在一起构成本章分类的小故事汇总。
+- images 里的每一张都必须有 scene_role、image_text、visual、narrative；每张图都要单独讲完一个很短的小故事，有起因、动作和轻微落点，不能只是同一画面换说法，也不能把 6 张图拆成同一个故事的机械分镜。
 - 每个章节的所有 images 都必须继续使用同一个主角形象，并在 visual 中写清楚主角正在做什么、场景如何变化、情绪如何推进。
 - 全书所有章节和所有图片必须属于同一本书：统一主色、线条、颗粒感、留白、光影、主角形象、角色气质和出版感。
 - 最终摊开效果要像同一本微信读书治愈漫画：白底大留白、单页小场景、少量角色动作、手写短句、轻幽默。
@@ -521,16 +531,40 @@ def build_healing_comic_writer_prompt(
       "visual": "本章整体画面方向",
       "images": [
         {{
-          "scene_role": "开场停顿",
+          "scene_role": "清晨小故事",
           "image_text": ["写在图上的短句1"],
           "visual": "第1张图的完整画面描述，必须包含同一个主角的动作、场景和文字融入方式",
-          "narrative": "说明这张图承担本章叙事的哪一步"
+          "narrative": "这张图单独讲完一个很短的小故事，有起因、动作和轻微落点"
         }},
         {{
-          "scene_role": "温柔收束",
+          "scene_role": "路上小故事",
           "image_text": ["写在图上的短句2"],
           "visual": "第2张图的完整画面描述，必须与上一张不同，并继续保持同一个主角形象",
-          "narrative": "说明这张图如何完成本章情绪落点"
+          "narrative": "这张图单独讲完另一个很短的小故事，不复用上一张构图"
+        }},
+        {{
+          "scene_role": "停顿小故事",
+          "image_text": ["写在图上的短句3"],
+          "visual": "第3张图的完整画面描述，新的生活场景、新动作、新情绪落点",
+          "narrative": "这张图是本章分类下的第三个独立小故事"
+        }},
+        {{
+          "scene_role": "误会小故事",
+          "image_text": ["写在图上的短句4"],
+          "visual": "第4张图的完整画面描述，保持同一主角但更换场景和动作",
+          "narrative": "这张图是本章分类下的第四个独立小故事"
+        }},
+        {{
+          "scene_role": "松口气小故事",
+          "image_text": ["写在图上的短句5"],
+          "visual": "第5张图的完整画面描述，避免重复前面任何一张构图",
+          "narrative": "这张图是本章分类下的第五个独立小故事"
+        }},
+        {{
+          "scene_role": "收住光小故事",
+          "image_text": ["写在图上的短句6"],
+          "visual": "第6张图的完整画面描述，作为本章分类下的另一个完整小故事",
+          "narrative": "这张图是本章分类下的第六个独立小故事"
         }}
       ]
     }}
@@ -701,7 +735,7 @@ def build_healing_comic_panel_prompt(
         f"- 图{sub.get('sub_index') or pos}：{sub.get('scene_role') or ''}；{sub.get('visual') or ''}"
         for pos, sub in enumerate(chapter_images, start=1)
     )
-    return f"""生成一张原创成年人治愈系短漫画单页图，属于同一组 {total} 章漫画中的第 {index} 章第 {sub_index} 张图。
+    return f"""生成一张原创成年人治愈系短漫画单页图，属于同一组 {total} 章漫画中的第 {index} 章分类下第 {sub_index} 个小故事。
 
 【系列方向】
 {series_context}
@@ -709,12 +743,12 @@ def build_healing_comic_panel_prompt(
 【主角形象圣经】
 {character_bible}
 
-【本章完整图像叙事】
+【本章分类下的小故事汇总】
 {chapter_sequence}
 
 【本张内容】
 - 标题：{title}
-- 本张作用：{scene_role}
+- 本张小故事类型：{scene_role}
 - 本张叙事：{narrative}
 - 画面：{visual}
 - 必须写在图上的短句：
@@ -726,10 +760,11 @@ def build_healing_comic_panel_prompt(
 
 【视觉要求】
 - 画面必须把上面的短句自然写进图里，像手写小对白、旁白或气泡文字；不要漏字，不要换成英文。
-- 只绘制“本张内容”，但要承接“本章完整图像叙事”，让同章多张图铺成一个清楚的小叙事，不要每张都画成同一构图。
+- 只绘制“本张内容”；本章只是分类，本张图必须单独讲完一个小故事，有起因、动作和轻微落点，不要依赖上一张或下一张才能读懂。
+- 同章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张图，每张都必须是不同小故事；不要把它们画成同一故事的机械分镜，不要每张都画成同一构图。
 - 主角必须严格遵守“主角形象圣经”；只能变化动作、角度、场景和情绪，不得改变主角的物种或身份、体型轮廓、主色、服装核心元素、标志性配件和面部特征。
 - 画面像微信读书同系列治愈漫画摊开后的单页：白底或浅色大留白，细线条，轻水彩/蜡笔颗粒，低压力阅读节奏。
-- 每张都是一个小场景，可以有一格或两三格小分镜，但不要复杂剧情。
+- 每张都是一个完整小故事场景，可以有一格或两三格小分镜，但不要复杂剧情。
 - 可以是原创人物、原创动物、植物、物件、天气、房间、街道、光影等意象；若使用固定角色，全系列保持一致。
 - 全系列保持统一角色气质、线条、配色、颗粒感、留白方式和日常治愈氛围，与封面像同一本书。
 - 不要像儿童绘本、商业鸡汤海报、PPT插画或廉价AI模板。
