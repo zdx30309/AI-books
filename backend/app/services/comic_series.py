@@ -70,7 +70,7 @@ from app.services.comic_prompts import (  # noqa: E402
 
 HEALING_COMIC_STYLE_GUARD = """- 漫画端必须保留治愈插画链路中已经验证有效的视觉质量基座：出版感、温暖感、白底留白、低压力阅读、轻水彩或蜡笔颗粒、统一主色、统一线条、统一角色气质。
 - 这里的治愈插画只作为视觉语言和稳定质量基座；最终产物必须是原创治愈漫画图文书，不得变成单张插画合集。
-- 每一章相当于一个温暖分类，章节内至少 6 张图，每张图都要是同一主角参与的独立小故事；多张图合在一起是本章分类下的小故事汇总，不能只是同一画面换角度。
+- 每一章相当于一个温暖分类，章节内至少 6 张图，但 6 只是硬性下限，不是固定数量；具体张数由模型根据本章分类、短句密度和可展开的小故事自然决定，最多不超过 20 张；不能全书每章都只有 6 张；每张图都要是同一主角参与的独立小故事；多张图合在一起是本章分类下的小故事汇总，不能只是同一画面换角度。
 - 全书封面、章节图片、图上短句、正文短语必须属于同一套治愈系列，温暖、克制、柔和、有成年人日常感。
 - 避免鸡汤、口号、儿童寓言、平台段子、功能化标题和模板化安慰。"""
 
@@ -101,7 +101,7 @@ HEALING_COMIC_PANEL_COUNT = HEALING_COMIC_DEFAULT_PANEL_COUNT
 HEALING_COMIC_MIN_PANEL_COUNT = 1
 HEALING_COMIC_MAX_PANEL_COUNT: int | None = None
 HEALING_COMIC_MIN_IMAGES_PER_CHAPTER = 6
-HEALING_COMIC_MAX_IMAGES_PER_CHAPTER: int | None = None
+HEALING_COMIC_MAX_IMAGES_PER_CHAPTER = 20
 REFERENCE_ASSET_DIR = Path(__file__).with_name("reference_assets") / "healing_comic"
 HEALING_COMIC_REFERENCE_EPUB = REFERENCE_ASSET_DIR / "kan_ni_yi_yan_jiu_hui_xiao.epub"
 HEALING_COMIC_REFERENCE_COVERS_ZIP = REFERENCE_ASSET_DIR / "reference_covers.zip"
@@ -112,6 +112,12 @@ HEALING_COMIC_STORY_ROLES = (
     "误会小故事",
     "松口气小故事",
     "收住光小故事",
+    "窗边小故事",
+    "晚风小故事",
+    "整理小故事",
+    "等候小故事",
+    "轻声小故事",
+    "回家小故事",
 )
 
 
@@ -395,14 +401,24 @@ def _clean_healing_comic_title(value: object, index: int, *, fallback_lines: obj
     return _GENERIC_HEALING_TITLES[(index - 1) % len(_GENERIC_HEALING_TITLES)]
 
 
-def _healing_image_count_for_chapter(panel: dict[str, object]) -> int:
+def _clamp_healing_image_count(count: int) -> int:
+    count = max(HEALING_COMIC_MIN_IMAGES_PER_CHAPTER, count)
+    if HEALING_COMIC_MAX_IMAGES_PER_CHAPTER is not None:
+        count = min(HEALING_COMIC_MAX_IMAGES_PER_CHAPTER, count)
+    return count
+
+
+def _healing_image_count_for_chapter(panel: dict[str, object], index: int = 1) -> int:
+    raw_images = panel.get("images") or panel.get("pictures") or panel.get("image_sequence")
     requested = panel.get("image_count") or panel.get("images_count") or panel.get("picture_count")
-    try:
-        count = int(requested)
-    except (TypeError, ValueError):
-        raw_images = panel.get("images") or panel.get("pictures") or panel.get("image_sequence")
-        count = len(raw_images) if isinstance(raw_images, list) else HEALING_COMIC_MIN_IMAGES_PER_CHAPTER
-    return max(HEALING_COMIC_MIN_IMAGES_PER_CHAPTER, count)
+    if requested is not None and str(requested).strip():
+        try:
+            requested_count = int(requested)
+        except (TypeError, ValueError):
+            requested_count = HEALING_COMIC_MIN_IMAGES_PER_CHAPTER
+        return _clamp_healing_image_count(requested_count)
+    raw_count = len(raw_images) if isinstance(raw_images, list) else 0
+    return _clamp_healing_image_count(raw_count)
 
 
 def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> list[dict[str, object]]:
@@ -411,8 +427,11 @@ def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> l
     base_visual = str(panel.get("visual") or panel.get("caption") or title).strip()
     raw_images = panel.get("images") or panel.get("pictures") or panel.get("image_sequence")
     images: list[dict[str, object]] = []
+    max_count = HEALING_COMIC_MAX_IMAGES_PER_CHAPTER
     if isinstance(raw_images, list):
         for sub_index, item in enumerate(raw_images, start=1):
+            if max_count is not None and len(images) >= max_count:
+                break
             if not isinstance(item, dict):
                 continue
             image_text = _short_text_lines(
@@ -430,7 +449,9 @@ def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> l
                     "narrative": str(item.get("narrative") or visual or base_visual).strip()[:420],
                 }
             )
-    target_count = max(_healing_image_count_for_chapter(panel), len(images))
+    target_count = max(_healing_image_count_for_chapter(panel, index), len(images))
+    if max_count is not None:
+        target_count = min(max_count, target_count)
     while len(images) < target_count:
         sub_index = len(images) + 1
         role = HEALING_COMIC_STORY_ROLES[(sub_index - 1) % len(HEALING_COMIC_STORY_ROLES)]
@@ -501,9 +522,9 @@ def build_healing_comic_writer_prompt(
 - 每条必须给出 image_text：这是要直接写在配图上的中文短语，1 到 3 行，每行 4 到 12 个中文字符，短、轻、好读。
 - 每条必须给出 phrases：章节正文使用的几句短语，必须与 image_text 一致或高度一致；正文只是短语，不要写故事长文。
 - 每条必须给出 visual：画面设计必须先服务 image_text，让图片和短语天然绑定。
-- 每条必须给出 images：这是该章节分类下的所有小故事图片，绝对不能只给 1 张；每章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张，6 张是硬性下限，具体数量可以继续增加，不设人为上限。
+- 每条必须给出 images：这是该章节分类下的所有小故事图片，绝对不能只给 1 张；每章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张，6 张只是硬性下限，不是默认固定值；必须根据本章分类、短句密度、情绪层次和可展开的小故事数量，由模型自行决定 6 到 {HEALING_COMIC_MAX_IMAGES_PER_CHAPTER} 张之间的合适数量；如果全书每章都只有 6 张，视为失败；不要为了凑数量制造重复画面或空泛小故事。
 - 章节本身相当于一个温暖分类，不是一张图的标题；该章节下的每一张图片都必须是一个独立小故事，所有图片合在一起构成本章分类的小故事汇总。
-- images 里的每一张都必须有 scene_role、image_text、visual、narrative；每张图都要单独讲完一个很短的小故事，有起因、动作和轻微落点，不能只是同一画面换说法，也不能把 6 张图拆成同一个故事的机械分镜。
+- images 里的每一张都必须有 scene_role、image_text、visual、narrative；每张图都要单独讲完一个很短的小故事，有起因、动作和轻微落点，不能只是同一画面换说法，也不能把同章多张图拆成同一个故事的机械分镜；同章新增的第 7 张、第 8 张、第 9 张或更多图片也必须继续属于本章分类，不能跑题。
 - 每个章节的所有 images 都必须继续使用同一个主角形象，并在 visual 中写清楚主角正在做什么、场景如何变化、情绪如何推进。
 - 全书所有章节和所有图片必须属于同一本书：统一主色、线条、颗粒感、留白、光影、主角形象、角色气质和出版感。
 - 最终摊开效果要像同一本微信读书治愈漫画：白底大留白、单页小场景、少量角色动作、手写短句、轻幽默。
@@ -526,6 +547,7 @@ def build_healing_comic_writer_prompt(
   "panels": [
     {{
       "title": "章节标题",
+      "image_count": 7,
       "image_text": ["写在图上的短句1", "写在图上的短句2"],
       "phrases": ["正文短语1", "正文短语2"],
       "visual": "本章整体画面方向",
@@ -565,6 +587,12 @@ def build_healing_comic_writer_prompt(
           "image_text": ["写在图上的短句6"],
           "visual": "第6张图的完整画面描述，作为本章分类下的另一个完整小故事",
           "narrative": "这张图是本章分类下的第六个独立小故事"
+        }},
+        {{
+          "scene_role": "窗边小故事",
+          "image_text": ["写在图上的短句7"],
+          "visual": "第7张图的完整画面描述，继续属于本章分类，但换成新的生活场景、新动作和新情绪落点",
+          "narrative": "这张图是本章分类下额外展开的独立小故事，不能重复前6张"
         }}
       ]
     }}
@@ -610,9 +638,13 @@ def fallback_healing_comic_panels(
     for index, moment in enumerate(moments, start=1):
         animal, subject = _animal_for(index)
         image_text = [f"{moment}慢一点", "也没关系"]
+        fallback_image_count = _clamp_healing_image_count(
+            HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + ((index - 1) % 5)
+        )
         panels.append(
             {
                 "title": _clean_healing_comic_title(f"{moment}的时候", index, fallback_lines=image_text),
+                "image_count": fallback_image_count,
                 "image_text": image_text,
                 "phrases": image_text,
                 "caption": "，".join(image_text),
@@ -761,7 +793,7 @@ def build_healing_comic_panel_prompt(
 【视觉要求】
 - 画面必须把上面的短句自然写进图里，像手写小对白、旁白或气泡文字；不要漏字，不要换成英文。
 - 只绘制“本张内容”；本章只是分类，本张图必须单独讲完一个小故事，有起因、动作和轻微落点，不要依赖上一张或下一张才能读懂。
-- 同章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张图，每张都必须是不同小故事；不要把它们画成同一故事的机械分镜，不要每张都画成同一构图。
+- 同章至少 {HEALING_COMIC_MIN_IMAGES_PER_CHAPTER} 张图，6 张只是下限，不是固定数量；本章实际共有 {len(chapter_images)} 张小故事图，每张都必须是不同小故事；不要把它们画成同一故事的机械分镜，不要每张都画成同一构图。
 - 主角必须严格遵守“主角形象圣经”；只能变化动作、角度、场景和情绪，不得改变主角的物种或身份、体型轮廓、主色、服装核心元素、标志性配件和面部特征。
 - 画面像微信读书同系列治愈漫画摊开后的单页：白底或浅色大留白，细线条，轻水彩/蜡笔颗粒，低压力阅读节奏。
 - 每张都是一个完整小故事场景，可以有一格或两三格小分镜，但不要复杂剧情。
@@ -1580,7 +1612,9 @@ __all__ = [
     "ComicSectionImage",
     "HEALING_COMIC_PANEL_COUNT",
     "HEALING_COMIC_DEFAULT_PANEL_COUNT",
+    "HEALING_COMIC_MAX_IMAGES_PER_CHAPTER",
     "HEALING_COMIC_MAX_PANEL_COUNT",
+    "HEALING_COMIC_MIN_IMAGES_PER_CHAPTER",
     "HEALING_COMIC_MIN_PANEL_COUNT",
     "assemble_healing_comic_markdown",
     "assemble_comic_series_markdown",

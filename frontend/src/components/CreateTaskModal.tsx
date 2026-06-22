@@ -1317,7 +1317,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会生成 6 张以上同系列小故事漫画图。
+                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。
                   </p>
                 </div>
                 <div>

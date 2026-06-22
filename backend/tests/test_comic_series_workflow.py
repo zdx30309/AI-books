@@ -30,6 +30,18 @@ PNG_1X1 = bytes.fromhex(
 )
 
 
+def _healing_story_images(index: int, count: int) -> list[dict[str, object]]:
+    return [
+        {
+            "scene_role": f"第{sub_index}个小故事",
+            "image_text": [f"第{index}章第{sub_index}句"],
+            "visual": f"同一原创主角在第{index}章分类下完成第{sub_index}个生活小故事，场景和动作都不同。",
+            "narrative": f"第{index}章分类下第{sub_index}个独立小故事，有起因、动作和轻微落点。",
+        }
+        for sub_index in range(1, count + 1)
+    ]
+
+
 def test_comic_series_requires_five_or_six_phrases() -> None:
     assert comic_series.parse_comic_phrases("1. 今晚月亮很忙\n2. 云路过窗外") == [
         "今晚月亮很忙",
@@ -234,15 +246,19 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
         assert "images" in prompt
         assert "正好输出 32" in prompt
         assert "每章至少 6 张" in prompt
+        assert "不是默认固定值" in prompt
+        assert "20 张" in prompt
         assert "章节本身相当于一个温暖分类" in prompt
         assert "温暖、治愈、柔和" in prompt
         assert "禁止使用“把”字句、“被”字句" in prompt
         panels = [
             {
                 "title": f"第{index}张",
+                "image_count": 6 + (index % 3),
                 "image_text": [f"第{index}次发呆", "也算认真"],
                 "phrases": [f"第{index}次发呆", "也算认真"],
                 "visual": f"原创小角色在白底日常场景 {index} 里停顿，轻幽默，留白。",
+                "images": _healing_story_images(index, 6 + (index % 3)),
             }
             for index in range(1, comic_series.HEALING_COMIC_PANEL_COUNT + 1)
         ]
@@ -278,12 +294,15 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
     assert "comic_images/comic_cover.png" not in result
     assert "comic_images/comic_section_32_01.png" in result
     assert "comic_images/comic_section_32_06.png" in result
+    assert "comic_images/comic_section_32_08.png" in result
     assert "第1次发呆" in result
-    assert len(image_prompts) == comic_series.HEALING_COMIC_PANEL_COUNT * comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
+    expected_image_count = 1 + sum(6 + (index % 3) for index in range(1, comic_series.HEALING_COMIC_PANEL_COUNT + 1))
+    assert len(image_prompts) == expected_image_count
     assert image_prompts[0][0] == "comic_cover.png"
     assert (output_dir / "comic_images" / "comic_cover.png").exists()
     assert (output_dir / "comic_images" / "comic_section_32_01.png").exists()
     assert (output_dir / "comic_images" / "comic_section_32_06.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_32_08.png").exists()
 
 
 def test_healing_comic_category_accepts_custom_panel_count(
@@ -305,10 +324,12 @@ def test_healing_comic_category_accepts_custom_panel_count(
         assert "正好输出 12 条章节" in prompt
         assert "不要固定成 32 条" in prompt
         assert "每章至少 6 张" in prompt
+        assert "6 到 20 张" in prompt
         assert "每张图都要单独讲完一个很短的小故事" in prompt
         panels = [
             {
                 "title": f"第{index}张",
+                "image_count": 6 + (index % 4),
                 "image_text": [f"第{index}次慢慢来"],
                 "phrases": [f"第{index}次慢慢来"],
                 "visual": f"原创小角色在白底日常场景 {index} 里停顿，留白。",
@@ -332,13 +353,49 @@ def test_healing_comic_category_accepts_custom_panel_count(
     )
 
     assert writer_prompts
-    assert len(image_prompts) == 12 * comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
+    expected_image_count = 1 + sum(6 + (index % 4) for index in range(1, 13))
+    assert len(image_prompts) == expected_image_count
     assert "comic_images/comic_section_12_01.png" in result
     assert "comic_images/comic_section_12_06.png" in result
+    assert "comic_images/comic_section_11_09.png" in result
     assert "comic_images/comic_section_13_01.png" not in result
     assert (output_dir / "comic_images" / "comic_section_12_01.png").exists()
     assert (output_dir / "comic_images" / "comic_section_12_06.png").exists()
+    assert (output_dir / "comic_images" / "comic_section_11_09.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_13_01.png").exists()
+
+
+def test_healing_comic_image_count_is_model_driven_with_bounds() -> None:
+    minimum_panel = {
+        "title": "早班窗光",
+        "images": _healing_story_images(1, 2),
+    }
+    assert len(comic_series._normalize_healing_chapter_images(minimum_panel, 1)) == 6  # noqa: SLF001
+
+    requested_panel = {
+        "title": "慢慢回家",
+        "image_count": 11,
+        "images": _healing_story_images(2, 7),
+    }
+    requested_images = comic_series._normalize_healing_chapter_images(requested_panel, 2)  # noqa: SLF001
+    assert len(requested_images) == 11
+    assert requested_images[-1]["sub_index"] == 11
+
+    oversized_panel = {
+        "title": "小故事很多",
+        "image_count": 24,
+        "images": _healing_story_images(3, 24),
+    }
+    oversized_images = comic_series._normalize_healing_chapter_images(oversized_panel, 3)  # noqa: SLF001
+    assert len(oversized_images) == comic_series.HEALING_COMIC_MAX_IMAGES_PER_CHAPTER
+    assert oversized_images[-1]["sub_index"] == comic_series.HEALING_COMIC_MAX_IMAGES_PER_CHAPTER
+
+    _, _, fallback_panels = comic_series.fallback_healing_comic_panels("兜底也要变化", panel_count=5)
+    fallback_counts = [
+        len(comic_series._normalize_healing_chapter_images(panel, index))  # noqa: SLF001
+        for index, panel in enumerate(fallback_panels, start=1)
+    ]
+    assert fallback_counts == [6, 7, 8, 9, 10]
 
 
 def test_healing_comic_uncertain_image_does_not_fail_manuscript(
@@ -427,6 +484,7 @@ def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
         panels = [
             {
                 "title": "今天轻一点",
+                "image_count": 8,
                 "image_text": ["今天轻一点"],
                 "phrases": ["今天轻一点"],
                 "visual": "同一个原创小熊在窗边放下帆布包。",
@@ -463,9 +521,10 @@ def test_healing_comic_keeps_unlimited_character_prompt_and_panel_count(
     )
 
     assert writer_prompts
-    assert len(image_prompts) == comic_series.HEALING_COMIC_MIN_IMAGES_PER_CHAPTER + 1
+    assert len(image_prompts) == 8 + 1
     assert "comic_images/comic_section_01_01.png" in result
     assert "comic_images/comic_section_01_06.png" in result
+    assert "comic_images/comic_section_01_08.png" in result
     assert long_character in (output_dir / "02_healing_comic_character_bible.md").read_text(encoding="utf-8")
 
 
