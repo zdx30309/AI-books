@@ -336,10 +336,13 @@ function saveBlob(blob: Blob, filename: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.style.display = "none";
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 60_000);
 }
 
 function openHiddenDownload(url: string) {
@@ -435,8 +438,10 @@ export const api = {
   downloadUrl: (id: string, fmt: "md" | "docx" = "md") =>
     `${BASE}/tasks/${id}/download?fmt=${fmt}`,
   downloadFile: async (id: string, fmt: "md" | "docx" = "md") => {
-    const { blob, filename } = await download(`/tasks/${id}/download?fmt=${fmt}`);
-    saveBlob(blob, filename);
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "请先登录");
+    const params = new URLSearchParams({ fmt, token, _: String(Date.now()) });
+    openHiddenDownload(`${BASE}/tasks/${id}/download/direct?${params.toString()}`);
   },
   downloadBatchFile: async (body: BatchDownloadRequest) => {
     const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
@@ -456,8 +461,10 @@ export const api = {
   getTaskImageBlob: (id: string, filename: string) =>
     fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}`),
   downloadCoverFile: async (id: string) => {
-    const { blob, filename } = await download(`/tasks/${id}/cover/download`);
-    saveBlob(blob, filename);
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "请先登录");
+    const params = new URLSearchParams({ token, _: String(Date.now()) });
+    openHiddenDownload(`${BASE}/tasks/${id}/cover/download/direct?${params.toString()}`);
   },
   createCoverJob: (file: File, category = "social_science") =>
     uploadFile<CoverJobResponse>("/covers/jobs", file, { category }),

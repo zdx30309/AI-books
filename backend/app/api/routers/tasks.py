@@ -1911,6 +1911,38 @@ def download_cover(
 
 
 @router.get(
+    "/{task_id}/cover/download/direct",
+    summary="下载任务封面图 (png, browser-native)",
+)
+def download_cover_direct(
+    task_id: UUID,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    user = _get_current_user_from_download_token(
+        db,
+        authorization=authorization,
+        token=token,
+    )
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    cover_path = _task_cover_path(task)
+    if cover_path is None:
+        raise HTTPException(status_code=404, detail=f"cover of task {task_id} not found")
+    return FileResponse(
+        cover_path,
+        media_type="image/png",
+        filename=_safe_download_name(task, "png"),
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@router.get(
     "/{task_id}/images/{filename}",
     summary="返回漫画系列章节配图",
 )
@@ -2193,20 +2225,7 @@ def download_batch_direct(
     return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 
-@router.get(
-    "/{task_id}/download",
-    summary="下载最终稿 (md/docx)",
-)
-def download_markdown(
-    task_id: UUID,
-    fmt: str = Query("md", pattern="^(md|docx|txt)$"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> Response:
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-
+def _build_single_download_response(db: Session, task: Task, fmt: str) -> Response:
     md = _read_task_markdown(db, task)
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
@@ -2232,9 +2251,49 @@ def download_markdown(
             "Content-Disposition": (
                 f'attachment; filename="{encoded_filename}"; '
                 f"filename*=UTF-8''{encoded_filename}"
-            )
+            ),
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
         },
     )
+
+
+@router.get(
+    "/{task_id}/download",
+    summary="下载最终稿 (md/docx)",
+)
+def download_markdown(
+    task_id: UUID,
+    fmt: str = Query("md", pattern="^(md|docx|txt)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_single_download_response(db, task, fmt)
+
+
+@router.get(
+    "/{task_id}/download/direct",
+    summary="下载最终稿 (md/docx, browser-native)",
+)
+def download_markdown_direct(
+    task_id: UUID,
+    fmt: str = Query("md", pattern="^(md|docx|txt)$"),
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> Response:
+    user = _get_current_user_from_download_token(
+        db,
+        authorization=authorization,
+        token=token,
+    )
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_single_download_response(db, task, fmt)
 
 
 @router.get(
