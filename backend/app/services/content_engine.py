@@ -2799,45 +2799,64 @@ async def _generate_healing_comic_book(
         raise ValueError("漫画需要 output_dir 以保存每张配图")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
-    _dump_stage(output_dir, "00_healing_comic_research.md", research_context)
-    if on_stage:
-        on_stage("comic_structure_done", {"chars": len(research_context), "research_done": True})
+    cached_final = _read_stage_file(output_dir, "04_format.md")
+    if cached_final:
+        if on_stage:
+            on_stage("format_done", {"chars": len(cached_final), "reused_stage": True})
+        return cached_final
 
-    writer_prompt = build_healing_comic_writer_prompt(
-        comic_title,
-        research_context,
-        panel_count=panel_count,
-        character_prompt=character_prompt,
-    )
-    _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
-    try:
-        writer_output = await _route_writer_call(
-            writer_prompt,
-            reasoning_effort="medium",
-            verbosity="low",
-            max_output_tokens=0,
+    research_context = _read_stage_file(output_dir, "00_healing_comic_research.md")
+    if not research_context:
+        research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
+        _dump_stage(output_dir, "00_healing_comic_research.md", research_context)
+
+    cached_script = _read_healing_comic_script_stage(output_dir)
+    if cached_script is not None:
+        title, intro, panels, series_meta = cached_script
+        if on_stage:
+            on_stage("comic_structure_done", {"chars": len(research_context), "reused_stage": True})
+    else:
+        if on_stage:
+            on_stage("comic_structure_done", {"chars": len(research_context), "research_done": True})
+        writer_prompt = build_healing_comic_writer_prompt(
+            comic_title,
+            research_context,
+            panel_count=panel_count,
+            character_prompt=character_prompt,
         )
-    except Exception as exc:
-        logger.warning("ChatGPT healing comic writer fallback: %s", exc)
-        writer_output = ""
-    _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
-    title, intro, panels, series_meta = parse_healing_comic_writer_output(
-        writer_output,
-        comic_title,
-        panel_count=panel_count,
-    )
-    script_json = json.dumps(
-        {"title": title, "intro": intro, "series_meta": series_meta, "panels": panels},
-        ensure_ascii=False,
-        indent=2,
-    )
-    _dump_stage(output_dir, "02_healing_comic_script.json", script_json)
-    character_bible = build_healing_comic_character_bible(character_prompt, series_meta)
-    _dump_stage(output_dir, "02_healing_comic_character_bible.md", character_bible)
+        _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
+        try:
+            writer_output = await _route_writer_call(
+                writer_prompt,
+                reasoning_effort="medium",
+                verbosity="low",
+                max_output_tokens=0,
+            )
+        except Exception as exc:
+            logger.warning("ChatGPT healing comic writer fallback: %s", exc)
+            writer_output = ""
+        _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
+        title, intro, panels, series_meta = parse_healing_comic_writer_output(
+            writer_output,
+            comic_title,
+            panel_count=panel_count,
+        )
+        script_json = json.dumps(
+            {"title": title, "intro": intro, "series_meta": series_meta, "panels": panels},
+            ensure_ascii=False,
+            indent=2,
+        )
+        _dump_stage(output_dir, "02_healing_comic_script.json", script_json)
 
-    refined_markdown = assemble_healing_comic_markdown(title, intro, panels)
-    _dump_stage(output_dir, "03_refine.md", refined_markdown)
+    character_bible = _read_stage_file(output_dir, "02_healing_comic_character_bible.md")
+    if not character_bible:
+        character_bible = build_healing_comic_character_bible(character_prompt, series_meta)
+        _dump_stage(output_dir, "02_healing_comic_character_bible.md", character_bible)
+
+    refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+    if not refined_markdown:
+        refined_markdown = assemble_healing_comic_markdown(title, intro, panels)
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
     if on_stage:
         total_images = 1 + sum(len(panel.get("images") or []) for panel in panels)
         on_stage("comic_images_start", {"total": total_images})
@@ -2865,6 +2884,39 @@ async def _generate_healing_comic_book(
     if on_stage:
         on_stage("format_done", {"chars": len(final_markdown), "skipped_deepseek": True})
     return final_markdown
+
+
+def _read_healing_comic_script_stage(output_dir: Path | None) -> tuple[
+    str,
+    str,
+    list[dict[str, object]],
+    dict[str, str],
+] | None:
+    raw = _read_stage_file(output_dir, "02_healing_comic_script.json")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("读取漫画脚本缓存失败: %s", exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    panels = payload.get("panels")
+    if not isinstance(panels, list) or not panels:
+        return None
+    normalized_panels = [panel for panel in panels if isinstance(panel, dict)]
+    if not normalized_panels:
+        return None
+    series_meta = payload.get("series_meta")
+    if not isinstance(series_meta, dict):
+        series_meta = {}
+    return (
+        str(payload.get("title") or "治愈漫画").strip() or "治愈漫画",
+        str(payload.get("intro") or "一本原创日常情绪短漫画。").strip(),
+        normalized_panels,
+        {str(key): str(value) for key, value in series_meta.items()},
+    )
 
 
 def _read_stage_file(output_dir: Path | None, filename: str) -> str | None:

@@ -365,6 +365,75 @@ def test_healing_comic_category_accepts_custom_panel_count(
     assert not (output_dir / "comic_images" / "comic_section_13_01.png").exists()
 
 
+def test_healing_comic_resume_reuses_cached_script_refine_and_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_comic_resume"
+    image_dir = output_dir / "comic_images"
+    image_dir.mkdir(parents=True)
+    panels = [
+        {
+            "title": "早班窗光",
+            "images": _healing_story_images(1, 6),
+            "phrases": ["早上有点皱", "你在光里", "慢慢就亮了"],
+        }
+    ]
+    script = {
+        "title": "看你一眼就会笑",
+        "intro": "一本温暖的原创日常漫画。",
+        "series_meta": {"series_style": "白底留白，轻水彩颗粒。"},
+        "panels": panels,
+    }
+    (output_dir / "00_healing_comic_research.md").write_text("cached research", encoding="utf-8")
+    (output_dir / "02_healing_comic_script.json").write_text(
+        json.dumps(script, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "02_healing_comic_character_bible.md").write_text("cached character", encoding="utf-8")
+    (output_dir / "03_refine.md").write_text(
+        "\n".join(
+            [
+                "@最终书名",
+                "看你一眼就会笑",
+                "@最终简介",
+                "一本温暖的原创日常漫画。",
+                "@目录",
+                "1. 早班窗光",
+                "@正文",
+                "@1. 早班窗光",
+                *[f"{{{{COMIC_IMAGE_1_{idx}}}}}" for idx in range(1, 7)],
+                "早上有点皱",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for filename in ["comic_cover.png", *[f"comic_section_01_{idx:02d}.png" for idx in range(1, 7)]]:
+        (image_dir / filename).write_bytes(PNG_1X1)
+
+    async def fail_writer(*_: object, **__: object) -> str:
+        raise AssertionError("cached healing comic retry must not call OpenAI writer")
+
+    def fail_image(*_: object, **__: object) -> Path:
+        raise AssertionError("cached healing comic retry must not call image API for existing images")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_writer)
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fail_image)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "书名：看你一眼就会笑",
+            category="healing_comic",
+            output_dir=output_dir,
+            healing_comic_panel_count=1,
+        )
+    )
+
+    assert "![配图](comic_images/comic_section_01_01.png)" in result
+    assert "{{COMIC_IMAGE_" not in result
+    assert (output_dir / "04_format.md").read_text(encoding="utf-8") == result
+
+
 def test_healing_comic_image_count_is_model_driven_with_bounds() -> None:
     minimum_panel = {
         "title": "早班窗光",
