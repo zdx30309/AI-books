@@ -14,7 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 
-from app.api.routers.tasks import _DOCX_EMU_PER_PIXEL, _markdown_to_docx, _task_cover_path
+from app.api.routers.tasks import (
+    _DOCX_EMU_PER_PIXEL,
+    _markdown_to_docx,
+    _task_comic_image_preview_path,
+    _task_cover_path,
+)
 from app.models import Task
 from app.services import comic_series, content_engine, cover
 
@@ -591,6 +596,31 @@ def test_docx_export_keeps_comic_image_native_pixel_extent(tmp_path: Path) -> No
         assert f'<wp:extent cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
         assert f'<a:ext cx="{expected_cx}" cy="{expected_cy}"/>' in document_xml
         assert docx.read("word/media/image1.png") == original_bytes
+
+
+def test_comic_preview_uses_compressed_copy_without_touching_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+
+    task_id = uuid4()
+    monkeypatch.setattr("app.api.routers.tasks.PROJECT_ROOT", tmp_path)
+    image_dir = tmp_path / "backend" / "output" / f"task_{task_id}" / "comic_images"
+    image_dir.mkdir(parents=True)
+    original_path = image_dir / "comic_section_01_01.png"
+    Image.new("RGB", (2450, 3500), "white").save(original_path, format="PNG")
+
+    preview_path = _task_comic_image_preview_path(task_id, "comic_section_01_01.png")
+
+    assert preview_path is not None
+    assert preview_path.suffix == ".jpg"
+    assert preview_path.exists()
+    with Image.open(preview_path) as preview:
+        assert preview.size[0] <= 700
+        assert preview.size[1] <= 1000
+    with Image.open(original_path) as original:
+        assert original.size == (2450, 3500)
 
 
 def test_comic_cover_path_falls_back_to_generated_comic_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

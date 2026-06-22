@@ -472,6 +472,74 @@ def _task_comic_image_path(task_id: UUID, filename: str) -> Path | None:
     return path if path.exists() else None
 
 
+_COMIC_PREVIEW_MAX_SIZE = (700, 1000)
+_COMIC_PREVIEW_QUALITY = 82
+
+
+def _task_comic_image_preview_path(task_id: UUID, filename: str) -> Path | None:
+    original = _task_comic_image_path(task_id, filename)
+    if original is None:
+        return None
+    preview_dir = _task_output_dir(task_id) / "comic_previews"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = (preview_dir / f"{original.stem}.jpg").resolve()
+    if preview_path.exists() and preview_path.stat().st_mtime >= original.stat().st_mtime:
+        return preview_path
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(original) as image:
+            image = ImageOps.exif_transpose(image)
+            image.thumbnail(_COMIC_PREVIEW_MAX_SIZE, Image.Resampling.LANCZOS)
+            if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                canvas = Image.new("RGB", rgba.size, "white")
+                canvas.paste(rgba, mask=rgba.getchannel("A"))
+                preview = canvas
+            else:
+                preview = image.convert("RGB")
+            preview.save(
+                preview_path,
+                "JPEG",
+                quality=_COMIC_PREVIEW_QUALITY,
+                optimize=True,
+                progressive=True,
+            )
+    except Exception:
+        logger.exception("[task %s] 漫画预览图生成失败: %s", task_id, filename)
+        return None
+    return preview_path
+
+
+def _build_task_image_download_response(
+    task_id: UUID,
+    filename: str,
+    *,
+    preview: bool = False,
+) -> FileResponse:
+    if preview:
+        image_path = _task_comic_image_preview_path(task_id, filename)
+        if image_path is None:
+            raise HTTPException(status_code=404, detail=f"image preview {filename} of task {task_id} not found")
+        download_name = f"{Path(filename).stem}_preview.jpg"
+        media_type = "image/jpeg"
+    else:
+        image_path = _task_comic_image_path(task_id, filename)
+        if image_path is None:
+            raise HTTPException(status_code=404, detail=f"image {filename} of task {task_id} not found")
+        download_name = image_path.name
+        media_type = "image/png"
+    return FileResponse(
+        image_path,
+        media_type=media_type,
+        filename=download_name,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
+
+
 def _retry_resume_state(task_id: UUID) -> tuple[int, str]:
     output_dir = _task_output_dir(task_id)
     for filename, progress, step in _RETRY_STAGE_PROGRESS:
@@ -1940,6 +2008,117 @@ def download_cover_direct(
             "Pragma": "no-cache",
         },
     )
+
+
+@router.get(
+    "/{task_id}/images/{filename}/preview",
+    summary="返回漫画系列章节配图预览图",
+)
+def get_task_image_preview(
+    task_id: UUID,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    category = str((task.config or {}).get("category") or "")
+    if category != "healing_comic":
+        raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
+    image_path = _task_comic_image_preview_path(task_id, filename)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail=f"image preview {filename} of task {task_id} not found")
+    return FileResponse(
+        image_path,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Vary": "Authorization",
+        },
+    )
+
+
+@router.get(
+    "/{task_id}/images/{filename}/preview/download",
+    summary="下载漫画系列章节配图预览图",
+)
+def download_task_image_preview(
+    task_id: UUID,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    category = str((task.config or {}).get("category") or "")
+    if category != "healing_comic":
+        raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
+    return _build_task_image_download_response(task_id, filename, preview=True)
+
+
+@router.get(
+    "/{task_id}/images/{filename}/preview/download/direct",
+    summary="下载漫画系列章节配图预览图 (browser-native)",
+)
+def download_task_image_preview_direct(
+    task_id: UUID,
+    filename: str,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    user = _get_current_user_from_download_token(
+        db,
+        authorization=authorization,
+        token=token,
+    )
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    category = str((task.config or {}).get("category") or "")
+    if category != "healing_comic":
+        raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
+    return _build_task_image_download_response(task_id, filename, preview=True)
+
+
+@router.get(
+    "/{task_id}/images/{filename}/download",
+    summary="下载漫画系列章节配图原图",
+)
+def download_task_image(
+    task_id: UUID,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_task_image_download_response(task_id, filename, preview=False)
+
+
+@router.get(
+    "/{task_id}/images/{filename}/download/direct",
+    summary="下载漫画系列章节配图原图 (browser-native)",
+)
+def download_task_image_direct(
+    task_id: UUID,
+    filename: str,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    user = _get_current_user_from_download_token(
+        db,
+        authorization=authorization,
+        token=token,
+    )
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_task_image_download_response(task_id, filename, preview=False)
 
 
 @router.get(

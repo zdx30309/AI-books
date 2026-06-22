@@ -462,6 +462,24 @@ export const api = {
   getCoverBlob: (id: string) => fetchBlob(`/tasks/${id}/cover`),
   getTaskImageBlob: (id: string, filename: string) =>
     fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}`),
+  getTaskImagePreviewBlob: (id: string, filename: string) =>
+    fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}/preview`),
+  downloadTaskImageFile: async (id: string, filename: string) => {
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
+    const params = new URLSearchParams({ token, _: String(Date.now()) });
+    openHiddenDownload(
+      `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/download/direct?${params.toString()}`,
+    );
+  },
+  downloadTaskImagePreviewFile: async (id: string, filename: string) => {
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
+    const params = new URLSearchParams({ token, _: String(Date.now()) });
+    openHiddenDownload(
+      `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/preview/download/direct?${params.toString()}`,
+    );
+  },
   downloadCoverFile: async (id: string) => {
     const token = tokenStore.get();
     if (!token) throw new ApiError(401, "请先登录");

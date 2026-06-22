@@ -820,6 +820,7 @@ export function BookDetail() {
                 <ChapterCard
                   key={c.id}
                   taskId={task.id}
+                  taskCategory={task.category}
                   chapter={c}
                   editing={editing}
                   isDirty={dirty[c.id] === true}
@@ -906,19 +907,26 @@ function TaskInlineImage({
   taskId,
   filename,
   alt,
+  preview,
 }: {
   taskId: string;
   filename: string;
   alt: string;
+  preview: boolean;
 }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<"original" | "preview" | null>(null);
 
   useEffect(() => {
     let alive = true;
     let objectUrl: string | null = null;
     setSrc(null);
-    api
-      .getTaskImageBlob(taskId, filename)
+    const loadImage = preview
+      ? api
+          .getTaskImagePreviewBlob(taskId, filename)
+          .catch(() => api.getTaskImageBlob(taskId, filename))
+      : api.getTaskImageBlob(taskId, filename);
+    loadImage
       .then((blob) => {
         if (!alive) return;
         objectUrl = URL.createObjectURL(blob);
@@ -931,7 +939,7 @@ function TaskInlineImage({
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [taskId, filename]);
+  }, [taskId, filename, preview]);
 
   if (!src) {
     return (
@@ -941,8 +949,64 @@ function TaskInlineImage({
     );
   }
 
+  const downloadOriginal = async () => {
+    setDownloading("original");
+    try {
+      await api.downloadTaskImageFile(taskId, filename);
+    } catch (e) {
+      const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
+      alert(`下载原图失败：${msg}`);
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const downloadPreview = async () => {
+    setDownloading("preview");
+    try {
+      await api.downloadTaskImagePreviewFile(taskId, filename);
+    } catch (e) {
+      const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
+      alert(`下载预览版失败：${msg}`);
+    } finally {
+      setDownloading(null);
+    }
+  };
+
   return (
-    <figure className="overflow-hidden rounded-lg border border-gold-500/10 bg-base-700/30">
+    <figure className="group relative overflow-hidden rounded-lg border border-gold-500/10 bg-base-700/30">
+      {preview && (
+        <div className="absolute right-3 top-3 z-10 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            title="下载原图"
+            onClick={downloadOriginal}
+            disabled={downloading !== null}
+            className="inline-flex items-center gap-1 rounded-full border border-gold-400/30 bg-base-900/85 px-2.5 py-1 text-[11px] tracking-wide text-warm-100 shadow-sm backdrop-blur transition-colors hover:border-gold-300/70 disabled:opacity-60"
+          >
+            {downloading === "original" ? (
+              <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
+            ) : (
+              <Download className="h-3 w-3" strokeWidth={1.5} />
+            )}
+            原图
+          </button>
+          <button
+            type="button"
+            title="下载预览版"
+            onClick={downloadPreview}
+            disabled={downloading !== null}
+            className="inline-flex items-center gap-1 rounded-full border border-gold-400/30 bg-base-900/85 px-2.5 py-1 text-[11px] tracking-wide text-warm-100 shadow-sm backdrop-blur transition-colors hover:border-gold-300/70 disabled:opacity-60"
+          >
+            {downloading === "preview" ? (
+              <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
+            ) : (
+              <Download className="h-3 w-3" strokeWidth={1.5} />
+            )}
+            预览
+          </button>
+        </div>
+      )}
       <img src={src} alt={alt} className="w-full object-cover" />
     </figure>
   );
@@ -950,6 +1014,7 @@ function TaskInlineImage({
 
 interface ChapterCardProps {
   taskId: string;
+  taskCategory?: string | null;
   chapter: ChapterResponse;
   editing: boolean;
   isDirty: boolean;
@@ -963,6 +1028,7 @@ interface ChapterCardProps {
 
 function ChapterCard({
   taskId,
+  taskCategory,
   chapter,
   editing,
   isDirty,
@@ -974,6 +1040,7 @@ function ChapterCard({
   onSelect,
 }: ChapterCardProps) {
   const recentlySaved = savedAt && Date.now() - savedAt < 4000;
+  const useComicPreview = taskCategory === "healing_comic";
 
   return (
     <article className="card-warm p-8" id={`chapter-${chapter.chapter_num}`}>
@@ -1031,6 +1098,7 @@ function ChapterCard({
                   taskId={taskId}
                   filename={imageMatch[2]}
                   alt={imageMatch[1] || "章节配图"}
+                  preview={useComicPreview}
                 />
               );
             }
