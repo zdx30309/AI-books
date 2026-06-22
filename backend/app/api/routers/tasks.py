@@ -2231,27 +2231,30 @@ def _build_single_download_response(db: Session, task: Task, fmt: str) -> Respon
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
+    output_dir = _task_output_dir(task.id)
+    download_dir = output_dir / "downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
     if fmt == "docx" or fmt == "txt":
         content = _markdown_to_docx(
             md,
-            image_base_dir=_task_output_dir(task.id),
+            image_base_dir=output_dir,
             category=category,
         )
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(task, "docx")
+        file_path = download_dir / "final.docx"
+        file_path.write_bytes(content)
     else:
         content = normalize_final_markdown(md, category=category)
         media_type = "text/markdown; charset=utf-8"
         filename = _safe_download_name(task, "md")
-    encoded_filename = quote(filename)
-    return Response(
-        content=content,
+        file_path = download_dir / "final.md"
+        file_path.write_text(content, encoding="utf-8")
+    return FileResponse(
+        file_path,
         media_type=media_type,
+        filename=filename,
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="{encoded_filename}"; '
-                f"filename*=UTF-8''{encoded_filename}"
-            ),
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
         },

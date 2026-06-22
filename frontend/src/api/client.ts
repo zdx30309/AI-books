@@ -346,12 +346,14 @@ function saveBlob(blob: Blob, filename: string) {
 }
 
 function openHiddenDownload(url: string) {
-  const iframe = document.createElement("iframe");
-  iframe.src = url;
-  iframe.style.display = "none";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
-  window.setTimeout(() => iframe.remove(), 60_000);
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  window.setTimeout(() => a.remove(), 300_000);
 }
 
 export const api = {
