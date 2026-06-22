@@ -95,7 +95,7 @@ HEALING_COMIC_PANEL_COUNT = HEALING_COMIC_DEFAULT_PANEL_COUNT
 HEALING_COMIC_MIN_PANEL_COUNT = 1
 HEALING_COMIC_MAX_PANEL_COUNT: int | None = None
 HEALING_COMIC_MIN_IMAGES_PER_CHAPTER = 2
-HEALING_COMIC_MAX_IMAGES_PER_CHAPTER = 5
+HEALING_COMIC_MAX_IMAGES_PER_CHAPTER: int | None = None
 REFERENCE_ASSET_DIR = Path(__file__).with_name("reference_assets") / "healing_comic"
 HEALING_COMIC_REFERENCE_EPUB = REFERENCE_ASSET_DIR / "kan_ni_yi_yan_jiu_hui_xiao.epub"
 HEALING_COMIC_REFERENCE_COVERS_ZIP = REFERENCE_ASSET_DIR / "reference_covers.zip"
@@ -388,7 +388,7 @@ def _healing_image_count_for_chapter(panel: dict[str, object]) -> int:
     except (TypeError, ValueError):
         raw_images = panel.get("images") or panel.get("pictures") or panel.get("image_sequence")
         count = len(raw_images) if isinstance(raw_images, list) else HEALING_COMIC_MIN_IMAGES_PER_CHAPTER
-    return max(HEALING_COMIC_MIN_IMAGES_PER_CHAPTER, min(HEALING_COMIC_MAX_IMAGES_PER_CHAPTER, count))
+    return max(HEALING_COMIC_MIN_IMAGES_PER_CHAPTER, count)
 
 
 def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> list[dict[str, object]]:
@@ -398,7 +398,7 @@ def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> l
     raw_images = panel.get("images") or panel.get("pictures") or panel.get("image_sequence")
     images: list[dict[str, object]] = []
     if isinstance(raw_images, list):
-        for sub_index, item in enumerate(raw_images[:HEALING_COMIC_MAX_IMAGES_PER_CHAPTER], start=1):
+        for sub_index, item in enumerate(raw_images, start=1):
             if not isinstance(item, dict):
                 continue
             image_text = _short_text_lines(
@@ -430,7 +430,7 @@ def _normalize_healing_chapter_images(panel: dict[str, object], index: int) -> l
                 "narrative": f"本章第{sub_index}张图推进“{title}”的{role}，让情绪从日常动作里自然落下。",
             }
         )
-    return images[:HEALING_COMIC_MAX_IMAGES_PER_CHAPTER]
+    return images
 
 
 def build_healing_comic_character_bible(
@@ -483,7 +483,7 @@ def build_healing_comic_writer_prompt(
 - 每条必须给出 image_text：这是要直接写在配图上的中文短语，1 到 3 行，每行 4 到 12 个中文字符，短、轻、好读。
 - 每条必须给出 phrases：章节正文使用的几句短语，必须与 image_text 一致或高度一致；正文只是短语，不要写故事长文。
 - 每条必须给出 visual：画面设计必须先服务 image_text，让图片和短语天然绑定。
-- 每条必须给出 images：这是该章节完整叙事需要生成的所有图片，绝对不能只给 1 张；每章至少 2 张，可以根据章节叙事需要给 2 到 5 张。
+- 每条必须给出 images：这是该章节完整叙事需要生成的所有图片，绝对不能只给 1 张；每章至少 2 张，具体数量由该章节叙事是否铺平决定，不设人为上限。
 - images 里的每一张都必须有 scene_role、image_text、visual、narrative；它们要铺平本章叙事的开场、转折和收束，不能只是同一画面换说法。
 - 每个章节的所有 images 都必须继续使用同一个主角形象，并在 visual 中写清楚主角正在做什么、场景如何变化、情绪如何推进。
 - 全书所有章节和所有图片必须属于同一本书：统一主色、线条、颗粒感、留白、光影、主角形象、角色气质和出版感。
