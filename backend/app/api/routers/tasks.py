@@ -82,7 +82,7 @@ from app.services.video_sources import (
 )
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
-from app.utils.docx_text import DocxTextError, extract_docx_text
+from app.utils.docx_text import DocxTextError, extract_classical_docx_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
@@ -991,7 +991,7 @@ async def create_classical_chinese_from_docx(
         raise HTTPException(status_code=400, detail="请上传 .docx 格式的 Word 文件")
     content = await file.read()
     try:
-        raw_text = extract_docx_text(content)
+        raw_text = extract_classical_docx_text(content)
     except DocxTextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     cfg = _normalize_task_config(
@@ -1577,12 +1577,34 @@ def _unique_zip_name(filename: str, used: set[str]) -> str:
         idx += 1
 
 
-def _docx_text_paragraph(line: str) -> str:
-    text = escape(line, {'"': "&quot;"})
+def _docx_text_runs(line: str, *, allow_markdown_bold: bool = False) -> str:
+    if not allow_markdown_bold or "**" not in line:
+        text = escape(line, {'"': "&quot;"})
+        return f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r>"
+    runs: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"\*\*([^*\n]+)\*\*", line):
+        if match.start() > cursor:
+            text = escape(line[cursor : match.start()], {'"': "&quot;"})
+            runs.append(f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r>")
+        bold_text = escape(match.group(1), {'"': "&quot;"})
+        runs.append(
+            "<w:r><w:rPr><w:b/></w:rPr>"
+            f"<w:t xml:space=\"preserve\">{bold_text}</w:t></w:r>"
+        )
+        cursor = match.end()
+    if cursor < len(line):
+        text = escape(line[cursor:], {'"': "&quot;"})
+        runs.append(f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r>")
+    return "".join(runs) or "<w:r><w:t></w:t></w:r>"
+
+
+def _docx_text_paragraph(line: str, *, allow_markdown_bold: bool = False) -> str:
+    runs = _docx_text_runs(line, allow_markdown_bold=allow_markdown_bold)
     return (
         "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" "
         "w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
-        f"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>"
+        f"{runs}</w:p>"
     )
 
 
@@ -1722,7 +1744,12 @@ def _markdown_to_docx(
                 )
             )
             continue
-        paragraphs.append(_docx_text_paragraph(line))
+        paragraphs.append(
+            _docx_text_paragraph(
+                line,
+                allow_markdown_bold=normalized_category == "classical_chinese",
+            )
+        )
 
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'

@@ -1268,6 +1268,10 @@ CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT = """请把下面的古文白话加�
 - 必须保持原稿段落边界和段落顺序；不要为了阅读节奏重新分段。
 - 原文中的人物、地名、官职、典故、制度名、动作、对白、因果和转折必须保留。
 - 如果某段已经自然，原样返回即可，不要为了显得改过而乱改。
+- 正文段首的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序。
+- **作者名** 这类整段加粗的作者或署名行必须保留加粗标记；其他段落不要新增加粗。
+- 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节；不得出现 ### 这类标题符号。
+- 如果原稿已有导言、引语、题记、按语等本身就是白话的段落，只允许微调标点和明显不顺处，不得重新改写。
 
 【语言要求】
 - 语言更白话、更顺口，但不要低俗化，不要现代网梗化。
@@ -1282,6 +1286,9 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 - 输出字数必须与原文字数基本一致，允许 ±10% 浮动；严禁大幅删减。
 - 不得以“前文已涉及”为由删除任何剧情、对白、动作、典故、人物关系、独立段落或独立章节。
 - 章节数量、章节标题、段落层次必须保留；古文白话正文按原文段落一一对应，不允许强制分段、合并段落、拆分段落或重排段落。
+- 正文段首的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序。
+- **作者名** 这类整段加粗的作者或署名行必须保留加粗标记；其他段落不要新增加粗。
+- 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节；不得出现 ### 这类标题符号。
 
 【需要完成的工作】
 1. 只处理明显不顺、翻译腔、生硬书面语和重复赘句。
@@ -1292,6 +1299,21 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 【输出要求】
 - 直接输出微调后的全文。
 """
+
+
+CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT = """【古文白话专属保护】
+- @正文 中的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序；这些编号由系统最终清理，不属于你要处理的格式。
+- **作者名** 这类整段加粗的作者或署名行必须保留加粗标记，不得删除星号，不得改成普通正文。
+- 不得新增没有 P 编号的小标题、Markdown 标题、资料型说明或解释性小节；输入里如果出现没有 P 编号的 ### 伪标题，只删除标题符号和伪标题行，不得影响后续正文段落。
+- 原文已经是白话的导言、引语、题记、按语，只允许保留或做中文标点整理，不得重新改写。
+- 正文标点统一使用中文全角标点和中文引号，不得残留英文逗号、句号、问号、叹号、冒号、分号和英文引号。
+"""
+
+CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.replace(
+    "\n【文本】",
+    f"\n\n{CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT}\n【文本】",
+    1,
+)
 
 
 BIOGRAPHY_FULL_BOOK_WRITER_PROMPT = """你是一名人物传记类非虚构作家，擅长把真实人物写成有悬念、有转折、有时代纹理的故事。写作要材料扎实、叙事好看、人物复杂，不写成生平年表、百科介绍或励志鸡汤。
@@ -1717,6 +1739,7 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT,
         polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
         refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
     ),
     "comic_series": _prompt_set(
         COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,

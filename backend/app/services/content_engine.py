@@ -23,7 +23,13 @@ from app.prompts.goal_driven_templates import (
     get_prompts,
     normalize_category,
 )
-from app.services.classical_chinese import build_classical_prompt_source, classical_final_title
+from app.services.classical_chinese import (
+    CLASSICAL_PARAGRAPH_MARKER_RE,
+    build_classical_prompt_source,
+    classical_expected_paragraph_count,
+    classical_final_title,
+    strip_classical_paragraph_markers,
+)
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
@@ -668,6 +674,8 @@ _CLASSICAL_CHAPTER_HEADING_RE = re.compile(r"^(@?\s*\d+[.．、]\s*)(.+?)\s*$")
 _CLASSICAL_PUNCT_ONLY_RE = re.compile(
     r"^[\s,，.。:：;；?？!！\"“”'‘’`·、（）()【】\[\]《》<>]+$"
 )
+_CLASSICAL_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
+_CLASSICAL_ANY_MARKER_RE = re.compile(r"【P\d{4}】")
 
 
 def _convert_ascii_quotes_to_chinese(text: str) -> str:
@@ -690,6 +698,10 @@ def _clean_classical_body_text(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
+    cleaned = strip_classical_paragraph_markers(cleaned)
+    heading = _CLASSICAL_MARKDOWN_HEADING_RE.match(cleaned)
+    if heading:
+        cleaned = heading.group(1).strip()
     cleaned = cleaned.replace("...", "……").replace("..", "……")
     cleaned = cleaned.translate(_CLASSICAL_BODY_PUNCT_TRANSLATION)
     cleaned = _convert_ascii_quotes_to_chinese(cleaned)
@@ -702,6 +714,8 @@ def _clean_classical_body_text(text: str) -> str:
 def _clean_classical_body_line(raw_line: str) -> str:
     stripped = (raw_line or "").strip()
     if not stripped:
+        return ""
+    if _CLASSICAL_MARKDOWN_HEADING_RE.match(stripped) and not _CLASSICAL_ANY_MARKER_RE.search(stripped):
         return ""
     chapter = _CLASSICAL_CHAPTER_HEADING_RE.match(stripped)
     if chapter:
@@ -744,6 +758,120 @@ def _classical_format_fallback_text(source: str, partial: str | None = None) -> 
         return partial_text
     logger.warning("古文白话终稿格式层疑似触达长度上限，改用 Gemini 二润完整稿进入确定性终稿清洗，避免后半截丢失")
     return source
+
+
+def _classical_body_for_validation(markdown: str) -> str:
+    match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", markdown or "")
+    return (markdown or "")[match.end() :] if match else (markdown or "")
+
+
+def _classical_structure_issues(markdown: str, *, expected_count: int) -> list[str]:
+    if expected_count < 2:
+        return []
+    body = _classical_body_for_validation(markdown)
+    markers = [int(item) for item in CLASSICAL_PARAGRAPH_MARKER_RE.findall(body)]
+    issues: list[str] = []
+    if not markers:
+        return [f"正文没有保留任何 P 段落编号，预期 P0001-P{expected_count:04d}"]
+    expected = set(range(1, expected_count + 1))
+    seen = set(markers)
+    missing = sorted(expected - seen)
+    extra = sorted(seen - expected)
+    duplicate = sorted({marker for marker in markers if markers.count(marker) > 1})
+    if missing:
+        sample = ", ".join(f"P{item:04d}" for item in missing[:12])
+        suffix = "..." if len(missing) > 12 else ""
+        issues.append(f"缺少原文段落编号：{sample}{suffix}")
+    if extra:
+        sample = ", ".join(f"P{item:04d}" for item in extra[:12])
+        suffix = "..." if len(extra) > 12 else ""
+        issues.append(f"出现超出原文范围的段落编号：{sample}{suffix}")
+    if duplicate:
+        sample = ", ".join(f"P{item:04d}" for item in duplicate[:12])
+        suffix = "..." if len(duplicate) > 12 else ""
+        issues.append(f"出现重复段落编号：{sample}{suffix}")
+    ordered = [marker for marker in markers if 1 <= marker <= expected_count]
+    if ordered != sorted(ordered):
+        issues.append("P 段落编号顺序被打乱")
+    pseudo_headings = [
+        line.strip()
+        for line in body.splitlines()
+        if _CLASSICAL_MARKDOWN_HEADING_RE.match(line.strip())
+        and not _CLASSICAL_ANY_MARKER_RE.search(line)
+    ]
+    if pseudo_headings:
+        sample = "；".join(pseudo_headings[:5])
+        issues.append(f"出现没有原文编号的 Markdown 伪小标题：{sample}")
+    return issues
+
+
+def _classical_translation_issues(source_text: str, markdown: str) -> list[str]:
+    source = source_text or ""
+    body = _classical_body_for_validation(markdown)
+    issues: list[str] = []
+    if "双卫" in source and re.search(r"(侍卫|保镖|护卫)", body):
+        issues.append("原文含“双卫”，正文疑似误译为侍卫、保镖或护卫")
+    if "婢子不宜好相识" in source and re.search(r"结交.{0,8}好相识|好相识", body):
+        issues.append("原文含“婢子不宜好相识”，正文疑似保留了错误的现代化理解")
+    return issues
+
+
+def _classical_quality_issues(
+    markdown: str,
+    *,
+    expected_count: int,
+    source_text: str,
+) -> list[str]:
+    return _classical_structure_issues(markdown, expected_count=expected_count) + _classical_translation_issues(
+        source_text,
+        markdown,
+    )
+
+
+async def _repair_classical_quality_once(
+    markdown: str,
+    *,
+    marked_source_text: str,
+    source_text: str,
+    expected_count: int,
+    stage: str,
+    output_dir: Path | None,
+) -> str:
+    issues = _classical_quality_issues(markdown, expected_count=expected_count, source_text=source_text)
+    if not issues:
+        return markdown
+    issue_text = "\n".join(f"- {issue}" for issue in issues)
+    logger.warning("古文白话%s阶段触发结构/误译修复: %s", stage, "; ".join(issues))
+    _dump_stage(output_dir, f"classical_{stage}_quality_issues.txt", issue_text)
+    repair_prompt = f"""你是古文白话稿件的结构校对编辑。下面的稿件已经生成，但存在段落编号、漏译、伪小标题或古今异义误译问题。请只修复这些问题，其他内容保持不变。
+
+【必须修复的问题】
+{issue_text}
+
+【修复硬规则】
+- @正文 中必须按原文编号 P0001 到 P{expected_count:04d} 连续输出，每个对应段落段首保留原来的【P0001】这类编号。
+- 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节。
+- 辑名、篇名、作者行、导言、引语、题记、按语、正文段落都要保留，不得漏句、漏半句或跳译。
+- 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
+- “双卫”在本语境下不得译成侍卫、保镖或护卫；“婢子不宜好相识”不得译成“结交什么好相识”。
+- 不要重写整篇，不要压缩，不要总结，不要输出解释，直接输出修复后的完整书稿。
+
+【带编号原文】
+{marked_source_text.strip()}
+
+【待修复稿件】
+{markdown.strip()}
+"""
+    repaired = await _route_writer_call(
+        repair_prompt,
+        max_output_tokens=0,
+        retry_on_failure=False,
+    )
+    _dump_stage(output_dir, f"classical_{stage}_quality_repaired.md", repaired)
+    remaining = _classical_quality_issues(repaired, expected_count=expected_count, source_text=source_text)
+    if remaining:
+        raise RuntimeError(f"古文白话{stage}阶段结构保护失败: {'；'.join(remaining)}")
+    return repaired
 
 
 _LIFE_PHILOSOPHY_CENTERED_SECTIONS = {"三个备选书名", "三个备选简介", "目录", "导言", "正文"}
@@ -794,6 +922,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
     if normalized == "classical_chinese":
+        front_lines = [strip_classical_paragraph_markers(line) for line in front_lines]
         body_lines = _clean_classical_body_lines(body)
         result = "\n".join(front_lines + body_lines).strip()
         return result + ("\n" if result else "")
@@ -3066,12 +3195,17 @@ async def generate_full_book(
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
     writer_input_text = raw_text.strip()
+    classical_source_text = writer_input_text
+    classical_marked_source_text = ""
+    classical_expected_count = 0
     if normalized_category == "classical_chinese":
+        classical_expected_count = classical_expected_paragraph_count(writer_input_text)
         writer_input_text = build_classical_prompt_source(
             writer_input_text,
             variant=classical_variant,
             original_title=classical_original_title,
         )
+        classical_marked_source_text = writer_input_text
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -3178,6 +3312,17 @@ async def generate_full_book(
             _log_stage("1b/4 writer-repaired", generated_markdown)
             _dump_stage(output_dir, "01b_writer_repaired.md", generated_markdown)
 
+    if normalized_category == "classical_chinese":
+        generated_markdown = await _repair_classical_quality_once(
+            generated_markdown,
+            marked_source_text=classical_marked_source_text,
+            source_text=classical_source_text,
+            expected_count=classical_expected_count,
+            stage="writer",
+            output_dir=output_dir,
+        )
+        _dump_stage(output_dir, "01_writer.md", generated_markdown)
+
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
@@ -3210,6 +3355,17 @@ async def generate_full_book(
         polish_chars = len(polished_markdown)
         if on_stage:
             on_stage("polish_done", {"chars": polish_chars})
+    if normalized_category == "classical_chinese":
+        polished_markdown = await _repair_classical_quality_once(
+            polished_markdown,
+            marked_source_text=classical_marked_source_text,
+            source_text=classical_source_text,
+            expected_count=classical_expected_count,
+            stage="polish",
+            output_dir=output_dir,
+        )
+        _dump_stage(output_dir, "02_polish.md", polished_markdown)
+        polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = _read_stage("03_refine.md")
@@ -3264,6 +3420,17 @@ async def generate_full_book(
         refine_chars = len(refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
+    if normalized_category == "classical_chinese":
+        refined_markdown = await _repair_classical_quality_once(
+            refined_markdown,
+            marked_source_text=classical_marked_source_text,
+            source_text=classical_source_text,
+            expected_count=classical_expected_count,
+            stage="refine",
+            output_dir=output_dir,
+        )
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+        refine_chars = len(refined_markdown)
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")
@@ -3309,6 +3476,34 @@ async def generate_full_book(
         _dump_stage(output_dir, "04_format.md", final_markdown)
         if on_stage:
             on_stage("format_done", {"chars": len(final_markdown)})
+
+    if normalized_category == "classical_chinese":
+        final_issues = _classical_quality_issues(
+            final_markdown,
+            expected_count=classical_expected_count,
+            source_text=classical_source_text,
+        )
+        if final_issues:
+            refined_issues = _classical_quality_issues(
+                refined_markdown,
+                expected_count=classical_expected_count,
+                source_text=classical_source_text,
+            )
+            if not refined_issues:
+                logger.warning(
+                    "古文白话 DeepSeek 格式层丢失结构保护，回退到 Gemini 二润完整稿: %s",
+                    "; ".join(final_issues),
+                )
+                final_markdown = refined_markdown
+            else:
+                final_markdown = await _repair_classical_quality_once(
+                    final_markdown,
+                    marked_source_text=classical_marked_source_text,
+                    source_text=classical_source_text,
+                    expected_count=classical_expected_count,
+                    stage="format",
+                    output_dir=output_dir,
+                )
 
     if _front_matter_missing(final_markdown):
         logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")

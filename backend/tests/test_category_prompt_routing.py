@@ -842,6 +842,12 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     assert "不要为了阅读节奏强制分段" in rendered
     assert "不要输出只有空格或单独标点的空段" in rendered
     assert "正文标点必须使用中文全角标点" in rendered
+    assert "【P0001】" in rendered
+    assert "原文结构清单" in rendered
+    assert "不得删除、改写、跳号、重号或调换顺序" in rendered
+    assert "婢子不宜好相识" in rendered
+    assert "双卫" in rendered
+    assert "不得译成侍卫、保镖或护卫" in rendered
     assert "形似神似，活灵活现" in rendered
     assert "不要脑补剧情，不要跳剧情，不要自己加开头和结尾" in rendered
     assert "志怪小说爽读版" in rendered
@@ -873,9 +879,9 @@ def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lin
 测试导言。
 @正文
 @1. 全文
-第一段白话。
+【P0001】第一段白话。
 
-第二段白话。
+【P0002】第二段白话。
 """
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
@@ -899,6 +905,8 @@ def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lin
     assert writer_prompts == [expected_prompt]
     assert "@最终书名\n十叶野闻（白话版）" in result
     assert "第一段白话。\n第二段白话。" in result
+    assert "【P0001】" not in result
+    assert "【P0002】" not in result
     assert "第一段白话。\n\n第二段白话。" not in result
 
 
@@ -983,6 +991,22 @@ def test_classical_chinese_deepseek_max_tokens_fallback_preserves_tail(
     )
 
     assert tail in result
+
+
+def test_classical_chinese_detects_structure_and_known_translation_issues() -> None:
+    missing = content_engine._classical_structure_issues(  # noqa: SLF001
+        "@正文\n【P0001】第一段。\n###帝后遗容如生\n第三段。",
+        expected_count=3,
+    )
+    mistranslation = content_engine._classical_translation_issues(  # noqa: SLF001
+        "家人捉双卫来寻生。\n婢子不宜好相识。",
+        "@正文\n【P0001】家里的仆人带着两个侍卫来找他。\n【P0002】这丫头，确实不该结交什么好相识。",
+    )
+
+    assert any("缺少原文段落编号" in issue for issue in missing)
+    assert any("Markdown 伪小标题" in issue for issue in missing)
+    assert any("双卫" in issue for issue in mistranslation)
+    assert any("婢子不宜好相识" in issue for issue in mistranslation)
 
 
 def test_web_short_story_style_reference_keeps_history_prompt_sync(

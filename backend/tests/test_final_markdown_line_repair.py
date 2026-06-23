@@ -156,10 +156,11 @@ def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation()
 人间有鬼（白话版）
 @正文
 @1. 全文
-宋定伯 随口 胡诌: "我是刚死的鬼, 所以身子还沉. "
+【P0001】宋定伯 随口 胡诌: "我是刚死的鬼, 所以身子还沉. "
 
- 。
-鬼又问: "你打算去哪儿? "
+  。
+###帝后遗容如生
+【P0002】鬼又问: "你打算去哪儿? "
 """
 
     result = normalize_final_markdown(markdown, category="classical_chinese")
@@ -170,6 +171,9 @@ def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation()
     assert "\n。\n" not in body
     assert "宋定伯随口胡诌：“我是刚死的鬼，所以身子还沉。”" in result
     assert "鬼又问：“你打算去哪儿？”" in result
+    assert "帝后遗容如生" not in result
+    assert "【P0001】" not in result
+    assert "【P0002】" not in result
     assert " " not in prose
     for punct in [",", ".", ":", ";", "?", "!", '"']:
         assert punct not in prose

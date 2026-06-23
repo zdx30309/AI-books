@@ -21,6 +21,11 @@ def _docx_text(content: bytes) -> str:
     return "\n".join(unescape(part) for part in parts)
 
 
+def _docx_document_xml(content: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(content)) as docx:
+        return docx.read("word/document.xml").decode("utf-8")
+
+
 def test_classical_docx_download_removes_intro_and_number_prefixes() -> None:
     markdown = """@最终书名
 盐铁论白话
@@ -51,6 +56,23 @@ def test_classical_docx_download_removes_intro_and_number_prefixes() -> None:
     assert "群臣之辩" in text
     assert "这里是第一章正文" in text
     assert "这里是第二章正文" in text
+
+
+def test_classical_docx_download_renders_bold_author_line() -> None:
+    markdown = """@最终书名
+聊斋志异（白话版）
+@正文
+@1. 全文
+**蒲松龄**
+这里是正文。
+"""
+
+    xml = _docx_document_xml(_markdown_to_docx(markdown, category="classical_chinese"))
+    text = _docx_text(_markdown_to_docx(markdown, category="classical_chinese"))
+
+    assert "**" not in text
+    assert "蒲松龄" in text
+    assert "<w:b/>" in xml
 
 
 def test_non_classical_docx_download_keeps_intro_and_number_prefixes() -> None:

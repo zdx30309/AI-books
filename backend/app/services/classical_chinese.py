@@ -89,6 +89,7 @@ _VARIANT_RULES: dict[str, str] = {
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _PUA_MARKER_RE = re.compile(r"\{\[[0-9a-fA-F]+\]\}")
 _LINK_MARK_RE = re.compile(r"[`~]")
+CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4})】\s*")
 _TITLE_SUFFIX = "（白话版）"
 
 
@@ -244,6 +245,56 @@ def build_classical_dictionary_context(raw_text: str) -> str:
     return "\n".join(lines)
 
 
+def _classical_source_lines(raw_text: str) -> list[str]:
+    return [line.strip() for line in (raw_text or "").splitlines() if line.strip()]
+
+
+def classical_expected_paragraph_count(raw_text: str) -> int:
+    return len(_classical_source_lines(raw_text))
+
+
+def classical_paragraph_marker(index: int) -> str:
+    return f"【P{index:04d}】"
+
+
+def strip_classical_paragraph_markers(text: str) -> str:
+    return CLASSICAL_PARAGRAPH_MARKER_RE.sub("", text or "")
+
+
+def _strip_bold_marks(text: str) -> str:
+    return re.sub(r"^\*\*(.+?)\*\*$", r"\1", (text or "").strip())
+
+
+def _classical_line_role(line: str) -> str:
+    stripped = _strip_bold_marks(line)
+    if line.strip().startswith("**") and line.strip().endswith("**"):
+        return "作者或署名行，必须保留并保持加粗标记"
+    if len(stripped) <= 24 and not re.search(r"[，。！？；：“”‘’]", stripped):
+        return "辑名、篇名或结构标题，必须保留标题含义，不得改名或丢失"
+    if re.match(r"^(序|引|导言|题记|按语|凡例|小引|卷首)", stripped):
+        return "导言、引语、题记或按语，若原本已是白话，只做标点整理，不得重写"
+    return "正文段落，必须完整白话化，不得漏句、漏半句或跳译"
+
+
+def build_classical_marked_source(raw_text: str) -> str:
+    lines = _classical_source_lines(raw_text)
+    return "\n".join(f"{classical_paragraph_marker(idx)} {line}" for idx, line in enumerate(lines, start=1))
+
+
+def build_classical_structure_checklist(raw_text: str, *, max_lines: int = 120) -> str:
+    lines = _classical_source_lines(raw_text)
+    if not lines:
+        return "未检测到有效原文段落。"
+    rendered: list[str] = []
+    for idx, line in enumerate(lines[:max_lines], start=1):
+        clean = _strip_bold_marks(line)
+        preview = clean[:36] + ("…" if len(clean) > 36 else "")
+        rendered.append(f"- P{idx:04d}：{_classical_line_role(line)}：{preview}")
+    if len(lines) > max_lines:
+        rendered.append(f"- 其余 {len(lines) - max_lines} 个段落同样必须按 P 编号连续处理，不得省略。")
+    return "\n".join(rendered)
+
+
 def build_classical_prompt_source(
     raw_text: str,
     *,
@@ -253,6 +304,8 @@ def build_classical_prompt_source(
     meta = get_classical_variant_meta(variant)
     dictionary_context = build_classical_dictionary_context(raw_text)
     final_title = classical_final_title(original_title)
+    marked_source = build_classical_marked_source(raw_text)
+    structure_checklist = build_classical_structure_checklist(raw_text)
     return f"""【古文白话总方向】
 形似神似，活灵活现。必须在故事自己的基础上，把原文的骨架、情节、人物关系、语气和意味都保住，同时让现代读者读起来顺畅、自然、有画面。不要把古文改成另一个故事，也不要为了好看而擅自加戏。
 
@@ -270,6 +323,20 @@ def build_classical_prompt_source(
 - 白话正文段落之间不要插入空白行，不要输出只有空格或单独标点的空段。
 - 段内不要保留排版空格；中文之间、中文和标点之间不要加空格。
 - 正文标点必须使用中文全角标点：，。！？；：“”‘’（）《》；不要使用英文逗号、句号、问号、叹号、冒号、分号和英文引号。
+- @正文 下的每个原文对应段落，必须在段首保留对应内部编号，如【P0001】、【P0002】。这些编号是系统校验用，最终会由系统自动移除；你不得删除、改写、跳号、重号或调换顺序。
+- 辑名、篇名、单独标题、作者行、署名行、导言、引语、题记、按语、凡例都算独立段落，必须按编号保留。原文已经是白话的导言、引语、题记或按语，只允许整理中文标点和明显错别字，不得重新改写。
+- 原文中整段加粗的作者或署名行会以 **作者名** 形式出现，输出时必须保留加粗标记；其他段落不要自行加粗。
+- 不得凭空增加没有 P 编号的小标题、Markdown 标题、资料型提示或解释性小节；不得出现 ### 这类标题符号。
+- 如果某段无法完全确定词义，必须保守表达，并尽量保留原句关系，不得为了顺口而改成另一层意思。
+
+【古今异义与误译防护】
+- 遇到古今异义词、器物名、职官名、旧称、俗称，必须结合上下文和词典摘录判断，不得机械套现代常见义。
+- 例如“婢子不宜好相识”一类句子，应按人物关系和语境理解为“不宜同她交好”或“不宜对她太客气”，不得写成“结交什么好相识”。
+- 例如“家人捉双卫来寻生”中，“卫”在该语境下应按坐骑、驴子一类理解，不得译成侍卫、保镖或护卫。
+- 遇到不确定词义，宁可写得保守，也不要写成看似顺口但改变事实的现代解释。
+
+【原文结构清单】
+{structure_checklist}
 
 【细分方向】
 {meta["label"]}：{meta["description"]}
@@ -281,15 +348,21 @@ def build_classical_prompt_source(
 {dictionary_context}
 
 【待处理原文】
-{raw_text.strip()}"""
+{marked_source}"""
 
 
 __all__ = [
     "CLASSICAL_VARIANT_OPTIONS",
+    "CLASSICAL_PARAGRAPH_MARKER_RE",
     "build_classical_dictionary_context",
+    "build_classical_marked_source",
     "build_classical_prompt_source",
+    "build_classical_structure_checklist",
+    "classical_expected_paragraph_count",
+    "classical_paragraph_marker",
     "classical_variant_rules",
     "classical_final_title",
     "get_classical_variant_meta",
     "normalize_classical_variant",
+    "strip_classical_paragraph_markers",
 ]
