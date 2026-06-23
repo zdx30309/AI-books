@@ -89,7 +89,7 @@ _VARIANT_RULES: dict[str, str] = {
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _PUA_MARKER_RE = re.compile(r"\{\[[0-9a-fA-F]+\]\}")
 _LINK_MARK_RE = re.compile(r"[`~]")
-CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4})】\s*")
+CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
 
 
@@ -245,12 +245,12 @@ def build_classical_dictionary_context(raw_text: str) -> str:
     return "\n".join(lines)
 
 
-def _classical_source_lines(raw_text: str) -> list[str]:
+def classical_source_lines(raw_text: str) -> list[str]:
     return [line.strip() for line in (raw_text or "").splitlines() if line.strip()]
 
 
 def classical_expected_paragraph_count(raw_text: str) -> int:
-    return len(_classical_source_lines(raw_text))
+    return len(classical_source_lines(raw_text))
 
 
 def classical_paragraph_marker(index: int) -> str:
@@ -276,17 +276,25 @@ def _classical_line_role(line: str) -> str:
     return "正文段落，必须完整白话化，不得漏句、漏半句或跳译"
 
 
-def build_classical_marked_source(raw_text: str) -> str:
-    lines = _classical_source_lines(raw_text)
-    return "\n".join(f"{classical_paragraph_marker(idx)} {line}" for idx, line in enumerate(lines, start=1))
+def build_classical_marked_source(raw_text: str, *, start_index: int = 1) -> str:
+    lines = classical_source_lines(raw_text)
+    return "\n".join(
+        f"{classical_paragraph_marker(idx)} {line}"
+        for idx, line in enumerate(lines, start=max(1, int(start_index or 1)))
+    )
 
 
-def build_classical_structure_checklist(raw_text: str, *, max_lines: int = 120) -> str:
-    lines = _classical_source_lines(raw_text)
+def build_classical_structure_checklist(
+    raw_text: str,
+    *,
+    max_lines: int = 120,
+    start_index: int = 1,
+) -> str:
+    lines = classical_source_lines(raw_text)
     if not lines:
         return "未检测到有效原文段落。"
     rendered: list[str] = []
-    for idx, line in enumerate(lines[:max_lines], start=1):
+    for idx, line in enumerate(lines[:max_lines], start=max(1, int(start_index or 1))):
         clean = _strip_bold_marks(line)
         preview = clean[:36] + ("…" if len(clean) > 36 else "")
         rendered.append(f"- P{idx:04d}：{_classical_line_role(line)}：{preview}")
@@ -300,12 +308,13 @@ def build_classical_prompt_source(
     *,
     variant: object = None,
     original_title: object = None,
+    start_index: int = 1,
 ) -> str:
     meta = get_classical_variant_meta(variant)
     dictionary_context = build_classical_dictionary_context(raw_text)
     final_title = classical_final_title(original_title)
-    marked_source = build_classical_marked_source(raw_text)
-    structure_checklist = build_classical_structure_checklist(raw_text)
+    marked_source = build_classical_marked_source(raw_text, start_index=start_index)
+    structure_checklist = build_classical_structure_checklist(raw_text, start_index=start_index)
     return f"""【古文白话总方向】
 形似神似，活灵活现。必须在故事自己的基础上，把原文的骨架、情节、人物关系、语气和意味都保住，同时让现代读者读起来顺畅、自然、有画面。不要把古文改成另一个故事，也不要为了好看而擅自加戏。
 
@@ -360,6 +369,7 @@ __all__ = [
     "build_classical_structure_checklist",
     "classical_expected_paragraph_count",
     "classical_paragraph_marker",
+    "classical_source_lines",
     "classical_variant_rules",
     "classical_final_title",
     "get_classical_variant_meta",

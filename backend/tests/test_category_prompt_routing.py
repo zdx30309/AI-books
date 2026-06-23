@@ -23,7 +23,9 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     build_classical_prompt_source,
+    classical_paragraph_marker,
     get_classical_variant_meta,
+    strip_classical_paragraph_markers,
 )
 from app.services import content_engine
 from app.services.gemini import GeminiMaxTokensError
@@ -1007,6 +1009,110 @@ def test_classical_chinese_detects_structure_and_known_translation_issues() -> N
     assert any("Markdown 伪小标题" in issue for issue in missing)
     assert any("双卫" in issue for issue in mistranslation)
     assert any("婢子不宜好相识" in issue for issue in mistranslation)
+
+
+def test_classical_paragraph_markers_support_100w_scale_counts() -> None:
+    marker = classical_paragraph_marker(10000)
+
+    assert marker == "【P10000】"
+    assert strip_classical_paragraph_markers(f"{marker}第万段。") == "第万段。"
+    assert not content_engine._classical_structure_issues(  # noqa: SLF001
+        "@正文\n【P10000】第万段白话。",
+        expected_count=10000,
+        expected_markers=[10000],
+    )
+
+
+def test_classical_marker_line_splitter_preserves_p_lines() -> None:
+    text = "【P0001】第一段白话。\n【P0002】第二段白话很长很长。\n【P10000】第万段白话。"
+
+    chunks = content_engine._split_text_by_classical_marker_lines(  # noqa: SLF001
+        text,
+        target_chars=18,
+    )
+
+    assert "".join(chunk.replace("\n", "") for chunk in chunks) == text.replace("\n", "")
+    assert any("【P10000】第万段白话。" in chunk for chunk in chunks)
+    assert all("【P" in line for chunk in chunks for line in chunk.splitlines())
+
+
+def test_classical_source_segmenter_handles_100w_chars_without_dropping_lines() -> None:
+    lines = ["甲" * 1000 for _ in range(1000)]
+
+    segments = content_engine._classical_segment_source_lines(  # noqa: SLF001
+        lines,
+        target_chars=12_000,
+    )
+    flattened = [line for _, segment_lines in segments for line in segment_lines]
+
+    assert sum(len(line) for line in lines) == content_engine.CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS
+    assert flattened == lines
+    assert [start for start, _ in segments] == sorted(start for start, _ in segments)
+    assert len(segments) > 50
+
+
+def test_classical_segmented_writer_caches_completed_segments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "\n".join(f"第{i}段文言。" + ("春秋旧事。" * 80) for i in range(1, 13))
+    writer_calls: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_calls.append(prompt)
+        assert kwargs["max_output_tokens"] == 0
+        assert kwargs["retry_on_failure"] is False
+        if "你只负责生成前置信息" in prompt:
+            return """@最终书名
+百段书（白话版）
+@最终简介
+测试简介。
+@目录
+1. 全文
+@导言
+测试导言。
+@正文
+@1. 全文"""
+        source = prompt.split("【待处理原文】", 1)[1]
+        markers = [int(item) for item in content_engine.CLASSICAL_PARAGRAPH_MARKER_RE.findall(source)]
+        return "\n".join(f"【P{marker:04d}】第{marker}段白话。" for marker in markers)
+
+    monkeypatch.setattr(content_engine, "CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS", 1)
+    monkeypatch.setattr(content_engine, "CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS", 1)
+    monkeypatch.setattr(content_engine, "CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS", 16)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="classical_chinese",
+            output_dir=tmp_path / "classical_segmented",
+            classical_original_title="百段书",
+        )
+    )
+
+    assert "@最终书名\n百段书（白话版）" in result
+    for marker in range(1, 13):
+        assert f"第{marker}段白话。" in result
+        assert f"【P{marker:04d}】" not in result
+    assert len([prompt for prompt in writer_calls if "当前分段范围" in prompt]) >= 3
+
+    first_call_count = len(writer_calls)
+    for stage_file in ("01_writer.md", "02_polish.md", "03_refine.md", "04_format.md"):
+        (tmp_path / "classical_segmented" / stage_file).unlink()
+    asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="classical_chinese",
+            output_dir=tmp_path / "classical_segmented",
+            classical_original_title="百段书",
+        )
+    )
+
+    assert len(writer_calls) == first_call_count
 
 
 def test_web_short_story_style_reference_keeps_history_prompt_sync(

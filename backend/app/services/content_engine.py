@@ -26,8 +26,10 @@ from app.prompts.goal_driven_templates import (
 from app.services.classical_chinese import (
     CLASSICAL_PARAGRAPH_MARKER_RE,
     build_classical_prompt_source,
+    build_classical_structure_checklist,
     classical_expected_paragraph_count,
     classical_final_title,
+    classical_source_lines,
     strip_classical_paragraph_markers,
 )
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
@@ -61,6 +63,11 @@ FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
 FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technology_advice"})
+CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS = 60_000
+CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
+CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
+CLASSICAL_SEGMENTED_WRITER_CONTEXT_CHARS = 1_500
+CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS = 1_000_000
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
@@ -675,7 +682,7 @@ _CLASSICAL_PUNCT_ONLY_RE = re.compile(
     r"^[\s,，.。:：;；?？!！\"“”'‘’`·、（）()【】\[\]《》<>]+$"
 )
 _CLASSICAL_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
-_CLASSICAL_ANY_MARKER_RE = re.compile(r"【P\d{4}】")
+_CLASSICAL_ANY_MARKER_RE = re.compile(r"【P\d{4,}】")
 
 
 def _convert_ascii_quotes_to_chinese(text: str) -> str:
@@ -765,32 +772,70 @@ def _classical_body_for_validation(markdown: str) -> str:
     return (markdown or "")[match.end() :] if match else (markdown or "")
 
 
-def _classical_structure_issues(markdown: str, *, expected_count: int) -> list[str]:
-    if expected_count < 2:
+def _classical_expected_marker_sequence(
+    *,
+    expected_count: int,
+    expected_markers: list[int] | range | None = None,
+) -> list[int]:
+    if expected_markers is not None:
+        sequence: list[int] = []
+        seen: set[int] = set()
+        for marker in expected_markers:
+            value = int(marker)
+            if value > 0 and value not in seen:
+                sequence.append(value)
+                seen.add(value)
+        return sequence
+    return list(range(1, max(0, int(expected_count or 0)) + 1))
+
+
+def _classical_marker_label(marker: int) -> str:
+    return f"P{marker:04d}"
+
+
+def _classical_marker_range_label(markers: list[int]) -> str:
+    if not markers:
+        return "空范围"
+    if len(markers) == 1:
+        return _classical_marker_label(markers[0])
+    return f"{_classical_marker_label(markers[0])} 到 {_classical_marker_label(markers[-1])}"
+
+
+def _classical_structure_issues(
+    markdown: str,
+    *,
+    expected_count: int,
+    expected_markers: list[int] | range | None = None,
+) -> list[str]:
+    expected_sequence = _classical_expected_marker_sequence(
+        expected_count=expected_count,
+        expected_markers=expected_markers,
+    )
+    if len(expected_sequence) < 2 and expected_markers is None:
         return []
     body = _classical_body_for_validation(markdown)
     markers = [int(item) for item in CLASSICAL_PARAGRAPH_MARKER_RE.findall(body)]
     issues: list[str] = []
     if not markers:
-        return [f"正文没有保留任何 P 段落编号，预期 P0001-P{expected_count:04d}"]
-    expected = set(range(1, expected_count + 1))
+        return [f"正文没有保留任何 P 段落编号，预期 {_classical_marker_range_label(expected_sequence)}"]
+    expected = set(expected_sequence)
     seen = set(markers)
     missing = sorted(expected - seen)
     extra = sorted(seen - expected)
     duplicate = sorted({marker for marker in markers if markers.count(marker) > 1})
     if missing:
-        sample = ", ".join(f"P{item:04d}" for item in missing[:12])
+        sample = ", ".join(_classical_marker_label(item) for item in missing[:12])
         suffix = "..." if len(missing) > 12 else ""
         issues.append(f"缺少原文段落编号：{sample}{suffix}")
     if extra:
-        sample = ", ".join(f"P{item:04d}" for item in extra[:12])
+        sample = ", ".join(_classical_marker_label(item) for item in extra[:12])
         suffix = "..." if len(extra) > 12 else ""
         issues.append(f"出现超出原文范围的段落编号：{sample}{suffix}")
     if duplicate:
-        sample = ", ".join(f"P{item:04d}" for item in duplicate[:12])
+        sample = ", ".join(_classical_marker_label(item) for item in duplicate[:12])
         suffix = "..." if len(duplicate) > 12 else ""
         issues.append(f"出现重复段落编号：{sample}{suffix}")
-    ordered = [marker for marker in markers if 1 <= marker <= expected_count]
+    ordered = [marker for marker in markers if marker in expected]
     if ordered != sorted(ordered):
         issues.append("P 段落编号顺序被打乱")
     pseudo_headings = [
@@ -821,8 +866,13 @@ def _classical_quality_issues(
     *,
     expected_count: int,
     source_text: str,
+    expected_markers: list[int] | range | None = None,
 ) -> list[str]:
-    return _classical_structure_issues(markdown, expected_count=expected_count) + _classical_translation_issues(
+    return _classical_structure_issues(
+        markdown,
+        expected_count=expected_count,
+        expected_markers=expected_markers,
+    ) + _classical_translation_issues(
         source_text,
         markdown,
     )
@@ -836,25 +886,42 @@ async def _repair_classical_quality_once(
     expected_count: int,
     stage: str,
     output_dir: Path | None,
+    expected_markers: list[int] | range | None = None,
+    segment_only: bool = False,
 ) -> str:
-    issues = _classical_quality_issues(markdown, expected_count=expected_count, source_text=source_text)
+    issues = _classical_quality_issues(
+        markdown,
+        expected_count=expected_count,
+        source_text=source_text,
+        expected_markers=expected_markers,
+    )
     if not issues:
         return markdown
     issue_text = "\n".join(f"- {issue}" for issue in issues)
     logger.warning("古文白话%s阶段触发结构/误译修复: %s", stage, "; ".join(issues))
     _dump_stage(output_dir, f"classical_{stage}_quality_issues.txt", issue_text)
+    marker_sequence = _classical_expected_marker_sequence(
+        expected_count=expected_count,
+        expected_markers=expected_markers,
+    )
+    marker_scope = _classical_marker_range_label(marker_sequence)
+    output_scope = (
+        "只输出修复后的本段 P 编号白话正文，不要输出书名、简介、目录、导言、@正文或章节标题。"
+        if segment_only
+        else "不要重写整篇，不要压缩，不要总结，不要输出解释，直接输出修复后的完整书稿。"
+    )
     repair_prompt = f"""你是古文白话稿件的结构校对编辑。下面的稿件已经生成，但存在段落编号、漏译、伪小标题或古今异义误译问题。请只修复这些问题，其他内容保持不变。
 
 【必须修复的问题】
 {issue_text}
 
 【修复硬规则】
-- @正文 中必须按原文编号 P0001 到 P{expected_count:04d} 连续输出，每个对应段落段首保留原来的【P0001】这类编号。
+- 必须按原文编号 {marker_scope} 连续输出，每个对应段落段首保留原来的【P0001】这类编号。
 - 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节。
 - 辑名、篇名、作者行、导言、引语、题记、按语、正文段落都要保留，不得漏句、漏半句或跳译。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - “双卫”在本语境下不得译成侍卫、保镖或护卫；“婢子不宜好相识”不得译成“结交什么好相识”。
-- 不要重写整篇，不要压缩，不要总结，不要输出解释，直接输出修复后的完整书稿。
+- {output_scope}
 
 【带编号原文】
 {marked_source_text.strip()}
@@ -868,10 +935,430 @@ async def _repair_classical_quality_once(
         retry_on_failure=False,
     )
     _dump_stage(output_dir, f"classical_{stage}_quality_repaired.md", repaired)
-    remaining = _classical_quality_issues(repaired, expected_count=expected_count, source_text=source_text)
+    remaining = _classical_quality_issues(
+        repaired,
+        expected_count=expected_count,
+        source_text=source_text,
+        expected_markers=expected_markers,
+    )
     if remaining:
         raise RuntimeError(f"古文白话{stage}阶段结构保护失败: {'；'.join(remaining)}")
     return repaired
+
+
+def _should_use_classical_segmented_writer(source_text: str, expected_count: int) -> bool:
+    return (
+        len(source_text or "") >= CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS
+        or expected_count >= CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS
+    )
+
+
+def _classical_segment_source_lines(
+    lines: list[str],
+    *,
+    target_chars: int = CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS,
+) -> list[tuple[int, list[str]]]:
+    target = max(2_000, int(target_chars or CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS))
+    segments: list[tuple[int, list[str]]] = []
+    current: list[str] = []
+    current_len = 0
+    start_index = 1
+    for index, line in enumerate(lines, start=1):
+        line_len = len(line) + 1
+        if current and current_len + line_len > target:
+            segments.append((start_index, current))
+            current = []
+            current_len = 0
+            start_index = index
+        current.append(line)
+        current_len += line_len
+    if current:
+        segments.append((start_index, current))
+    return segments
+
+
+def _classical_context_from_lines(
+    lines: list[str],
+    *,
+    start_index: int,
+    end_index: int,
+    max_chars: int = CLASSICAL_SEGMENTED_WRITER_CONTEXT_CHARS,
+) -> tuple[str, str]:
+    limit = max(0, int(max_chars or 0))
+    if limit <= 0:
+        return "", ""
+
+    before_parts: list[str] = []
+    before_len = 0
+    for line in reversed(lines[: max(0, start_index - 1)]):
+        line_len = len(line) + 1
+        if before_parts and before_len + line_len > limit:
+            break
+        before_parts.append(line)
+        before_len += line_len
+    before = "\n".join(reversed(before_parts))
+
+    after_parts: list[str] = []
+    after_len = 0
+    for line in lines[end_index:]:
+        line_len = len(line) + 1
+        if after_parts and after_len + line_len > limit:
+            break
+        after_parts.append(line)
+        after_len += line_len
+    return before, "\n".join(after_parts)
+
+
+def _classical_source_preview(lines: list[str], *, max_chars: int = 8_000) -> str:
+    if not lines:
+        return ""
+    limit = max(1_000, int(max_chars or 8_000))
+    head_limit = limit // 2
+    tail_limit = limit - head_limit
+    head: list[str] = []
+    head_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if head and head_len + line_len > head_limit:
+            break
+        head.append(line)
+        head_len += line_len
+
+    tail: list[str] = []
+    tail_len = 0
+    for line in reversed(lines):
+        line_len = len(line) + 1
+        if tail and tail_len + line_len > tail_limit:
+            break
+        tail.append(line)
+        tail_len += line_len
+
+    rendered_tail = list(reversed(tail))
+    if head and rendered_tail and head[-1] == rendered_tail[0]:
+        return "\n".join(head)
+    omitted = max(0, len(lines) - len(head) - len(rendered_tail))
+    middle = [f"……中间省略 {omitted} 个原文段落，仅用于前置信息判断，正文会逐段完整翻译……"] if omitted else []
+    return "\n".join(head + middle + rendered_tail)
+
+
+def _classical_frontmatter_fallback(original_title: object, total_paragraphs: int) -> str:
+    return f"""@最终书名
+{classical_final_title(original_title)}
+@最终简介
+这是一部以原文为根基整理的白话稿。文字尽量贴近原作的情节、人物关系和语气，把难读的文言转成更顺畅的现代汉语，同时保留原书的结构和余味。
+@目录
+1. 全文
+@导言
+这份白话稿处理的不是一段摘录，而是一部有自身结构的古文作品。原文共 {total_paragraphs} 个段落，每一段都关系到后文的语气、人物和叙事推进。
+
+阅读时可以先把它看作一次忠实的语言转换：标题、署名、引语、导言和正文都按原有顺序保留，难处只在于把古汉语的省略、倒装和旧词义转成今天能读懂的表达。
+@正文
+@1. 全文"""
+
+
+def _classical_frontmatter_prompt(
+    *,
+    lines: list[str],
+    original_title: object,
+    variant: object,
+) -> str:
+    preview = _classical_source_preview(lines)
+    final_title = classical_final_title(original_title)
+    variant_checklist = build_classical_structure_checklist("\n".join(lines[:80]), max_lines=80)
+    return f"""你是古文白话书稿编辑。现在处理的是一部长原文，正文会由系统按 P 编号逐段完整翻译；你只负责生成前置信息，不得翻译正文，不得概括代替正文。
+
+【输出范围】
+只输出以下结构，顺序不得改变：
+@最终书名
+{final_title}
+@最终简介
+一段封底式简介
+@目录
+1. 全文
+@导言
+2 到 4 个自然段
+@正文
+@1. 全文
+
+【硬规则】
+- 最终书名必须逐字使用：{final_title}
+- 不要输出 P 编号段落，不要翻译正文，不要补写正文。
+- 简介和导言要服务古文白话读者，说明作品入口、阅读气质和整理方式，不要写成论文摘要、营销口播或空泛套话。
+- 导言不得替代正文，不要提前复述完整故事。
+- 直接输出成稿，不要解释，不要代码块。
+
+【细分方向】
+{variant or "plain"}
+
+【原文结构参考】
+{variant_checklist}
+
+【原文节选参考】
+{preview}"""
+
+
+def _classical_segment_writer_prompt(
+    *,
+    segment_text: str,
+    all_lines: list[str],
+    start_index: int,
+    variant: object,
+    original_title: object,
+) -> str:
+    segment_lines = classical_source_lines(segment_text)
+    end_index = start_index + len(segment_lines) - 1
+    before, after = _classical_context_from_lines(
+        all_lines,
+        start_index=start_index,
+        end_index=end_index,
+    )
+    task_pack = build_classical_prompt_source(
+        segment_text,
+        variant=variant,
+        original_title=original_title,
+        start_index=start_index,
+    )
+    before_block = before.strip() or "无"
+    after_block = after.strip() or "无"
+    return f"""你是一名成熟的古文白话写作者。现在处理的是长篇古文白话工程中的一个连续分段。
+
+【当前分段范围】
+{_classical_marker_label(start_index)} 到 {_classical_marker_label(end_index)}
+
+【本次只做一件事】
+把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。
+
+【必须严格遵守】
+- 每个原文段落必须一一对应输出，不得漏段、漏句、漏半句，不得合并段落，不得拆散段落，不得调换顺序。
+- 每段开头必须保留原来的 P 编号，从 {_classical_marker_label(start_index)} 连续到 {_classical_marker_label(end_index)}。
+- 上文和下文只供理解人物关系、语气和词义，不属于本次输出范围，绝对不要翻译上下文参考。
+- 输出时不得出现没有 P 编号的小标题、Markdown 标题、资料型说明、任务说明或模型过程词。
+- 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
+- 古今异义、器物名、职官名和旧称必须按上下文处理；不确定时保守表达，不要改成另一层意思。
+- 不要为了顺口改剧情，不要新增情节、人物、心理和结尾。
+
+【上文参考，不翻译】
+{before_block}
+
+【下文参考，不翻译】
+{after_block}
+
+【当前分段任务包】
+{task_pack}"""
+
+
+def _classical_segment_output_body(markdown: str) -> str:
+    body = _classical_body_for_validation(markdown)
+    lines: list[str] = []
+    for raw_line in body.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if _FRONT_SECTION_RE.match(stripped):
+            continue
+        if _CLASSICAL_CHAPTER_HEADING_RE.match(stripped):
+            continue
+        if _CLASSICAL_MARKDOWN_HEADING_RE.match(stripped) and not _CLASSICAL_ANY_MARKER_RE.search(stripped):
+            continue
+        if _CLASSICAL_PUNCT_ONLY_RE.fullmatch(stripped):
+            continue
+        if _CLASSICAL_ANY_MARKER_RE.search(stripped) or not lines:
+            lines.append(stripped)
+        else:
+            lines[-1] = f"{lines[-1]}{stripped}"
+    return "\n".join(lines).strip()
+
+
+def _classical_segment_cache_path(
+    output_dir: Path | None,
+    *,
+    segment_index: int,
+    start_index: int,
+    end_index: int,
+    segment_text: str,
+) -> Path | None:
+    if output_dir is None:
+        return None
+    digest = hashlib.sha256(segment_text.encode("utf-8")).hexdigest()[:16]
+    return (
+        output_dir
+        / "01_classical_writer_segments"
+        / f"{segment_index:04d}_{_classical_marker_label(start_index)}-{_classical_marker_label(end_index)}_{digest}.md"
+    )
+
+
+async def _generate_classical_frontmatter(
+    *,
+    lines: list[str],
+    variant: object,
+    original_title: object,
+    output_dir: Path | None,
+) -> str:
+    total_paragraphs = len(lines)
+    digest = hashlib.sha256(("\n".join(lines)).encode("utf-8")).hexdigest()[:16]
+    cache_path = output_dir / f"01_classical_frontmatter_{digest}.md" if output_dir else None
+    if cache_path and cache_path.exists():
+        try:
+            cached = cache_path.read_text(encoding="utf-8").strip()
+            if cached and not _front_matter_missing(cached) and re.search(r"(?m)^@1[.．、]\s*全文\s*$", cached):
+                logger.info("复用古文白话长稿前置信息缓存: %s", cache_path.name)
+                return cached
+        except Exception as exc:
+            logger.warning("古文白话前置信息缓存读取失败: %s", exc)
+
+    prompt = _classical_frontmatter_prompt(
+        lines=lines,
+        original_title=original_title,
+        variant=variant,
+    )
+    try:
+        frontmatter = await _route_writer_call(
+            prompt,
+            max_output_tokens=0,
+            retry_on_failure=False,
+        )
+        if _front_matter_missing(frontmatter):
+            raise ValueError("frontmatter missing required sections")
+        frontmatter = enforce_classical_title(frontmatter, original_title)
+        if not re.search(r"(?m)^@1[.．、]\s*全文\s*$", frontmatter):
+            frontmatter = frontmatter.rstrip() + "\n@1. 全文"
+    except Exception as exc:
+        logger.warning("古文白话长稿前置信息生成失败，使用确定性兜底: %s", exc)
+        frontmatter = _classical_frontmatter_fallback(original_title, total_paragraphs)
+
+    if cache_path:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(frontmatter.strip(), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("古文白话前置信息缓存写入失败: %s", exc)
+    return frontmatter.strip()
+
+
+async def _generate_classical_segmented_writer(
+    source_text: str,
+    *,
+    variant: object,
+    original_title: object,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+) -> str:
+    lines = classical_source_lines(source_text)
+    if not lines:
+        raise ValueError("古文白话原文为空，无法生成")
+    expected_count = len(lines)
+    segments = _classical_segment_source_lines(
+        lines,
+        target_chars=CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS,
+    )
+    logger.info(
+        "古文白话启用长稿分段主笔 source_chars=%d design_target=%d paragraphs=%d segments=%d",
+        len(source_text or ""),
+        CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS,
+        expected_count,
+        len(segments),
+    )
+
+    frontmatter = await _generate_classical_frontmatter(
+        lines=lines,
+        variant=variant,
+        original_title=original_title,
+        output_dir=output_dir,
+    )
+
+    segment_bodies: list[str] = []
+    completed_chars = len(frontmatter)
+    for segment_index, (start_index, segment_lines) in enumerate(segments, start=1):
+        segment_text = "\n".join(segment_lines)
+        end_index = start_index + len(segment_lines) - 1
+        expected_markers = list(range(start_index, end_index + 1))
+        cache_path = _classical_segment_cache_path(
+            output_dir,
+            segment_index=segment_index,
+            start_index=start_index,
+            end_index=end_index,
+            segment_text=segment_text,
+        )
+        body: str | None = None
+        if cache_path and cache_path.exists():
+            try:
+                cached = cache_path.read_text(encoding="utf-8").strip()
+                cached_issues = _classical_quality_issues(
+                    cached,
+                    expected_count=expected_count,
+                    source_text=segment_text,
+                    expected_markers=expected_markers,
+                )
+                if not cached_issues:
+                    body = cached
+                    logger.info(
+                        "复用古文白话分段缓存 %d/%d %s-%s",
+                        segment_index,
+                        len(segments),
+                        _classical_marker_label(start_index),
+                        _classical_marker_label(end_index),
+                    )
+                else:
+                    logger.warning(
+                        "古文白话分段缓存校验失败，将重生 %d/%d: %s",
+                        segment_index,
+                        len(segments),
+                        "; ".join(cached_issues),
+                    )
+            except Exception as exc:
+                logger.warning("古文白话分段缓存读取失败 %d/%d: %s", segment_index, len(segments), exc)
+
+        if body is None:
+            prompt = _classical_segment_writer_prompt(
+                segment_text=segment_text,
+                all_lines=lines,
+                start_index=start_index,
+                variant=variant,
+                original_title=original_title,
+            )
+            raw_segment = await _route_writer_call(
+                prompt,
+                max_output_tokens=0,
+                retry_on_failure=False,
+            )
+            body = _classical_segment_output_body(raw_segment)
+            body = await _repair_classical_quality_once(
+                body,
+                marked_source_text=build_classical_prompt_source(
+                    segment_text,
+                    variant=variant,
+                    original_title=original_title,
+                    start_index=start_index,
+                ),
+                source_text=segment_text,
+                expected_count=expected_count,
+                expected_markers=expected_markers,
+                stage=f"writer_segment_{segment_index:04d}",
+                output_dir=output_dir,
+                segment_only=True,
+            )
+            body = _classical_segment_output_body(body)
+            if cache_path:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(body.strip(), encoding="utf-8")
+                except Exception as exc:
+                    logger.warning("古文白话分段缓存写入失败 %d/%d: %s", segment_index, len(segments), exc)
+
+        segment_bodies.append(body.strip())
+        completed_chars += len(body)
+        if on_stage:
+            on_stage("writer_progress", {"chars": completed_chars})
+
+    assembled = frontmatter.rstrip() + "\n" + "\n".join(segment_bodies).strip()
+    final_issues = _classical_quality_issues(
+        assembled,
+        expected_count=expected_count,
+        source_text=source_text,
+    )
+    if final_issues:
+        raise RuntimeError(f"古文白话分段组装覆盖校验失败: {'；'.join(final_issues)}")
+    return assembled
 
 
 _LIFE_PHILOSOPHY_CENTERED_SECTIONS = {"三个备选书名", "三个备选简介", "目录", "导言", "正文"}
@@ -1469,9 +1956,56 @@ def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+def _split_text_by_classical_marker_lines(text: str, *, target_chars: int = 1000) -> list[str]:
+    """Split classical drafts by physical lines so P-numbered paragraphs stay whole."""
+    lines = [line.rstrip() for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [line for line in lines if line.strip()]
+    if not lines:
+        return []
+
+    target = max(300, int(target_chars or 1000))
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if current and current_len + line_len > target:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += line_len
+        if current_len >= target:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+    if current:
+        chunks.append("\n".join(current))
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
 def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[str]:
     retry_target = max(300, min(700, target_chars // 2 if target_chars > 0 else 500))
     return _split_text_by_paragraph(text, target_chars=retry_target)
+
+
+def _classical_chunk_marker_issues(source_chunk: str, output_chunk: str) -> list[str]:
+    source_markers = [int(item) for item in CLASSICAL_PARAGRAPH_MARKER_RE.findall(source_chunk or "")]
+    if not source_markers:
+        return []
+    output_markers = [int(item) for item in CLASSICAL_PARAGRAPH_MARKER_RE.findall(output_chunk or "")]
+    if source_markers == output_markers:
+        return []
+    issues: list[str] = []
+    missing = [marker for marker in source_markers if marker not in output_markers]
+    extra = [marker for marker in output_markers if marker not in source_markers]
+    if missing:
+        issues.append("缺少 P 编号：" + ", ".join(_classical_marker_label(item) for item in missing[:8]))
+    if extra:
+        issues.append("出现本块外 P 编号：" + ", ".join(_classical_marker_label(item) for item in extra[:8]))
+    if not missing and not extra:
+        issues.append("P 编号顺序被改动")
+    return issues
 
 
 async def _polish_by_paragraph_chunks(
@@ -1587,6 +2121,8 @@ async def _polish_by_paragraph_chunks_strict(
     max_tokens_retry_depth: int = 3,
     allow_chunk_fallback: bool = False,
     chunk_failure_bypass_threshold: int = 2,
+    splitter: Callable[..., list[str]] | None = None,
+    chunk_validator: Callable[[str, str], list[str]] | None = None,
 ) -> str:
     """Quality-safe Gemini polish with per-chunk resume cache.
 
@@ -1597,7 +2133,8 @@ async def _polish_by_paragraph_chunks_strict(
     """
     if not text or not text.strip():
         return text
-    chunks = _split_text_by_paragraph(text, target_chars=target_chars)
+    split_func = splitter or _split_text_by_paragraph
+    chunks = split_func(text, target_chars=target_chars)
     if not chunks:
         return text
 
@@ -1638,7 +2175,19 @@ async def _polish_by_paragraph_chunks_strict(
             return None
         try:
             content = path.read_text(encoding="utf-8").strip()
-            return content or None
+            if not content:
+                return None
+            if chunk_validator:
+                validation_issues = chunk_validator(chunk, content)
+                if validation_issues:
+                    logger.warning(
+                        "%s cache invalid chunk=%d: %s",
+                        log_label,
+                        idx + 1,
+                        "; ".join(validation_issues),
+                    )
+                    return None
+            return content
         except Exception as exc:
             logger.warning("%s cache read failed chunk=%d: %s", log_label, idx + 1, exc)
             return None
@@ -1673,17 +2222,18 @@ async def _polish_by_paragraph_chunks_strict(
         except GeminiMaxTokensError:
             if depth >= max_tokens_retry_depth:
                 raise
-            retry_chunks = _split_text_for_max_tokens_retry(
-                chunk,
-                target_chars=current_target_chars,
-            )
-            if len(retry_chunks) <= 1:
-                raise
-
             retry_target = max(
                 300,
                 min(700, current_target_chars // 2 if current_target_chars > 0 else 500),
             )
+            retry_chunks = (
+                _split_text_for_max_tokens_retry(chunk, target_chars=current_target_chars)
+                if splitter is None
+                else split_func(chunk, target_chars=retry_target)
+            )
+            if len(retry_chunks) <= 1:
+                raise
+
             sub_concurrency = max(1, min(len(retry_chunks), concurrency))
             logger.warning(
                 "%s chunk %d/%d hit MAX_TOKENS; retrying as %d subchunks depth=%d concurrency=%d",
@@ -1809,6 +2359,10 @@ async def _polish_by_paragraph_chunks_strict(
             await _mark_started(idx + 1, chunk)
             try:
                 result = await _polish_with_max_tokens_retry(chunk, idx=idx)
+                if chunk_validator:
+                    validation_issues = chunk_validator(chunk, result)
+                    if validation_issues:
+                        raise RuntimeError("; ".join(validation_issues))
                 polished[idx] = result
                 _write_cache(idx, chunk, result)
                 await _mark_completed(idx + 1, result)
@@ -1887,6 +2441,8 @@ async def _refine_by_paragraph_chunks_strict(
     chunk_func: Callable[..., str] | None = None,
     allow_chunk_fallback: bool = False,
     chunk_failure_bypass_threshold: int = 2,
+    splitter: Callable[..., list[str]] | None = None,
+    chunk_validator: Callable[[str, str], list[str]] | None = None,
 ) -> str:
     return await _polish_by_paragraph_chunks_strict(
         text,
@@ -1902,6 +2458,8 @@ async def _refine_by_paragraph_chunks_strict(
         quality_gate_name="Gemini refine",
         allow_chunk_fallback=allow_chunk_fallback,
         chunk_failure_bypass_threshold=chunk_failure_bypass_threshold,
+        splitter=splitter,
+        chunk_validator=chunk_validator,
     )
 
 
@@ -3273,28 +3831,43 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("writer_start", {})
-        writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
-        writer_prompt = _append_style_reference_prompt(
-            writer_prompt,
-            category=normalized_category,
-            style_reference=style_reference,
-            style_notes=style_notes,
-        )
-        writer_prompt = _append_reference_article_prompt(
-            writer_prompt,
-            category=normalized_category,
-            input_source=input_source,
-        )
-        writer_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
-        generated_markdown = await _route_writer_call(
-            writer_prompt,
-            max_output_tokens=writer_max_output_tokens,
-            on_progress=(
-                (lambda chars: on_stage("writer_progress", {"chars": chars}))
-                if on_stage
-                else None
-            ),
-        )
+        if (
+            normalized_category == "classical_chinese"
+            and _should_use_classical_segmented_writer(
+                classical_source_text,
+                classical_expected_count,
+            )
+        ):
+            generated_markdown = await _generate_classical_segmented_writer(
+                classical_source_text,
+                variant=classical_variant,
+                original_title=classical_original_title,
+                output_dir=output_dir,
+                on_stage=on_stage,
+            )
+        else:
+            writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
+            writer_prompt = _append_style_reference_prompt(
+                writer_prompt,
+                category=normalized_category,
+                style_reference=style_reference,
+                style_notes=style_notes,
+            )
+            writer_prompt = _append_reference_article_prompt(
+                writer_prompt,
+                category=normalized_category,
+                input_source=input_source,
+            )
+            writer_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
+            generated_markdown = await _route_writer_call(
+                writer_prompt,
+                max_output_tokens=writer_max_output_tokens,
+                on_progress=(
+                    (lambda chars: on_stage("writer_progress", {"chars": chars}))
+                    if on_stage
+                    else None
+                ),
+            )
         _log_stage("1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         if on_stage:
@@ -3349,6 +3922,16 @@ async def generate_full_book(
             output_dir=output_dir,
             chunk_func=polish_chunk_func,
             allow_chunk_fallback=normalized_category == "classical_chinese",
+            splitter=(
+                _split_text_by_classical_marker_lines
+                if normalized_category == "classical_chinese"
+                else None
+            ),
+            chunk_validator=(
+                _classical_chunk_marker_issues
+                if normalized_category == "classical_chinese"
+                else None
+            ),
         )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
@@ -3393,6 +3976,8 @@ async def generate_full_book(
                 output_dir=output_dir,
                 chunk_func=refine_func,
                 allow_chunk_fallback=True,
+                splitter=_split_text_by_classical_marker_lines,
+                chunk_validator=_classical_chunk_marker_issues,
             )
         else:
             try:
