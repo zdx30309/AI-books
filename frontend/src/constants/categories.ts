@@ -75,6 +75,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "finance_technology_advice",
+    label: "财经科技（观点建议版）",
+    core_feature: "在财经科技分析里形成明确观点，并给出有条件、可执行的普通人建议",
+    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人建议、信息判断",
+    prompt_status: "ready",
+  },
+  {
     id: "wisdom_stories",
     label: "小故事·智慧",
     core_feature: "以故事承载哲理，易传播",

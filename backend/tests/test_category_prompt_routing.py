@@ -43,7 +43,9 @@ MINIMAL_MANUSCRIPT = """@最终书名
 """
 
 WRITER_ROUTING_CATEGORIES = [
-    category for category in SUPPORTED_CATEGORIES if category not in {"comic_series", "healing_comic"}
+    category
+    for category in SUPPORTED_CATEGORIES
+    if category not in {"comic_series", "healing_comic", "finance_technology_advice"}
 ]
 
 
@@ -374,11 +376,33 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "测试参考资料" in rendered
 
 
+def test_finance_technology_advice_category_uses_viewpoint_advice_prompt() -> None:
+    meta = get_category_meta("finance_technology_advice")
+    prompt = get_prompts("finance_technology_advice")["full_book_writer"]
+    rendered = prompt.format(raw_text="观点建议版测试资料")
+
+    assert meta["label"] == "财经科技（观点建议版）"
+    assert "财经科技来源表述专项要求" in prompt
+    assert "每个核心问题都要形成明确、具体的独立判断" in prompt
+    assert "先识别常见说法和大众默认认知" in prompt
+    assert "不得为了显得独特而刻意反常识" in prompt
+    assert "必须设置一个独立小节" in prompt
+    assert "具体、可执行、有适用条件的建议" in prompt
+    assert "如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识" in prompt
+    assert "正文字数不设人为上限" in prompt
+    assert "[参考资料全文]" in prompt
+    assert "观点建议版测试资料" in rendered
+
+
 def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("财经") == "finance_technology"
     assert normalize_category("财经科技") == "finance_technology"
     assert normalize_category("财经·科技") == "finance_technology"
     assert normalize_category("finance_tech") == "finance_technology"
+    assert normalize_category("财经科技（观点建议版）") == "finance_technology_advice"
+    assert normalize_category("财经科技观点建议版") == "finance_technology_advice"
+    assert normalize_category("财经·科技（观点建议版）") == "finance_technology_advice"
+    assert normalize_category("finance_tech_advice") == "finance_technology_advice"
 
 
 def test_finance_dynamic_target_words_by_duration() -> None:
@@ -405,6 +429,19 @@ def test_finance_dynamic_target_words_by_duration() -> None:
     assert content_engine._finance_dynamic_target_words("财" * 8400) == 50_000
 
 
+def test_finance_advice_category_always_uses_finance_workflow() -> None:
+    assert content_engine._should_use_finance_longform(
+        "finance_technology_advice",
+        "很短的财经科技观点建议版资料。",
+        source_duration_seconds=60,
+    )
+    assert not content_engine._should_use_finance_longform(
+        "finance_technology",
+        "很短的财经科技资料。",
+        source_duration_seconds=60,
+    )
+
+
 def _long_finance_manuscript(repeat: int = 5200) -> str:
     body = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
     return MINIMAL_MANUSCRIPT.replace("测试正文。", body)
@@ -413,6 +450,53 @@ def _long_finance_manuscript(repeat: int = 5200) -> str:
 def _finance_continuation_fragment(repeat: int = 1800) -> str:
     body = "这一层需要补足产业链、公司行为、政策条件、资金周期、普通人影响和风险边界之间的传导关系。" * repeat
     return f"@1. 全局传导\n{body}"
+
+
+def test_finance_technology_advice_longform_uses_finance_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_prompts: list[str] = []
+    polish_kwargs: list[dict[str, object]] = []
+    format_kwargs: list[dict[str, object]] = []
+    writer_output = _long_finance_manuscript()
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        return writer_output
+
+    def fake_polish_book_text(text: str, **kwargs: object) -> str:
+        polish_kwargs.append(dict(kwargs))
+        return text
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        format_kwargs.append(dict(kwargs))
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "财经科技观点建议版测试文稿，涉及产业链、资产误判、职业选择和普通人信息判断。",
+            category="finance_technology_advice",
+            output_dir=tmp_path / "finance_advice_longform",
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert "@最终书名" in result
+    assert len(writer_prompts) == 1
+    assert "财经科技长视频动态长文强约束" in writer_prompts[0]
+    assert "每个核心问题都要形成明确、具体的独立判断" in writer_prompts[0]
+    assert "具体、可执行、有适用条件的建议" in writer_prompts[0]
+    assert "财经科技来源表述专项要求" in writer_prompts[0]
+    assert polish_kwargs[0]["disable_max_output_tokens"] is True
+    assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
+    assert format_kwargs[0]["max_output_tokens"] == 0
+    assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
 
 
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(

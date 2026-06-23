@@ -249,6 +249,7 @@ def test_cover_category_registry_exposes_reference_zip_categories() -> None:
     assert [(item["id"], item["label"]) for item in list_cover_categories()] == [
         ("social_science", "视觉冲击"),
         ("finance_technology", "财经·科技"),
+        ("finance_technology_advice", "财经科技（观点建议版）"),
         ("illustration", "饱和插画"),
         ("illustration_crayon", "萌系治愈"),
         ("literature", "正统出版"),
@@ -273,6 +274,22 @@ def test_finance_technology_cover_category_uses_own_profile() -> None:
     assert "财经科技 / 商业趋势出版封面" == brief.cover_type
     assert "荐股海报" in brief.generation_prompt_addendum
     assert "视觉冲击类封面" not in brief.generation_prompt_addendum
+
+
+def test_finance_technology_advice_cover_category_reuses_finance_profile() -> None:
+    cover_input = cover.prepare_cover_input(
+        "周期里的误判",
+        "@最终简介\n一本解释产业、技术、价格和普通人建议的财经科技书。",
+        author="测试作者",
+        category="财经科技（观点建议版）",
+    )
+    brief = cover.build_cover_style_brief(cover_input)
+
+    assert cover_input.category == "finance_technology_advice"
+    assert cover_input.category_label == "财经科技（观点建议版）"
+    assert get_cover_category_meta("财经科技（观点建议版）")["id"] == "finance_technology_advice"
+    assert "财经科技 / 商业趋势出版封面" == brief.cover_type
+    assert "荐股海报" in brief.generation_prompt_addendum
 
 
 def test_orthodox_test_cover_categories_use_orthodox_prompt_with_distinct_replacement_levels() -> None:

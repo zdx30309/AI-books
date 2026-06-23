@@ -54,12 +54,20 @@ FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
 FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
+FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technology_advice"})
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
 _FRONT_SECTION_RE = re.compile(
     r"^(?:！！！)?@?\s*(最终书名|最终简介|三个备选书名|三个备选简介|目录|导言|文前|正文)\s*$"
 )
+
+
+def _is_finance_longform_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category or "") in FINANCE_LONGFORM_CATEGORIES
+    except Exception:
+        return False
 
 
 def _strip_title_colons(title: str) -> str:
@@ -778,7 +786,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         lines = [line.rstrip() for line in text.split("\n")]
         compact = [line for line in lines if line.strip()]
         result = "\n".join(compact).strip()
-        if normalized == "finance_technology":
+        if normalized in FINANCE_LONGFORM_CATEGORIES:
             result = _clean_finance_source_leaks(result).strip()
         return result + ("\n" if result else "")
 
@@ -803,7 +811,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
-    if normalized == "finance_technology":
+    if normalized in FINANCE_LONGFORM_CATEGORIES:
         result = _clean_finance_source_leaks(result).strip()
     if normalized == "life_philosophy":
         result = _apply_life_philosophy_delivery_markers(result).strip()
@@ -1822,8 +1830,14 @@ def _should_use_finance_longform(
     *,
     source_duration_seconds: int | float | None = None,
 ) -> bool:
-    if normalize_category(category) != "finance_technology":
+    try:
+        normalized = normalize_category(category)
+    except Exception:
         return False
+    if normalized not in FINANCE_LONGFORM_CATEGORIES:
+        return False
+    if normalized == "finance_technology_advice":
+        return True
     return (
         _finance_dynamic_target_words(
             raw_text,
@@ -2180,10 +2194,11 @@ async def _finance_expand_writer_to_target(
     raw_text: str,
     target_words: int,
     duration_seconds: int,
+    category: str,
     output_dir: Path | None,
     on_stage: StageCallback | None,
 ) -> tuple[str, bool]:
-    current_markdown = normalize_final_markdown(current_markdown, category="finance_technology")
+    current_markdown = normalize_final_markdown(current_markdown, category=category)
     current_body_chars = _finance_body_chars(current_markdown)
     if _finance_body_target_reached(current_markdown, target_words):
         return current_markdown, False
@@ -2245,7 +2260,7 @@ async def _finance_expand_writer_to_target(
             ) from exc
         _dump_stage(output_dir, f"01c_finance_continuation_{round_index:02d}.md", continuation)
         current_markdown = _finance_append_continuation(current_markdown, continuation)
-        current_markdown = normalize_final_markdown(current_markdown, category="finance_technology")
+        current_markdown = normalize_final_markdown(current_markdown, category=category)
         after_body_chars = _finance_body_chars(current_markdown)
         gain = after_body_chars - before_body_chars
         logger.info(
@@ -2312,6 +2327,7 @@ def _positive_int(value: Any) -> int | None:
 async def _generate_finance_longform_book(
     raw_text: str,
     *,
+    category: str,
     prompts: dict[str, str],
     output_dir: Path | None,
     on_stage: StageCallback | None,
@@ -2402,7 +2418,7 @@ async def _generate_finance_longform_book(
                 f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
                 f"finance OpenAI whole-book writer failed before 01_writer.md was saved: {exc}"
             ) from exc
-        generated_markdown = normalize_final_markdown(generated_markdown, category="finance_technology")
+        generated_markdown = normalize_final_markdown(generated_markdown, category=category)
         _log_stage("finance 1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         generated_body_chars = _finance_body_chars(generated_markdown)
@@ -2419,6 +2435,7 @@ async def _generate_finance_longform_book(
         raw_text=raw_text,
         target_words=target_words,
         duration_seconds=duration_seconds,
+        category=category,
         output_dir=output_dir,
         on_stage=on_stage,
     )
@@ -2477,7 +2494,7 @@ async def _generate_finance_longform_book(
             )
             _dump_stage(output_dir, "02_polish_error.txt", f"{exc.__class__.__name__}: {exc}")
             polished_markdown = generated_markdown
-        polished_markdown = normalize_final_markdown(polished_markdown, category="finance_technology")
+        polished_markdown = normalize_final_markdown(polished_markdown, category=category)
         if _finance_stage_looks_compressed(generated_markdown, polished_markdown):
             logger.warning(
                 "财经科技 Gemini 一润疑似压缩，保留 OpenAI 完整初稿: source_body=%d candidate_body=%d",
@@ -2525,7 +2542,7 @@ async def _generate_finance_longform_book(
             )
             _dump_stage(output_dir, "03_refine_error.txt", f"{exc.__class__.__name__}: {exc}")
             refined_markdown = polished_markdown
-        refined_markdown = normalize_final_markdown(refined_markdown, category="finance_technology")
+        refined_markdown = normalize_final_markdown(refined_markdown, category=category)
         if _finance_stage_looks_compressed(polished_markdown, refined_markdown):
             logger.warning(
                 "财经科技 Gemini 二润疑似压缩，保留一润完整稿: source_body=%d candidate_body=%d",
@@ -2584,7 +2601,7 @@ async def _generate_finance_longform_book(
         )
         final_markdown = refined_markdown
 
-    final_markdown = normalize_final_markdown(final_markdown, category="finance_technology")
+    final_markdown = normalize_final_markdown(final_markdown, category=category)
     if _finance_stage_looks_compressed(refined_markdown, final_markdown):
         logger.warning(
             "DeepSeek 财经科技整稿格式化疑似压缩或截断，保留 Gemini 二润完整稿: source_body=%d candidate_body=%d",
@@ -2611,7 +2628,7 @@ async def _repair_front_matter(
     *,
     category: str | None = None,
 ) -> str:
-    is_finance = normalize_category(category or "") == "finance_technology"
+    is_finance = _is_finance_longform_category(category)
     source_label = "参考资料全文" if is_finance else "原始视频文稿"
     source_instruction = (
         "- 如果前置块缺失，请根据下方参考资料全文和当前书稿内容补齐\n"
@@ -3084,6 +3101,7 @@ async def generate_full_book(
     ):
         return await _generate_finance_longform_book(
             writer_input_text,
+            category=normalized_category,
             prompts=prompts,
             output_dir=output_dir,
             on_stage=on_stage,

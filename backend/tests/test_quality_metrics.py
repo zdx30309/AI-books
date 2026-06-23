@@ -135,6 +135,19 @@ def test_finance_source_leak_hits_are_category_scoped() -> None:
     assert not other_report.finance_source_leak_hits
 
 
+def test_finance_advice_source_leak_hits_reuse_finance_quality_gate() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 正式章节
+视频材料中提到，SpaceX 正在扩大算力投入。
+"""
+
+    report = measure_quality(markdown, category="finance_technology_advice")
+
+    assert report.finance_source_leak_hits["财经来源穿帮表述残留"]
+
+
 def test_finance_source_leak_cleaned_text_no_longer_triggers_quality_hit() -> None:
     markdown = """@最终书名
 测试书

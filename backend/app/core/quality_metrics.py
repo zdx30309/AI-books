@@ -625,7 +625,7 @@ def measure_quality(markdown: str, *, category: str | None = None) -> QualityRep
     category_key = (category or "").strip().lower()
     if category_key == "masterpiece_interpretation":
         report.masterpiece_colloquial_hits = _detect_masterpiece_colloquial(markdown)
-    if category_key == "finance_technology":
+    if category_key in {"finance_technology", "finance_technology_advice"}:
         report.finance_source_leak_hits = _detect_finance_source_leaks(markdown)
 
     marks = _count_marks(markdown)
