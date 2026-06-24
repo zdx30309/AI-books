@@ -149,6 +149,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [comicTitle, setComicTitle] = useState("");
   const [comicPanelCount, setComicPanelCount] = useState(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
   const [comicThemeRequirement, setComicThemeRequirement] = useState("");
+  const [comicSourceContent, setComicSourceContent] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
@@ -198,6 +199,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setComicTitle("");
       setComicPanelCount(String(HEALING_COMIC_DEFAULT_PANEL_COUNT));
       setComicThemeRequirement("");
+      setComicSourceContent("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
       setCategory(defaultCategoryId ?? "social_science");
@@ -398,6 +400,14 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           return;
         }
         const characterPrompt = comicThemeRequirement.trim();
+        const sourceContent = comicSourceContent.trim();
+        const rawText = [
+          `书名：${cleanedTitle}`,
+          characterPrompt ? `主角形象：${characterPrompt}` : "",
+          sourceContent ? `自定义内容：\n${sourceContent}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
         setSubmitting(true);
         try {
           const res = await api.createTask({
@@ -408,10 +418,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               comic_panel_count: panelCount,
               comic_character_prompt: characterPrompt || undefined,
               comic_theme_requirement: characterPrompt || undefined,
+              comic_source_content: sourceContent || undefined,
               title: cleanedTitle,
-              raw_text: characterPrompt
-                ? `书名：${cleanedTitle}\n主角形象：${characterPrompt}`
-                : `书名：${cleanedTitle}`,
+              raw_text: rawText,
             },
           });
           onCreated(res.task_id);
@@ -1347,6 +1356,30 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
                     可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
+                  </p>
+                </div>
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="healing-comic-source-content"
+                      className="block text-[11px] tracking-widest text-warm-300"
+                    >
+                      自定义内容（可选）
+                    </label>
+                    <span className="text-[10px] tracking-widest text-warm-500">
+                      {comicSourceContent.trim().length} 字
+                    </span>
+                  </div>
+                  <textarea
+                    id="healing-comic-source-content"
+                    value={comicSourceContent}
+                    onChange={(e) => setComicSourceContent(e.target.value)}
+                    placeholder="可粘贴一篇文章、公众号正文、随笔或已有文案；系统会提取主题、情绪、场景和细节，改造成同一套治愈漫画。"
+                    rows={6}
+                    className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-warm-500">
+                    留空则继续按书名生成；填写后会围绕文章内容创作，不额外增加提取 API 调用。
                   </p>
                 </div>
                 </>

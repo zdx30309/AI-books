@@ -31,6 +31,7 @@ from app.services.comic_series import (
     ComicGenerationPaused,
     parse_healing_comic_character_prompt,
     parse_healing_comic_panel_count,
+    parse_healing_comic_source_content,
 )
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import (
@@ -1158,6 +1159,12 @@ def process_video(_self, task_id: str) -> dict:
                     or (task.config or {}).get("character_prompt")
                     or (task.config or {}).get("comic_theme_requirement")
                     or (task.config or {}).get("comic_requirement")
+                ),
+                healing_comic_source_content=parse_healing_comic_source_content(
+                    (task.config or {}).get("comic_source_content")
+                    or (task.config or {}).get("source_content")
+                    or (task.config or {}).get("article_content")
+                    or (task.config or {}).get("custom_content")
                 ),
                 healing_comic_should_pause=(
                     (lambda: _healing_comic_pause_requested(task_id, run_id))

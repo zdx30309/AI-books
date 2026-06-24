@@ -39,6 +39,7 @@ from app.services.comic_series import (
     parse_comic_title,
     parse_healing_comic_character_prompt,
     parse_healing_comic_panel_count,
+    parse_healing_comic_source_content,
     validate_comic_phrases,
 )
 from app.services.classical_chinese import CLASSICAL_CHINESE_CATEGORY_IDS, get_classical_variant_meta
@@ -254,12 +255,23 @@ def _normalize_task_config(config: dict | None) -> dict:
             or cfg.get("theme_requirement")
             or ""
         )
+        source_content = parse_healing_comic_source_content(
+            cfg.get("comic_source_content")
+            or cfg.get("source_content")
+            or cfg.get("article_content")
+            or cfg.get("custom_content")
+            or ""
+        )
         cfg["comic_title"] = title
         cfg["comic_panel_count"] = panel_count
         if character_prompt:
             cfg["comic_character_prompt"] = character_prompt
         else:
             cfg.pop("comic_character_prompt", None)
+        if source_content:
+            cfg["comic_source_content"] = source_content
+        else:
+            cfg.pop("comic_source_content", None)
         cfg["title"] = title
         cfg.pop("comic_preface_phrase", None)
         cfg.pop("comic_phrases", None)
@@ -267,6 +279,8 @@ def _normalize_task_config(config: dict | None) -> dict:
         raw_lines = [f"书名：{title}"]
         if character_prompt:
             raw_lines.append(f"主角形象：{character_prompt}")
+        if source_content:
+            raw_lines.extend(["自定义内容：", source_content])
         cfg["raw_text"] = "\n".join(raw_lines)
         cfg["raw_text_chars"] = len(cfg["raw_text"])
     if category == "comic_series":

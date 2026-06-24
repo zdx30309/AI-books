@@ -17,6 +17,7 @@ import pytest
 from app.api.routers.tasks import (
     _DOCX_EMU_PER_PIXEL,
     _markdown_to_docx,
+    _normalize_task_config,
     _task_comic_image_preview_path,
     _task_cover_path,
 )
@@ -363,6 +364,106 @@ def test_healing_comic_category_accepts_custom_panel_count(
     assert (output_dir / "comic_images" / "comic_section_12_06.png").exists()
     assert (output_dir / "comic_images" / "comic_section_11_09.png").exists()
     assert not (output_dir / "comic_images" / "comic_section_13_01.png").exists()
+
+
+def test_healing_comic_normalize_keeps_custom_source_content() -> None:
+    article = "自定义内容：雨下了一整夜。小店老板把门口的椅子擦干，留给第一个路过的人。"
+
+    cfg = _normalize_task_config(
+        {
+            "category": "healing_comic",
+            "comic_title": "雨停以后",
+            "comic_panel_count": 8,
+            "comic_character_prompt": "米白色原创小熊，蓝灰围巾。",
+            "comic_source_content": article,
+        }
+    )
+
+    assert cfg["category"] == "healing_comic"
+    assert cfg["comic_title"] == "雨停以后"
+    assert cfg["comic_panel_count"] == 8
+    assert cfg["comic_source_content"] == "雨下了一整夜。小店老板把门口的椅子擦干，留给第一个路过的人。"
+    assert "主角形象：米白色原创小熊，蓝灰围巾。" in cfg["raw_text"]
+    assert "自定义内容：" in cfg["raw_text"]
+    assert "小店老板把门口的椅子擦干" in cfg["raw_text"]
+
+
+def test_healing_comic_custom_source_content_enters_single_writer_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = "雨停以后"
+    article = "雨下了一整夜。早餐店的灯亮得很早，有人把门口的椅子擦干，留给第一个路过的人。"
+    writer_prompts: list[str] = []
+    image_prompts: list[str] = []
+
+    def fake_image(prompt: str, output_path: Path, **_: object) -> Path:
+        image_prompts.append(prompt)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(PNG_1X1)
+        return output_path
+
+    async def fake_writer(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        assert "用户自定义内容" in prompt
+        assert "同一次脚本规划中完成提取和改编" in prompt
+        assert "只能作为参照材料" in prompt
+        assert "不得逐段改写" in prompt
+        assert "不得出现“文章里提到”" in prompt
+        assert article in prompt
+        assert "最终产物必须是原创治愈漫画图文书" in prompt
+        panels = [
+            {
+                "title": "门口微光",
+                "image_count": 6,
+                "image_text": ["雨刚停", "椅子是干的"],
+                "phrases": ["雨刚停", "椅子是干的"],
+                "visual": "同一原创小熊在早餐店门口停下，白底留白，轻水彩颗粒。",
+                "images": _healing_story_images(1, 6),
+            },
+            {
+                "title": "早饭很暖",
+                "image_count": 7,
+                "image_text": ["灯很早", "心慢慢亮"],
+                "phrases": ["灯很早", "心慢慢亮"],
+                "visual": "同一原创小熊坐在窗边，早餐热气很轻，场景温暖。",
+                "images": _healing_story_images(2, 7),
+            },
+        ]
+        return json.dumps(
+            {
+                "title": title,
+                "intro": "一组从雨后小事长出来的治愈漫画。",
+                "series_style": "白底留白，轻水彩颗粒，温暖晨光。",
+                "protagonist_profile": "米白色原创小熊，蓝灰围巾，小帆布包。",
+                "cover_visual": "米白小熊站在雨后店门口。",
+                "panels": panels,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fake_image)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(content_engine.settings, "DEEPSEEK_API_KEY", "")
+
+    output_dir = tmp_path / "healing_comic_article"
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            f"书名：{title}",
+            category="healing_comic",
+            output_dir=output_dir,
+            healing_comic_panel_count=2,
+            healing_comic_character_prompt="米白色原创小熊，蓝灰围巾，小帆布包。",
+            healing_comic_source_content=article,
+        )
+    )
+
+    assert len(writer_prompts) == 1
+    assert image_prompts
+    assert (output_dir / "00_healing_comic_source_content.md").read_text(encoding="utf-8") == article
+    assert article in (output_dir / "01_writer_prompt.md").read_text(encoding="utf-8")
+    assert "comic_images/comic_section_02_07.png" in result
+    assert "雨刚停" in result
 
 
 def test_healing_comic_resume_reuses_cached_script_refine_and_images(

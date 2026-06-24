@@ -197,6 +197,17 @@ def parse_healing_comic_requirement(value: object) -> str:
     return text
 
 
+def parse_healing_comic_source_content(value: object) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(
+        r"^\s*(?:自定义内容|文章内容|参考文章|原文内容|素材正文|内容来源|用户文章|用户提供内容)\s*[：:]\s*",
+        "",
+        text,
+    ).strip()
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text
+
+
 def parse_healing_comic_character_prompt(value: object) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     text = re.sub(r"^\s*(?:主角形象|主角设定|角色形象|角色设定|主角要求|角色要求|主题要求|用户要求)\s*[：:]\s*", "", text)
@@ -500,10 +511,30 @@ def build_healing_comic_writer_prompt(
     *,
     panel_count: int = HEALING_COMIC_DEFAULT_PANEL_COUNT,
     character_prompt: str | None = None,
+    source_content: str | None = None,
 ) -> str:
     book_title = parse_healing_comic_title(title) or "今天也不用很厉害"
     panel_count = parse_healing_comic_panel_count(panel_count)
     character_bible = build_healing_comic_character_bible(character_prompt)
+    source_text = parse_healing_comic_source_content(source_content)
+    source_block = ""
+    source_rule = "只根据书名自动推导一类适合的漫画系列，不需要用户再输入短语、角色或剧情。"
+    if source_text:
+        source_block = f"""
+【用户自定义内容】
+本次用户提供了一篇文章或已有内容。请在同一次脚本规划中完成提取和改编，不要新增单独提取阶段。
+
+必须先从这篇内容里提取可漫画化的主题、情绪、生活场景、人物关系、细节物件、转折和余味，再改造成原创温暖治愈漫画系列。
+- 这篇内容只能作为参照材料，不得逐段改写，不得复刻原文结构，不得照搬原句，不得把原文做成摘要。
+- 每个章节必须能回到原内容里的某个情绪、场景、问题或细节，但表达必须是原创日常治愈小故事。
+- 如果内容信息密度高，可以把同一主题拆成多个温暖分类；如果内容很短，不要硬凑无关内容。
+- 不得出现“文章里提到”“原文说”“素材显示”“用户提供的内容中”等元叙述。
+- 仍然保持治愈系漫画图文书：主角一致、风格统一、每章多图、每张图都是独立小故事。
+
+用户自定义内容全文：
+{source_text}
+"""
+        source_rule = "如果存在“用户自定义内容”，必须围绕其中提取出的主题、情绪、场景、人物关系和细节物件进行漫画化改编；不要只按书名自由发挥，也不要复述原文。"
     return f"""你是原创温暖治愈系漫画主编。请根据用户给定书名，参考服务端漫画数据库的抽象规律，创作一本 {panel_count} 章的原创温暖治愈漫画图文书。
 
 用户书名：
@@ -514,12 +545,13 @@ def build_healing_comic_writer_prompt(
 
 服务端参考数据库摘要：
 {research_context}
+{source_block}
 
 【治愈系列风格基座】
 {HEALING_COMIC_STYLE_GUARD}
 
 硬性要求：
-- 只根据书名自动推导一类适合的漫画系列，不需要用户再输入短语、角色或剧情。
+- {source_rule}
 - 需要正好输出 {panel_count} 条章节；不要固定成 32 条，也不要自行增减。
 - {panel_count} 是本次用户指定章节数，不是系统上限；不得因为超过 32 或 64 就截断章节。
 - 每条必须自拟章节标题，标题正文建议 4 到 12 个中文字符，必须温暖、治愈、柔和，有日常生活感；不要写成“第1张”“第2章”这类功能标题；禁止使用“把”字句、“被”字句等复杂句式。
@@ -1780,6 +1812,7 @@ __all__ = [
     "parse_healing_comic_requirement",
     "parse_healing_comic_character_prompt",
     "parse_healing_comic_panel_count",
+    "parse_healing_comic_source_content",
     "parse_healing_comic_title",
     "parse_healing_comic_writer_output",
     "plan_healing_comic_images",

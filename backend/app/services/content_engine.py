@@ -3714,6 +3714,7 @@ async def _generate_healing_comic_book(
     on_stage: StageCallback | None,
     panel_count: int = 32,
     character_prompt: str | None = None,
+    source_content: str | None = None,
     should_pause: Callable[[], bool] | None = None,
 ) -> str:
     from app.services.comic_series import (
@@ -3724,6 +3725,7 @@ async def _generate_healing_comic_book(
         inject_comic_images,
         parse_healing_comic_character_prompt,
         parse_healing_comic_panel_count,
+        parse_healing_comic_source_content,
         parse_healing_comic_title,
         parse_healing_comic_writer_output,
     )
@@ -3731,6 +3733,7 @@ async def _generate_healing_comic_book(
     comic_title = parse_healing_comic_title(raw_text) or "今天也不用很厉害"
     panel_count = parse_healing_comic_panel_count(panel_count)
     character_prompt = parse_healing_comic_character_prompt(character_prompt)
+    source_content = parse_healing_comic_source_content(source_content)
     if output_dir is None:
         raise ValueError("漫画需要 output_dir 以保存每张配图")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -3752,6 +3755,8 @@ async def _generate_healing_comic_book(
     if not research_context:
         research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
         _dump_stage(output_dir, "00_healing_comic_research.md", research_context)
+    if source_content:
+        _dump_stage(output_dir, "00_healing_comic_source_content.md", source_content)
 
     _raise_if_paused()
     cached_script = _read_healing_comic_script_stage(output_dir)
@@ -3767,6 +3772,7 @@ async def _generate_healing_comic_book(
             research_context,
             panel_count=panel_count,
             character_prompt=character_prompt,
+            source_content=source_content,
         )
         _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
         try:
@@ -3981,6 +3987,7 @@ async def generate_full_book(
     classical_original_title: str | None = None,
     healing_comic_panel_count: int | None = None,
     healing_comic_character_prompt: str | None = None,
+    healing_comic_source_content: str | None = None,
     healing_comic_should_pause: Callable[[], bool] | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
@@ -4022,6 +4029,7 @@ async def generate_full_book(
             on_stage=on_stage,
             panel_count=healing_comic_panel_count or 32,
             character_prompt=healing_comic_character_prompt,
+            source_content=healing_comic_source_content,
             should_pause=healing_comic_should_pause,
         )
 
