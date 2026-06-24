@@ -253,6 +253,9 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         db.commit()
         raise StaleTaskRun(f"task {task.id} held by cost protection")
 
+    if task.status not in _ACTIVE_RUN_STATUSES:
+        raise StaleTaskRun(f"task {task.id} status={task.status} is not runnable")
+
     active_run_id = str(cfg.get("active_run_id") or "").strip()
     if task.status == TaskStatus.PROCESSING and active_run_id and active_run_id != run_id:
         raise StaleTaskRun(
