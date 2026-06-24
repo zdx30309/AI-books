@@ -27,6 +27,7 @@ interface Props {
 function statusLabel(status: string, progress: number): string {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
+  if (status === "paused") return "已暂停";
   if (progress === 0) return "排队中";
   return `生成中 ${progress}%`;
 }

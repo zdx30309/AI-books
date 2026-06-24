@@ -394,6 +394,8 @@ export const api = {
     }),
   deleteTask: (id: string) =>
     request<void>(`/tasks/${id}`, { method: "DELETE" }),
+  pauseComicTask: (id: string) =>
+    request<TaskStatusResponse>(`/tasks/${id}/pause-comic`, { method: "POST" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
   retryFailedTasks: (body: BatchRetryTaskRequest = {}) =>

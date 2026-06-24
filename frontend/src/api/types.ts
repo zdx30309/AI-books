@@ -9,7 +9,8 @@ export type TaskStatus =
   | "writing_chapters"
   | "fact_checking"
   | "completed"
-  | "failed";
+  | "failed"
+  | "paused";
 
 export interface CreateTaskRequest {
   url: string;

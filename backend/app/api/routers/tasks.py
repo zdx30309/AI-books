@@ -588,6 +588,11 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("last_auto_retry_error", None)
     cfg.pop("auto_retry_not_before", None)
     cfg.pop("auto_retry_scheduled_by", None)
+    cfg.pop("pause_requested", None)
+    cfg.pop("pause_requested_at", None)
+    cfg.pop("paused_at", None)
+    cfg.pop("paused_run_id", None)
+    cfg.pop("last_pause_message", None)
     task.config = cfg
     progress, step = _retry_resume_state(task.id)
     task.status = TaskStatus.PENDING
@@ -1355,6 +1360,48 @@ def delete_task(
 
 
 @router.post(
+    "/{task_id}/pause-comic",
+    response_model=TaskStatusResponse,
+    summary="暂停漫画生成任务",
+)
+def pause_comic_task(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TaskStatusResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    cfg = dict(task.config or {})
+    category = str(cfg.get("category") or "").strip()
+    if category != "healing_comic":
+        raise HTTPException(status_code=409, detail="当前任务不是漫画分类，不能使用漫画暂停")
+    if task.status == TaskStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="任务已完成，不能暂停")
+    if task.status == TaskStatus.FAILED:
+        raise HTTPException(status_code=409, detail="任务已失败，请直接继续生成")
+    if task.status == TaskStatus.PAUSED:
+        return TaskStatusResponse.model_validate(task)
+
+    now = datetime.now(timezone.utc).isoformat()
+    cfg["pause_requested"] = True
+    cfg["pause_requested_at"] = now
+    if task.status == TaskStatus.PENDING and not _has_active_run(task):
+        cfg["pause_requested"] = False
+        cfg["paused_at"] = now
+        task.status = TaskStatus.PAUSED
+        task.current_step = "已暂停，可点击继续生成从断点恢复"
+    else:
+        task.current_step = "暂停请求已发送，当前图片完成后停止"
+    task.config = cfg
+    task.error_message = None
+    db.commit()
+    db.refresh(task)
+    return TaskStatusResponse.model_validate(task)
+
+
+@router.post(
     "/{task_id}/retry",
     response_model=CreateTaskResponse,
     summary="重新投递任务（卡 0% 或失败时使用，仅任务主人可操作）",
@@ -1378,7 +1425,7 @@ def retry_task(
         if not_before and not_before > datetime.now(timezone.utc):
             return CreateTaskResponse(task_id=task.id, status=task.status)
         return CreateTaskResponse(task_id=task.id, status=task.status)
-    if task.status != TaskStatus.FAILED:
+    if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED}:
         raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
 
     _prepare_task_for_retry(task)
@@ -1505,7 +1552,7 @@ def _cleanup_expired_tasks(db: Session, user: User) -> int:
         .filter(
             Task.owner_id == user.id,
             Task.created_at < cutoff,
-            ~Task.status.in_(_ACTIVE_TASK_STATUSES),
+            ~Task.status.in_((*_ACTIVE_TASK_STATUSES, TaskStatus.PAUSED)),
         )
         .all()
     )

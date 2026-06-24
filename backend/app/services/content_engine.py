@@ -3483,6 +3483,7 @@ async def _generate_healing_comic_book(
     on_stage: StageCallback | None,
     panel_count: int = 32,
     character_prompt: str | None = None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> str:
     from app.services.comic_series import (
         assemble_healing_comic_markdown,
@@ -3503,17 +3504,25 @@ async def _generate_healing_comic_book(
         raise ValueError("漫画需要 output_dir 以保存每张配图")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _raise_if_paused() -> None:
+        if should_pause is not None and should_pause():
+            from app.services.comic_series import ComicGenerationPaused
+
+            raise ComicGenerationPaused("漫画生成已暂停")
+
     cached_final = _read_stage_file(output_dir, "04_format.md")
     if cached_final:
         if on_stage:
             on_stage("format_done", {"chars": len(cached_final), "reused_stage": True})
         return cached_final
 
+    _raise_if_paused()
     research_context = _read_stage_file(output_dir, "00_healing_comic_research.md")
     if not research_context:
         research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
         _dump_stage(output_dir, "00_healing_comic_research.md", research_context)
 
+    _raise_if_paused()
     cached_script = _read_healing_comic_script_stage(output_dir)
     if cached_script is not None:
         title, intro, panels, series_meta = cached_script
@@ -3552,11 +3561,13 @@ async def _generate_healing_comic_book(
         )
         _dump_stage(output_dir, "02_healing_comic_script.json", script_json)
 
+    _raise_if_paused()
     character_bible = _read_stage_file(output_dir, "02_healing_comic_character_bible.md")
     if not character_bible:
         character_bible = build_healing_comic_character_bible(character_prompt, series_meta)
         _dump_stage(output_dir, "02_healing_comic_character_bible.md", character_bible)
 
+    _raise_if_paused()
     refined_markdown = _read_stage_file(output_dir, "03_refine.md")
     if not refined_markdown:
         refined_markdown = assemble_healing_comic_markdown(title, intro, panels)
@@ -3581,6 +3592,7 @@ async def _generate_healing_comic_book(
         allow_uncertain=True,
         retry_uncertain=True,
         on_progress=_image_progress,
+        should_pause=should_pause,
     )
     final_markdown = inject_comic_images(refined_markdown, images)
     final_markdown = normalize_final_markdown(final_markdown, category="healing_comic")
@@ -3738,6 +3750,7 @@ async def generate_full_book(
     classical_original_title: str | None = None,
     healing_comic_panel_count: int | None = None,
     healing_comic_character_prompt: str | None = None,
+    healing_comic_should_pause: Callable[[], bool] | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
 ) -> str:
@@ -3775,6 +3788,7 @@ async def generate_full_book(
             on_stage=on_stage,
             panel_count=healing_comic_panel_count or 32,
             character_prompt=healing_comic_character_prompt,
+            should_pause=healing_comic_should_pause,
         )
 
     if normalized_category == "comic_series":

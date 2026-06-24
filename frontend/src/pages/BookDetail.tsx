@@ -13,6 +13,7 @@ import {
   FileText,
   Image as ImageIcon,
   Loader2,
+  Pause,
   Pencil,
   Eye,
   Save,
@@ -116,6 +117,7 @@ export function BookDetail() {
   const [polishTrigger, setPolishTrigger] = useState<PolishTrigger | null>(null);
   const [polishing, setPolishing] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
@@ -183,7 +185,7 @@ export function BookDetail() {
     if (!task) return;
     const coverInFlight =
       task.cover_status === "queued" || task.cover_status === "generating";
-    if ((task.status === "completed" || task.status === "failed") && !coverInFlight) {
+    if ((task.status === "completed" || task.status === "failed" || task.status === "paused") && !coverInFlight) {
       if (pollRef.current) window.clearInterval(pollRef.current);
     }
   }, [task]);
@@ -443,6 +445,27 @@ export function BookDetail() {
     }
   }, [id, task, refresh, restartPolling]);
 
+  const handlePauseComic = useCallback(async () => {
+    if (!id || !task) return;
+    const ok = window.confirm(
+      "确定暂停这本漫画吗？系统会在当前图片完成后停止，已生成内容会保留。",
+    );
+    if (!ok) return;
+    setPausing(true);
+    try {
+      const next = await api.pauseComicTask(id);
+      setTask(next);
+      setError(null);
+      restartPolling();
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : "暂停失败";
+      alert(`暂停生成失败：${msg}`);
+    } finally {
+      setPausing(false);
+    }
+  }, [id, task, refresh, restartPolling]);
+
   const handleDownload = useCallback(
     async (fmt: "md" | "docx", preview = false) => {
       if (!id) return;
@@ -520,10 +543,12 @@ export function BookDetail() {
   const isActive = ACTIVE_STATUSES.has(task.status);
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
+  const isPaused = task.status === "paused";
   const isHealingComic = task.category === "healing_comic";
+  const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
-  const canRetry = isFailed || (task.status === "pending" && task.progress < 100);
+  const canRetry = isFailed || isPaused || (task.status === "pending" && task.progress < 100);
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
@@ -665,6 +690,21 @@ export function BookDetail() {
           </div>
 
           <div className="flex flex-col gap-2">
+            {canPauseComic ? (
+              <button
+                type="button"
+                onClick={handlePauseComic}
+                disabled={pausing}
+                className="btn-ghost disabled:opacity-50"
+              >
+                {pausing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                ) : (
+                  <Pause className="h-3.5 w-3.5" strokeWidth={1.5} />
+                )}
+                {pausing ? "暂停中" : "暂停生成"}
+              </button>
+            ) : null}
             {canRetry ? (
               <button type="button" onClick={handleRetry} className="btn-ghost">
                 <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
@@ -743,7 +783,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : isFailed ? "失败" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : isFailed ? "失败" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -755,7 +795,7 @@ export function BookDetail() {
         </div>
 
         {/* 分步进度 - 任务进行中或失败时展示 */}
-        {(isActive || isFailed) && (
+        {(isActive || isFailed || isPaused) && (
           <div className="mt-6 rounded-xl border border-gold-500/8 bg-base-700/40 p-5">
             <div className="mb-4 text-[11px] tracking-widest text-warm-400">
               工作流状态
@@ -766,7 +806,7 @@ export function BookDetail() {
               status={task.status}
               category={task.category}
             />
-            {isActive && (
+            {isActive && !isPaused && (
               <p className="mt-4 flex items-center gap-2 text-[10px] tracking-widest text-warm-500">
                 <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
                 每 2.5 秒自动刷新一次

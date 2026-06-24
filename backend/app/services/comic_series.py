@@ -130,6 +130,10 @@ def _comic_image_gate_wait_timeout_seconds() -> int:
     )
 
 
+class ComicGenerationPaused(RuntimeError):
+    """Raised when a healing comic task is paused between image requests."""
+
+
 @dataclass(frozen=True)
 class ComicSectionImage:
     index: int
@@ -1102,6 +1106,7 @@ def generate_healing_comic_images(
     allow_uncertain: bool = False,
     retry_uncertain: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> list[ComicSectionImage]:
     image_dir = output_dir / "comic_images"
     results = plan_healing_comic_images(
@@ -1115,10 +1120,16 @@ def generate_healing_comic_images(
     )
     total = len(results)
 
+    def _raise_if_paused() -> None:
+        if should_pause is not None and should_pause():
+            _write_manifest(image_dir, results)
+            raise ComicGenerationPaused("漫画生成已暂停")
+
     def _stem_for(image: ComicSectionImage) -> str:
         return image.path.stem
 
     def _generate_one(image: ComicSectionImage) -> ComicSectionImage:
+        _raise_if_paused()
         stem = _stem_for(image)
         response_path = image_dir / f"{stem}_response.json"
         uncertain_path = image_dir / f"{stem}_uncertain.json"
@@ -1136,6 +1147,7 @@ def generate_healing_comic_images(
         )
 
     if results:
+        _raise_if_paused()
         try:
             results[0] = _generate_one(results[0])
         except Exception:
@@ -1143,6 +1155,7 @@ def generate_healing_comic_images(
             raise
         if on_progress is not None:
             on_progress(1, total)
+        _raise_if_paused()
 
     max_workers = max(1, min(int(getattr(settings, "IMAGE_MAX_CONCURRENT_CALLS", 2) or 2), 2))
     pending = list(enumerate(results[1:], start=1))
@@ -1153,6 +1166,7 @@ def generate_healing_comic_images(
 
         def submit_next() -> None:
             nonlocal next_pending_index
+            _raise_if_paused()
             if next_pending_index >= len(pending):
                 return
             offset, image = pending[next_pending_index]
@@ -1178,6 +1192,7 @@ def generate_healing_comic_images(
             if on_progress is not None:
                 on_progress(completed, total)
             _write_manifest(image_dir, results)
+            _raise_if_paused()
             submit_next()
     _write_manifest(image_dir, results)
     return results
@@ -1728,6 +1743,7 @@ __all__ = [
     "COMIC_SECTION_IMAGE_PROMPT",
     "COMIC_SERIES_STYLE_BIBLE",
     "COMIC_STORY_PROMPT",
+    "ComicGenerationPaused",
     "ComicSectionImage",
     "HEALING_COMIC_PANEL_COUNT",
     "HEALING_COMIC_DEFAULT_PANEL_COUNT",

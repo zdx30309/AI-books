@@ -27,7 +27,11 @@ from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
 from app.services.classical_chinese import classical_final_title
 from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
-from app.services.comic_series import parse_healing_comic_character_prompt, parse_healing_comic_panel_count
+from app.services.comic_series import (
+    ComicGenerationPaused,
+    parse_healing_comic_character_prompt,
+    parse_healing_comic_panel_count,
+)
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.qingdou import (
     QingdouDurationExceededError,
@@ -210,6 +214,15 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         return task
 
     cfg = dict(task.config or {})
+    if task.status == TaskStatus.PAUSED or cfg.get("pause_requested"):
+        cfg["pause_requested"] = False
+        cfg["paused_at"] = datetime.now(timezone.utc).isoformat()
+        task.config = cfg
+        task.status = TaskStatus.PAUSED
+        task.current_step = "已暂停，可点击继续生成从断点恢复"
+        db.commit()
+        raise StaleTaskRun(f"task {task.id} paused before run")
+
     if cfg.get("generation_hold"):
         task.status = TaskStatus.FAILED
         task.error_message = str(
@@ -291,6 +304,47 @@ def _start_active_run_heartbeat(task_id: str, run_id: str) -> tuple[threading.Ev
     )
     thread.start()
     return stop_event, thread
+
+
+def _healing_comic_pause_requested(task_id: str, run_id: str) -> bool:
+    pause_db: Session = SessionLocal()
+    try:
+        task = pause_db.get(Task, uuid.UUID(task_id))
+        if task is None:
+            raise ComicGenerationPaused("漫画任务已被删除")
+        cfg = dict(task.config or {})
+        if task.status == TaskStatus.PAUSED:
+            return True
+        if not bool(cfg.get("pause_requested")):
+            return False
+        active_run_id = str(cfg.get("active_run_id") or "").strip()
+        return not active_run_id or active_run_id == run_id
+    finally:
+        pause_db.close()
+
+
+def _mark_task_paused(
+    db: Session,
+    task_id: str,
+    run_id: str,
+    message: str = "漫画生成已暂停",
+) -> Task | None:
+    task = db.get(Task, uuid.UUID(task_id))
+    if task is None:
+        return None
+    _clear_task_run(task, run_id)
+    cfg = dict(task.config or {})
+    cfg["pause_requested"] = False
+    cfg["paused_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["paused_run_id"] = run_id
+    cfg["last_pause_message"] = message[:1000]
+    task.config = cfg
+    task.status = TaskStatus.PAUSED
+    task.current_step = "已暂停，可点击继续生成从断点恢复"
+    task.error_message = None
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 def extract_video_text_with_qingdou(
@@ -1103,6 +1157,11 @@ def process_video(_self, task_id: str) -> dict:
                     or (task.config or {}).get("comic_theme_requirement")
                     or (task.config or {}).get("comic_requirement")
                 ),
+                healing_comic_should_pause=(
+                    (lambda: _healing_comic_pause_requested(task_id, run_id))
+                    if category == "healing_comic"
+                    else None
+                ),
                 input_source=input_source,
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
             )
@@ -1176,6 +1235,16 @@ def process_video(_self, task_id: str) -> dict:
             "task_id": task_id,
             "status": latest.status if latest is not None else "stale",
             "chapters": len(latest.chapters) if latest is not None else 0,
+        }
+
+    except ComicGenerationPaused as e:
+        logger.info("[task %s] healing comic generation paused: %s", task_id, e)
+        db.rollback()
+        paused_task = _mark_task_paused(db, task_id, run_id, str(e))
+        return {
+            "task_id": task_id,
+            "status": TaskStatus.PAUSED,
+            "chapters": len(paused_task.chapters) if paused_task is not None else 0,
         }
 
     except Exception as e:

@@ -654,6 +654,29 @@ def test_healing_comic_reuses_existing_images_without_api_calls(
     assert {image.status for image in images} == {"completed"}
 
 
+def test_healing_comic_pause_stops_before_image_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "healing_pause"
+
+    def fail_image(*_: object, **__: object) -> Path:
+        raise AssertionError("paused comic generation must not call the image API")
+
+    monkeypatch.setattr(comic_series, "generate_image_file_from_prompt", fail_image)
+
+    with pytest.raises(comic_series.ComicGenerationPaused):
+        comic_series.generate_healing_comic_images(
+            [{"title": "窗边小事", "image_count": 6, "image_text": ["慢慢来"], "visual": "留白日常。"}],
+            output_dir,
+            title="今天也可以",
+            allow_uncertain=True,
+            should_pause=lambda: True,
+        )
+
+    assert (output_dir / "comic_images" / "comic_images_manifest.json").exists()
+
+
 def test_healing_comic_permanent_error_uses_safe_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

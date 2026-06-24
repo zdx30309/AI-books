@@ -1,4 +1,4 @@
-import { Check, Circle, Loader2 } from "lucide-react";
+import { Check, Circle, Loader2, Pause } from "lucide-react";
 
 interface Step {
   key: string;
@@ -34,7 +34,8 @@ interface Props {
 
 export function WorkflowStepper({ progress, currentStep, status, category }: Props) {
   const isFailed = status === "failed";
-  const isCompleted = status === "completed" || (!isFailed && progress >= 100);
+  const isPaused = status === "paused";
+  const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
     category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
   const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
@@ -47,6 +48,7 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
         const done = isCompleted || (next ? progress >= next.start : false);
         // 进行中：自身已开始但下一步未开始
         const active = !done && progress >= step.start;
+        const paused = isPaused && active;
         // 失败：当前步骤定格在 active
         const failed = isFailed && active;
 
@@ -58,6 +60,8 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
                   ? "bg-gold-500/15 text-gold-300"
                   : failed
                     ? "bg-red-500/15 text-red-300"
+                    : paused
+                    ? "bg-gold-500/10 text-gold-200"
                     : active
                     ? "bg-gold-500/10 text-gold-200"
                     : "bg-warm-600/10 text-warm-500"
@@ -67,6 +71,8 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
                 <Check className="h-3 w-3" strokeWidth={2.5} />
               ) : failed ? (
                 <Circle className="h-2.5 w-2.5 fill-current" />
+              ) : paused ? (
+                <Pause className="h-3 w-3" strokeWidth={2} />
               ) : active ? (
                 <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
               ) : (
@@ -80,6 +86,8 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
                     ? "text-warm-200"
                     : failed
                       ? "text-red-200"
+                      : paused
+                      ? "text-warm-100"
                       : active
                       ? "text-warm-100"
                       : "text-warm-500"
@@ -87,9 +95,9 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
               >
                 {step.label}
               </div>
-              {active && currentStep && (
+              {(active || paused) && currentStep && (
                 <div className="mt-1 text-[11px] tracking-wide text-warm-400">
-                  {failed ? "已停止" : currentStep}
+                  {failed ? "已停止" : paused ? "已暂停" : currentStep}
                 </div>
               )}
             </div>

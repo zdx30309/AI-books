@@ -28,6 +28,7 @@ class TaskStatus:
     FACT_CHECKING = "fact_checking"
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
 
     # 兼容旧流水线状态名，避免历史代码引用时失效。
     PROCESSING = "processing"

@@ -28,6 +28,7 @@ class TaskStatus:
     PROCESSING = "processing"    # Celery 处理中
     COMPLETED = "completed"      # 全流程成功
     FAILED = "failed"            # 任意阶段失败
+    PAUSED = "paused"            # 漫画任务中途暂停
 
 
 class Task(Base):
