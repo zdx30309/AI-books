@@ -79,6 +79,17 @@ def test_terminal_qingdou_empty_content_failure_is_not_retried() -> None:
     assert task_tasks._is_retryable_error_message(str(exc)) is False  # noqa: SLF001
 
 
+def test_terminal_qingdou_empty_content_with_other_status_is_not_retried() -> None:
+    exc = RuntimeError(
+        "抖音 video parse failed after 1 candidate URL(s): "
+        "QingdouError: 轻抖任务失败 batchStatus=2 "
+        "raw={'result': {'batchStatus': 2, 'list': [{'status': 1010, 'videoContent': None}]}}"
+    )
+
+    assert task_tasks._is_retryable_generation_error(exc) is False  # noqa: SLF001
+    assert task_tasks._is_retryable_error_message(str(exc)) is False  # noqa: SLF001
+
+
 def test_user_facing_openai_rate_limit_message_remains_recoverable() -> None:
     message = "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
 

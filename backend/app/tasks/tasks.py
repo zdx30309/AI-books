@@ -154,11 +154,6 @@ _QINGDOU_TERMINAL_BATCH_TOKENS = (
     "batchstatus': 2",
     '"batchstatus": 2',
 )
-_QINGDOU_TERMINAL_STATUS_TOKENS = (
-    "status=1120",
-    "status': 1120",
-    '"status": 1120',
-)
 _QINGDOU_EMPTY_CONTENT_TOKENS = (
     "videocontent': none",
     '"videocontent": none',
@@ -682,9 +677,8 @@ def _is_terminal_qingdou_parse_error_message(normalized: str) -> bool:
     if "qingdouerror" not in normalized and "轻抖任务失败" not in normalized:
         return False
     batch_failed = any(token in normalized for token in _QINGDOU_TERMINAL_BATCH_TOKENS)
-    terminal_status = any(token in normalized for token in _QINGDOU_TERMINAL_STATUS_TOKENS)
     empty_content = any(token in normalized for token in _QINGDOU_EMPTY_CONTENT_TOKENS)
-    return batch_failed and terminal_status and empty_content
+    return batch_failed and empty_content
 
 
 def _retry_exhausted_step(message: str) -> str:
