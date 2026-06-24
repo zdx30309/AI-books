@@ -48,7 +48,14 @@ MINIMAL_MANUSCRIPT = """@最终书名
 WRITER_ROUTING_CATEGORIES = [
     category
     for category in SUPPORTED_CATEGORIES
-    if category not in {"comic_series", "healing_comic", "finance_technology", "finance_technology_advice"}
+    if category
+    not in {
+        "comic_series",
+        "healing_comic",
+        "finance_technology",
+        "finance_technology_advice",
+        "finance_technology_recommendation",
+    }
 ]
 
 
@@ -401,15 +408,31 @@ def test_finance_technology_advice_category_uses_viewpoint_advice_prompt() -> No
     assert "不得为了显得独特而刻意反常识" not in prompt
     assert "对于时下（2026年）某领域的前景预估，必须使用最新的例子" not in prompt
     assert "不要像一套分析模板从头写到底" in prompt
-    assert "必须设置一个独立小节" in prompt
-    assert "具体、可执行、有适用条件的建议" in prompt
-    assert "如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识" in prompt
+    assert "必须设置一个独立小节" not in prompt
+    assert "如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识" not in prompt
     assert "这是观点建议版，不是资料汇编版" in prompt
     assert "所有资料、数据、公司动作、政策、技术事件和案例，都必须服务于一个明确判断或一条具体建议" in prompt
     assert "宁可少写，也不要堆无用材料" in prompt
-    assert "正文字数不设人为上限" in prompt
+    assert "正文字数不设人为上限" not in prompt
     assert "[参考资料全文]" in prompt
     assert "观点建议版测试资料" in rendered
+
+
+def test_finance_technology_recommendation_category_uses_suggestion_prompt() -> None:
+    meta = get_category_meta("finance_technology_recommendation")
+    prompt = get_prompts("finance_technology_recommendation")["full_book_writer"]
+    rendered = prompt.format(raw_text="建议版测试资料")
+
+    assert meta["label"] == "财经科技（建议版）"
+    assert "财经科技来源表述专项要求" not in prompt
+    assert "财经科技联网检索与最新例子硬性要求" not in prompt
+    assert "你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。" in prompt
+    assert "凡话题与普通人的生活、工作、消费、资产、职业或信息判断有关，必须设置一个独立小节" in prompt
+    assert "具体、可执行、有适用条件的建议" in prompt
+    assert "最终正文长度控制在约12000字" in prompt
+    assert "正文字数不设人为上限" not in prompt
+    assert "[参考资料全文]" in prompt
+    assert "建议版测试资料" in rendered
 
 
 def test_finance_technology_aliases_resolve() -> None:
@@ -421,6 +444,10 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("财经科技观点建议版") == "finance_technology_advice"
     assert normalize_category("财经·科技（观点建议版）") == "finance_technology_advice"
     assert normalize_category("finance_tech_advice") == "finance_technology_advice"
+    assert normalize_category("财经科技（建议版）") == "finance_technology_recommendation"
+    assert normalize_category("财经科技建议版") == "finance_technology_recommendation"
+    assert normalize_category("财经·科技（建议版）") == "finance_technology_recommendation"
+    assert normalize_category("finance_tech_recommendation") == "finance_technology_recommendation"
 
 
 def test_finance_dynamic_target_words_by_duration() -> None:
@@ -475,6 +502,114 @@ def test_finance_advice_category_always_uses_finance_workflow() -> None:
         "很短的财经科技资料。",
         source_duration_seconds=60,
     )
+
+
+def test_finance_recommendation_category_does_not_use_finance_longform_workflow() -> None:
+    assert not content_engine._should_use_finance_longform(
+        "finance_technology_recommendation",
+        "很短的财经科技建议版资料。",
+        source_duration_seconds=60,
+    )
+    assert "finance_technology_recommendation" not in content_engine.FINANCE_LONGFORM_CATEGORIES
+
+
+def test_finance_recommendation_generation_uses_standard_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_prompts: list[str] = []
+    polish_instructions: list[str] = []
+    refine_instructions: list[str] = []
+    format_templates: list[str] = []
+    research_calls: list[tuple[str, str]] = []
+
+    async def fail_finance_longform(*_: object, **__: object) -> str:
+        raise AssertionError("finance recommendation must not use finance longform workflow")
+
+    async def fake_latest_research_pack(
+        raw_text: str,
+        *,
+        category: str,
+        output_dir: Path | None,
+        on_stage: object | None = None,
+    ) -> str:
+        research_calls.append((category, raw_text))
+        return "【财经科技联网检索结果】\n- 检索结论：找到 2026 年当前例子。\n- 可使用的最新例子：\n  1. 2026-06-01｜测试来源｜测试主体｜测试事实｜测试主题｜只作事实边界"
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return MINIMAL_MANUSCRIPT
+
+    async def fake_polish_chunks(text: str, **kwargs: object) -> str:
+        polish_instructions.append(str(kwargs.get("system_instruction") or ""))
+        return text
+
+    def fake_refine_book_text(text: str, **kwargs: object) -> str:
+        refine_instructions.append(str(kwargs.get("system_instruction") or ""))
+        return text
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        format_templates.append(str(kwargs.get("prompt_template") or ""))
+        return text
+
+    monkeypatch.setattr(content_engine, "_generate_finance_longform_book", fail_finance_longform)
+    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", fake_latest_research_pack)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
+    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "财经科技建议版资料。",
+            category="finance_technology_recommendation",
+            output_dir=tmp_path / "finance_recommendation_standard",
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert "@最终书名" in result
+    assert research_calls == [("finance_technology_recommendation", "财经科技建议版资料。")]
+    assert len(writer_prompts) == 1
+    assert "财经科技观点建议版密度强约束" not in writer_prompts[0]
+    assert "财经科技长视频动态长文强约束" not in writer_prompts[0]
+    assert "财经科技建议版联网事实资料" in writer_prompts[0]
+    assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
+    assert "找到 2026 年当前例子" in writer_prompts[0]
+    assert "最终正文长度控制在约12000字" in writer_prompts[0]
+    assert polish_instructions and "财经科技超长文整稿处理保护" not in polish_instructions[0]
+    assert refine_instructions and "财经科技超长文整稿处理保护" not in refine_instructions[0]
+    assert format_templates and "财经科技超长文整稿格式保护" not in format_templates[0]
+
+
+def test_finance_recommendation_resume_reuses_writer_without_web_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "finance_recommendation_resume"
+    output_dir.mkdir(parents=True)
+    (output_dir / "01_writer.md").write_text(MINIMAL_MANUSCRIPT, encoding="utf-8")
+
+    async def fail_latest_research_pack(*_: object, **__: object) -> str:
+        raise AssertionError("resume with existing writer must not call finance web search again")
+
+    async def fake_polish_chunks(text: str, **_: object) -> str:
+        return text
+
+    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", fail_latest_research_pack)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "财经科技建议版资料。",
+            category="finance_technology_recommendation",
+            output_dir=output_dir,
+        )
+    )
+
+    assert "@最终书名" in result
 
 
 def test_finance_advice_final_resume_rejects_overlong_cached_output() -> None:

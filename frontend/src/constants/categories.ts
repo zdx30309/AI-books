@@ -82,6 +82,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "finance_technology_recommendation",
+    label: "财经科技（建议版）",
+    core_feature: "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
+    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人建议、信息判断",
+    prompt_status: "ready",
+  },
+  {
     id: "wisdom_stories",
     label: "小故事·智慧",
     core_feature: "以故事承载哲理，易传播",
@@ -208,6 +215,7 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "popular_science_cognitive_upgrade",
   "finance_technology",
   "finance_technology_advice",
+  "finance_technology_recommendation",
   "wisdom_stories_causal_philosophy",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",

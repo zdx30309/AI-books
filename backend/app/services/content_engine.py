@@ -70,6 +70,14 @@ FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technolo
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
 FINANCE_TECHNOLOGY_ADVICE_CATEGORY = "finance_technology_advice"
+FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY = "finance_technology_recommendation"
+FINANCE_SOURCE_GUARDED_CATEGORIES = frozenset(
+    {
+        "finance_technology",
+        FINANCE_TECHNOLOGY_ADVICE_CATEGORY,
+        FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY,
+    }
+)
 FINANCE_ADVICE_TARGET_10_MIN_WORDS = 12_000
 FINANCE_ADVICE_TARGET_20_MIN_WORDS = 18_000
 FINANCE_ADVICE_BASE_TARGET_WORDS = 28_000
@@ -1506,7 +1514,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         lines = [line.rstrip() for line in text.split("\n")]
         compact = [line for line in lines if line.strip()]
         result = "\n".join(compact).strip()
-        if normalized in FINANCE_LONGFORM_CATEGORIES:
+        if normalized in FINANCE_SOURCE_GUARDED_CATEGORIES:
             result = _clean_finance_source_leaks(result).strip()
         return result + ("\n" if result else "")
 
@@ -1532,7 +1540,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     )
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
-    if normalized in FINANCE_LONGFORM_CATEGORIES:
+    if normalized in FINANCE_SOURCE_GUARDED_CATEGORIES:
         result = _clean_finance_source_leaks(result).strip()
     if normalized == "life_philosophy":
         result = _apply_life_philosophy_delivery_markers(result).strip()
@@ -2698,6 +2706,13 @@ def _is_finance_advice_category(category: str | None) -> bool:
         return False
 
 
+def _is_finance_recommendation_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category) == FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY
+    except Exception:
+        return False
+
+
 def _finance_section_content(text: str, section: str) -> str:
     pattern = re.compile(
         r"^@?\s*"
@@ -2800,7 +2815,12 @@ def _finance_web_search_excerpt(raw_text: str, *, max_chars: int = 12_000) -> st
 
 def _finance_latest_research_prompt(raw_text: str, *, category: str) -> str:
     excerpt = _finance_web_search_excerpt(raw_text)
-    category_label = "财经科技（观点建议版）" if category == "finance_technology_advice" else "财经·科技"
+    if _is_finance_advice_category(category):
+        category_label = "财经科技（观点建议版）"
+    elif _is_finance_recommendation_category(category):
+        category_label = "财经科技（建议版）"
+    else:
+        category_label = "财经·科技"
     return f"""你是财经科技长文写作前的联网事实检索员。
 
 任务：请调用联网搜索，围绕下方参考资料，查找可用于 {category_label} 长文的 2026 年或当前时点最新例子。
@@ -2836,6 +2856,23 @@ def _finance_latest_research_block(latest_research: str | None) -> str:
 
 [财经科技联网检索结果]
 {research}
+"""
+
+
+def _append_finance_recommendation_research_prompt(
+    writer_prompt: str,
+    latest_research: str | None,
+) -> str:
+    return f"""{writer_prompt.rstrip()}
+
+【财经科技建议版联网事实资料】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{_finance_latest_research_block(latest_research)}
+- 上方“财经科技（建议版）”主 prompt 仍然完整生效；本段只补充事实核验与最新资料边界，不改变主 prompt 的写作结构、标题结构、字数要求和建议要求。
+- 如果正文需要引用资料、数据、公司动作、政策变化、技术进展、市场变化或当前例子，必须优先使用上方联网检索结果和用户提供资料中可核对的事实。
+- 如果联网检索没有提供 2026 年或明确当前时点的最新例子，就不要写当前前景、最新趋势或近期案例，也不要退而求其次使用过去几年案例冒充最新例子。
+- 不要编造来源、日期、数据、公司动作或政策变化；不确定的事实宁可不写。
+- 正式成稿不得出现“联网检索”“搜索结果”“API”“参考资料显示”“视频材料提到”等创作过程词。
 """
 
 
@@ -4306,6 +4343,7 @@ async def generate_full_book(
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
     writer_input_text = raw_text.strip()
+    finance_recommendation_latest_research: str | None = None
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
@@ -4405,7 +4443,19 @@ async def generate_full_book(
                 interleaved=is_classical_interleaved,
             )
         else:
+            if _is_finance_recommendation_category(normalized_category):
+                finance_recommendation_latest_research = await _finance_latest_research_pack(
+                    writer_input_text,
+                    category=normalized_category,
+                    output_dir=output_dir,
+                    on_stage=on_stage,
+                )
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
+            if _is_finance_recommendation_category(normalized_category):
+                writer_prompt = _append_finance_recommendation_research_prompt(
+                    writer_prompt,
+                    finance_recommendation_latest_research,
+                )
             writer_prompt = _append_style_reference_prompt(
                 writer_prompt,
                 category=normalized_category,

@@ -48,6 +48,20 @@ def test_normalize_final_markdown_preserves_chapter_boundaries() -> None:
     assert "这是第一段。\n@2. 第二章\n人物传记等。" in result
 
 
+def test_finance_recommendation_normalize_cleans_source_leaks() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 测试章节
+视频材料中提到，SpaceX 提交了新的文件。
+"""
+
+    result = normalize_final_markdown(markdown, category="finance_technology_recommendation")
+
+    assert "视频材料" not in result
+    assert "根据公开资料" in result
+
+
 def test_life_philosophy_normalize_keeps_centered_delivery_markers() -> None:
     markdown = """！！！@三个备选书名
 1. 清醒的人生

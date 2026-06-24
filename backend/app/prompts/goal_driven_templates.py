@@ -250,6 +250,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "finance_technology_recommendation",
+        "label": "财经科技（建议版）",
+        "core_feature": "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
+        "directions": "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人建议、信息判断",
+        "prompt_status": "ready",
+    },
+    {
         "id": "wisdom_stories",
         "label": "小故事·智慧",
         "core_feature": "以故事承载哲理，易传播",
@@ -615,11 +622,48 @@ FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非�
 - 可以做宏观分析和条件推演。
 - 章节之间要有节奏变化，不要像一套分析模板从头写到底。
 - 观点要有深度和洞察力：不只描述发生了什么，还要解释背后的结构、利益、代价和选择。
-- 凡话题与普通人的生活、工作、消费、资产、职业或信息判断有关，必须设置一个独立小节，依据前文分析给出具体、可执行、有适用条件的建议；即使是偏科普的话题，也要说明普通人如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识。
 - 建议小节不能重复前文材料堆砌，也不能泛泛说“保持理性”“关注风险”。必须把前文分析转成有条件、有边界、能执行的判断，例如适用于谁、不适用于谁、先看什么信号、避免什么误判。
 - 不要空话，不要学术腔，不要翻译腔，不要做心理和情绪刻画，不要使用比喻修辞。
 - 不要使用“不是……而是……”句式，不要使用破折号——
-- 正文字数不设人为上限，以把核心问题讲清楚、讲透彻为准；不要为了控制篇幅删掉必要的背景、机制、影响链条和条件推演，也不要为了拉长篇幅重复观点或堆砌无关信息。
+- 所有书名、目录标题和正文章节标题都不要出现冒号。
+- 正文最后一章不要命名为“结语”。
+
+输入：
+[参考资料全文]
+{raw_text}
+
+请直接输出完整书稿。"""
+
+
+FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文写作者。
+
+任务：参考我提供的资料，直接生成一篇完整的深度长文。
+
+输出要求：
+- 严格按以下顺序输出，不得打乱：
+  1. @最终书名
+  2. @最终简介
+  3. @目录
+  4. @导言
+  5. @正文
+- 导言必须放在目录之后、正文之前，长度 100~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言，不要和正文太相似。
+- 正文必须紧接在导言之后，不要插入额外说明。
+- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程。
+
+内容要求：
+- 我提供的文章、资料或文稿，只能作为“参照材料”，不能作为逐段改写的底稿。
+- 你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。
+- 写作内容不需要大包大揽，不必把这个话题相关的所有方面都写全。重点是抓住1个主矛盾和2—4个核心问题，把它们讲清楚、讲透彻。
+- 写作要像给小白讲财经·科技内容一样，先把背景讲明白，再推进分析；不要一上来堆术语、数据、机构名称和结论；不要写成研究报告。
+- 每个重要概念、事件、政策、技术、公司动作或市场变化，都要先说明它是什么，再说明它为什么重要，最后说明它可能影响谁、影响什么。
+- 不要做具体投资预测，不要下结论式判断涨跌。
+- 可以做宏观分析和条件推演。
+- 章节之间要有节奏变化，不要像一套分析模板从头写到底。
+- 观点要有深度和洞察力：不只描述发生了什么，还要解释背后的结构、利益、代价和选择。
+- 凡话题与普通人的生活、工作、消费、资产、职业或信息判断有关，必须设置一个独立小节，依据前文分析给出具体、可执行、有适用条件的建议；即使是偏科普的话题，也要说明普通人如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识。
+- 不要空话，不要学术腔，不要翻译腔，不要做心理和情绪刻画，不要使用比喻修辞。
+- 不要使用“不是……而是……”句式，不要使用破折号——
+- 最终正文长度控制在约12000字，允许小幅度缩减，增加是可以的
 - 所有书名、目录标题和正文章节标题都不要出现冒号。
 - 正文最后一章不要命名为“结语”。
 
@@ -1751,6 +1795,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "finance_technology_advice": _prompt_set(
         FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT,
     ),
+    "finance_technology_recommendation": _prompt_set(
+        FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT,
+    ),
     "wisdom_stories": _prompt_set(
         WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -1841,6 +1888,16 @@ CATEGORY_ALIASES: dict[str, str] = {
     "财经·科技观点建议版": "finance_technology_advice",
     "财经·科技（观点建议版）": "finance_technology_advice",
     "财经·科技(观点建议版)": "finance_technology_advice",
+    "finance_technology_recommendation": "finance_technology_recommendation",
+    "finance_tech_recommendation": "finance_technology_recommendation",
+    "finance_technology_suggestion": "finance_technology_recommendation",
+    "finance_tech_suggestion": "finance_technology_recommendation",
+    "财经科技建议版": "finance_technology_recommendation",
+    "财经科技（建议版）": "finance_technology_recommendation",
+    "财经科技(建议版)": "finance_technology_recommendation",
+    "财经·科技建议版": "finance_technology_recommendation",
+    "财经·科技（建议版）": "finance_technology_recommendation",
+    "财经·科技(建议版)": "finance_technology_recommendation",
     "wisdom_causal_philosophy": "wisdom_stories_causal_philosophy",
     "story_wisdom_causal_philosophy": "wisdom_stories_causal_philosophy",
     "故事智慧因果哲思版": "wisdom_stories_causal_philosophy",
@@ -1913,6 +1970,7 @@ __all__ = [
     "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT",
+    "FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",
     "FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT",
     "GEMINI_FAST_POLISH_PROMPT",
