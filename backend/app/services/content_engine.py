@@ -25,11 +25,14 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.classical_chinese import (
+    CLASSICAL_CHINESE_CATEGORY_IDS,
+    CLASSICAL_INTERLEAVED_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
     build_classical_prompt_source,
     build_classical_structure_checklist,
     classical_expected_paragraph_count,
     classical_final_title,
+    classical_paragraph_marker,
     classical_source_lines,
     strip_classical_paragraph_markers,
 )
@@ -82,6 +85,20 @@ _FRONT_SECTION_RE = re.compile(
 def _is_finance_longform_category(category: str | None) -> bool:
     try:
         return normalize_category(category or "") in FINANCE_LONGFORM_CATEGORIES
+    except Exception:
+        return False
+
+
+def _is_classical_chinese_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category or "") in CLASSICAL_CHINESE_CATEGORY_IDS
+    except Exception:
+        return False
+
+
+def _is_classical_interleaved_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category or "") == CLASSICAL_INTERLEAVED_CATEGORY
     except Exception:
         return False
 
@@ -864,14 +881,51 @@ def _classical_translation_issues(source_text: str, markdown: str) -> list[str]:
     return issues
 
 
+def _classical_interleaved_structure_issues(
+    markdown: str,
+    *,
+    expected_count: int,
+    expected_markers: list[int] | range | None = None,
+) -> list[str]:
+    expected_sequence = _classical_expected_marker_sequence(
+        expected_count=expected_count,
+        expected_markers=expected_markers,
+    )
+    if not expected_sequence:
+        return []
+    body = _classical_body_for_validation(markdown)
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    issues: list[str] = []
+    for marker in expected_sequence:
+        marker_text = classical_paragraph_marker(marker)
+        line_index = next((idx for idx, line in enumerate(lines) if marker_text in line), -1)
+        if line_index < 0:
+            continue
+        original_line = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", lines[line_index], count=1).strip()
+        if not re.match(r"^[（(]\s*原文\s*[）)]", original_line):
+            issues.append(f"{_classical_marker_label(marker)} 缺少（原文）标注")
+        translation_index = line_index + 1
+        if translation_index >= len(lines):
+            issues.append(f"{_classical_marker_label(marker)} 缺少紧随其后的（翻译）段")
+            continue
+        translation_line = lines[translation_index]
+        if CLASSICAL_PARAGRAPH_MARKER_RE.search(translation_line) or not re.match(
+            r"^[（(]\s*翻译\s*[）)]",
+            translation_line,
+        ):
+            issues.append(f"{_classical_marker_label(marker)} 缺少紧随其后的（翻译）段")
+    return issues
+
+
 def _classical_quality_issues(
     markdown: str,
     *,
     expected_count: int,
     source_text: str,
     expected_markers: list[int] | range | None = None,
+    interleaved: bool = False,
 ) -> list[str]:
-    return _classical_structure_issues(
+    issues = _classical_structure_issues(
         markdown,
         expected_count=expected_count,
         expected_markers=expected_markers,
@@ -879,6 +933,13 @@ def _classical_quality_issues(
         source_text,
         markdown,
     )
+    if interleaved:
+        issues += _classical_interleaved_structure_issues(
+            markdown,
+            expected_count=expected_count,
+            expected_markers=expected_markers,
+        )
+    return issues
 
 
 async def _repair_classical_quality_once(
@@ -891,12 +952,14 @@ async def _repair_classical_quality_once(
     output_dir: Path | None,
     expected_markers: list[int] | range | None = None,
     segment_only: bool = False,
+    interleaved: bool = False,
 ) -> str:
     issues = _classical_quality_issues(
         markdown,
         expected_count=expected_count,
         source_text=source_text,
         expected_markers=expected_markers,
+        interleaved=interleaved,
     )
     if not issues:
         return markdown
@@ -913,6 +976,12 @@ async def _repair_classical_quality_once(
         if segment_only
         else "不要重写整篇，不要压缩，不要总结，不要输出解释，直接输出修复后的完整书稿。"
     )
+    interleaved_rule = (
+        "- 本稿是原文翻译穿插版，每个 P 编号必须对应两个连续自然段：【P0001】（原文）原文内容，下一段为（翻译）白话译文；原文段不得改写，翻译段不得漏译。\n"
+        "- 原文翻译穿插版不得把原文和翻译合并成一段，不得集中输出全部原文后再输出全部翻译。"
+        if interleaved
+        else ""
+    )
     repair_prompt = f"""你是古文白话稿件的结构校对编辑。下面的稿件已经生成，但存在段落编号、漏译、伪小标题或古今异义误译问题。请只修复这些问题，其他内容保持不变。
 
 【必须修复的问题】
@@ -924,6 +993,7 @@ async def _repair_classical_quality_once(
 - 辑名、篇名、作者行、导言、引语、题记、按语、正文段落都要保留，不得漏句、漏半句或跳译。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - “双卫”在本语境下不得译成侍卫、保镖或护卫；“婢子不宜好相识”不得译成“结交什么好相识”。
+{interleaved_rule}
 - {output_scope}
 
 【带编号原文】
@@ -943,6 +1013,7 @@ async def _repair_classical_quality_once(
         expected_count=expected_count,
         source_text=source_text,
         expected_markers=expected_markers,
+        interleaved=interleaved,
     )
     if remaining:
         raise RuntimeError(f"古文白话{stage}阶段结构保护失败: {'；'.join(remaining)}")
@@ -1107,6 +1178,7 @@ def _classical_segment_writer_prompt(
     start_index: int,
     variant: object,
     original_title: object,
+    interleaved: bool = False,
 ) -> str:
     segment_lines = classical_source_lines(segment_text)
     end_index = start_index + len(segment_lines) - 1
@@ -1120,16 +1192,27 @@ def _classical_segment_writer_prompt(
         variant=variant,
         original_title=original_title,
         start_index=start_index,
+        interleaved=interleaved,
     )
     before_block = before.strip() or "无"
     after_block = after.strip() or "无"
+    output_mode_rule = (
+        "把当前分段范围内的原文逐段完整输出为原文翻译穿插结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
+        if interleaved
+        else "把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
+    )
+    interleaved_rule = (
+        "\n- 每个原文段落必须输出两个连续自然段：第一段为【P0001】（原文）原文内容，第二段为（翻译）现代汉语译文。\n- 原文段必须逐字保留任务包中的对应原文，不得改写；翻译段必须完整翻译上一段原文，不得漏译。\n- 不得把原文和翻译合并成一段，不得集中输出全部原文后再输出全部翻译。"
+        if interleaved
+        else ""
+    )
     return f"""你是一名成熟的古文白话写作者。现在处理的是长篇古文白话工程中的一个连续分段。
 
 【当前分段范围】
 {_classical_marker_label(start_index)} 到 {_classical_marker_label(end_index)}
 
 【本次只做一件事】
-把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。
+{output_mode_rule}
 
 【必须严格遵守】
 - 每个原文段落必须一一对应输出，不得漏段、漏句、漏半句，不得合并段落，不得拆散段落，不得调换顺序。
@@ -1139,6 +1222,7 @@ def _classical_segment_writer_prompt(
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - 古今异义、器物名、职官名和旧称必须按上下文处理；不确定时保守表达，不要改成另一层意思。
 - 不要为了顺口改剧情，不要新增情节、人物、心理和结尾。
+{interleaved_rule}
 
 【上文参考，不翻译】
 {before_block}
@@ -1150,7 +1234,7 @@ def _classical_segment_writer_prompt(
 {task_pack}"""
 
 
-def _classical_segment_output_body(markdown: str) -> str:
+def _classical_segment_output_body(markdown: str, *, interleaved: bool = False) -> str:
     body = _classical_body_for_validation(markdown)
     lines: list[str] = []
     for raw_line in body.splitlines():
@@ -1166,6 +1250,8 @@ def _classical_segment_output_body(markdown: str) -> str:
         if _CLASSICAL_PUNCT_ONLY_RE.fullmatch(stripped):
             continue
         if _CLASSICAL_ANY_MARKER_RE.search(stripped) or not lines:
+            lines.append(stripped)
+        elif interleaved and re.match(r"^[（(]\s*翻译\s*[）)]", stripped):
             lines.append(stripped)
         else:
             lines[-1] = f"{lines[-1]}{stripped}"
@@ -1245,6 +1331,7 @@ async def _generate_classical_segmented_writer(
     original_title: object,
     output_dir: Path | None,
     on_stage: StageCallback | None,
+    interleaved: bool = False,
 ) -> str:
     lines = classical_source_lines(source_text)
     if not lines:
@@ -1291,6 +1378,7 @@ async def _generate_classical_segmented_writer(
                     expected_count=expected_count,
                     source_text=segment_text,
                     expected_markers=expected_markers,
+                    interleaved=interleaved,
                 )
                 if not cached_issues:
                     body = cached
@@ -1318,13 +1406,14 @@ async def _generate_classical_segmented_writer(
                 start_index=start_index,
                 variant=variant,
                 original_title=original_title,
+                interleaved=interleaved,
             )
             raw_segment = await _route_writer_call(
                 prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
             )
-            body = _classical_segment_output_body(raw_segment)
+            body = _classical_segment_output_body(raw_segment, interleaved=interleaved)
             body = await _repair_classical_quality_once(
                 body,
                 marked_source_text=build_classical_prompt_source(
@@ -1332,6 +1421,7 @@ async def _generate_classical_segmented_writer(
                     variant=variant,
                     original_title=original_title,
                     start_index=start_index,
+                    interleaved=interleaved,
                 ),
                 source_text=segment_text,
                 expected_count=expected_count,
@@ -1339,8 +1429,9 @@ async def _generate_classical_segmented_writer(
                 stage=f"writer_segment_{segment_index:04d}",
                 output_dir=output_dir,
                 segment_only=True,
+                interleaved=interleaved,
             )
-            body = _classical_segment_output_body(body)
+            body = _classical_segment_output_body(body, interleaved=interleaved)
             if cache_path:
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1358,6 +1449,7 @@ async def _generate_classical_segmented_writer(
         assembled,
         expected_count=expected_count,
         source_text=source_text,
+        interleaved=interleaved,
     )
     if final_issues:
         raise RuntimeError(f"古文白话分段组装覆盖校验失败: {'；'.join(final_issues)}")
@@ -1411,7 +1503,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     front = text[: match.end()]
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
-    if normalized == "classical_chinese":
+    if normalized in CLASSICAL_CHINESE_CATEGORY_IDS:
         front_lines = [strip_classical_paragraph_markers(line) for line in front_lines]
         body_lines = _clean_classical_body_lines(body)
         result = "\n".join(front_lines + body_lines).strip()
@@ -3908,12 +4000,15 @@ async def generate_full_book(
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
-    if normalized_category == "classical_chinese":
+    is_classical_category = normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
+    is_classical_interleaved = normalized_category == CLASSICAL_INTERLEAVED_CATEGORY
+    if is_classical_category:
         classical_expected_count = classical_expected_paragraph_count(writer_input_text)
         writer_input_text = build_classical_prompt_source(
             writer_input_text,
             variant=classical_variant,
             original_title=classical_original_title,
+            interleaved=is_classical_interleaved,
         )
         classical_marked_source_text = writer_input_text
 
@@ -3985,7 +4080,7 @@ async def generate_full_book(
         if on_stage:
             on_stage("writer_start", {})
         if (
-            normalized_category == "classical_chinese"
+            is_classical_category
             and _should_use_classical_segmented_writer(
                 classical_source_text,
                 classical_expected_count,
@@ -3997,6 +4092,7 @@ async def generate_full_book(
                 original_title=classical_original_title,
                 output_dir=output_dir,
                 on_stage=on_stage,
+                interleaved=is_classical_interleaved,
             )
         else:
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
@@ -4011,7 +4107,7 @@ async def generate_full_book(
                 category=normalized_category,
                 input_source=input_source,
             )
-            writer_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
+            writer_max_output_tokens = 0 if is_classical_category else None
             generated_markdown = await _route_writer_call(
                 writer_prompt,
                 max_output_tokens=writer_max_output_tokens,
@@ -4038,7 +4134,7 @@ async def generate_full_book(
             _log_stage("1b/4 writer-repaired", generated_markdown)
             _dump_stage(output_dir, "01b_writer_repaired.md", generated_markdown)
 
-    if normalized_category == "classical_chinese":
+    if is_classical_category:
         generated_markdown = await _repair_classical_quality_once(
             generated_markdown,
             marked_source_text=classical_marked_source_text,
@@ -4046,6 +4142,7 @@ async def generate_full_book(
             expected_count=classical_expected_count,
             stage="writer",
             output_dir=output_dir,
+            interleaved=is_classical_interleaved,
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
 
@@ -4064,7 +4161,7 @@ async def generate_full_book(
             on_stage("polish_start", {})
         polish_chunk_func = (
             _polish_book_text_without_output_cap
-            if normalized_category == "classical_chinese"
+            if is_classical_category
             else polish_book_text
         )
         polished_markdown = await _polish_by_paragraph_chunks_strict(
@@ -4074,15 +4171,15 @@ async def generate_full_book(
             on_stage=on_stage,
             output_dir=output_dir,
             chunk_func=polish_chunk_func,
-            allow_chunk_fallback=normalized_category == "classical_chinese",
+            allow_chunk_fallback=is_classical_category,
             splitter=(
                 _split_text_by_classical_marker_lines
-                if normalized_category == "classical_chinese"
+                if is_classical_category
                 else None
             ),
             chunk_validator=(
                 _classical_chunk_marker_issues
-                if normalized_category == "classical_chinese"
+                if is_classical_category
                 else None
             ),
         )
@@ -4091,7 +4188,7 @@ async def generate_full_book(
         polish_chars = len(polished_markdown)
         if on_stage:
             on_stage("polish_done", {"chars": polish_chars})
-    if normalized_category == "classical_chinese":
+    if is_classical_category:
         polished_markdown = await _repair_classical_quality_once(
             polished_markdown,
             marked_source_text=classical_marked_source_text,
@@ -4099,6 +4196,7 @@ async def generate_full_book(
             expected_count=classical_expected_count,
             stage="polish",
             output_dir=output_dir,
+            interleaved=is_classical_interleaved,
         )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -4116,10 +4214,10 @@ async def generate_full_book(
             on_stage("refine_start", {})
         refine_func = (
             _refine_book_text_without_output_cap
-            if normalized_category == "classical_chinese"
+            if is_classical_category
             else refine_book_text
         )
-        if normalized_category == "classical_chinese":
+        if is_classical_category:
             logger.info("Classical Chinese refine uses chunked path to avoid whole-book Gemini stalls")
             refined_markdown = await _refine_by_paragraph_chunks_strict(
                 polished_markdown,
@@ -4158,7 +4256,7 @@ async def generate_full_book(
         refine_chars = len(refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
-    if normalized_category == "classical_chinese":
+    if is_classical_category:
         refined_markdown = await _repair_classical_quality_once(
             refined_markdown,
             marked_source_text=classical_marked_source_text,
@@ -4166,6 +4264,7 @@ async def generate_full_book(
             expected_count=classical_expected_count,
             stage="refine",
             output_dir=output_dir,
+            interleaved=is_classical_interleaved,
         )
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
@@ -4181,14 +4280,14 @@ async def generate_full_book(
         if on_stage:
             on_stage("format_start", {})
         try:
-            format_max_output_tokens = 0 if normalized_category == "classical_chinese" else None
+            format_max_output_tokens = 0 if is_classical_category else None
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
                     format_book_text,
                     refined_markdown,
                     prompt_template=final_book_format_prompt,
                     max_output_tokens=format_max_output_tokens,
-                    fail_on_max_tokens=normalized_category == "classical_chinese",
+                    fail_on_max_tokens=is_classical_category,
                     on_progress=(
                         (lambda chars: on_stage("format_progress", {"chars": chars}))
                         if on_stage
@@ -4198,12 +4297,12 @@ async def generate_full_book(
                 timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
             if (
-                normalized_category == "classical_chinese"
+                is_classical_category
                 and _classical_format_looks_truncated(refined_markdown, final_markdown)
             ):
                 final_markdown = _classical_format_fallback_text(refined_markdown, final_markdown)
         except DeepSeekMaxTokensError as exc:
-            if normalized_category != "classical_chinese":
+            if not is_classical_category:
                 raise
             final_markdown = _classical_format_fallback_text(refined_markdown, exc.partial_text)
         except asyncio.TimeoutError as exc:
@@ -4215,17 +4314,19 @@ async def generate_full_book(
         if on_stage:
             on_stage("format_done", {"chars": len(final_markdown)})
 
-    if normalized_category == "classical_chinese":
+    if is_classical_category:
         final_issues = _classical_quality_issues(
             final_markdown,
             expected_count=classical_expected_count,
             source_text=classical_source_text,
+            interleaved=is_classical_interleaved,
         )
         if final_issues:
             refined_issues = _classical_quality_issues(
                 refined_markdown,
                 expected_count=classical_expected_count,
                 source_text=classical_source_text,
+                interleaved=is_classical_interleaved,
             )
             if not refined_issues:
                 logger.warning(
@@ -4241,6 +4342,7 @@ async def generate_full_book(
                     expected_count=classical_expected_count,
                     stage="format",
                     output_dir=output_dir,
+                    interleaved=is_classical_interleaved,
                 )
 
     if _front_matter_missing(final_markdown):
@@ -4250,7 +4352,7 @@ async def generate_full_book(
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
 
-    if normalized_category == "classical_chinese":
+    if is_classical_category:
         final_markdown = enforce_classical_title(final_markdown, classical_original_title)
     final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
     _dump_stage(output_dir, "04_format.md", final_markdown)

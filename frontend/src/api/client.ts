@@ -382,10 +382,12 @@ export const api = {
     file: File,
     classicalVariant = "plain",
     title = "",
+    category = "classical_chinese",
   ) =>
     uploadFile<CreateTaskResponse>("/tasks/classical-chinese/docx", file, {
       classical_variant: classicalVariant,
       title,
+      category,
     }),
   createTaskBatch: (body: BatchCreateTaskRequest) =>
     request<BatchCreateTaskResponse>("/tasks/batch", {

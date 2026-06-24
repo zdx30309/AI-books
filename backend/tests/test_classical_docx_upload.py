@@ -118,6 +118,14 @@ def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
             "title": "论语",
         }
     )["classical_original_title"] == "论语"
+    interleaved_cfg = task_router._normalize_task_config(  # noqa: SLF001
+        {
+            "category": "classical_chinese_interleaved",
+            "title": "宋定伯捉鬼",
+        }
+    )
+    assert interleaved_cfg["category"] == "classical_chinese_interleaved"
+    assert interleaved_cfg["classical_original_title"] == "宋定伯捉鬼"
 
 
 def test_create_classical_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
@@ -150,6 +158,43 @@ def test_create_classical_text_task_externalizes_raw_text(tmp_path, monkeypatch)
     )
 
     assert response.status == TaskStatus.PENDING
+    assert "raw_text" not in db.task.config
+    assert db.task.config["raw_text_chars"] == len(raw_text)
+    stored_path = tmp_path / db.task.config["source_text_path"]
+    assert stored_path.read_text(encoding="utf-8") == raw_text
+
+
+def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
+    class FakeDb:
+        def add(self, task):
+            self.task = task
+
+        def commit(self):
+            pass
+
+        def refresh(self, task):
+            if not task.id:
+                task.id = uuid4()
+
+    raw_text = "南阳宋定伯，年少时，夜行，逢鬼，问之。" * 1000
+    db = FakeDb()
+    user = type("User", (), {"id": uuid4()})()
+    monkeypatch.setattr(task_router, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(task_router, "_dispatch_task", lambda task: None)
+
+    response = task_router._create_classical_text_task(  # noqa: SLF001
+        source_url="manual://classical_chinese_interleaved",
+        config={
+            "category": "classical_chinese_interleaved",
+            "raw_text": raw_text,
+            "classical_original_title": "宋定伯捉鬼",
+        },
+        db=db,
+        user=user,
+    )
+
+    assert response.status == TaskStatus.PENDING
+    assert db.task.config["category"] == "classical_chinese_interleaved"
     assert "raw_text" not in db.task.config
     assert db.task.config["raw_text_chars"] == len(raw_text)
     stored_path = tmp_path / db.task.config["source_text_path"]

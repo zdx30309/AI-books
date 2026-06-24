@@ -91,6 +91,8 @@ _PUA_MARKER_RE = re.compile(r"\{\[[0-9a-fA-F]+\]\}")
 _LINK_MARK_RE = re.compile(r"[`~]")
 CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
+CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
+CLASSICAL_CHINESE_CATEGORY_IDS = frozenset({"classical_chinese", CLASSICAL_INTERLEAVED_CATEGORY})
 
 
 def normalize_classical_variant(raw: object) -> str:
@@ -309,12 +311,30 @@ def build_classical_prompt_source(
     variant: object = None,
     original_title: object = None,
     start_index: int = 1,
+    interleaved: bool = False,
 ) -> str:
     meta = get_classical_variant_meta(variant)
     dictionary_context = build_classical_dictionary_context(raw_text)
     final_title = classical_final_title(original_title)
     marked_source = build_classical_marked_source(raw_text, start_index=start_index)
     structure_checklist = build_classical_structure_checklist(raw_text, start_index=start_index)
+    interleaved_rules = (
+        """
+【原文翻译穿插版硬规则】
+- 本任务是“白话原文翻译穿插版”，不是普通纯白话版。
+- @正文 下每个原文段落必须输出两个连续自然段，顺序固定为：先原文，后翻译。
+- 每个原文段必须以对应 P 编号开头，格式为：【P0001】（原文）原文内容。
+- 每个翻译段必须紧跟对应原文段，格式为：（翻译）现代汉语译文。
+- 原文段中的原文内容必须逐字保留任务包里的对应原文，不得改字、删句、改标点、改顺序，也不得把多个原文段合并到一起。
+- 翻译段必须完整覆盖上一段原文的全部内容，不得漏句、漏半句、跳译、概括代替翻译。
+- 不得先集中输出全部原文再集中输出全部翻译；不得把原文和翻译混在同一个自然段里；不得额外添加“注释”“赏析”“解析”“译者按”等内容。
+- 示例格式：
+  【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。
+  （翻译）南阳有个叫宋定伯的人，年轻时有一晚赶路，遇见了鬼，便开口询问它。
+"""
+        if interleaved
+        else ""
+    )
     return f"""【古文白话总方向】
 形似神似，活灵活现。必须在故事自己的基础上，把原文的骨架、情节、人物关系、语气和意味都保住，同时让现代读者读起来顺畅、自然、有画面。不要把古文改成另一个故事，也不要为了好看而擅自加戏。
 
@@ -343,6 +363,7 @@ def build_classical_prompt_source(
 - 例如“婢子不宜好相识”一类句子，应按人物关系和语境理解为“不宜同她交好”或“不宜对她太客气”，不得写成“结交什么好相识”。
 - 例如“家人捉双卫来寻生”中，“卫”在该语境下应按坐骑、驴子一类理解，不得译成侍卫、保镖或护卫。
 - 遇到不确定词义，宁可写得保守，也不要写成看似顺口但改变事实的现代解释。
+{interleaved_rules}
 
 【原文结构清单】
 {structure_checklist}
@@ -363,6 +384,8 @@ def build_classical_prompt_source(
 __all__ = [
     "CLASSICAL_VARIANT_OPTIONS",
     "CLASSICAL_PARAGRAPH_MARKER_RE",
+    "CLASSICAL_CHINESE_CATEGORY_IDS",
+    "CLASSICAL_INTERLEAVED_CATEGORY",
     "build_classical_dictionary_context",
     "build_classical_marked_source",
     "build_classical_prompt_source",

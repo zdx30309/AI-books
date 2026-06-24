@@ -59,11 +59,11 @@ def test_generate_full_book_routes_writer_prompt_by_category(
 ) -> None:
     raw_text = "这是一段用于本地路由测试的原始文稿。"
     writer_prompts: list[str] = []
-    expected_raw_text = (
-        build_classical_prompt_source(raw_text)
-        if category == "classical_chinese"
-        else raw_text
-    )
+    expected_raw_text = raw_text
+    if category == "classical_chinese":
+        expected_raw_text = build_classical_prompt_source(raw_text)
+    elif category == "classical_chinese_interleaved":
+        expected_raw_text = build_classical_prompt_source(raw_text, interleaved=True)
     expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
@@ -350,6 +350,8 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("故事智慧因果哲思版") == "wisdom_stories_causal_philosophy"
     assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
+    assert normalize_category("古文白话（原文翻译穿插版）") == "classical_chinese_interleaved"
+    assert normalize_category("财经科技（观点建议版）") == "finance_technology_advice"
 
 
 def test_finance_technology_category_uses_dedicated_prompt() -> None:
@@ -946,6 +948,26 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     assert get_classical_variant_meta("武侠小说爽读版")["id"] == "wuxia_web"
 
 
+def test_classical_chinese_interleaved_prompt_preserves_original_and_translation() -> None:
+    meta = get_category_meta("classical_chinese_interleaved")
+    prompt = get_prompts("classical_chinese_interleaved")["full_book_writer"]
+    task_source = build_classical_prompt_source(
+        "南阳宋定伯，年少时，夜行，逢鬼，问之。",
+        variant="plain",
+        original_title="宋定伯捉鬼",
+        interleaved=True,
+    )
+    rendered = prompt.format(raw_text=task_source)
+
+    assert meta["label"] == "古文白话（原文翻译穿插版）"
+    assert "原文翻译穿插正文" in rendered
+    assert "【原文翻译穿插版硬规则】" in rendered
+    assert "【P0001】（原文）" in rendered
+    assert "（翻译）现代汉语译文" in rendered
+    assert "原文段中的原文内容必须逐字保留" in rendered
+    assert "不得先集中输出全部原文再集中输出全部翻译" in rendered
+
+
 def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lines(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -998,6 +1020,73 @@ def test_classical_chinese_enforces_original_title_suffix_and_compacts_blank_lin
     assert "【P0001】" not in result
     assert "【P0002】" not in result
     assert "第一段白话。\n\n第二段白话。" not in result
+
+
+def test_classical_chinese_interleaved_outputs_original_translation_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”"
+    expected_source = build_classical_prompt_source(
+        raw_text,
+        original_title="宋定伯捉鬼",
+        interleaved=True,
+    )
+    expected_prompt = get_prompts("classical_chinese_interleaved")["full_book_writer"].format(
+        raw_text=expected_source
+    )
+    writer_prompts: list[str] = []
+    manuscript = """@最终书名
+宋定伯捉鬼（白话版）
+@最终简介
+测试简介
+@目录
+1. 全文
+@导言
+测试导言。
+@正文
+@1. 全文
+【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。
+（翻译）南阳有个叫宋定伯的人，年轻时夜里赶路，遇见了鬼，便开口询问它。
+【P0002】（原文）定伯诳之，言：“我亦鬼。”
+（翻译）宋定伯骗它说：“我也是鬼。”
+"""
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        writer_prompts.append(prompt)
+        return manuscript
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="classical_chinese_interleaved",
+            output_dir=tmp_path / "classical_interleaved",
+            classical_original_title="宋定伯捉鬼",
+        )
+    )
+
+    assert writer_prompts == [expected_prompt]
+    assert "@最终书名\n宋定伯捉鬼（白话版）" in result
+    assert "【P0001】" not in result
+    assert "【P0002】" not in result
+    assert "（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。\n（翻译）南阳有个叫宋定伯的人" in result
+    assert "（原文）定伯诳之，言：“我亦鬼。”\n（翻译）宋定伯骗它说：“我也是鬼。”" in result
+
+
+def test_classical_interleaved_quality_detects_missing_translation_pair() -> None:
+    issues = content_engine._classical_quality_issues(  # noqa: SLF001
+        "@正文\n【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。\n【P0002】（原文）定伯诳之，言：“我亦鬼。”\n（翻译）宋定伯骗它说：“我也是鬼。”",
+        expected_count=2,
+        source_text="南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”",
+        interleaved=True,
+    )
+
+    assert any("P0001 缺少紧随其后的（翻译）段" in issue for issue in issues)
 
 
 def test_classical_chinese_uses_no_application_output_caps(

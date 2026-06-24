@@ -25,7 +25,7 @@ from app.core.quality_metrics import measure_quality, format_report
 from app.db.session import SessionLocal
 from app.models import Chapter, Task, TaskStatus
 from app.prompts.goal_driven_templates import get_category_meta, normalize_category
-from app.services.classical_chinese import classical_final_title
+from app.services.classical_chinese import CLASSICAL_CHINESE_CATEGORY_IDS, classical_final_title
 from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
 from app.services.comic_series import (
     ComicGenerationPaused,
@@ -75,7 +75,9 @@ def _classical_original_title_from_config(config: dict[str, Any], *, source_url:
         stem = Path(filename).stem.strip()
         if stem:
             return stem[:120]
-    if source_url.startswith("manual://classical_chinese_docx/"):
+    if source_url.startswith("manual://classical_chinese_docx/") or source_url.startswith(
+        "manual://classical_chinese_interleaved_docx/"
+    ):
         stem = Path(source_url.rsplit("/", 1)[-1]).stem.strip()
         if stem:
             return stem[:120]
@@ -430,7 +432,7 @@ def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> 
     if cached_text:
         return cached_text, config_duration
 
-    if category == "classical_chinese":
+    if category in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise ValueError("古文白话题材请直接粘贴文言文原文，不需要填写视频链接")
 
     raw_max_duration = config.get("max_video_duration")
@@ -1033,7 +1035,7 @@ def process_video(_self, task_id: str) -> dict:
         category_meta = get_category_meta(category)
         classical_original_title = (
             _classical_original_title_from_config(task.config or {}, source_url=task.source_url)
-            if category == "classical_chinese"
+            if category in CLASSICAL_CHINESE_CATEGORY_IDS
             else None
         )
         _patch_config(
@@ -1173,7 +1175,7 @@ def process_video(_self, task_id: str) -> dict:
 
         book_title = (
             classical_final_title(classical_original_title)
-            if category == "classical_chinese"
+            if category in CLASSICAL_CHINESE_CATEGORY_IDS
             else _extract_book_title(markdown)
         )
         _ensure_active_run(db, task, run_id)

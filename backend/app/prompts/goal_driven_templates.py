@@ -313,6 +313,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "classical_chinese_interleaved",
+        "label": "古文白话（原文翻译穿插版）",
+        "core_feature": "每段先保留原文，再紧跟对应白话翻译",
+        "directions": "古文原文、逐段翻译、原文翻译穿插、古籍白话对照阅读",
+        "prompt_status": "ready",
+    },
+    {
         "id": "comic_series",
         "label": "插画",
         "core_feature": "目录加文前封面和五或六辑治愈插画绘本，短语、配图、故事成套生成",
@@ -1269,6 +1276,18 @@ CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT = """你是一名古文白话大板块
 请直接输出完整白话加工稿。"""
 
 
+CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT = CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT.replace(
+    "- @正文 下必须直接输出加工后的正文，可以按原文逻辑自然分章分段；不要再单独设置“原文整理”“白话译文”“疑难词句”“阅读提示”等资料型章节，除非输入本身明确要求。",
+    "- @正文 下必须直接输出原文翻译穿插正文：每个原文自然段先输出“（原文）……”自然段，下一段紧跟对应“（翻译）……”自然段；不要再单独设置“原文整理”“白话译文”“疑难词句”“阅读提示”等资料型章节。",
+).replace(
+    "- @正文 的段落必须和原文段落一一对应：原文第几段，白话正文就第几段。不要强制分段，不要合并原文段落，不要拆散原文段落，不要重排段落顺序。",
+    "- @正文 的原文段和翻译段必须和原文段落一一对应：原文第几段，就先输出第几段原文，再紧跟第几段翻译。不要合并原文段落，不要拆散原文段落，不要重排段落顺序。",
+).replace(
+    "请直接输出完整白话加工稿。",
+    "请直接输出完整白话原文翻译穿插稿。",
+)
+
+
 CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT = """请把下面的古文白话加工稿做一润，让它更通俗、连贯、自然，读起来没有翻译腔。
 
 【总方向】
@@ -1282,6 +1301,7 @@ CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT = """请把下面的古文白话加�
 - 原文中的人物、地名、官职、典故、制度名、动作、对白、因果和转折必须保留。
 - 如果某段已经自然，原样返回即可，不要为了显得改过而乱改。
 - 正文段首的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序。
+- 如果正文采用“（原文）/（翻译）”穿插结构，必须保留每一组原文段和翻译段的相邻关系；原文段不得被改写，翻译段不得被删减。
 - **作者名** 这类整段加粗的作者或署名行必须保留加粗标记；其他段落不要新增加粗。
 - 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节；不得出现 ### 这类标题符号。
 - 如果原稿已有导言、引语、题记、按语等本身就是白话的段落，只允许微调标点和明显不顺处，不得重新改写。
@@ -1300,6 +1320,7 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 - 不得以“前文已涉及”为由删除任何剧情、对白、动作、典故、人物关系、独立段落或独立章节。
 - 章节数量、章节标题、段落层次必须保留；古文白话正文按原文段落一一对应，不允许强制分段、合并段落、拆分段落或重排段落。
 - 正文段首的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序。
+- 如果正文采用“（原文）/（翻译）”穿插结构，必须保留每一组原文段和翻译段的相邻关系；原文段不得被改写，翻译段不得被删减。
 - **作者名** 这类整段加粗的作者或署名行必须保留加粗标记；其他段落不要新增加粗。
 - 不得新增没有 P 编号的小标题、Markdown 标题、解释性小节或资料型章节；不得出现 ### 这类标题符号。
 
@@ -1316,6 +1337,7 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 
 CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT = """【古文白话专属保护】
 - @正文 中的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序；这些编号由系统最终清理，不属于你要处理的格式。
+- 如果正文采用“（原文）/（翻译）”穿插结构，必须保留原文段和翻译段的相邻关系；不得删除“（原文）”“（翻译）”标注，不得把原文和翻译合并成一段。
 - **作者名** 这类整段加粗的作者或署名行必须保留加粗标记，不得删除星号，不得改成普通正文。
 - 不得新增没有 P 编号的小标题、Markdown 标题、资料型说明或解释性小节；输入里如果出现没有 P 编号的 ### 伪标题，只删除标题符号和伪标题行，不得影响后续正文段落。
 - 原文已经是白话的导言、引语、题记、按语，只允许保留或做中文标点整理，不得重新改写。
@@ -1754,6 +1776,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
         formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
     ),
+    "classical_chinese_interleaved": _prompt_set(
+        CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT,
+        polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
+        refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
+    ),
     "comic_series": _prompt_set(
         COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
         polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
@@ -1823,6 +1851,12 @@ CATEGORY_ALIASES: dict[str, str] = {
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",
+    "古文白话原文翻译穿插版": "classical_chinese_interleaved",
+    "古文白话（原文翻译穿插版）": "classical_chinese_interleaved",
+    "古文白话(原文翻译穿插版)": "classical_chinese_interleaved",
+    "白话原文翻译穿插版": "classical_chinese_interleaved",
+    "classical_chinese_interleaved": "classical_chinese_interleaved",
+    "classical_interleaved": "classical_chinese_interleaved",
     "comic": "healing_comic",
     "comic_bookshelf": "healing_comic",
     "漫画": "healing_comic",
@@ -1870,6 +1904,8 @@ __all__ = [
     "SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT",
     "LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT",
     "LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT",
+    "CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT",
+    "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",

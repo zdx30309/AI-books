@@ -75,6 +75,30 @@ def test_classical_docx_download_renders_bold_author_line() -> None:
     assert "<w:b/>" in xml
 
 
+def test_classical_interleaved_docx_download_preserves_original_translation_pairs() -> None:
+    markdown = """@最终书名
+宋定伯捉鬼（白话版）
+@导言
+这段导言不进入 Word。
+@正文
+@1. 全文
+【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。
+（翻译）南阳有个叫宋定伯的人，年轻时夜里赶路，遇见了鬼，便询问它。
+【P0002】（原文）定伯诳之，言：“我亦鬼。”
+（翻译）宋定伯骗它说：“我也是鬼。”
+"""
+
+    text = _docx_text(_markdown_to_docx(markdown, category="classical_chinese_interleaved"))
+
+    assert "这段导言不进入 Word" not in text
+    assert "【P0001】" not in text
+    assert "【P0002】" not in text
+    assert "（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。" in text
+    assert "（翻译）南阳有个叫宋定伯的人" in text
+    assert "（原文）定伯诳之，言：“我亦鬼。”" in text
+    assert "（翻译）宋定伯骗它说：“我也是鬼。”" in text
+
+
 def test_non_classical_docx_download_keeps_intro_and_number_prefixes() -> None:
     markdown = """@最终书名
 测试书名

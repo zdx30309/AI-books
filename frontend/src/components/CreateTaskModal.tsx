@@ -63,6 +63,10 @@ const LONG_NOVEL_MODULES = [
     description: "婆媳、妯娌、分家、房产、养老、借钱、带娃等家庭利益矛盾。",
   },
 ];
+const CLASSICAL_CHINESE_CATEGORY_IDS = new Set([
+  "classical_chinese",
+  "classical_chinese_interleaved",
+]);
 type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch" | "longNovel";
 
 function extractCandidateLinks(text: string) {
@@ -161,7 +165,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const comicPhrases = parseComicPhrases(comicPhraseInput);
   const isReferenceArticle = mode === "article" || mode === "articleBatch";
   const isReferenceArticleBatch = mode === "articleBatch";
-  const isClassicalChinese = category === "classical_chinese";
+  const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
@@ -593,6 +597,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           classicalDocxFile,
           classicalVariant,
           classicalBookTitle.trim(),
+          category,
         );
         onCreated(res.task_id);
       } catch (e) {
@@ -633,7 +638,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       }
       if (rawText.trim()) config.raw_text = rawText.trim();
       const res = await api.createTask({
-        url: isClassicalChinese ? "manual://classical_chinese" : url.trim() || "manual://raw_text",
+        url: isClassicalChinese ? `manual://${category}` : url.trim() || "manual://raw_text",
         config,
       });
       onCreated(res.task_id);

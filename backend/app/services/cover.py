@@ -651,6 +651,7 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
 _CATEGORY_STYLE_PROFILES["web_short_story"] = _CATEGORY_STYLE_PROFILES["history_culture"]
 _CATEGORY_STYLE_PROFILES["social_science_test"] = _CATEGORY_STYLE_PROFILES["social_science"]
 _CATEGORY_STYLE_PROFILES["finance_technology_advice"] = _CATEGORY_STYLE_PROFILES["finance_technology"]
+_CATEGORY_STYLE_PROFILES["classical_chinese_interleaved"] = _CATEGORY_STYLE_PROFILES["classical_chinese"]
 _CATEGORY_STYLE_PROFILES["illustration"] = _CATEGORY_STYLE_PROFILES["psychology_self_help"]
 
 _COVER_PROMPT_ADJUSTMENT_KEYS = ("style_brief_rules", "draft_rules", "refine_rules")

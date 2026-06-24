@@ -145,6 +145,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "classical_chinese_interleaved",
+    label: "古文白话（原文翻译穿插版）",
+    core_feature: "每段先保留原文，再紧跟对应白话翻译",
+    directions: "古文原文、逐段翻译、原文翻译穿插、古籍白话对照阅读",
+    prompt_status: "ready",
+  },
+  {
     id: "comic_series",
     label: "插画",
     core_feature: "目录加文前封面和五或六辑治愈漫画绘本，短语、配图、故事成套生成",
@@ -200,9 +207,11 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "life_philosophy_self_rescue",
   "popular_science_cognitive_upgrade",
   "finance_technology",
+  "finance_technology_advice",
   "wisdom_stories_causal_philosophy",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
+  "classical_chinese_interleaved",
 ] as const;
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [

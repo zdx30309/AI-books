@@ -41,7 +41,7 @@ from app.services.comic_series import (
     parse_healing_comic_panel_count,
     validate_comic_phrases,
 )
-from app.services.classical_chinese import get_classical_variant_meta
+from app.services.classical_chinese import CLASSICAL_CHINESE_CATEGORY_IDS, get_classical_variant_meta
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -211,7 +211,7 @@ def _normalize_task_config(config: dict | None) -> dict:
     else:
         cfg.pop("style_reference", None)
         cfg.pop("style_notes", None)
-    if category == "classical_chinese":
+    if category in CLASSICAL_CHINESE_CATEGORY_IDS:
         variant_meta = get_classical_variant_meta(cfg.get("classical_variant"))
         cfg["classical_variant"] = variant_meta["id"]
         cfg["classical_variant_label"] = variant_meta["label"]
@@ -729,7 +729,7 @@ def create_task(
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
     cfg = _config_with_source_platform(_normalize_task_config(req.config), req.url)
-    if cfg.get("category") == "classical_chinese":
+    if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         return _create_classical_text_task(source_url=req.url, config=cfg, db=db, user=user)
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
 
@@ -986,6 +986,7 @@ def create_emotion_reference_article_task_batch(
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
     classical_variant: str = Form(default="plain"),
+    category: str = Form(default="classical_chinese"),
     title: str = Form(default=""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -999,9 +1000,15 @@ async def create_classical_chinese_from_docx(
         raw_text = extract_classical_docx_text(content)
     except DocxTextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    try:
+        normalized_category = normalize_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS:
+        raise HTTPException(status_code=400, detail="Word 上传只支持古文白话相关分类")
     cfg = _normalize_task_config(
         {
-            "category": "classical_chinese",
+            "category": normalized_category,
             "classical_variant": classical_variant,
             "classical_original_title": (title.strip() or Path(filename).stem.strip())[:120],
             "title": (title.strip() or Path(filename).stem.strip())[:120],
@@ -1011,7 +1018,7 @@ async def create_classical_chinese_from_docx(
         }
     )
     response = _create_and_dispatch_task(
-        source_url=f"manual://classical_chinese_docx/{filename[:120]}",
+        source_url=f"manual://{normalized_category}_docx/{filename[:120]}",
         config=cfg,
         db=db,
         user=user,
@@ -1066,7 +1073,7 @@ def create_task_batch(
         raise HTTPException(status_code=400, detail="一次最多放入 500 个链接")
 
     cfg = _normalize_task_config(req.config)
-    if cfg.get("category") == "classical_chinese":
+    if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
     if cfg.get("category") in {"comic_series", "healing_comic"}:
         label = str(cfg.get("category_label") or "插画")
@@ -1722,10 +1729,10 @@ def _docx_category(markdown_category: str | None) -> str:
         return ""
 
 
-def _classical_chinese_docx_lines(markdown: str) -> list[str]:
+def _classical_chinese_docx_lines(markdown: str, *, category: str = "classical_chinese") -> list[str]:
     lines: list[str] = []
     skipping_intro = False
-    for raw_line in normalize_final_markdown(markdown, category="classical_chinese").splitlines():
+    for raw_line in normalize_final_markdown(markdown, category=category).splitlines():
         stripped = raw_line.strip()
         section = _DOCX_FRONT_SECTION_RE.match(stripped)
         if section:
@@ -1758,8 +1765,8 @@ def _markdown_to_docx(
     paragraphs: list[str] = []
     image_entries: list[tuple[str, Path, str]] = []
     normalized_category = _docx_category(category)
-    if normalized_category == "classical_chinese":
-        docx_lines = _classical_chinese_docx_lines(markdown)
+    if normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS:
+        docx_lines = _classical_chinese_docx_lines(markdown, category=normalized_category)
     else:
         docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
     for line in docx_lines:
@@ -1794,7 +1801,7 @@ def _markdown_to_docx(
         paragraphs.append(
             _docx_text_paragraph(
                 line,
-                allow_markdown_bold=normalized_category == "classical_chinese",
+                allow_markdown_bold=normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS,
             )
         )
 
