@@ -118,6 +118,7 @@ _RETRYABLE_ERROR_TOKENS = (
     "concurrency limiter",
     "retryable gemini",
     "quality gate",
+    "openai 请求被限流",
     "rate_limit",
     "429",
     "500",
@@ -146,6 +147,23 @@ _NON_RETRYABLE_ERROR_TOKENS = (
     "exceeded your current quota",
     "duration exceeded",
     "超过限制",
+)
+
+_QINGDOU_TERMINAL_BATCH_TOKENS = (
+    "batchstatus=2",
+    "batchstatus': 2",
+    '"batchstatus": 2',
+)
+_QINGDOU_TERMINAL_STATUS_TOKENS = (
+    "status=1120",
+    "status': 1120",
+    '"status": 1120',
+)
+_QINGDOU_EMPTY_CONTENT_TOKENS = (
+    "videocontent': none",
+    '"videocontent": none',
+    "videocontent=none",
+    "未返回 videocontent",
 )
 _AUTH_ERROR_RE = re.compile(
     r"(?:http|status(?:_code| code)?|error code|code)\s*[:= ]+\s*(?:401|403)\b"
@@ -626,6 +644,8 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
     normalized = f"{type(exc).__name__}: {exc}".lower()
+    if _is_terminal_qingdou_parse_error_message(normalized):
+        return False
     if _is_auth_error_message(normalized):
         return False
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
@@ -642,6 +662,8 @@ def _is_retryable_error_message(message: str | None) -> bool:
     normalized = (message or "").lower()
     if not normalized:
         return False
+    if _is_terminal_qingdou_parse_error_message(normalized):
+        return False
     if _is_auth_error_message(normalized):
         return False
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
@@ -651,6 +673,19 @@ def _is_retryable_error_message(message: str | None) -> bool:
 
 def _is_auth_error_message(normalized: str) -> bool:
     return "api key" in normalized or "unauthorized" in normalized or bool(_AUTH_ERROR_RE.search(normalized))
+
+
+def _is_terminal_qingdou_parse_error_message(normalized: str) -> bool:
+    if "qingdouerror" not in normalized and "轻抖任务失败" not in normalized:
+        return False
+    batch_failed = any(token in normalized for token in _QINGDOU_TERMINAL_BATCH_TOKENS)
+    terminal_status = any(token in normalized for token in _QINGDOU_TERMINAL_STATUS_TOKENS)
+    empty_content = any(token in normalized for token in _QINGDOU_EMPTY_CONTENT_TOKENS)
+    return batch_failed and terminal_status and empty_content
+
+
+def _retry_exhausted_step(message: str) -> str:
+    return f"自动重试已用尽：{message}。后台会按恢复策略重排；也可稍后点击继续生成。"[:255]
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -810,6 +845,49 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
     return len(tasks_to_dispatch)
 
 
+def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
+    if not settings.STALE_TASK_WATCHDOG_ENABLED:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    db: Session = SessionLocal()
+    tasks_to_dispatch: list[str] = []
+    try:
+        rows = (
+            db.execute(
+                select(Task)
+                .where(Task.status == TaskStatus.PENDING)
+                .with_for_update(skip_locked=True)
+                .limit(max(1, limit))
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            cfg = dict(task.config or {})
+            if cfg.get("generation_hold") or str(cfg.get("active_run_id") or "").strip():
+                continue
+            not_before = _parse_iso_datetime(cfg.get("auto_retry_not_before"))
+            if not_before is None or not_before > now:
+                continue
+            message = task.error_message or cfg.get("last_auto_retry_error")
+            if message and not _is_retryable_error_message(str(message)):
+                continue
+            cfg["auto_retry_redispatched_at"] = now.isoformat()
+            task.config = cfg
+            tasks_to_dispatch.append(str(task.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("pending retry watchdog failed")
+        return 0
+    finally:
+        db.close()
+
+    _dispatch_task_ids(tasks_to_dispatch, label="pending retry watchdog")
+    return len(tasks_to_dispatch)
+
+
 def _patch_config(task: Task, **kv: Any) -> None:
     cfg = dict(task.config or {})
     cfg.update(kv)
@@ -819,6 +897,8 @@ def _patch_config(task: Task, **kv: Any) -> None:
 def _user_facing_generation_error(exc: Exception) -> str:
     raw = f"{type(exc).__name__}: {exc}"
     normalized = raw.lower()
+    if _is_terminal_qingdou_parse_error_message(normalized):
+        return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
     if "insufficient_quota" in normalized or "exceeded your current quota" in normalized:
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
     if "rate_limit" in normalized or "429" in normalized:
@@ -1291,7 +1371,7 @@ def process_video(_self, task_id: str) -> dict:
                     task.status = TaskStatus.FAILED
                     task.error_message = message[:2000]
                     task.current_step = (
-                        f"等待自动恢复：{message}" if _is_retryable_generation_error(e) else f"失败：{message}"
+                        _retry_exhausted_step(message) if _is_retryable_generation_error(e) else f"失败：{message}"
                     )[:255]
                 db.commit()
         except Exception:

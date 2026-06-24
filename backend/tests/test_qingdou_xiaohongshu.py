@@ -64,3 +64,29 @@ def test_xiaohongshu_share_token_is_not_reported_as_model_api_key_error() -> Non
     assert "QingdouError" in message
     assert task_tasks._is_retryable_generation_error(exc) is True  # noqa: SLF001
 
+
+def test_terminal_qingdou_empty_content_failure_is_not_retried() -> None:
+    exc = RuntimeError(
+        "小红书 video parse failed after 1 candidate URL(s): "
+        "QingdouError: 轻抖任务失败 batchStatus=2 "
+        "raw={'result': {'batchStatus': 2, 'list': [{'status': 1120, 'videoContent': None}]}}"
+    )
+
+    message = task_tasks._user_facing_generation_error(exc)  # noqa: SLF001
+
+    assert "粘贴文稿" in message
+    assert task_tasks._is_retryable_generation_error(exc) is False  # noqa: SLF001
+    assert task_tasks._is_retryable_error_message(str(exc)) is False  # noqa: SLF001
+
+
+def test_user_facing_openai_rate_limit_message_remains_recoverable() -> None:
+    message = "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
+
+    assert task_tasks._is_retryable_error_message(message) is True  # noqa: SLF001
+
+
+def test_exhausted_retry_step_is_not_waiting_auto_recovery_label() -> None:
+    step = task_tasks._retry_exhausted_step("OpenAI 请求被限流，请稍后重试。")  # noqa: SLF001
+
+    assert step.startswith("自动重试已用尽")
+    assert "等待自动恢复" not in step
