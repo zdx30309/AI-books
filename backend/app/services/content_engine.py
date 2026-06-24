@@ -70,6 +70,11 @@ FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technolo
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
 FINANCE_TECHNOLOGY_ADVICE_CATEGORY = "finance_technology_advice"
+FINANCE_ADVICE_TARGET_10_MIN_WORDS = 20_000
+FINANCE_ADVICE_TARGET_20_MIN_WORDS = 35_000
+FINANCE_ADVICE_BASE_TARGET_WORDS = 50_000
+FINANCE_ADVICE_WRITER_MIN_TARGET_RATIO = 0.95
+FINANCE_ADVICE_STAGE_MIN_RETAIN_RATIO = 0.85
 CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS = 60_000
 CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
 CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
@@ -2607,6 +2612,60 @@ def _finance_dynamic_target_words(
     return max(FINANCE_LONGFORM_MIN_TARGET_WORDS, target)
 
 
+def _finance_advice_dynamic_target_words(
+    raw_text: str,
+    *,
+    source_duration_seconds: int | float | None = None,
+) -> int:
+    seconds = 0.0
+    if source_duration_seconds not in (None, ""):
+        try:
+            seconds = float(source_duration_seconds or 0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+    if seconds <= 0:
+        seconds = float(_finance_duration_seconds_from_text(raw_text))
+
+    minutes = max(seconds / 60.0, 1.0)
+    if minutes <= 10:
+        base_target = max(
+            FINANCE_LONGFORM_MIN_TARGET_WORDS,
+            int(round(minutes / 10.0 * FINANCE_ADVICE_TARGET_10_MIN_WORDS)),
+        )
+    elif minutes <= 20:
+        base_target = int(
+            round(
+                FINANCE_ADVICE_TARGET_10_MIN_WORDS
+                + (minutes - 10.0)
+                / 10.0
+                * (FINANCE_ADVICE_TARGET_20_MIN_WORDS - FINANCE_ADVICE_TARGET_10_MIN_WORDS)
+            )
+        )
+    elif minutes < 30:
+        base_target = int(
+            round(
+                FINANCE_ADVICE_TARGET_20_MIN_WORDS
+                + (minutes - 20.0)
+                / 10.0
+                * (FINANCE_ADVICE_BASE_TARGET_WORDS - FINANCE_ADVICE_TARGET_20_MIN_WORDS)
+            )
+        )
+    elif minutes <= 60:
+        base_target = FINANCE_ADVICE_BASE_TARGET_WORDS
+    else:
+        base_target = max(
+            FINANCE_ADVICE_BASE_TARGET_WORDS,
+            int(round(minutes / 60.0 * FINANCE_ADVICE_BASE_TARGET_WORDS)),
+        )
+    target = int(round(base_target * _finance_content_density_multiplier(raw_text, minutes)))
+    return max(FINANCE_LONGFORM_MIN_TARGET_WORDS, target)
+
+
+def _finance_required_body_target(target_words: int, *, category: str | None = None) -> int:
+    ratio = FINANCE_ADVICE_WRITER_MIN_TARGET_RATIO if _is_finance_advice_category(category) else 1.0
+    return max(1, int(math.ceil(int(target_words) * ratio)))
+
+
 def _should_use_finance_longform(
     category: str,
     raw_text: str,
@@ -2845,6 +2904,7 @@ def _finance_whole_book_prompt(
 ) -> str:
     minutes = round((duration_seconds or _finance_duration_seconds_from_text(raw_text)) / 60, 1)
     source_cpm = int(round(len((raw_text or "").strip()) / max(minutes, 1.0)))
+    required_body_target = _finance_required_body_target(target_words, category=category)
     focus_points = _finance_source_focus_points(raw_text)
     focus_block = f"\n[参考资料信息点观察清单]\n{focus_points}\n" if focus_points else ""
     latest_research_block = _finance_latest_research_block(latest_research)
@@ -2856,8 +2916,10 @@ def _finance_whole_book_prompt(
 {latest_research_block}
 - 以上财经科技观点建议版主 prompt 全部继续生效；本段只增加观点密度、去堆料和链路约束，不替换原分类规则。
 - 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
-- 参考资料对应时长约 {minutes} 分钟，参考资料信息密度约每分钟 {source_cpm} 字；这只用于判断材料复杂度，不作为最低字数目标，不得为了接近某个字数去补材料。
-- 正文字数不设人为上限，但也不设最低扩写目标；以把 1 个主矛盾和 2 到 4 个核心问题讲清楚、讲透彻为准。讲透即停，宁可少写，也不要堆砌重复材料和无用材料。
+- 参考资料对应时长约 {minutes} 分钟，参考资料信息密度约每分钟 {source_cpm} 字；本次有效正文字数目标约 {target_words} 字，OpenAI 主稿阶段必须完成至少 {required_body_target} 字，约为目标的 95%。10 分钟内容要按约 20000 字的深度展开，20 分钟内容要按约 35000 字的深度展开，30 分钟及以上内容要尽量接近或超过 50000 字。
+- 这是有效分析篇幅目标，不是资料堆砌目标。扩写只能来自更完整的背景解释、机制拆解、利益相关方、影响链条、条件推演、现实误判、风险边界和普通人建议，不能靠重复观点、堆公司名、堆年份、堆术语或堆无关材料凑字数。
+- 正文字数不设人为上限，也不能写成五六千字的短稿；必须把 1 个主矛盾和 2 到 4 个核心问题讲清楚、讲透彻。篇幅增加时，内容密度、判断强度和正式书稿质量必须保持不变。
+- Gemini 一润、Gemini 二润和 DeepSeek 格式层只做润色、微调和格式整理，不负责补字数；正文长度必须主要由主稿阶段完成，不能把篇幅缺口留给后续模型。
 - 观点建议版的首要任务是形成判断和建议，不是展示材料库存。所有资料、数据、公司动作、政策、技术事件和案例都必须回答一个问题：它支撑了哪个判断，改变了谁的理解，导向哪条行动边界。
 - 每个核心问题必须形成独立判断；每个判断只能选择最必要的材料支撑。不能把同一材料、同一数据、同一案例、同一公司动作换说法写进多个章节。
 - 禁止材料清单化、百科化、研究报告化；禁止为了显得信息量大而连续罗列公司名、年份、机构名、政策名、技术名、数据口径。
@@ -2904,6 +2966,7 @@ def _finance_stage_instruction(
 {FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 当前环节只执行原有 workflow 的对应处理，不改变分工，不重写成新稿，不改成摘要。
 - 你会收到待处理完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
+- 正文字数已经由 OpenAI 主稿阶段完成，本阶段不负责补字数，也不得把长稿压缩成短稿；输出正文篇幅应尽量保持输入正文的 90% 以上。
 - 必须保留完整结构、核心判断、关键事实、必要机制链条、风险边界和建议小节；不得把观点建议稿压缩成短摘要。
 - 观点建议版允许并要求清理明显重复材料、无关材料和资料堆叠：同一数据、同一案例、同一公司动作、同一政策背景、同一判断如果在多处重复出现，只保留对论证最有价值的一处，其余删改为自然衔接句。
 - 不要删除能支撑新判断、新条件、新边界或具体建议的有效内容；只清掉不改变观点推进的重复铺陈、百科式罗列和无效资料堆砌。
@@ -2932,6 +2995,7 @@ def _finance_format_template(base_template: str, *, category: str | None = None)
 {FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
 - 本阶段以格式整理和标题规范为主，不得重写成新稿，不得摘要、缩写、合并章节或重排论证。
+- 正文字数已经由 OpenAI 主稿阶段完成，本阶段不负责补字数，也不得把长稿压缩成短稿；输出正文篇幅应尽量保持输入正文的 90% 以上。
 - 必须保留观点建议版的核心判断、关键事实、机制链条、风险边界和建议小节。
 - 如果输入中仍有明显重复材料、无关材料堆叠或同一判断换说法，只允许做保守删改：删除重复段落或重复句，保留最有论证价值的一处，不得影响新的观点推进。
 - 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
@@ -2952,8 +3016,16 @@ def _finance_format_template(base_template: str, *, category: str | None = None)
     return f"{template}\n\n{guard}"
 
 
-def _finance_body_target_reached(markdown: str, target_words: int) -> bool:
-    return _finance_body_chars(markdown) >= max(1, int(target_words))
+def _finance_body_target_reached(
+    markdown: str,
+    target_words: int,
+    *,
+    category: str | None = None,
+) -> bool:
+    return _finance_body_chars(markdown) >= _finance_required_body_target(
+        target_words,
+        category=category,
+    )
 
 
 def _finance_chapter_titles_from_body(body: str) -> list[tuple[int, str]]:
@@ -3085,12 +3157,67 @@ def _finance_continuation_prompt(
     round_index: int,
     batch_target: int,
     latest_research: str | None = None,
+    category: str | None = None,
 ) -> str:
     current_body_chars = _finance_body_chars(current_markdown)
-    remaining = max(0, int(target_words) - current_body_chars)
+    required_body_target = _finance_required_body_target(target_words, category=category)
+    remaining = max(0, required_body_target - current_body_chars)
     minutes = round(duration_seconds / 60.0, 1)
     focus_points = _finance_source_focus_points(raw_text, max_points=55)
     chapter_map = _finance_existing_chapter_map(current_markdown)
+    if _is_finance_advice_category(category):
+        return f"""{base_writer_prompt.rstrip()}
+
+【财经科技观点建议版主稿同阶段补足任务】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{_finance_latest_research_block(latest_research)}
+当前仍属于 OpenAI 主稿阶段，不是重写任务，不是润色任务，也不是格式整理任务。Gemini 一润、Gemini 二润和 DeepSeek 格式层不会负责补字数，所以本阶段必须把主稿有效篇幅补到目标 95% 以上。
+你会看到参考资料全文、当前已完成主稿和已有章节目录。请只输出“新增正文正式章节”，新增章节会拼回 @正文 并重建目录。
+
+【当前篇幅状态】
+- 参考资料对应时长约 {minutes} 分钟。
+- 有效正文字数目标约 {target_words} 字。
+- 主稿阶段最低必达正文约 {required_body_target} 字，约为目标的 95%。
+- 当前正文约 {current_body_chars} 字。
+- 仍需补足约 {remaining} 字。
+- 本轮新增正文目标约 {batch_target} 字；如果内容密度足够，可以更多，不设人为上限。
+- 当前是第 {round_index} 轮主稿同阶段补足。
+
+【只能补这些有效内容】
+- 补缺失的核心判断：围绕 1 个主矛盾和 2 到 4 个核心问题，补足前文没有讲透的判断，不要开无关新题。
+- 补背景解释：把小白读者必须理解的概念、事件、政策、技术、公司动作或市场变化讲清楚。
+- 补机制链条：说明变量之间怎样传导，谁影响谁，影响普通人的哪一类判断。
+- 补利益相关方：分别说明公司、产业链、消费者、从业者、普通投资者或信息接收者的处境差异。
+- 补条件推演：明确什么条件下判断成立，什么条件下判断失效，哪些边界不能越过。
+- 补现实误判：指出大众容易怎样误读资料、数字、公司动作或政策信号。
+- 补具体建议：把分析转成可执行、有适用条件的建议，不能泛泛写“保持理性”“关注风险”。
+
+【反重复与质量要求】
+- 这是观点建议版，不是资料汇编版。不能把前文已经使用过的材料、数据、案例、公司动作换说法再写一遍。
+- 每个新增章节必须提供新的判断层次或行动边界，不能只补事实清单，不能堆公司名、年份、机构名、政策名、技术名、数据口径。
+- 如果某个资料点不能支撑判断、改变理解或导向建议，就不要写入正文。
+- 如果需要写当前前景、2026 年趋势、最新产业例子或近期公司动作，只能使用上方联网检索结果里已有的 2026 年或明确当前资料；如果没有检索到，不要补写这类最新例子，也不要使用过去几年案例替代。
+- 不做具体投资预测，不写涨跌结论，不给买卖建议。
+- 语言仍然要保持财经科技观点建议版的正式书稿质量，不要口语化，不要论文腔，不要总结腔。
+
+【输出格式】
+- 只输出新增的正文正式章节，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
+- 每个新增章节必须以 @N. 章节名 开头，N 可从 1 开始，章节编号会在最终正文中统一重排。
+- 章节标题不得出现中文冒号或英文冒号，不要命名为“结语”。
+- 不要解释，不要代码块，不要元信息，不要输出“续写如下”。
+
+[已有章节目录]
+{chapter_map}
+
+[参考资料信息点观察清单]
+{focus_points}
+
+[参考资料全文]
+{raw_text.strip()}
+
+[当前已完成主稿]
+{current_markdown.strip()}
+"""
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长文同阶段定向续写任务】
@@ -3160,10 +3287,11 @@ async def _finance_expand_writer_to_target(
 ) -> tuple[str, bool]:
     current_markdown = normalize_final_markdown(current_markdown, category=category)
     current_body_chars = _finance_body_chars(current_markdown)
-    if _finance_body_target_reached(current_markdown, target_words):
+    if _finance_body_target_reached(current_markdown, target_words, category=category):
         return current_markdown, False
 
-    deficit = max(0, int(target_words) - current_body_chars)
+    required_body_target = _finance_required_body_target(target_words, category=category)
+    deficit = max(0, required_body_target - current_body_chars)
     max_rounds = max(
         1,
         int(math.ceil(deficit / FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET)) + 2,
@@ -3172,10 +3300,10 @@ async def _finance_expand_writer_to_target(
     no_gain_rounds = 0
 
     for round_index in range(1, max_rounds + 1):
-        if _finance_body_target_reached(current_markdown, target_words):
+        if _finance_body_target_reached(current_markdown, target_words, category=category):
             break
         before_body_chars = _finance_body_chars(current_markdown)
-        remaining = max(0, int(target_words) - before_body_chars)
+        remaining = max(0, required_body_target - before_body_chars)
         batch_target = max(
             8_000,
             min(FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET, remaining + 2_000),
@@ -3189,6 +3317,7 @@ async def _finance_expand_writer_to_target(
             round_index=round_index,
             batch_target=batch_target,
             latest_research=latest_research,
+            category=category,
         )
         _dump_stage(output_dir, f"01c_finance_continuation_prompt_{round_index:02d}.md", prompt)
         logger.warning(
@@ -3249,11 +3378,12 @@ async def _finance_expand_writer_to_target(
                 f"body_chars={after_body_chars} target={target_words}"
             )
 
-    if not _finance_body_target_reached(current_markdown, target_words):
+    if not _finance_body_target_reached(current_markdown, target_words, category=category):
         raise RuntimeError(
             f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
-            f"finance writer could not reach dynamic target without quality risk; "
-            f"body_chars={_finance_body_chars(current_markdown)} target={target_words}"
+            f"finance writer could not reach required target without quality risk; "
+            f"body_chars={_finance_body_chars(current_markdown)} "
+            f"required={required_body_target} target={target_words}"
         )
     return current_markdown, expanded
 
@@ -3267,7 +3397,11 @@ def _finance_stage_looks_compressed(source: str, candidate: str, *, category: st
         return True
     source_body_chars = _finance_body_chars(source)
     candidate_body_chars = _finance_body_chars(candidate)
-    retain_ratio = 0.55 if _is_finance_advice_category(category) else FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO
+    retain_ratio = (
+        FINANCE_ADVICE_STAGE_MIN_RETAIN_RATIO
+        if _is_finance_advice_category(category)
+        else FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO
+    )
     if source_body_chars >= 10_000 and candidate_body_chars < max(
         5000,
         int(source_body_chars * retain_ratio),
@@ -3297,21 +3431,35 @@ async def _generate_finance_longform_book(
 ) -> str:
     is_advice = _is_finance_advice_category(category)
     duration_seconds = _positive_int(source_duration_seconds) or _finance_duration_seconds_from_text(raw_text)
-    target_words = _finance_dynamic_target_words(
-        raw_text,
-        source_duration_seconds=duration_seconds,
+    target_words = (
+        _finance_advice_dynamic_target_words(
+            raw_text,
+            source_duration_seconds=duration_seconds,
+        )
+        if is_advice
+        else _finance_dynamic_target_words(
+            raw_text,
+            source_duration_seconds=duration_seconds,
+        )
     )
+    required_body_target = _finance_required_body_target(target_words, category=category)
     metadata = {
         "targetWords": target_words,
+        "requiredWriterBodyChars": required_body_target,
+        "writerMinimumRatio": FINANCE_ADVICE_WRITER_MIN_TARGET_RATIO if is_advice else 1.0,
         "durationSeconds": duration_seconds,
         "targetMode": (
-            "viewpoint_density_no_minimum_expansion_target"
+            "viewpoint_advice_writer_stage_min_95pct_target"
             if is_advice
             else "writer_stage_expand_to_dynamic_target"
         ),
-        "stageMinRetainRatio": FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO,
+        "stageMinRetainRatio": (
+            FINANCE_ADVICE_STAGE_MIN_RETAIN_RATIO
+            if is_advice
+            else FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO
+        ),
         "mode": (
-            "viewpoint_advice_whole_workflow_no_writer_continuation"
+            "viewpoint_advice_whole_workflow_writer_stage_continuation_before_polish"
             if is_advice
             else "whole_workflow_with_writer_stage_continuations"
         ),
@@ -3338,9 +3486,10 @@ async def _generate_finance_longform_book(
             encoding="utf-8",
         )
 
+    stale_final_resume = False
     final_resume_markdown = _read_stage_file(output_dir, "04_format.md")
     if final_resume_markdown:
-        if is_advice or _finance_body_target_reached(final_resume_markdown, target_words):
+        if _finance_body_target_reached(final_resume_markdown, target_words, category=category):
             logger.info("复用已存在的财经长文 04_format.md")
             _log_stage("finance 4/4 format (resume)", final_resume_markdown)
             if on_stage:
@@ -3352,10 +3501,14 @@ async def _generate_finance_longform_book(
             target_words,
         )
         _dump_stage(output_dir, "04_format_stale_short.md", final_resume_markdown)
+        stale_final_resume = True
 
     resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
     resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
     resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+    if stale_final_resume and resume_writer_markdown:
+        resume_polished_markdown = None
+        resume_refined_markdown = None
     latest_research = await _finance_latest_research_pack(
         raw_text,
         category=category,
@@ -3411,27 +3564,25 @@ async def _generate_finance_longform_book(
         _log_stage("finance 1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         generated_body_chars = _finance_body_chars(generated_markdown)
-        if not is_advice and generated_body_chars < target_words:
+        if generated_body_chars < required_body_target:
             logger.warning(
-                "财经科技整稿低于动态篇幅目标但不触发二次整稿生成: body_chars=%d target=%d",
+                "财经科技整稿低于主稿必达目标，不触发二次整稿生成，将进入 writer 同阶段定向续写: body_chars=%d required=%d target=%d",
                 generated_body_chars,
+                required_body_target,
                 target_words,
             )
 
-    if is_advice:
-        writer_expanded = False
-    else:
-        generated_markdown, writer_expanded = await _finance_expand_writer_to_target(
-            generated_markdown,
-            base_writer_prompt=base_writer_prompt,
-            raw_text=raw_text,
-            latest_research=latest_research,
-            target_words=target_words,
-            duration_seconds=duration_seconds,
-            category=category,
-            output_dir=output_dir,
-            on_stage=on_stage,
-        )
+    generated_markdown, writer_expanded = await _finance_expand_writer_to_target(
+        generated_markdown,
+        base_writer_prompt=base_writer_prompt,
+        raw_text=raw_text,
+        latest_research=latest_research,
+        target_words=target_words,
+        duration_seconds=duration_seconds,
+        category=category,
+        output_dir=output_dir,
+        on_stage=on_stage,
+    )
     if writer_expanded:
         resume_polished_markdown = None
         resume_refined_markdown = None
@@ -3444,8 +3595,9 @@ async def _generate_finance_longform_book(
                 "chars": len(generated_markdown),
                 "body_chars": _finance_body_chars(generated_markdown),
                 "target_words": target_words,
+                "required_writer_body_chars": required_body_target,
                 "target_mode": (
-                    "viewpoint_density_no_continuation"
+                    "viewpoint_advice_writer_stage_min_95pct"
                     if is_advice
                     else "expanded_to_target"
                 ),

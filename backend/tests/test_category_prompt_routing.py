@@ -445,6 +445,18 @@ def test_finance_dynamic_target_words_by_duration() -> None:
         source_duration_seconds=90 * 60,
     ) == 75_000
     assert content_engine._finance_dynamic_target_words("财" * 8400) == 50_000
+    assert 19_000 <= content_engine._finance_advice_dynamic_target_words(
+        "财经科技观点建议版测试文稿",
+        source_duration_seconds=10 * 60,
+    ) <= 21_000
+    assert content_engine._finance_advice_dynamic_target_words(
+        "财经科技观点建议版测试文稿",
+        source_duration_seconds=20 * 60,
+    ) >= 35_000
+    assert content_engine._finance_advice_dynamic_target_words(
+        "财经科技观点建议版测试文稿",
+        source_duration_seconds=30 * 60,
+    ) == 50_000
 
 
 def test_finance_advice_category_always_uses_finance_workflow() -> None:
@@ -581,59 +593,83 @@ def test_finance_technology_advice_longform_uses_finance_workflow(
     assert "财经科技来源表述专项要求" in writer_prompts[0]
     assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
     assert "已检索到 2026 年当前最新例子" in writer_prompts[0]
-    assert "不作为最低字数目标" in writer_prompts[0]
-    assert "讲透即停" in writer_prompts[0]
+    assert "有效正文字数目标约 50000 字" in writer_prompts[0]
+    assert "OpenAI 主稿阶段必须完成至少 47500 字" in writer_prompts[0]
+    assert "约为目标的 95%" in writer_prompts[0]
+    assert "不能把篇幅缺口留给后续模型" in writer_prompts[0]
     assert "不是展示材料库存" in writer_prompts[0]
     assert "如果资料只提供背景但不能推动判断，就压缩成一句背景" in writer_prompts[0]
     assert polish_kwargs[0]["disable_max_output_tokens"] is True
     assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
     assert "观点建议版允许并要求清理明显重复材料" in str(polish_kwargs[0]["system_instruction"])
+    assert "本阶段不负责补字数" in str(polish_kwargs[0]["system_instruction"])
     assert "财经科技联网检索与最新例子硬性要求" in str(polish_kwargs[0]["system_instruction"])
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
     assert "明显重复材料、无关材料堆叠" in str(format_kwargs[0]["prompt_template"])
+    assert "本阶段不负责补字数" in str(format_kwargs[0]["prompt_template"])
     assert "财经科技联网检索与最新例子硬性要求" in str(format_kwargs[0]["prompt_template"])
 
 
-def test_finance_technology_advice_does_not_force_dynamic_target_continuation(
+def test_finance_technology_advice_writer_stage_reaches_95_percent_before_polish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     writer_prompts: list[str] = []
     writer_kwargs: list[dict[str, object]] = []
+    calls: list[str] = []
+    polish_inputs: list[str] = []
 
     async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
         writer_prompts.append(prompt)
         writer_kwargs.append(dict(kwargs))
-        return MINIMAL_MANUSCRIPT
+        calls.append("writer")
+        if len(writer_prompts) == 1:
+            return MINIMAL_MANUSCRIPT
+        return _finance_continuation_fragment(repeat=1800)
 
     _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+
+    def fake_polish_book_text(text: str, **_: object) -> str:
+        calls.append("polish")
+        polish_inputs.append(text)
+        return text
+
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
     monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
     monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
 
     result = asyncio.run(
         content_engine.generate_full_book(
-            "观点建议版资料，只有一个核心判断，材料很少，不应该为了五万字反复续写。",
+            "观点建议版资料，只有一个核心判断，但必须围绕机制链条、普通人建议和风险边界展开到足够篇幅。",
             category="finance_technology_advice",
-            output_dir=tmp_path / "finance_advice_no_continuation",
-            source_duration_seconds=30 * 60,
+            output_dir=tmp_path / "finance_advice_writer_target",
+            source_duration_seconds=10 * 60,
         )
     )
 
     assert "@最终书名" in result
-    assert len(writer_prompts) == 1
+    assert len(writer_prompts) == 2
     assert "财经科技观点建议版密度强约束" in writer_prompts[0]
-    assert "财经科技长文同阶段定向续写任务" not in "\n".join(writer_prompts)
-    assert "动态目标正文字数约" not in writer_prompts[0]
+    assert "有效正文字数目标约 20000 字" in writer_prompts[0]
+    assert "OpenAI 主稿阶段必须完成至少 19000 字" in writer_prompts[0]
+    assert "财经科技观点建议版主稿同阶段补足任务" in writer_prompts[1]
+    assert "Gemini 一润、Gemini 二润和 DeepSeek 格式层不会负责补字数" in writer_prompts[1]
+    assert "主稿阶段最低必达正文约 19000 字" in writer_prompts[1]
+    assert calls[:3] == ["writer", "writer", "polish"]
+    assert polish_inputs
+    assert content_engine._finance_body_chars(polish_inputs[0]) >= 19_000
     assert all(kwargs["max_output_tokens"] == 0 for kwargs in writer_kwargs)
     plan = json.loads(
-        (tmp_path / "finance_advice_no_continuation" / "00_finance_longform_plan.json").read_text(
+        (tmp_path / "finance_advice_writer_target" / "00_finance_longform_plan.json").read_text(
             encoding="utf-8"
         )
     )
-    assert plan["targetMode"] == "viewpoint_density_no_minimum_expansion_target"
+    assert plan["targetMode"] == "viewpoint_advice_writer_stage_min_95pct_target"
+    assert plan["targetWords"] == 20_000
+    assert plan["requiredWriterBodyChars"] == 19_000
+    assert plan["writerMinimumRatio"] == pytest.approx(0.95)
     assert plan["adviceDedup"]["enabled"] is True
 
 
