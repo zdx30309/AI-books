@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     OPENAI_WRITER_RETRY_BACKOFF_SECONDS: float = 8.0
     OPENAI_WRITER_STREAM: bool = False
     OPENAI_WRITER_MAX_CONCURRENT_CALLS: int = 16
+    FINANCE_WEB_SEARCH_MODEL: str = ""
+    FINANCE_WEB_SEARCH_TIMEOUT_SECONDS: int = 240
+    FINANCE_WEB_SEARCH_CONTEXT_SIZE: str = "medium"
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False

@@ -17,6 +17,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
+    FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT,
     FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     SECTION_TITLE_REQUIREMENT_PROMPT,
@@ -63,6 +64,8 @@ FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
 FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technology_advice"})
+FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
+FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
 CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS = 60_000
 CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
 CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
@@ -2523,15 +2526,7 @@ def _should_use_finance_longform(
         return False
     if normalized not in FINANCE_LONGFORM_CATEGORIES:
         return False
-    if normalized == "finance_technology_advice":
-        return True
-    return (
-        _finance_dynamic_target_words(
-            raw_text,
-            source_duration_seconds=source_duration_seconds,
-        )
-        > FINANCE_LONGFORM_STANDARD_WORDS
-    )
+    return True
 
 
 def _finance_section_content(text: str, section: str) -> str:
@@ -2625,21 +2620,138 @@ def _finance_source_focus_points(raw_text: str, *, max_points: int = 40) -> str:
     return "\n".join(f"- {item}" for item in selected)
 
 
+def _finance_web_search_excerpt(raw_text: str, *, max_chars: int = 12_000) -> str:
+    text = re.sub(r"\s+", " ", (raw_text or "").strip())
+    if len(text) <= max_chars:
+        return text
+    head = text[: int(max_chars * 0.65)].strip()
+    tail = text[-int(max_chars * 0.35) :].strip()
+    return f"{head}\n\n……\n\n{tail}"
+
+
+def _finance_latest_research_prompt(raw_text: str, *, category: str) -> str:
+    excerpt = _finance_web_search_excerpt(raw_text)
+    category_label = "财经科技（观点建议版）" if category == "finance_technology_advice" else "财经·科技"
+    return f"""你是财经科技长文写作前的联网事实检索员。
+
+任务：请调用联网搜索，围绕下方参考资料，查找可用于 {category_label} 长文的 2026 年或当前时点最新例子。
+
+硬性要求：
+1. 必须执行联网搜索，不得只凭模型知识回答。
+2. 只收录 2026 年或明确属于当前时点的资料。资料必须有日期、来源名称、事件主体和可核对事实。
+3. 对于“当前、时下、2026年、今年、最新、近期、前景预估、趋势判断、行业机会、产业变化”等判断，只允许使用本次检索到的最新例子。
+4. 如果某个主题没有检索到 2026 年或明确当前的最新例子，明确写“未检索到 2026 年最新例子”，并说明不要写该主题的最新例子。
+5. 不要用 2025 年、2024 年、2023 年或更早案例替代最新例子；过去案例只能标为历史背景或机制对照。
+6. 不要编造来源、日期、数据或公司动作。找不到就写找不到。
+
+输出格式：
+【财经科技联网检索结果】
+- 检索结论：写明哪些主题有 2026 年或当前最新例子，哪些主题没有。
+- 可使用的最新例子：
+  1. 日期｜来源｜主体｜事实｜适用主题｜使用边界
+  2. 日期｜来源｜主体｜事实｜适用主题｜使用边界
+- 不得作为最新例子的旧资料：
+  1. 年份｜来源或主体｜只能作为历史背景或机制对照的原因
+- 禁写提醒：列出没有检索到最新例子的主题，提醒正文不要退而求其次使用过去几年案例。
+
+[参考资料摘要]
+{excerpt}
+"""
+
+
+def _finance_latest_research_block(latest_research: str | None) -> str:
+    research = (latest_research or "").strip()
+    if not research:
+        research = "【财经科技联网检索结果】\n- 检索结论：未检索到可用的 2026 年或当前最新例子。涉及当前前景、最新趋势或近期案例时不要写具体例子。"
+    return f"""{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
+
+[财经科技联网检索结果]
+{research}
+"""
+
+
+def _openai_finance_web_search_call(prompt: str) -> str:
+    if not _resolve_openai_api_key():
+        raise RuntimeError("财经科技联网检索需要 OPENAI_API_KEY，不能在没有联网检索的情况下生成财经科技稿件")
+
+    model = (settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
+    context_size = (settings.FINANCE_WEB_SEARCH_CONTEXT_SIZE or "medium").strip().lower()
+    if context_size not in {"low", "medium", "high"}:
+        context_size = "medium"
+
+    response = _get_openai_writer_client().responses.create(
+        model=model,
+        input=prompt,
+        reasoning={"effort": "low"},
+        tools=[
+            {
+                "type": "web_search",
+                "search_context_size": context_size,
+            }
+        ],
+        tool_choice="required",
+        include=["web_search_call.action.sources"],
+    )
+    text = _extract_openai_response_text(response)
+    if not text.strip():
+        raise RuntimeError(f"财经科技联网检索无返回内容: {_openai_response_debug_summary(response)}")
+    return text.strip()
+
+
+async def _finance_latest_research_pack(
+    raw_text: str,
+    *,
+    category: str,
+    output_dir: Path | None,
+    on_stage: StageCallback | None = None,
+) -> str:
+    cached = _read_stage_file(output_dir, FINANCE_LATEST_RESEARCH_STAGE_FILE)
+    if cached:
+        logger.info("复用已存在的财经科技联网检索结果 %s", FINANCE_LATEST_RESEARCH_STAGE_FILE)
+        return cached
+
+    prompt = _finance_latest_research_prompt(raw_text, category=category)
+    _dump_stage(output_dir, FINANCE_LATEST_RESEARCH_PROMPT_FILE, prompt)
+    if on_stage:
+        on_stage("finance_web_search_start", {"category": category})
+
+    try:
+        research = await _to_thread_with_optional_timeout(
+            _openai_finance_web_search_call,
+            prompt,
+            timeout_seconds=settings.FINANCE_WEB_SEARCH_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _dump_stage(output_dir, "00_finance_latest_research_error.txt", f"{exc.__class__.__name__}: {exc}")
+        raise RuntimeError(f"财经科技分类必须完成 API 联网检索后才能生成：{exc}") from exc
+
+    if not research.strip():
+        raise RuntimeError("财经科技分类 API 联网检索返回空结果，已停止生成以避免使用过期资料")
+
+    _dump_stage(output_dir, FINANCE_LATEST_RESEARCH_STAGE_FILE, research)
+    if on_stage:
+        on_stage("finance_web_search_done", {"chars": len(research)})
+    return research.strip()
+
+
 def _finance_whole_book_prompt(
     base_writer_prompt: str,
     raw_text: str,
     *,
     target_words: int,
     duration_seconds: int | None,
+    latest_research: str | None = None,
 ) -> str:
     minutes = round((duration_seconds or _finance_duration_seconds_from_text(raw_text)) / 60, 1)
     source_cpm = int(round(len((raw_text or "").strip()) / max(minutes, 1.0)))
     focus_points = _finance_source_focus_points(raw_text)
     focus_block = f"\n[参考资料信息点观察清单]\n{focus_points}\n" if focus_points else ""
+    latest_research_block = _finance_latest_research_block(latest_research)
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长视频动态长文强约束】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{latest_research_block}
 - 以上财经科技分类 prompt 全部继续生效；本段只增加长视频篇幅、质量和链路约束，不替换原分类规则。
 - 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
 - 这里的“一次性”指本轮直接整稿生成；成稿内部仍然必须按 @目录 和 @正文 组织章节。
@@ -2661,20 +2773,24 @@ def _finance_stage_instruction(base_instruction: str, stage_name: str) -> str:
 
 【财经科技超长文整稿处理保护】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 当前环节只执行原有 workflow 的对应处理，不改变分工，不重写成新稿，不改成摘要。
 - 你会收到待处理完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
 - 必须保留完整正文、完整章节、完整段落和全部参考资料信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
 - 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
 - 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
+- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
 """
 
 
 def _finance_format_template(base_template: str) -> str:
     guard = f"""【财经科技超长文整稿格式保护】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
 - 本阶段只做格式整理和标题规范，不得摘要、缩写、删减、合并章节、重排论证或压缩正文。
 - 输出应保留完整篇幅和全部参考资料信息点，不能只输出前半部分或前 20000 字。
+- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
 """
     template = base_template.rstrip()
     marker = "\n【文本】"
@@ -2815,6 +2931,7 @@ def _finance_continuation_prompt(
     duration_seconds: int,
     round_index: int,
     batch_target: int,
+    latest_research: str | None = None,
 ) -> str:
     current_body_chars = _finance_body_chars(current_markdown)
     remaining = max(0, int(target_words) - current_body_chars)
@@ -2825,6 +2942,7 @@ def _finance_continuation_prompt(
 
 【财经科技长文同阶段定向续写任务】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{_finance_latest_research_block(latest_research)}
 当前仍属于初稿补写环节，不是重写任务，不是润色任务，也不是格式整理。
 你会看到参考资料全文、当前已完成书稿和已有章节目录。请只输出“新增正文正式章节”，新增章节会拼回 @正文 并重建目录。
 
@@ -2850,6 +2968,7 @@ def _finance_continuation_prompt(
 【反重复与质量要求】
 - 只补充当前书稿未充分展开的层次，不能复述已有章节，不能换说法重复同一判断。
 - 每个新增章节都必须围绕参考资料中的事实与信息点展开，并提供新增内容价值：背景解释、机制拆解、影响链条、利益相关方、条件推演、现实误判或风险边界。
+- 如果需要写当前前景、2026 年趋势、最新产业例子或近期公司动作，只能使用上方联网检索结果里已有的 2026 年或明确当前资料；如果没有检索到，不要补写这类例子，也不要使用过去几年案例替代。
 - 不能为了凑字数堆无关知识，不能写百科，不能写研究报告，不能写投资建议。
 - 不做具体投资预测，不写涨跌结论，不给买卖建议。
 - 语言仍然要保持财经科技分类原 prompt 的正式书稿质量，不要口语化，不要论文腔，不要总结腔。
@@ -2879,6 +2998,7 @@ async def _finance_expand_writer_to_target(
     *,
     base_writer_prompt: str,
     raw_text: str,
+    latest_research: str | None,
     target_words: int,
     duration_seconds: int,
     category: str,
@@ -2915,6 +3035,7 @@ async def _finance_expand_writer_to_target(
             duration_seconds=duration_seconds,
             round_index=round_index,
             batch_target=batch_target,
+            latest_research=latest_research,
         )
         _dump_stage(output_dir, f"01c_finance_continuation_prompt_{round_index:02d}.md", prompt)
         logger.warning(
@@ -3031,6 +3152,12 @@ async def _generate_finance_longform_book(
         "targetMode": "writer_stage_expand_to_dynamic_target",
         "stageMinRetainRatio": FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO,
         "mode": "whole_workflow_with_writer_stage_continuations",
+        "latestResearch": {
+            "required": True,
+            "stageFile": FINANCE_LATEST_RESEARCH_STAGE_FILE,
+            "promptFile": FINANCE_LATEST_RESEARCH_PROMPT_FILE,
+            "currentExamplesRule": "2026_or_current_only_no_older_fallback",
+        },
         "outputCaps": {
             "openai": "disabled",
             "gemini": "disabled",
@@ -3062,6 +3189,12 @@ async def _generate_finance_longform_book(
     resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
     resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
     resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+    latest_research = await _finance_latest_research_pack(
+        raw_text,
+        category=category,
+        output_dir=output_dir,
+        on_stage=on_stage,
+    )
     base_writer_prompt = prompts["full_book_writer"].format(raw_text=raw_text)
     if not raw_text.strip() and not (
         resume_writer_markdown or resume_polished_markdown or resume_refined_markdown
@@ -3087,6 +3220,7 @@ async def _generate_finance_longform_book(
             raw_text,
             target_words=target_words,
             duration_seconds=duration_seconds,
+            latest_research=latest_research,
         )
         _dump_stage(output_dir, "01_finance_whole_prompt.md", writer_prompt)
         try:
@@ -3120,6 +3254,7 @@ async def _generate_finance_longform_book(
         generated_markdown,
         base_writer_prompt=base_writer_prompt,
         raw_text=raw_text,
+        latest_research=latest_research,
         target_words=target_words,
         duration_seconds=duration_seconds,
         category=category,
@@ -3322,7 +3457,11 @@ async def _repair_front_matter(
         if is_finance
         else "- 如果前置块缺失，请根据下方原始视频文稿和当前书稿内容补齐\n"
     )
-    finance_guard = f"{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}\n" if is_finance else ""
+    finance_guard = (
+        f"{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}\n{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}\n"
+        if is_finance
+        else ""
+    )
     repair_prompt = (
         "你现在只负责修复书稿的前置块，不要重写全文。\n"
         "必须补齐并保留以下五个部分，标题前的 @ 加工符号也必须保留：\n"

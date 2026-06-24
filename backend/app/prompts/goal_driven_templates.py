@@ -498,6 +498,15 @@ FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT = """【财经科技来源表述专项�
 - 如果一句话需要交代来源，只能使用“根据《来源名》”或“根据公开资料”这两类正式书稿表达；不要使用任何会让读者看出这是由视频或文稿改写而来的元叙述。"""
 
 
+FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT = """【财经科技联网检索与最新例子硬性要求】
+- 财经科技分类在写作前必须调用 API 联网检索。凡涉及“当前、时下、2026年、今年、最新、近期、前景预估、趋势判断、行业机会、产业变化”等现实判断，只能依据联网检索得到的最新资料和参考资料本身展开。
+- 对于 2026 年某领域前景预估、公司动作、政策变化、技术进展、产业事件、市场变化或普通人影响，必须检索到 2026 年或明确属于当前时点的最新例子，才可以写入正文。
+- 如果联网检索结果没有找到 2026 年或明确当前的最新例子，就不要写这一类最新例子，也不要退而求其次使用 2025 年、2024 年、2023 年或更早案例来冒充当前例子。
+- 过去几年的案例只能作为历史背景、机制对照或周期回看，不能承担“最新例子”“时下趋势”“当前前景”的证据功能。
+- 没有明确日期、来源名称、事件主体和可核对事实的资料，不得写成事实；宁可删去相关现实例子，也不要用模糊旧例补位。
+- 成稿不得暴露“联网检索、搜索结果、API、检索资料、参考资料信息点”等创作过程词；正式表达仍按来源表述规则写成“根据《来源名》……”或“根据公开资料……”。"""
+
+
 FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文写作者。
 
 任务：参考我提供的资料，直接生成一篇完整的深度长文。
@@ -525,6 +534,8 @@ FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构�
 """ + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
 
 """ + FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT + """
+
+""" + FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT + """
 
 内容要求：
 - 我提供的文章、资料或文稿，只能作为“参照材料”，不能作为逐段改写的底稿。写作时不得沿用原文的开篇方式、段落顺序、案例组合、论证路径、表达节奏和关键句式，不能让成稿看起来像是在原文基础上换词、扩写或重排。
@@ -580,6 +591,8 @@ FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非�
 """ + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
 
 """ + FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT + """
+
+""" + FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT + """
 
 内容要求：
 - 我提供的文章、资料或文稿，只能作为“参照材料”，不能作为逐段改写的底稿。
@@ -1860,6 +1873,7 @@ __all__ = [
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",
+    "FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT",
     "GEMINI_FAST_POLISH_PROMPT",
     "GEMINI_FAST_REFINE_PROMPT",
     "FINAL_BOOK_FORMAT_PROMPT",

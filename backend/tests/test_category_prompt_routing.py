@@ -47,7 +47,7 @@ MINIMAL_MANUSCRIPT = """@最终书名
 WRITER_ROUTING_CATEGORIES = [
     category
     for category in SUPPORTED_CATEGORIES
-    if category not in {"comic_series", "healing_comic", "finance_technology_advice"}
+    if category not in {"comic_series", "healing_comic", "finance_technology", "finance_technology_advice"}
 ]
 
 
@@ -368,6 +368,9 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "正文字数不设人为上限" in prompt
     assert "最终正文长度控制在约12000字" not in prompt
     assert "财经科技来源表述专项要求" in prompt
+    assert "财经科技联网检索与最新例子硬性要求" in prompt
+    assert "必须调用 API 联网检索" in prompt
+    assert "不要退而求其次使用 2025 年、2024 年、2023 年或更早案例" in prompt
     assert "视频材料中提到" in prompt
     assert "根据《来源名》" in prompt
     assert "根据公开资料" in prompt
@@ -385,6 +388,9 @@ def test_finance_technology_advice_category_uses_viewpoint_advice_prompt() -> No
 
     assert meta["label"] == "财经科技（观点建议版）"
     assert "财经科技来源表述专项要求" in prompt
+    assert "财经科技联网检索与最新例子硬性要求" in prompt
+    assert "必须调用 API 联网检索" in prompt
+    assert "不要退而求其次使用 2025 年、2024 年、2023 年或更早案例" in prompt
     assert "每个核心问题都要形成明确、具体的独立判断" in prompt
     assert "先识别常见说法和大众默认认知" in prompt
     assert "不得为了显得独特而刻意反常识" in prompt
@@ -437,7 +443,7 @@ def test_finance_advice_category_always_uses_finance_workflow() -> None:
         "很短的财经科技观点建议版资料。",
         source_duration_seconds=60,
     )
-    assert not content_engine._should_use_finance_longform(
+    assert content_engine._should_use_finance_longform(
         "finance_technology",
         "很短的财经科技资料。",
         source_duration_seconds=60,
@@ -452,6 +458,71 @@ def _long_finance_manuscript(repeat: int = 5200) -> str:
 def _finance_continuation_fragment(repeat: int = 1800) -> str:
     body = "这一层需要补足产业链、公司行为、政策条件、资金周期、普通人影响和风险边界之间的传导关系。" * repeat
     return f"@1. 全局传导\n{body}"
+
+
+def _patch_finance_latest_research(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_latest_research_pack(*_: object, **__: object) -> str:
+        return (
+            "【财经科技联网检索结果】\n"
+            "- 检索结论：已检索到 2026 年当前最新例子；未检索到的主题不得使用过去几年案例替代。\n"
+            "- 可使用的最新例子：\n"
+            "  1. 2026-06｜公开资料｜测试公司｜测试公司发布当前产业动作｜测试主题｜只能用于当前例子。\n"
+            "- 禁写提醒：没有 2026 年最新例子的主题不要写最新例子。"
+        )
+
+    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", fake_latest_research_pack)
+
+
+def test_finance_web_search_call_requires_required_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponses:
+        def create(self, **kwargs: object) -> dict[str, str]:
+            calls.append(dict(kwargs))
+            return {"output_text": "【财经科技联网检索结果】\n- 检索结论：测试结果。"}
+
+    class FakeClient:
+        responses = FakeResponses()
+
+    monkeypatch.setattr(content_engine, "_resolve_openai_api_key", lambda: "sk-test")
+    monkeypatch.setattr(content_engine, "_get_openai_writer_client", lambda: FakeClient())
+
+    result = content_engine._openai_finance_web_search_call("检索提示")
+
+    assert "测试结果" in result
+    assert calls
+    assert calls[0]["tool_choice"] == "required"
+    assert calls[0]["tools"] == [{"type": "web_search", "search_context_size": "medium"}]
+
+
+def test_finance_latest_research_pack_uses_cache_without_api_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "finance_research_cache"
+    output_dir.mkdir()
+    cached = "【财经科技联网检索结果】\n- 检索结论：缓存结果，包含 2026 年最新例子。"
+    (output_dir / content_engine.FINANCE_LATEST_RESEARCH_STAGE_FILE).write_text(
+        cached,
+        encoding="utf-8",
+    )
+
+    def fail_web_search(_: str) -> str:
+        raise AssertionError("cached finance research must not call API again")
+
+    monkeypatch.setattr(content_engine, "_openai_finance_web_search_call", fail_web_search)
+
+    result = asyncio.run(
+        content_engine._finance_latest_research_pack(
+            "财经科技资料",
+            category="finance_technology",
+            output_dir=output_dir,
+        )
+    )
+
+    assert result == cached
 
 
 def test_finance_technology_advice_longform_uses_finance_workflow(
@@ -475,6 +546,7 @@ def test_finance_technology_advice_longform_uses_finance_workflow(
         format_kwargs.append(dict(kwargs))
         return text
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
     monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
@@ -495,10 +567,14 @@ def test_finance_technology_advice_longform_uses_finance_workflow(
     assert "每个核心问题都要形成明确、具体的独立判断" in writer_prompts[0]
     assert "具体、可执行、有适用条件的建议" in writer_prompts[0]
     assert "财经科技来源表述专项要求" in writer_prompts[0]
+    assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
+    assert "已检索到 2026 年当前最新例子" in writer_prompts[0]
     assert polish_kwargs[0]["disable_max_output_tokens"] is True
     assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
+    assert "财经科技联网检索与最新例子硬性要求" in str(polish_kwargs[0]["system_instruction"])
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
+    assert "财经科技联网检索与最新例子硬性要求" in str(format_kwargs[0]["prompt_template"])
 
 
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
@@ -539,6 +615,7 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     async def fail_chunked_gemini(*_: object, **__: object) -> str:
         raise AssertionError("finance longform must not use chunked Gemini path")
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
     monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
@@ -560,6 +637,8 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     assert "一次性输出完整书稿" in writer_prompts[0]
     assert "不要分章分批生成" in writer_prompts[0]
     assert "财经科技来源表述专项要求" in writer_prompts[0]
+    assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
+    assert "已检索到 2026 年当前最新例子" in writer_prompts[0]
     assert "参考资料信息点观察清单" in writer_prompts[0]
     assert "必须按参考资料中的事实与信息点展开" in writer_prompts[0]
     assert "视频信息点观察清单" not in writer_prompts[0]
@@ -578,17 +657,20 @@ def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
     assert polish_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
     assert "财经科技来源表述专项要求" in str(polish_kwargs[0]["system_instruction"])
+    assert "财经科技联网检索与最新例子硬性要求" in str(polish_kwargs[0]["system_instruction"])
     assert "不能只处理开头、前半部分或前 20000 字" in str(polish_kwargs[0]["system_instruction"])
     assert refine_kwargs[0]["disable_max_output_tokens"] is True
     assert refine_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿处理保护" in str(refine_kwargs[0]["system_instruction"])
     assert "财经科技来源表述专项要求" in str(refine_kwargs[0]["system_instruction"])
+    assert "财经科技联网检索与最新例子硬性要求" in str(refine_kwargs[0]["system_instruction"])
     assert "不能只处理开头、前半部分或前 20000 字" in str(refine_kwargs[0]["system_instruction"])
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert format_kwargs[0]["fail_on_max_tokens"] is True
     assert format_kwargs[0]["retries"] == 1
     assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
     assert "财经科技来源表述专项要求" in str(format_kwargs[0]["prompt_template"])
+    assert "财经科技联网检索与最新例子硬性要求" in str(format_kwargs[0]["prompt_template"])
     assert "不能只输出前半部分或前 20000 字" in str(format_kwargs[0]["prompt_template"])
 
 
@@ -606,6 +688,7 @@ def test_finance_longform_short_writer_uses_targeted_continuation_not_redraft(
             return MINIMAL_MANUSCRIPT
         return _finance_continuation_fragment()
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
     monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
@@ -625,6 +708,8 @@ def test_finance_longform_short_writer_uses_targeted_continuation_not_redraft(
     assert "财经科技长视频动态长文强约束" in writer_prompts[0]
     assert "财经科技长文同阶段定向续写任务" in writer_prompts[1]
     assert "财经科技来源表述专项要求" in writer_prompts[1]
+    assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[1]
+    assert "已检索到 2026 年当前最新例子" in writer_prompts[1]
     assert "全局扩写蓝图" in writer_prompts[1]
     assert "只输出“新增正文正式章节”" in writer_prompts[1]
     assert "[参考资料全文]" in writer_prompts[1]
@@ -650,6 +735,7 @@ def test_finance_longform_deepseek_compression_keeps_refined_full_text(
     def fake_format_book_text(text: str, **kwargs: object) -> str:
         return MINIMAL_MANUSCRIPT
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
     monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
@@ -675,6 +761,7 @@ def test_finance_openai_writer_failure_is_non_retryable(
     async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
         raise RuntimeError("connection reset")
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
 
     with pytest.raises(RuntimeError, match="automatic retry stopped to avoid duplicate billing"):
@@ -712,6 +799,7 @@ def test_finance_short_final_resume_is_not_reused_before_writer_expansion(
         format_inputs.append(text)
         return text
 
+    _patch_finance_latest_research(monkeypatch)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "polish_book_text", fake_polish_book_text)
     monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
