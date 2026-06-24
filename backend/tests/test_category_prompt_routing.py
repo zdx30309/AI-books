@@ -393,12 +393,13 @@ def test_finance_technology_advice_category_uses_viewpoint_advice_prompt() -> No
     assert "财经科技联网检索与最新例子硬性要求" in prompt
     assert "必须调用 API 联网检索" in prompt
     assert "不要退而求其次使用 2025 年、2024 年、2023 年或更早案例" in prompt
-    assert "每个核心问题都要形成明确、具体的独立判断" in prompt
-    assert "从被忽略的变量、利益关系、因果链条、适用条件或现实代价中寻找新的解释角度" in prompt
+    assert "你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。" in prompt
+    assert "每个核心问题都要形成明确、具体的独立判断" not in prompt
+    assert "从被忽略的变量、利益关系、因果链条、适用条件或现实代价中寻找新的解释角度" not in prompt
     assert "先识别常见说法和大众默认认知" not in prompt
     assert "不得为了显得独特而刻意反常识" not in prompt
-    assert "对于时下（2026年）某领域的前景预估，必须使用最新的例子" in prompt
-    assert "不要一套分析模板从头写到底" in prompt
+    assert "对于时下（2026年）某领域的前景预估，必须使用最新的例子" not in prompt
+    assert "不要像一套分析模板从头写到底" in prompt
     assert "必须设置一个独立小节" in prompt
     assert "具体、可执行、有适用条件的建议" in prompt
     assert "如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识" in prompt
@@ -569,7 +570,8 @@ def test_finance_technology_advice_longform_uses_finance_workflow(
     assert "@最终书名" in result
     assert len(writer_prompts) == 1
     assert "财经科技长视频动态长文强约束" in writer_prompts[0]
-    assert "每个核心问题都要形成明确、具体的独立判断" in writer_prompts[0]
+    assert "你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。" in writer_prompts[0]
+    assert "每个核心问题都要形成明确、具体的独立判断" not in writer_prompts[0]
     assert "具体、可执行、有适用条件的建议" in writer_prompts[0]
     assert "财经科技来源表述专项要求" in writer_prompts[0]
     assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
