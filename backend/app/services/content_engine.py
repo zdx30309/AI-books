@@ -69,6 +69,7 @@ FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid dupli
 FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technology_advice"})
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
+FINANCE_TECHNOLOGY_ADVICE_CATEGORY = "finance_technology_advice"
 CLASSICAL_SEGMENTED_WRITER_MIN_SOURCE_CHARS = 60_000
 CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
 CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
@@ -2621,6 +2622,13 @@ def _should_use_finance_longform(
     return True
 
 
+def _is_finance_advice_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category) == FINANCE_TECHNOLOGY_ADVICE_CATEGORY
+    except Exception:
+        return False
+
+
 def _finance_section_content(text: str, section: str) -> str:
     pattern = re.compile(
         r"^@?\s*"
@@ -2833,12 +2841,34 @@ def _finance_whole_book_prompt(
     target_words: int,
     duration_seconds: int | None,
     latest_research: str | None = None,
+    category: str | None = None,
 ) -> str:
     minutes = round((duration_seconds or _finance_duration_seconds_from_text(raw_text)) / 60, 1)
     source_cpm = int(round(len((raw_text or "").strip()) / max(minutes, 1.0)))
     focus_points = _finance_source_focus_points(raw_text)
     focus_block = f"\n[参考资料信息点观察清单]\n{focus_points}\n" if focus_points else ""
     latest_research_block = _finance_latest_research_block(latest_research)
+    if _is_finance_advice_category(category):
+        return f"""{base_writer_prompt.rstrip()}
+
+【财经科技观点建议版密度强约束】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{latest_research_block}
+- 以上财经科技观点建议版主 prompt 全部继续生效；本段只增加观点密度、去堆料和链路约束，不替换原分类规则。
+- 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
+- 参考资料对应时长约 {minutes} 分钟，参考资料信息密度约每分钟 {source_cpm} 字；这只用于判断材料复杂度，不作为最低字数目标，不得为了接近某个字数去补材料。
+- 正文字数不设人为上限，但也不设最低扩写目标；以把 1 个主矛盾和 2 到 4 个核心问题讲清楚、讲透彻为准。讲透即停，宁可少写，也不要堆砌重复材料和无用材料。
+- 观点建议版的首要任务是形成判断和建议，不是展示材料库存。所有资料、数据、公司动作、政策、技术事件和案例都必须回答一个问题：它支撑了哪个判断，改变了谁的理解，导向哪条行动边界。
+- 每个核心问题必须形成独立判断；每个判断只能选择最必要的材料支撑。不能把同一材料、同一数据、同一案例、同一公司动作换说法写进多个章节。
+- 禁止材料清单化、百科化、研究报告化；禁止为了显得信息量大而连续罗列公司名、年份、机构名、政策名、技术名、数据口径。
+- 如果资料只提供背景但不能推动判断，就压缩成一句背景；如果资料与主矛盾无关，就不要写入正文。
+- 建议小节必须独立存在，并把前文分析转成具体、可执行、有适用条件的建议；建议不能重复前文材料，也不能泛泛写“保持理性”“关注风险”。
+- 如需写当前前景、2026 年趋势、最新产业例子或近期公司动作，只能使用上方联网检索结果里已有的 2026 年或明确当前资料；没有检索到就不要写这类最新例子，也不要使用过去几年案例替代。
+- 不做具体投资预测，不写涨跌结论，不给买卖建议；所有判断只能写成条件、机制、约束、影响和普通人可执行的信息判断。
+- 输出顺序仍然只能是 @最终书名、@最终简介、@目录、@导言、@正文；只输出成稿，不要解释，不要代码块，不要元信息。
+{focus_block}
+请严格按照完整财经科技观点建议版 prompt 和以上观点密度强约束，一次性输出完整书稿。
+"""
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长视频动态长文强约束】
@@ -2860,7 +2890,27 @@ def _finance_whole_book_prompt(
 """
 
 
-def _finance_stage_instruction(base_instruction: str, stage_name: str) -> str:
+def _finance_stage_instruction(
+    base_instruction: str,
+    stage_name: str,
+    *,
+    category: str | None = None,
+) -> str:
+    if _is_finance_advice_category(category):
+        return f"""{base_instruction.rstrip()}
+
+【财经科技超长文整稿处理保护】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
+- 当前环节只执行原有 workflow 的对应处理，不改变分工，不重写成新稿，不改成摘要。
+- 你会收到待处理完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
+- 必须保留完整结构、核心判断、关键事实、必要机制链条、风险边界和建议小节；不得把观点建议稿压缩成短摘要。
+- 观点建议版允许并要求清理明显重复材料、无关材料和资料堆叠：同一数据、同一案例、同一公司动作、同一政策背景、同一判断如果在多处重复出现，只保留对论证最有价值的一处，其余删改为自然衔接句。
+- 不要删除能支撑新判断、新条件、新边界或具体建议的有效内容；只清掉不改变观点推进的重复铺陈、百科式罗列和无效资料堆砌。
+- 建议小节必须保留并变得更具体，不能被合并成泛泛总结；如果建议只是在重复前文材料，要改成可执行、有适用条件的建议。
+- 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技观点建议版规则不被破坏。
+- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
+"""
     return f"""{base_instruction.rstrip()}
 
 【财经科技超长文整稿处理保护】
@@ -2875,8 +2925,19 @@ def _finance_stage_instruction(base_instruction: str, stage_name: str) -> str:
 """
 
 
-def _finance_format_template(base_template: str) -> str:
-    guard = f"""【财经科技超长文整稿格式保护】
+def _finance_format_template(base_template: str, *, category: str | None = None) -> str:
+    if _is_finance_advice_category(category):
+        guard = f"""【财经科技超长文整稿格式保护】
+{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
+{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
+- 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
+- 本阶段以格式整理和标题规范为主，不得重写成新稿，不得摘要、缩写、合并章节或重排论证。
+- 必须保留观点建议版的核心判断、关键事实、机制链条、风险边界和建议小节。
+- 如果输入中仍有明显重复材料、无关材料堆叠或同一判断换说法，只允许做保守删改：删除重复段落或重复句，保留最有论证价值的一处，不得影响新的观点推进。
+- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
+"""
+    else:
+        guard = f"""【财经科技超长文整稿格式保护】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
 {FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
@@ -3197,7 +3258,7 @@ async def _finance_expand_writer_to_target(
     return current_markdown, expanded
 
 
-def _finance_stage_looks_compressed(source: str, candidate: str) -> bool:
+def _finance_stage_looks_compressed(source: str, candidate: str, *, category: str | None = None) -> bool:
     if not source or len(source) < 10_000:
         return False
     if not candidate or not candidate.strip():
@@ -3206,9 +3267,10 @@ def _finance_stage_looks_compressed(source: str, candidate: str) -> bool:
         return True
     source_body_chars = _finance_body_chars(source)
     candidate_body_chars = _finance_body_chars(candidate)
+    retain_ratio = 0.55 if _is_finance_advice_category(category) else FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO
     if source_body_chars >= 10_000 and candidate_body_chars < max(
         5000,
-        int(source_body_chars * FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO),
+        int(source_body_chars * retain_ratio),
     ):
         return True
     return False
@@ -3233,6 +3295,7 @@ async def _generate_finance_longform_book(
     on_stage: StageCallback | None,
     source_duration_seconds: int | float | None,
 ) -> str:
+    is_advice = _is_finance_advice_category(category)
     duration_seconds = _positive_int(source_duration_seconds) or _finance_duration_seconds_from_text(raw_text)
     target_words = _finance_dynamic_target_words(
         raw_text,
@@ -3241,9 +3304,21 @@ async def _generate_finance_longform_book(
     metadata = {
         "targetWords": target_words,
         "durationSeconds": duration_seconds,
-        "targetMode": "writer_stage_expand_to_dynamic_target",
+        "targetMode": (
+            "viewpoint_density_no_minimum_expansion_target"
+            if is_advice
+            else "writer_stage_expand_to_dynamic_target"
+        ),
         "stageMinRetainRatio": FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO,
-        "mode": "whole_workflow_with_writer_stage_continuations",
+        "mode": (
+            "viewpoint_advice_whole_workflow_no_writer_continuation"
+            if is_advice
+            else "whole_workflow_with_writer_stage_continuations"
+        ),
+        "adviceDedup": {
+            "enabled": is_advice,
+            "rule": "facts_must_serve_judgment_or_advice_no_material_inventory",
+        },
         "latestResearch": {
             "required": True,
             "stageFile": FINANCE_LATEST_RESEARCH_STAGE_FILE,
@@ -3265,7 +3340,7 @@ async def _generate_finance_longform_book(
 
     final_resume_markdown = _read_stage_file(output_dir, "04_format.md")
     if final_resume_markdown:
-        if _finance_body_target_reached(final_resume_markdown, target_words):
+        if is_advice or _finance_body_target_reached(final_resume_markdown, target_words):
             logger.info("复用已存在的财经长文 04_format.md")
             _log_stage("finance 4/4 format (resume)", final_resume_markdown)
             if on_stage:
@@ -3313,6 +3388,7 @@ async def _generate_finance_longform_book(
             target_words=target_words,
             duration_seconds=duration_seconds,
             latest_research=latest_research,
+            category=category,
         )
         _dump_stage(output_dir, "01_finance_whole_prompt.md", writer_prompt)
         try:
@@ -3335,24 +3411,27 @@ async def _generate_finance_longform_book(
         _log_stage("finance 1/4 writer", generated_markdown)
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
         generated_body_chars = _finance_body_chars(generated_markdown)
-        if generated_body_chars < target_words:
+        if not is_advice and generated_body_chars < target_words:
             logger.warning(
                 "财经科技整稿低于动态篇幅目标但不触发二次整稿生成: body_chars=%d target=%d",
                 generated_body_chars,
                 target_words,
             )
 
-    generated_markdown, writer_expanded = await _finance_expand_writer_to_target(
-        generated_markdown,
-        base_writer_prompt=base_writer_prompt,
-        raw_text=raw_text,
-        latest_research=latest_research,
-        target_words=target_words,
-        duration_seconds=duration_seconds,
-        category=category,
-        output_dir=output_dir,
-        on_stage=on_stage,
-    )
+    if is_advice:
+        writer_expanded = False
+    else:
+        generated_markdown, writer_expanded = await _finance_expand_writer_to_target(
+            generated_markdown,
+            base_writer_prompt=base_writer_prompt,
+            raw_text=raw_text,
+            latest_research=latest_research,
+            target_words=target_words,
+            duration_seconds=duration_seconds,
+            category=category,
+            output_dir=output_dir,
+            on_stage=on_stage,
+        )
     if writer_expanded:
         resume_polished_markdown = None
         resume_refined_markdown = None
@@ -3365,7 +3444,11 @@ async def _generate_finance_longform_book(
                 "chars": len(generated_markdown),
                 "body_chars": _finance_body_chars(generated_markdown),
                 "target_words": target_words,
-                "target_mode": "expanded_to_target",
+                "target_mode": (
+                    "viewpoint_density_no_continuation"
+                    if is_advice
+                    else "expanded_to_target"
+                ),
             },
         )
 
@@ -3385,7 +3468,11 @@ async def _generate_finance_longform_book(
     else:
         if on_stage:
             on_stage("polish_start", {})
-        polish_instruction = _finance_stage_instruction(prompts["gemini_fast_polish"], "Gemini 一润")
+        polish_instruction = _finance_stage_instruction(
+            prompts["gemini_fast_polish"],
+            "Gemini 一润",
+            category=category,
+        )
         logger.info("财经科技 Gemini 一润整稿输入: chars=%d body_chars=%d", len(generated_markdown), _finance_body_chars(generated_markdown))
         try:
             polished_markdown = await _to_thread_with_optional_timeout(
@@ -3409,7 +3496,7 @@ async def _generate_finance_longform_book(
             _dump_stage(output_dir, "02_polish_error.txt", f"{exc.__class__.__name__}: {exc}")
             polished_markdown = generated_markdown
         polished_markdown = normalize_final_markdown(polished_markdown, category=category)
-        if _finance_stage_looks_compressed(generated_markdown, polished_markdown):
+        if _finance_stage_looks_compressed(generated_markdown, polished_markdown, category=category):
             logger.warning(
                 "财经科技 Gemini 一润疑似压缩，保留 OpenAI 完整初稿: source_body=%d candidate_body=%d",
                 _finance_body_chars(generated_markdown),
@@ -3433,7 +3520,11 @@ async def _generate_finance_longform_book(
     else:
         if on_stage:
             on_stage("refine_start", {})
-        refine_instruction = _finance_stage_instruction(prompts["gemini_fast_refine"], "Gemini 二润")
+        refine_instruction = _finance_stage_instruction(
+            prompts["gemini_fast_refine"],
+            "Gemini 二润",
+            category=category,
+        )
         logger.info("财经科技 Gemini 二润整稿输入: chars=%d body_chars=%d", len(polished_markdown), _finance_body_chars(polished_markdown))
         try:
             refined_markdown = await _to_thread_with_optional_timeout(
@@ -3457,7 +3548,7 @@ async def _generate_finance_longform_book(
             _dump_stage(output_dir, "03_refine_error.txt", f"{exc.__class__.__name__}: {exc}")
             refined_markdown = polished_markdown
         refined_markdown = normalize_final_markdown(refined_markdown, category=category)
-        if _finance_stage_looks_compressed(polished_markdown, refined_markdown):
+        if _finance_stage_looks_compressed(polished_markdown, refined_markdown, category=category):
             logger.warning(
                 "财经科技 Gemini 二润疑似压缩，保留一润完整稿: source_body=%d candidate_body=%d",
                 _finance_body_chars(polished_markdown),
@@ -3474,7 +3565,7 @@ async def _generate_finance_longform_book(
 
     if on_stage:
         on_stage("format_start", {})
-    format_template = _finance_format_template(prompts["final_book_format"])
+    format_template = _finance_format_template(prompts["final_book_format"], category=category)
     logger.info("财经科技 DeepSeek 格式层整稿输入: chars=%d body_chars=%d", len(refined_markdown), _finance_body_chars(refined_markdown))
     try:
         final_markdown = await asyncio.wait_for(
@@ -3516,7 +3607,7 @@ async def _generate_finance_longform_book(
         final_markdown = refined_markdown
 
     final_markdown = normalize_final_markdown(final_markdown, category=category)
-    if _finance_stage_looks_compressed(refined_markdown, final_markdown):
+    if _finance_stage_looks_compressed(refined_markdown, final_markdown, category=category):
         logger.warning(
             "DeepSeek 财经科技整稿格式化疑似压缩或截断，保留 Gemini 二润完整稿: source_body=%d candidate_body=%d",
             _finance_body_chars(refined_markdown),

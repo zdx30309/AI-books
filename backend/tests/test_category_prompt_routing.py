@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import asyncio
+import json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -403,6 +404,9 @@ def test_finance_technology_advice_category_uses_viewpoint_advice_prompt() -> No
     assert "必须设置一个独立小节" in prompt
     assert "具体、可执行、有适用条件的建议" in prompt
     assert "如何辨别误导信息、选择可靠渠道或更科学地获取和使用相关知识" in prompt
+    assert "这是观点建议版，不是资料汇编版" in prompt
+    assert "所有资料、数据、公司动作、政策、技术事件和案例，都必须服务于一个明确判断或一条具体建议" in prompt
+    assert "宁可少写，也不要堆无用材料" in prompt
     assert "正文字数不设人为上限" in prompt
     assert "[参考资料全文]" in prompt
     assert "观点建议版测试资料" in rendered
@@ -569,19 +573,68 @@ def test_finance_technology_advice_longform_uses_finance_workflow(
 
     assert "@最终书名" in result
     assert len(writer_prompts) == 1
-    assert "财经科技长视频动态长文强约束" in writer_prompts[0]
+    assert "财经科技观点建议版密度强约束" in writer_prompts[0]
+    assert "财经科技长视频动态长文强约束" not in writer_prompts[0]
     assert "你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。" in writer_prompts[0]
     assert "每个核心问题都要形成明确、具体的独立判断" not in writer_prompts[0]
     assert "具体、可执行、有适用条件的建议" in writer_prompts[0]
     assert "财经科技来源表述专项要求" in writer_prompts[0]
     assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
     assert "已检索到 2026 年当前最新例子" in writer_prompts[0]
+    assert "不作为最低字数目标" in writer_prompts[0]
+    assert "讲透即停" in writer_prompts[0]
+    assert "不是展示材料库存" in writer_prompts[0]
+    assert "如果资料只提供背景但不能推动判断，就压缩成一句背景" in writer_prompts[0]
     assert polish_kwargs[0]["disable_max_output_tokens"] is True
     assert "财经科技超长文整稿处理保护" in str(polish_kwargs[0]["system_instruction"])
+    assert "观点建议版允许并要求清理明显重复材料" in str(polish_kwargs[0]["system_instruction"])
     assert "财经科技联网检索与最新例子硬性要求" in str(polish_kwargs[0]["system_instruction"])
     assert format_kwargs[0]["max_output_tokens"] == 0
     assert "财经科技超长文整稿格式保护" in str(format_kwargs[0]["prompt_template"])
+    assert "明显重复材料、无关材料堆叠" in str(format_kwargs[0]["prompt_template"])
     assert "财经科技联网检索与最新例子硬性要求" in str(format_kwargs[0]["prompt_template"])
+
+
+def test_finance_technology_advice_does_not_force_dynamic_target_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_prompts: list[str] = []
+    writer_kwargs: list[dict[str, object]] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        writer_kwargs.append(dict(kwargs))
+        return MINIMAL_MANUSCRIPT
+
+    _patch_finance_latest_research(monkeypatch)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "观点建议版资料，只有一个核心判断，材料很少，不应该为了五万字反复续写。",
+            category="finance_technology_advice",
+            output_dir=tmp_path / "finance_advice_no_continuation",
+            source_duration_seconds=30 * 60,
+        )
+    )
+
+    assert "@最终书名" in result
+    assert len(writer_prompts) == 1
+    assert "财经科技观点建议版密度强约束" in writer_prompts[0]
+    assert "财经科技长文同阶段定向续写任务" not in "\n".join(writer_prompts)
+    assert "动态目标正文字数约" not in writer_prompts[0]
+    assert all(kwargs["max_output_tokens"] == 0 for kwargs in writer_kwargs)
+    plan = json.loads(
+        (tmp_path / "finance_advice_no_continuation" / "00_finance_longform_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert plan["targetMode"] == "viewpoint_density_no_minimum_expansion_target"
+    assert plan["adviceDedup"]["enabled"] is True
 
 
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
