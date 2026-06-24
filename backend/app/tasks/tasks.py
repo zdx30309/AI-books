@@ -46,6 +46,7 @@ from app.services.video_sources import (
     source_url_candidates,
 )
 from app.services.wechat_channels import WeChatChannelsError, extract_wechat_channels_text
+from app.services.xiaohongshu import XiaohongshuPageTextError, extract_xiaohongshu_page_text
 from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
@@ -518,6 +519,30 @@ def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> 
                     "请配置 WECHAT_CHANNELS_TIKHUB_API_KEY、WECHAT_CHANNELS_DOWNLOADER_API_KEY "
                     "或 WECHAT_CHANNELS_GENERIC_RESOLVER_URL 后重试。"
                 ) from resolver_exc
+        if source_platform == "xiaohongshu" and not isinstance(exc, QingdouDurationExceededError):
+            try:
+                logger.warning("Xiaohongshu Qingdou parse failed; trying public page subtitle fallback: %s", exc)
+                fallback = extract_xiaohongshu_page_text(parser_url, timeout=min(max(poll_timeout, 5), 60))
+                logger.warning(
+                    "Xiaohongshu public page fallback completed: title=%s chars=%d duration=%s subtitle=%s",
+                    fallback.title,
+                    len(fallback.text),
+                    fallback.duration_seconds,
+                    bool(fallback.subtitle_url),
+                )
+                return fallback.text, fallback.duration_seconds or config_duration
+            except XiaohongshuPageTextError as fallback_exc:
+                logger.warning("Xiaohongshu public page fallback failed", exc_info=True)
+                raise RuntimeError(
+                    "小红书解析失败：轻抖未返回视频正文，小红书公开页面也未提取到可用正文。"
+                    f"轻抖错误：{exc}；页面兜底错误：{fallback_exc}"
+                ) from fallback_exc
+            except Exception as fallback_exc:
+                logger.warning("Xiaohongshu public page fallback failed", exc_info=True)
+                raise RuntimeError(
+                    "小红书解析失败：轻抖未返回视频正文，小红书公开页面兜底也失败。"
+                    f"轻抖错误：{exc}；页面兜底错误：{fallback_exc}"
+                ) from fallback_exc
         if (
             source_platform == "bilibili"
             and not isinstance(exc, QingdouDurationExceededError)
