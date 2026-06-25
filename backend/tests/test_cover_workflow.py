@@ -163,6 +163,19 @@ def test_literature_reference_members_excludes_removed_suffixes(tmp_path: Path) 
     assert cover._literature_reference_members(zip_path) == ("参考封面/album_temp_1779350904.jpg",)  # noqa: SLF001
 
 
+def test_literature_reference_zip_prefers_configured_external_path(tmp_path: Path, monkeypatch) -> None:
+    zip_path = tmp_path / "external_reference_covers.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("参考封面/album_temp_1779350904.jpg", PNG_BYTES)
+
+    monkeypatch.setattr(cover.settings, "COVER_ORTHODOX_REFERENCE_ZIP_PATH", str(zip_path))
+
+    assert cover._literature_reference_zip_path() == zip_path  # noqa: SLF001
+    assert cover._literature_reference_members(cover._literature_reference_zip_path()) == (  # noqa: SLF001
+        "参考封面/album_temp_1779350904.jpg",
+    )
+
+
 def test_style_brief_locks_reference_site_and_brands() -> None:
     cover_input = cover.prepare_cover_input(
         "沉默的账单",

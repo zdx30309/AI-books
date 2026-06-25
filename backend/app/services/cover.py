@@ -983,6 +983,12 @@ def _repo_root() -> Path:
 
 
 def _literature_reference_zip_path() -> Path:
+    configured = str(getattr(settings, "COVER_ORTHODOX_REFERENCE_ZIP_PATH", "") or "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists() and configured_path.is_file():
+            return configured_path
+        logger.warning("正统出版参考封面外部 ZIP 路径不可用，将回退到内置路径: %s", configured_path)
     service_dir = Path(__file__).resolve().parent
     return service_dir / "reference_assets" / "orthodox_publishing" / "reference_covers.zip"
 
