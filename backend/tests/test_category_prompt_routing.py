@@ -427,14 +427,15 @@ def test_finance_technology_recommendation_category_uses_suggestion_prompt() -> 
     assert "财经科技来源表述专项要求" not in prompt
     assert "财经科技联网检索与最新例子硬性要求" not in prompt
     assert "你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。" in prompt
+    assert "财经科技（建议版）的本段专属要求优先级最高" in prompt
     assert "这是建议版，不是资料汇编版" in prompt
     assert "不得作为可铺陈、可罗列、可反复展开的材料库" in prompt
     assert "每条事实、数据、案例、公司动作或政策背景，只能在最能支撑核心判断的位置展开一次" in prompt
     assert "凡话题与普通人的生活、工作、消费、资产、职业或信息判断有关，必须设置一个独立小节" in prompt
     assert "具体、可执行、有适用条件的建议" in prompt
-    assert "通常控制在约8000到12000字" in prompt
-    assert "宁可少写，也不要为了接近字数反复堆材料" in prompt
-    assert "最终正文长度控制在约12000字" not in prompt
+    assert "最终正文长度控制在约12000字" in prompt
+    assert "约12000字是明确写作目标" in prompt
+    assert "不得为了接近字数反复堆材料" in prompt
     assert "正文字数不设人为上限" not in prompt
     assert "[参考资料全文]" in prompt
     assert "建议版测试资料" in rendered
@@ -582,10 +583,12 @@ def test_finance_recommendation_generation_uses_standard_workflow(
     assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
     assert "找到 2026 年当前例子" in writer_prompts[0]
     assert "联网检索结果只能作为论据，不作为材料库" in writer_prompts[0]
+    assert "主 prompt 仍然完整生效且优先级最高" in writer_prompts[0]
     assert "在全文中最多完整展开一次" in writer_prompts[0]
     assert "建议小节不得重新复述联网资料" in writer_prompts[0]
-    assert "通常控制在约8000到12000字" in writer_prompts[0]
-    assert "最终正文长度控制在约12000字" not in writer_prompts[0]
+    assert "最终正文长度控制在约12000字" in writer_prompts[0]
+    assert "约12000字目标仍需完成" in writer_prompts[0]
+    assert "不得为了使用联网资料而扩写资料清单" in writer_prompts[0]
     assert polish_instructions and "财经科技超长文整稿处理保护" not in polish_instructions[0]
     assert refine_instructions and "财经科技超长文整稿处理保护" not in refine_instructions[0]
     assert format_templates and "财经科技超长文整稿格式保护" not in format_templates[0]
