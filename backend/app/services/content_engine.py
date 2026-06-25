@@ -2926,6 +2926,9 @@ async def _finance_latest_research_pack(
     output_dir: Path | None,
     on_stage: StageCallback | None = None,
 ) -> str:
+    if _is_finance_recommendation_category(category):
+        raise RuntimeError("财经科技（建议版）已关闭联网检索，必须只按专属主 prompt 和用户提供资料生成")
+
     cached = _read_stage_file(output_dir, FINANCE_LATEST_RESEARCH_STAGE_FILE)
     if cached:
         logger.info("复用已存在的财经科技联网检索结果 %s", FINANCE_LATEST_RESEARCH_STAGE_FILE)
@@ -4358,7 +4361,6 @@ async def generate_full_book(
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
     writer_input_text = raw_text.strip()
-    finance_recommendation_latest_research: str | None = None
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
@@ -4458,19 +4460,7 @@ async def generate_full_book(
                 interleaved=is_classical_interleaved,
             )
         else:
-            if _is_finance_recommendation_category(normalized_category):
-                finance_recommendation_latest_research = await _finance_latest_research_pack(
-                    writer_input_text,
-                    category=normalized_category,
-                    output_dir=output_dir,
-                    on_stage=on_stage,
-                )
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
-            if _is_finance_recommendation_category(normalized_category):
-                writer_prompt = _append_finance_recommendation_research_prompt(
-                    writer_prompt,
-                    finance_recommendation_latest_research,
-                )
             writer_prompt = _append_style_reference_prompt(
                 writer_prompt,
                 category=normalized_category,

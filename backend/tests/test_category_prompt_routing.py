@@ -527,20 +527,12 @@ def test_finance_recommendation_generation_uses_standard_workflow(
     polish_instructions: list[str] = []
     refine_instructions: list[str] = []
     format_templates: list[str] = []
-    research_calls: list[tuple[str, str]] = []
 
     async def fail_finance_longform(*_: object, **__: object) -> str:
         raise AssertionError("finance recommendation must not use finance longform workflow")
 
-    async def fake_latest_research_pack(
-        raw_text: str,
-        *,
-        category: str,
-        output_dir: Path | None,
-        on_stage: object | None = None,
-    ) -> str:
-        research_calls.append((category, raw_text))
-        return "【财经科技联网检索结果】\n- 检索结论：找到 2026 年当前例子。\n- 可使用的最新例子：\n  1. 2026-06-01｜测试来源｜测试主体｜测试事实｜测试主题｜只作事实边界"
+    async def fail_latest_research_pack(*_: object, **__: object) -> str:
+        raise AssertionError("finance recommendation must not call web search")
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
         writer_prompts.append(prompt)
@@ -559,7 +551,7 @@ def test_finance_recommendation_generation_uses_standard_workflow(
         return text
 
     monkeypatch.setattr(content_engine, "_generate_finance_longform_book", fail_finance_longform)
-    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", fake_latest_research_pack)
+    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", fail_latest_research_pack)
     monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
     monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
     monkeypatch.setattr(content_engine, "refine_book_text", fake_refine_book_text)
@@ -575,35 +567,34 @@ def test_finance_recommendation_generation_uses_standard_workflow(
     )
 
     assert "@最终书名" in result
-    assert research_calls == [("finance_technology_recommendation", "财经科技建议版资料。")]
     assert len(writer_prompts) == 1
     assert "财经科技观点建议版密度强约束" not in writer_prompts[0]
     assert "财经科技长视频动态长文强约束" not in writer_prompts[0]
-    assert "财经科技建议版联网事实资料" in writer_prompts[0]
-    assert "财经科技联网检索与最新例子硬性要求" in writer_prompts[0]
-    assert "找到 2026 年当前例子" in writer_prompts[0]
-    assert "联网检索结果只能作为论据，不作为材料库" in writer_prompts[0]
-    assert "主 prompt 仍然完整生效且优先级最高" in writer_prompts[0]
-    assert "在全文中最多完整展开一次" in writer_prompts[0]
-    assert "建议小节不得重新复述联网资料" in writer_prompts[0]
+    assert "财经科技建议版联网事实资料" not in writer_prompts[0]
+    assert "财经科技联网检索与最新例子硬性要求" not in writer_prompts[0]
+    assert "找到 2026 年当前例子" not in writer_prompts[0]
+    assert "联网检索结果只能作为论据，不作为材料库" not in writer_prompts[0]
+    assert "财经科技（建议版）的本段专属要求优先级最高" in writer_prompts[0]
+    assert "这是建议版，不是资料汇编版" in writer_prompts[0]
+    assert "只能在最能支撑核心判断的位置展开一次" in writer_prompts[0]
+    assert "建议小节只能把前文判断转成行动边界" in writer_prompts[0]
     assert "最终正文长度控制在约12000字" in writer_prompts[0]
-    assert "约12000字目标仍需完成" in writer_prompts[0]
-    assert "不得为了使用联网资料而扩写资料清单" in writer_prompts[0]
+    assert "约12000字是明确写作目标" in writer_prompts[0]
+    assert "不得为了接近字数反复堆材料" in writer_prompts[0]
     assert polish_instructions and "财经科技超长文整稿处理保护" not in polish_instructions[0]
     assert refine_instructions and "财经科技超长文整稿处理保护" not in refine_instructions[0]
     assert format_templates and "财经科技超长文整稿格式保护" not in format_templates[0]
 
 
-def test_finance_recommendation_web_search_prompt_treats_results_as_evidence() -> None:
-    prompt = content_engine._finance_latest_research_prompt(
-        "财经科技建议版资料。",
-        category="finance_technology_recommendation",
-    )
-
-    assert "财经科技（建议版）额外要求" in prompt
-    assert "只作为正文的事实核验和论据边界，不作为可铺陈的写作材料库" in prompt
-    assert "最多输出 5 条可使用的最新例子" in prompt
-    assert "提醒正文只能展开一次，不得在多个章节反复使用" in prompt
+def test_finance_recommendation_web_search_pack_is_disabled(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="财经科技（建议版）已关闭联网检索"):
+        asyncio.run(
+            content_engine._finance_latest_research_pack(
+                "财经科技建议版资料。",
+                category="finance_technology_recommendation",
+                output_dir=tmp_path / "finance_recommendation_no_web",
+            )
+        )
 
 
 def test_finance_recommendation_resume_reuses_writer_without_web_search(
