@@ -12,7 +12,7 @@ import {
 import { api, ApiError } from "@/api/client";
 import type { WeReadBookRow } from "@/api/types";
 
-const SAMPLE_CATALOG = "西游记（人民文学版）\n活着\n三体";
+const SAMPLE_CATALOG = "西游记（人民文学版）\n活着\nhttps://weread.qq.com/web/reader/aea32010813ab9e28g016851";
 const SAMPLE_PROFIT = "西游记（人民文学版）,38.5\n活着,21\n三体,56";
 
 function formatPercent(value: number | null) {
@@ -21,6 +21,10 @@ function formatPercent(value: number | null) {
 
 function formatMoney(value: number | null) {
   return value === null || Number.isNaN(value) ? "--" : `¥${value.toFixed(2)}`;
+}
+
+function displayText(value: string | null | undefined) {
+  return value && value.trim() ? value : "--";
 }
 
 function statusLabel(status: string) {
@@ -53,12 +57,16 @@ export function WeReadTool() {
   const stats = useMemo(() => {
     const matched = rows.filter((row) => row.status === "matched" || row.status === "partial").length;
     const profitTotal = rows.reduce((sum, row) => sum + (row.profit ?? 0), 0);
+    const projectMatched = rows.filter((row) => row.project_match_status).length;
+    const companyMatched = new Set(rows.map((row) => row.company_name).filter(Boolean)).size;
     return {
       total: rows.length,
       matched,
       average: averageRecommendation(rows),
       profitTotal,
       profitMatched: rows.filter((row) => row.profit !== null).length,
+      projectMatched,
+      companyMatched,
     };
   }, [rows]);
 
@@ -116,10 +124,10 @@ export function WeReadTool() {
         <div>
           <div className="badge-gold mb-4">微信读书数据工具</div>
           <h1 className="font-serif text-3xl tracking-wide text-warm-100">
-            推荐值与利润匹配
+            推荐值与项目字段匹配
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-warm-400">
-            粘贴图书目录后抓取微信读书推荐值；再粘贴利润表，系统会按书名自动匹配并生成可下载的 Excel。
+            粘贴图书目录或微信读书链接后抓取推荐值、阅读人数、评论数量；系统会自动匹配项目进度表里的公司、编辑、书名和已有字段，并生成可下载的 Excel。
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -155,10 +163,10 @@ export function WeReadTool() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="font-serif text-xl tracking-wide text-warm-100">
-                图书目录
+                图书或链接
               </h2>
               <p className="mt-1 text-xs leading-5 text-warm-500">
-                一行一本；支持「书名」「书名,作者」或微信读书链接。
+                一行一本；支持「书名」「书名,作者」或微信读书链接。链接会优先匹配项目进度表。
               </p>
             </div>
             <BookOpenCheck className="h-5 w-5 text-gold-300" strokeWidth={1.7} />
@@ -228,10 +236,12 @@ export function WeReadTool() {
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
         <StatTile label="图书总数" value={stats.total || "--"} />
         <StatTile label="推荐值匹配" value={stats.matched || "--"} />
         <StatTile label="平均推荐值" value={formatPercent(stats.average)} />
+        <StatTile label="项目匹配" value={stats.projectMatched || "--"} />
+        <StatTile label="公司命中" value={stats.companyMatched || "--"} />
         <StatTile label="利润合计" value={stats.profitMatched > 0 ? formatMoney(stats.profitTotal) : "--"} />
       </section>
 
@@ -262,16 +272,21 @@ export function WeReadTool() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[1320px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-gold-500/10 text-[11px] tracking-widest text-warm-500">
                   <th className="px-5 py-3 font-medium">原始书名</th>
+                  <th className="px-5 py-3 font-medium">公司名字</th>
                   <th className="px-5 py-3 font-medium">匹配书名</th>
                   <th className="px-5 py-3 font-medium">作者</th>
                   <th className="px-5 py-3 font-medium">推荐值</th>
-                  <th className="px-5 py-3 font-medium">今日阅读</th>
+                  <th className="px-5 py-3 font-medium">阅读人数</th>
+                  <th className="px-5 py-3 font-medium">评论数量</th>
+                  <th className="px-5 py-3 font-medium">项目书名</th>
+                  <th className="px-5 py-3 font-medium">编辑</th>
                   <th className="px-5 py-3 font-medium">利润</th>
                   <th className="px-5 py-3 font-medium">状态</th>
+                  <th className="px-5 py-3 font-medium">项目来源</th>
                   <th className="px-5 py-3 font-medium">备注</th>
                 </tr>
               </thead>
@@ -282,6 +297,9 @@ export function WeReadTool() {
                     className="border-b border-gold-500/8 text-warm-200"
                   >
                     <td className="px-5 py-4 align-top">{row.query_title}</td>
+                    <td className="px-5 py-4 align-top text-warm-100">
+                      {displayText(row.company_name)}
+                    </td>
                     <td className="px-5 py-4 align-top">
                       {row.source_url ? (
                         <a
@@ -290,14 +308,14 @@ export function WeReadTool() {
                           rel="noreferrer"
                           className="text-gold-200 underline decoration-gold-400/30 underline-offset-4 hover:text-gold-100"
                         >
-                          {row.matched_title || "--"}
+                          {displayText(row.matched_title)}
                         </a>
                       ) : (
-                        row.matched_title || "--"
+                        displayText(row.matched_title)
                       )}
                     </td>
                     <td className="px-5 py-4 align-top text-warm-400">
-                      {row.matched_author || row.query_author || "--"}
+                      {displayText(row.matched_author || row.query_author)}
                     </td>
                     <td className="px-5 py-4 align-top">
                       <span className="rounded-full bg-gold-500/10 px-3 py-1 text-gold-100">
@@ -305,7 +323,16 @@ export function WeReadTool() {
                       </span>
                     </td>
                     <td className="px-5 py-4 align-top text-warm-400">
-                      {row.today_reading || "--"}
+                      {displayText(row.reading_count)}
+                    </td>
+                    <td className="px-5 py-4 align-top text-warm-400">
+                      {displayText(row.comment_count)}
+                    </td>
+                    <td className="max-w-[220px] px-5 py-4 align-top text-warm-200">
+                      {displayText(row.project_title)}
+                    </td>
+                    <td className="px-5 py-4 align-top text-warm-400">
+                      {displayText(row.project_editor)}
                     </td>
                     <td className="px-5 py-4 align-top text-warm-100">
                       {formatMoney(row.profit)}
@@ -320,6 +347,11 @@ export function WeReadTool() {
                       >
                         {statusLabel(row.status)}
                       </span>
+                    </td>
+                    <td className="px-5 py-4 align-top text-xs leading-5 text-warm-500">
+                      {row.project_match_status
+                        ? `${row.project_match_status}${row.project_source_sheet ? ` · ${row.project_source_sheet}` : ""}`
+                        : "--"}
                     </td>
                     <td className="max-w-[260px] px-5 py-4 align-top text-xs leading-5 text-warm-500">
                       {row.error || "--"}

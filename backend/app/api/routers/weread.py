@@ -33,8 +33,34 @@ class WeReadBookRow(BaseModel):
     today_reading: str | None = None
     total_reading: str | None = None
     word_count: str | None = None
+    reading_count: str | None = None
+    comment_count: str | None = None
+    company_name: str | None = None
     source_url: str | None = None
     profit: float | None = None
+    project_editor: str | None = None
+    project_title: str | None = None
+    project_word_count_10k: str | None = None
+    project_finished_at: str | None = None
+    project_summary: str | None = None
+    project_pen_name: str | None = None
+    project_new_title: str | None = None
+    project_original_author: str | None = None
+    project_recommendation: float | None = None
+    project_comment_count: str | None = None
+    project_tags: str | None = None
+    project_reading_count: str | None = None
+    project_weread_url: str | None = None
+    project_negative_review: str | None = None
+    project_parent_record: str | None = None
+    project_status: str | None = None
+    project_progress: str | None = None
+    project_update_date: str | None = None
+    project_start_date: str | None = None
+    project_time_span: str | None = None
+    project_note: str | None = None
+    project_source_sheet: str | None = None
+    project_match_status: str | None = None
     status: str
     error: str | None = None
 

@@ -3,23 +3,27 @@ from __future__ import annotations
 
 import csv
 import html
+import json
 import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO, StringIO
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 from xml.sax.saxutils import escape
 
 import httpx
 
 
 WEREAD_HOST = "https://weread.qq.com"
+PROJECT_INDEX_PATH = Path(__file__).resolve().parent / "reference_assets" / "weread_project_index.json"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+_PROJECT_INDEX_CACHE: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -40,8 +44,34 @@ class WeReadBookResult:
     today_reading: str | None = None
     total_reading: str | None = None
     word_count: str | None = None
+    reading_count: str | None = None
+    comment_count: str | None = None
+    company_name: str | None = None
     source_url: str | None = None
     profit: float | None = None
+    project_editor: str | None = None
+    project_title: str | None = None
+    project_word_count_10k: str | None = None
+    project_finished_at: str | None = None
+    project_summary: str | None = None
+    project_pen_name: str | None = None
+    project_new_title: str | None = None
+    project_original_author: str | None = None
+    project_recommendation: float | None = None
+    project_comment_count: str | None = None
+    project_tags: str | None = None
+    project_reading_count: str | None = None
+    project_weread_url: str | None = None
+    project_negative_review: str | None = None
+    project_parent_record: str | None = None
+    project_status: str | None = None
+    project_progress: str | None = None
+    project_update_date: str | None = None
+    project_start_date: str | None = None
+    project_time_span: str | None = None
+    project_note: str | None = None
+    project_source_sheet: str | None = None
+    project_match_status: str | None = None
     status: str = "pending"
     error: str | None = None
 
@@ -56,8 +86,34 @@ class WeReadBookResult:
             "today_reading": self.today_reading,
             "total_reading": self.total_reading,
             "word_count": self.word_count,
+            "reading_count": self.reading_count,
+            "comment_count": self.comment_count,
+            "company_name": self.company_name,
             "source_url": self.source_url,
             "profit": self.profit,
+            "project_editor": self.project_editor,
+            "project_title": self.project_title,
+            "project_word_count_10k": self.project_word_count_10k,
+            "project_finished_at": self.project_finished_at,
+            "project_summary": self.project_summary,
+            "project_pen_name": self.project_pen_name,
+            "project_new_title": self.project_new_title,
+            "project_original_author": self.project_original_author,
+            "project_recommendation": self.project_recommendation,
+            "project_comment_count": self.project_comment_count,
+            "project_tags": self.project_tags,
+            "project_reading_count": self.project_reading_count,
+            "project_weread_url": self.project_weread_url,
+            "project_negative_review": self.project_negative_review,
+            "project_parent_record": self.project_parent_record,
+            "project_status": self.project_status,
+            "project_progress": self.project_progress,
+            "project_update_date": self.project_update_date,
+            "project_start_date": self.project_start_date,
+            "project_time_span": self.project_time_span,
+            "project_note": self.project_note,
+            "project_source_sheet": self.project_source_sheet,
+            "project_match_status": self.project_match_status,
             "status": self.status,
             "error": self.error,
         }
@@ -169,6 +225,7 @@ async def analyze_weread_books(
                 result.error = str(exc)[:240]
 
             result.profit = _match_profit(profits, result)
+            _attach_project_match(result)
             results.append(result)
         return results
 
@@ -199,6 +256,27 @@ async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         source_url=selected.get("source_url") or url,
         status="matched",
     )
+    if selected.get("source_url"):
+        try:
+            detail = await fetch_reader_result(
+                client,
+                CatalogBook(
+                    title=item.title,
+                    author=item.author,
+                    source_url=selected.get("source_url"),
+                ),
+            )
+            result.matched_title = detail.matched_title or result.matched_title
+            result.matched_author = detail.matched_author or result.matched_author
+            result.recommendation = detail.recommendation if detail.recommendation is not None else result.recommendation
+            result.rating_count = detail.rating_count or result.rating_count
+            result.total_reading = detail.total_reading or result.total_reading
+            result.word_count = detail.word_count or result.word_count
+            result.source_url = detail.source_url or result.source_url
+            result.status = "matched" if result.recommendation is not None else detail.status
+            result.error = detail.error if result.status != "matched" else None
+        except Exception:
+            pass
     return result
 
 
@@ -242,12 +320,38 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
         "原始作者",
         "匹配书名",
         "匹配作者",
+        "公司名字",
         "微信读书推荐值",
+        "阅读人数",
+        "评论数量",
         "今日阅读",
         "点评数",
         "总阅读",
         "字数",
         "利润",
+        "项目编辑",
+        "项目书名",
+        "项目字数（万）",
+        "项目完成时间",
+        "项目简介",
+        "项目笔名/备注",
+        "项目新书名",
+        "原著作者",
+        "项目推荐值",
+        "项目点评人数",
+        "项目标签",
+        "项目阅读",
+        "项目微信读书链接",
+        "负面评价",
+        "父记录",
+        "项目状态",
+        "项目进度",
+        "项目进度更新日期",
+        "项目起始日期",
+        "项目时间跨度",
+        "项目备注",
+        "项目来源表",
+        "项目匹配方式",
         "匹配状态",
         "来源链接",
         "备注",
@@ -260,12 +364,38 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
                 row.get("query_author"),
                 row.get("matched_title"),
                 row.get("matched_author"),
+                row.get("company_name"),
                 _format_percent(row.get("recommendation")),
+                row.get("reading_count"),
+                row.get("comment_count"),
                 row.get("today_reading"),
                 row.get("rating_count"),
                 row.get("total_reading"),
                 row.get("word_count"),
                 row.get("profit"),
+                row.get("project_editor"),
+                row.get("project_title"),
+                row.get("project_word_count_10k"),
+                row.get("project_finished_at"),
+                row.get("project_summary"),
+                row.get("project_pen_name"),
+                row.get("project_new_title"),
+                row.get("project_original_author"),
+                _format_percent(row.get("project_recommendation")),
+                row.get("project_comment_count"),
+                row.get("project_tags"),
+                row.get("project_reading_count"),
+                row.get("project_weread_url"),
+                row.get("project_negative_review"),
+                row.get("project_parent_record"),
+                row.get("project_status"),
+                row.get("project_progress"),
+                row.get("project_update_date"),
+                row.get("project_start_date"),
+                row.get("project_time_span"),
+                row.get("project_note"),
+                row.get("project_source_sheet"),
+                row.get("project_match_status"),
                 _status_label(str(row.get("status") or "")),
                 row.get("source_url"),
                 row.get("error"),
@@ -300,10 +430,11 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <cols>
     <col min="1" max="4" width="24" customWidth="1"/>
-    <col min="5" max="5" width="18" customWidth="1"/>
-    <col min="6" max="11" width="14" customWidth="1"/>
-    <col min="12" max="12" width="48" customWidth="1"/>
-    <col min="13" max="13" width="30" customWidth="1"/>
+    <col min="5" max="13" width="16" customWidth="1"/>
+    <col min="14" max="17" width="18" customWidth="1"/>
+    <col min="18" max="18" width="54" customWidth="1"/>
+    <col min="19" max="36" width="20" customWidth="1"/>
+    <col min="37" max="39" width="30" customWidth="1"/>
   </cols>
   <sheetData>{"".join(sheet_rows)}</sheetData>
 </worksheet>"""
@@ -371,6 +502,136 @@ def _match_profit(profits: dict[str, float], result: WeReadBookResult) -> float 
         if key and key in profits:
             return profits[key]
     return None
+
+
+def _attach_project_match(result: WeReadBookResult) -> None:
+    record, match_status = _find_project_record(result)
+    if record:
+        result.company_name = _project_text(record, "company_name") or result.company_name
+        result.project_editor = _project_text(record, "editor")
+        result.project_title = _project_text(record, "title")
+        result.project_word_count_10k = _project_text(record, "word_count_10k")
+        result.project_finished_at = _project_text(record, "finished_at")
+        result.project_summary = _project_text(record, "summary")
+        result.project_pen_name = _project_text(record, "pen_name")
+        result.project_new_title = _project_text(record, "new_title")
+        result.project_original_author = _project_text(record, "original_author")
+        result.project_recommendation = _project_recommendation_value(record.get("project_recommendation"))
+        result.project_comment_count = _project_text(record, "project_comment_count")
+        result.project_tags = _project_text(record, "project_tags")
+        result.project_reading_count = _project_text(record, "project_reading_count")
+        result.project_weread_url = _project_text(record, "project_weread_url")
+        result.project_negative_review = _project_text(record, "negative_review")
+        result.project_parent_record = _project_text(record, "parent_record")
+        result.project_status = _project_text(record, "project_status")
+        result.project_progress = _project_text(record, "project_progress")
+        result.project_update_date = _project_text(record, "project_update_date")
+        result.project_start_date = _project_text(record, "project_start_date")
+        result.project_time_span = _project_text(record, "time_span")
+        result.project_note = _project_text(record, "project_note")
+        result.project_source_sheet = _project_text(record, "source_sheet")
+        result.project_match_status = match_status
+        if result.recommendation is None:
+            result.recommendation = result.project_recommendation
+        if not result.rating_count:
+            result.rating_count = result.project_comment_count
+        if not result.total_reading:
+            result.total_reading = result.project_reading_count
+        if not result.source_url:
+            result.source_url = result.project_weread_url
+        if result.status in {"pending", "failed", "not_found"}:
+            result.status = "matched" if result.recommendation is not None else "partial"
+            result.error = None
+
+    result.reading_count = result.total_reading or result.project_reading_count
+    result.comment_count = result.rating_count or result.project_comment_count
+
+
+def _find_project_record(result: WeReadBookResult) -> tuple[dict[str, Any] | None, str | None]:
+    records = _load_project_records()
+    url_keys = {
+        key
+        for key in (
+            _project_url_key(result.source_url),
+            _project_url_key(result.query_title),
+            _project_url_key(result.matched_title),
+        )
+        if key
+    }
+    if url_keys:
+        for record in records:
+            if record.get("_url_key") in url_keys:
+                return record, "链接匹配"
+
+    title_keys = {
+        key
+        for key in (
+            normalize_title(result.query_title),
+            normalize_title(result.matched_title),
+        )
+        if key
+    }
+    if title_keys:
+        for record in records:
+            if record.get("_title_key") in title_keys:
+                return record, "书名匹配"
+    return None, None
+
+
+def _load_project_records() -> list[dict[str, Any]]:
+    global _PROJECT_INDEX_CACHE
+    if _PROJECT_INDEX_CACHE is not None:
+        return _PROJECT_INDEX_CACHE
+    if not PROJECT_INDEX_PATH.exists():
+        _PROJECT_INDEX_CACHE = []
+        return _PROJECT_INDEX_CACHE
+    try:
+        payload = json.loads(PROJECT_INDEX_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _PROJECT_INDEX_CACHE = []
+        return _PROJECT_INDEX_CACHE
+
+    records: list[dict[str, Any]] = []
+    for raw in payload.get("records") or []:
+        if not isinstance(raw, dict):
+            continue
+        record = dict(raw)
+        record["_url_key"] = _project_url_key(record.get("project_weread_url"))
+        record["_title_key"] = normalize_title(record.get("title"))
+        records.append(record)
+    _PROJECT_INDEX_CACHE = records
+    return records
+
+
+def _project_url_key(value: Any) -> str:
+    text = str(value or "").strip().strip(" ，,。；;)")
+    if not text or "http" not in text:
+        return ""
+    match = re.search(r"https?://[^\s，,。；;）)]+", text)
+    if match:
+        text = match.group(0)
+    reader = re.search(r"/web/reader/([^/?#]+)", text)
+    if reader:
+        return f"reader:{reader.group(1)}"
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return ""
+    return f"{parsed.netloc.lower()}{parsed.path.rstrip('/')}?{parsed.query}".rstrip("?")
+
+
+def _project_text(record: dict[str, Any], key: str) -> str | None:
+    value = record.get(key)
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _project_recommendation_value(value: Any) -> float | None:
+    number = _parse_float(value)
+    if number is None:
+        return None
+    if 0 < number <= 1:
+        return number * 100
+    return number
 
 
 def _split_row(line: str) -> list[str]:
@@ -449,7 +710,7 @@ def _col_name(index: int) -> str:
     return result
 
 
-def safe_export_filename(prefix: str = "微信读书推荐值") -> str:
+def safe_export_filename(prefix: str = "微信读书推荐值与项目匹配") -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{stamp}.xlsx"
 
@@ -480,7 +741,7 @@ def _root_rels_xml() -> str:
 def _workbook_xml() -> str:
     return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="推荐值与利润" sheetId="1" r:id="rId1"/></sheets>
+  <sheets><sheet name="推荐值与项目匹配" sheetId="1" r:id="rId1"/></sheets>
 </workbook>"""
 
 
