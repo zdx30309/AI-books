@@ -128,12 +128,16 @@ def normalize_title(value: str | None) -> str:
 def parse_catalog(text: str) -> list[CatalogBook]:
     items: list[CatalogBook] = []
     seen: set[str] = set()
+    header: list[str] | None = None
+    known_editors = _known_project_editors()
 
     for raw_line in (text or "").splitlines():
         line = raw_line.strip().strip("|")
         if not line:
             continue
-        if re.search(r"^(书名|标题|title)(\s|,|，|\t|$)", line, re.I):
+        row = _split_row(line)
+        if _looks_like_catalog_header(row):
+            header = row
             continue
 
         url_match = re.search(r"https?://[^\s,，]+", line)
@@ -143,21 +147,27 @@ def parse_catalog(text: str) -> list[CatalogBook]:
 
         title = ""
         author: str | None = None
+        if header and row:
+            title = _value_from_header(row, header, ("书名", "标题", "title"))
+            author = _value_from_header(row, header, ("作者", "原始作者", "原著作者", "author")) or None
+            source_url = source_url or _value_from_header(row, header, ("微信读书链接", "来源链接", "链接", "url")) or None
+
         bracket_match = re.search(r"《([^》]+)》", clean_line)
-        if bracket_match:
+        if not title and bracket_match:
             title = bracket_match.group(1).strip()
             rest = clean_line[bracket_match.end() :].strip(" -—,，\t")
             author = rest or None
-        else:
+        elif not title:
             row = _split_row(clean_line)
             if row:
-                title = row[0]
-                author = row[1] if len(row) > 1 else None
+                title, author = _title_author_from_row(row, known_editors)
             elif source_url:
                 title = source_url
 
         title = _clean_cell(title)
         author = _clean_cell(author) if author else None
+        if normalize_title(title) in known_editors and not source_url:
+            continue
         if not title and source_url:
             title = source_url
         if not title:
@@ -272,6 +282,7 @@ async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> W
             result.rating_count = detail.rating_count or result.rating_count
             result.total_reading = detail.total_reading or result.total_reading
             result.word_count = detail.word_count or result.word_count
+            result.company_name = detail.company_name or result.company_name
             result.source_url = detail.source_url or result.source_url
             result.status = "matched" if result.recommendation is not None else detail.status
             result.error = detail.error if result.status != "matched" else None
@@ -297,6 +308,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
     rating_count = _first_match(body, [r"book_rating_item_detail_count[^>]*>.*?<span>(.*?)</span>"])
     total_reading = _extract_stat(body, "阅读")
     word_count = _extract_stat(body, "字数")
+    company_name = _extract_copyright_holder(body)
 
     clean_title = _clean_text(title) or item.title
     return WeReadBookResult(
@@ -308,6 +320,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         rating_count=_clean_text(rating_count),
         total_reading=total_reading,
         word_count=word_count,
+        company_name=company_name,
         source_url=item.source_url,
         status="matched" if recommendation else "partial",
         error=None if recommendation else "已读取书籍页，但未找到推荐值",
@@ -320,40 +333,12 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
         "原始作者",
         "匹配书名",
         "匹配作者",
-        "公司名字",
-        "微信读书推荐值",
+        "版权方（公司名字）",
+        "推荐值",
         "阅读人数",
         "评论数量",
-        "今日阅读",
-        "点评数",
-        "总阅读",
-        "字数",
-        "利润",
-        "项目编辑",
-        "项目书名",
-        "项目字数（万）",
-        "项目完成时间",
-        "项目简介",
-        "项目笔名/备注",
-        "项目新书名",
-        "原著作者",
-        "项目推荐值",
-        "项目点评人数",
-        "项目标签",
-        "项目阅读",
-        "项目微信读书链接",
-        "负面评价",
-        "父记录",
-        "项目状态",
-        "项目进度",
-        "项目进度更新日期",
-        "项目起始日期",
-        "项目时间跨度",
-        "项目备注",
-        "项目来源表",
-        "项目匹配方式",
-        "匹配状态",
         "来源链接",
+        "匹配状态",
         "备注",
     ]
     body_rows = [headers]
@@ -368,36 +353,8 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
                 _format_percent(row.get("recommendation")),
                 row.get("reading_count"),
                 row.get("comment_count"),
-                row.get("today_reading"),
-                row.get("rating_count"),
-                row.get("total_reading"),
-                row.get("word_count"),
-                row.get("profit"),
-                row.get("project_editor"),
-                row.get("project_title"),
-                row.get("project_word_count_10k"),
-                row.get("project_finished_at"),
-                row.get("project_summary"),
-                row.get("project_pen_name"),
-                row.get("project_new_title"),
-                row.get("project_original_author"),
-                _format_percent(row.get("project_recommendation")),
-                row.get("project_comment_count"),
-                row.get("project_tags"),
-                row.get("project_reading_count"),
-                row.get("project_weread_url"),
-                row.get("project_negative_review"),
-                row.get("project_parent_record"),
-                row.get("project_status"),
-                row.get("project_progress"),
-                row.get("project_update_date"),
-                row.get("project_start_date"),
-                row.get("project_time_span"),
-                row.get("project_note"),
-                row.get("project_source_sheet"),
-                row.get("project_match_status"),
-                _status_label(str(row.get("status") or "")),
                 row.get("source_url"),
+                _status_label(str(row.get("status") or "")),
                 row.get("error"),
             ]
         )
@@ -430,11 +387,9 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <cols>
     <col min="1" max="4" width="24" customWidth="1"/>
-    <col min="5" max="13" width="16" customWidth="1"/>
-    <col min="14" max="17" width="18" customWidth="1"/>
-    <col min="18" max="18" width="54" customWidth="1"/>
-    <col min="19" max="36" width="20" customWidth="1"/>
-    <col min="37" max="39" width="30" customWidth="1"/>
+    <col min="5" max="8" width="18" customWidth="1"/>
+    <col min="9" max="9" width="48" customWidth="1"/>
+    <col min="10" max="11" width="18" customWidth="1"/>
   </cols>
   <sheetData>{"".join(sheet_rows)}</sheetData>
 </worksheet>"""
@@ -507,7 +462,7 @@ def _match_profit(profits: dict[str, float], result: WeReadBookResult) -> float 
 def _attach_project_match(result: WeReadBookResult) -> None:
     record, match_status = _find_project_record(result)
     if record:
-        result.company_name = _project_text(record, "company_name") or result.company_name
+        result.company_name = result.company_name or _project_text(record, "company_name")
         result.project_editor = _project_text(record, "editor")
         result.project_title = _project_text(record, "title")
         result.project_word_count_10k = _project_text(record, "word_count_10k")
@@ -603,6 +558,14 @@ def _load_project_records() -> list[dict[str, Any]]:
     return records
 
 
+def _known_project_editors() -> set[str]:
+    return {
+        normalize_title(record.get("editor"))
+        for record in _load_project_records()
+        if normalize_title(record.get("editor"))
+    }
+
+
 def _project_url_key(value: Any) -> str:
     text = str(value or "").strip().strip(" ，,。；;)")
     if not text or "http" not in text:
@@ -638,7 +601,9 @@ def _split_row(line: str) -> list[str]:
     if not line:
         return []
     normalized = line.replace("，", ",")
-    if "," in normalized or "\t" in normalized:
+    if "\t" in normalized:
+        row = normalized.split("\t")
+    elif "," in normalized:
         try:
             row = next(csv.reader(StringIO(normalized)))
         except csv.Error:
@@ -646,6 +611,33 @@ def _split_row(line: str) -> list[str]:
     else:
         row = re.split(r"\s{2,}|[|｜]", normalized)
     return [_clean_cell(item) for item in row if _clean_cell(item)]
+
+
+def _looks_like_catalog_header(row: list[str]) -> bool:
+    if not row:
+        return False
+    normalized = [normalize_title(cell) for cell in row]
+    return any(cell in {"书名", "标题", "title"} for cell in normalized) and any(
+        cell in {"编辑", "编辑名", "作者", "原始作者", "原著作者", "author", "微信读书链接", "来源链接", "链接", "url"}
+        for cell in normalized
+    )
+
+
+def _value_from_header(row: list[str], header: list[str], names: tuple[str, ...]) -> str:
+    wanted = {normalize_title(name) for name in names}
+    for index, name in enumerate(header):
+        if normalize_title(name) in wanted and index < len(row):
+            return row[index]
+    return ""
+
+
+def _title_author_from_row(row: list[str], known_editors: set[str]) -> tuple[str, str | None]:
+    if not row:
+        return "", None
+    first = row[0]
+    if len(row) >= 2 and normalize_title(first) in known_editors:
+        return row[1], row[2] if len(row) > 2 else None
+    return first, row[1] if len(row) > 1 else None
 
 
 def _clean_cell(value: str | None) -> str:
@@ -675,6 +667,24 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
         if match:
             return html.unescape(match.group(1)).strip()
     return None
+
+
+def _extract_copyright_holder(text: str) -> str | None:
+    values = [
+        _clean_text(_decode_json_string(value))
+        for value in re.findall(r'"(?:copyrightHolder|copyrightOwner|publisher)"\s*:\s*"([^"]*)"', text)
+    ]
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def _decode_json_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except json.JSONDecodeError:
+        return value
 
 
 def _extract_stat(text: str, label: str) -> str | None:

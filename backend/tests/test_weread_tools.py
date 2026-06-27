@@ -19,6 +19,30 @@ def test_parse_catalog_keeps_weread_link() -> None:
     assert rows[0].source_url == "https://weread.qq.com/web/reader/aea32010813ab9e28g016851"
 
 
+def test_parse_catalog_uses_book_title_from_copied_table_rows(monkeypatch) -> None:
+    monkeypatch.setattr(
+        weread_tools,
+        "_PROJECT_INDEX_CACHE",
+        [{"editor": "单华伟", "_title_key": "", "_url_key": ""}],
+    )
+
+    rows = parse_catalog("编辑名\t书名\n单华伟\t肉蒲团（白话版）")
+
+    assert [row.title for row in rows] == ["肉蒲团（白话版）"]
+
+
+def test_parse_catalog_skips_editor_name_only_lines(monkeypatch) -> None:
+    monkeypatch.setattr(
+        weread_tools,
+        "_PROJECT_INDEX_CACHE",
+        [{"editor": "单华伟", "_title_key": "", "_url_key": ""}],
+    )
+
+    rows = parse_catalog("单华伟\n肉蒲团（白话版）")
+
+    assert [row.title for row in rows] == ["肉蒲团（白话版）"]
+
+
 def test_project_index_match_adds_company_and_existing_excel_fields(monkeypatch) -> None:
     monkeypatch.setattr(
         weread_tools,
@@ -58,13 +82,19 @@ def test_project_index_match_adds_company_and_existing_excel_fields(monkeypatch)
     assert result.error is None
 
 
-def test_weread_export_contains_new_metric_and_project_columns() -> None:
+def test_extract_copyright_holder_from_weread_payload() -> None:
+    body = '{"publisher":"广西师范大学出版社","copyrightOwner":"","name":"肉蒲团"}'
+
+    assert weread_tools._extract_copyright_holder(body) == "广西师范大学出版社"
+
+
+def test_weread_export_contains_only_required_metric_columns() -> None:
     content = build_weread_xlsx(
         [
             {
                 "query_title": "黄金投资指南",
                 "matched_title": "黄金投资指南",
-                "company_name": "汇安",
+                "company_name": "广西师范大学出版社",
                 "recommendation": 80.5,
                 "reading_count": "623",
                 "comment_count": "44",
@@ -78,9 +108,10 @@ def test_weread_export_contains_new_metric_and_project_columns() -> None:
     )
     shared_text = _xlsx_shared_text(content)
 
-    assert "公司名字" in shared_text
+    assert "版权方（公司名字）" in shared_text
     assert "阅读人数" in shared_text
     assert "评论数量" in shared_text
-    assert "项目编辑" in shared_text
-    assert "项目书名" in shared_text
-    assert "汇安" in shared_text
+    assert "项目编辑" not in shared_text
+    assert "项目书名" not in shared_text
+    assert "利润" not in shared_text
+    assert "广西师范大学出版社" in shared_text
