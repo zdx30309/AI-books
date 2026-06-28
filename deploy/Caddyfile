@@ -16,6 +16,6 @@
     import app
 }
 
-sheke.asia, www.sheke.asia {
+http://sheke.asia, http://www.sheke.asia {
     import app
 }
