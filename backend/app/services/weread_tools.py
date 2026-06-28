@@ -11,7 +11,7 @@ from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 from xml.sax.saxutils import escape
 
 import httpx
@@ -404,6 +404,14 @@ async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         )
 
     selected = _select_card(cards, item)
+    if not selected:
+        return WeReadBookResult(
+            query_title=item.title,
+            query_author=item.author,
+            source_url=url,
+            status="not_found",
+            error="搜索结果中没有作者对得上的书籍",
+        )
     result = WeReadBookResult(
         query_title=item.title,
         query_author=item.author,
@@ -426,6 +434,16 @@ async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> W
             )
             result.matched_title = detail.matched_title or result.matched_title
             result.matched_author = detail.matched_author or result.matched_author
+            if not _author_matches(item.author, result.matched_author):
+                return WeReadBookResult(
+                    query_title=item.title,
+                    query_author=item.author,
+                    matched_title=result.matched_title,
+                    matched_author=result.matched_author,
+                    source_url=result.source_url,
+                    status="not_found",
+                    error="匹配作者不一致，已跳过该搜索结果",
+                )
             result.recommendation = detail.recommendation if detail.recommendation is not None else result.recommendation
             result.rating_count = detail.rating_count or result.rating_count
             result.total_reading = detail.total_reading or result.total_reading
@@ -448,40 +466,46 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         r'"name"\s*:\s*"([^"]+)"',
         r'<meta property="og:title" content="([^"]+)"',
         r"<title>(.*?)\s*-\s*.*?微信读书</title>",
-    ])
+    ]) or _extract_nuxt_book_field(body, "title")
     author = _first_match(body, [
         r'"author"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"',
         r"<title>.*?-\s*(.*?)\s*-\s*微信读书</title>",
-    ])
-    recommendation = _first_match(body, [r"微信读书推荐值\s*([0-9.]+%)"])
-    rating_count = _first_match(body, [r"book_rating_item_detail_count[^>]*>.*?<span>(.*?)</span>"])
+    ]) or _extract_nuxt_book_field(body, "author")
+    recommendation = _extract_recommendation_percent(body)
+    rating_count = _extract_rating_count(body)
     total_reading = _extract_stat(body, "阅读")
     word_count = _extract_stat(body, "字数")
     company_name = _extract_copyright_holder(body)
     translator = _extract_translator(body)
 
     clean_title = _clean_text(title) or item.title
+    clean_author = _clean_text(author) or item.author
+    author_mismatch = item.source_url is None and not _author_matches(item.author, clean_author)
     return WeReadBookResult(
         query_title=item.title,
         query_author=item.author,
         matched_title=clean_title,
-        matched_author=_clean_text(author) or item.author,
-        recommendation=_parse_float(recommendation),
-        rating_count=_clean_text(rating_count),
+        matched_author=clean_author,
+        recommendation=recommendation,
+        rating_count=rating_count or "0人点评",
         total_reading=total_reading,
         word_count=word_count,
         company_name=company_name,
         translator=translator,
         source_url=item.source_url,
-        status="matched" if recommendation else "partial",
-        error=None if recommendation else "已读取书籍页，但未找到推荐值",
+        status="not_found" if author_mismatch else ("matched" if recommendation is not None else "partial"),
+        error=(
+            "匹配作者不一致，已跳过该搜索结果"
+            if author_mismatch
+            else (None if recommendation is not None else "已读取书籍页，但未找到推荐值")
+        ),
     )
 
 
 def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
     headers = [
         "原始书名",
-        "原始作者",
+        "原始链接",
         "匹配书名",
         "匹配作者",
         "译者",
@@ -495,14 +519,14 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
         body_rows.append(
             [
                 row.get("query_title"),
-                row.get("query_author"),
+                _source_link_for_export(row),
                 row.get("matched_title"),
                 row.get("matched_author"),
                 row.get("translator"),
-                row.get("company_name"),
+                _company_for_display(row.get("company_name")),
                 _format_percent(row.get("recommendation")),
                 row.get("reading_count"),
-                row.get("comment_count"),
+                _comment_count_for_display(row.get("comment_count")),
             ]
         )
 
@@ -557,6 +581,23 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
     return output.getvalue()
 
 
+def _source_link_for_export(row: dict[str, Any]) -> str | None:
+    for key in ("source_url", "project_weread_url", "query_author"):
+        value = row.get(key)
+        url = _extract_first_url(str(value)) if value is not None else None
+        if url:
+            return url
+    return None
+
+
+def _company_for_display(value: Any) -> str:
+    return _valid_company_name(str(value or "")) or "无内容"
+
+
+def _comment_count_for_display(value: Any) -> str:
+    return _normalize_comment_count(value) or "0人点评"
+
+
 def _parse_search_cards(html_text: str) -> list[dict[str, str | None]]:
     cards: list[dict[str, str | None]] = []
     for match in re.finditer(r'<li class="wr_bookList_item">([\s\S]*?)</li>', html_text):
@@ -579,18 +620,37 @@ def _parse_search_cards(html_text: str) -> list[dict[str, str | None]]:
     return cards
 
 
-def _select_card(cards: list[dict[str, str | None]], item: CatalogBook) -> dict[str, str | None]:
+def _select_card(cards: list[dict[str, str | None]], item: CatalogBook) -> dict[str, str | None] | None:
     wanted_title = normalize_title(item.title)
-    wanted_author = normalize_title(item.author)
+    wanted_author = normalize_title(item.author) if _query_author_requires_match(item.author) else ""
     for card in cards:
         if normalize_title(card.get("title")) == wanted_title:
-            if not wanted_author or wanted_author in normalize_title(card.get("author")):
+            if not wanted_author or _author_matches(item.author, card.get("author")):
                 return card
     for card in cards:
         card_title = normalize_title(card.get("title"))
         if wanted_title and (wanted_title in card_title or card_title in wanted_title):
+            if wanted_author and not _author_matches(item.author, card.get("author")):
+                continue
             return card
-    return cards[0]
+    if wanted_author:
+        return None
+    return cards[0] if cards else None
+
+
+def _query_author_requires_match(value: str | None) -> bool:
+    text = _clean_cell(value)
+    return bool(text and not _extract_first_url(text))
+
+
+def _author_matches(query_author: str | None, matched_author: str | None) -> bool:
+    if not _query_author_requires_match(query_author):
+        return True
+    wanted = normalize_title(query_author)
+    actual = normalize_title(matched_author)
+    if not wanted or not actual:
+        return False
+    return wanted == actual or wanted in actual or actual in wanted
 
 
 def _match_profit(profits: dict[str, float], result: WeReadBookResult) -> float | None:
@@ -634,7 +694,7 @@ def _attach_project_match(result: WeReadBookResult) -> None:
         if result.recommendation is None:
             result.recommendation = result.project_recommendation
         if not result.rating_count:
-            result.rating_count = result.project_comment_count
+            result.rating_count = _normalize_comment_count(result.project_comment_count)
         if not result.total_reading:
             result.total_reading = result.project_reading_count
         if not result.source_url:
@@ -644,7 +704,7 @@ def _attach_project_match(result: WeReadBookResult) -> None:
             result.error = None
 
     result.reading_count = result.total_reading or result.project_reading_count
-    result.comment_count = result.rating_count or result.project_comment_count
+    result.comment_count = _comment_count_for_display(result.rating_count or result.project_comment_count)
 
 
 def _find_project_record(result: WeReadBookResult) -> tuple[dict[str, Any] | None, str | None]:
@@ -724,6 +784,19 @@ def _project_url_key(value: Any) -> str:
     parsed = urlparse(text)
     if not parsed.netloc:
         return ""
+    if parsed.path.rstrip("/") == "/book-detail":
+        query = parse_qs(parsed.query)
+        detail_id = next(
+            (
+                value.strip()
+                for key in ("v", "bookId", "bookid")
+                for value in (query.get(key) or [])
+                if value and value.strip()
+            ),
+            "",
+        )
+        if detail_id:
+            return f"book-detail:{detail_id}"
     return f"{parsed.netloc.lower()}{parsed.path.rstrip('/')}?{parsed.query}".rstrip("?")
 
 
@@ -814,6 +887,92 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
     return None
 
 
+def _extract_nuxt_book_field(text: str, field: str) -> str | None:
+    start = text.find("bookInfo:{")
+    if start < 0:
+        return None
+    block = text[start : start + 8000]
+    match = re.search(rf"\b{re.escape(field)}\s*:\s*([^,\}}]+)", block)
+    if not match:
+        return None
+
+    token = match.group(1).strip()
+    literal = _decode_js_string_literal(token)
+    if literal:
+        return literal
+
+    values = _nuxt_argument_values(text)
+    value = values.get(token)
+    return value or None
+
+
+def _nuxt_argument_values(text: str) -> dict[str, str]:
+    script_start = text.find("window.__NUXT__=(function(")
+    if script_start < 0:
+        return {}
+    script_end = text.find("</script>", script_start)
+    script = text[script_start : script_end if script_end >= 0 else len(text)]
+
+    params_match = re.search(r"window\.__NUXT__=\(function\(([^)]*)\)", script)
+    args_start = script.rfind("}(")
+    args_end = script.rfind("));")
+    if not params_match or args_start < 0 or args_end < args_start:
+        return {}
+
+    params = [part.strip() for part in params_match.group(1).split(",") if part.strip()]
+    args = _split_js_arguments(script[args_start + 2 : args_end])
+    values: dict[str, str] = {}
+    for param, raw_value in zip(params, args):
+        value = _decode_js_string_literal(raw_value.strip())
+        if value:
+            values[param] = value
+    return values
+
+
+def _split_js_arguments(text: str) -> list[str]:
+    args: list[str] = []
+    current: list[str] = []
+    quote_char = ""
+    escaped = False
+    depth = 0
+    for char in text:
+        current.append(char)
+        if quote_char:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote_char:
+                quote_char = ""
+            continue
+        if char in {"'", '"'}:
+            quote_char = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            args.append("".join(current[:-1]).strip())
+            current = []
+    tail = "".join(current).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _decode_js_string_literal(value: str) -> str | None:
+    text = value.strip()
+    if len(text) < 2 or text[0] not in {"'", '"'} or text[-1] != text[0]:
+        return None
+    if text[0] == "'":
+        text = '"' + text[1:-1].replace('"', r"\"") + '"'
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return _clean_text(value.strip("'\""))
+    return _clean_text(decoded)
+
+
 def _extract_copyright_holder(text: str) -> str | None:
     priority_values = _json_string_values(
         text,
@@ -823,17 +982,24 @@ def _extract_copyright_holder(text: str) -> str | None:
             "copyrightOwner",
             "copyrightCompany",
             "copyrightName",
+            "copyright",
             "rightsHolder",
+            "rightsOwner",
+            "rightsName",
+            "ownerName",
             "cpName",
+            "companyName",
         ),
     )
     for value in priority_values:
-        if value:
-            return value
+        clean_value = _valid_company_name(value)
+        if clean_value:
+            return clean_value
 
-    for value in _json_string_values(text, ("publisher",)):
-        if value:
-            return value
+    for value in _json_string_values(text, ("publisher", "publisherName", "press")):
+        clean_value = _valid_company_name(value)
+        if clean_value:
+            return clean_value
     return None
 
 
@@ -855,14 +1021,91 @@ def _json_string_values(text: str, keys: tuple[str, ...]) -> list[str]:
     values: list[str] = []
     for key in keys:
         if key == "copyrightInfo.name":
-            pattern = r'"copyrightInfo"\s*:\s*\{[^{}]*"name"\s*:\s*"([^"]*)"'
+            patterns = (
+                r'"copyrightInfo"\s*:\s*\{[^{}]*"name"\s*:\s*"([^"]*)"',
+                r"\bcopyrightInfo\s*:\s*\{[^{}]*\bname\s*:\s*\"([^\"]*)\"",
+            )
         else:
-            pattern = rf'"{re.escape(key)}"\s*:\s*"([^"]*)"'
-        for raw_value in re.findall(pattern, text, re.S):
-            value = _clean_text(_decode_json_string(raw_value))
-            if value:
-                values.append(value)
+            escaped = re.escape(key)
+            patterns = (
+                rf'"{escaped}"\s*:\s*"([^"]*)"',
+                rf"\b{escaped}\s*:\s*\"([^\"]*)\"",
+            )
+        for pattern in patterns:
+            for raw_value in re.findall(pattern, text, re.S):
+                value = _clean_text(_decode_json_string(raw_value))
+                if value:
+                    values.append(value)
     return values
+
+
+def _valid_company_name(value: str | None) -> str | None:
+    text = _clean_text(value).strip(" ，,。；;:：")
+    if not text:
+        return None
+    if text.lower() in {"null", "none", "undefined", "true", "false"}:
+        return None
+    if len(text) == 1 and re.fullmatch(r"[a-zA-Z]", text):
+        return None
+    return text
+
+
+def _extract_recommendation_percent(text: str) -> float | None:
+    direct = _first_match(
+        text,
+        [
+            r"微信读书推荐值\s*([0-9.]+%)",
+            r"book_rating_item_label_number[\s\S]{0,160}?([0-9]+(?:\.[0-9]+)?)\s*<span[^>]*>%</span>",
+        ],
+    )
+    number = _parse_float(direct)
+    if number is not None:
+        return number
+
+    for pattern in (
+        r'"newRating"\s*:\s*([0-9]{2,4})',
+        r"\bnewRating\s*:\s*([0-9]{2,4})",
+    ):
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        raw = _parse_float(match.group(1))
+        if raw is None:
+            continue
+        if raw > 100:
+            return raw / 10
+        return raw
+    return None
+
+
+def _extract_rating_count(text: str) -> str | None:
+    for pattern in (
+        r'"newRatingCount"\s*:\s*([0-9]+)',
+        r"\bnewRatingCount\s*:\s*([0-9]+)",
+        r'"ratingCount"\s*:\s*([0-9]+)',
+        r"\bratingCount\s*:\s*([0-9]+)",
+        r'rating_number_people[^>]*>\s*([0-9]+(?:\.[0-9]+)?)\s*</span>\s*人点评',
+        r"book_rating_item_detail_count[\s\S]{0,300}?([0-9]+(?:\.[0-9]+)?(?:万|千)?)\s*人点评",
+        r"([0-9]+(?:\.[0-9]+)?(?:万|千)?)\s*人点评",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            normalized = _normalize_comment_count(match.group(1))
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_comment_count(value: Any) -> str | None:
+    text = _clean_text(str(value or ""))
+    text = re.sub(r"\s+", "", text)
+    if not text or not re.search(r"\d", text):
+        return None
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)(万|千)?(?:人)?(?:点评|评论|评价)?", text)
+    if not match:
+        return None
+    count = f"{match.group(1)}{match.group(2) or ''}"
+    return f"{count}人点评"
 
 
 def _decode_json_string(value: str) -> str:

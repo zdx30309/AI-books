@@ -25,6 +25,14 @@ function displayText(value: string | null | undefined) {
   return value && value.trim() ? value : "--";
 }
 
+function displayCompany(value: string | null | undefined) {
+  return value && value.trim() ? value : "无内容";
+}
+
+function displayCommentCount(value: string | null | undefined) {
+  return value && /\d/.test(value) ? value : "0人点评";
+}
+
 function statusLabel(status: string) {
   return (
     {
@@ -369,7 +377,7 @@ export function WeReadTool() {
                   >
                     <td className="px-5 py-4 align-top">{row.query_title}</td>
                     <td className="px-5 py-4 align-top text-warm-100">
-                      {displayText(row.company_name)}
+                      {displayCompany(row.company_name)}
                     </td>
                     <td className="px-5 py-4 align-top">
                       {row.source_url ? (
@@ -400,7 +408,7 @@ export function WeReadTool() {
                       {displayText(row.reading_count)}
                     </td>
                     <td className="px-5 py-4 align-top text-warm-400">
-                      {displayText(row.comment_count)}
+                      {displayCommentCount(row.comment_count)}
                     </td>
                     <td className="px-5 py-4 align-top">
                       <span
