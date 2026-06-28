@@ -243,6 +243,13 @@ def parse_catalog_workbook(content: bytes) -> list[CatalogBook]:
     return items
 
 
+def catalog_books_to_text(items: list[CatalogBook]) -> str:
+    lines = ["书名\t原著作者\t微信读书链接"]
+    for item in items:
+        lines.append("\t".join((item.title, item.author or "", item.source_url or "")))
+    return "\n".join(lines)
+
+
 def _excel_cell_text(value: Any) -> str:
     if value is None:
         return ""

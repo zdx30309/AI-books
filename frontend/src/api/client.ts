@@ -75,6 +75,7 @@ import type {
   WeReadAnalyzeRequest,
   WeReadAnalyzeResponse,
   WeReadBookRow,
+  WeReadExcelImportResponse,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -827,6 +828,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  importWeReadExcel: (file: File) =>
+    uploadFile<WeReadExcelImportResponse>("/weread/import-excel", file),
   analyzeWeReadExcel: (file: File) =>
     uploadFile<WeReadAnalyzeResponse>("/weread/analyze-excel", file),
   downloadWeReadExcel: async (rows: WeReadBookRow[]) => {

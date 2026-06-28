@@ -11,10 +11,11 @@ import {
   Search,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import type { WeReadBookRow } from "@/api/types";
+import type { WeReadBookRow, WeReadCatalogItem } from "@/api/types";
 
 const SAMPLE_CATALOG = "西游记（人民文学版）\n活着\nhttps://weread.qq.com/web/reader/aea32010813ab9e28g016851";
 const SAMPLE_PROFIT = "西游记（人民文学版）,38.5\n活着,21\n三体,56";
+const EXCEL_ANALYZE_BATCH_SIZE = 25;
 
 function formatPercent(value: number | null) {
   return value === null || Number.isNaN(value) ? "--" : `${value.toFixed(1)}%`;
@@ -43,6 +44,14 @@ function averageRecommendation(rows: WeReadBookRow[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function catalogItemsToText(items: WeReadCatalogItem[]) {
+  const lines = ["书名\t原著作者\t微信读书链接"];
+  items.forEach((item) => {
+    lines.push([item.title, item.author ?? "", item.source_url ?? ""].join("\t"));
+  });
+  return lines.join("\n");
+}
+
 export function WeReadTool() {
   const [catalogText, setCatalogText] = useState("");
   const [profitText, setProfitText] = useState("");
@@ -52,6 +61,7 @@ export function WeReadTool() {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importedFileName, setImportedFileName] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
@@ -79,6 +89,7 @@ export function WeReadTool() {
       });
       setRows(result.items);
       setImportedFileName(null);
+      setImportProgress(null);
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -117,10 +128,23 @@ export function WeReadTool() {
   const importExcelAndAnalyze = async (file: File) => {
     setImporting(true);
     setError(null);
+    setRows([]);
+    setImportProgress(null);
     try {
-      const result = await api.analyzeWeReadExcel(file);
-      setRows(result.items);
+      const imported = await api.importWeReadExcel(file);
       setImportedFileName(file.name);
+      setImportProgress({ done: 0, total: imported.total });
+      const mergedRows: WeReadBookRow[] = [];
+      for (let start = 0; start < imported.items.length; start += EXCEL_ANALYZE_BATCH_SIZE) {
+        const chunk = imported.items.slice(start, start + EXCEL_ANALYZE_BATCH_SIZE);
+        const result = await api.analyzeWeReadBooks({
+          catalog_text: catalogItemsToText(chunk),
+          profit_text: null,
+        });
+        mergedRows.push(...result.items);
+        setRows([...mergedRows]);
+        setImportProgress({ done: mergedRows.length, total: imported.total });
+      }
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -185,7 +209,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={downloadExcel}
-            disabled={rows.length === 0 || downloading}
+            disabled={rows.length === 0 || downloading || importing}
             className="btn-gold"
           >
             {downloading ? (
@@ -256,7 +280,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={downloadExcel}
-              disabled={rows.length === 0 || downloading}
+              disabled={rows.length === 0 || downloading || importing}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-gold-400/45 bg-gold-500/10 px-5 py-3 text-sm font-medium tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? (
@@ -286,6 +310,11 @@ export function WeReadTool() {
       {importedFileName && (
         <div className="rounded-xl border border-gold-500/15 bg-base-800/60 px-4 py-3 text-xs leading-5 text-warm-400">
           已导入：{importedFileName}
+          {importProgress && (
+            <span className="ml-3 text-gold-200">
+              {importing ? "正在分批抓取" : "抓取完成"} {importProgress.done}/{importProgress.total}
+            </span>
+          )}
         </div>
       )}
 

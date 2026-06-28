@@ -384,6 +384,18 @@ export interface WeReadAnalyzeResponse {
   items: WeReadBookRow[];
 }
 
+export interface WeReadCatalogItem {
+  title: string;
+  author: string | null;
+  source_url: string | null;
+}
+
+export interface WeReadExcelImportResponse {
+  total: number;
+  catalog_text: string;
+  items: WeReadCatalogItem[];
+}
+
 
 // 数据分析工具
 

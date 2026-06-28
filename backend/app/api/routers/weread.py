@@ -10,9 +10,11 @@ from pydantic import BaseModel, Field
 from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
+    analyze_weread_catalog,
     analyze_weread_books,
-    analyze_weread_workbook,
     build_weread_xlsx,
+    catalog_books_to_text,
+    parse_catalog_workbook,
     safe_export_filename,
 )
 
@@ -73,6 +75,18 @@ class WeReadAnalyzeResponse(BaseModel):
     items: list[WeReadBookRow]
 
 
+class WeReadCatalogItem(BaseModel):
+    title: str
+    author: str | None = None
+    source_url: str | None = None
+
+
+class WeReadExcelImportResponse(BaseModel):
+    total: int
+    catalog_text: str
+    items: list[WeReadCatalogItem]
+
+
 class WeReadExportRequest(BaseModel):
     rows: list[WeReadBookRow] = Field(..., min_length=1)
 
@@ -91,6 +105,26 @@ async def analyze_books(
 
 
 @router.post(
+    "/import-excel",
+    response_model=WeReadExcelImportResponse,
+    summary="上传项目进度 Excel 并快速解析可抓取目录",
+)
+async def import_books_excel(
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+) -> WeReadExcelImportResponse:
+    catalog = _parse_excel_or_400(file.filename or "", await file.read())
+    return WeReadExcelImportResponse(
+        total=len(catalog),
+        catalog_text=catalog_books_to_text(catalog),
+        items=[
+            WeReadCatalogItem(title=item.title, author=item.author, source_url=item.source_url)
+            for item in catalog
+        ],
+    )
+
+
+@router.post(
     "/analyze-excel",
     response_model=WeReadAnalyzeResponse,
     summary="上传项目进度 Excel 并批量抓取微信读书推荐值",
@@ -99,14 +133,23 @@ async def analyze_books_excel(
     file: UploadFile = File(...),
     _: User = Depends(get_current_user),
 ) -> WeReadAnalyzeResponse:
-    filename = file.filename or ""
+    catalog = _parse_excel_or_400(file.filename or "", await file.read())
+    if len(catalog) > 60:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Excel 识别到 {len(catalog)} 本书，单次公网请求过长。请使用导入 Excel 抓取，系统会自动分批处理。",
+        )
+    rows = await analyze_weread_catalog(catalog)
+    return _rows_response(rows)
+
+
+def _parse_excel_or_400(filename: str, content: bytes):
     if not filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="请上传 .xlsx 格式的 Excel 文件")
     try:
-        rows = await analyze_weread_workbook(await file.read())
+        return parse_catalog_workbook(content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _rows_response(rows)
 
 
 def _rows_response(rows: list) -> WeReadAnalyzeResponse:

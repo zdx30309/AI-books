@@ -8,7 +8,14 @@ from openpyxl import Workbook
 
 from app.api.routers.weread import WeReadBookRow, WeReadExportRequest
 from app.services import weread_tools
-from app.services.weread_tools import WeReadBookResult, build_weread_xlsx, parse_catalog, parse_catalog_workbook
+from app.services.weread_tools import (
+    CatalogBook,
+    WeReadBookResult,
+    build_weread_xlsx,
+    catalog_books_to_text,
+    parse_catalog,
+    parse_catalog_workbook,
+)
 
 
 def _xlsx_shared_text(content: bytes) -> str:
@@ -74,6 +81,21 @@ def test_parse_catalog_workbook_supports_project_progress_excel(monkeypatch) -> 
         ("论老年 论友谊", "西塞罗", "https://weread.qq.com/web/reader/book001"),
         ("论责任", "西塞罗", "https://weread.qq.com/web/reader/book002"),
         ("职业网球到底多烧钱？", None, None),
+    ]
+
+
+def test_catalog_books_to_text_keeps_excel_fields_for_chunked_fetch() -> None:
+    text = catalog_books_to_text(
+        [
+            CatalogBook("论责任", "西塞罗", "https://weread.qq.com/web/reader/book002"),
+            CatalogBook("职业网球到底多烧钱？", None, None),
+        ]
+    )
+
+    assert text.splitlines() == [
+        "书名\t原著作者\t微信读书链接",
+        "论责任\t西塞罗\thttps://weread.qq.com/web/reader/book002",
+        "职业网球到底多烧钱？\t\t",
     ]
 
 
