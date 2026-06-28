@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   BadgeDollarSign,
   BookOpenCheck,
   Download,
   FileSpreadsheet,
+  FileUp,
   Loader2,
   RefreshCcw,
   Search,
@@ -47,8 +48,11 @@ export function WeReadTool() {
   const [profitText, setProfitText] = useState("");
   const [rows, setRows] = useState<WeReadBookRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importedFileName, setImportedFileName] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
     const matched = rows.filter((row) => row.status === "matched" || row.status === "partial").length;
@@ -74,6 +78,7 @@ export function WeReadTool() {
         profit_text: profitText || null,
       });
       setRows(result.items);
+      setImportedFileName(null);
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -109,6 +114,27 @@ export function WeReadTool() {
     }
   };
 
+  const importExcelAndAnalyze = async (file: File) => {
+    setImporting(true);
+    setError(null);
+    try {
+      const result = await api.analyzeWeReadExcel(file);
+      setRows(result.items);
+      setImportedFileName(file.name);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.detail
+          : e instanceof Error
+            ? e.message
+            : "Excel 导入失败";
+      setError(msg);
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
@@ -122,6 +148,29 @@ export function WeReadTool() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importExcelAndAnalyze(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading || importing}
+            className="btn-ghost"
+          >
+            {importing ? (
+              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+            ) : (
+              <FileUp className="h-4 w-4" strokeWidth={1.7} />
+            )}
+            <span className="tracking-widest">导入 Excel 抓取</span>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -233,6 +282,12 @@ export function WeReadTool() {
         <StatTile label="平均推荐值" value={formatPercent(stats.average)} />
         <StatTile label="版权方命中" value={stats.companyMatched || "--"} />
       </section>
+
+      {importedFileName && (
+        <div className="rounded-xl border border-gold-500/15 bg-base-800/60 px-4 py-3 text-xs leading-5 text-warm-400">
+          已导入：{importedFileName}
+        </div>
+      )}
 
       <section className="card-warm overflow-hidden">
         <div className="flex items-center justify-between gap-4 border-b border-gold-500/10 px-5 py-4">

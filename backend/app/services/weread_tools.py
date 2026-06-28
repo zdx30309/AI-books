@@ -15,6 +15,7 @@ from urllib.parse import quote, urljoin, urlparse
 from xml.sax.saxutils import escape
 
 import httpx
+from openpyxl import load_workbook
 
 
 WEREAD_HOST = "https://weread.qq.com"
@@ -24,6 +25,11 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 _PROJECT_INDEX_CACHE: list[dict[str, Any]] | None = None
+_EXCEL_TITLE_HEADERS = ("书名", "标题", "图书", "作品", "项目名称")
+_EXCEL_AUTHOR_HEADERS = ("原著作者", "原始作者", "作者")
+_EXCEL_URL_HEADERS = ("微信读书链接", "微信链接", "来源链接", "链接", "url")
+_EXCEL_NEW_TITLE_HEADERS = ("新书名/上架后改名", "新书名", "上架后改名")
+_NON_BOOK_TITLE_RE = re.compile(r"(?:表格|书单|项目进度|进度汇总|数据汇总|汇总表)")
 
 
 @dataclass
@@ -184,6 +190,121 @@ def parse_catalog(text: str) -> list[CatalogBook]:
     return items
 
 
+def parse_catalog_workbook(content: bytes) -> list[CatalogBook]:
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError("无法读取 Excel 文件，请确认上传的是 .xlsx 表格") from exc
+
+    items: list[CatalogBook] = []
+    seen: set[str] = set()
+    seen_titles: set[str] = set()
+    for sheet in workbook.worksheets:
+        header: list[str] | None = None
+        header_row = 0
+        for row_index, raw_row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            row = [_excel_cell_text(value) for value in raw_row]
+            if not any(row):
+                continue
+            if header is None:
+                if _looks_like_excel_catalog_header(row):
+                    header = row
+                    header_row = row_index
+                continue
+            if row_index <= header_row:
+                continue
+
+            title = _value_from_header(row, header, _EXCEL_TITLE_HEADERS)
+            if not title:
+                title = _value_from_header(row, header, _EXCEL_NEW_TITLE_HEADERS)
+            author = _value_from_header(row, header, _EXCEL_AUTHOR_HEADERS) or None
+            source_url = _value_from_header(row, header, _EXCEL_URL_HEADERS) or None
+            source_url = _extract_first_url(source_url)
+            if not title and source_url:
+                title = source_url
+            title = _clean_cell(title)
+            author = _clean_cell(author) if author else None
+            if not title:
+                continue
+            if _looks_like_non_book_excel_row(title, author, source_url):
+                continue
+
+            key = _catalog_seen_key(title, author, source_url)
+            title_key = normalize_title(title)
+            if key in seen or (title_key and title_key in seen_titles):
+                continue
+            seen.add(key)
+            if title_key:
+                seen_titles.add(title_key)
+            items.append(CatalogBook(title=title, author=author, source_url=source_url))
+
+    if not items:
+        raise ValueError("Excel 中没有识别到可抓取的书名或微信读书链接")
+    return items
+
+
+def _excel_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    text = str(value).strip()
+    if text.endswith(".0") and re.fullmatch(r"\d+\.0", text):
+        return text[:-2]
+    return text
+
+
+def _looks_like_excel_catalog_header(row: list[str]) -> bool:
+    normalized = [normalize_title(cell) for cell in row if cell]
+    has_title = any(normalize_title(name) in normalized for name in (*_EXCEL_TITLE_HEADERS, *_EXCEL_NEW_TITLE_HEADERS))
+    has_context = any(
+        normalize_title(name) in normalized
+        for name in (
+            *_EXCEL_URL_HEADERS,
+            *_EXCEL_AUTHOR_HEADERS,
+            "编辑",
+            "编辑名",
+            "索引字段（导出时备份用，勿动）",
+            "简介",
+            "项目状态",
+            "推荐值",
+            "阅读",
+        )
+    )
+    return has_title and has_context
+
+
+def _extract_first_url(value: str | None) -> str | None:
+    match = re.search(r"https?://[^\s，,。；;)）]+", value or "")
+    return match.group(0) if match else None
+
+
+def _catalog_seen_key(title: str, author: str | None, source_url: str | None) -> str:
+    url_key = _project_url_key(source_url)
+    if url_key:
+        return url_key
+    return f"{normalize_title(title)}|{normalize_title(author)}"
+
+
+def _looks_like_non_book_excel_row(title: str, author: str | None, source_url: str | None) -> bool:
+    normalized = normalize_title(title)
+    if source_url:
+        return False
+    if not normalized:
+        return True
+    if normalized in _known_project_editors():
+        return True
+    if _NON_BOOK_TITLE_RE.search(title):
+        return True
+    return normalized in {
+        "书名",
+        "标题",
+        "项目状态",
+        "当前大概进度",
+        "索引字段导出时备份用勿动",
+    }
+
+
 def parse_profit_table(text: str) -> dict[str, float]:
     profits: dict[str, float] = {}
     for raw_line in (text or "").splitlines():
@@ -217,6 +338,23 @@ async def analyze_weread_books(
     limit: int | None = None,
 ) -> list[WeReadBookResult]:
     catalog = parse_catalog(catalog_text)
+    return await analyze_weread_catalog(catalog, profit_text=profit_text, limit=limit)
+
+
+async def analyze_weread_workbook(
+    content: bytes,
+    profit_text: str | None = None,
+    limit: int | None = None,
+) -> list[WeReadBookResult]:
+    catalog = parse_catalog_workbook(content)
+    return await analyze_weread_catalog(catalog, profit_text=profit_text, limit=limit)
+
+
+async def analyze_weread_catalog(
+    catalog: list[CatalogBook],
+    profit_text: str | None = None,
+    limit: int | None = None,
+) -> list[WeReadBookResult]:
     if not catalog:
         return []
 

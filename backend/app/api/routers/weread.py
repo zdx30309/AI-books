@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,7 @@ from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
     analyze_weread_books,
+    analyze_weread_workbook,
     build_weread_xlsx,
     safe_export_filename,
 )
@@ -86,9 +87,31 @@ async def analyze_books(
     _: User = Depends(get_current_user),
 ) -> WeReadAnalyzeResponse:
     rows = await analyze_weread_books(req.catalog_text, req.profit_text)
+    return _rows_response(rows)
+
+
+@router.post(
+    "/analyze-excel",
+    response_model=WeReadAnalyzeResponse,
+    summary="上传项目进度 Excel 并批量抓取微信读书推荐值",
+)
+async def analyze_books_excel(
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+) -> WeReadAnalyzeResponse:
+    filename = file.filename or ""
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 格式的 Excel 文件")
+    try:
+        rows = await analyze_weread_workbook(await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _rows_response(rows)
+
+
+def _rows_response(rows: list) -> WeReadAnalyzeResponse:
     if not rows:
         raise HTTPException(status_code=400, detail="请至少输入一本书名或微信读书链接")
-
     items = [WeReadBookRow(**row.as_dict()) for row in rows]
     matched = sum(1 for item in items if item.status in {"matched", "partial"})
     return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items)

@@ -4,9 +4,11 @@ import asyncio
 import zipfile
 from io import BytesIO
 
+from openpyxl import Workbook
+
 from app.api.routers.weread import WeReadBookRow, WeReadExportRequest
 from app.services import weread_tools
-from app.services.weread_tools import WeReadBookResult, build_weread_xlsx, parse_catalog
+from app.services.weread_tools import WeReadBookResult, build_weread_xlsx, parse_catalog, parse_catalog_workbook
 
 
 def _xlsx_shared_text(content: bytes) -> str:
@@ -43,6 +45,36 @@ def test_parse_catalog_skips_editor_name_only_lines(monkeypatch) -> None:
     rows = parse_catalog("单华伟\n肉蒲团（白话版）")
 
     assert [row.title for row in rows] == ["肉蒲团（白话版）"]
+
+
+def test_parse_catalog_workbook_supports_project_progress_excel(monkeypatch) -> None:
+    monkeypatch.setattr(
+        weread_tools,
+        "_PROJECT_INDEX_CACHE",
+        [{"editor": "单华伟", "_title_key": "", "_url_key": ""}],
+    )
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "已完成书目"
+    ws.append(["编辑名", "书名", "原著作者", "微信读书链接", "推荐值", "阅读"])
+    ws.append(["单华伟", "论老年 论友谊", "西塞罗", "https://weread.qq.com/web/reader/book001", 0.8, 623])
+    ws.append([None, "论责任", "西塞罗", "https://weread.qq.com/web/reader/book002", 0.9, 176])
+    ws.append([None, "单华伟", None, None, None, None])
+    month = workbook.create_sheet("202606")
+    month.append(["索引字段（导出时备份用，勿动）", "编辑", "书名", "简介", "父记录"])
+    month.append(["单华伟", "单华伟", "职业网球到底多烧钱？", "简介", None])
+    month.append(["单华伟", "单华伟", "论责任", "重复", None])
+
+    output = BytesIO()
+    workbook.save(output)
+
+    rows = parse_catalog_workbook(output.getvalue())
+
+    assert [(row.title, row.author, row.source_url) for row in rows] == [
+        ("论老年 论友谊", "西塞罗", "https://weread.qq.com/web/reader/book001"),
+        ("论责任", "西塞罗", "https://weread.qq.com/web/reader/book002"),
+        ("职业网球到底多烧钱？", None, None),
+    ]
 
 
 def test_project_index_match_adds_company_and_existing_excel_fields(monkeypatch) -> None:

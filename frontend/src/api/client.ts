@@ -827,6 +827,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  analyzeWeReadExcel: (file: File) =>
+    uploadFile<WeReadAnalyzeResponse>("/weread/analyze-excel", file),
   downloadWeReadExcel: async (rows: WeReadBookRow[]) => {
     const { blob, filename } = await downloadWithBody("/weread/export", { rows });
     saveBlob(blob, filename);
