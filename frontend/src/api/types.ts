@@ -348,6 +348,7 @@ export interface WeReadBookRow {
   reading_count: string | null;
   comment_count: string | null;
   company_name: string | null;
+  translator: string | null;
   source_url: string | null;
   profit: number | null;
   project_editor: string | null;

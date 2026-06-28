@@ -19,8 +19,8 @@ router = APIRouter(prefix="/api/v1/weread", tags=["WeRead"])
 
 
 class WeReadAnalyzeRequest(BaseModel):
-    catalog_text: str = Field(..., min_length=1, max_length=20_000)
-    profit_text: str | None = Field(default=None, max_length=20_000)
+    catalog_text: str = Field(..., min_length=1)
+    profit_text: str | None = None
 
 
 class WeReadBookRow(BaseModel):
@@ -36,6 +36,7 @@ class WeReadBookRow(BaseModel):
     reading_count: str | None = None
     comment_count: str | None = None
     company_name: str | None = None
+    translator: str | None = None
     source_url: str | None = None
     profit: float | None = None
     project_editor: str | None = None
@@ -72,7 +73,7 @@ class WeReadAnalyzeResponse(BaseModel):
 
 
 class WeReadExportRequest(BaseModel):
-    rows: list[WeReadBookRow] = Field(..., min_length=1, max_length=100)
+    rows: list[WeReadBookRow] = Field(..., min_length=1)
 
 
 @router.post(

@@ -261,13 +261,14 @@ export function WeReadTool() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[1240px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-gold-500/10 text-[11px] tracking-widest text-warm-500">
                   <th className="px-5 py-3 font-medium">原始书名</th>
                   <th className="px-5 py-3 font-medium">版权方</th>
                   <th className="px-5 py-3 font-medium">匹配书名</th>
                   <th className="px-5 py-3 font-medium">作者</th>
+                  <th className="px-5 py-3 font-medium">译者</th>
                   <th className="px-5 py-3 font-medium">推荐值</th>
                   <th className="px-5 py-3 font-medium">阅读人数</th>
                   <th className="px-5 py-3 font-medium">评论数量</th>
@@ -302,6 +303,9 @@ export function WeReadTool() {
                     </td>
                     <td className="px-5 py-4 align-top text-warm-400">
                       {displayText(row.matched_author || row.query_author)}
+                    </td>
+                    <td className="px-5 py-4 align-top text-warm-400">
+                      {displayText(row.translator)}
                     </td>
                     <td className="px-5 py-4 align-top">
                       <span className="rounded-full bg-gold-500/10 px-3 py-1 text-gold-100">

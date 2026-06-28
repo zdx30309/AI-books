@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import zipfile
 from io import BytesIO
 
+from app.api.routers.weread import WeReadBookRow, WeReadExportRequest
 from app.services import weread_tools
 from app.services.weread_tools import WeReadBookResult, build_weread_xlsx, parse_catalog
 
@@ -83,9 +85,15 @@ def test_project_index_match_adds_company_and_existing_excel_fields(monkeypatch)
 
 
 def test_extract_copyright_holder_from_weread_payload() -> None:
-    body = '{"publisher":"广西师范大学出版社","copyrightOwner":"","name":"肉蒲团"}'
+    body = '{"publisher":"广西师范大学出版社","copyrightOwner":"","copyrightInfo":{"id":1,"name":"简读互动"},"name":"肉蒲团"}'
 
-    assert weread_tools._extract_copyright_holder(body) == "广西师范大学出版社"
+    assert weread_tools._extract_copyright_holder(body) == "简读互动"
+
+
+def test_extract_translator_from_weread_payload() -> None:
+    body = '{"translator":"刘半农（译） 单华伟（编）","title":"1793乾隆英使觐见记"}'
+
+    assert weread_tools._extract_translator(body) == "刘半农（译） 单华伟（编）"
 
 
 def test_weread_export_contains_only_required_metric_columns() -> None:
@@ -94,6 +102,7 @@ def test_weread_export_contains_only_required_metric_columns() -> None:
             {
                 "query_title": "黄金投资指南",
                 "matched_title": "黄金投资指南",
+                "translator": "刘半农（译）",
                 "company_name": "广西师范大学出版社",
                 "recommendation": 80.5,
                 "reading_count": "623",
@@ -109,9 +118,41 @@ def test_weread_export_contains_only_required_metric_columns() -> None:
     shared_text = _xlsx_shared_text(content)
 
     assert "版权方（公司名字）" in shared_text
+    assert "译者" in shared_text
     assert "阅读人数" in shared_text
     assert "评论数量" in shared_text
     assert "项目编辑" not in shared_text
     assert "项目书名" not in shared_text
     assert "利润" not in shared_text
+    assert "来源链接" not in shared_text
+    assert "匹配状态" not in shared_text
+    assert "备注" not in shared_text
     assert "广西师范大学出版社" in shared_text
+    assert "刘半农（译）" in shared_text
+
+
+def test_analyze_weread_books_does_not_stop_at_80(monkeypatch) -> None:
+    async def fake_fetch_search_result(client, item):
+        return WeReadBookResult(
+            query_title=item.title,
+            query_author=item.author,
+            matched_title=item.title,
+            recommendation=80.0,
+            status="matched",
+        )
+
+    monkeypatch.setattr(weread_tools, "fetch_search_result", fake_fetch_search_result)
+    monkeypatch.setattr(weread_tools, "_attach_project_match", lambda result: None)
+
+    catalog = "\n".join(f"测试书名{i}" for i in range(105))
+    rows = asyncio.run(weread_tools.analyze_weread_books(catalog))
+
+    assert len(rows) == 105
+
+
+def test_weread_export_request_accepts_more_than_100_rows() -> None:
+    row = WeReadBookRow(query_title="测试书名", status="matched")
+
+    req = WeReadExportRequest(rows=[row for _ in range(120)])
+
+    assert len(req.rows) == 120

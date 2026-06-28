@@ -47,6 +47,7 @@ class WeReadBookResult:
     reading_count: str | None = None
     comment_count: str | None = None
     company_name: str | None = None
+    translator: str | None = None
     source_url: str | None = None
     profit: float | None = None
     project_editor: str | None = None
@@ -89,6 +90,7 @@ class WeReadBookResult:
             "reading_count": self.reading_count,
             "comment_count": self.comment_count,
             "company_name": self.company_name,
+            "translator": self.translator,
             "source_url": self.source_url,
             "profit": self.profit,
             "project_editor": self.project_editor,
@@ -212,7 +214,7 @@ def parse_profit_table(text: str) -> dict[str, float]:
 async def analyze_weread_books(
     catalog_text: str,
     profit_text: str | None = None,
-    limit: int = 80,
+    limit: int | None = None,
 ) -> list[WeReadBookResult]:
     catalog = parse_catalog(catalog_text)
     if not catalog:
@@ -223,7 +225,8 @@ async def analyze_weread_books(
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
     async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
         results: list[WeReadBookResult] = []
-        for item in catalog[:limit]:
+        selected_catalog = catalog if limit is None else catalog[: max(0, limit)]
+        for item in selected_catalog:
             result = WeReadBookResult(query_title=item.title, query_author=item.author)
             try:
                 if item.source_url:
@@ -283,6 +286,7 @@ async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> W
             result.total_reading = detail.total_reading or result.total_reading
             result.word_count = detail.word_count or result.word_count
             result.company_name = detail.company_name or result.company_name
+            result.translator = detail.translator or result.translator
             result.source_url = detail.source_url or result.source_url
             result.status = "matched" if result.recommendation is not None else detail.status
             result.error = detail.error if result.status != "matched" else None
@@ -309,6 +313,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
     total_reading = _extract_stat(body, "阅读")
     word_count = _extract_stat(body, "字数")
     company_name = _extract_copyright_holder(body)
+    translator = _extract_translator(body)
 
     clean_title = _clean_text(title) or item.title
     return WeReadBookResult(
@@ -321,6 +326,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         total_reading=total_reading,
         word_count=word_count,
         company_name=company_name,
+        translator=translator,
         source_url=item.source_url,
         status="matched" if recommendation else "partial",
         error=None if recommendation else "已读取书籍页，但未找到推荐值",
@@ -333,13 +339,11 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
         "原始作者",
         "匹配书名",
         "匹配作者",
+        "译者",
         "版权方（公司名字）",
         "推荐值",
         "阅读人数",
         "评论数量",
-        "来源链接",
-        "匹配状态",
-        "备注",
     ]
     body_rows = [headers]
     for row in rows:
@@ -349,13 +353,11 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
                 row.get("query_author"),
                 row.get("matched_title"),
                 row.get("matched_author"),
+                row.get("translator"),
                 row.get("company_name"),
                 _format_percent(row.get("recommendation")),
                 row.get("reading_count"),
                 row.get("comment_count"),
-                row.get("source_url"),
-                _status_label(str(row.get("status") or "")),
-                row.get("error"),
             ]
         )
 
@@ -387,9 +389,7 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <cols>
     <col min="1" max="4" width="24" customWidth="1"/>
-    <col min="5" max="8" width="18" customWidth="1"/>
-    <col min="9" max="9" width="48" customWidth="1"/>
-    <col min="10" max="11" width="18" customWidth="1"/>
+    <col min="5" max="9" width="18" customWidth="1"/>
   </cols>
   <sheetData>{"".join(sheet_rows)}</sheetData>
 </worksheet>"""
@@ -670,14 +670,54 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
 
 
 def _extract_copyright_holder(text: str) -> str | None:
-    values = [
-        _clean_text(_decode_json_string(value))
-        for value in re.findall(r'"(?:copyrightHolder|copyrightOwner|publisher)"\s*:\s*"([^"]*)"', text)
-    ]
-    for value in values:
+    priority_values = _json_string_values(
+        text,
+        (
+            "copyrightInfo.name",
+            "copyrightHolder",
+            "copyrightOwner",
+            "copyrightCompany",
+            "copyrightName",
+            "rightsHolder",
+            "cpName",
+        ),
+    )
+    for value in priority_values:
+        if value:
+            return value
+
+    for value in _json_string_values(text, ("publisher",)):
         if value:
             return value
     return None
+
+
+def _extract_translator(text: str) -> str | None:
+    for value in _json_string_values(text, ("translator",)):
+        if value:
+            return value
+
+    seg_block = _first_match(text, [r'"translatorSeg"\s*:\s*\[([\s\S]*?)\]'])
+    seg_values = [
+        _clean_text(_decode_json_string(value))
+        for value in re.findall(r'"words"\s*:\s*"([^"]*)"', seg_block or "")
+    ]
+    joined = "".join(value for value in seg_values if value)
+    return joined or None
+
+
+def _json_string_values(text: str, keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        if key == "copyrightInfo.name":
+            pattern = r'"copyrightInfo"\s*:\s*\{[^{}]*"name"\s*:\s*"([^"]*)"'
+        else:
+            pattern = rf'"{re.escape(key)}"\s*:\s*"([^"]*)"'
+        for raw_value in re.findall(pattern, text, re.S):
+            value = _clean_text(_decode_json_string(raw_value))
+            if value:
+                values.append(value)
+    return values
 
 
 def _decode_json_string(value: str) -> str:
