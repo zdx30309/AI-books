@@ -300,6 +300,33 @@ def test_life_philosophy_self_rescue_keeps_dedicated_writer() -> None:
     assert "@三个备选书名" not in prompt
 
 
+def test_life_philosophy_prompt_avoids_fixed_scene_and_loop_formula() -> None:
+    prompt = get_prompts("life_philosophy")["full_book_writer"]
+
+    assert "场景切片" not in prompt
+    assert "现实处境 → 常见反应 → 隐含误区 → 长期代价 → 替代认知 → 行动原则" not in prompt
+    assert "不要机械套用同一条六步路径" in prompt
+    assert "开篇不得总是写成“一个虚构人名遇到心理困难”" in prompt
+    assert "不得固定放在每章倒数第二段" in prompt
+    assert "不要统一写成“某某是有代价的”" in prompt
+    assert "前者……，后者……" in prompt
+    assert "不得出现中文逗号连用“，，”" in prompt
+
+
+def test_life_philosophy_self_rescue_prompt_uses_anti_template_rules() -> None:
+    prompt = get_prompts("life_philosophy_self_rescue")["full_book_writer"]
+
+    assert "场景切片" not in prompt
+    assert "现实处境 → 常见反应 → 隐含误区 → 长期消耗 → 重新理解 → 行动原则" not in prompt
+    assert "人生哲学反模板约束" in prompt
+    assert "生活场面不要只放在每篇开头和结尾" in prompt
+    assert "开篇不得总是写成“一个虚构人名遇到心理困难”" in prompt
+    assert "收束不要总是写成“你在一个平静时刻继续面对生活”" in prompt
+    assert "不得固定放在每章倒数第二段" in prompt
+    assert "避免在章节标题和正文里反复使用：自救、失控、消耗、成熟、成年人、审判、判决" in prompt
+    assert "慢下来、边界、自责、责任、秩序、债务、陷阱、代价、某某瘾" in prompt
+
+
 def test_longform_variant_categories_use_dedicated_prompts() -> None:
     cases = [
         (
