@@ -11,7 +11,6 @@ from app.prompts.goal_driven_templates import get_category_meta
 BASE_COVER_CATEGORY_IDS: tuple[str, ...] = (
     "social_science",
     "finance_technology",
-    "finance_technology_advice",
     "finance_technology_recommendation",
 )
 
@@ -106,10 +105,6 @@ _register_alias("财经", "finance_technology")
 _register_alias("财经科技", "finance_technology")
 _register_alias("财经·科技", "finance_technology")
 _register_alias("finance_tech", "finance_technology")
-_register_alias("财经科技（观点建议版）", "finance_technology_advice")
-_register_alias("财经科技观点建议版", "finance_technology_advice")
-_register_alias("财经·科技（观点建议版）", "finance_technology_advice")
-_register_alias("finance_tech_advice", "finance_technology_advice")
 _register_alias("财经科技（建议版）", "finance_technology_recommendation")
 _register_alias("财经科技建议版", "finance_technology_recommendation")
 _register_alias("财经·科技（建议版）", "finance_technology_recommendation")

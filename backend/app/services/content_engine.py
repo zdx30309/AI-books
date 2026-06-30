@@ -25,6 +25,7 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.classical_chinese import (
+    BUDDHIST_SCRIPTURE_STORY_CATEGORY,
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
@@ -34,6 +35,7 @@ from app.services.classical_chinese import (
     classical_final_title,
     classical_paragraph_marker,
     classical_source_lines,
+    classical_variant_for_category,
     strip_classical_paragraph_markers,
 )
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
@@ -66,15 +68,13 @@ FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
 FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
-FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology", "finance_technology_advice"})
+FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology"})
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
-FINANCE_TECHNOLOGY_ADVICE_CATEGORY = "finance_technology_advice"
 FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY = "finance_technology_recommendation"
 FINANCE_SOURCE_GUARDED_CATEGORIES = frozenset(
     {
         "finance_technology",
-        FINANCE_TECHNOLOGY_ADVICE_CATEGORY,
         FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY,
     }
 )
@@ -2700,10 +2700,7 @@ def _should_use_finance_longform(
 
 
 def _is_finance_advice_category(category: str | None) -> bool:
-    try:
-        return normalize_category(category) == FINANCE_TECHNOLOGY_ADVICE_CATEGORY
-    except Exception:
-        return False
+    return False
 
 
 def _is_finance_recommendation_category(category: str | None) -> bool:
@@ -2815,9 +2812,7 @@ def _finance_web_search_excerpt(raw_text: str, *, max_chars: int = 12_000) -> st
 
 def _finance_latest_research_prompt(raw_text: str, *, category: str) -> str:
     excerpt = _finance_web_search_excerpt(raw_text)
-    if _is_finance_advice_category(category):
-        category_label = "财经科技（观点建议版）"
-    elif _is_finance_recommendation_category(category):
+    if _is_finance_recommendation_category(category):
         category_label = "财经科技（建议版）"
     else:
         category_label = "财经·科技"
@@ -2973,29 +2968,6 @@ def _finance_whole_book_prompt(
     focus_points = _finance_source_focus_points(raw_text)
     focus_block = f"\n[参考资料信息点观察清单]\n{focus_points}\n" if focus_points else ""
     latest_research_block = _finance_latest_research_block(latest_research)
-    if _is_finance_advice_category(category):
-        return f"""{base_writer_prompt.rstrip()}
-
-【财经科技观点建议版密度强约束】
-{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
-{latest_research_block}
-- 以上财经科技观点建议版主 prompt 全部继续生效；本段只增加观点密度、去堆料和链路约束，不替换原分类规则。
-- 必须一次性输出完整书稿，不要先写蓝图，不要分章分批生成，不要把正文留给后续补写。
-- 参考资料对应时长约 {minutes} 分钟，参考资料信息密度约每分钟 {source_cpm} 字；本次有效正文参考目标约 {target_words} 字，最低有效展开参考线约 {required_body_target} 字。这个数字是质量区间，不是硬性凑字任务。
-- 观点建议版宁可精炼，也不能冗长。正文只围绕 1 个主矛盾和 2 到 4 个核心问题展开；写到判断、机制、边界和建议已经清楚时就收住，不要为了靠近目标字数继续补材料。
-- 篇幅只能来自更完整的背景解释、机制拆解、利益相关方、影响链条、条件推演、现实误判、风险边界和普通人建议。不能靠重复观点、堆公司名、堆年份、堆术语、堆无关材料或把前文换说法凑字数。
-- 如果后半段开始重复前文、只是在追加资料清单、百科解释或无新判断的案例，必须删掉或压缩。后续 Gemini 一润、Gemini 二润和 DeepSeek 格式层允许删除这类无效材料，不以保字数为目标。
-- 观点建议版的首要任务是形成判断和建议，不是展示材料库存。所有资料、数据、公司动作、政策、技术事件和案例都必须回答一个问题：它支撑了哪个判断，改变了谁的理解，导向哪条行动边界。
-- 每个核心问题必须形成独立判断；每个判断只能选择最必要的材料支撑。不能把同一材料、同一数据、同一案例、同一公司动作换说法写进多个章节。
-- 禁止材料清单化、百科化、研究报告化；禁止为了显得信息量大而连续罗列公司名、年份、机构名、政策名、技术名、数据口径。
-- 如果资料只提供背景但不能推动判断，就压缩成一句背景；如果资料与主矛盾无关，就不要写入正文。
-- 建议小节必须独立存在，并把前文分析转成具体、可执行、有适用条件的建议；建议不能重复前文材料，也不能泛泛写“保持理性”“关注风险”。
-- 如需写当前前景、2026 年趋势、最新产业例子或近期公司动作，只能使用上方联网检索结果里已有的 2026 年或明确当前资料；没有检索到就不要写这类最新例子，也不要使用过去几年案例替代。
-- 不做具体投资预测，不写涨跌结论，不给买卖建议；所有判断只能写成条件、机制、约束、影响和普通人可执行的信息判断。
-- 输出顺序仍然只能是 @最终书名、@最终简介、@目录、@导言、@正文；只输出成稿，不要解释，不要代码块，不要元信息。
-{focus_block}
-请严格按照完整财经科技观点建议版 prompt 和以上观点密度强约束，一次性输出完整书稿。
-"""
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长视频动态长文强约束】
@@ -3023,22 +2995,6 @@ def _finance_stage_instruction(
     *,
     category: str | None = None,
 ) -> str:
-    if _is_finance_advice_category(category):
-        return f"""{base_instruction.rstrip()}
-
-【财经科技超长文整稿处理保护】
-{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
-{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
-- 当前环节只执行原有 workflow 的对应处理，不改变分工，不重写成新稿，不改成摘要。
-- 你会收到待处理完整书稿，必须从 @最终书名 处理到最后一行正文，不能只处理开头、前半部分或前 20000 字。
-- 本阶段不负责补字数，也不保护无效篇幅。发现后半段重复前文、资料清单化、百科式铺陈、同一判断换说法、无新判断案例堆叠时，必须删改或压缩成自然衔接句。
-- 必须保留完整结构、核心判断、关键事实、必要机制链条、风险边界和建议小节；不得把观点建议稿压缩成短摘要。
-- 观点建议版允许并要求清理明显重复材料、无关材料和资料堆叠：同一数据、同一案例、同一公司动作、同一政策背景、同一判断如果在多处重复出现，只保留对论证最有价值的一处，其余删改为自然衔接句。
-- 不要删除能支撑新判断、新条件、新边界或具体建议的有效内容；但如果一个段落只是在补字数、重复前文或堆无关材料，删除它比保留它更符合任务。
-- 建议小节必须保留并变得更具体，不能被合并成泛泛总结；如果建议只是在重复前文材料，要改成可执行、有适用条件的建议。
-- 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技观点建议版规则不被破坏。
-- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
-"""
     return f"""{base_instruction.rstrip()}
 
 【财经科技超长文整稿处理保护】
@@ -3054,19 +3010,7 @@ def _finance_stage_instruction(
 
 
 def _finance_format_template(base_template: str, *, category: str | None = None) -> str:
-    if _is_finance_advice_category(category):
-        guard = f"""【财经科技超长文整稿格式保护】
-{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
-{FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
-- 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
-- 本阶段以格式整理和标题规范为主，不得重写成新稿，不得摘要、缩写、合并章节或重排论证。
-- 本阶段不负责补字数，也不保护无效篇幅。允许保守删除或压缩明显重复材料、无关材料堆叠、资料清单化段落和同一判断换说法。
-- 必须保留观点建议版的核心判断、关键事实、机制链条、风险边界和建议小节。
-- 如果输入中仍有明显重复材料、无关材料堆叠或同一判断换说法，只允许做保守删改：删除重复段落或重复句，保留最有论证价值的一处，不得影响新的观点推进。
-- 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
-"""
-    else:
-        guard = f"""【财经科技超长文整稿格式保护】
+    guard = f"""【财经科技超长文整稿格式保护】
 {FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
 {FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT}
 - 你会收到待处理完整书稿，必须完整读取并整理全部内容，从 @最终书名 到最后一行正文都要处理。
@@ -3247,60 +3191,6 @@ def _finance_continuation_prompt(
     minutes = round(duration_seconds / 60.0, 1)
     focus_points = _finance_source_focus_points(raw_text, max_points=55)
     chapter_map = _finance_existing_chapter_map(current_markdown)
-    if _is_finance_advice_category(category):
-        return f"""{base_writer_prompt.rstrip()}
-
-【财经科技观点建议版主稿同阶段补足任务】
-{FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT}
-{_finance_latest_research_block(latest_research)}
-当前仍属于 OpenAI 主稿阶段，不是重写任务，不是润色任务，也不是格式整理任务。本阶段只补“缺失的有效分析维度”，不是为了凑字数把文章拉长。
-你会看到参考资料全文、当前已完成主稿和已有章节目录。请只输出“新增正文正式章节”，新增章节会拼回 @正文 并重建目录。
-
-【当前篇幅状态】
-- 参考资料对应时长约 {minutes} 分钟。
-- 有效正文参考目标约 {target_words} 字。
-- 最低有效展开参考线约 {required_body_target} 字；这是触发一次补足的参考线，不是硬性凑字目标。
-- 当前正文约 {current_body_chars} 字。
-- 仍需补足约 {remaining} 字。
-- 本轮新增正文参考量约 {batch_target} 字；如果没有足够新的判断、机制、边界或建议，宁可少写，不要硬凑。
-- 当前是第 {round_index} 轮主稿同阶段补足。
-
-【只能补这些有效内容】
-- 补缺失的核心判断：围绕 1 个主矛盾和 2 到 4 个核心问题，补足前文没有讲透的判断，不要开无关新题。
-- 补背景解释：把小白读者必须理解的概念、事件、政策、技术、公司动作或市场变化讲清楚。
-- 补机制链条：说明变量之间怎样传导，谁影响谁，影响普通人的哪一类判断。
-- 补利益相关方：分别说明公司、产业链、消费者、从业者、普通投资者或信息接收者的处境差异。
-- 补条件推演：明确什么条件下判断成立，什么条件下判断失效，哪些边界不能越过。
-- 补现实误判：指出大众容易怎样误读资料、数字、公司动作或政策信号。
-- 补具体建议：把分析转成可执行、有适用条件的建议，不能泛泛写“保持理性”“关注风险”。
-
-【反重复与质量要求】
-- 这是观点建议版，不是资料汇编版。不能把前文已经使用过的材料、数据、案例、公司动作换说法再写一遍。
-- 每个新增章节必须提供新的判断层次或行动边界，不能只补事实清单，不能堆公司名、年份、机构名、政策名、技术名、数据口径。
-- 如果某个资料点不能支撑判断、改变理解或导向建议，就不要写入正文。
-- 如果现有主稿已经把核心问题讲清楚，没有新的有效层次可补，可以只输出一句“无新增有效内容”，系统会保留当前主稿继续后续流程。
-- 如果需要写当前前景、2026 年趋势、最新产业例子或近期公司动作，只能使用上方联网检索结果里已有的 2026 年或明确当前资料；如果没有检索到，不要补写这类最新例子，也不要使用过去几年案例替代。
-- 不做具体投资预测，不写涨跌结论，不给买卖建议。
-- 语言仍然要保持财经科技观点建议版的正式书稿质量，不要口语化，不要论文腔，不要总结腔。
-
-【输出格式】
-- 只输出新增的正文正式章节，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
-- 每个新增章节必须以 @N. 章节名 开头，N 可从 1 开始，章节编号会在最终正文中统一重排。
-- 章节标题不得出现中文冒号或英文冒号，不要命名为“结语”。
-- 不要解释，不要代码块，不要元信息，不要输出“续写如下”。
-
-[已有章节目录]
-{chapter_map}
-
-[参考资料信息点观察清单]
-{focus_points}
-
-[参考资料全文]
-{raw_text.strip()}
-
-[当前已完成主稿]
-{current_markdown.strip()}
-"""
     return f"""{base_writer_prompt.rstrip()}
 
 【财经科技长文同阶段定向续写任务】
@@ -3465,13 +3355,6 @@ async def _finance_expand_writer_to_target(
                 )
         else:
             no_gain_rounds += 1
-        if is_advice and no_gain_rounds >= 1:
-            logger.info(
-                "财经科技观点建议版续写未获得有效新增内容，保留当前主稿继续后续流程: body_chars=%d target=%d",
-                after_body_chars,
-                target_words,
-            )
-            break
         if no_gain_rounds >= 2:
             raise RuntimeError(
                 f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
@@ -3480,14 +3363,6 @@ async def _finance_expand_writer_to_target(
             )
 
     if not _finance_body_target_reached(current_markdown, target_words, category=category):
-        if is_advice:
-            logger.info(
-                "财经科技观点建议版低于参考线但停止继续扩写以避免堆料: body_chars=%d required=%d target=%d",
-                _finance_body_chars(current_markdown),
-                required_body_target,
-                target_words,
-            )
-            return current_markdown, expanded
         raise RuntimeError(
             f"{FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX}: "
             f"finance writer could not reach required target without quality risk; "
@@ -4366,6 +4241,8 @@ async def generate_full_book(
     classical_expected_count = 0
     is_classical_category = normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
     is_classical_interleaved = normalized_category == CLASSICAL_INTERLEAVED_CATEGORY
+    if normalized_category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
+        classical_variant = classical_variant_for_category(normalized_category, classical_variant)
     if is_classical_category:
         classical_expected_count = classical_expected_paragraph_count(writer_input_text)
         writer_input_text = build_classical_prompt_source(

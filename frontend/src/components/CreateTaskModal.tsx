@@ -29,6 +29,7 @@ const CLASSICAL_VARIANTS = [
   { id: "zhiguai_web", label: "志怪小说爽读版" },
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
+  { id: "buddhist_story", label: "佛经白话故事版" },
 ] as const;
 const LONG_NOVEL_CONFLICT_OPTIONS = [
   "婆媳偏心",
@@ -66,6 +67,7 @@ const LONG_NOVEL_MODULES = [
 const CLASSICAL_CHINESE_CATEGORY_IDS = new Set([
   "classical_chinese",
   "classical_chinese_interleaved",
+  "buddhist_scripture_story",
 ]);
 type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch" | "longNovel";
 
@@ -167,6 +169,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isReferenceArticle = mode === "article" || mode === "articleBatch";
   const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
+  const isBuddhistScripture = category === "buddhist_scripture_story";
+  const isClassicalButtonActive = isClassicalChinese && !isBuddhistScripture;
+  const classicalDisplayName = isBuddhistScripture ? "佛经白话" : "古文白话";
+  const effectiveClassicalVariant = isBuddhistScripture ? "buddhist_story" : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
@@ -232,6 +238,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       cancelled = true;
     };
   }, [open]);
+
+  useEffect(() => {
+    if (category === "buddhist_scripture_story") {
+      setClassicalVariant("buddhist_story");
+    }
+  }, [category]);
 
   useEffect(() => {
     if (COMIC_CATEGORY_IDS.has(category)) {
@@ -547,7 +559,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
     if (mode === "batch") {
       if (isClassicalChinese || isComicCategory) {
-        setError(isComicCategory ? `${comicCategoryLabel}请使用${comicCategoryLabel}入口输入短语` : "古文白话请单条粘贴文言文原文，不使用候选链接库");
+        setError(isComicCategory ? `${comicCategoryLabel}请使用${comicCategoryLabel}入口输入短语` : `${classicalDisplayName}请单条粘贴原文，不使用候选链接库`);
         return;
       }
       const { urls, duplicateCount } = candidateLinkStats;
@@ -604,7 +616,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       try {
         const res = await api.createClassicalChineseTaskFromDocx(
           classicalDocxFile,
-          classicalVariant,
+          effectiveClassicalVariant,
           classicalBookTitle.trim(),
           category,
         );
@@ -635,7 +647,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     try {
       const config: Record<string, unknown> = { category };
       if (isClassicalChinese) {
-        config.classical_variant = classicalVariant;
+        config.classical_variant = effectiveClassicalVariant;
         if (classicalBookTitle.trim()) {
           config.classical_original_title = classicalBookTitle.trim();
           config.title = classicalBookTitle.trim();
@@ -748,15 +760,32 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               onClick={() => {
                 setMode("single");
                 setCategory("classical_chinese");
+                setClassicalVariant("plain");
               }}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                isClassicalChinese
+                isClassicalButtonActive
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
                   : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
             >
               <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
               古文白话
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("single");
+                setCategory("buddhist_scripture_story");
+                setClassicalVariant("buddhist_story");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                isBuddhistScripture
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+              佛经白话
             </button>
             <button
               type="button"
@@ -812,6 +841,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
+                if (CLASSICAL_CHINESE_CATEGORY_IDS.has(nextCategory)) {
+                  setMode("single");
+                  setClassicalVariant(
+                    nextCategory === "buddhist_scripture_story" ? "buddhist_story" : "plain",
+                  );
+                }
                 if (COMIC_CATEGORY_IDS.has(nextCategory)) {
                   setMode("comic");
                 } else if (mode === "comic") {
@@ -1189,12 +1224,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       htmlFor="classical-variant"
                       className="mb-2 block text-[11px] tracking-widest text-warm-300"
                     >
-                      古文白话细分方向
+                      {classicalDisplayName}细分方向
                     </label>
                     <select
                       id="classical-variant"
-                      value={classicalVariant}
+                      value={effectiveClassicalVariant}
                       onChange={(e) => setClassicalVariant(e.target.value)}
+                      disabled={isBuddhistScripture}
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
                     >
                       {CLASSICAL_VARIANTS.map((item) => (
@@ -1248,7 +1284,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       {classicalDocxFile?.name || "选择 .docx 文件"}
                     </span>
                     <span className="mt-2 text-xs leading-relaxed text-warm-500">
-                      系统会读取 Word 正文，并按古文白话流程生成
+                      系统会读取 Word 正文，并按{classicalDisplayName}流程生成
                     </span>
                   </label>
                   <input
@@ -1269,7 +1305,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   className="mb-2 block text-[11px] tracking-widest text-warm-300"
                 >
                   {isClassicalChinese
-                    ? "文言文原文"
+                    ? isBuddhistScripture
+                      ? "佛经原文"
+                      : "文言文原文"
                     : isReferenceArticle
                       ? "参考文章全文"
                       : "视频文稿（可选）"}
@@ -1280,7 +1318,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   onChange={(e) => setRawText(e.target.value)}
                   placeholder={
                     isClassicalChinese
-                      ? "请直接粘贴需要转成白话文的文言文原文"
+                      ? isBuddhistScripture
+                        ? "请直接粘贴需要转成白话故事稿的佛经原文"
+                        : "请直接粘贴需要转成白话文的文言文原文"
                       : isReferenceArticle
                         ? "请粘贴公众号文章或已有文章全文。系统会提炼情感关系问题，重新组织结构和案例，生成原创文章。"
                         : "如果已经有视频文稿，可以直接粘贴在这里，跳过链接解析步骤"

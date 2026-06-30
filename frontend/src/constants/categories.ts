@@ -75,13 +75,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
-    id: "finance_technology_advice",
-    label: "财经科技（观点建议版）",
-    core_feature: "在财经科技分析里形成明确观点，并给出有条件、可执行的普通人建议",
-    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人建议、信息判断",
-    prompt_status: "ready",
-  },
-  {
     id: "finance_technology_recommendation",
     label: "财经科技（建议版）",
     core_feature: "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
@@ -152,6 +145,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "buddhist_scripture_story",
+    label: "佛经白话",
+    core_feature: "把佛经经文译成自然连贯的白话故事稿，忠于原文讲述和道理",
+    directions: "佛经、佛陀说法、弟子问答、因缘譬喻、经典段落白话化",
+    prompt_status: "ready",
+  },
+  {
     id: "classical_chinese_interleaved",
     label: "古文白话（原文翻译穿插版）",
     core_feature: "每段先保留原文，再紧跟对应白话翻译",
@@ -214,11 +214,11 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "life_philosophy_self_rescue",
   "popular_science_cognitive_upgrade",
   "finance_technology",
-  "finance_technology_advice",
   "finance_technology_recommendation",
   "wisdom_stories_causal_philosophy",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
+  "buddhist_scripture_story",
   "classical_chinese_interleaved",
 ] as const;
 

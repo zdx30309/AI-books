@@ -35,6 +35,11 @@ CLASSICAL_VARIANT_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "诗歌翻译",
         "description": "把诗歌译成一整段华丽但易懂的现代汉语。",
     },
+    {
+        "id": "buddhist_story",
+        "label": "佛经白话故事版",
+        "description": "把佛经经文译成连贯白话，适度故事化表达，忠于原文讲述和道理。",
+    },
 )
 
 _VARIANT_ALIASES: dict[str, str] = {
@@ -57,6 +62,11 @@ _VARIANT_ALIASES: dict[str, str] = {
     "诗歌": "poetry",
     "诗歌翻译": "poetry",
     "poetry": "poetry",
+    "佛经": "buddhist_story",
+    "佛经白话": "buddhist_story",
+    "佛经白话故事版": "buddhist_story",
+    "buddhist": "buddhist_story",
+    "buddhist_story": "buddhist_story",
 }
 
 _VARIANT_RULES: dict[str, str] = {
@@ -84,6 +94,12 @@ _VARIANT_RULES: dict[str, str] = {
 - 可以适当补充必要语义，让普通读者一眼读懂。
 - 不要用太生僻的字，不要把诗意翻成空泛抒情或现代鸡汤。
 - 保留诗歌中的意象、情绪方向、时间空间关系和语气转折。""",
+    "buddhist_story": """- 请将佛经经文翻译成自然、连贯、能读下去的白话文，整体读感像一个平稳讲述的故事。
+- 改动幅度不要太大，只做必要的语序调整、指代补足和衔接润色，让现代读者能顺着人物、问答、因缘和说法过程读懂。
+- 不要编造原文没有的人物、地点、事件、对白、神通、因果细节、结局或教义解释。
+- 可以把经文里的问答、譬喻、动作和说法过程写得更顺，但必须契合原文讲述的事情和道理。
+- 语言要有故事感，但不要改成小说爽文、玄幻故事、心灵鸡汤、现代心理学文章或宗教宣传口号。
+- 遇到佛教术语、名号、地名、人名和核心教义，不确定时保守处理，可保留原词并用上下文自然解释，不要乱翻。""",
 }
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
@@ -92,7 +108,17 @@ _LINK_MARK_RE = re.compile(r"[`~]")
 CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
 CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
-CLASSICAL_CHINESE_CATEGORY_IDS = frozenset({"classical_chinese", CLASSICAL_INTERLEAVED_CATEGORY})
+BUDDHIST_SCRIPTURE_STORY_CATEGORY = "buddhist_scripture_story"
+BUDDHIST_SCRIPTURE_VARIANT = "buddhist_story"
+CLASSICAL_CHINESE_CATEGORY_IDS = frozenset(
+    {"classical_chinese", CLASSICAL_INTERLEAVED_CATEGORY, BUDDHIST_SCRIPTURE_STORY_CATEGORY}
+)
+
+
+def classical_variant_for_category(category: object, variant: object = None) -> str:
+    if str(category or "").strip() == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
+        return BUDDHIST_SCRIPTURE_VARIANT
+    return normalize_classical_variant(variant)
 
 
 def normalize_classical_variant(raw: object) -> str:
@@ -386,6 +412,8 @@ __all__ = [
     "CLASSICAL_PARAGRAPH_MARKER_RE",
     "CLASSICAL_CHINESE_CATEGORY_IDS",
     "CLASSICAL_INTERLEAVED_CATEGORY",
+    "BUDDHIST_SCRIPTURE_STORY_CATEGORY",
+    "BUDDHIST_SCRIPTURE_VARIANT",
     "build_classical_dictionary_context",
     "build_classical_marked_source",
     "build_classical_prompt_source",
@@ -394,6 +422,7 @@ __all__ = [
     "classical_paragraph_marker",
     "classical_source_lines",
     "classical_variant_rules",
+    "classical_variant_for_category",
     "classical_final_title",
     "get_classical_variant_meta",
     "normalize_classical_variant",

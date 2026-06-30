@@ -243,13 +243,6 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
-        "id": "finance_technology_advice",
-        "label": "财经科技（观点建议版）",
-        "core_feature": "在财经科技分析里形成明确观点，并给出有条件、可执行的普通人建议",
-        "directions": "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人建议、信息判断",
-        "prompt_status": "ready",
-    },
-    {
         "id": "finance_technology_recommendation",
         "label": "财经科技（建议版）",
         "core_feature": "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
@@ -317,6 +310,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "古文白话",
         "core_feature": "文言文直译与意译并重",
         "directions": "古文、家书、碑铭、史传、经典段落白话化",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "buddhist_scripture_story",
+        "label": "佛经白话",
+        "core_feature": "把佛经经文译成自然连贯的白话故事稿，忠于原文讲述和道理",
+        "directions": "佛经、佛陀说法、弟子问答、因缘譬喻、经典段落白话化",
         "prompt_status": "ready",
     },
     {
@@ -579,54 +579,6 @@ FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构�
 3. @目录
 4. @导言
 5. @正文
-
-输入：
-[参考资料全文]
-{raw_text}
-
-请直接输出完整书稿。"""
-
-
-FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文写作者。
-
-任务：参考我提供的资料，直接生成一篇完整的深度长文。
-
-输出要求：
-- 严格按以下顺序输出，不得打乱：
-  1. @最终书名
-  2. @最终简介
-  3. @目录
-  4. @导言
-  5. @正文
-- 导言必须放在目录之后、正文之前，长度 100~400 字，负责说明全书问题意识、阅读入口和核心判断，不要写成客套前言，不要和正文太相似。
-- 正文必须紧接在导言之后，不要插入额外说明。
-- 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程。
-
-""" + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
-
-""" + FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT + """
-
-""" + FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT + """
-
-内容要求：
-- 我提供的文章、资料或文稿，只能作为“参照材料”，不能作为逐段改写的底稿。
-- 你需要先从参照材料中提炼出最值得大众关心的核心问题、现实矛盾和基本判断。
-- 写作内容不需要大包大揽，不必把这个话题相关的所有方面都写全。重点是抓住1个主矛盾和2—4个核心问题，把它们讲清楚、讲透彻。
-- 这是观点建议版，不是资料汇编版。所有资料、数据、公司动作、政策、技术事件和案例，都必须服务于一个明确判断或一条具体建议；不能为了显示材料多而罗列资料。
-- 每一章只能承担一个主要判断。先把判断说清楚，再选择最必要的材料支撑它；同一材料、同一案例、同一数据、同一公司动作不要在不同章节反复出现。
-- 如果某段资料不能回答“它证明了什么、改变了谁的判断、带来什么行动边界”，就不要写入正文。宁可少写，也不要堆无用材料。
-- 对同一事实的解释只能推进一次：背景、机制、影响、建议各自承担不同功能，不能把同一层意思换几种说法重复展开。
-- 写作要像给小白讲财经·科技内容一样，先把背景讲明白，再推进分析；不要一上来堆术语、数据、机构名称和结论；不要写成研究报告。
-- 每个重要概念、事件、政策、技术、公司动作或市场变化，都要先说明它是什么，再说明它为什么重要，最后说明它可能影响谁、影响什么。
-- 不要做具体投资预测，不要下结论式判断涨跌。
-- 可以做宏观分析和条件推演。
-- 章节之间要有节奏变化，不要像一套分析模板从头写到底。
-- 观点要有深度和洞察力：不只描述发生了什么，还要解释背后的结构、利益、代价和选择。
-- 建议小节不能重复前文材料堆砌，也不能泛泛说“保持理性”“关注风险”。必须把前文分析转成有条件、有边界、能执行的判断，例如适用于谁、不适用于谁、先看什么信号、避免什么误判。
-- 不要空话，不要学术腔，不要翻译腔，不要做心理和情绪刻画，不要使用比喻修辞。
-- 不要使用“不是……而是……”句式，不要使用破折号——
-- 所有书名、目录标题和正文章节标题都不要出现冒号。
-- 正文最后一章不要命名为“结语”。
 
 输入：
 [参考资料全文]
@@ -1796,9 +1748,6 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "finance_technology": _prompt_set(
         FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT,
     ),
-    "finance_technology_advice": _prompt_set(
-        FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT,
-    ),
     "finance_technology_recommendation": _prompt_set(
         FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -1827,6 +1776,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         SUSPENSE_MICRO_REASONING_FULL_BOOK_WRITER_PROMPT,
     ),
     "classical_chinese": _prompt_set(
+        CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT,
+        polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
+        refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
+    ),
+    "buddhist_scripture_story": _prompt_set(
         CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT,
         polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
         refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
@@ -1882,16 +1837,6 @@ CATEGORY_ALIASES: dict[str, str] = {
     "财经": "finance_technology",
     "财经科技": "finance_technology",
     "财经·科技": "finance_technology",
-    "finance_advice": "finance_technology_advice",
-    "finance_tech_advice": "finance_technology_advice",
-    "finance_technology_view_advice": "finance_technology_advice",
-    "财经观点建议版": "finance_technology_advice",
-    "财经科技观点建议版": "finance_technology_advice",
-    "财经科技（观点建议版）": "finance_technology_advice",
-    "财经科技(观点建议版)": "finance_technology_advice",
-    "财经·科技观点建议版": "finance_technology_advice",
-    "财经·科技（观点建议版）": "finance_technology_advice",
-    "财经·科技(观点建议版)": "finance_technology_advice",
     "finance_technology_recommendation": "finance_technology_recommendation",
     "finance_tech_recommendation": "finance_technology_recommendation",
     "finance_technology_suggestion": "finance_technology_recommendation",
@@ -1917,6 +1862,11 @@ CATEGORY_ALIASES: dict[str, str] = {
     "guwen": "classical_chinese",
     "ancient_chinese": "classical_chinese",
     "文言文": "classical_chinese",
+    "佛经": "buddhist_scripture_story",
+    "佛经白话": "buddhist_scripture_story",
+    "佛经白话故事版": "buddhist_scripture_story",
+    "buddhist_scripture": "buddhist_scripture_story",
+    "buddhist_scripture_story": "buddhist_scripture_story",
     "古文白话原文翻译穿插版": "classical_chinese_interleaved",
     "古文白话（原文翻译穿插版）": "classical_chinese_interleaved",
     "古文白话(原文翻译穿插版)": "classical_chinese_interleaved",
@@ -1973,7 +1923,6 @@ __all__ = [
     "CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT",
     "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
-    "FINANCE_TECHNOLOGY_ADVICE_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",
     "FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT",
