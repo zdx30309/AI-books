@@ -1061,7 +1061,8 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
 
 def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     meta = get_category_meta("buddhist_scripture_story")
-    prompt = get_prompts("buddhist_scripture_story")["full_book_writer"]
+    prompts = get_prompts("buddhist_scripture_story")
+    prompt = prompts["full_book_writer"]
     task_source = build_buddhist_scripture_story_source(
         "如是我闻。一时佛在舍卫国祇树给孤独园，与大比丘众俱。",
         original_title="金刚经",
@@ -1070,19 +1071,28 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
 
     assert meta["label"] == "佛经白话"
     assert "最终书名必须逐字使用：金刚经（白话版）" in rendered
-    assert "佛经白话故事稿编辑" in rendered
-    assert "请先在内部理解经文白话含义，再依据这层白话含义改写成一篇连贯、平稳、有故事感的白话稿" in rendered
+    assert "佛经小故事改写作者" in rendered
+    assert "不是翻译佛经，也不是写佛经讲义" in rendered
+    assert "先把佛经原文里的“事件轴、观照过程、问答关系、说法推进、譬喻和收束”提炼出来" in rendered
+    assert "成稿必须像小故事：有开端，有推进，有转折或层层深入，有收束" in rendered
     assert "不是逐段直译" in rendered
     assert "不要按原文段落一一对应输出" in rendered
     assert "不要保留 P 编号" in rendered
     assert "不要写成“原文一句、翻译一句”的资料稿" in rendered
     assert "故事感必须来自原文已有的问答、动作、譬喻、说法顺序和人物关系" in rendered
+    assert "第一章必须从原文已有的动作、观照、提问或说法关系进入" in rendered
+    assert "正确方向是“观自在菩萨深行般若时，先照见五蕴皆空" in rendered
+    assert "错误方向是“逐句解释五蕴、色空、无明、老死分别是什么意思”" in rendered
     assert "改动幅度不要太大" in rendered
     assert "不要编造原文没有的人物、地点、事件、对白、神通、因果细节、结局或教义解释" in rendered
     assert "白话正文必须按原文段落一一对应输出" not in rendered
     assert "【P0001】" not in rendered
     assert "原文结构清单" not in rendered
     assert "古文白话大板块" not in rendered
+    assert "输出字数必须与原文字数基本一致" not in prompts["gemini_fast_polish"]
+    assert "输出字数必须与原文字数基本一致" not in prompts["gemini_fast_refine"]
+    assert "不得把故事稿润成术语解释稿或白话讲义" in prompts["gemini_fast_polish"]
+    assert "不得把故事稿改成术语解释稿或白话讲义" in prompts["gemini_fast_refine"]
 
 
 def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
