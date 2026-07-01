@@ -107,6 +107,7 @@ _PUA_MARKER_RE = re.compile(r"\{\[[0-9a-fA-F]+\]\}")
 _LINK_MARK_RE = re.compile(r"[`~]")
 CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
+BUDDHIST_SCRIPTURE_DEFAULT_TITLE = "佛经白话"
 CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
 BUDDHIST_SCRIPTURE_STORY_CATEGORY = "buddhist_scripture_story"
 BUDDHIST_SCRIPTURE_VARIANT = "buddhist_story"
@@ -146,6 +147,15 @@ def classical_final_title(original_title: object) -> str:
     title = re.sub(r"\s+", " ", str(original_title or "")).strip(" \t\r\n《》")
     if not title:
         title = "古文白话"
+    if title.endswith(_TITLE_SUFFIX):
+        return title
+    return f"{title}{_TITLE_SUFFIX}"
+
+
+def buddhist_scripture_final_title(original_title: object = None) -> str:
+    title = re.sub(r"\s+", " ", str(original_title or "")).strip(" \t\r\n《》")
+    if not title:
+        title = BUDDHIST_SCRIPTURE_DEFAULT_TITLE
     if title.endswith(_TITLE_SUFFIX):
         return title
     return f"{title}{_TITLE_SUFFIX}"
@@ -407,6 +417,42 @@ def build_classical_prompt_source(
 {marked_source}"""
 
 
+def build_buddhist_scripture_story_source(
+    raw_text: str,
+    *,
+    original_title: object = None,
+) -> str:
+    final_title = buddhist_scripture_final_title(original_title)
+    source_text = (raw_text or "").strip()
+    return f"""【佛经白话故事任务包】
+本任务不是逐段直译，也不是佛经注释、讲义、心灵鸡汤或现代心理学文章。请先在内部理解经文白话含义，再依据这层白话含义改写成一篇连贯、平稳、有故事感的白话稿；最终只输出成稿，不输出逐句翻译过程。
+
+【书名硬规则】
+- 最终书名必须逐字使用：{final_title}
+- 不要生成新书名，不要改写原书名，不要扩写、缩短或润色书名；只允许在原书名后保留“（白话版）”。
+
+【核心改写规则】
+- 先理解经文讲了什么，再把原文已有的场景、人物、问答、动作、譬喻、因缘和说法顺序串成读者能顺着读下去的小故事。
+- 故事感必须来自原文已有的问答、动作、譬喻、说法顺序和人物关系，不得靠新增剧情制造戏剧性。
+- 改动幅度不要太大，只做必要的语序调整、指代补足、衔接润色和叙事顺滑处理。
+- 不要按原文段落一一对应输出，不要保留内部 P 编号，不要把正文写成“原文一句、翻译一句”的资料稿。
+- 不要编造原文没有的人物、地点、事件、对白、神通、因果细节、结局或教义解释。
+- 可以把经文里的问答、譬喻、动作和说法过程写得更顺，但必须契合原文讲述的事情和道理。
+- 遇到佛教术语、名号、地名、人名和核心教义，不确定时保守处理，可保留原词并用上下文自然解释，不要乱翻。
+- 如果原文主要是偈颂或教义阐述，可以写成平稳的说法过程；只补足必要承接，不虚构听众反应、人物心理或额外场景。
+
+【输出形态】
+- 严格按以下顺序输出：@最终书名、@最终简介、@目录、@导言、@正文。
+- @最终简介写得像认真图书的封底简介，克制、清楚、有阅读质感，不要营销口号。
+- @导言简短交代经文的进入方式和核心意味，不要提前总结成教义论文。
+- @正文可以按原文内容自然分成 1-6 个章节；每章像一个清楚的故事片段或说法过程，章节标题要短。
+- 正文要连贯、有故事感，但不要改成小说爽文、玄幻故事、宗教宣传口号或现代励志文。
+- 不要加粗，不要代码块，不要元信息，不要解释过程；直接输出完整成稿。
+
+【佛经原文】
+{source_text}"""
+
+
 __all__ = [
     "CLASSICAL_VARIANT_OPTIONS",
     "CLASSICAL_PARAGRAPH_MARKER_RE",
@@ -414,6 +460,9 @@ __all__ = [
     "CLASSICAL_INTERLEAVED_CATEGORY",
     "BUDDHIST_SCRIPTURE_STORY_CATEGORY",
     "BUDDHIST_SCRIPTURE_VARIANT",
+    "BUDDHIST_SCRIPTURE_DEFAULT_TITLE",
+    "buddhist_scripture_final_title",
+    "build_buddhist_scripture_story_source",
     "build_classical_dictionary_context",
     "build_classical_marked_source",
     "build_classical_prompt_source",

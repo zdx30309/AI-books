@@ -25,10 +25,9 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
-    BUDDHIST_SCRIPTURE_VARIANT,
+    build_buddhist_scripture_story_source,
     build_classical_prompt_source,
     classical_paragraph_marker,
-    classical_variant_for_category,
     get_classical_variant_meta,
     strip_classical_paragraph_markers,
 )
@@ -76,10 +75,7 @@ def test_generate_full_book_routes_writer_prompt_by_category(
     elif category == "classical_chinese_interleaved":
         expected_raw_text = build_classical_prompt_source(raw_text, interleaved=True)
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
-        expected_raw_text = build_classical_prompt_source(
-            raw_text,
-            variant=BUDDHIST_SCRIPTURE_VARIANT,
-        )
+        expected_raw_text = build_buddhist_scripture_story_source(raw_text)
     expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
@@ -1063,25 +1059,82 @@ def test_classical_chinese_has_dedicated_translation_direction() -> None:
     assert get_classical_variant_meta("武侠小说爽读版")["id"] == "wuxia_web"
 
 
-def test_buddhist_scripture_story_uses_classical_story_translation_rules() -> None:
+def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     meta = get_category_meta("buddhist_scripture_story")
     prompt = get_prompts("buddhist_scripture_story")["full_book_writer"]
-    task_source = build_classical_prompt_source(
+    task_source = build_buddhist_scripture_story_source(
         "如是我闻。一时佛在舍卫国祇树给孤独园，与大比丘众俱。",
-        variant=classical_variant_for_category("buddhist_scripture_story"),
         original_title="金刚经",
     )
     rendered = prompt.format(raw_text=task_source)
 
     assert meta["label"] == "佛经白话"
-    assert classical_variant_for_category("buddhist_scripture_story") == "buddhist_story"
     assert "最终书名必须逐字使用：金刚经（白话版）" in rendered
-    assert "佛经白话故事版" in rendered
-    assert "整体读感像一个平稳讲述的故事" in rendered
+    assert "佛经白话故事稿编辑" in rendered
+    assert "请先在内部理解经文白话含义，再依据这层白话含义改写成一篇连贯、平稳、有故事感的白话稿" in rendered
+    assert "不是逐段直译" in rendered
+    assert "不要按原文段落一一对应输出" in rendered
+    assert "不要保留 P 编号" in rendered
+    assert "不要写成“原文一句、翻译一句”的资料稿" in rendered
+    assert "故事感必须来自原文已有的问答、动作、譬喻、说法顺序和人物关系" in rendered
     assert "改动幅度不要太大" in rendered
     assert "不要编造原文没有的人物、地点、事件、对白、神通、因果细节、结局或教义解释" in rendered
-    assert "必须契合原文讲述的事情和道理" in rendered
-    assert "不要改成小说爽文、玄幻故事、心灵鸡汤、现代心理学文章或宗教宣传口号" in rendered
+    assert "白话正文必须按原文段落一一对应输出" not in rendered
+    assert "【P0001】" not in rendered
+    assert "原文结构清单" not in rendered
+    assert "古文白话大板块" not in rendered
+
+
+def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "如是我闻。一时佛在舍卫国祇树给孤独园，与大比丘众俱。"
+    writer_prompts: list[str] = []
+    writer_max_tokens: list[object] = []
+    expected_source = build_buddhist_scripture_story_source(raw_text, original_title="金刚经")
+    expected_prompt = get_prompts("buddhist_scripture_story")["full_book_writer"].format(
+        raw_text=expected_source
+    )
+    manuscript = """@最终书名
+模型乱起的名字
+@最终简介
+测试简介
+@目录
+1. 林中说法
+@导言
+测试导言。
+@正文
+@1. 林中说法
+那一天，佛在舍卫国祇树给孤独园停留，身边有许多比丘一起听他说法。
+"""
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        writer_max_tokens.append(kwargs.get("max_output_tokens"))
+        return manuscript
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="buddhist_scripture_story",
+            output_dir=tmp_path / "buddhist",
+            classical_original_title="金刚经",
+        )
+    )
+
+    assert writer_prompts == [expected_prompt]
+    assert writer_max_tokens == [None]
+    assert "@最终书名\n金刚经（白话版）" in result
+    assert "那一天，佛在舍卫国祇树给孤独园停留" in result
+    assert "白话正文必须按原文段落一一对应输出" not in writer_prompts[0]
+    assert "【P0001】" not in writer_prompts[0]
+    assert "原文结构清单" not in writer_prompts[0]
 
 
 def test_classical_chinese_interleaved_prompt_preserves_original_and_translation() -> None:

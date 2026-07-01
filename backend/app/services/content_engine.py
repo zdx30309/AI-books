@@ -29,6 +29,8 @@ from app.services.classical_chinese import (
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
+    buddhist_scripture_final_title,
+    build_buddhist_scripture_story_source,
     build_classical_prompt_source,
     build_classical_structure_checklist,
     classical_expected_paragraph_count,
@@ -109,7 +111,11 @@ def _is_finance_longform_category(category: str | None) -> bool:
 
 def _is_classical_chinese_category(category: str | None) -> bool:
     try:
-        return normalize_category(category or "") in CLASSICAL_CHINESE_CATEGORY_IDS
+        normalized = normalize_category(category or "")
+        return (
+            normalized in CLASSICAL_CHINESE_CATEGORY_IDS
+            and normalized != BUDDHIST_SCRIPTURE_STORY_CATEGORY
+        )
     except Exception:
         return False
 
@@ -1521,7 +1527,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     front = text[: match.end()]
     body = text[match.end() :]
     front_lines = [line.rstrip() for line in front.split("\n")]
-    if normalized in CLASSICAL_CHINESE_CATEGORY_IDS:
+    if normalized in CLASSICAL_CHINESE_CATEGORY_IDS and normalized != BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         front_lines = [strip_classical_paragraph_markers(line) for line in front_lines]
         body_lines = _clean_classical_body_lines(body)
         result = "\n".join(front_lines + body_lines).strip()
@@ -4239,10 +4245,18 @@ async def generate_full_book(
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
-    is_classical_category = normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
+    is_buddhist_scripture_story = normalized_category == BUDDHIST_SCRIPTURE_STORY_CATEGORY
+    is_classical_category = (
+        normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
+        and not is_buddhist_scripture_story
+    )
     is_classical_interleaved = normalized_category == CLASSICAL_INTERLEAVED_CATEGORY
-    if normalized_category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
+    if is_buddhist_scripture_story:
         classical_variant = classical_variant_for_category(normalized_category, classical_variant)
+        writer_input_text = build_buddhist_scripture_story_source(
+            writer_input_text,
+            original_title=classical_original_title,
+        )
     if is_classical_category:
         classical_expected_count = classical_expected_paragraph_count(writer_input_text)
         writer_input_text = build_classical_prompt_source(
@@ -4596,6 +4610,11 @@ async def generate_full_book(
 
     if is_classical_category:
         final_markdown = enforce_classical_title(final_markdown, classical_original_title)
+    elif is_buddhist_scripture_story:
+        final_markdown = enforce_classical_title(
+            final_markdown,
+            buddhist_scripture_final_title(classical_original_title),
+        )
     final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
     _dump_stage(output_dir, "04_format.md", final_markdown)
 

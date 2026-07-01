@@ -42,7 +42,11 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
     validate_comic_phrases,
 )
-from app.services.classical_chinese import CLASSICAL_CHINESE_CATEGORY_IDS, get_classical_variant_meta
+from app.services.classical_chinese import (
+    BUDDHIST_SCRIPTURE_STORY_CATEGORY,
+    CLASSICAL_CHINESE_CATEGORY_IDS,
+    get_classical_variant_meta,
+)
 from app.schemas.chapter import (
     ChapterResponse,
     ChapterUpdateRequest,
@@ -1779,7 +1783,10 @@ def _markdown_to_docx(
     paragraphs: list[str] = []
     image_entries: list[tuple[str, Path, str]] = []
     normalized_category = _docx_category(category)
-    if normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS:
+    if (
+        normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
+        and normalized_category != BUDDHIST_SCRIPTURE_STORY_CATEGORY
+    ):
         docx_lines = _classical_chinese_docx_lines(markdown, category=normalized_category)
     else:
         docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
