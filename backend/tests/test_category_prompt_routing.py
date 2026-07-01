@@ -354,6 +354,11 @@ def test_longform_variant_categories_use_dedicated_prompts() -> None:
             "让读者从人物的选择和后果里，看见人生运行中的因果关系",
         ),
         (
+            "wisdom_stories_historical",
+            "故事·智慧类（历史故事版）",
+            "一个人如何在具体时代里做出选择",
+        ),
+        (
             "emotion_relationship_unique_view",
             "心理情感（情感·关系）（独特观点版）",
             "让最终成稿与原视频文稿在结构、案例、表达和推进方式上都有明显区别",
@@ -387,6 +392,8 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("人生哲学困境自救版") == "life_philosophy_self_rescue"
     assert normalize_category("科普读物认知升级版") == "popular_science_cognitive_upgrade"
     assert normalize_category("故事智慧因果哲思版") == "wisdom_stories_causal_philosophy"
+    assert normalize_category("故事智慧类历史故事版") == "wisdom_stories_historical"
+    assert normalize_category("故事·智慧类（历史故事版）") == "wisdom_stories_historical"
     assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
     assert normalize_category("古文白话（原文翻译穿插版）") == "classical_chinese_interleaved"
@@ -962,16 +969,17 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
             assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
                 "final_book_format"
             ].find("{text}")
-            assert "不得出现正文内小节标题" in prompts["final_book_format"]
+            assert "`###短标题`" in prompts["final_book_format"]
+            assert "不得出现“短标题，正文”" in prompts["final_book_format"]
             assert "正文内小节标题，标题正文必须限制" not in prompts["final_book_format"]
 
 
 def test_section_title_rules_forbid_body_subheadings() -> None:
     prompt = get_prompts("social_science")["full_book_writer"]
 
-    assert "正文只允许使用正式章节标题" in prompt
-    assert "不得在章节内部再生成小节标题" in prompt
-    assert "Markdown 粗体标题" in prompt
+    assert "正文正式章节标题只能使用" in prompt
+    assert "`###短标题`" in prompt
+    assert "不得写成“短标题，正文”" in prompt
 
 
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:

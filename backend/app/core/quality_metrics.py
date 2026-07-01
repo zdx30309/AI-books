@@ -436,6 +436,11 @@ def _looks_like_naked_subheading(line: str) -> bool:
     return True
 
 
+def _is_allowed_internal_subheading(line: str) -> bool:
+    match = re.match(r"^###\s*([^#].*?)\s*$", line.strip())
+    return bool(match and _looks_like_naked_subheading(match.group(1)))
+
+
 def _detect_format_noise(text: str) -> dict[str, list[str]]:
     results: dict[str, list[str]] = {}
     in_body = False
@@ -450,6 +455,8 @@ def _detect_format_noise(text: str) -> dict[str, list[str]]:
         if not in_body:
             continue
         if _BODY_CHAPTER_RE.match(line) or re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line):
+            continue
+        if _is_allowed_internal_subheading(line):
             continue
         if "**" in line or "__" in line:
             _add_noise_hit(results, "Markdown 粗体残留", line)

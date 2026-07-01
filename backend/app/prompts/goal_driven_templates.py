@@ -17,6 +17,7 @@ from app.prompts.longform_variant_prompts import (
     POPULAR_SCIENCE_COGNITIVE_UPGRADE_FULL_BOOK_WRITER_PROMPT,
     SOCIAL_SCIENCE_CORE_CONFLICT_FULL_BOOK_WRITER_PROMPT,
     WISDOM_STORIES_CAUSAL_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
+    WISDOM_STORIES_HISTORICAL_FULL_BOOK_WRITER_PROMPT,
 )
 
 PROMPT_DIR = Path(__file__).resolve().parent
@@ -168,13 +169,13 @@ FINAL_BOOK_FORMAT_PROMPT = """你是格式整理器，负责把书稿整理成�
    - 正文内每一个章节标题（形如「@1. xxx」「@2. xxx」）
 3. 标题清理：所有书名、目录标题、导言标题、正文章节标题中，不得出现中文冒号或英文冒号；如果标题中有冒号，直接删掉冒号或改成自然停顿。
 4. 结尾标题清理：正文最后一章不得命名为“结语”，也不得出现“结语”两个字作为章节标题；如输入有“结语”，改成一个普通章节标题，但不要新增内容。
-5. 标题优化：只允许优化 @目录 和 @正文 下的正式章节标题（@N. 章节名）。正文段落内部不得新增、保留或发明小节标题；如果输入里有正文内伪小标题，只能删除其 Markdown/编号/加粗/@ 等格式痕迹，并把可读内容作为普通正文处理，不得新增标题层级。正式章节标题正文必须限制在 10 个字以内，必须清楚、简洁地描述本章主要内容；禁止使用“把”字句、“被”字句，以及“让……”“真正该……”“……这件事……”等绕口或复杂句式。只允许改标题，不得改写正文。
+5. 标题优化：只允许优化 @目录 和 @正文 下的正式章节标题（@N. 章节名）。正文段落内部如果出现伪小标题、裸短标题、编号小标题、Markdown 粗体标题、# 标题或裸 @ 标题，必须统一整理成单独一行的 `###短标题`；如果原文写成“短标题，正文”“短标题：正文”“@短标题：正文”或“**短标题**正文”，必须拆成 `###短标题` 和正文两行，不得让小标题像正文一样粘在段落开头。正式章节标题正文必须限制在 10 个字以内，必须清楚、简洁地描述本章主要内容；禁止使用“把”字句、“被”字句，以及“让……”“真正该……”“……这件事……”等绕口或复杂句式。只允许改标题和小标题格式，不得改写正文。
 6. 导言重复清理：如果 @正文 开头与 @导言 完全重复或高度重合，保留 @导言，只删除 @正文 开头的重复段落；不得删除后续正文，不得因此改写正文。
 
 【强制要求】
 - 必须保持五节顺序：最终书名 → 最终简介 → 目录 → 导言 → 正文。不得调换顺序，不得删除任何一节。
-- 输出中绝对不得出现 # 符号（无论是 #、##、### 还是 ####）。如果输入文本里出现任何 # 标题符号，必须删除该 # 符号，仅保留标题文字本身，并按上述规则加 @。
-- 正文只允许出现五个前置结构标记和正式章节标题 @N. 章节名；不得出现正文内小节标题、裸编号小标题、Markdown 粗体标题、反引号标题或裸 @ 批注。
+- 除正文内部规范小标题 `###短标题` 外，输出中不得出现任何 # 符号；如果输入文本里出现 #、##、#### 等标题符号，必须统一改成 `###短标题`，且标题必须单独占一行。
+- 正文只允许出现五个前置结构标记、正式章节标题 @N. 章节名，以及单独成行的内部小标题 `###短标题`；不得出现“短标题，正文”“短标题：正文”、裸编号小标题、Markdown 粗体标题、反引号标题或裸 @ 批注。
 - 不得改写、增删、合并、拆分、改序、重述任何正文内容。
 - 不得加入解释、前言、总结、过渡语或任何新增内容。
 - 保留原文的段落、空行、列表结构。
@@ -261,6 +262,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "故事·智慧（因果哲思版）",
         "core_feature": "从人物选择和后果里写出因果关系、命运回望与克制的人生警醒",
         "directions": "因果、命运、执念、善恶、误判、得失、报应、无常、选择与代价",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "wisdom_stories_historical",
+        "label": "故事·智慧类（历史故事版）",
+        "core_feature": "以真实历史事件、人物选择和时代规则为叙事基础，写出历史张力与人生余味",
+        "directions": "历史故事、人物轶事、权力、功名、忠义、野心、误判、进退、得失、盛衰、乱世选择",
         "prompt_status": "ready",
     },
     {
@@ -651,7 +659,7 @@ WISDOM_STORIES_FULL_BOOK_WRITER_PROMPT = """你是一名擅长历史小故事、
 - 导言要带钩子：第一段必须从一个具体场面、一个反常举动、一句耐人寻味的话或一个历史小悬念切入；后面再打开阅读视角，不要一上来讲大道理。
 - 导言排版要求：标题独立一行，下面 2~4 个自然段；段落之间可以保留一个空行。
 - 正文必须紧接在导言之后，不要插入额外说明。
-- 正文只允许使用 @N. 章节名作为正式章节标题；章节内部不得再安排小标题、编号小标题或 Markdown 粗体标题。
+- 正文正式章节标题只能使用 @N. 章节名；章节内部如果确实需要小标题，只能写成单独一行的 ###短标题，不能写成“短标题，正文”、编号小标题、Markdown 粗体标题或裸 @ 标题。
 - 只输出成稿，不要解释，不要代码块，不要元信息，不要分析过程。
 
 """ + BOOK_TITLE_AND_DESCRIPTION_PROMPT + """
@@ -1550,18 +1558,19 @@ WRITER_PUNCTUATION_USAGE_PROMPT = """【标点符号专项要求】
 
 
 SECTION_TITLE_REQUIREMENT_PROMPT = """【小节标题全局要求】
-- 正文只允许使用正式章节标题：@N. 章节名。不得在章节内部再生成小节标题、裸短标题、编号小标题、Markdown 粗体标题、反引号标题或裸 @ 批注。
+- 正文正式章节标题只能使用：@N. 章节名。
+- 正文内部如果确实需要小标题，只允许统一写成单独一行的 `###短标题`；不得写成“短标题，正文”“短标题：正文”“@短标题”“**短标题**正文”、裸短标题、编号小标题、反引号标题或裸 @ 批注。
 - 所有目录标题和正文章节标题都必须清楚、简洁地描述本章主要内容。
 - 标题正文限制在 10 个字以内；确有必要时可保留必要引号、数字或专名，但不得写成长句。
 - 禁止使用“把”字句、“被”字句，以及“让……”“真正该……”“……这件事……”等绕口或复杂句式。
 - 优先使用短名词短语或清晰问题句，例如：“趁热吃”的风险、养胃可以吃辣椒吗、护胃的用药习惯、胃部不适的罪魁祸首、正确面对幽门螺杆菌。
-- 不得输出 **标题**正文、# 标题、1. 小标题、@这几句话…… 这类排版污染；如果输入中已有，只能去掉格式痕迹并保留必要正文。"""
+- 不得输出 **标题**正文、# 标题、1. 小标题、@这几句话…… 这类排版污染；如果输入中已有，必须把真实小标题改成 `###短标题`，把批注类内容删除，并保留必要正文。"""
 
 
 SECTION_TITLE_REFINE_GUARD_PROMPT = """【小节标题兜底要求】
 - 章节数量、章节顺序和正文内容必须保留。
 - 如果目录标题或正文章节标题明显超过 10 个字，或使用“把”字句、“被”字句等复杂句式，只允许在不改变章节含义的前提下短化标题。
-- 正文内部不得新增或保留小节标题；遇到正文内伪小标题、裸编号、Markdown 粗体、#、反引号或裸 @ 批注，只能去掉格式痕迹并作为普通正文处理。
+- 正文内部如果出现小节标题，只允许保留为单独一行的 `###短标题`；遇到正文内伪小标题、裸编号、Markdown 粗体、#、反引号或裸 @ 标题，必须统一成 `###短标题`，不得变成“短标题，正文”。
 - 标题要清楚、简洁地描述本节主要内容；正文不得因此被删减、合并、改序或重写。"""
 
 
@@ -1856,6 +1865,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "wisdom_stories_causal_philosophy": _prompt_set(
         WISDOM_STORIES_CAUSAL_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT,
     ),
+    "wisdom_stories_historical": _prompt_set(
+        WISDOM_STORIES_HISTORICAL_FULL_BOOK_WRITER_PROMPT,
+    ),
     "biography": _prompt_set(
         BIOGRAPHY_FULL_BOOK_WRITER_PROMPT,
         polish=BIOGRAPHY_GEMINI_FAST_POLISH_PROMPT,
@@ -1949,6 +1961,14 @@ CATEGORY_ALIASES: dict[str, str] = {
     "story_wisdom_causal_philosophy": "wisdom_stories_causal_philosophy",
     "故事智慧因果哲思版": "wisdom_stories_causal_philosophy",
     "小故事智慧因果哲思版": "wisdom_stories_causal_philosophy",
+    "wisdom_stories_historical": "wisdom_stories_historical",
+    "story_wisdom_historical": "wisdom_stories_historical",
+    "historical_wisdom_stories": "wisdom_stories_historical",
+    "故事智慧历史故事版": "wisdom_stories_historical",
+    "故事智慧类历史故事版": "wisdom_stories_historical",
+    "故事·智慧类（历史故事版）": "wisdom_stories_historical",
+    "故事·智慧类(历史故事版)": "wisdom_stories_historical",
+    "历史故事版": "wisdom_stories_historical",
     "emotion_unique_view": "emotion_relationship_unique_view",
     "emotion_relationship_unique_perspective": "emotion_relationship_unique_view",
     "情感关系独特观点版": "emotion_relationship_unique_view",
@@ -2022,6 +2042,7 @@ __all__ = [
     "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT",
+    "WISDOM_STORIES_HISTORICAL_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT",
     "FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT",
     "GEMINI_FAST_POLISH_PROMPT",

@@ -102,6 +102,21 @@ def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None
     assert report.total_violations >= 6
 
 
+def test_format_noise_allows_standard_internal_subheading() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 正式章节
+###扎堆竞争的代价
+临床资源就那么多。
+"""
+
+    report = measure_quality(markdown)
+
+    assert "# 标题残留" not in report.format_noise_hits
+    assert "裸短小标题" not in report.format_noise_hits
+
+
 def test_life_philosophy_centered_markers_are_not_counted_as_double_excl_noise() -> None:
     markdown = """！！！@三个备选书名
 测试书

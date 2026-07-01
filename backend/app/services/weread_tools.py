@@ -25,10 +25,11 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 _PROJECT_INDEX_CACHE: list[dict[str, Any]] | None = None
-_EXCEL_TITLE_HEADERS = ("书名", "标题", "图书", "作品", "项目名称")
-_EXCEL_AUTHOR_HEADERS = ("原著作者", "原始作者", "作者")
-_EXCEL_URL_HEADERS = ("微信读书链接", "微信链接", "来源链接", "链接", "url")
+_EXCEL_TITLE_HEADERS = ("书名", "原始书名", "标题", "原始标题", "图书", "作品", "项目名称")
+_EXCEL_AUTHOR_HEADERS = ("原著作者", "原始作者", "作者", "匹配作者")
+_EXCEL_URL_HEADERS = ("微信读书链接", "微信链接", "来源链接", "原始链接", "匹配链接", "链接", "url")
 _EXCEL_NEW_TITLE_HEADERS = ("新书名/上架后改名", "新书名", "上架后改名")
+_EXCEL_MATCHED_TITLE_HEADERS = ("匹配书名", "匹配标题", "匹配图书")
 _NON_BOOK_TITLE_RE = re.compile(r"(?:表格|书单|项目进度|进度汇总|数据汇总|汇总表)")
 
 
@@ -156,9 +157,11 @@ def parse_catalog(text: str) -> list[CatalogBook]:
         title = ""
         author: str | None = None
         if header and row:
-            title = _value_from_header(row, header, ("书名", "标题", "title"))
-            author = _value_from_header(row, header, ("作者", "原始作者", "原著作者", "author")) or None
-            source_url = source_url or _value_from_header(row, header, ("微信读书链接", "来源链接", "链接", "url")) or None
+            title = _value_from_header(row, header, (*_EXCEL_TITLE_HEADERS, "title"))
+            if not title:
+                title = _value_from_header(row, header, (*_EXCEL_NEW_TITLE_HEADERS, *_EXCEL_MATCHED_TITLE_HEADERS))
+            author = _value_from_header(row, header, (*_EXCEL_AUTHOR_HEADERS, "author")) or None
+            source_url = source_url or _value_from_header(row, header, _EXCEL_URL_HEADERS) or None
 
         bracket_match = re.search(r"《([^》]+)》", clean_line)
         if not title and bracket_match:
@@ -217,6 +220,8 @@ def parse_catalog_workbook(content: bytes) -> list[CatalogBook]:
             title = _value_from_header(row, header, _EXCEL_TITLE_HEADERS)
             if not title:
                 title = _value_from_header(row, header, _EXCEL_NEW_TITLE_HEADERS)
+            if not title:
+                title = _value_from_header(row, header, _EXCEL_MATCHED_TITLE_HEADERS)
             author = _value_from_header(row, header, _EXCEL_AUTHOR_HEADERS) or None
             source_url = _value_from_header(row, header, _EXCEL_URL_HEADERS) or None
             source_url = _extract_first_url(source_url)
@@ -263,7 +268,10 @@ def _excel_cell_text(value: Any) -> str:
 
 def _looks_like_excel_catalog_header(row: list[str]) -> bool:
     normalized = [normalize_title(cell) for cell in row if cell]
-    has_title = any(normalize_title(name) in normalized for name in (*_EXCEL_TITLE_HEADERS, *_EXCEL_NEW_TITLE_HEADERS))
+    has_title = any(
+        normalize_title(name) in normalized
+        for name in (*_EXCEL_TITLE_HEADERS, *_EXCEL_NEW_TITLE_HEADERS, *_EXCEL_MATCHED_TITLE_HEADERS)
+    )
     has_context = any(
         normalize_title(name) in normalized
         for name in (
@@ -275,6 +283,10 @@ def _looks_like_excel_catalog_header(row: list[str]) -> bool:
             "简介",
             "项目状态",
             "推荐值",
+            "版权方（公司名字）",
+            "版权方",
+            "阅读人数",
+            "评论数量",
             "阅读",
         )
     )
@@ -305,6 +317,8 @@ def _looks_like_non_book_excel_row(title: str, author: str | None, source_url: s
         return True
     return normalized in {
         "书名",
+        "原始书名",
+        "匹配书名",
         "标题",
         "项目状态",
         "当前大概进度",
@@ -835,8 +849,23 @@ def _looks_like_catalog_header(row: list[str]) -> bool:
     if not row:
         return False
     normalized = [normalize_title(cell) for cell in row]
-    return any(cell in {"书名", "标题", "title"} for cell in normalized) and any(
-        cell in {"编辑", "编辑名", "作者", "原始作者", "原著作者", "author", "微信读书链接", "来源链接", "链接", "url"}
+    title_headers = {normalize_title(name) for name in (*_EXCEL_TITLE_HEADERS, *_EXCEL_NEW_TITLE_HEADERS, *_EXCEL_MATCHED_TITLE_HEADERS, "title")}
+    context_headers = {
+        normalize_title(name)
+        for name in (
+            *_EXCEL_AUTHOR_HEADERS,
+            *_EXCEL_URL_HEADERS,
+            "author",
+            "编辑",
+            "编辑名",
+            "版权方（公司名字）",
+            "推荐值",
+            "阅读人数",
+            "评论数量",
+        )
+    }
+    return any(cell in title_headers for cell in normalized) and any(
+        cell in context_headers
         for cell in normalized
     )
 

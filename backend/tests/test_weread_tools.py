@@ -84,6 +84,53 @@ def test_parse_catalog_workbook_supports_project_progress_excel(monkeypatch) -> 
     ]
 
 
+def test_parse_catalog_workbook_supports_weread_export_headers() -> None:
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "推荐值与项目匹配"
+    ws.append(
+        [
+            "原始书名",
+            "原始链接",
+            "匹配书名",
+            "作者",
+            "译者",
+            "版权方（公司名字）",
+            "推荐值",
+            "阅读人数",
+            "评论数量",
+        ]
+    )
+    ws.append(["多余的话", None, "多余的话", "瞿秋白", None, "明天远航", None, None, None])
+    ws.append(
+        [
+            "",
+            "https://weread.qq.com/web/reader/book002",
+            "段永平投资问答录：大道至简的财富逻辑",
+            "马小奔",
+            None,
+            "明天远航",
+            "79.2%",
+            "688人",
+            "44人点评",
+        ]
+    )
+
+    output = BytesIO()
+    workbook.save(output)
+
+    rows = parse_catalog_workbook(output.getvalue())
+
+    assert [(row.title, row.author, row.source_url) for row in rows] == [
+        ("多余的话", "瞿秋白", None),
+        (
+            "段永平投资问答录：大道至简的财富逻辑",
+            "马小奔",
+            "https://weread.qq.com/web/reader/book002",
+        ),
+    ]
+
+
 def test_catalog_books_to_text_keeps_excel_fields_for_chunked_fetch() -> None:
     text = catalog_books_to_text(
         [

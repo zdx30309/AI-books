@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.prompts.goal_driven_templates import SUPPORTED_CATEGORIES
 from app.services.content_engine import normalize_final_markdown
 
 
@@ -203,7 +204,7 @@ def test_normalize_removes_bold_prefix_pseudo_heading_from_body() -> None:
     result = normalize_final_markdown(markdown, category="health_wellness")
 
     assert "**" not in result
-    assert "年龄的真相" not in result
+    assert "###年龄的真相" in result
     assert "30岁后的状态下滑" in result
     assert "这是重要的一点" in result
     assert "@1. 健康观察" in result
@@ -223,7 +224,7 @@ def test_normalize_removes_repeated_naked_pseudo_heading_without_gluing_text() -
     assert "财富自由的三种诉求财富自由背后" not in result
     assert "财富自由的三种诉求\n" not in result
     assert "财富自由背后藏着三种完全不同的诉求" in result
-    assert "健康四件事。\n每天记录四个关键点" in result
+    assert "###健康四件事\n每天记录四个关键点" in result
 
 
 def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> None:
@@ -239,13 +240,49 @@ def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> N
     result = normalize_final_markdown(markdown, category="popular_science")
 
     assert "这几句话逻辑自洽" not in result
-    assert "#" not in result
+    assert "# 身体的能量账本" not in result
+    assert "###身体的能量账本" in result
     assert "\n1. 起床之后\n" not in result
-    assert "身体的能量账本。" in result
     assert "起床之后。\n起床之后先记录" not in result
     assert "起床之后先记录昨晚睡了几个小时" in result
     assert "普通段落应该只去掉非法 at 符号" in result
     assert "@普通段落" not in result
+
+
+def test_normalize_standardizes_inline_pseudo_subheading_for_all_categories() -> None:
+    markdown = """@正文
+@1. 新药中国路
+扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
+@不过这种模式的局限性也摆在眼前：如果只是慢半拍的简单复制，留给你的窗口期会越来越短。
+"""
+
+    result = normalize_final_markdown(markdown, category="finance_technology")
+
+    assert "###扎堆竞争的代价\n临床资源就那么多" in result
+    assert "###不过这种模式的局限性也摆在眼前\n如果只是慢半拍" in result
+    assert "扎堆竞争的代价，临床资源" not in result
+    assert "@不过这种模式" not in result
+
+
+def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories() -> None:
+    markdown = """@正文
+@1. 新药中国路
+扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
+"""
+    special_layout_categories = {
+        "comic_series",
+        "healing_comic",
+        "classical_chinese",
+        "classical_chinese_interleaved",
+    }
+
+    for category in SUPPORTED_CATEGORIES:
+        if category in special_layout_categories:
+            continue
+        result = normalize_final_markdown(markdown, category=category)
+
+        assert "###扎堆竞争的代价\n临床资源就那么多" in result, category
+        assert "扎堆竞争的代价，临床资源" not in result, category
 
 
 def test_comic_normalize_keeps_image_markdown_unchanged() -> None:

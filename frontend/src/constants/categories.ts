@@ -96,6 +96,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "wisdom_stories_historical",
+    label: "故事·智慧类（历史故事版）",
+    core_feature: "以真实历史事件、人物选择和时代规则为叙事基础，写出历史张力与人生余味",
+    directions: "历史故事、人物轶事、权力、功名、忠义、野心、误判、进退、得失、盛衰、乱世选择",
+    prompt_status: "ready",
+  },
+  {
     id: "biography",
     label: "传记·人物",
     core_feature: "浓缩人生关键节点与品格",
@@ -216,6 +223,7 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "finance_technology",
   "finance_technology_recommendation",
   "wisdom_stories_causal_philosophy",
+  "wisdom_stories_historical",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
   "buddhist_scripture_story",

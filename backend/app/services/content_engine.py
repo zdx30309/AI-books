@@ -439,6 +439,38 @@ _WISDOM_STORY_INLINE_STARTERS = (
     "李",
     "张",
 )
+_INLINE_SUBHEADING_KEYWORDS = (
+    "代价",
+    "难题",
+    "局限",
+    "风险",
+    "真相",
+    "困境",
+    "陷阱",
+    "选择",
+    "转折",
+    "退路",
+    "误判",
+    "成本",
+    "边界",
+    "启示",
+    "根源",
+    "答案",
+    "分水岭",
+    "账本",
+    "底气",
+    "诉求",
+    "策略",
+    "模式",
+    "路径",
+    "危机",
+    "余波",
+    "裂缝",
+    "规则",
+    "逻辑",
+    "竞争",
+    "转化",
+)
 
 
 def _is_structural_markdown_line(line: str) -> bool:
@@ -520,6 +552,87 @@ def _looks_like_bold_prefix_heading(title: str, rest: str) -> bool:
     return len(clean_title) <= 16 and len(clean_rest) >= 8
 
 
+def _normalize_internal_subheading_title(title: str, *, max_len: int = 24) -> str | None:
+    clean = _strip_inline_markdown_marks(title).lstrip("@").strip()
+    clean = re.sub(r"^(?:\d+|[一二三四五六七八九十百]+)[.．、]\s*", "", clean).strip()
+    clean = clean.strip(" \t*_`#：:，,、。.!！?？；;「」『』“”\"'‘’（）()[]【】")
+    if not clean or len(clean) > max_len:
+        return None
+    if _cjk_ratio(clean) < 0.55:
+        return None
+    if re.search(r"[。！？；，、,.!?;：:]", clean):
+        return None
+    if clean.startswith(_CONTINUATION_PREFIXES):
+        return None
+    if clean.endswith(("的", "和", "与", "及", "或", "把", "被", "让", "在", "对", "给")):
+        return None
+    return clean
+
+
+def _format_internal_subheading(title: str) -> str:
+    return f"###{title}"
+
+
+def _split_internal_subheading_line(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped or _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
+        return None
+    if _looks_like_editorial_comment(stripped):
+        return None
+
+    markdown_heading = re.match(r"^\s{0,3}#{1,6}\s*(.+?)\s*$", stripped)
+    if markdown_heading:
+        title = _normalize_internal_subheading_title(markdown_heading.group(1))
+        return [_format_internal_subheading(title)] if title else None
+
+    bold_prefix = re.match(r"^\*\*([^*\n]{1,32})\*\*\s*(.*?)\s*$", stripped)
+    if bold_prefix:
+        title = _normalize_internal_subheading_title(bold_prefix.group(1), max_len=18)
+        rest = bold_prefix.group(2).strip()
+        if title and (not rest or len(rest) >= 4):
+            return [_format_internal_subheading(title), rest] if rest else [_format_internal_subheading(title)]
+
+    candidate = stripped
+    has_marker = False
+    if candidate.startswith("@"):
+        has_marker = True
+        candidate = candidate.lstrip("@").strip()
+        if _looks_like_editorial_comment(candidate):
+            return None
+
+    numbered = re.match(r"^(?:\d+|[一二三四五六七八九十百]+)[.．、]\s*(.+?)\s*$", candidate)
+    if numbered:
+        has_marker = True
+        candidate = numbered.group(1).strip()
+
+    direct_title = (
+        _normalize_internal_subheading_title(candidate, max_len=16)
+        if _looks_like_pseudo_heading_text(candidate)
+        else None
+    )
+    if direct_title and _looks_like_pseudo_heading_text(direct_title):
+        return [_format_internal_subheading(direct_title)]
+
+    for separator in ("：", ":", "，", ","):
+        index = candidate.find(separator)
+        if index < 3:
+            continue
+        title_limit = 24 if separator in {"：", ":"} or has_marker else 12
+        if index > title_limit:
+            continue
+        title = _normalize_internal_subheading_title(candidate[:index], max_len=title_limit)
+        body = candidate[index + 1 :].strip()
+        if not title or len(body) < 8:
+            continue
+        if not has_marker and not any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS):
+            continue
+        if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
+            continue
+        return [_format_internal_subheading(title), body]
+
+    return None
+
+
 def _line_repeats_heading(heading: str, line: str) -> bool:
     heading_key = _canonical_duplicate_text(heading)
     line_key = _canonical_duplicate_text(line)[:80]
@@ -574,12 +687,34 @@ def _strip_body_noise_line(line: str) -> str | None:
 
 def _remove_body_format_noise(lines: list[str]) -> list[str]:
     cleaned: list[str] = []
-    pending = [_strip_body_noise_line(line) for line in lines]
+    pending: list[str | None] = []
+    for raw_line in lines:
+        split_parts = _split_internal_subheading_line(raw_line)
+        source_parts = split_parts if split_parts is not None else [raw_line]
+        for part in source_parts:
+            normalized = part.strip()
+            if normalized.startswith("###"):
+                title = _normalize_internal_subheading_title(normalized[3:].strip())
+                pending.append(_format_internal_subheading(title) if title else None)
+                continue
+            pending.append(_strip_body_noise_line(normalized))
+
     for index, line in enumerate(pending):
         if line is None:
             continue
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped.startswith("###"):
+            heading_text = stripped[3:].strip()
+            next_line = ""
+            for candidate in pending[index + 1 :]:
+                if candidate:
+                    next_line = candidate.strip()
+                    break
+            if next_line and _line_repeats_heading(heading_text, next_line):
+                continue
+            cleaned.append(stripped)
             continue
         if _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
             cleaned.append(stripped)
@@ -592,6 +727,10 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                     next_line = candidate.strip()
                     break
             if next_line and _line_repeats_heading(stripped, next_line):
+                continue
+            title = _normalize_internal_subheading_title(stripped, max_len=16)
+            if title:
+                cleaned.append(_format_internal_subheading(title))
                 continue
             if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
                 stripped = f"{stripped}。"
