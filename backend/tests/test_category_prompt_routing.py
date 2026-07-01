@@ -1081,6 +1081,11 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     assert "不要写成“原文一句、翻译一句”的资料稿" in rendered
     assert "故事感必须来自原文已有的问答、动作、譬喻、说法顺序和人物关系" in rendered
     assert "第一章必须从原文已有的动作、观照、提问或说法关系进入" in rendered
+    assert "长佛经必须覆盖全本，不能只写一个总故事、总论或代表性段落" in rendered
+    assert "按原文顺序拆成多个故事单元/说法单元" in rendered
+    assert "长文本的章节数量不设固定上限" in rendered
+    assert "目录要体现原文从头到尾的故事单元顺序" in rendered
+    assert "长佛经按全本顺序拆成足够多的故事单元/说法单元，不设固定章节上限" in rendered
     assert "正确方向是“观自在菩萨深行般若时，先照见五蕴皆空" in rendered
     assert "错误方向是“逐句解释五蕴、色空、无明、老死分别是什么意思”" in rendered
     assert "改动幅度不要太大" in rendered
@@ -1089,10 +1094,13 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     assert "【P0001】" not in rendered
     assert "原文结构清单" not in rendered
     assert "古文白话大板块" not in rendered
+    assert "1-6 个章节" not in rendered
     assert "输出字数必须与原文字数基本一致" not in prompts["gemini_fast_polish"]
     assert "输出字数必须与原文字数基本一致" not in prompts["gemini_fast_refine"]
     assert "不得把故事稿润成术语解释稿或白话讲义" in prompts["gemini_fast_polish"]
     assert "不得把故事稿改成术语解释稿或白话讲义" in prompts["gemini_fast_refine"]
+    assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_polish"]
+    assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_refine"]
 
 
 def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
