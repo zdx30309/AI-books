@@ -99,7 +99,7 @@ CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS = 1_000_000
 BUDDHIST_STORY_UNIT_WRITER_MIN_UNITS = 20
 BUDDHIST_STORY_UNITS_PER_SEGMENT = 8
 BUDDHIST_STORY_REPAIR_UNITS_PER_SEGMENT = 4
-BUDDHIST_STORY_MIN_CHAPTER_CJK = 320
+BUDDHIST_STORY_MIN_CHAPTER_CJK = 300
 BUDDHIST_STORY_TINY_SOURCE_MIN_CHAPTER_CJK = 240
 BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS = 2_800
 
@@ -1836,6 +1836,20 @@ async def _repair_buddhist_story_batch_against_source(
     stage: str,
     batch_index: int,
 ) -> str:
+    cache_path = (
+        output_dir / f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}.md"
+        if output_dir is not None
+        else None
+    )
+    if cache_path is not None and cache_path.exists():
+        try:
+            cached = cache_path.read_text(encoding="utf-8").strip()
+            if cached and not _buddhist_story_manuscript_issues(cached, units):
+                logger.info("复用佛经白话定向修复批次缓存 stage=%s batch=%04d", stage, batch_index)
+                return cached
+        except Exception as exc:
+            logger.warning("读取佛经白话定向修复批次缓存失败 stage=%s batch=%04d: %s", stage, batch_index, exc)
+
     prompt = f"""你是佛经白话故事稿的单元修复作者。下面只给你一小批《百喻经》或佛经故事单元，请根据原文，把这些章节修成完整、连贯、有故事感的小故事。
 
 【输出硬规则】
