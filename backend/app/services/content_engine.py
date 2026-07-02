@@ -1931,7 +1931,11 @@ async def _repair_buddhist_story_batch_against_source(
         remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
         raise RuntimeError(f"佛经白话单元定向修复失败: {'；'.join(remaining)}")
-    _dump_stage(output_dir, f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}.md", body)
+    _dump_stage(
+        output_dir,
+        cache_path.name if cache_path is not None else f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}.md",
+        body,
+    )
     return body
 
 

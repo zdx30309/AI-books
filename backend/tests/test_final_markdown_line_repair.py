@@ -539,3 +539,4 @@ def test_buddhist_story_targeted_repair_reuses_cached_chapters_across_batch_chan
     assert cached_body in result
     assert repaired_body in result
     assert (tmp_path / "buddhist_story_resume_targeted_cache_reuse.txt").exists()
+    assert list(tmp_path.glob("buddhist_story_resume_targeted_repair_*_U*.md"))
