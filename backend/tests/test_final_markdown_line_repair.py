@@ -487,3 +487,18 @@ def test_buddhist_story_targeted_repair_reuses_existing_manuscript_and_removes_e
     assert "这一次修复只补足第二则" in result
     assert (tmp_path / "buddhist_story_resume_targeted_issues.txt").exists()
     assert (tmp_path / "buddhist_story_resume_targeted_repaired.md").exists()
+
+
+def test_buddhist_story_targeted_repair_accepts_borderline_story_length() -> None:
+    units = [
+        content_engine.BuddhistStoryUnit(
+            index=70,
+            title="chapter",
+            source="\u539f" * 40,
+        )
+    ]
+    accepted = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 293)
+    rejected = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 259)
+
+    assert content_engine._buddhist_story_manuscript_issues(accepted, units) == []
+    assert content_engine._buddhist_story_manuscript_issues(rejected, units)
