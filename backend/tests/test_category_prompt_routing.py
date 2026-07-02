@@ -1167,6 +1167,38 @@ def test_buddhist_story_unit_splitter_prefers_body_run_over_catalog() -> None:
     assert "目录标题" not in units[0].source
 
 
+def test_buddhist_story_unit_splitter_handles_positional_chinese_numerals() -> None:
+    numerals = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "一〇", "一一", "一二"]
+    raw_text = "\n".join(
+        f"（{numeral}）第{index}喻\n昔有愚人做事颠倒，事情发展之后显出修行上的警醒。"
+        for index, numeral in enumerate(numerals, start=1)
+    )
+
+    units = split_buddhist_story_units(raw_text, original_title="百喻经")
+
+    assert [unit.index for unit in units] == list(range(1, 13))
+    assert units[9].title == "第10喻"
+    assert units[10].title == "第11喻"
+
+
+def test_buddhist_story_unit_splitter_ignores_baiyujing_volume_headings() -> None:
+    numerals = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "一〇", "一一", "一二"]
+    first_volume = "\n".join(
+        f"（{numeral}）第{index}喻\n昔有愚人做事颠倒，事情发展之后显出修行上的警醒。"
+        for index, numeral in enumerate(numerals[:6], start=1)
+    )
+    second_volume = "\n".join(
+        f"（{numeral}）第{index}喻\n昔有愚人做事颠倒，事情发展之后显出修行上的警醒。"
+        for index, numeral in enumerate(numerals[6:], start=7)
+    )
+    raw_text = f"百喻经卷第一\n{first_volume}\n百喻经卷第二\n{second_volume}"
+
+    units = split_buddhist_story_units(raw_text, original_title="百喻经")
+
+    assert [unit.index for unit in units] == list(range(1, 13))
+    assert all(unit.index != 100 for unit in units)
+
+
 def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

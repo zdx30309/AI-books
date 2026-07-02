@@ -98,6 +98,7 @@ CLASSICAL_SEGMENTED_WRITER_CONTEXT_CHARS = 1_500
 CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS = 1_000_000
 BUDDHIST_STORY_UNIT_WRITER_MIN_UNITS = 20
 BUDDHIST_STORY_UNITS_PER_SEGMENT = 8
+BUDDHIST_STORY_REPAIR_UNITS_PER_SEGMENT = 4
 BUDDHIST_STORY_MIN_CHAPTER_CJK = 320
 BUDDHIST_STORY_TINY_SOURCE_MIN_CHAPTER_CJK = 240
 BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS = 2_800
@@ -1776,6 +1777,153 @@ def _buddhist_chapter_marker_issues(source_chunk: str, output_chunk: str) -> lis
     return issues
 
 
+def _buddhist_story_chapter_map(markdown: str) -> dict[int, tuple[str, str]]:
+    chapters = _extract_buddhist_body_chapters(markdown)
+    return {
+        number: (title, "\n".join(line for line in lines if line.strip()).strip())
+        for number, title, lines in chapters
+    }
+
+
+def _buddhist_story_units_to_repair(markdown: str, units: list[BuddhistStoryUnit]) -> list[BuddhistStoryUnit]:
+    by_number = _buddhist_story_chapter_map(markdown)
+    targets: list[BuddhistStoryUnit] = []
+    for unit in units:
+        _, body = by_number.get(unit.index, ("", ""))
+        cjk = sum(1 for char in body if "\u3400" <= char <= "\u9fff")
+        if not body or cjk < _buddhist_min_chapter_cjk(unit):
+            targets.append(unit)
+    return targets
+
+
+def _buddhist_story_repair_batches(units: list[BuddhistStoryUnit]) -> list[list[BuddhistStoryUnit]]:
+    batches: list[list[BuddhistStoryUnit]] = []
+    current: list[BuddhistStoryUnit] = []
+    previous: int | None = None
+    for unit in units:
+        if (
+            current
+            and (
+                len(current) >= BUDDHIST_STORY_REPAIR_UNITS_PER_SEGMENT
+                or previous is None
+                or unit.index != previous + 1
+            )
+        ):
+            batches.append(current)
+            current = []
+        current.append(unit)
+        previous = unit.index
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _buddhist_story_existing_block(markdown: str, units: list[BuddhistStoryUnit]) -> str:
+    by_number = _buddhist_story_chapter_map(markdown)
+    blocks: list[str] = []
+    for unit in units:
+        title, body = by_number.get(unit.index, (unit.title, ""))
+        body = body.strip() or "（当前稿件缺少这一章或内容过短。）"
+        blocks.append(f"@{unit.index}. {title or unit.title}\n{body}")
+    return "\n\n".join(blocks)
+
+
+async def _repair_buddhist_story_batch_against_source(
+    markdown: str,
+    *,
+    units: list[BuddhistStoryUnit],
+    output_dir: Path | None,
+    stage: str,
+    batch_index: int,
+) -> str:
+    prompt = f"""你是佛经白话故事稿的单元修复作者。下面只给你一小批《百喻经》或佛经故事单元，请根据原文，把这些章节修成完整、连贯、有故事感的小故事。
+
+【输出硬规则】
+- 只输出本批次正文，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
+- 必须严格输出这些章节：{", ".join(f"@{unit.index}. {unit.title}" for unit in units)}。
+- 每个原文故事单元只能对应一个正式章节；不能新增章节，不能输出本批次之外的章节。
+- 每章都要先讲完整故事，再在同一章末尾自然收束寓意。
+- 每章尽量写充分，常规写成 350 到 650 汉字左右；原文特别短也要尽量写到 250 汉字以上。
+- 不得编造原文没有的人物、地点、关键事实、因果结论或新结局。
+- 可以参考当前稿件的已有表达，但如果当前稿件太短，必须补足故事进入、人物动作、误判、后果和收束。
+
+【本批次原文故事单元】
+{_buddhist_story_units_source_block(units)}
+
+【当前稿件对应章节】
+{_buddhist_story_existing_block(markdown, units)}
+"""
+    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+    body = _buddhist_story_segment_output_body(repaired)
+    remaining = _buddhist_story_manuscript_issues(body, units)
+    if remaining:
+        strict_prompt = prompt + f"""
+
+【上次修复仍不合格】
+{'; '.join(remaining)}
+
+请重新输出本批次，必须补足篇幅和故事细节，仍然只能输出指定章节。
+"""
+        repaired = await _route_writer_call(strict_prompt, max_output_tokens=0, retry_on_failure=False)
+        body = _buddhist_story_segment_output_body(repaired)
+        remaining = _buddhist_story_manuscript_issues(body, units)
+    if remaining:
+        raise RuntimeError(f"佛经白话单元定向修复失败: {'；'.join(remaining)}")
+    _dump_stage(output_dir, f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}.md", body)
+    return body
+
+
+async def _repair_buddhist_story_manuscript_against_units(
+    markdown: str,
+    *,
+    units: list[BuddhistStoryUnit],
+    output_dir: Path | None,
+    stage: str,
+    original_title: object = None,
+) -> str:
+    if not units:
+        return markdown
+
+    issues = _buddhist_story_manuscript_issues(markdown, units)
+    if not issues:
+        return markdown
+
+    issue_text = "\n".join(f"- {issue}" for issue in issues)
+    _dump_stage(output_dir, f"buddhist_story_{stage}_targeted_issues.txt", issue_text)
+    targets = _buddhist_story_units_to_repair(markdown, units)
+    replacements: dict[int, tuple[str, str]] = {}
+    for batch_index, batch in enumerate(_buddhist_story_repair_batches(targets), start=1):
+        batch_body = await _repair_buddhist_story_batch_against_source(
+            markdown,
+            units=batch,
+            output_dir=output_dir,
+            stage=stage,
+            batch_index=batch_index,
+        )
+        replacements.update(_buddhist_story_chapter_map(batch_body))
+
+    existing = _buddhist_story_chapter_map(markdown)
+    parts = [_buddhist_story_frontmatter(units, original_title=original_title)]
+    for unit in units:
+        title, body = replacements.get(unit.index) or existing.get(unit.index, (unit.title, ""))
+        title = title or unit.title
+        body = body.strip()
+        parts.append(f"@{unit.index}. {title}\n{body}".strip())
+
+    repaired = "\n\n".join(part.strip() for part in parts if part.strip())
+    repaired = normalize_final_markdown(repaired, category=BUDDHIST_SCRIPTURE_STORY_CATEGORY)
+    remaining = _buddhist_story_manuscript_issues(repaired, units)
+    if remaining:
+        _dump_stage(
+            output_dir,
+            f"buddhist_story_{stage}_targeted_remaining.txt",
+            "\n".join(f"- {issue}" for issue in remaining),
+        )
+        raise RuntimeError(f"佛经白话单元定向修复后仍不合格: {'；'.join(remaining)}")
+    _dump_stage(output_dir, f"buddhist_story_{stage}_targeted_repaired.md", repaired)
+    return repaired
+
+
 def _split_buddhist_text_by_chapters(text: str, *, target_chars: int = BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS) -> list[str]:
     if not text or not text.strip():
         return []
@@ -2438,7 +2586,7 @@ async def _route_writer_call(
 
 _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES = {
     "《百喻经》章节覆盖不足",
-    "佛经白话章节过短，故事展开不足",
+    "《百喻经》章节数量异常",
 }
 
 
@@ -4909,6 +5057,15 @@ async def generate_full_book(
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
+        if is_buddhist_scripture_story and use_buddhist_story_unit_writer:
+            final_resume_markdown = await _repair_buddhist_story_manuscript_against_units(
+                final_resume_markdown,
+                units=buddhist_story_units,
+                output_dir=output_dir,
+                stage="resume",
+                original_title=classical_original_title,
+            )
+            _dump_stage(output_dir, "04_format.md", final_resume_markdown)
         from app.core.quality_metrics import detect_final_hard_errors
 
         resume_hard_errors = detect_final_hard_errors(
@@ -5098,9 +5255,13 @@ async def generate_full_book(
             buddhist_story_units,
         )
         if buddhist_polish_issues:
-            raise RuntimeError(
-                f"佛经白话一润后章节保护失败: {'；'.join(buddhist_polish_issues)}"
-        )
+            polished_markdown = await _repair_buddhist_story_manuscript_against_units(
+                polished_markdown,
+                units=buddhist_story_units,
+                output_dir=output_dir,
+                stage="polish",
+                original_title=classical_original_title,
+            )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
     if is_classical_category:
@@ -5199,9 +5360,13 @@ async def generate_full_book(
             buddhist_story_units,
         )
         if buddhist_refine_issues:
-            raise RuntimeError(
-                f"佛经白话二润后章节保护失败: {'；'.join(buddhist_refine_issues)}"
-        )
+            refined_markdown = await _repair_buddhist_story_manuscript_against_units(
+                refined_markdown,
+                units=buddhist_story_units,
+                output_dir=output_dir,
+                stage="refine",
+                original_title=classical_original_title,
+            )
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
     if is_classical_category:
@@ -5324,8 +5489,12 @@ async def generate_full_book(
             buddhist_story_units,
         )
         if buddhist_final_issues:
-            raise RuntimeError(
-                f"佛经白话终稿章节保护失败: {'；'.join(buddhist_final_issues)}"
+            final_markdown = await _repair_buddhist_story_manuscript_against_units(
+                final_markdown,
+                units=buddhist_story_units,
+                output_dir=output_dir,
+                stage="final",
+                original_title=classical_original_title,
             )
 
     if _front_matter_missing(final_markdown):

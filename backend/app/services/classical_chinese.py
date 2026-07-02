@@ -516,6 +516,11 @@ def _chinese_numeral_to_int(text: str) -> int | None:
         "八": 8,
         "九": 9,
     }
+    if all(char in digits for char in raw):
+        value = 0
+        for char in raw:
+            value = value * 10 + digits[char]
+        return value if value > 0 else None
     units = {"十": 10, "百": 100}
     total = 0
     number = 0
@@ -540,6 +545,8 @@ def _chinese_numeral_to_int(text: str) -> int | None:
 def _buddhist_heading_candidate(line: str) -> tuple[int, str] | None:
     stripped = (line or "").strip()
     if not stripped or len(stripped) > 72:
+        return None
+    if re.search(r"经卷第[一二三四五六七八九十百零〇两\d]+", stripped):
         return None
     match = _BUDDHIST_ARABIC_HEADING_RE.match(stripped)
     if not match:

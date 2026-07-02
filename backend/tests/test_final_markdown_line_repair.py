@@ -428,3 +428,62 @@ def test_final_hard_error_gate_refuses_non_repairable_buddhist_coverage_issue(
                 output_dir=tmp_path,
             )
         )
+
+
+def test_buddhist_story_targeted_repair_reuses_existing_manuscript_and_removes_extra(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    units = [
+        content_engine.BuddhistStoryUnit(index=1, title="第一喻", source="昔有愚人执著表面，后为众人所笑。"),
+        content_engine.BuddhistStoryUnit(index=2, title="第二喻", source="昔有愚人求取方便，反而失去本来利益。"),
+        content_engine.BuddhistStoryUnit(index=3, title="第三喻", source="昔有愚人误认因缘，最后明白不可倒置。"),
+    ]
+    good_body = (
+        "从前有个愚人听见一句话，便急着照做，却没有先看清事情的来龙去脉。"
+        "他先做了一个选择，又因为这个选择不断补救，越补越偏。旁人提醒他时，"
+        "他仍旧执着在最初的想法里，直到结果摆在眼前，才发现自己抓住的是表面的方便。"
+        "这则譬喻不是为了嘲笑愚人，而是提醒修行者：听到一个道理之后，要回到因缘和次第里理解。"
+        "只有看见愚人如何一步步走偏，读者才会明白原文真正要警醒的地方。"
+        "故事说完时，那个人的荒唐选择已经显出后果，修行上的提醒也自然落回心里。"
+        "这段收束不是另起一章讲道理，而是让读者顺着前面的动作和后果，看见执著怎样把小错推成大错。"
+        "因此故事本身已经承担了说明的力量，最后的提醒只是把那层意思轻轻点明。"
+    )
+    markdown = f"""@最终书名
+百喻经（白话版）
+@正文
+@1. 第一喻
+{good_body}
+@2. 第二喻
+太短。
+@3. 第三喻
+{good_body}
+@4. 多余总结
+这不是原文的一则譬喻。
+"""
+
+    async def fake_route_writer_call(prompt: str, **kwargs) -> str:
+        assert "单元修复作者" in prompt
+        assert "@2. 第二喻" in prompt
+        assert "@1. 第一喻" not in prompt.split("【当前稿件对应章节】", 1)[0]
+        repaired_body = good_body + "这一次修复只补足第二则的故事，不改动其他已经合格的章节。"
+        return f"@2. 第二喻\n{repaired_body}"
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+
+    result = asyncio.run(
+        content_engine._repair_buddhist_story_manuscript_against_units(
+            markdown,
+            units=units,
+            output_dir=tmp_path,
+            stage="resume",
+            original_title="百喻经",
+        )
+    )
+
+    chapters = content_engine._extract_buddhist_body_chapters(result)
+    assert [number for number, _, _ in chapters] == [1, 2, 3]
+    assert "@4. 多余总结" not in result
+    assert "这一次修复只补足第二则" in result
+    assert (tmp_path / "buddhist_story_resume_targeted_issues.txt").exists()
+    assert (tmp_path / "buddhist_story_resume_targeted_repaired.md").exists()

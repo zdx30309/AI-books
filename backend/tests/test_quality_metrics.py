@@ -201,6 +201,16 @@ def test_final_hard_error_gate_detects_baiyujing_over_split_chapter_count() -> N
     assert hits["《百喻经》章节数量异常"]
 
 
+def test_final_hard_error_gate_detects_baiyujing_extra_summary_chapter() -> None:
+    body = "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐，最后在同一章里自然收束到修行上的提醒。"
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 100))
+    markdown = f"@最终书名\n百喻经（白话版）\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert hits["《百喻经》章节数量异常"]
+
+
 def test_final_hard_error_gate_detects_baiyujing_missing_late_chapters() -> None:
     body = "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐，中间有动作和转折，最后在同一章里自然收束到修行上的提醒。"
     chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 59))

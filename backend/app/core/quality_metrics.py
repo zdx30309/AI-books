@@ -666,11 +666,11 @@ def _detect_buddhist_story_shape_errors(text: str, *, category: str | None = Non
 
     results: dict[str, list[str]] = {}
     chapter_count = len(chapters)
-    if "百喻经" in text and chapter_count > 120:
+    if "百喻经" in text and chapter_count != 98 and chapter_count >= 90:
         _add_noise_hit(
             results,
             "《百喻经》章节数量异常",
-            f"检测到 {chapter_count} 个正文正式章节；《百喻经》全本应按九十八则譬喻组织，不应拆成一百九十多章或二百多章。",
+            f"检测到 {chapter_count} 个正文正式章节；《百喻经》全本应按九十八则譬喻组织，不能多出总结章、寓意章或把同一则拆成多章。",
         )
     if "百喻经" in text and chapter_count < 90:
         _add_noise_hit(
