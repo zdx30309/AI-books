@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
+import pytest
+
 from app.prompts.goal_driven_templates import SUPPORTED_CATEGORIES
+from app.services import content_engine
 from app.services.content_engine import normalize_final_markdown
 
 
@@ -323,3 +327,104 @@ def test_masterpiece_interpretation_does_not_use_local_colloquial_rewrite() -> N
     assert "咱们一点儿也不能把那味儿写成唠嗑。" in result
     assert "这事儿是不是已经说清楚。" in result
     assert "这件事相当复杂。" not in result
+
+
+def test_final_hard_error_gate_repairs_flagged_semantic_issue(monkeypatch, tmp_path) -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 盐味成患
+这人心里便想“菜之所以好喝，是因为加了盐。”
+"""
+
+    async def fake_route_writer_call(prompt: str, **kwargs) -> str:
+        assert "终稿硬伤质检编辑" in prompt
+        assert "菜之所以好喝" in prompt
+        return markdown.replace("菜之所以好喝", "菜之所以好吃")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+
+    result = asyncio.run(
+        content_engine._repair_final_hard_errors_once(
+            markdown,
+            category="buddhist_scripture_story",
+            output_dir=tmp_path,
+        )
+    )
+
+    assert "菜之所以好吃" in result
+    assert "菜之所以好喝" not in result
+    assert (tmp_path / "final_hard_error_issues.txt").exists()
+    assert (tmp_path / "semantic_quality_repaired.md").exists()
+
+
+def test_final_hard_error_gate_skips_clean_manuscript_without_llm(monkeypatch, tmp_path) -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 日常饮食
+这碗汤很好喝。
+这盘菜很好吃。
+"""
+
+    async def fail_if_called(*args, **kwargs) -> str:
+        raise AssertionError("clean manuscript should not call the writer")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_if_called)
+
+    result = asyncio.run(
+        content_engine._repair_final_hard_errors_once(
+            markdown,
+            category="buddhist_scripture_story",
+            output_dir=tmp_path,
+        )
+    )
+
+    assert result == markdown
+    assert not (tmp_path / "semantic_quality_repaired.md").exists()
+
+
+def test_final_hard_error_gate_fails_when_repair_keeps_blocking_issue(monkeypatch, tmp_path) -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 盐味成患
+这人心里便想“菜之所以好喝，是因为加了盐。”
+"""
+
+    async def fake_route_writer_call(prompt: str, **kwargs) -> str:
+        return markdown
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+
+    with pytest.raises(RuntimeError, match="终稿硬伤质检失败"):
+        asyncio.run(
+            content_engine._repair_final_hard_errors_once(
+                markdown,
+                category="buddhist_scripture_story",
+                output_dir=tmp_path,
+            )
+        )
+
+
+def test_final_hard_error_gate_refuses_non_repairable_buddhist_coverage_issue(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    body = "从前有个愚人做错事，最后明白不可执著表面。"
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 59))
+    markdown = f"@最终书名\n百喻经（白话版）\n@正文\n{chapters}"
+
+    async def fail_if_called(*args, **kwargs) -> str:
+        raise AssertionError("coverage issues must not be locally repaired")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="需重跑完整生成链路"):
+        asyncio.run(
+            content_engine._repair_final_hard_errors_once(
+                markdown,
+                category="buddhist_scripture_story",
+                output_dir=tmp_path,
+            )
+        )

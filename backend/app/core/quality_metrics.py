@@ -41,6 +41,9 @@ class QualityReport:
     # ===== 排版污染 =====
     format_noise_hits: dict[str, list[str]] = field(default_factory=dict)
 
+    # ===== 终稿硬伤闸门（高置信度，命中后不应直接交付） =====
+    final_hard_error_hits: dict[str, list[str]] = field(default_factory=dict)
+
     # ===== 名作解读专项文风污染 =====
     masterpiece_colloquial_hits: dict[str, list[str]] = field(default_factory=dict)
 
@@ -405,6 +408,61 @@ _CONTINUATION_PREFIXES = (
     "这种",
     "这类",
 )
+_FINAL_QA_EXCLUDED_CATEGORIES = {"comic_series", "healing_comic"}
+_INLINE_SUBHEADING_KEYWORDS = (
+    "代价",
+    "难题",
+    "局限",
+    "风险",
+    "真相",
+    "困境",
+    "陷阱",
+    "选择",
+    "转折",
+    "退路",
+    "误判",
+    "成本",
+    "边界",
+    "启示",
+    "根源",
+    "答案",
+    "分水岭",
+    "账本",
+    "底气",
+    "诉求",
+    "策略",
+    "模式",
+    "路径",
+    "危机",
+    "余波",
+    "裂缝",
+    "规则",
+    "逻辑",
+    "竞争",
+    "转化",
+)
+_SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
+    "语义搭配硬伤：菜/饭菜不应写成好喝": (
+        r"re:(?:菜|饭菜|菜肴|菜品|饭|米饭|面条|馒头|包子|点心|肉|鱼)"
+        r"[^。！？；\n]{0,40}好喝"
+    ),
+    "语义搭配硬伤：固体食物不应写成喝起来": (
+        r"re:(?:菜|饭菜|菜肴|菜品|饭|米饭|面条|馒头|包子|点心|肉|鱼)"
+        r"[^。！？；\n]{0,24}喝起来"
+    ),
+    "语义搭配硬伤：汤/茶/水不应写成好吃": (
+        r"re:(?:汤|茶|水|酒|饮料|奶茶|咖啡|药汤|汤药|药水)"
+        r"[^。！？；\n]{0,24}好吃"
+    ),
+    "语义搭配硬伤：可读文本不应写成读起来好听": (
+        r"re:(?:书|文章|文字|文本|稿子|章节|小说|佛经)"
+        r"读起来(?:很|非常|特别|也|并不|不)?好听"
+    ),
+}
+_PROMPT_RESIDUAL_RULES: dict[str, str] = {
+    "输出要求残留": r"re:^(?:输出要求|任务|要求)[:：]",
+    "提示词残留": r"re:(?:只输出成稿|不要解释|不要输出分析|以下是根据|我将为你(?:生成|整理|撰写|分析|改写|输出))",
+}
 
 
 def _cjk_ratio(text: str) -> float:
@@ -474,6 +532,213 @@ def _detect_format_noise(text: str) -> dict[str, list[str]]:
         if _looks_like_naked_subheading(line):
             _add_noise_hit(results, "裸短小标题", line)
     return results
+
+
+def _detect_inline_pseudo_subheading(text: str) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    in_body = False
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+        if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
+            continue
+        match = re.match(r"^([^。！？；，、,.!?;：:\n]{3,16})[，,：:](.{8,})$", line)
+        if not match:
+            continue
+        title = match.group(1).strip().lstrip("@").strip()
+        if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
+            continue
+        if (
+            title
+            and _cjk_ratio(title) >= 0.55
+            and any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS)
+        ):
+            _add_noise_hit(results, "正文内小标题未标准化为 ###", line)
+    return results
+
+
+def _detect_empty_front_sections(text: str) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    current_section: str | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        if current_section in {"最终书名", "最终简介", "目录", "导言", "正文"}:
+            meaningful = [line.strip() for line in current_lines if line.strip()]
+            if not meaningful:
+                _add_noise_hit(results, "空前置块或空正文", f"@{current_section}")
+
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            flush()
+            current_section = section.group(1)
+            current_lines = []
+            continue
+        if current_section:
+            current_lines.append(raw_line)
+    flush()
+    return results
+
+
+def _detect_duplicate_body_headings(text: str) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    seen_chapters: set[str] = set()
+    previous_internal_heading: str | None = None
+    in_body = False
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+        if _BODY_CHAPTER_RE.match(line):
+            key = re.sub(r"\s+", "", line)
+            if key in seen_chapters:
+                _add_noise_hit(results, "重复章节头", line)
+            seen_chapters.add(key)
+            previous_internal_heading = None
+            continue
+        if _is_allowed_internal_subheading(line):
+            key = re.sub(r"\s+", "", line)
+            if previous_internal_heading == key:
+                _add_noise_hit(results, "连续重复小标题", line)
+            previous_internal_heading = key
+            continue
+        previous_internal_heading = None
+    return results
+
+
+def _body_chapters(text: str) -> list[tuple[str, list[str]]]:
+    chapters: list[tuple[str, list[str]]] = []
+    in_body = False
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            if current_heading:
+                chapters.append((current_heading, current_lines))
+            in_body = section.group(1) == "正文"
+            current_heading = None
+            current_lines = []
+            continue
+        if not in_body:
+            continue
+        if _BODY_CHAPTER_RE.match(line):
+            if current_heading:
+                chapters.append((current_heading, current_lines))
+            current_heading = line
+            current_lines = []
+            continue
+        if current_heading:
+            current_lines.append(line)
+    if current_heading:
+        chapters.append((current_heading, current_lines))
+    return chapters
+
+
+def _cjk_count(text: str) -> int:
+    return sum(1 for char in text if "\u3400" <= char <= "\u9fff")
+
+
+def _detect_buddhist_story_shape_errors(text: str, *, category: str | None = None) -> dict[str, list[str]]:
+    if (category or "").strip().lower() != "buddhist_scripture_story":
+        return {}
+    chapters = _body_chapters(text)
+    if not chapters:
+        return {}
+
+    results: dict[str, list[str]] = {}
+    chapter_count = len(chapters)
+    if "百喻经" in text and chapter_count > 120:
+        _add_noise_hit(
+            results,
+            "《百喻经》章节数量异常",
+            f"检测到 {chapter_count} 个正文正式章节；《百喻经》全本应按九十八则譬喻组织，不应拆成一百九十多章或二百多章。",
+        )
+    if "百喻经" in text and chapter_count < 90:
+        _add_noise_hit(
+            results,
+            "《百喻经》章节覆盖不足",
+            f"检测到 {chapter_count} 个正文正式章节；《百喻经》全本应覆盖九十八则譬喻，不能只生成前半部或提前收束。",
+        )
+
+    thin_samples: list[str] = []
+    short_story_samples: list[str] = []
+    for heading, lines in chapters:
+        prose_lines = [line for line in lines if not _is_allowed_internal_subheading(line)]
+        body = "".join(prose_lines)
+        cjk_chars = _cjk_count(body)
+        if cjk_chars < 45:
+            preview = " ".join(prose_lines)[:90]
+            thin_samples.append(f"{heading}｜{preview or '正文为空'}")
+        if cjk_chars < 220:
+            preview = " ".join(prose_lines)[:90]
+            short_story_samples.append(f"{heading}｜{cjk_chars} 字｜{preview or '正文为空'}")
+
+    if chapter_count >= 20 and len(thin_samples) >= max(5, chapter_count // 5):
+        for sample in thin_samples[:10]:
+            _add_noise_hit(results, "佛经白话章节过短，疑似故事和寓意被拆章", sample)
+    if chapter_count >= 20 and len(short_story_samples) >= max(8, chapter_count // 3):
+        for sample in short_story_samples[:10]:
+            _add_noise_hit(results, "佛经白话章节过短，故事展开不足", sample)
+    return results
+
+
+def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> dict[str, list[str]]:
+    """Detect high-confidence final manuscript errors that should block delivery."""
+    category_key = (category or "").strip().lower()
+    if category_key in _FINAL_QA_EXCLUDED_CATEGORIES:
+        return {}
+
+    results: dict[str, list[str]] = {}
+
+    def merge(hits: dict[str, list[str]]) -> None:
+        for name, samples in hits.items():
+            bucket = results.setdefault(name, [])
+            for sample in samples:
+                if sample not in bucket and len(bucket) < 10:
+                    bucket.append(sample)
+
+    for name, pattern in _SEMANTIC_COLLOCATION_RULES.items():
+        hits = _detect(markdown, pattern)
+        if hits:
+            results[name] = hits
+    for name, pattern in _PROMPT_RESIDUAL_RULES.items():
+        hits = _detect(markdown, pattern)
+        if hits:
+            results[name] = hits
+    merge(_detect_format_noise(markdown))
+    merge(_detect_inline_pseudo_subheading(markdown))
+    merge(_detect_empty_front_sections(markdown))
+    merge(_detect_duplicate_body_headings(markdown))
+    merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))
+    return results
+
+
+def format_final_hard_error_hits(hits: dict[str, list[str]], *, top_k: int = 8) -> str:
+    lines: list[str] = []
+    for name, samples in sorted(hits.items(), key=lambda item: item[0]):
+        lines.append(f"- {name}: {len(samples)} 处")
+        for sample in samples[:top_k]:
+            lines.append(f"  - {sample[:160]}")
+    return "\n".join(lines)
 
 
 def _masterpiece_narrative_text(markdown: str) -> str:
@@ -569,6 +834,7 @@ def _calc_total(report: QualityReport) -> None:
         + sum(len(v) for v in report.award_word_hits.values())
         + sum(len(v) for v in report.llm_residual_hits.values())
         + sum(len(v) for v in report.format_noise_hits.values())
+        + sum(len(v) for v in report.final_hard_error_hits.values())
         + sum(len(v) for v in report.masterpiece_colloquial_hits.values())
         + sum(len(v) for v in report.finance_source_leak_hits.values())
     )
@@ -629,6 +895,7 @@ def measure_quality(markdown: str, *, category: str | None = None) -> QualityRep
 
     report.half_width_punct_count, report.half_width_punct_samples = _detect_half_width_punct(markdown)
     report.format_noise_hits = _detect_format_noise(markdown)
+    report.final_hard_error_hits = detect_final_hard_errors(markdown, category=category)
     category_key = (category or "").strip().lower()
     if category_key == "masterpiece_interpretation":
         report.masterpiece_colloquial_hits = _detect_masterpiece_colloquial(markdown)
@@ -688,6 +955,7 @@ def format_report(report: QualityReport, *, top_k: int = 5) -> str:
     _render_section("颁奖词 / 神坛化", report.award_word_hits)
     _render_section("大模型残留口癖 (任一命中即说明洗稿不彻底)", report.llm_residual_hits)
     _render_section("排版污染（小标题 / Markdown / 批注残留）", report.format_noise_hits)
+    _render_section("终稿硬伤闸门（命中后不应直接交付）", report.final_hard_error_hits)
     _render_section("名作解读口语化残留", report.masterpiece_colloquial_hits)
     _render_section("财经来源穿帮表述残留", report.finance_source_leak_hits)
 

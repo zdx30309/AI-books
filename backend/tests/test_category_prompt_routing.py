@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import asyncio
 import json
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,6 +30,7 @@ from app.services.classical_chinese import (
     build_classical_prompt_source,
     classical_paragraph_marker,
     get_classical_variant_meta,
+    split_buddhist_story_units,
     strip_classical_paragraph_markers,
 )
 from app.services import content_engine
@@ -289,7 +291,21 @@ def test_life_philosophy_category_uses_three_alternative_prompt_flow() -> None:
     assert "原始视频文稿" in rendered
 
     assert "将我的文本重新表达为自然流畅的现代汉语" in polish
+    assert "晚上十一点" in polish
+    assert "凌晨两点" in polish
+    assert "并不" in polish
+    assert "真正的" in polish
+    assert "看似……，却……" in polish
+    assert "听起来似乎……，实际上……" in polish
+    assert "不得把具体判断改成空话" in polish
     assert "在不删减内容的前提下重新分段，每段 50~100 字" in refine
+    assert "晚上十一点" in refine
+    assert "凌晨两点" in refine
+    assert "并不" in refine
+    assert "真正的" in refine
+    assert "看似……，却……" in refine
+    assert "听起来似乎……，实际上……" in refine
+    assert "不得降低文稿质量" in refine
     assert "三个备选书名（小节标题：@三个备选书名）" in formatter
     assert "每个章节的标题统一格式为：！！！N. 章节名" in formatter
     assert "每一个标题文字前面加一个 ！！！ 符号作为居中标记" in formatter
@@ -311,9 +327,16 @@ def test_life_philosophy_prompt_avoids_fixed_scene_and_loop_formula() -> None:
     assert "现实处境 → 常见反应 → 隐含误区 → 长期代价 → 替代认知 → 行动原则" not in prompt
     assert "不要机械套用同一条六步路径" in prompt
     assert "开篇不得总是写成“一个虚构人名遇到心理困难”" in prompt
+    assert "章节开头和小节开头不要反复用具体钟点制造气氛" in prompt
+    assert "晚上十一点" in prompt
+    assert "凌晨两点" in prompt
     assert "不得固定放在每章倒数第二段" in prompt
     assert "不要统一写成“某某是有代价的”" in prompt
     assert "前者……，后者……" in prompt
+    assert "看似……，却……" in prompt
+    assert "听起来似乎……，实际上……" in prompt
+    assert "控制“并不”“真正”“真正的”的密度" in prompt
+    assert "回避上述词句时不能降低文稿质量" in prompt
     assert "不得出现中文逗号连用“，，”" in prompt
 
 
@@ -325,9 +348,16 @@ def test_life_philosophy_self_rescue_prompt_uses_anti_template_rules() -> None:
     assert "人生哲学反模板约束" in prompt
     assert "生活场面不要只放在每篇开头和结尾" in prompt
     assert "开篇不得总是写成“一个虚构人名遇到心理困难”" in prompt
+    assert "章节开头和小节开头不要反复用具体钟点制造气氛" in prompt
+    assert "晚上十一点" in prompt
+    assert "凌晨两点" in prompt
     assert "收束不要总是写成“你在一个平静时刻继续面对生活”" in prompt
     assert "不得固定放在每章倒数第二段" in prompt
     assert "避免在章节标题和正文里反复使用：自救、失控、消耗、成熟、成年人、审判、判决" in prompt
+    assert "控制“并不”“真正”“真正的”的密度" in prompt
+    assert "看似……，却……" in prompt
+    assert "听起来似乎……，实际上……" in prompt
+    assert "回避上述词句时不能降低文稿质量" in prompt
     assert "慢下来、边界、自责、责任、秩序、债务、陷阱、代价、某某瘾" in prompt
 
 
@@ -1091,9 +1121,16 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     assert "第一章必须从原文已有的动作、观照、提问或说法关系进入" in rendered
     assert "长佛经必须覆盖全本，不能只写一个总故事、总论或代表性段落" in rendered
     assert "按原文顺序拆成多个故事单元/说法单元" in rendered
+    assert "一个原文故事单元只能对应一个正文正式章节" in rendered
+    assert "不得把同一则因缘、譬喻或故事拆成“故事章”和“道理章”两章" in rendered
+    assert "《百喻经》全本是九十八则譬喻" in rendered
+    assert "不得扩成一百九十多章、二百章或二百零四章" in rendered
+    assert "不得生成只有一句道理、几句话评价或寥寥数字的空章节" in rendered
     assert "长文本的章节数量不设固定上限" in rendered
     assert "目录要体现原文从头到尾的故事单元顺序" in rendered
+    assert "目录和正文的正式章节数量必须以原文故事单元数为准" in rendered
     assert "长佛经按全本顺序拆成足够多的故事单元/说法单元，不设固定章节上限" in rendered
+    assert "长佛经不能把一个故事单元拆成“故事章+寓意章”" in rendered
     assert "正确方向是“观自在菩萨深行般若时，先照见五蕴皆空" in rendered
     assert "错误方向是“逐句解释五蕴、色空、无明、老死分别是什么意思”" in rendered
     assert "改动幅度不要太大" in rendered
@@ -1109,6 +1146,25 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     assert "不得把故事稿改成术语解释稿或白话讲义" in prompts["gemini_fast_refine"]
     assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_polish"]
     assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_refine"]
+    assert "350 到 600 汉字" in rendered
+    assert "完整故事厚度" in prompts["gemini_fast_polish"]
+    assert "完整故事厚度" in prompts["gemini_fast_refine"]
+
+
+def test_buddhist_story_unit_splitter_prefers_body_run_over_catalog() -> None:
+    catalog = "\n".join(f"{idx}. 目录标题{idx}" for idx in range(1, 16))
+    body = "\n".join(
+        f"{idx}. 第{idx}喻\n这是第{idx}则譬喻的原文内容，包含愚人的选择、事情的发展和最后的警醒。"
+        for idx in range(1, 16)
+    )
+    raw_text = f"@目录\n{catalog}\n@正文\n{body}"
+
+    units = split_buddhist_story_units(raw_text, original_title="百喻经")
+
+    assert [unit.index for unit in units] == list(range(1, 16))
+    assert units[0].title == "第1喻"
+    assert "原文内容" in units[0].source
+    assert "目录标题" not in units[0].source
 
 
 def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
@@ -1161,6 +1217,59 @@ def test_buddhist_scripture_story_generation_avoids_classical_pipeline(
     assert "白话正文必须按原文段落一一对应输出" not in writer_prompts[0]
     assert "【P0001】" not in writer_prompts[0]
     assert "原文结构清单" not in writer_prompts[0]
+
+
+def test_buddhist_scripture_story_long_parables_use_story_unit_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "\n".join(
+        f"{idx}. 第{idx}喻\n从前有个愚人做了一件颠倒的事。事情一步步发展，最后显出修行上的警醒。"
+        for idx in range(1, 21)
+    )
+    writer_prompts: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **kwargs: object) -> str:
+        writer_prompts.append(prompt)
+        chapters = re.findall(r"@(\d+)\. ([^,，\n]+)", prompt)
+        if not chapters:
+            raise AssertionError("story unit writer prompt should list target chapters")
+        story = (
+            "从前有个愚人听见一句话，便急着照做，却没有先看清事情的来龙去脉。"
+            "他先做了一个选择，又因为这个选择不断补救，越补越偏。旁人提醒他时，他仍旧执着在最初的想法里，"
+            "直到结果摆在眼前，才发现自己抓住的是表面的方便，丢掉的是事情真正的根本。"
+            "这则譬喻不是为了嘲笑愚人，而是提醒修行者：听到一个道理之后，要回到因缘和次第里理解，"
+            "不能把一句话孤零零拿出来，当成可以立刻套用的答案。"
+            "若只是急着拿走结论，故事就会变成一句空话；只有看见愚人如何一步步走偏，"
+            "读者才会明白原文真正要警醒的地方。"
+            "所以这一章最后仍然落回原文的本意：修行不是抓住一个漂亮说法就够了，"
+            "还要看见自己在具体处境里怎样起心、怎样误判、怎样把小小的执著养成后来的苦果。"
+            "故事说完时，那个人的荒唐选择已经显出后果，读者也能顺着这个后果明白，"
+            "佛经里的譬喻不是短短一句结论，而是一面照见心念的镜子。"
+        )
+        return "\n\n".join(
+            f"@{number}. {title}\n{story}"
+            for number, title in chapters
+        )
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            raw_text,
+            category="buddhist_scripture_story",
+            output_dir=tmp_path / "buddhist-long",
+            classical_original_title="佛说譬喻集",
+        )
+    )
+
+    assert len(writer_prompts) == 3
+    assert all("佛经白话小故事改写作者" in prompt for prompt in writer_prompts)
+    assert "@20. 第20喻" in result
+    assert "第21喻" not in result
 
 
 def test_classical_chinese_interleaved_prompt_preserves_original_and_translation() -> None:

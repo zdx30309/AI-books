@@ -6,6 +6,7 @@ import logging
 import lzma
 import re
 from collections import Counter
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,13 @@ BUDDHIST_SCRIPTURE_VARIANT = "buddhist_story"
 CLASSICAL_CHINESE_CATEGORY_IDS = frozenset(
     {"classical_chinese", CLASSICAL_INTERLEAVED_CATEGORY, BUDDHIST_SCRIPTURE_STORY_CATEGORY}
 )
+
+
+@dataclass(frozen=True)
+class BuddhistStoryUnit:
+    index: int
+    title: str
+    source: str
 
 
 def classical_variant_for_category(category: object, variant: object = None) -> str:
@@ -439,6 +447,10 @@ def build_buddhist_scripture_story_source(
 - 短经也要根据内容自然扩写，但没有固定字数标准；以故事是否完整、是否有推进和收束为准。不能贴着原句逐句翻译。
 - 长佛经必须覆盖全本，不能只写一个总故事、总论或代表性段落。必须按原文顺序拆成多个故事单元/说法单元；每个单元负责覆盖一段原文内容，合起来从开头覆盖到结尾。
 - 如果原文包含多个独立因缘、譬喻、问答、品、卷、章节或场景，每一类内容都要各自写成不同的小故事或说法故事，不能合并成一篇概括文。
+- 一个原文故事单元只能对应一个正文正式章节。不得把同一则因缘、譬喻或故事拆成“故事章”和“道理章”两章；道理、寓意、修行提醒必须放回同一章末尾自然收束。
+- 《百喻经》全本是九十八则譬喻，正文正式章节应按九十八则左右组织；不得扩成一百九十多章、二百章或二百零四章。目录中一则譬喻只能占一条，不能为同一则故事再单独列一条“寓意”“启示”“代价”“智慧”章节。
+- 每个正文正式章节都必须是一则完整小故事或说法单元，至少包含故事进入、人物/动作/譬喻推进和同章内的自然收束；不得生成只有一句道理、几句话评价或寥寥数字的空章节。
+- 每个故事单元都要尽量充分写成好读的小故事，能多写就多写，不要为了省篇幅写成梗概。常规每则应有 350 到 600 汉字左右，原文特别短也要尽量写到 250 汉字以上。
 - 不要按原文段落一一对应输出，不要保留内部 P 编号，不要把正文写成“原文一句、翻译一句”的资料稿。
 - 不要逐句解释“某某意思是……”。要写成讲述：谁在修行或开示，看到什么，如何一步步说明，这场说法如何推进，又如何收束。
 - 正文主体不能是术语词典或白话讲义。少用“所谓、指的是、意思是、也就是说、这说明”这类解释腔句式；必须先有叙事动作和说法推进，再自然带出道理。
@@ -454,6 +466,7 @@ def build_buddhist_scripture_story_source(
 - 每一章都要有叙事推进句，例如“他看见……”“他转而告诉……”“这层意思继续展开……”“说法到这里收束到……”；不要连续三段都在解释术语。
 - 长文本的章节数量不设固定上限；需要多少个故事单元才能讲清楚、覆盖全本，就写多少个。不要为了凑少数章节而压缩、跳过或混合不同故事。
 - 目录要体现原文从头到尾的故事单元顺序。正文每个正式章节都必须承担一个明确覆盖范围：一个因缘、一个譬喻、一个问答推进、一个说法层次或一个收束。
+- 目录和正文的正式章节数量必须以原文故事单元数为准，不以“故事+寓意”双倍计算；同一则故事的寓意只能写在同一章内部，不能另起正式章节。
 - 如果原文没有具体地点、天气、钟声、旁观者，就不要编这些外部场景；可以写“这场故事发生在一次照见里”“这场开示从某个称呼开始”这类不新增事实的叙事入口。
 - 例如遇到《心经》：正确方向是“观自在菩萨深行般若时，先照见五蕴皆空；他把这次照见转向舍利子，用一层层开示把色空、六根六尘、十二因缘、四谛、无所得讲成一条放下挂碍的路，最后以咒语收束”。错误方向是“逐句解释五蕴、色空、无明、老死分别是什么意思”。
 
@@ -465,11 +478,155 @@ def build_buddhist_scripture_story_source(
 - 正文要连贯、有故事感，但不要改成小说爽文、玄幻故事、宗教宣传口号或现代励志文。
 - @正文必须比直译更有故事形态。短经通常可以拆成 2-4 个正文短章；每章要有连续段落，不要只给几句白话译文。
 - 长佛经必须优先完整覆盖，而不是优先少章、短篇或好看。宁可多写几个不同小故事，也不能漏掉原文里的关键因缘、譬喻、问答和说法推进。
+- 长佛经不能把一个故事单元拆成“故事章+寓意章”。如果是《百喻经》这类一则一喻的文本，每一则譬喻就是一个正式章节，章节内部同时完成故事和寓意收束。
+- 每个故事单元都要尽量展开为完整、好读的小故事，不能写成几十字或一百来字的梗概；宁可篇幅更长，也要把动作、误判、结果和警醒讲清楚。
 - 每个正文短章都要有一个推进功能：进入修行或说法场面、照见或提出问题、层层开示、落到行动/心境/咒语收束。不要每章都写成概念释义。
 - 不要加粗，不要代码块，不要元信息，不要解释过程；直接输出完整成稿。
 
 【佛经原文】
 {source_text}"""
+
+
+_BUDDHIST_ARABIC_HEADING_RE = re.compile(r"^\s*@?\s*(\d{1,3})[.．、]\s*(.{1,48})\s*$")
+_BUDDHIST_PAREN_HEADING_RE = re.compile(r"^\s*[（(]\s*(\d{1,3}|[一二三四五六七八九十百零〇两]{1,8})\s*[）)]\s*(.{1,48})\s*$")
+_BUDDHIST_CHINESE_HEADING_RE = re.compile(
+    r"^\s*(?:第\s*)?([一二三四五六七八九十百零〇两]{1,8})\s*(?:则|篇|喻)[：:、.．\s]*(.{0,48})\s*$"
+)
+_BUDDHIST_HEADING_BAD_PUNCT_RE = re.compile(r"[。！？!?；;]")
+
+
+def _chinese_numeral_to_int(text: str) -> int | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        value = int(raw)
+        return value if value > 0 else None
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    units = {"十": 10, "百": 100}
+    total = 0
+    number = 0
+    seen = False
+    for char in raw:
+        if char in digits:
+            number = digits[char]
+            seen = True
+            continue
+        unit = units.get(char)
+        if unit is None:
+            return None
+        seen = True
+        total += (number or 1) * unit
+        number = 0
+    if not seen:
+        return None
+    total += number
+    return total if total > 0 else None
+
+
+def _buddhist_heading_candidate(line: str) -> tuple[int, str] | None:
+    stripped = (line or "").strip()
+    if not stripped or len(stripped) > 72:
+        return None
+    match = _BUDDHIST_ARABIC_HEADING_RE.match(stripped)
+    if not match:
+        match = _BUDDHIST_PAREN_HEADING_RE.match(stripped)
+    if not match:
+        match = _BUDDHIST_CHINESE_HEADING_RE.match(stripped)
+    if not match:
+        return None
+    number = _chinese_numeral_to_int(match.group(1))
+    title = re.sub(r"\s+", " ", (match.group(2) or "").strip())
+    title = title.strip("：:，,、.． ")
+    if number is None or number > 300:
+        return None
+    if title and (_BUDDHIST_HEADING_BAD_PUNCT_RE.search(title) or len(title) > 48):
+        return None
+    if title and len(_CJK_RE.findall(title)) == 0:
+        return None
+    return number, title or f"第{number}则"
+
+
+def _buddhist_cjk_count(text: str) -> int:
+    return sum(1 for char in text or "" if "\u3400" <= char <= "\u9fff")
+
+
+def split_buddhist_story_units(raw_text: str, *, original_title: object = None) -> list[BuddhistStoryUnit]:
+    """Split numbered Buddhist parable collections into story units.
+
+    This is intentionally conservative: when there is no reliable numbered run,
+    the caller should use the normal single-piece Buddhist writer.
+    """
+    lines = classical_source_lines(raw_text)
+    if not lines:
+        return []
+
+    candidates: list[tuple[int, int, str]] = []
+    for line_index, line in enumerate(lines):
+        candidate = _buddhist_heading_candidate(line)
+        if candidate is None:
+            continue
+        number, title = candidate
+        candidates.append((line_index, number, title))
+    if len(candidates) < 12:
+        return []
+
+    runs: list[list[tuple[int, int, str]]] = []
+    current: list[tuple[int, int, str]] = []
+    for candidate in candidates:
+        _, number, _ = candidate
+        if not current:
+            current = [candidate] if number == 1 else []
+            continue
+        previous_number = current[-1][1]
+        if number == previous_number + 1:
+            current.append(candidate)
+            continue
+        if len(current) >= 12:
+            runs.append(current)
+        current = [candidate] if number == 1 else []
+    if len(current) >= 12:
+        runs.append(current)
+    if not runs:
+        return []
+
+    next_heading_by_line = {
+        candidates[pos][0]: (candidates[pos + 1][0] if pos + 1 < len(candidates) else len(lines))
+        for pos in range(len(candidates))
+    }
+
+    def run_body_chars(run: list[tuple[int, int, str]]) -> int:
+        total = 0
+        for line_index, _, _ in run:
+            end = next_heading_by_line.get(line_index, len(lines))
+            body = "\n".join(lines[line_index + 1 : end])
+            total += _buddhist_cjk_count(body)
+        return total
+
+    best_run = max(runs, key=lambda run: (run_body_chars(run), len(run)))
+    if len(best_run) < 20 and "百喻经" not in f"{original_title or ''}\n{raw_text[:500]}":
+        return []
+
+    units: list[BuddhistStoryUnit] = []
+    for line_index, number, title in best_run:
+        end = next_heading_by_line.get(line_index, len(lines))
+        source_lines = [lines[line_index]] + lines[line_index + 1 : end]
+        source = "\n".join(source_lines).strip()
+        units.append(BuddhistStoryUnit(index=number, title=title, source=source))
+    return units
 
 
 __all__ = [
@@ -480,6 +637,7 @@ __all__ = [
     "BUDDHIST_SCRIPTURE_STORY_CATEGORY",
     "BUDDHIST_SCRIPTURE_VARIANT",
     "BUDDHIST_SCRIPTURE_DEFAULT_TITLE",
+    "BuddhistStoryUnit",
     "buddhist_scripture_final_title",
     "build_buddhist_scripture_story_source",
     "build_classical_dictionary_context",
@@ -494,5 +652,6 @@ __all__ = [
     "classical_final_title",
     "get_classical_variant_meta",
     "normalize_classical_variant",
+    "split_buddhist_story_units",
     "strip_classical_paragraph_markers",
 ]

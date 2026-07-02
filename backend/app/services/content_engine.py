@@ -26,6 +26,7 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
+    BuddhistStoryUnit,
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
@@ -37,6 +38,7 @@ from app.services.classical_chinese import (
     classical_final_title,
     classical_paragraph_marker,
     classical_source_lines,
+    split_buddhist_story_units,
     classical_variant_for_category,
     strip_classical_paragraph_markers,
 )
@@ -94,6 +96,11 @@ CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
 CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
 CLASSICAL_SEGMENTED_WRITER_CONTEXT_CHARS = 1_500
 CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS = 1_000_000
+BUDDHIST_STORY_UNIT_WRITER_MIN_UNITS = 20
+BUDDHIST_STORY_UNITS_PER_SEGMENT = 8
+BUDDHIST_STORY_MIN_CHAPTER_CJK = 320
+BUDDHIST_STORY_TINY_SOURCE_MIN_CHAPTER_CJK = 240
+BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS = 2_800
 
 
 _FRONT_SECTION_TITLES = ("最终书名", "最终简介", "三个备选书名", "三个备选简介", "目录", "导言", "文前", "正文")
@@ -1619,6 +1626,352 @@ async def _generate_classical_segmented_writer(
     return assembled
 
 
+def _should_use_buddhist_story_unit_writer(
+    units: list[BuddhistStoryUnit],
+    *,
+    original_title: object = None,
+    source_text: str = "",
+) -> bool:
+    if len(units) >= BUDDHIST_STORY_UNIT_WRITER_MIN_UNITS:
+        return True
+    title_probe = f"{original_title or ''}\n{source_text[:500]}"
+    return "百喻经" in title_probe and len(units) >= 12
+
+
+def _buddhist_story_unit_chunks(
+    units: list[BuddhistStoryUnit],
+    *,
+    per_segment: int = BUDDHIST_STORY_UNITS_PER_SEGMENT,
+) -> list[list[BuddhistStoryUnit]]:
+    size = max(1, int(per_segment or BUDDHIST_STORY_UNITS_PER_SEGMENT))
+    return [units[pos : pos + size] for pos in range(0, len(units), size)]
+
+
+def _buddhist_story_units_source_block(units: list[BuddhistStoryUnit]) -> str:
+    blocks: list[str] = []
+    for unit in units:
+        blocks.append(
+            f"【U{unit.index:04d}】标题：{unit.title}\n原文：\n{unit.source.strip()}"
+        )
+    return "\n\n".join(blocks)
+
+
+def _buddhist_story_frontmatter(units: list[BuddhistStoryUnit], *, original_title: object = None) -> str:
+    final_title = buddhist_scripture_final_title(original_title)
+    is_baiyujing = "百喻经" in final_title
+    catalog = "\n".join(f"{unit.index}. {unit.title}" for unit in units)
+    if is_baiyujing:
+        intro = "《百喻经》用一则则短小譬喻，照见人在贪、嗔、痴、疑和执著中的颠倒。它的故事常常看似荒唐，却把修行里最容易犯的错误放到眼前：有人为了多得一点盐而伤身，有人想建楼却不要地基，有人追逐影子却以为抓住了金子。读这些故事，重点不在笑话本身，而在笑过之后看见自己心里的相似处。"
+        description = "本书依《百喻经》原有譬喻次第，将经中故事改写为连贯、平实、有故事感的白话文本。每一则譬喻都尽量保留原文里的动作、选择、后果和警醒，不把它写成逐句翻译，也不把它改成脱离原意的现代寓言。"
+    else:
+        intro = f"这部佛经白话稿依原文次第展开，共整理出 {len(units)} 个故事或说法单元。每个单元都从原文已有的人物、问答、动作或譬喻进入，把压缩在经文中的因缘和收束写成能顺着读下去的白话故事。"
+        description = "本书依据佛经原文改写为连贯白话，尽量让读者在故事和说法推进中理解其中的警醒。文字保持克制，不另造情节，不离开原文讲述的事实和道理。"
+    return f"""@最终书名
+{final_title}
+@最终简介
+{description}
+@目录
+{catalog}
+@导言
+{intro}
+@正文"""
+
+
+_BUDDHIST_BODY_CHAPTER_RE = re.compile(r"^\s*@\s*(\d+)[.．、]\s*(.+?)\s*$")
+
+
+def _extract_buddhist_body_chapters(markdown: str) -> list[tuple[int, str, list[str]]]:
+    chapters: list[tuple[int, str, list[str]]] = []
+    in_body = False
+    current_num: int | None = None
+    current_title = ""
+    current_lines: list[str] = []
+    for raw_line in (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            if current_num is not None:
+                chapters.append((current_num, current_title, current_lines))
+            in_body = section.group(1) == "正文"
+            current_num = None
+            current_title = ""
+            current_lines = []
+            continue
+        if not in_body and not chapters and _BUDDHIST_BODY_CHAPTER_RE.match(line):
+            in_body = True
+        if not in_body:
+            continue
+        match = _BUDDHIST_BODY_CHAPTER_RE.match(line)
+        if match:
+            if current_num is not None:
+                chapters.append((current_num, current_title, current_lines))
+            current_num = int(match.group(1))
+            current_title = match.group(2).strip()
+            current_lines = []
+            continue
+        if current_num is not None and not _FRONT_SECTION_RE.match(line):
+            current_lines.append(line)
+    if current_num is not None:
+        chapters.append((current_num, current_title, current_lines))
+    return chapters
+
+
+def _buddhist_chapter_cjk(lines: list[str]) -> int:
+    return sum(1 for char in "".join(lines) if "\u3400" <= char <= "\u9fff")
+
+
+def _buddhist_min_chapter_cjk(unit: BuddhistStoryUnit) -> int:
+    source_cjk = sum(1 for char in unit.source if "\u3400" <= char <= "\u9fff")
+    if source_cjk < 24:
+        return BUDDHIST_STORY_TINY_SOURCE_MIN_CHAPTER_CJK
+    return BUDDHIST_STORY_MIN_CHAPTER_CJK
+
+
+def _buddhist_story_manuscript_issues(markdown: str, units: list[BuddhistStoryUnit]) -> list[str]:
+    expected = [unit.index for unit in units]
+    chapters = _extract_buddhist_body_chapters(markdown)
+    actual = [number for number, _, _ in chapters]
+    issues: list[str] = []
+    if actual != expected:
+        missing = [number for number in expected if number not in actual]
+        extra = [number for number in actual if number not in expected]
+        if missing:
+            issues.append("缺少佛经故事章节：" + ", ".join(f"@{item}" for item in missing[:12]))
+        if extra:
+            issues.append("出现本批次外章节：" + ", ".join(f"@{item}" for item in extra[:12]))
+        if not missing and not extra:
+            issues.append("佛经故事章节顺序被改动")
+    by_number = {number: lines for number, _, lines in chapters}
+    unit_by_number = {unit.index: unit for unit in units}
+    short: list[str] = []
+    for number in expected:
+        unit = unit_by_number[number]
+        lines = by_number.get(number, [])
+        cjk = _buddhist_chapter_cjk(lines)
+        if cjk < _buddhist_min_chapter_cjk(unit):
+            short.append(f"@{number} {unit.title} 仅 {cjk} 字")
+    if short:
+        issues.append("佛经故事章节展开不足：" + "；".join(short[:8]))
+    return issues
+
+
+def _buddhist_chapter_marker_issues(source_chunk: str, output_chunk: str) -> list[str]:
+    source_numbers = [int(item) for item in re.findall(r"(?m)^\s*@\s*(\d+)[.．、]", source_chunk or "")]
+    if not source_numbers:
+        return []
+    output_numbers = [number for number, _, _ in _extract_buddhist_body_chapters(output_chunk)]
+    if output_numbers == source_numbers:
+        return []
+    issues: list[str] = []
+    missing = [number for number in source_numbers if number not in output_numbers]
+    extra = [number for number in output_numbers if number not in source_numbers]
+    if missing:
+        issues.append("缺少佛经章节：" + ", ".join(f"@{item}" for item in missing[:8]))
+    if extra:
+        issues.append("出现本块外佛经章节：" + ", ".join(f"@{item}" for item in extra[:8]))
+    if not missing and not extra:
+        issues.append("佛经章节顺序被改动")
+    return issues
+
+
+def _split_buddhist_text_by_chapters(text: str, *, target_chars: int = BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS) -> list[str]:
+    if not text or not text.strip():
+        return []
+    chapters = _extract_buddhist_body_chapters(text)
+    if not chapters:
+        return _split_text_by_paragraph(text, target_chars=target_chars)
+    body_match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", text.replace("\r\n", "\n").replace("\r", "\n"))
+    prefix = text[: body_match.end()].strip() if body_match else ""
+    rendered_chapters = [
+        f"@{number}. {title}\n" + "\n".join(lines).strip()
+        for number, title, lines in chapters
+    ]
+    target = max(800, int(target_chars or BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS))
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for chapter in rendered_chapters:
+        chapter_len = len(chapter) + 2
+        if current and current_len + chapter_len > target:
+            chunks.append("\n\n".join(current))
+            current = []
+            current_len = 0
+        current.append(chapter)
+        current_len += chapter_len
+    if current:
+        chunks.append("\n\n".join(current))
+    if prefix and chunks:
+        chunks[0] = prefix + "\n" + chunks[0]
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _buddhist_segment_cache_path(
+    output_dir: Path | None,
+    *,
+    segment_index: int,
+    units: list[BuddhistStoryUnit],
+) -> Path | None:
+    if output_dir is None:
+        return None
+    source = "\n\n".join(unit.source for unit in units)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    start = units[0].index
+    end = units[-1].index
+    return output_dir / "01_buddhist_story_segments" / f"{segment_index:04d}_U{start:04d}-U{end:04d}_{digest}.md"
+
+
+async def _repair_buddhist_story_segment_once(
+    markdown: str,
+    *,
+    units: list[BuddhistStoryUnit],
+    output_dir: Path | None,
+    segment_index: int,
+) -> str:
+    issues = _buddhist_story_manuscript_issues(markdown, units)
+    if not issues:
+        return markdown
+    issue_text = "\n".join(f"- {issue}" for issue in issues)
+    _dump_stage(output_dir, f"buddhist_story_segment_{segment_index:04d}_issues.txt", issue_text)
+    prompt = f"""你是佛经白话故事稿的结构校对编辑。下面这一批故事单元已经生成，但存在章节缺失、顺序错误或故事展开不足。请只修复列出的问题。
+
+【必须修复的问题】
+{issue_text}
+
+【硬规则】
+- 只输出本批次正文，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
+- 本批次必须严格输出这些正式章节：{", ".join(f"@{unit.index}. {unit.title}" for unit in units)}。
+- 每个原文故事单元只能对应一个正式章节；不能拆成“故事章”和“道理章”。
+- 每章都要有完整小故事形态：进入故事、人物动作或选择、后果显现、同章末尾自然收束寓意。
+- 每章要尽量充分展开，常规写成 350 到 600 汉字左右，原文特别短也要尽量写到 250 汉字以上；不能只补一句道理或几句解释。
+- 不得编造原文没有的人物、地点、关键事实、因果结论或新结局。
+- 不得只写一句“这譬喻……”；道理必须接在故事之后自然落下。
+- 不要重写本批次之外的章节。
+
+【本批次原文故事单元】
+{_buddhist_story_units_source_block(units)}
+
+【待修复正文】
+{markdown.strip()}
+"""
+    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+    body = _buddhist_story_segment_output_body(repaired)
+    remaining = _buddhist_story_manuscript_issues(body, units)
+    if remaining:
+        raise RuntimeError(f"佛经白话分单元修复失败: {'；'.join(remaining)}")
+    _dump_stage(output_dir, f"buddhist_story_segment_{segment_index:04d}_repaired.md", body)
+    return body
+
+
+def _buddhist_story_segment_output_body(markdown: str) -> str:
+    chapters = _extract_buddhist_body_chapters(markdown)
+    if not chapters:
+        return (markdown or "").strip()
+    parts: list[str] = []
+    for number, title, lines in chapters:
+        parts.append(f"@{number}. {title}\n" + "\n".join(line for line in lines if line.strip()).strip())
+    return "\n\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def _buddhist_story_segment_prompt(
+    *,
+    units: list[BuddhistStoryUnit],
+    all_units: list[BuddhistStoryUnit],
+    original_title: object,
+) -> str:
+    final_title = buddhist_scripture_final_title(original_title)
+    return f"""你是一名佛经白话小故事改写作者。现在处理的是长佛经中的一个连续故事单元批次，不是整本一次生成。
+
+【全书信息】
+- 最终书名：{final_title}
+- 全书共 {len(all_units)} 个故事/说法单元；当前只写第 {units[0].index} 到第 {units[-1].index} 单元。
+- 当前批次之外的单元不要写，也不要概括。
+
+【输出范围】
+- 只输出本批次 @正文 里的正式章节，不要输出 @最终书名、@最终简介、@目录、@导言、@正文。
+- 必须严格按以下章节输出：{", ".join(f"@{unit.index}. {unit.title}" for unit in units)}。
+- 每个原文故事单元只能对应一个正式章节，不能拆成“故事章”和“寓意章”。
+
+【写作质量】
+- 每章都要是一则完整的小故事：故事进入、人物动作或选择、结果变化、同章内自然收束道理。
+- 每章要有足够展开，按“能把故事表达清楚”为准，尽量往充分写；常规每则写成 350 到 600 汉字左右，原文特别短也要尽量写到 250 汉字以上。
+- 不能只写梗概，不能只有两三句话，不能只写“这譬喻……”。必须把原文压缩的动作、误判、后果和警醒顺成一则能读的小故事。
+- 原文很短时，也要把原文压缩的动作、动机、误判、结果和警醒顺成一个可读故事；但不得编造原文没有的关键事实、人物、地点、结局或教义。
+- 道理、寓意、修行提醒只能放在同一章末尾自然收束，不能另起正式章节。
+- 语言平实、顺滑、有故事感，不要写成逐句翻译、术语讲义、鸡汤、玄幻故事或现代心理学文章。
+- 遇到不确定的佛教术语、人名、地名和核心教义，保守处理，不要乱翻。
+
+【本批次原文故事单元】
+{_buddhist_story_units_source_block(units)}"""
+
+
+async def _generate_buddhist_story_unit_writer(
+    source_text: str,
+    *,
+    units: list[BuddhistStoryUnit],
+    original_title: object,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+) -> str:
+    if not units:
+        raise ValueError("佛经白话故事单元为空，无法分单元生成")
+    chunks = _buddhist_story_unit_chunks(units)
+    logger.info(
+        "佛经白话启用故事单元分批 writer source_chars=%d units=%d chunks=%d",
+        len(source_text or ""),
+        len(units),
+        len(chunks),
+    )
+    frontmatter = _buddhist_story_frontmatter(units, original_title=original_title)
+    bodies: list[str] = []
+    completed_chars = len(frontmatter)
+    for segment_index, segment_units in enumerate(chunks, start=1):
+        cache_path = _buddhist_segment_cache_path(
+            output_dir,
+            segment_index=segment_index,
+            units=segment_units,
+        )
+        body: str | None = None
+        if cache_path and cache_path.exists():
+            try:
+                cached = cache_path.read_text(encoding="utf-8").strip()
+                if cached and not _buddhist_story_manuscript_issues(cached, segment_units):
+                    body = cached
+                    logger.info("复用佛经白话故事分批缓存 %d/%d", segment_index, len(chunks))
+            except Exception as exc:
+                logger.warning("佛经白话故事分批缓存读取失败 %d/%d: %s", segment_index, len(chunks), exc)
+        if body is None:
+            prompt = _buddhist_story_segment_prompt(
+                units=segment_units,
+                all_units=units,
+                original_title=original_title,
+            )
+            raw_segment = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+            body = _buddhist_story_segment_output_body(raw_segment)
+            body = await _repair_buddhist_story_segment_once(
+                body,
+                units=segment_units,
+                output_dir=output_dir,
+                segment_index=segment_index,
+            )
+            if cache_path:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(body.strip(), encoding="utf-8")
+                except Exception as exc:
+                    logger.warning("佛经白话故事分批缓存写入失败 %d/%d: %s", segment_index, len(chunks), exc)
+        bodies.append(body.strip())
+        completed_chars += len(body)
+        if on_stage:
+            on_stage("writer_progress", {"chars": completed_chars, "story_unit": segment_units[-1].index})
+    assembled = frontmatter.rstrip() + "\n" + "\n\n".join(bodies).strip()
+    issues = _buddhist_story_manuscript_issues(assembled, units)
+    if issues:
+        raise RuntimeError(f"佛经白话故事单元组装校验失败: {'；'.join(issues)}")
+    return assembled
+
+
 _LIFE_PHILOSOPHY_CENTERED_SECTIONS = {"三个备选书名", "三个备选简介", "目录", "导言", "正文"}
 
 
@@ -2081,6 +2434,72 @@ async def _route_writer_call(
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
+
+
+_NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES = {
+    "《百喻经》章节覆盖不足",
+    "佛经白话章节过短，故事展开不足",
+}
+
+
+def _has_non_repairable_final_hard_errors(issues: dict[str, list[str]]) -> bool:
+    return any(name in issues for name in _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES)
+
+
+async def _repair_final_hard_errors_once(
+    markdown: str,
+    *,
+    category: str | None,
+    output_dir: Path | None,
+    stage: str = "format",
+) -> str:
+    from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
+
+    normalized_category = normalize_category(category or "")
+    issues = detect_final_hard_errors(markdown, category=normalized_category)
+    if not issues:
+        return markdown
+
+    issue_text = format_final_hard_error_hits(issues)
+    logger.warning("终稿硬伤闸门触发 stage=%s category=%s: %s", stage, normalized_category, issue_text)
+    _dump_stage(output_dir, "final_hard_error_issues.txt", issue_text)
+    if _has_non_repairable_final_hard_errors(issues):
+        raise RuntimeError(f"终稿硬伤质检失败，需重跑完整生成链路: {issue_text}")
+
+    repair_prompt = f"""你是中文长文终稿硬伤质检编辑。下面是一篇已经完成全部生成、润色、精修和格式化的终稿，但仍命中了高置信硬伤。请只修复列出的问题，不要重写文章。
+
+【必须修复的问题】
+{issue_text}
+
+【修复规则】
+- 只修复上面列出的语义搭配、伪小标题、残留提示词、重复标题或空块硬伤。
+- 语义搭配要按中文常识修正，例如“菜/饭菜/菜肴好喝”应改成“好吃”或“味道好”，“汤/茶/水好吃”应改成“好喝”或等价自然表达。
+- 正文内部小标题只能使用“###短标题”单独占一行；不能保留“@短标题”、编号伪标题、裸短标题或“短标题，正文内容”这种混排。
+- 如果命中佛经白话章节过短、故事和寓意被拆章或《百喻经》章节数量异常，必须把同一则譬喻的“故事章”和“道理章/寓意章/启示章”合并为一个正式章节；每章内部先讲完整故事，再在同章末尾自然收束道理，不得保留只有一句道理的独立章节。
+- 如果是《百喻经》全本，正文正式章节应按九十八则譬喻组织，不能生成一百九十多章、二百章或二百零四章。
+- 删除任务说明、审稿批注、提示词残留和模型解释语。
+- 不得新增故事情节、观点、事实、人物、章节或参考资料。
+- 不得改变 @最终书名、@最终简介、@目录、@导言、@正文 的顺序和名称。
+- 不得改变章节顺序、段落主旨、文风和字数规模。
+- 只输出修复后的完整终稿，不要解释，不要列清单。
+
+【待修复终稿】
+{markdown.strip()}
+"""
+    repaired = await _route_writer_call(
+        repair_prompt,
+        max_output_tokens=0,
+        retry_on_failure=False,
+    )
+    repaired = normalize_final_markdown(repaired, category=normalized_category)
+    _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
+
+    remaining = detect_final_hard_errors(repaired, category=normalized_category)
+    if remaining:
+        remaining_text = format_final_hard_error_hits(remaining)
+        _dump_stage(output_dir, "final_hard_error_remaining.txt", remaining_text)
+        raise RuntimeError(f"终稿硬伤质检失败，修复后仍命中: {remaining_text}")
+    return repaired
 
 
 def _effective_gemini_chunk_timeout(
@@ -3625,6 +4044,14 @@ async def _generate_finance_longform_book(
     if final_resume_markdown:
         if _finance_final_resume_reusable(final_resume_markdown, target_words, category=category):
             logger.info("复用已存在的财经长文 04_format.md")
+            final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=category)
+            final_resume_markdown = await _repair_final_hard_errors_once(
+                final_resume_markdown,
+                category=category,
+                output_dir=output_dir,
+                stage="finance_resume",
+            )
+            _dump_stage(output_dir, "04_format.md", final_resume_markdown)
             _log_stage("finance 4/4 format (resume)", final_resume_markdown)
             if on_stage:
                 on_stage("format_done", {"chars": len(final_resume_markdown)})
@@ -3901,6 +4328,13 @@ async def _generate_finance_longform_book(
         )
         _dump_stage(output_dir, "04_format_rejected_compressed.md", final_markdown)
         final_markdown = refined_markdown
+    final_markdown = normalize_final_markdown(final_markdown, category=category)
+    final_markdown = await _repair_final_hard_errors_once(
+        final_markdown,
+        category=category,
+        output_dir=output_dir,
+        stage="finance_format",
+    )
     _log_stage("finance 4/4 format", final_markdown, prev_chars=refine_chars)
     _dump_stage(output_dir, "04_format.md", final_markdown)
     if on_stage:
@@ -4385,6 +4819,8 @@ async def generate_full_book(
     classical_marked_source_text = ""
     classical_expected_count = 0
     is_buddhist_scripture_story = normalized_category == BUDDHIST_SCRIPTURE_STORY_CATEGORY
+    buddhist_story_units: list[BuddhistStoryUnit] = []
+    use_buddhist_story_unit_writer = False
     is_classical_category = (
         normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
         and not is_buddhist_scripture_story
@@ -4392,6 +4828,15 @@ async def generate_full_book(
     is_classical_interleaved = normalized_category == CLASSICAL_INTERLEAVED_CATEGORY
     if is_buddhist_scripture_story:
         classical_variant = classical_variant_for_category(normalized_category, classical_variant)
+        buddhist_story_units = split_buddhist_story_units(
+            classical_source_text,
+            original_title=classical_original_title,
+        )
+        use_buddhist_story_unit_writer = _should_use_buddhist_story_unit_writer(
+            buddhist_story_units,
+            original_title=classical_original_title,
+            source_text=classical_source_text,
+        )
         writer_input_text = build_buddhist_scripture_story_source(
             writer_input_text,
             original_title=classical_original_title,
@@ -4443,7 +4888,11 @@ async def generate_full_book(
             source_duration_seconds=source_duration_seconds,
         )
 
+    ignore_existing_stages = False
+
     def _read_stage(filename: str) -> str | None:
+        if ignore_existing_stages:
+            return None
         if output_dir is None:
             return None
         path = output_dir / filename
@@ -4459,13 +4908,46 @@ async def generate_full_book(
     final_resume_markdown = _read_stage("04_format.md")
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
-        _log_stage("4/4 format (resume fast)", final_resume_markdown)
-        if on_stage:
-            on_stage("format_done", {"chars": len(final_resume_markdown)})
-        return final_resume_markdown
+        final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
+        from app.core.quality_metrics import detect_final_hard_errors
+
+        resume_hard_errors = detect_final_hard_errors(
+            final_resume_markdown,
+            category=normalized_category,
+        )
+        if is_buddhist_scripture_story and _has_non_repairable_final_hard_errors(resume_hard_errors):
+            logger.warning(
+                "佛经白话既有 04_format.md 命中不可局部修复硬伤，将忽略旧阶段并重新生成: %s",
+                "; ".join(resume_hard_errors),
+            )
+            ignore_existing_stages = True
+            final_resume_markdown = None
+        else:
+            final_resume_markdown = await _repair_final_hard_errors_once(
+                final_resume_markdown,
+                category=normalized_category,
+                output_dir=output_dir,
+                stage="resume",
+            )
+            _dump_stage(output_dir, "04_format.md", final_resume_markdown)
+            _log_stage("4/4 format (resume fast)", final_resume_markdown)
+            if on_stage:
+                on_stage("format_done", {"chars": len(final_resume_markdown)})
+            return final_resume_markdown
 
     # ---- 第 1 层: OpenAI Writer ----
     generated_markdown = _read_stage("01_writer.md")
+    if generated_markdown and use_buddhist_story_unit_writer:
+        cached_writer_issues = _buddhist_story_manuscript_issues(
+            generated_markdown,
+            buddhist_story_units,
+        )
+        if cached_writer_issues:
+            logger.warning(
+                "佛经白话既有 01_writer.md 未通过章节/篇幅保护，将重新生成: %s",
+                "; ".join(cached_writer_issues),
+            )
+            generated_markdown = None
     if generated_markdown:
         logger.info("复用已存在的 01_writer.md")
         _log_stage("1/4 writer (resume)", generated_markdown)
@@ -4488,6 +4970,14 @@ async def generate_full_book(
                 output_dir=output_dir,
                 on_stage=on_stage,
                 interleaved=is_classical_interleaved,
+            )
+        elif use_buddhist_story_unit_writer:
+            generated_markdown = await _generate_buddhist_story_unit_writer(
+                classical_source_text,
+                units=buddhist_story_units,
+                original_title=classical_original_title,
+                output_dir=output_dir,
+                on_stage=on_stage,
             )
         else:
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
@@ -4545,6 +5035,17 @@ async def generate_full_book(
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
     polished_markdown = _read_stage("02_polish.md")
+    if polished_markdown and use_buddhist_story_unit_writer:
+        cached_polish_issues = _buddhist_story_manuscript_issues(
+            polished_markdown,
+            buddhist_story_units,
+        )
+        if cached_polish_issues:
+            logger.warning(
+                "佛经白话既有 02_polish.md 未通过章节/篇幅保护，将重新一润: %s",
+                "; ".join(cached_polish_issues),
+            )
+            polished_markdown = None
     if polished_markdown:
         logger.info("复用已存在的 02_polish.md")
         _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
@@ -4561,7 +5062,11 @@ async def generate_full_book(
         )
         polished_markdown = await _polish_by_paragraph_chunks_strict(
             generated_markdown,
-            target_chars=1000,
+            target_chars=(
+                BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS
+                if use_buddhist_story_unit_writer
+                else 1000
+            ),
             system_instruction=gemini_fast_polish_prompt,
             on_stage=on_stage,
             output_dir=output_dir,
@@ -4570,11 +5075,15 @@ async def generate_full_book(
             splitter=(
                 _split_text_by_classical_marker_lines
                 if is_classical_category
+                else _split_buddhist_text_by_chapters
+                if use_buddhist_story_unit_writer
                 else None
             ),
             chunk_validator=(
                 _classical_chunk_marker_issues
                 if is_classical_category
+                else _buddhist_chapter_marker_issues
+                if use_buddhist_story_unit_writer
                 else None
             ),
         )
@@ -4583,6 +5092,17 @@ async def generate_full_book(
         polish_chars = len(polished_markdown)
         if on_stage:
             on_stage("polish_done", {"chars": polish_chars})
+    if use_buddhist_story_unit_writer:
+        buddhist_polish_issues = _buddhist_story_manuscript_issues(
+            polished_markdown,
+            buddhist_story_units,
+        )
+        if buddhist_polish_issues:
+            raise RuntimeError(
+                f"佛经白话一润后章节保护失败: {'；'.join(buddhist_polish_issues)}"
+        )
+        _dump_stage(output_dir, "02_polish.md", polished_markdown)
+        polish_chars = len(polished_markdown)
     if is_classical_category:
         polished_markdown = await _repair_classical_quality_once(
             polished_markdown,
@@ -4598,6 +5118,17 @@ async def generate_full_book(
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = _read_stage("03_refine.md")
+    if refined_markdown and use_buddhist_story_unit_writer:
+        cached_refine_issues = _buddhist_story_manuscript_issues(
+            refined_markdown,
+            buddhist_story_units,
+        )
+        if cached_refine_issues:
+            logger.warning(
+                "佛经白话既有 03_refine.md 未通过章节/篇幅保护，将重新二润: %s",
+                "; ".join(cached_refine_issues),
+            )
+            refined_markdown = None
     if refined_markdown:
         logger.info("复用已存在的 03_refine.md")
         _log_stage("3/4 refine (resume)", refined_markdown, prev_chars=polish_chars)
@@ -4625,6 +5156,17 @@ async def generate_full_book(
                 splitter=_split_text_by_classical_marker_lines,
                 chunk_validator=_classical_chunk_marker_issues,
             )
+        elif use_buddhist_story_unit_writer:
+            logger.info("Buddhist story refine uses chapter chunks to avoid whole-book compression")
+            refined_markdown = await _refine_by_paragraph_chunks_strict(
+                polished_markdown,
+                target_chars=BUDDHIST_STORY_LONG_CHUNK_TARGET_CHARS,
+                system_instruction=gemini_fast_refine_prompt,
+                on_stage=on_stage,
+                output_dir=output_dir,
+                splitter=_split_buddhist_text_by_chapters,
+                chunk_validator=_buddhist_chapter_marker_issues,
+            )
         else:
             try:
                 refined_markdown = await _to_thread_with_optional_timeout(
@@ -4651,6 +5193,17 @@ async def generate_full_book(
         refine_chars = len(refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
+    if use_buddhist_story_unit_writer:
+        buddhist_refine_issues = _buddhist_story_manuscript_issues(
+            refined_markdown,
+            buddhist_story_units,
+        )
+        if buddhist_refine_issues:
+            raise RuntimeError(
+                f"佛经白话二润后章节保护失败: {'；'.join(buddhist_refine_issues)}"
+        )
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+        refine_chars = len(refined_markdown)
     if is_classical_category:
         refined_markdown = await _repair_classical_quality_once(
             refined_markdown,
@@ -4666,6 +5219,17 @@ async def generate_full_book(
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")
+    if final_markdown and use_buddhist_story_unit_writer:
+        cached_format_issues = _buddhist_story_manuscript_issues(
+            final_markdown,
+            buddhist_story_units,
+        )
+        if cached_format_issues:
+            logger.warning(
+                "佛经白话既有 04_format.md 未通过章节/篇幅保护，将重新格式化: %s",
+                "; ".join(cached_format_issues),
+            )
+            final_markdown = None
     if final_markdown:
         logger.info("复用已存在的 04_format.md")
         _log_stage("4/4 format (resume)", final_markdown, prev_chars=refine_chars)
@@ -4675,14 +5239,14 @@ async def generate_full_book(
         if on_stage:
             on_stage("format_start", {})
         try:
-            format_max_output_tokens = 0 if is_classical_category else None
+            format_max_output_tokens = 0 if (is_classical_category or use_buddhist_story_unit_writer) else None
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
                     format_book_text,
                     refined_markdown,
                     prompt_template=final_book_format_prompt,
                     max_output_tokens=format_max_output_tokens,
-                    fail_on_max_tokens=is_classical_category,
+                    fail_on_max_tokens=(is_classical_category or use_buddhist_story_unit_writer),
                     on_progress=(
                         (lambda chars: on_stage("format_progress", {"chars": chars}))
                         if on_stage
@@ -4696,10 +5260,25 @@ async def generate_full_book(
                 and _classical_format_looks_truncated(refined_markdown, final_markdown)
             ):
                 final_markdown = _classical_format_fallback_text(refined_markdown, final_markdown)
+            if use_buddhist_story_unit_writer:
+                buddhist_format_issues = _buddhist_story_manuscript_issues(
+                    final_markdown,
+                    buddhist_story_units,
+                )
+                if buddhist_format_issues:
+                    logger.warning(
+                        "佛经白话 DeepSeek 格式层破坏章节或篇幅，回退到 Gemini 二润稿: %s",
+                        "; ".join(buddhist_format_issues),
+                    )
+                    final_markdown = refined_markdown
         except DeepSeekMaxTokensError as exc:
-            if not is_classical_category:
+            if not (is_classical_category or use_buddhist_story_unit_writer):
                 raise
-            final_markdown = _classical_format_fallback_text(refined_markdown, exc.partial_text)
+            final_markdown = (
+                refined_markdown
+                if use_buddhist_story_unit_writer
+                else _classical_format_fallback_text(refined_markdown, exc.partial_text)
+            )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"DeepSeek 终稿格式化超过 {settings.DEEPSEEK_FORMAT_CALL_TIMEOUT} 秒未返回"
@@ -4739,6 +5318,15 @@ async def generate_full_book(
                     output_dir=output_dir,
                     interleaved=is_classical_interleaved,
                 )
+    if use_buddhist_story_unit_writer:
+        buddhist_final_issues = _buddhist_story_manuscript_issues(
+            final_markdown,
+            buddhist_story_units,
+        )
+        if buddhist_final_issues:
+            raise RuntimeError(
+                f"佛经白话终稿章节保护失败: {'；'.join(buddhist_final_issues)}"
+            )
 
     if _front_matter_missing(final_markdown):
         logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")
@@ -4755,6 +5343,12 @@ async def generate_full_book(
             buddhist_scripture_final_title(classical_original_title),
         )
     final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
+    final_markdown = await _repair_final_hard_errors_once(
+        final_markdown,
+        category=normalized_category,
+        output_dir=output_dir,
+        stage="format",
+    )
     _dump_stage(output_dir, "04_format.md", final_markdown)
 
     logger.info(

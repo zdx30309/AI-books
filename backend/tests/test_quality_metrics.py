@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.quality_metrics import format_report, measure_quality
+from app.core.quality_metrics import detect_final_hard_errors, format_report, measure_quality
 
 
 def test_empty_string_all_zero() -> None:
@@ -115,6 +115,131 @@ def test_format_noise_allows_standard_internal_subheading() -> None:
 
     assert "# 标题残留" not in report.format_noise_hits
     assert "裸短小标题" not in report.format_noise_hits
+
+
+def test_final_hard_error_gate_detects_semantic_collocation_errors() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 盐味成患
+这人心里便想“菜之所以好喝，是因为加了盐。”
+"""
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+    report = measure_quality(markdown, category="buddhist_scripture_story")
+    rendered = format_report(report)
+
+    assert hits["语义搭配硬伤：菜/饭菜不应写成好喝"]
+    assert report.final_hard_error_hits["语义搭配硬伤：菜/饭菜不应写成好喝"]
+    assert "终稿硬伤闸门" in rendered
+
+
+def test_final_hard_error_gate_does_not_flag_valid_food_or_drink_collocations() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 日常饮食
+这碗汤很好喝。
+这盘菜很好吃。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert "语义搭配硬伤：菜/饭菜不应写成好喝" not in hits
+    assert "语义搭配硬伤：汤/茶/水不应写成好吃" not in hits
+
+
+def test_final_hard_error_gate_detects_illegal_at_pseudo_heading() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 新药中国路
+@不过这种模式的局限性也摆在眼前：如果只是慢半拍的简单复制，留给你的窗口期会越来越短。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="finance_technology")
+
+    assert hits["非法正文 @ 段首"]
+
+
+def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 新药中国路
+###扎堆竞争的代价
+临床资源就那么多。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="finance_technology")
+
+    assert not hits
+
+
+def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
+    chapters: list[str] = []
+    for index in range(1, 31):
+        if index % 2:
+            body = "有个愚人来到河边，听见别人说水深，便站在岸上犹豫不前。他看着水流过去，口渴越来越重，却始终不肯低头饮水。"
+        else:
+            body = "修行不可只听名相。"
+        chapters.append(f"@{index}. 测试章节{index}\n{body}")
+    markdown = "@最终书名\n佛经白话\n@正文\n" + "\n".join(chapters)
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert hits["佛经白话章节过短，疑似故事和寓意被拆章"]
+
+
+def test_final_hard_error_gate_detects_baiyujing_over_split_chapter_count() -> None:
+    body = "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐，最后在同一章里自然收束到修行上的提醒。"
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 122))
+    markdown = f"@最终书名\n百喻经（白话版）\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert hits["《百喻经》章节数量异常"]
+
+
+def test_final_hard_error_gate_detects_baiyujing_missing_late_chapters() -> None:
+    body = "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐，中间有动作和转折，最后在同一章里自然收束到修行上的提醒。"
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 59))
+    markdown = f"@最终书名\n百喻经（白话版）\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert hits["《百喻经》章节覆盖不足"]
+
+
+def test_final_hard_error_gate_detects_buddhist_story_chapters_too_short() -> None:
+    body = "从前有个愚人做错事，最后明白不可执著表面。"
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 31))
+    markdown = f"@最终书名\n佛经白话\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert hits["佛经白话章节过短，故事展开不足"]
+
+
+def test_final_hard_error_gate_allows_baiyujing_single_chapter_per_parable() -> None:
+    body = (
+        "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐。愚人听见一句话，便急着照做，"
+        "却没有先看清因缘和次第。他越想证明自己是对的，就越把小问题变成大麻烦。旁人提醒他时，"
+        "他仍旧执著在最初的想法里，直到后果摆在眼前，才发现自己抓住的是表面的方便，丢掉的是事情真正的根本。"
+        "故事最后在同一章里自然收束到修行上的提醒：听闻道理以后，不能只拿一句结论来套用，"
+        "还要回到具体处境里照见自己的起心动念。若看不见这个过程，所谓修行就会变成另一种执著。"
+        "这时故事已经不只是一个笑话，而是一条从选择到后果的路。读者能看见人如何在一点小利面前失去判断，"
+        "也能看见佛经为什么要用譬喻来说法：抽象的教义容易被记成口号，具体的故事却会把人的颠倒照出来。"
+    )
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 99))
+    markdown = f"@最终书名\n百喻经（白话版）\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert "《百喻经》章节数量异常" not in hits
+    assert "《百喻经》章节覆盖不足" not in hits
+    assert "佛经白话章节过短，故事展开不足" not in hits
+    assert "佛经白话章节过短，疑似故事和寓意被拆章" not in hits
 
 
 def test_life_philosophy_centered_markers_are_not_counted_as_double_excl_noise() -> None:
