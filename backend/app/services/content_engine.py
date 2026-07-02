@@ -1818,6 +1818,53 @@ def _buddhist_story_repair_batches(units: list[BuddhistStoryUnit]) -> list[list[
     return batches
 
 
+def _buddhist_story_batch_cache_path(
+    output_dir: Path | None,
+    *,
+    stage: str,
+    batch_index: int,
+    units: list[BuddhistStoryUnit],
+) -> Path | None:
+    if output_dir is None:
+        return None
+    source = "\n\n".join(f"@{unit.index}. {unit.title}\n{unit.source}" for unit in units)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    start = units[0].index if units else 0
+    end = units[-1].index if units else 0
+    return output_dir / (
+        f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}_"
+        f"U{start:04d}-U{end:04d}_{digest}.md"
+    )
+
+
+def _buddhist_story_cached_replacements(
+    output_dir: Path | None,
+    *,
+    stage: str,
+    units: list[BuddhistStoryUnit],
+) -> dict[int, tuple[str, str]]:
+    if output_dir is None:
+        return {}
+    unit_by_number = {unit.index: unit for unit in units}
+    replacements: dict[int, tuple[str, str]] = {}
+    for cache_path in sorted(output_dir.glob(f"buddhist_story_{stage}_targeted_repair_*.md")):
+        try:
+            cached = cache_path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            logger.warning("读取佛经白话定向修复缓存失败 path=%s: %s", cache_path, exc)
+            continue
+        if not cached:
+            continue
+        for number, title, lines in _extract_buddhist_body_chapters(cached):
+            unit = unit_by_number.get(number)
+            if unit is None or number in replacements:
+                continue
+            body = "\n".join(line for line in lines if line.strip()).strip()
+            if body and _buddhist_chapter_cjk(body.splitlines()) >= _buddhist_min_chapter_cjk(unit):
+                replacements[number] = (title or unit.title, body)
+    return replacements
+
+
 def _buddhist_story_existing_block(markdown: str, units: list[BuddhistStoryUnit]) -> str:
     by_number = _buddhist_story_chapter_map(markdown)
     blocks: list[str] = []
@@ -1836,10 +1883,11 @@ async def _repair_buddhist_story_batch_against_source(
     stage: str,
     batch_index: int,
 ) -> str:
-    cache_path = (
-        output_dir / f"buddhist_story_{stage}_targeted_repair_{batch_index:04d}.md"
-        if output_dir is not None
-        else None
+    cache_path = _buddhist_story_batch_cache_path(
+        output_dir,
+        stage=stage,
+        batch_index=batch_index,
+        units=units,
     )
     if cache_path is not None and cache_path.exists():
         try:
@@ -1905,7 +1953,14 @@ async def _repair_buddhist_story_manuscript_against_units(
     issue_text = "\n".join(f"- {issue}" for issue in issues)
     _dump_stage(output_dir, f"buddhist_story_{stage}_targeted_issues.txt", issue_text)
     targets = _buddhist_story_units_to_repair(markdown, units)
-    replacements: dict[int, tuple[str, str]] = {}
+    replacements = _buddhist_story_cached_replacements(output_dir, stage=stage, units=targets)
+    if replacements:
+        targets = [unit for unit in targets if unit.index not in replacements]
+        _dump_stage(
+            output_dir,
+            f"buddhist_story_{stage}_targeted_cache_reuse.txt",
+            "\n".join(f"@{number}" for number in sorted(replacements)),
+        )
     for batch_index, batch in enumerate(_buddhist_story_repair_batches(targets), start=1):
         batch_body = await _repair_buddhist_story_batch_against_source(
             markdown,

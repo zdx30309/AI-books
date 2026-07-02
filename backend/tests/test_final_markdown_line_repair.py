@@ -502,3 +502,40 @@ def test_buddhist_story_targeted_repair_accepts_borderline_story_length() -> Non
 
     assert content_engine._buddhist_story_manuscript_issues(accepted, units) == []
     assert content_engine._buddhist_story_manuscript_issues(rejected, units)
+
+
+def test_buddhist_story_targeted_repair_reuses_cached_chapters_across_batch_changes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    units = [
+        content_engine.BuddhistStoryUnit(index=1, title="one", source="\u539f" * 40),
+        content_engine.BuddhistStoryUnit(index=2, title="two", source="\u539f" * 40),
+    ]
+    cached_body = "\u6545" * 270
+    repaired_body = "\u4fee" * 270
+    (tmp_path / "buddhist_story_resume_targeted_repair_0001.md").write_text(
+        f"@1. one\n{cached_body}",
+        encoding="utf-8",
+    )
+    markdown = "@\u6b63\u6587\n@1. one\n\u77ed\n@2. two\n\u77ed"
+
+    async def fake_route_writer_call(prompt: str, **kwargs) -> str:
+        assert "@1. one" not in prompt.split("\u3010\u672c\u6279\u6b21\u539f\u6587\u6545\u4e8b\u5355\u5143\u3011", 1)[-1]
+        assert "@2. two" in prompt
+        return f"@2. two\n{repaired_body}"
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+
+    result = asyncio.run(
+        content_engine._repair_buddhist_story_manuscript_against_units(
+            markdown,
+            units=units,
+            output_dir=tmp_path,
+            stage="resume",
+        )
+    )
+
+    assert cached_body in result
+    assert repaired_body in result
+    assert (tmp_path / "buddhist_story_resume_targeted_cache_reuse.txt").exists()
