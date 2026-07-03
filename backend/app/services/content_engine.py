@@ -2591,7 +2591,6 @@ def _stream_openai_writer(
         if (getattr(event, "type", "") or "").endswith("output_text.delta"):
             delta = getattr(event, "delta", None)
             if delta:
-                print(delta, end="", flush=True)
                 chunks.append(delta)
                 generated_chars += len(delta)
                 if on_progress is not None:
@@ -2604,7 +2603,6 @@ def _stream_openai_writer(
             final_response = getattr(event, "response", None) or final_response
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
-    print()
     return "".join(chunks).strip(), final_response
 
 

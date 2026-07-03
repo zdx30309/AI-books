@@ -409,6 +409,11 @@ _CONTINUATION_PREFIXES = (
     "这类",
 )
 _FINAL_QA_EXCLUDED_CATEGORIES = {"comic_series", "healing_comic"}
+_CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
+_CLASSICAL_LABEL_LINE_RE = re.compile(
+    r"^(?:\u3010P\d{4}\u3011\s*)?"
+    r"(?:\uff08\u539f\u6587\uff09|\uff08\u7ffb\u8bd1\uff09)"
+)
 _INLINE_SUBHEADING_KEYWORDS = (
     "代价",
     "难题",
@@ -499,7 +504,13 @@ def _is_allowed_internal_subheading(line: str) -> bool:
     return bool(match and _looks_like_naked_subheading(match.group(1)))
 
 
-def _detect_format_noise(text: str) -> dict[str, list[str]]:
+def _is_classical_interleaved_label_line(line: str, *, category: str | None = None) -> bool:
+    if (category or "").strip().lower() != _CLASSICAL_INTERLEAVED_CATEGORY:
+        return False
+    return bool(_CLASSICAL_LABEL_LINE_RE.match(line.strip()))
+
+
+def _detect_format_noise(text: str, *, category: str | None = None) -> dict[str, list[str]]:
     results: dict[str, list[str]] = {}
     in_body = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -511,6 +522,8 @@ def _detect_format_noise(text: str) -> dict[str, list[str]]:
             in_body = section.group(1) == "正文"
             continue
         if not in_body:
+            continue
+        if _is_classical_interleaved_label_line(line, category=category):
             continue
         if _BODY_CHAPTER_RE.match(line) or re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", line):
             continue
@@ -534,7 +547,7 @@ def _detect_format_noise(text: str) -> dict[str, list[str]]:
     return results
 
 
-def _detect_inline_pseudo_subheading(text: str) -> dict[str, list[str]]:
+def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) -> dict[str, list[str]]:
     results: dict[str, list[str]] = {}
     in_body = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -546,6 +559,8 @@ def _detect_inline_pseudo_subheading(text: str) -> dict[str, list[str]]:
             in_body = section.group(1) == "正文"
             continue
         if not in_body:
+            continue
+        if _is_classical_interleaved_label_line(line, category=category):
             continue
         if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
             continue
@@ -724,8 +739,8 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
         hits = _detect(markdown, pattern)
         if hits:
             results[name] = hits
-    merge(_detect_format_noise(markdown))
-    merge(_detect_inline_pseudo_subheading(markdown))
+    merge(_detect_format_noise(markdown, category=category_key))
+    merge(_detect_inline_pseudo_subheading(markdown, category=category_key))
     merge(_detect_empty_front_sections(markdown))
     merge(_detect_duplicate_body_headings(markdown))
     merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))

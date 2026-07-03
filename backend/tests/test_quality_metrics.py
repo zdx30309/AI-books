@@ -176,6 +176,22 @@ def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
     assert not hits
 
 
+def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
+    markdown = """@最终书名
+盐铁论（白话版）
+@正文
+@1. 盐铁论
+【P0001】（原文）卷一
+【P0002】（原文）本议第一
+【P0003】（翻译）这是对应的白话解释。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_interleaved")
+
+    assert "裸短小标题" not in hits
+    assert not hits
+
+
 def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
     chapters: list[str] = []
     for index in range(1, 31):
