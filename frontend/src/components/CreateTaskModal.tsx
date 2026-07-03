@@ -174,7 +174,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
   const isBuddhistScripture = category === "buddhist_scripture_story";
   const isClassicalReferenceRewrite = category === "classical_chinese_reference_rewrite";
-  const isClassicalButtonActive = isClassicalChinese && !isBuddhistScripture;
+  const isClassicalButtonActive = category === "classical_chinese";
+  const isClassicalReferenceButtonActive = isClassicalReferenceRewrite;
   const classicalDisplayName = isBuddhistScripture ? "佛经白话" : "古文白话";
   const effectiveClassicalVariant = isBuddhistScripture
     ? "buddhist_story"
@@ -251,7 +252,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   }, [open]);
 
   useEffect(() => {
-    if (category === "buddhist_scripture_story") {
+    if (category === "classical_chinese_reference_rewrite") {
+      setClassicalVariant("reference_translation");
+      setClassicalInputMode("docx");
+    } else if (category === "buddhist_scripture_story") {
       setClassicalVariant("buddhist_story");
     }
   }, [category]);
@@ -779,6 +783,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 setMode("single");
                 setCategory("classical_chinese");
                 setClassicalVariant("plain");
+                setClassicalInputMode("text");
               }}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 isClassicalButtonActive
@@ -793,8 +798,26 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               type="button"
               onClick={() => {
                 setMode("single");
+                setCategory("classical_chinese_reference_rewrite");
+                setClassicalVariant("reference_translation");
+                setClassicalInputMode("docx");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                isClassicalReferenceButtonActive
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+              参照译写
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("single");
                 setCategory("buddhist_scripture_story");
                 setClassicalVariant("buddhist_story");
+                setClassicalInputMode("text");
               }}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 isBuddhistScripture
@@ -866,7 +889,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       ? "buddhist_story"
                       : nextCategory === "classical_chinese_reference_rewrite"
                         ? "reference_translation"
-                        : "plain",
+                      : "plain",
+                  );
+                  setClassicalInputMode(
+                    nextCategory === "classical_chinese_reference_rewrite" ? "docx" : "text",
                   );
                 }
                 if (COMIC_CATEGORY_IDS.has(nextCategory)) {
@@ -922,7 +948,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
               <label className="mb-3 flex items-center gap-2 text-[11px] tracking-widest text-warm-300">
                 <PencilLine className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />
-                {isClassicalReferenceRewrite ? "参考译文" : "笔锋参考"}
+                {isClassicalReferenceRewrite ? "参照译本" : "笔锋参考"}
               </label>
               <div className="space-y-3">
                 <input
@@ -931,7 +957,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   onChange={(e) => setStyleReference(e.target.value)}
                   placeholder={
                     isClassicalReferenceRewrite
-                      ? "输入参考译本名称、译者名或译文来源说明"
+                      ? "输入参照译本名称、译者名或译文来源说明"
                       : "输入想参考的作者、作品气质或类型笔法"
                   }
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
@@ -941,13 +967,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   onChange={(e) => setStyleNotes(e.target.value)}
                   placeholder={
                     isClassicalReferenceRewrite
-                      ? "可粘贴参考译文片段、术语译法或断句说明。系统只参考释义和术语，不复制句子。"
+                      ? "可粘贴参照译本文字片段、术语译法或断句说明。系统只参考释义和术语，不复制句子。"
                       : "可补充节奏、叙事视角、人物关系、爽点密度等要求"
                   }
                   rows={4}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
-                {isClassicalReferenceRewrite && classicalInputMode === "docx" && (
+                {isClassicalReferenceRewrite && (
                   <div>
                     <label
                       htmlFor="classical-reference-docx"
@@ -955,10 +981,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     >
                       <UploadCloud className="mb-2 h-5 w-5 text-gold-300" strokeWidth={1.5} />
                       <span className="text-sm text-warm-100">
-                        {classicalReferenceDocxFile?.name || "可选上传参考译文 .docx"}
+                        {classicalReferenceDocxFile?.name || "第二份：可选上传参照译本 Word"}
                       </span>
                       <span className="mt-1 text-xs leading-relaxed text-warm-500">
-                        用于释义、术语和断句参考，不复制译文句子
+                        这是第二份文档，用于释义、术语和断句参考，不复制译文句子
                       </span>
                     </label>
                     <input
@@ -975,7 +1001,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 )}
                 <p className="text-xs leading-relaxed text-warm-500">
                   {isClassicalReferenceRewrite
-                    ? "系统会参考释义、术语、断句和语气密度，结合古汉语词典生成新的白话表达，不会复制参考译文句子。"
+                    ? "原文 Word 是生成依据；参照译本 Word 只用于释义、术语、断句和语气密度参考，不会复制参考译文句子。"
                     : "系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。"}
                 </p>
               </div>
@@ -1274,7 +1300,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                     />
                     <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                      最终书名会固定为“原书名（白话版）”。上传 Word 时可留空，系统会用文件名作为原书名。
+                      {isClassicalReferenceRewrite
+                        ? "参照译写需要两份材料：原文 Word 作为生成依据，参照译本 Word 作为可选参考。最终书名固定为“原书名（白话版）”。"
+                        : "最终书名会固定为“原书名（白话版）”。上传 Word 时可留空，系统会用文件名作为原书名。"}
                     </p>
                   </div>
                   <div>
@@ -1319,7 +1347,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                           : "text-warm-500 hover:text-warm-200"
                       }`}
                     >
-                      上传 Word
+                      {isClassicalReferenceRewrite ? "上传原文 Word" : "上传 Word"}
                     </button>
                   </div>
                 </div>
@@ -1331,7 +1359,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     htmlFor="classical-docx"
                     className="mb-2 block text-[11px] tracking-widest text-warm-300"
                   >
-                    Word 文档
+                    {isClassicalReferenceRewrite ? "第一份：原文 Word 文档" : "Word 文档"}
                   </label>
                   <label
                     htmlFor="classical-docx"
@@ -1339,10 +1367,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   >
                     <UploadCloud className="mb-3 h-7 w-7 text-gold-300" strokeWidth={1.5} />
                     <span className="text-sm text-warm-100">
-                      {classicalDocxFile?.name || "选择 .docx 文件"}
+                      {classicalDocxFile?.name || (isClassicalReferenceRewrite ? "选择原文 .docx 文件" : "选择 .docx 文件")}
                     </span>
                     <span className="mt-2 text-xs leading-relaxed text-warm-500">
-                      系统会读取 Word 正文，并按{classicalDisplayName}流程生成
+                      {isClassicalReferenceRewrite
+                        ? "系统会读取这份 Word 作为古文原文，再结合参考译文生成参照译写稿"
+                        : `系统会读取 Word 正文，并按${classicalDisplayName}流程生成`}
                     </span>
                   </label>
                   <input
