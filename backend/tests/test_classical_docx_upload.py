@@ -9,6 +9,7 @@ import pytest
 
 from app.api.routers import tasks as task_router
 from app.models import TaskStatus
+from app.services import classical_reference_templates as ref_templates
 from app.tasks import tasks as task_tasks
 from app.utils.docx_text import DocxTextError, extract_classical_docx_text, extract_docx_text
 
@@ -204,6 +205,30 @@ def test_create_classical_reference_rewrite_task_externalizes_long_style_notes(t
     assert style_path.read_text(encoding="utf-8") == style_notes.strip()
 
 
+def test_default_classical_reference_template_can_attach_to_config(tmp_path, monkeypatch) -> None:
+    reference_dir = tmp_path / "backend" / "output" / "reference_templates" / "classical_reference_rewrite"
+    reference_dir.mkdir(parents=True)
+    text_path = reference_dir / "default_reference.txt"
+    meta_path = reference_dir / "default_reference.json"
+    text_path.write_text("【译文】一段参照译文。\n【点评】一段讲解。", encoding="utf-8")
+    meta_path.write_text(
+        '{"name":"菜根谭-中华书局参照范本","source_filename":"菜根谭-中华书局.docx"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ref_templates, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(ref_templates, "DEFAULT_REFERENCE_TEXT_PATH", text_path)
+    monkeypatch.setattr(ref_templates, "DEFAULT_REFERENCE_META_PATH", meta_path)
+
+    cfg = task_router._apply_default_classical_reference_template(  # noqa: SLF001
+        {"category": "classical_chinese_reference_rewrite"}
+    )
+
+    assert cfg["default_style_reference_enabled"] is True
+    assert cfg["style_reference"] == "菜根谭-中华书局参照范本"
+    assert cfg["style_notes_path"].endswith("default_reference.txt")
+    assert "固定参照译本体例范本" in cfg["style_notes"]
+
+
 def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
     class FakeDb:
         def add(self, task):
@@ -267,3 +292,25 @@ def test_style_notes_path_can_feed_long_reference_translation(tmp_path, monkeypa
     )
 
     assert loaded == text.strip()
+
+
+def test_default_reference_template_feeds_reference_rewrite_worker(tmp_path, monkeypatch) -> None:
+    reference_dir = tmp_path / "backend" / "output" / "reference_templates" / "classical_reference_rewrite"
+    reference_dir.mkdir(parents=True)
+    text_path = reference_dir / "default_reference.txt"
+    meta_path = reference_dir / "default_reference.json"
+    text_path.write_text("【译文】一段参照译文。\n【点评】一段讲解。", encoding="utf-8")
+    meta_path.write_text('{"name":"菜根谭-中华书局参照范本"}', encoding="utf-8")
+    monkeypatch.setattr(ref_templates, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(ref_templates, "DEFAULT_REFERENCE_TEXT_PATH", text_path)
+    monkeypatch.setattr(ref_templates, "DEFAULT_REFERENCE_META_PATH", meta_path)
+    monkeypatch.setattr(task_tasks, "PROJECT_ROOT", tmp_path)
+
+    loaded = task_tasks._style_notes_from_config(  # noqa: SLF001
+        {"category": "classical_chinese_reference_rewrite"},
+        task_label="test",
+    )
+
+    assert "固定参照译本体例范本" in loaded
+    assert "【译文】一段参照译文" in loaded
+    assert "【点评】一段讲解" in loaded

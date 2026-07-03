@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
-import type { TaskCategoryOption } from "@/api/types";
+import type { ClassicalReferenceTemplateResponse, TaskCategoryOption } from "@/api/types";
 
 interface Props {
   open: boolean;
@@ -121,6 +121,15 @@ function parsePanelCount(value: string) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
+function formatChineseCharCount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 字";
+  if (value >= 10_000) {
+    const rounded = Math.round((value / 10_000) * 10) / 10;
+    return `${rounded.toString().replace(/\.0$/, "")} 万字`;
+  }
+  return `${value.toLocaleString("zh-CN")} 字`;
+}
+
 export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, defaultCategoryId }: Props) {
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
@@ -163,6 +172,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
     normalizeCategoryOptions(DEFAULT_CATEGORIES),
   );
+  const [classicalReferenceTemplate, setClassicalReferenceTemplate] =
+    useState<ClassicalReferenceTemplateResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedCategory =
@@ -224,6 +235,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setStyleReference("");
       setStyleNotes("");
       setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+      setClassicalReferenceTemplate(null);
       setError(null);
       setSubmitting(false);
     }
@@ -245,6 +257,22 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       })
       .catch(() => {
         if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api
+      .getClassicalReferenceTemplate()
+      .then((res) => {
+        if (!cancelled) setClassicalReferenceTemplate(res);
+      })
+      .catch(() => {
+        if (!cancelled) setClassicalReferenceTemplate(null);
       });
     return () => {
       cancelled = true;
@@ -951,6 +979,25 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 {isClassicalReferenceRewrite ? "参照译本" : "笔锋参考"}
               </label>
               <div className="space-y-3">
+                {isClassicalReferenceRewrite && (
+                  <div className="rounded-lg border border-gold-500/20 bg-base-800/45 px-3 py-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] tracking-widest text-gold-200">固定参照范本</span>
+                      <span
+                        className={`text-[11px] ${
+                          classicalReferenceTemplate?.enabled ? "text-gold-200" : "text-warm-500"
+                        }`}
+                      >
+                        {classicalReferenceTemplate?.enabled ? "已自动启用" : "未配置"}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-warm-500">
+                      {classicalReferenceTemplate?.enabled
+                        ? `${classicalReferenceTemplate.name || classicalReferenceTemplate.source_filename}，约 ${formatChineseCharCount(classicalReferenceTemplate.chars)}。未上传第二份 Word 时默认使用；上传第二份 Word 时本次优先使用上传文件。`
+                        : "服务器还没有固定参照范本；可先上传第二份参照译本 Word。"}
+                    </p>
+                  </div>
+                )}
                 <input
                   type="text"
                   value={styleReference}

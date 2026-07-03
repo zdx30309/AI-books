@@ -11,6 +11,7 @@ import type {
   BatchRetryTaskResponse,
   ChapterResponse,
   ChapterUpdateRequest,
+  ClassicalReferenceTemplateResponse,
   ChaptersListResponse,
   CreateTaskRequest,
   CreateTaskResponse,
@@ -366,6 +367,8 @@ export const api = {
   listTasks: (page = 1, pageSize = 20) =>
     request<TaskListResponse>(`/tasks?page=${page}&page_size=${pageSize}`),
   getTaskCategories: () => request<TaskCategoryListResponse>("/tasks/categories"),
+  getClassicalReferenceTemplate: () =>
+    request<ClassicalReferenceTemplateResponse>("/tasks/classical-reference-rewrite/default-reference"),
   getCoverCategories: () => request<TaskCategoryListResponse>("/covers/categories"),
   getTask: (id: string) => request<TaskStatusResponse>(`/tasks/${id}`),
   createTask: (body: CreateTaskRequest) =>

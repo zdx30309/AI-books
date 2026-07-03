@@ -166,6 +166,14 @@ export interface TaskCategoryListResponse {
   items: TaskCategoryOption[];
 }
 
+export interface ClassicalReferenceTemplateResponse {
+  enabled: boolean;
+  name: string;
+  source_filename: string;
+  chars: number;
+  updated_at: string;
+}
+
 export interface TaskStatusResponse {
   id: string;
   source_url: string;

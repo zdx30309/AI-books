@@ -492,7 +492,8 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "古文白话参照译写版专用的参照译本输入项" in with_reference
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
-    assert "词义校准、顺译成文、点评式阐发" in with_reference
+    assert "原文理解、必要注释、现代译文、点评阐发" in with_reference
+    assert "全注全译体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
 
 

@@ -5143,8 +5143,8 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
         "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
     CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
-        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度，以及“词义校准、顺译成文、点评式阐发”的组织方法。",
-        "必须回到古文原文和古汉语词典生成新的白话表达；可以学习参照译本的体例和讲解技法，但不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
+        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度，以及“原文理解、必要注释、现代译文、点评阐发”的全注全译体例。",
+        "必须回到古文原文和古汉语词典生成新的白话表达；可以学习参照译本的条目结构、注释密度、译文顺序和点评讲解技法，但不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
     ),
 }
 
@@ -5232,7 +5232,8 @@ def _append_style_reference_prompt(
     style_reference: str | None,
     style_notes: str | None,
 ) -> str:
-    style_copy = _STYLE_REFERENCE_CATEGORY_COPY.get(normalize_category(category))
+    normalized_category = normalize_category(category)
+    style_copy = _STYLE_REFERENCE_CATEGORY_COPY.get(normalized_category)
     if style_copy is None:
         return writer_prompt
 
@@ -5250,13 +5251,23 @@ def _append_style_reference_prompt(
         parts.append(f"- 参考对象：{reference}")
     if notes:
         parts.append(f"- 补充要求：{notes}")
-    parts.extend(
-        [
-            "- 请提炼参考对象的叙事节奏、镜头感、人物推进、信息密度、段落呼吸和语言锋利度。",
-            "- 只能学习气质和技法，必须生成原创书稿；不要复刻、改写或搬运任何现成作品句子。",
-            f"- {boundary}",
-        ]
-    )
+    if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+        parts.extend(
+            [
+                "- 请提炼参考对象的条目体例、注释取舍、译文顺序、点评深度、事例佐证方式、古籍普及读物语气和信息密度。",
+                "- 每个原文条目都不能只输出粗浅翻译；必须体现原文理解、必要注释、现代译文和点评阐发的完整层次。",
+                "- 只能学习体例和技法，必须生成新的白话书稿；不要复刻、改写或搬运任何现成译文句子。",
+                f"- {boundary}",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "- 请提炼参考对象的叙事节奏、镜头感、人物推进、信息密度、段落呼吸和语言锋利度。",
+                "- 只能学习气质和技法，必须生成原创书稿；不要复刻、改写或搬运任何现成作品句子。",
+                f"- {boundary}",
+            ]
+        )
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
 
 

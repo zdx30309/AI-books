@@ -123,6 +123,14 @@ class TaskCategoryListResponse(BaseModel):
     items: list[TaskCategoryOption]
 
 
+class ClassicalReferenceTemplateResponse(BaseModel):
+    enabled: bool
+    name: str = ""
+    source_filename: str = ""
+    chars: int = 0
+    updated_at: str = ""
+
+
 class TaskStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

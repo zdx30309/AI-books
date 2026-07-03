@@ -28,9 +28,11 @@ from app.prompts.goal_driven_templates import get_category_meta, normalize_categ
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
     CLASSICAL_CHINESE_CATEGORY_IDS,
+    CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     buddhist_scripture_final_title,
     classical_final_title,
 )
+from app.services.classical_reference_templates import DEFAULT_REFERENCE_STYLE_GUIDE, default_reference_template_status
 from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
 from app.services.comic_series import (
     ComicGenerationPaused,
@@ -639,6 +641,22 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
 def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
     inline_notes = str(config.get("style_notes") or "").strip()
     style_notes_path = str(config.get("style_notes_path") or "").strip()
+    default_reference_used = bool(config.get("default_style_reference_enabled"))
+    if not style_notes_path:
+        try:
+            is_defaultable_reference_rewrite = normalize_category(str(config.get("category") or "")) == CLASSICAL_REFERENCE_REWRITE_CATEGORY
+        except Exception:
+            is_defaultable_reference_rewrite = False
+        if not inline_notes and is_defaultable_reference_rewrite:
+            status_info = default_reference_template_status()
+            if status_info.enabled and status_info.text_path:
+                style_notes_path = status_info.text_path
+                inline_notes = DEFAULT_REFERENCE_STYLE_GUIDE.strip()
+                default_reference_used = True
+            else:
+                return ""
+        else:
+            return inline_notes
     if not style_notes_path:
         return inline_notes
     path = Path(style_notes_path)
@@ -651,6 +669,8 @@ def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
     if not text:
         raise ValueError("参考译文文件为空，请重新上传")
     logger.info("[%s] 使用 style_notes_path 提供的参考译文 (%d 字): %s", task_label, len(text), style_notes_path)
+    if inline_notes and default_reference_used:
+        return f"{inline_notes}\n\n{text}".strip()
     return text
 
 

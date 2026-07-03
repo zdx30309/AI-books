@@ -66,6 +66,7 @@ from app.schemas.task import (
     BatchRetryTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
+    ClassicalReferenceTemplateResponse,
     MarkdownResponse,
     RegenerateCoverRequest,
     RegenerateSelectionRequest,
@@ -85,6 +86,10 @@ from app.services.video_sources import (
     detect_video_source_platform,
     platform_label,
     resolve_bilibili_source_url,
+)
+from app.services.classical_reference_templates import (
+    DEFAULT_REFERENCE_STYLE_GUIDE,
+    default_reference_template_status,
 )
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
@@ -394,6 +399,7 @@ def _create_classical_text_task(
     should_externalize_style_notes = (
         cfg.get("category") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
         and len(style_notes_full) > STYLE_NOTES_INLINE_LIMIT
+        and not str(cfg.get("style_notes_path") or "").strip()
     )
     if should_externalize_style_notes:
         cfg["style_notes"] = style_notes_full[:STYLE_NOTES_INLINE_LIMIT]
@@ -453,6 +459,30 @@ def _persist_uploaded_source_text(task_id: UUID, text: str, *, suffix: str = "")
     path = input_dir / filename
     path.write_text(text, encoding="utf-8")
     return str(path.relative_to(PROJECT_ROOT))
+
+
+def _apply_default_classical_reference_template(cfg: dict, *, manual_reference_provided: bool = False) -> dict:
+    if cfg.get("category") != CLASSICAL_REFERENCE_REWRITE_CATEGORY or manual_reference_provided:
+        return cfg
+    if str(cfg.get("style_notes_path") or "").strip():
+        return cfg
+
+    status_info = default_reference_template_status()
+    if not status_info.enabled:
+        return cfg
+
+    current_notes = str(cfg.get("style_notes") or "").strip()
+    cfg["style_notes"] = "\n\n".join(
+        part for part in (current_notes, DEFAULT_REFERENCE_STYLE_GUIDE.strip()) if part
+    )
+    cfg["style_notes_path"] = status_info.text_path
+    cfg["style_notes_chars"] = len(cfg["style_notes"]) + status_info.chars
+    cfg["default_style_reference_enabled"] = True
+    cfg["default_style_reference_name"] = status_info.name
+    cfg["default_style_reference_filename"] = status_info.source_filename
+    if not str(cfg.get("style_reference") or "").strip():
+        cfg["style_reference"] = status_info.name[:200]
+    return cfg
 
 
 def _dispatch_task(task: Task) -> None:
@@ -775,6 +805,7 @@ def create_task(
             cfg["style_reference"] = raw_style_reference[:200]
         if raw_style_notes:
             cfg["style_notes"] = raw_style_notes
+        cfg = _apply_default_classical_reference_template(cfg)
     if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         return _create_classical_text_task(source_url=req.url, config=cfg, db=db, user=user)
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
@@ -1084,11 +1115,17 @@ async def create_classical_chinese_from_docx(
         style_notes_parts.append(f"【参考译文文件：{reference_filename}】\n{reference_text}")
         cfg["style_reference_filename"] = reference_filename
     style_notes_full = "\n\n".join(part for part in style_notes_parts if part.strip())
+    if style_notes_full:
+        cfg["style_notes"] = style_notes_full
+    if not reference_text:
+        cfg = _apply_default_classical_reference_template(cfg)
+        style_notes_full = str(cfg.get("style_notes") or "").strip()
     should_externalize_style_notes = (
         normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY
         and len(style_notes_full) > STYLE_NOTES_INLINE_LIMIT
+        and not str(cfg.get("style_notes_path") or "").strip()
     )
-    effective_style_reference = style_reference.strip() or reference_filename
+    effective_style_reference = style_reference.strip() or reference_filename or str(cfg.get("style_reference") or "").strip()
     if effective_style_reference:
         cfg["style_reference"] = effective_style_reference[:200]
     if style_notes_full:
@@ -1133,6 +1170,22 @@ async def create_classical_chinese_from_docx(
             detail=f"Word 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
         ) from exc
     return response
+
+
+@router.get(
+    "/classical-reference-rewrite/default-reference",
+    response_model=ClassicalReferenceTemplateResponse,
+    summary="获取古文白话参照译写默认参考范本状态",
+)
+def get_classical_reference_rewrite_default_reference() -> ClassicalReferenceTemplateResponse:
+    status_info = default_reference_template_status()
+    return ClassicalReferenceTemplateResponse(
+        enabled=status_info.enabled,
+        name=status_info.name,
+        source_filename=status_info.source_filename,
+        chars=status_info.chars,
+        updated_at=status_info.updated_at,
+    )
 
 
 @router.get(
