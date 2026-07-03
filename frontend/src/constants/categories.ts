@@ -166,6 +166,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "classical_chinese_reference_rewrite",
+    label: "古文白话（参照译写版）",
+    core_feature: "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话",
+    directions: "古文原文、已有白话译文参照、知名译本参照、古汉语词典校义、长篇古籍白话化",
+    prompt_status: "ready",
+  },
+  {
     id: "comic_series",
     label: "插画",
     core_feature: "目录加文前封面和五或六辑治愈漫画绘本，短语、配图、故事成套生成",
@@ -228,6 +235,7 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "health_wellness_daily_pain",
   "buddhist_scripture_story",
   "classical_chinese_interleaved",
+  "classical_chinese_reference_rewrite",
 ] as const;
 
 export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [

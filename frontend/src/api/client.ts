@@ -179,6 +179,7 @@ async function uploadFile<T>(
   path: string,
   file: File,
   fields?: Record<string, string>,
+  extraFiles?: Record<string, File | null | undefined>,
 ): Promise<T> {
   const headers: Record<string, string> = {};
   const token = tokenStore.get();
@@ -186,6 +187,9 @@ async function uploadFile<T>(
 
   const form = new FormData();
   form.append("file", file);
+  Object.entries(extraFiles ?? {}).forEach(([key, value]) => {
+    if (value) form.append(key, value);
+  });
   Object.entries(fields ?? {}).forEach(([key, value]) => {
     form.append(key, value);
   });
@@ -384,11 +388,18 @@ export const api = {
     classicalVariant = "plain",
     title = "",
     category = "classical_chinese",
+    styleReference = "",
+    styleNotes = "",
+    referenceFile?: File | null,
   ) =>
     uploadFile<CreateTaskResponse>("/tasks/classical-chinese/docx", file, {
       classical_variant: classicalVariant,
       title,
       category,
+      style_reference: styleReference,
+      style_notes: styleNotes,
+    }, {
+      reference_file: referenceFile,
     }),
   createTaskBatch: (body: BatchCreateTaskRequest) =>
     request<BatchCreateTaskResponse>("/tasks/batch", {

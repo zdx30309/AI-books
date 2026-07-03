@@ -41,6 +41,11 @@ CLASSICAL_VARIANT_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "佛经白话故事版",
         "description": "把佛经经文译成连贯白话，适度故事化表达，忠于原文讲述和道理。",
     },
+    {
+        "id": "reference_translation",
+        "label": "知名译本参照",
+        "description": "参考已有译文的释义、术语和断句，结合古汉语词典，重新写成自然原创白话。",
+    },
 )
 
 _VARIANT_ALIASES: dict[str, str] = {
@@ -68,6 +73,11 @@ _VARIANT_ALIASES: dict[str, str] = {
     "佛经白话故事版": "buddhist_story",
     "buddhist": "buddhist_story",
     "buddhist_story": "buddhist_story",
+    "知名译本": "reference_translation",
+    "知名译本参照": "reference_translation",
+    "参考译本": "reference_translation",
+    "参照译写": "reference_translation",
+    "reference_translation": "reference_translation",
 }
 
 _VARIANT_RULES: dict[str, str] = {
@@ -101,6 +111,11 @@ _VARIANT_RULES: dict[str, str] = {
 - 可以把经文里的问答、譬喻、动作和说法过程写得更顺，但必须契合原文讲述的事情和道理。
 - 语言要有故事感，但不要改成小说爽文、玄幻故事、心灵鸡汤、现代心理学文章或宗教宣传口号。
 - 遇到佛教术语、名号、地名、人名和核心教义，不确定时保守处理，可保留原词并用上下文自然解释，不要乱翻。""",
+    "reference_translation": """- 参考已有译本或白话稿时，只允许吸收释义判断、术语译法、断句思路、人物称谓和语气密度；不得照搬、近似改写或按句同义替换参考译文。
+- 最终正文必须重新组织句子和表达，让读者读到的是新的白话成稿，而不是某个译本的洗稿版。
+- 参考译文与古汉语词典冲突时，优先结合原文上下文和词典保守判断；不要为了追随参考译文而改错原意。
+- 语言要比普通直译更连贯、自然、少 AI 腔，保留古文意味，但不用现代口水话稀释原文。
+- 不随意补写新情节，不新增原文没有的人物关系、事件、结论和评价。""",
 }
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
@@ -110,10 +125,16 @@ CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
 BUDDHIST_SCRIPTURE_DEFAULT_TITLE = "佛经白话"
 CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
+CLASSICAL_REFERENCE_REWRITE_CATEGORY = "classical_chinese_reference_rewrite"
 BUDDHIST_SCRIPTURE_STORY_CATEGORY = "buddhist_scripture_story"
 BUDDHIST_SCRIPTURE_VARIANT = "buddhist_story"
 CLASSICAL_CHINESE_CATEGORY_IDS = frozenset(
-    {"classical_chinese", CLASSICAL_INTERLEAVED_CATEGORY, BUDDHIST_SCRIPTURE_STORY_CATEGORY}
+    {
+        "classical_chinese",
+        CLASSICAL_INTERLEAVED_CATEGORY,
+        CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+        BUDDHIST_SCRIPTURE_STORY_CATEGORY,
+    }
 )
 
 
@@ -127,6 +148,8 @@ class BuddhistStoryUnit:
 def classical_variant_for_category(category: object, variant: object = None) -> str:
     if str(category or "").strip() == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         return BUDDHIST_SCRIPTURE_VARIANT
+    if str(category or "").strip() == CLASSICAL_REFERENCE_REWRITE_CATEGORY and not str(variant or "").strip():
+        return "reference_translation"
     return normalize_classical_variant(variant)
 
 
@@ -643,6 +666,7 @@ __all__ = [
     "CLASSICAL_PARAGRAPH_MARKER_RE",
     "CLASSICAL_CHINESE_CATEGORY_IDS",
     "CLASSICAL_INTERLEAVED_CATEGORY",
+    "CLASSICAL_REFERENCE_REWRITE_CATEGORY",
     "BUDDHIST_SCRIPTURE_STORY_CATEGORY",
     "BUDDHIST_SCRIPTURE_VARIANT",
     "BUDDHIST_SCRIPTURE_DEFAULT_TITLE",

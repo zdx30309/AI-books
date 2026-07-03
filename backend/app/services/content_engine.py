@@ -30,6 +30,7 @@ from app.services.classical_chinese import (
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
+    CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     buddhist_scripture_final_title,
     build_buddhist_scripture_story_source,
     build_classical_prompt_source,
@@ -1680,6 +1681,9 @@ async def _generate_classical_segmented_writer(
     output_dir: Path | None,
     on_stage: StageCallback | None,
     interleaved: bool = False,
+    category: str = "classical_chinese",
+    style_reference: str | None = None,
+    style_notes: str | None = None,
 ) -> str:
     lines = classical_source_lines(source_text)
     if not lines:
@@ -1755,6 +1759,17 @@ async def _generate_classical_segmented_writer(
                 variant=variant,
                 original_title=original_title,
                 interleaved=interleaved,
+            )
+            prompt = _append_style_reference_prompt(
+                prompt,
+                category=category,
+                style_reference=style_reference,
+                style_notes=_style_reference_notes_for_classical_segment(
+                    style_notes,
+                    start_index=start_index,
+                    end_index=end_index,
+                    total_source_lines=expected_count,
+                ),
             )
             raw_segment = await _route_writer_call(
                 prompt,
@@ -5127,7 +5142,62 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
         "这是社会痛点测试版专用的文风控制项，只影响论述笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
         "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
+    CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
+        "这是古文白话参照译写版专用的参考译文输入项，只用于判断释义、术语、断句、称谓和语言密度。",
+        "必须回到古文原文和古汉语词典生成新的白话表达；不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
+    ),
 }
+
+
+STYLE_REFERENCE_NOTES_PROMPT_CHAR_LIMIT = 8_000
+
+
+def _style_reference_prompt_excerpt(
+    notes: str | None,
+    *,
+    max_chars: int = STYLE_REFERENCE_NOTES_PROMPT_CHAR_LIMIT,
+) -> str:
+    text = (notes or "").strip()
+    limit = max(1_000, int(max_chars or STYLE_REFERENCE_NOTES_PROMPT_CHAR_LIMIT))
+    if len(text) <= limit:
+        return text
+    head_limit = limit // 2
+    tail_limit = limit - head_limit
+    return (
+        text[:head_limit].rstrip()
+        + f"\n\n……参考译文很长，系统已保留全文；本次 prompt 仅展示前后节选（全文 {len(text)} 字）……\n\n"
+        + text[-tail_limit:].lstrip()
+    )
+
+
+def _style_reference_notes_for_classical_segment(
+    notes: str | None,
+    *,
+    start_index: int,
+    end_index: int,
+    total_source_lines: int,
+) -> str:
+    text = (notes or "").strip()
+    if not text:
+        return ""
+    note_lines = classical_source_lines(text)
+    if not note_lines:
+        return _style_reference_prompt_excerpt(text)
+
+    selected_lines: list[str] = []
+    if len(note_lines) >= end_index:
+        selected_lines = note_lines[start_index - 1 : end_index]
+    elif total_source_lines > 0:
+        note_count = len(note_lines)
+        start_pos = int(max(0, start_index - 1) / total_source_lines * note_count)
+        end_pos = int(max(start_index, end_index) / total_source_lines * note_count)
+        end_pos = max(start_pos + 1, min(note_count, end_pos))
+        selected_lines = note_lines[start_pos:end_pos]
+
+    selected = "\n".join(line for line in selected_lines if line.strip()).strip()
+    if selected:
+        return _style_reference_prompt_excerpt(selected)
+    return _style_reference_prompt_excerpt(text)
 
 
 REFERENCE_ARTICLE_INPUT_SOURCE = "reference_article"
@@ -5167,7 +5237,7 @@ def _append_style_reference_prompt(
         return writer_prompt
 
     reference = (style_reference or "").strip()
-    notes = (style_notes or "").strip()
+    notes = _style_reference_prompt_excerpt(style_notes)
     if not reference and not notes:
         return writer_prompt
 
@@ -5245,6 +5315,7 @@ async def generate_full_book(
             original_title=classical_original_title,
         )
     if is_classical_category:
+        classical_variant = classical_variant_for_category(normalized_category, classical_variant)
         classical_expected_count = classical_expected_paragraph_count(writer_input_text)
         writer_input_text = build_classical_prompt_source(
             writer_input_text,
@@ -5382,6 +5453,9 @@ async def generate_full_book(
                 output_dir=output_dir,
                 on_stage=on_stage,
                 interleaved=is_classical_interleaved,
+                category=normalized_category,
+                style_reference=style_reference,
+                style_notes=style_notes,
             )
         elif use_buddhist_story_unit_writer:
             generated_markdown = await _generate_buddhist_story_unit_writer(

@@ -26,9 +26,11 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
+    CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     build_buddhist_scripture_story_source,
     build_classical_prompt_source,
     classical_paragraph_marker,
+    classical_variant_for_category,
     get_classical_variant_meta,
     split_buddhist_story_units,
     strip_classical_paragraph_markers,
@@ -76,6 +78,8 @@ def test_generate_full_book_routes_writer_prompt_by_category(
         expected_raw_text = build_classical_prompt_source(raw_text)
     elif category == "classical_chinese_interleaved":
         expected_raw_text = build_classical_prompt_source(raw_text, interleaved=True)
+    elif category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+        expected_raw_text = build_classical_prompt_source(raw_text, variant="reference_translation")
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         expected_raw_text = build_buddhist_scripture_story_source(raw_text)
     expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
@@ -398,6 +402,11 @@ def test_longform_variant_categories_use_dedicated_prompts() -> None:
             "健康养生（日常痛点版）",
             "必须单独列出一章，详细讲解什么状况需要寻求专业帮助",
         ),
+        (
+            CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+            "古文白话（参照译写版）",
+            "如果任务包、笔锋参考或补充要求里包含别人已经翻译好的白话译文，只能作为释义参考",
+        ),
     ]
 
     for category, label, needle in cases:
@@ -427,8 +436,56 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
     assert normalize_category("古文白话（原文翻译穿插版）") == "classical_chinese_interleaved"
+    assert normalize_category("古文白话参照译写版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
+    assert normalize_category("古文白话（参照译写版）") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
+    assert normalize_category("古文白话抄袭版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("佛经白话") == "buddhist_scripture_story"
     assert normalize_category("佛经白话故事版") == "buddhist_scripture_story"
+
+
+def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
+    meta = get_category_meta(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
+    prompts = get_prompts(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
+    writer = prompts["full_book_writer"]
+    source_pack = build_classical_prompt_source(
+        "子曰：学而时习之，不亦说乎。",
+        variant=classical_variant_for_category(CLASSICAL_REFERENCE_REWRITE_CATEGORY),
+        original_title="论语",
+    )
+
+    assert meta["label"] == "古文白话（参照译写版）"
+    assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话"
+    assert "{raw_text}" in writer
+    assert "参照译写白话加工稿" in writer
+    assert "若参考到已有译文，只能吸收释义判断、术语、断句和语气密度" in writer
+    assert "参照译写安全硬规则" in writer
+    assert "不得逐句模仿" in writer
+    assert "输出必须回到古文原文和古汉语词典" in writer
+    assert "知名译本参照" in source_pack
+    assert "参考已有译本或白话稿时" in source_pack
+    assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
+
+
+def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> None:
+    segment_prompt = content_engine._classical_segment_writer_prompt(
+        segment_text="子曰：学而时习之，不亦说乎。",
+        all_lines=["子曰：学而时习之，不亦说乎。"],
+        start_index=1,
+        variant=classical_variant_for_category(CLASSICAL_REFERENCE_REWRITE_CATEGORY),
+        original_title="论语",
+    )
+    with_reference = content_engine._append_style_reference_prompt(
+        segment_prompt,
+        category=CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+        style_reference="某知名译本",
+        style_notes="参考译文：孔子说，学习以后常常温习。",
+    )
+
+    assert "笔锋参考要求" in with_reference
+    assert "古文白话参照译写版专用的参考译文输入项" in with_reference
+    assert "参考对象：某知名译本" in with_reference
+    assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
+    assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
 
 
 def test_finance_technology_category_uses_dedicated_prompt() -> None:

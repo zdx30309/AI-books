@@ -87,8 +87,10 @@ def _classical_original_title_from_config(
         stem = Path(filename).stem.strip()
         if stem:
             return stem[:120]
-    if source_url.startswith("manual://classical_chinese_docx/") or source_url.startswith(
-        "manual://classical_chinese_interleaved_docx/"
+    if (
+        source_url.startswith("manual://classical_chinese_docx/")
+        or source_url.startswith("manual://classical_chinese_interleaved_docx/")
+        or source_url.startswith("manual://classical_chinese_reference_rewrite_docx/")
     ):
         stem = Path(source_url.rsplit("/", 1)[-1]).stem.strip()
         if stem:
@@ -631,6 +633,24 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
     if not text:
         raise ValueError("上传的 Word 正文文件为空，请重新上传")
     logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
+    return text
+
+
+def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
+    inline_notes = str(config.get("style_notes") or "").strip()
+    style_notes_path = str(config.get("style_notes_path") or "").strip()
+    if not style_notes_path:
+        return inline_notes
+    path = Path(style_notes_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise ValueError(f"参考译文文件不存在，请重新上传：{style_notes_path}") from exc
+    if not text:
+        raise ValueError("参考译文文件为空，请重新上传")
+    logger.info("[%s] 使用 style_notes_path 提供的参考译文 (%d 字): %s", task_label, len(text), style_notes_path)
     return text
 
 
@@ -1264,7 +1284,7 @@ def process_video(_self, task_id: str) -> dict:
                 output_dir=output_dir,
                 on_stage=_on_stage,
                 style_reference=str((task.config or {}).get("style_reference") or "").strip() or None,
-                style_notes=str((task.config or {}).get("style_notes") or "").strip() or None,
+                style_notes=_style_notes_from_config(task.config or {}, task_label=str(task.id)) or None,
                 classical_variant=str((task.config or {}).get("classical_variant") or "").strip() or None,
                 classical_original_title=classical_original_title,
                 healing_comic_panel_count=parse_healing_comic_panel_count(

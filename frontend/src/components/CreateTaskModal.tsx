@@ -30,6 +30,7 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
   { id: "buddhist_story", label: "佛经白话故事版" },
+  { id: "reference_translation", label: "知名译本参照" },
 ] as const;
 const LONG_NOVEL_CONFLICT_OPTIONS = [
   "婆媳偏心",
@@ -67,6 +68,7 @@ const LONG_NOVEL_MODULES = [
 const CLASSICAL_CHINESE_CATEGORY_IDS = new Set([
   "classical_chinese",
   "classical_chinese_interleaved",
+  "classical_chinese_reference_rewrite",
   "buddhist_scripture_story",
 ]);
 type CreateMode = "single" | "batch" | "comic" | "article" | "articleBatch" | "longNovel";
@@ -144,6 +146,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [assistingField, setAssistingField] = useState<string | null>(null);
   const [classicalInputMode, setClassicalInputMode] = useState<"text" | "docx">("text");
   const [classicalDocxFile, setClassicalDocxFile] = useState<File | null>(null);
+  const [classicalReferenceDocxFile, setClassicalReferenceDocxFile] = useState<File | null>(null);
   const [classicalVariant, setClassicalVariant] = useState("plain");
   const [classicalBookTitle, setClassicalBookTitle] = useState("");
   const [candidateLinks, setCandidateLinks] = useState("");
@@ -170,13 +173,20 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
   const isBuddhistScripture = category === "buddhist_scripture_story";
+  const isClassicalReferenceRewrite = category === "classical_chinese_reference_rewrite";
   const isClassicalButtonActive = isClassicalChinese && !isBuddhistScripture;
   const classicalDisplayName = isBuddhistScripture ? "佛经白话" : "古文白话";
-  const effectiveClassicalVariant = isBuddhistScripture ? "buddhist_story" : classicalVariant;
+  const effectiveClassicalVariant = isBuddhistScripture
+    ? "buddhist_story"
+    : isClassicalReferenceRewrite && classicalVariant === "plain"
+      ? "reference_translation"
+      : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
-    category === "web_short_story" || category === "social_science_test";
+    category === "web_short_story"
+    || category === "social_science_test"
+    || category === "classical_chinese_reference_rewrite";
   const articleLinkStats = normalizeCandidateLinks(articleLinks);
 
   useEffect(() => {
@@ -198,6 +208,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setAssistingField(null);
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
+      setClassicalReferenceDocxFile(null);
       setClassicalVariant("plain");
       setClassicalBookTitle("");
       setCandidateLinks("");
@@ -254,6 +265,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     else {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
+      setClassicalReferenceDocxFile(null);
     }
   }, [category, isClassicalChinese]);
 
@@ -262,7 +274,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setStyleReference("");
       setStyleNotes("");
     }
-  }, [supportsStyleReference]);
+    if (!isClassicalReferenceRewrite) {
+      setClassicalReferenceDocxFile(null);
+    }
+  }, [isClassicalReferenceRewrite, supportsStyleReference]);
 
   useEffect(() => {
     if (!open) return;
@@ -619,6 +634,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           effectiveClassicalVariant,
           classicalBookTitle.trim(),
           category,
+          supportsStyleReference ? styleReference.trim() : "",
+          supportsStyleReference ? styleNotes.trim() : "",
+          isClassicalReferenceRewrite ? classicalReferenceDocxFile : null,
         );
         onCreated(res.task_id);
       } catch (e) {
@@ -844,7 +862,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 if (CLASSICAL_CHINESE_CATEGORY_IDS.has(nextCategory)) {
                   setMode("single");
                   setClassicalVariant(
-                    nextCategory === "buddhist_scripture_story" ? "buddhist_story" : "plain",
+                    nextCategory === "buddhist_scripture_story"
+                      ? "buddhist_story"
+                      : nextCategory === "classical_chinese_reference_rewrite"
+                        ? "reference_translation"
+                        : "plain",
                   );
                 }
                 if (COMIC_CATEGORY_IDS.has(nextCategory)) {
@@ -900,25 +922,61 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
               <label className="mb-3 flex items-center gap-2 text-[11px] tracking-widest text-warm-300">
                 <PencilLine className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.7} />
-                笔锋参考
+                {isClassicalReferenceRewrite ? "参考译文" : "笔锋参考"}
               </label>
               <div className="space-y-3">
                 <input
                   type="text"
                   value={styleReference}
                   onChange={(e) => setStyleReference(e.target.value)}
-                  placeholder="输入想参考的作者、作品气质或类型笔法"
+                  placeholder={
+                    isClassicalReferenceRewrite
+                      ? "输入参考译本名称、译者名或译文来源说明"
+                      : "输入想参考的作者、作品气质或类型笔法"
+                  }
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 <textarea
                   value={styleNotes}
                   onChange={(e) => setStyleNotes(e.target.value)}
-                  placeholder="可补充节奏、叙事视角、人物关系、爽点密度等要求"
+                  placeholder={
+                    isClassicalReferenceRewrite
+                      ? "可粘贴参考译文片段、术语译法或断句说明。系统只参考释义和术语，不复制句子。"
+                      : "可补充节奏、叙事视角、人物关系、爽点密度等要求"
+                  }
                   rows={4}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
+                {isClassicalReferenceRewrite && classicalInputMode === "docx" && (
+                  <div>
+                    <label
+                      htmlFor="classical-reference-docx"
+                      className="flex min-h-[76px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gold-500/25 bg-base-700/40 px-4 py-4 text-center transition-colors hover:border-gold-400/50 hover:bg-gold-500/5"
+                    >
+                      <UploadCloud className="mb-2 h-5 w-5 text-gold-300" strokeWidth={1.5} />
+                      <span className="text-sm text-warm-100">
+                        {classicalReferenceDocxFile?.name || "可选上传参考译文 .docx"}
+                      </span>
+                      <span className="mt-1 text-xs leading-relaxed text-warm-500">
+                        用于释义、术语和断句参考，不复制译文句子
+                      </span>
+                    </label>
+                    <input
+                      id="classical-reference-docx"
+                      type="file"
+                      accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      className="sr-only"
+                      onChange={(event) => {
+                        setClassicalReferenceDocxFile(event.target.files?.[0] ?? null);
+                        setError(null);
+                      }}
+                    />
+                  </div>
+                )}
                 <p className="text-xs leading-relaxed text-warm-500">
-                  系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。
+                  {isClassicalReferenceRewrite
+                    ? "系统会参考释义、术语、断句和语气密度，结合古汉语词典生成新的白话表达，不会复制参考译文句子。"
+                    : "系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。"}
                 </p>
               </div>
             </div>

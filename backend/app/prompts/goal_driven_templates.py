@@ -335,6 +335,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "classical_chinese_reference_rewrite",
+        "label": "古文白话（参照译写版）",
+        "core_feature": "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话",
+        "directions": "古文原文、已有白话译文参照、知名译本参照、古汉语词典校义、长篇古籍白话化",
+        "prompt_status": "ready",
+    },
+    {
         "id": "comic_series",
         "label": "插画",
         "core_feature": "目录加文前封面和五或六辑治愈插画绘本，短语、配图、故事成套生成",
@@ -1305,6 +1312,23 @@ CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT = CLASSICAL_CHINESE_FULL_B
 )
 
 
+CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT = "当前分类：古文白话（参照译写版）\n\n" + CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT.replace(
+    "任务：根据用户粘贴的原文和系统提供的细分方向、分类翻译要求、古汉语词典摘录，直接生成一份白话加工稿。这个题材不处理视频链接，不调用轻抖文案解析。",
+    "任务：根据用户粘贴的古文原文、系统提供的细分方向、分类翻译要求、古汉语词典摘录，以及可能附带的参考译文信息，直接生成一份参照译写白话加工稿。这个题材不处理视频链接，不调用轻抖文案解析。",
+).replace(
+    "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。",
+    "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。若参考到已有译文，只能吸收释义判断、术语、断句和语气密度，必须重写为新的表达，不得逐句复刻、同义替换或贴近洗稿。",
+) + """
+
+【参照译写安全硬规则】
+- 如果任务包、笔锋参考或补充要求里包含别人已经翻译好的白话译文，只能作为释义参考、术语参考、断句参考和语气密度参考。
+- 不得逐句模仿、不得保留参考译文的独特句式、不得把参考译文换几个词后输出、不得沿用参考译文连续三句以上的表达顺序。
+- 输出必须回到古文原文和古汉语词典：先判断原文讲什么，再用自己的现代汉语重新写。
+- 若参考译文很顺，可以学习其“通顺、不翻译腔”的效果，但不能复制其句子、段落推进和可识别表达。
+- 如果参考译文与古汉语词典或上下文冲突，优先按原文和词典保守处理。
+"""
+
+
 BUDDHIST_SCRIPTURE_STORY_FULL_BOOK_WRITER_PROMPT = """你是一名佛经小故事改写作者。你的任务不是翻译佛经，也不是写佛经讲义，而是先把佛经原文里的“事件轴、观照过程、问答关系、说法推进、譬喻和收束”提炼出来，再写成一篇读起来像小故事的白话稿。
 
 任务：根据用户提供的【佛经小故事改写任务包】生成一份完整成稿。这个分类不是古文逐段翻译，不处理视频链接，不调用轻抖文案解析。
@@ -1917,6 +1941,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
         formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
     ),
+    "classical_chinese_reference_rewrite": _prompt_set(
+        CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT,
+        polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
+        refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
+    ),
     "comic_series": _prompt_set(
         COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
         polish=COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT,
@@ -2005,6 +2035,14 @@ CATEGORY_ALIASES: dict[str, str] = {
     "白话原文翻译穿插版": "classical_chinese_interleaved",
     "classical_chinese_interleaved": "classical_chinese_interleaved",
     "classical_interleaved": "classical_chinese_interleaved",
+    "古文白话参照译写版": "classical_chinese_reference_rewrite",
+    "古文白话（参照译写版）": "classical_chinese_reference_rewrite",
+    "古文白话(参照译写版)": "classical_chinese_reference_rewrite",
+    "古文白话参考译本版": "classical_chinese_reference_rewrite",
+    "古文白话知名译本参照版": "classical_chinese_reference_rewrite",
+    "古文白话抄袭版": "classical_chinese_reference_rewrite",
+    "classical_chinese_reference_rewrite": "classical_chinese_reference_rewrite",
+    "classical_reference_rewrite": "classical_chinese_reference_rewrite",
     "comic": "healing_comic",
     "comic_bookshelf": "healing_comic",
     "漫画": "healing_comic",
@@ -2054,6 +2092,7 @@ __all__ = [
     "LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT",
     "CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT",
     "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
+    "CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT",
     "WISDOM_STORIES_HISTORICAL_FULL_BOOK_WRITER_PROMPT",

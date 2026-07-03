@@ -164,6 +164,46 @@ def test_create_classical_text_task_externalizes_raw_text(tmp_path, monkeypatch)
     assert stored_path.read_text(encoding="utf-8") == raw_text
 
 
+def test_create_classical_reference_rewrite_task_externalizes_long_style_notes(tmp_path, monkeypatch) -> None:
+    class FakeDb:
+        def add(self, task):
+            self.task = task
+
+        def commit(self):
+            pass
+
+        def refresh(self, task):
+            if not task.id:
+                task.id = uuid4()
+
+    raw_text = "子曰：学而时习之，不亦说乎。"
+    style_notes = "参考译文：孔子说，学习以后常常温习。\n" * 500
+    db = FakeDb()
+    user = type("User", (), {"id": uuid4()})()
+    monkeypatch.setattr(task_router, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(task_router, "_dispatch_task", lambda task: None)
+
+    response = task_router._create_classical_text_task(  # noqa: SLF001
+        source_url="manual://classical_chinese_reference_rewrite",
+        config={
+            "category": "classical_chinese_reference_rewrite",
+            "raw_text": raw_text,
+            "style_reference": "某知名译本",
+            "style_notes": style_notes,
+            "classical_original_title": "论语",
+        },
+        db=db,
+        user=user,
+    )
+
+    assert response.status == TaskStatus.PENDING
+    assert "raw_text" not in db.task.config
+    assert len(db.task.config["style_notes"]) == task_router.STYLE_NOTES_INLINE_LIMIT
+    assert db.task.config["style_notes_chars"] == len(style_notes.strip())
+    style_path = tmp_path / db.task.config["style_notes_path"]
+    assert style_path.read_text(encoding="utf-8") == style_notes.strip()
+
+
 def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
     class FakeDb:
         def add(self, task):
@@ -213,3 +253,17 @@ def test_source_text_path_can_feed_long_docx_text(tmp_path, monkeypatch) -> None
     )
 
     assert loaded == text
+
+
+def test_style_notes_path_can_feed_long_reference_translation(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "style_reference.txt"
+    text = "参考译文：孔子说，学习以后常常温习。\n" * 500
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(task_tasks, "PROJECT_ROOT", tmp_path)
+
+    loaded = task_tasks._style_notes_from_config(  # noqa: SLF001
+        {"style_notes_path": "style_reference.txt", "style_notes": "短预览"},
+        task_label="test",
+    )
+
+    assert loaded == text.strip()

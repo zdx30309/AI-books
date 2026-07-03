@@ -45,6 +45,7 @@ from app.services.comic_series import (
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
     CLASSICAL_CHINESE_CATEGORY_IDS,
+    CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     get_classical_variant_meta,
 )
 from app.schemas.chapter import (
@@ -109,6 +110,8 @@ _FINAL_TITLE_SECTION_RE = re.compile(
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["Tasks"])
+
+STYLE_NOTES_INLINE_LIMIT = 4_000
 
 _ACTIVE_TASK_STATUSES = (
     TaskStatus.PENDING,
@@ -202,9 +205,9 @@ def _normalize_task_config(config: dict | None) -> dict:
     )
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
-    if category in {"web_short_story", "social_science_test"}:
+    if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
         style_reference = str(cfg.get("style_reference") or "").strip()[:200]
-        style_notes = str(cfg.get("style_notes") or "").strip()[:1000]
+        style_notes = str(cfg.get("style_notes") or "").strip()[:STYLE_NOTES_INLINE_LIMIT]
         if style_reference:
             cfg["style_reference"] = style_reference
         else:
@@ -387,6 +390,15 @@ def _create_classical_text_task(
     cfg = dict(config)
     cfg.pop("raw_text", None)
     cfg["raw_text_chars"] = len(raw_text)
+    style_notes_full = str(cfg.get("style_notes") or "").strip()
+    should_externalize_style_notes = (
+        cfg.get("category") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
+        and len(style_notes_full) > STYLE_NOTES_INLINE_LIMIT
+    )
+    if should_externalize_style_notes:
+        cfg["style_notes"] = style_notes_full[:STYLE_NOTES_INLINE_LIMIT]
+        cfg["style_notes_chars"] = len(style_notes_full)
+        cfg["style_notes_preview_chars"] = len(cfg["style_notes"])
     task = Task(
         source_url=source_url,
         owner_id=user.id,
@@ -403,6 +415,12 @@ def _create_classical_text_task(
     try:
         source_text_path = _persist_uploaded_source_text(task.id, raw_text)
         cfg.update(source_text_path=source_text_path, raw_text_chars=len(raw_text))
+        if should_externalize_style_notes:
+            cfg["style_notes_path"] = _persist_uploaded_source_text(
+                task.id,
+                style_notes_full,
+                suffix="style_reference",
+            )
         task.config = cfg
         db.commit()
     except Exception as exc:
@@ -427,10 +445,12 @@ def _create_classical_text_task(
     return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
-def _persist_uploaded_source_text(task_id: UUID, text: str) -> str:
+def _persist_uploaded_source_text(task_id: UUID, text: str, *, suffix: str = "") -> str:
     input_dir = PROJECT_ROOT / "backend" / "output" / "task_inputs"
     input_dir.mkdir(parents=True, exist_ok=True)
-    path = input_dir / f"{task_id}.txt"
+    clean_suffix = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(suffix or "").strip()).strip("_")
+    filename = f"{task_id}_{clean_suffix}.txt" if clean_suffix else f"{task_id}.txt"
+    path = input_dir / filename
     path.write_text(text, encoding="utf-8")
     return str(path.relative_to(PROJECT_ROOT))
 
@@ -746,7 +766,15 @@ def create_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
-    cfg = _config_with_source_platform(_normalize_task_config(req.config), req.url)
+    raw_config = dict(req.config or {})
+    raw_style_reference = str(raw_config.get("style_reference") or "").strip()
+    raw_style_notes = str(raw_config.get("style_notes") or "").strip()
+    cfg = _config_with_source_platform(_normalize_task_config(raw_config), req.url)
+    if cfg.get("category") == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+        if raw_style_reference:
+            cfg["style_reference"] = raw_style_reference[:200]
+        if raw_style_notes:
+            cfg["style_notes"] = raw_style_notes
     if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         return _create_classical_text_task(source_url=req.url, config=cfg, db=db, user=user)
     return _create_and_dispatch_task(source_url=req.url, config=cfg, db=db, user=user)
@@ -1003,9 +1031,12 @@ def create_emotion_reference_article_task_batch(
 )
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
+    reference_file: UploadFile | None = File(default=None),
     classical_variant: str = Form(default="plain"),
     category: str = Form(default="classical_chinese"),
     title: str = Form(default=""),
+    style_reference: str = Form(default=""),
+    style_notes: str = Form(default=""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
@@ -1024,6 +1055,19 @@ async def create_classical_chinese_from_docx(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise HTTPException(status_code=400, detail="Word 上传只支持古文白话相关分类")
+    reference_text = ""
+    reference_filename = ""
+    if reference_file is not None and (reference_file.filename or "").strip():
+        if normalized_category != CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+            raise HTTPException(status_code=400, detail="参考译文文件只支持古文白话（参照译写版）")
+        reference_filename = (reference_file.filename or "reference_translation.docx")[:255]
+        if not reference_filename.lower().endswith(".docx"):
+            raise HTTPException(status_code=400, detail="参考译文请上传 .docx 格式的 Word 文件")
+        reference_content = await reference_file.read()
+        try:
+            reference_text = extract_classical_docx_text(reference_content).strip()
+        except DocxTextError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=f"参考译文读取失败：{exc}") from exc
     cfg = _normalize_task_config(
         {
             "category": normalized_category,
@@ -1035,6 +1079,27 @@ async def create_classical_chinese_from_docx(
             "input_source": "docx_upload",
         }
     )
+    style_notes_parts = [style_notes.strip()]
+    if reference_text:
+        style_notes_parts.append(f"【参考译文文件：{reference_filename}】\n{reference_text}")
+        cfg["style_reference_filename"] = reference_filename
+    style_notes_full = "\n\n".join(part for part in style_notes_parts if part.strip())
+    should_externalize_style_notes = (
+        normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY
+        and len(style_notes_full) > STYLE_NOTES_INLINE_LIMIT
+    )
+    effective_style_reference = style_reference.strip() or reference_filename
+    if effective_style_reference:
+        cfg["style_reference"] = effective_style_reference[:200]
+    if style_notes_full:
+        cfg["style_notes"] = (
+            style_notes_full[:STYLE_NOTES_INLINE_LIMIT]
+            if should_externalize_style_notes
+            else style_notes_full
+        )
+        cfg["style_notes_chars"] = len(style_notes_full)
+        if should_externalize_style_notes:
+            cfg["style_notes_preview_chars"] = len(cfg["style_notes"])
     response = _create_and_dispatch_task(
         source_url=f"manual://{normalized_category}_docx/{filename[:120]}",
         config=cfg,
@@ -1049,6 +1114,12 @@ async def create_classical_chinese_from_docx(
         source_text_path = _persist_uploaded_source_text(response.task_id, raw_text)
         cfg = dict(task.config or {})
         cfg.update(source_text_path=source_text_path, raw_text_chars=len(raw_text))
+        if should_externalize_style_notes:
+            cfg["style_notes_path"] = _persist_uploaded_source_text(
+                response.task_id,
+                style_notes_full,
+                suffix="style_reference",
+            )
         task.config = cfg
         db.commit()
         _dispatch_task(task)
