@@ -96,6 +96,7 @@ CLASSICAL_SEGMENTED_WRITER_MIN_PARAGRAPHS = 600
 CLASSICAL_SEGMENTED_WRITER_TARGET_SOURCE_CHARS = 12_000
 CLASSICAL_SEGMENTED_WRITER_CONTEXT_CHARS = 1_500
 CLASSICAL_LONG_SOURCE_DESIGN_TARGET_CHARS = 1_000_000
+CLASSICAL_FULL_REPAIR_LLM_MAX_CHARS = 50_000
 BUDDHIST_STORY_UNIT_WRITER_MIN_UNITS = 20
 BUDDHIST_STORY_UNITS_PER_SEGMENT = 8
 BUDDHIST_STORY_REPAIR_UNITS_PER_SEGMENT = 4
@@ -1041,6 +1042,31 @@ def _classical_structure_issues(
     return issues
 
 
+def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
+    """Remove model-inserted front-matter markers/headings inside interleaved body."""
+    lines = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned: list[str] = []
+    body_started = False
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        section = _FRONT_SECTION_RE.match(stripped)
+        has_marker = bool(CLASSICAL_PARAGRAPH_MARKER_RE.search(stripped))
+        if not body_started:
+            cleaned.append(raw_line)
+            if (section and section.group(1) == "正文") or has_marker:
+                body_started = True
+            continue
+        if section:
+            continue
+        if (
+            _CLASSICAL_MARKDOWN_HEADING_RE.match(stripped)
+            and not _CLASSICAL_ANY_MARKER_RE.search(stripped)
+        ):
+            continue
+        cleaned.append(raw_line)
+    return "\n".join(cleaned).strip()
+
+
 def _classical_translation_issues(source_text: str, markdown: str) -> list[str]:
     source = source_text or ""
     body = _classical_body_for_validation(markdown)
@@ -1134,6 +1160,31 @@ async def _repair_classical_quality_once(
     )
     if not issues:
         return markdown
+    if interleaved:
+        cleaned = _clean_classical_interleaved_structural_noise(markdown)
+        if cleaned != (markdown or "").strip():
+            cleaned_issues = _classical_quality_issues(
+                cleaned,
+                expected_count=expected_count,
+                source_text=source_text,
+                expected_markers=expected_markers,
+                interleaved=interleaved,
+            )
+            _dump_stage(output_dir, f"classical_{stage}_deterministic_repaired.md", cleaned)
+            if not cleaned_issues:
+                logger.warning(
+                    "古文白话%s阶段结构噪声已确定性清理，跳过全稿 LLM 修复",
+                    stage,
+                )
+                return cleaned
+            markdown = cleaned
+            issues = cleaned_issues
+    if (
+        not segment_only
+        and len(markdown or "") > CLASSICAL_FULL_REPAIR_LLM_MAX_CHARS
+    ):
+        _dump_stage(output_dir, f"classical_{stage}_quality_issues.txt", "\n".join(f"- {issue}" for issue in issues))
+        raise RuntimeError(f"古文白话{stage}阶段结构保护失败: {'；'.join(issues)}")
     issue_text = "\n".join(f"- {issue}" for issue in issues)
     logger.warning("古文白话%s阶段触发结构/误译修复: %s", stage, "; ".join(issues))
     _dump_stage(output_dir, f"classical_{stage}_quality_issues.txt", issue_text)

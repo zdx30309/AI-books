@@ -1450,6 +1450,81 @@ def test_classical_interleaved_quality_detects_missing_translation_pair() -> Non
     assert any("P0001 缺少紧随其后的（翻译）段" in issue for issue in issues)
 
 
+def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    noisy = """@正文
+【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。
+@导言
+（翻译）南阳有个叫宋定伯的人，年轻时夜里赶路，遇见了鬼，便开口问它。
+
+###不该出现的小标题
+【P0002】（原文）定伯诳之，言：“我亦鬼。”
+@正文
+（翻译）宋定伯骗它说：“我也是鬼。”"""
+
+    async def fail_route_writer_call(*_: object, **__: object) -> str:
+        raise AssertionError("deterministic cleanup should avoid full-manuscript LLM repair")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_route_writer_call)
+
+    result = asyncio.run(
+        content_engine._repair_classical_quality_once(
+            noisy,
+            marked_source_text="",
+            source_text="南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”",
+            expected_count=2,
+            stage="polish",
+            output_dir=tmp_path,
+            interleaved=True,
+        )
+    )
+
+    assert "@导言" not in result
+    assert "###不该出现的小标题" not in result
+    assert result.count("【P0001】") == 1
+    assert result.count("【P0002】") == 1
+    assert content_engine._classical_quality_issues(
+        result,
+        expected_count=2,
+        source_text="南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”",
+        interleaved=True,
+    ) == []
+
+
+def test_long_classical_interleaved_full_repair_does_not_call_llm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = (
+        "@正文\n"
+        "【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。\n"
+        "【P0002】（原文）定伯诳之，言：“我亦鬼。”\n"
+        "（翻译）宋定伯骗它说：“我也是鬼。”\n"
+        + "补长文本。" * 80
+    )
+
+    async def fail_route_writer_call(*_: object, **__: object) -> str:
+        raise AssertionError("long full-manuscript repair should fail before LLM")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_route_writer_call)
+    monkeypatch.setattr(content_engine, "CLASSICAL_FULL_REPAIR_LLM_MAX_CHARS", 100)
+
+    with pytest.raises(RuntimeError, match="结构保护失败"):
+        asyncio.run(
+            content_engine._repair_classical_quality_once(
+                bad,
+                marked_source_text="",
+                source_text="南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”",
+                expected_count=2,
+                stage="polish",
+                output_dir=tmp_path,
+                interleaved=True,
+            )
+        )
+
+
 def test_classical_chinese_uses_no_application_output_caps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
