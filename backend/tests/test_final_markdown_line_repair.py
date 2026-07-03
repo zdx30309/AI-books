@@ -198,6 +198,31 @@ def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation()
         assert punct not in prose
 
 
+def test_classical_reference_rewrite_normalize_matches_annotated_layout() -> None:
+    markdown = """@最终书名
+守株待兔（白话版）
+@正文
+@1. 全文
+【P0001】【原文定位】宋国有个种田人，田中有株，兔走触株，折颈而死。【注释】①宋人：宋国人。②耕者：种田的人。③株：树桩。【译文】宋国有个种田人，看见兔子撞在树桩上死了。【点评】这则寓言提醒人不能守着偶然当常法。
+【P0002】欲做精金美玉的人品①，定从烈火中煅来②。【注释】①精金美玉：比喻纯洁完美的人或事物。②煅：锻炼，烧制。【译文】若想成就好品格，就要经受历练。【点评】这条讲修身。
+【P0003】处世让一步为高①。【注释】①让一步：不是退缩，而是留出余地。【译文】处世时懂得退让，反而是一种高明。【点评】这条讲进退。"""
+
+    result = normalize_final_markdown(markdown, category="classical_chinese_reference_rewrite")
+
+    assert "【原文定位】" not in result
+    assert "【P0001】" not in result
+    assert "\n一\n宋国有个种田人" in result
+    assert "\n二\n欲做精金美玉的人品①" in result
+    assert "\n三\n处世让一步为高①" in result
+    assert "\n【注释】\n" in result
+    assert "\n【译文】\n" in result
+    assert "\n【点评】\n" in result
+    assert "\n①宋人：宋国人。\n②耕者：种田的人。\n③株：树桩。\n" in result
+    assert "【注释】①宋人" not in result
+    assert "【译文】宋国有个种田人" not in result
+    assert "【点评】这则寓言" not in result
+
+
 def test_normalize_removes_bold_prefix_pseudo_heading_from_body() -> None:
     markdown = """@正文
 @1. 健康观察
@@ -278,6 +303,7 @@ def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories(
         "healing_comic",
         "classical_chinese",
         "classical_chinese_interleaved",
+        "classical_chinese_reference_rewrite",
     }
 
     for category in SUPPORTED_CATEGORIES:

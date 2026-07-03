@@ -881,6 +881,9 @@ _CLASSICAL_TRANSLATION_LABEL_RE = re.compile(r"^[（(]\s*翻译\s*[）)]")
 _CLASSICAL_AI_RESIDUE_RE = re.compile(
     r"^(?:请问您是否需要|如果您需要|如需继续|需要我继续|以上就是|以上是)"
 )
+_CLASSICAL_REFERENCE_LABEL_RE = re.compile(r"(【\s*(?:原文定位|原文|注释|译文|点评)\s*】)")
+_CLASSICAL_REFERENCE_OUTPUT_LABELS = {"注释", "译文", "点评"}
+_CIRCLED_NOTE_RE = re.compile(r"(?=①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩)")
 
 
 def _convert_ascii_quotes_to_chinese(text: str) -> str:
@@ -930,6 +933,110 @@ def _clean_classical_body_line(raw_line: str) -> str:
     cleaned = _clean_classical_body_text(stripped)
     if not cleaned or _CLASSICAL_PUNCT_ONLY_RE.fullmatch(cleaned):
         return ""
+    return cleaned
+
+
+def _chinese_order_label(value: int) -> str:
+    numerals = "零一二三四五六七八九"
+    if value <= 0:
+        return str(value)
+    if value < 10:
+        return numerals[value]
+    if value == 10:
+        return "十"
+    if value < 20:
+        return "十" + numerals[value % 10]
+    if value < 100:
+        ten, one = divmod(value, 10)
+        return numerals[ten] + "十" + (numerals[one] if one else "")
+    if value < 1000:
+        hundred, rest = divmod(value, 100)
+        if rest == 0:
+            return numerals[hundred] + "百"
+        if rest < 10:
+            return numerals[hundred] + "百零" + numerals[rest]
+        return numerals[hundred] + "百" + _chinese_order_label(rest)
+    return str(value)
+
+
+def _split_classical_reference_labels(raw_line: str) -> list[str]:
+    stripped = (raw_line or "").strip()
+    if not stripped:
+        return []
+    if _CLASSICAL_MARKDOWN_HEADING_RE.match(stripped) and not _CLASSICAL_ANY_MARKER_RE.search(stripped):
+        return []
+    chapter = _CLASSICAL_CHAPTER_HEADING_RE.match(stripped)
+    if chapter:
+        prefix = re.sub(r"\s+", "", chapter.group(1)).replace("．", ".").replace("、", ".")
+        title = _clean_classical_body_text(chapter.group(2))
+        return [f"{prefix} {title}".rstrip()] if title else [prefix]
+
+    cleaned = _clean_classical_body_text(stripped)
+    if not cleaned or _CLASSICAL_PUNCT_ONLY_RE.fullmatch(cleaned):
+        return []
+
+    tokens = [token for token in _CLASSICAL_REFERENCE_LABEL_RE.split(cleaned) if token]
+    if len(tokens) == 1:
+        return [cleaned]
+
+    lines: list[str] = []
+    for token in tokens:
+        label_match = _CLASSICAL_REFERENCE_LABEL_RE.fullmatch(token)
+        if label_match:
+            label = re.sub(r"[【】\s]", "", label_match.group(0))
+            if label in _CLASSICAL_REFERENCE_OUTPUT_LABELS:
+                if not lines or lines[-1] != f"【{label}】":
+                    lines.append(f"【{label}】")
+            # Drop 【原文】/【原文定位】 labels; keep following content as ordinary text.
+            continue
+        content = token.strip()
+        if content and not _CLASSICAL_PUNCT_ONLY_RE.fullmatch(content):
+            lines.append(content)
+    return lines
+
+
+def _split_circled_note_items(line: str) -> list[str]:
+    text = (line or "").strip()
+    if not text or not _CIRCLED_NOTE_RE.search(text):
+        return [text] if text else []
+    parts = [part.strip() for part in _CIRCLED_NOTE_RE.split(text) if part.strip()]
+    return parts or [text]
+
+
+def _clean_classical_reference_body_lines(body: str) -> list[str]:
+    raw_lines = body.split("\n")
+    marker_numbers = [
+        int(match.group(1))
+        for raw_line in raw_lines
+        for match in [CLASSICAL_PARAGRAPH_MARKER_RE.search(raw_line)]
+        if match
+    ]
+    should_number_entries = len(set(marker_numbers)) >= 3
+    seen_markers: set[int] = set()
+    cleaned: list[str] = []
+    current_reference_label: str | None = None
+    for raw_line in raw_lines:
+        marker_match = CLASSICAL_PARAGRAPH_MARKER_RE.search(raw_line)
+        marker_number = int(marker_match.group(1)) if marker_match else None
+        if (
+            should_number_entries
+            and marker_number is not None
+            and marker_number not in seen_markers
+        ):
+            seen_markers.add(marker_number)
+            label = _chinese_order_label(len(seen_markers))
+            if not cleaned or cleaned[-1] != label:
+                cleaned.append(label)
+        for line in _split_classical_reference_labels(raw_line):
+            if line:
+                if line in {"【注释】", "【译文】", "【点评】"}:
+                    current_reference_label = line
+                    cleaned.append(line)
+                    continue
+                if current_reference_label == "【注释】":
+                    cleaned.extend(_split_circled_note_items(line))
+                else:
+                    cleaned.append(line)
     return cleaned
 
 
@@ -1545,9 +1652,12 @@ def _classical_segment_writer_prompt(
     )
     before_block = before.strip() or "无"
     after_block = after.strip() or "无"
+    is_reference_translation = str(variant or "").strip() == "reference_translation"
     output_mode_rule = (
         "把当前分段范围内的原文逐段完整输出为原文翻译穿插结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
         if interleaved
+        else "把当前分段范围内的原文逐条写成全注全译式条目。只输出本段 P 编号正文；每条按“原文原句、【注释】、【译文】、【点评】”换行排版，不输出 @最终书名、@最终简介、@目录、@导言、@正文。"
+        if is_reference_translation
         else "把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
     )
     interleaved_rule = (
@@ -1567,7 +1677,8 @@ def _classical_segment_writer_prompt(
 - 每个原文段落必须一一对应输出，不得漏段、漏句、漏半句，不得合并段落，不得拆散段落，不得调换顺序。
 - 每段开头必须保留原来的 P 编号，从 {_classical_marker_label(start_index)} 连续到 {_classical_marker_label(end_index)}。
 - 上文和下文只供理解人物关系、语气和词义，不属于本次输出范围，绝对不要翻译上下文参考。
-- 输出时不得出现没有 P 编号的小标题、Markdown 标题、资料型说明、任务说明或模型过程词。
+- 输出时不得出现没有 P 编号的小标题、Markdown 标题、任务说明或模型过程词。
+- 如果是参照译写版，【注释】【译文】【点评】是合法条目层级，必须单独成行；不得输出【原文定位】标签。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - 古今异义、器物名、职官名和旧称必须按上下文处理；不确定时保守表达，不要改成另一层意思。
 - 不要为了顺口改剧情，不要新增情节、人物、心理和结尾。
@@ -2438,7 +2549,10 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     front_lines = [line.rstrip() for line in front.split("\n")]
     if normalized in CLASSICAL_CHINESE_CATEGORY_IDS and normalized != BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         front_lines = [strip_classical_paragraph_markers(line) for line in front_lines]
-        body_lines = _clean_classical_body_lines(body)
+        if normalized == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+            body_lines = _clean_classical_reference_body_lines(body)
+        else:
+            body_lines = _clean_classical_body_lines(body)
         if normalized == CLASSICAL_INTERLEAVED_CATEGORY:
             body_lines = _collapse_extra_classical_interleaved_translation_lines(body_lines)
         result = "\n".join(front_lines + body_lines).strip()
