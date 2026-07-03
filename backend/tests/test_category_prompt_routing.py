@@ -1450,6 +1450,47 @@ def test_classical_interleaved_quality_detects_missing_translation_pair() -> Non
     assert any("P0001 缺少紧随其后的（翻译）段" in issue for issue in issues)
 
 
+def test_classical_interleaved_quality_detects_duplicate_translation_variants() -> None:
+    issues = content_engine._classical_quality_issues(  # noqa: SLF001
+        "@正文\n"
+        "【P0001】（原文）文学对曰：窃闻治人之道。\n"
+        "（翻译）文学之士回答说：私下听闻治理百姓的道理。\n"
+        "（翻译）文学之士回答说：我听说治理国家的道理。\n"
+        "【P0002】（原文）定伯诳之，言：“我亦鬼。”\n"
+        "（翻译）宋定伯骗它说：“我也是鬼。”",
+        expected_count=2,
+        source_text="文学对曰：窃闻治人之道。\n定伯诳之，言：“我亦鬼。”",
+        interleaved=True,
+    )
+
+    assert any("P0001 出现连续多个（翻译）段" in issue for issue in issues)
+
+
+def test_classical_interleaved_normalize_removes_duplicate_translation_variants() -> None:
+    manuscript = """@最终书名
+盐铁论（白话版）
+@正文
+@1. 全文
+【P0001】（原文）文学对曰：窃闻治人之道。
+（翻译）文学之士回答说：私下听闻治理百姓的道理。
+（翻译）文学之士回答说：我听说治理国家的道理。
+（翻译）文学之士回答说：我私下听说治理百姓的办法。
+【P0002】（原文）定伯诳之，言：“我亦鬼。”
+（翻译）宋定伯骗它说：“我也是鬼。”
+"""
+
+    result = content_engine.normalize_final_markdown(
+        manuscript,
+        category="classical_chinese_interleaved",
+    )
+
+    assert result.count("（原文）") == 2
+    assert result.count("（翻译）") == 2
+    assert "私下听闻治理百姓的道理" in result
+    assert "我听说治理国家的道理" not in result
+    assert "我私下听说治理百姓的办法" not in result
+
+
 def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1494,6 +1535,46 @@ def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm
         result,
         expected_count=2,
         source_text="南阳宋定伯，年少时，夜行，逢鬼，问之。\n定伯诳之，言：“我亦鬼。”",
+        interleaved=True,
+    ) == []
+
+
+def test_classical_interleaved_repair_removes_duplicate_translation_variants_without_llm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    noisy = """@正文
+【P0001】（原文）文学对曰：窃闻治人之道。
+（翻译）文学之士回答说：私下听闻治理百姓的道理。
+（翻译）文学之士回答说：我听说治理国家的道理。
+【P0002】（原文）定伯诳之，言：“我亦鬼。”
+（翻译）宋定伯骗它说：“我也是鬼。”
+"""
+
+    async def fail_route_writer_call(*_: object, **__: object) -> str:
+        raise AssertionError("duplicate translation cleanup should not call LLM")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_route_writer_call)
+
+    result = asyncio.run(
+        content_engine._repair_classical_quality_once(
+            noisy,
+            marked_source_text="",
+            source_text="文学对曰：窃闻治人之道。\n定伯诳之，言：“我亦鬼。”",
+            expected_count=2,
+            stage="polish",
+            output_dir=tmp_path,
+            interleaved=True,
+        )
+    )
+
+    assert result.count("（翻译）") == 2
+    assert "私下听闻治理百姓的道理" in result
+    assert "我听说治理国家的道理" not in result
+    assert content_engine._classical_quality_issues(
+        result,
+        expected_count=2,
+        source_text="文学对曰：窃闻治人之道。\n定伯诳之，言：“我亦鬼。”",
         interleaved=True,
     ) == []
 

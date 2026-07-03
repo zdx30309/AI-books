@@ -941,6 +941,69 @@ def _clean_classical_body_lines(body: str) -> list[str]:
     return cleaned
 
 
+def _classical_interleaved_label_kind(line: str) -> str | None:
+    markerless = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", (line or "").strip(), count=1).strip()
+    if _CLASSICAL_ORIGINAL_LABEL_RE.match(markerless):
+        return "original"
+    if _CLASSICAL_TRANSLATION_LABEL_RE.match(markerless):
+        return "translation"
+    return None
+
+
+def _collapse_extra_classical_interleaved_translation_lines(lines: list[str]) -> list[str]:
+    """Keep a single translation paragraph for each original paragraph.
+
+    Gemini may retain older candidate translations after adding a revised one.
+    The first translation after the original is the current candidate; following
+    consecutive translation labels before the next original are stale variants.
+    """
+    cleaned: list[str] = []
+    in_original_block = False
+    translation_seen = False
+    for raw_line in lines:
+        line = (raw_line or "").strip()
+        if not line:
+            continue
+        label_kind = _classical_interleaved_label_kind(line)
+        if label_kind == "original":
+            in_original_block = True
+            translation_seen = False
+            cleaned.append(raw_line)
+            continue
+        if label_kind == "translation" and in_original_block:
+            if translation_seen:
+                continue
+            translation_seen = True
+            cleaned.append(raw_line)
+            continue
+        cleaned.append(raw_line)
+    return cleaned
+
+
+def _collapse_extra_classical_interleaved_translations(markdown: str) -> str:
+    lines = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned: list[str] = []
+    body_started = False
+    body_lines: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        section = _FRONT_SECTION_RE.match(stripped)
+        label_kind = _classical_interleaved_label_kind(stripped)
+        if not body_started:
+            cleaned.append(raw_line)
+            if (section and section.group(1) == "正文") or label_kind == "original":
+                body_started = True
+                if label_kind == "original":
+                    cleaned.pop()
+                    body_lines.append(raw_line)
+            continue
+        body_lines.append(raw_line)
+    if not body_started:
+        return (markdown or "").strip()
+    cleaned.extend(_collapse_extra_classical_interleaved_translation_lines(body_lines))
+    return "\n".join(cleaned).strip()
+
+
 def _classical_cjk_signature(text: str) -> str:
     return "".join(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text or ""))
 
@@ -1108,7 +1171,7 @@ def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
         )
         if _CLASSICAL_TRANSLATION_LABEL_RE.match(markerless):
             pending_translation = False
-    return "\n".join(cleaned).strip()
+    return _collapse_extra_classical_interleaved_translations("\n".join(cleaned).strip())
 
 
 def _classical_translation_issues(source_text: str, markdown: str) -> list[str]:
@@ -1155,6 +1218,25 @@ def _classical_interleaved_structure_issues(
             translation_line,
         ):
             issues.append(f"{_classical_marker_label(marker)} 缺少紧随其后的（翻译）段")
+            continue
+        extra_translation_count = 0
+        cursor = translation_index + 1
+        while cursor < len(lines):
+            cursor_line = lines[cursor]
+            cursor_markerless = CLASSICAL_PARAGRAPH_MARKER_RE.sub(
+                "",
+                cursor_line,
+                count=1,
+            ).strip()
+            if CLASSICAL_PARAGRAPH_MARKER_RE.search(cursor_line) or _CLASSICAL_ORIGINAL_LABEL_RE.match(cursor_markerless):
+                break
+            if _CLASSICAL_TRANSLATION_LABEL_RE.match(cursor_markerless):
+                extra_translation_count += 1
+            cursor += 1
+        if extra_translation_count:
+            issues.append(
+                f"{_classical_marker_label(marker)} 出现连续多个（翻译）段：多出 {extra_translation_count} 段"
+            )
     return issues
 
 
@@ -2342,6 +2424,8 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     if normalized in CLASSICAL_CHINESE_CATEGORY_IDS and normalized != BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         front_lines = [strip_classical_paragraph_markers(line) for line in front_lines]
         body_lines = _clean_classical_body_lines(body)
+        if normalized == CLASSICAL_INTERLEAVED_CATEGORY:
+            body_lines = _collapse_extra_classical_interleaved_translation_lines(body_lines)
         result = "\n".join(front_lines + body_lines).strip()
         return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
