@@ -875,6 +875,8 @@ _CLASSICAL_PUNCT_ONLY_RE = re.compile(
 )
 _CLASSICAL_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
 _CLASSICAL_ANY_MARKER_RE = re.compile(r"【P\d{4,}】")
+_CLASSICAL_ORIGINAL_LABEL_RE = re.compile(r"^[（(]\s*原文\s*[）)]")
+_CLASSICAL_TRANSLATION_LABEL_RE = re.compile(r"^[（(]\s*翻译\s*[）)]")
 
 
 def _convert_ascii_quotes_to_chinese(text: str) -> str:
@@ -1047,6 +1049,7 @@ def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
     lines = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     cleaned: list[str] = []
     body_started = False
+    pending_translation = False
     for raw_line in lines:
         stripped = raw_line.strip()
         section = _FRONT_SECTION_RE.match(stripped)
@@ -1055,6 +1058,13 @@ def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
             cleaned.append(raw_line)
             if (section and section.group(1) == "正文") or has_marker:
                 body_started = True
+                markerless = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", stripped, count=1).strip()
+                pending_translation = bool(
+                    has_marker and _CLASSICAL_ORIGINAL_LABEL_RE.match(markerless)
+                )
+            continue
+        if not stripped:
+            cleaned.append(raw_line)
             continue
         if section:
             continue
@@ -1063,7 +1073,17 @@ def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
             and not _CLASSICAL_ANY_MARKER_RE.search(stripped)
         ):
             continue
+        markerless = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", stripped, count=1).strip()
+        if pending_translation and not has_marker and not _CLASSICAL_TRANSLATION_LABEL_RE.match(markerless):
+            raw_line = f"（翻译）{stripped}"
+            stripped = raw_line.strip()
+            markerless = stripped
         cleaned.append(raw_line)
+        pending_translation = bool(
+            has_marker and _CLASSICAL_ORIGINAL_LABEL_RE.match(markerless)
+        )
+        if _CLASSICAL_TRANSLATION_LABEL_RE.match(markerless):
+            pending_translation = False
     return "\n".join(cleaned).strip()
 
 

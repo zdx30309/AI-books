@@ -1457,7 +1457,7 @@ def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm
     noisy = """@正文
 【P0001】（原文）南阳宋定伯，年少时，夜行，逢鬼，问之。
 @导言
-（翻译）南阳有个叫宋定伯的人，年轻时夜里赶路，遇见了鬼，便开口问它。
+南阳有个叫宋定伯的人，年轻时夜里赶路，遇见了鬼，便开口问它。
 
 ###不该出现的小标题
 【P0002】（原文）定伯诳之，言：“我亦鬼。”
@@ -1485,6 +1485,7 @@ def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm
     assert "###不该出现的小标题" not in result
     assert result.count("【P0001】") == 1
     assert result.count("【P0002】") == 1
+    assert "（翻译）南阳有个叫宋定伯的人" in result
     assert content_engine._classical_quality_issues(
         result,
         expected_count=2,
