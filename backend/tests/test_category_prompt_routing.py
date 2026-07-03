@@ -1146,9 +1146,14 @@ def test_buddhist_scripture_story_uses_dedicated_story_prompt() -> None:
     assert "不得把故事稿改成术语解释稿或白话讲义" in prompts["gemini_fast_refine"]
     assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_polish"]
     assert "长佛经稿不得合并不同故事单元" in prompts["gemini_fast_refine"]
-    assert "350 到 600 汉字" in rendered
-    assert "完整故事厚度" in prompts["gemini_fast_polish"]
-    assert "完整故事厚度" in prompts["gemini_fast_refine"]
+    assert "不设固定字数标准" in rendered
+    assert "讲清楚就自然收住" in rendered
+    assert "菜、菜肴写“好吃、味道好、鲜美”" in rendered
+    assert "350 到 600 汉字" not in rendered
+    assert "350 到 600 汉字" not in prompts["gemini_fast_polish"]
+    assert "350 到 600 汉字" not in prompts["gemini_fast_refine"]
+    assert "完整故事形态" in prompts["gemini_fast_polish"]
+    assert "完整故事形态" in prompts["gemini_fast_refine"]
 
 
 def test_buddhist_story_unit_splitter_prefers_body_run_over_catalog() -> None:

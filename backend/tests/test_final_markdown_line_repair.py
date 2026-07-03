@@ -497,8 +497,8 @@ def test_buddhist_story_targeted_repair_accepts_borderline_story_length() -> Non
             source="\u539f" * 40,
         )
     ]
-    accepted = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 293)
-    rejected = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 259)
+    accepted = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 170)
+    rejected = "@\u6b63\u6587\n@70. chapter\n" + ("\u6545" * 99)
 
     assert content_engine._buddhist_story_manuscript_issues(accepted, units) == []
     assert content_engine._buddhist_story_manuscript_issues(rejected, units)

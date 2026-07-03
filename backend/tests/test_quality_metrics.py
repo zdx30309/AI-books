@@ -231,6 +231,21 @@ def test_final_hard_error_gate_detects_buddhist_story_chapters_too_short() -> No
     assert hits["佛经白话章节过短，故事展开不足"]
 
 
+def test_final_hard_error_gate_allows_clear_short_buddhist_parables() -> None:
+    body = (
+        "从前有个愚人到人家做客，嫌饭食太淡。主人添了一点盐，饭味立刻变得鲜美。"
+        "愚人便以为美味全在盐里，回去后不再吃饭，只把盐大把吞下，结果口中苦涩，反受其害。"
+        "这则譬喻提醒修行者，节制饮食本为调养身心，若执著到断绝饮食，反会把助道的方法变成伤身的偏见。"
+    )
+    chapters = "\n".join(f"@{index}. 第{index}喻\n{body}" for index in range(1, 31))
+    markdown = f"@最终书名\n佛经白话\n@正文\n{chapters}"
+
+    hits = detect_final_hard_errors(markdown, category="buddhist_scripture_story")
+
+    assert "佛经白话章节过短，故事展开不足" not in hits
+    assert "佛经白话章节过短，疑似故事和寓意被拆章" not in hits
+
+
 def test_final_hard_error_gate_allows_baiyujing_single_chapter_per_parable() -> None:
     body = (
         "这个譬喻先写愚人的选择，再写事情如何一步步走向荒唐。愚人听见一句话，便急着照做，"

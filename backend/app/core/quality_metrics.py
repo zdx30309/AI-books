@@ -688,7 +688,7 @@ def _detect_buddhist_story_shape_errors(text: str, *, category: str | None = Non
         if cjk_chars < 45:
             preview = " ".join(prose_lines)[:90]
             thin_samples.append(f"{heading}｜{preview or '正文为空'}")
-        if cjk_chars < 220:
+        if cjk_chars < 100:
             preview = " ".join(prose_lines)[:90]
             short_story_samples.append(f"{heading}｜{cjk_chars} 字｜{preview or '正文为空'}")
 
