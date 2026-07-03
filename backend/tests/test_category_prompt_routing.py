@@ -1900,6 +1900,55 @@ def test_classical_chunk_fallback_continues_after_gemini_error(tmp_path: Path) -
     assert any(info.get("phase") == "fallback" for _, info in events)
 
 
+def test_validated_chunk_fallback_is_cached_for_resume(tmp_path: Path) -> None:
+    raw_text = "@77. Salt\nA smooth parable body."
+    bad_output = "@7. Salt\nGemini changed the chapter marker."
+    events: list[tuple[str, dict[str, object]]] = []
+    calls = 0
+
+    def bad_polish(chunk: str, **_: object) -> str:
+        nonlocal calls
+        calls += 1
+        assert chunk == raw_text
+        return bad_output
+
+    result = asyncio.run(
+        content_engine._polish_by_paragraph_chunks_strict(
+            raw_text,
+            target_chars=1000,
+            output_dir=tmp_path,
+            chunk_func=bad_polish,
+            allow_chunk_fallback=True,
+            call_timeout_seconds=0,
+            splitter=lambda text, **_: [text],
+            chunk_validator=content_engine._buddhist_chapter_marker_issues,
+            on_stage=lambda stage, info: events.append((stage, info)),
+        )
+    )
+
+    assert result == raw_text
+    assert calls == 1
+    assert any(info.get("phase") == "fallback" for _, info in events)
+
+    def should_not_call_gemini(_: str, **__: object) -> str:
+        raise AssertionError("fallback chunk should be reused from cache")
+
+    resumed = asyncio.run(
+        content_engine._polish_by_paragraph_chunks_strict(
+            raw_text,
+            target_chars=1000,
+            output_dir=tmp_path,
+            chunk_func=should_not_call_gemini,
+            allow_chunk_fallback=True,
+            call_timeout_seconds=0,
+            splitter=lambda text, **_: [text],
+            chunk_validator=content_engine._buddhist_chapter_marker_issues,
+        )
+    )
+
+    assert resumed == raw_text
+
+
 def test_zero_gemini_chunk_timeout_is_bounded_wait_not_output_cap() -> None:
     timeout = content_engine._effective_gemini_chunk_timeout(0, 180)
 

@@ -3213,6 +3213,7 @@ async def _polish_by_paragraph_chunks_strict(
     async def _fallback_chunk(idx: int, chunk: str, *, message: str) -> None:
         nonlocal fallback_count
         polished[idx] = chunk
+        _write_cache(idx, chunk, chunk)
         async with error_lock:
             fallback_count += 1
             if fallback_count >= max(1, int(chunk_failure_bypass_threshold or 1)):
@@ -5305,7 +5306,7 @@ async def generate_full_book(
             on_stage=on_stage,
             output_dir=output_dir,
             chunk_func=polish_chunk_func,
-            allow_chunk_fallback=is_classical_category,
+            allow_chunk_fallback=is_classical_category or use_buddhist_story_unit_writer,
             splitter=(
                 _split_text_by_classical_marker_lines
                 if is_classical_category
@@ -5402,6 +5403,7 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
+                allow_chunk_fallback=True,
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
