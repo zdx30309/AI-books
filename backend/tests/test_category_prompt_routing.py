@@ -458,11 +458,18 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "{raw_text}" in writer
     assert "参照译写白话加工稿" in writer
     assert "若参考到已有译文，只能吸收释义判断、术语、断句和语气密度" in writer
+    assert "不是把古文简单翻译成现代汉语" in writer
+    assert "词义校准" in writer
+    assert "顺译成文" in writer
+    assert "点评式阐发" in writer
+    assert "对《菜根谭》这类格言、清言、小品、语录体文本" in writer
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
     assert "输出必须回到古文原文和古汉语词典" in writer
     assert "知名译本参照" in source_pack
     assert "参考已有译本或白话稿时" in source_pack
+    assert "不是简单翻译" in source_pack
+    assert "点评式阐发" in source_pack
     assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
 
 
@@ -482,9 +489,10 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     )
 
     assert "笔锋参考要求" in with_reference
-    assert "古文白话参照译写版专用的参考译文输入项" in with_reference
+    assert "古文白话参照译写版专用的参照译本输入项" in with_reference
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
+    assert "词义校准、顺译成文、点评式阐发" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
 
 

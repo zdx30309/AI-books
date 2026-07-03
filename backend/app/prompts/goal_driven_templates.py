@@ -115,6 +115,7 @@ SOCIAL_SCIENCE_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文
 
 
 LIFE_PHILOSOPHY_FULL_BOOK_WRITER_PROMPT = _load_prompt_template("life_philosophy_writer.md")
+CLASSICAL_REFERENCE_REWRITE_PROFILE = _load_prompt_template("classical_reference_rewrite_profile.md")
 
 
 GEMINI_FAST_POLISH_PROMPT = """请把下面的文字重写成自然流畅、适合大众阅读的现代汉语。
@@ -1318,7 +1319,7 @@ CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT = "当前分类：�
 ).replace(
     "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。",
     "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。若参考到已有译文，只能吸收释义判断、术语、断句和语气密度，必须重写为新的表达，不得逐句复刻、同义替换或贴近洗稿。",
-) + """
+) + "\n\n" + CLASSICAL_REFERENCE_REWRITE_PROFILE + """
 
 【参照译写安全硬规则】
 - 如果任务包、笔锋参考或补充要求里包含别人已经翻译好的白话译文，只能作为释义参考、术语参考、断句参考和语气密度参考。
