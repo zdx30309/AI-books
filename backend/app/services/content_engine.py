@@ -877,6 +877,9 @@ _CLASSICAL_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
 _CLASSICAL_ANY_MARKER_RE = re.compile(r"【P\d{4,}】")
 _CLASSICAL_ORIGINAL_LABEL_RE = re.compile(r"^[（(]\s*原文\s*[）)]")
 _CLASSICAL_TRANSLATION_LABEL_RE = re.compile(r"^[（(]\s*翻译\s*[）)]")
+_CLASSICAL_AI_RESIDUE_RE = re.compile(
+    r"^(?:请问您是否需要|如果您需要|如需继续|需要我继续|以上就是|以上是)"
+)
 
 
 def _convert_ascii_quotes_to_chinese(text: str) -> str:
@@ -1050,23 +1053,44 @@ def _clean_classical_interleaved_structural_noise(markdown: str) -> str:
     cleaned: list[str] = []
     body_started = False
     pending_translation = False
+    seen_markers: set[int] = set()
+    last_marker = 0
+    skip_until_next_marker = False
     for raw_line in lines:
         stripped = raw_line.strip()
         section = _FRONT_SECTION_RE.match(stripped)
-        has_marker = bool(CLASSICAL_PARAGRAPH_MARKER_RE.search(stripped))
+        marker_match = CLASSICAL_PARAGRAPH_MARKER_RE.search(stripped)
+        marker_number = int(marker_match.group(1)) if marker_match else None
+        has_marker = marker_number is not None
         if not body_started:
             cleaned.append(raw_line)
             if (section and section.group(1) == "正文") or has_marker:
                 body_started = True
+                if marker_number is not None:
+                    seen_markers.add(marker_number)
+                    last_marker = marker_number
                 markerless = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", stripped, count=1).strip()
                 pending_translation = bool(
                     has_marker and _CLASSICAL_ORIGINAL_LABEL_RE.match(markerless)
                 )
             continue
         if not stripped:
-            cleaned.append(raw_line)
+            if not skip_until_next_marker:
+                cleaned.append(raw_line)
+            continue
+        if has_marker:
+            if marker_number in seen_markers or marker_number < last_marker:
+                skip_until_next_marker = True
+                pending_translation = False
+                continue
+            skip_until_next_marker = False
+            seen_markers.add(marker_number)
+            last_marker = marker_number
+        elif skip_until_next_marker:
             continue
         if section:
+            continue
+        if _CLASSICAL_AI_RESIDUE_RE.match(stripped):
             continue
         if (
             _CLASSICAL_MARKDOWN_HEADING_RE.match(stripped)

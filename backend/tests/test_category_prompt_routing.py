@@ -1462,7 +1462,9 @@ def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm
 ###不该出现的小标题
 【P0002】（原文）定伯诳之，言：“我亦鬼。”
 @正文
-（翻译）宋定伯骗它说：“我也是鬼。”"""
+（翻译）宋定伯骗它说：“我也是鬼。”
+请问您是否需要接下来的章节概要或微调？
+【P0001】这是一段模型误插入的重复编号内容，应当被删除。"""
 
     async def fail_route_writer_call(*_: object, **__: object) -> str:
         raise AssertionError("deterministic cleanup should avoid full-manuscript LLM repair")
@@ -1486,6 +1488,8 @@ def test_classical_interleaved_repair_removes_body_frontmatter_noise_without_llm
     assert result.count("【P0001】") == 1
     assert result.count("【P0002】") == 1
     assert "（翻译）南阳有个叫宋定伯的人" in result
+    assert "请问您是否需要" not in result
+    assert "模型误插入" not in result
     assert content_engine._classical_quality_issues(
         result,
         expected_count=2,
