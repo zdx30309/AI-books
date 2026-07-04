@@ -410,6 +410,10 @@ _CONTINUATION_PREFIXES = (
 )
 _FINAL_QA_EXCLUDED_CATEGORIES = {"comic_series", "healing_comic"}
 _CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
+_CLASSICAL_PAIRED_TRANSLATION_CATEGORIES = {
+    _CLASSICAL_INTERLEAVED_CATEGORY,
+    "classical_chinese_reference_rewrite",
+}
 _CLASSICAL_LABEL_LINE_RE = re.compile(
     r"^(?:\u3010P\d{4}\u3011\s*)?"
     r"(?:\uff08\u539f\u6587\uff09|\uff08\u7ffb\u8bd1\uff09)"
@@ -505,7 +509,7 @@ def _is_allowed_internal_subheading(line: str) -> bool:
 
 
 def _is_classical_interleaved_label_line(line: str, *, category: str | None = None) -> bool:
-    if (category or "").strip().lower() != _CLASSICAL_INTERLEAVED_CATEGORY:
+    if (category or "").strip().lower() not in _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES:
         return False
     return bool(_CLASSICAL_LABEL_LINE_RE.match(line.strip()))
 

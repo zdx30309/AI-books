@@ -409,6 +409,35 @@ def test_final_hard_error_gate_skips_clean_manuscript_without_llm(monkeypatch, t
     assert not (tmp_path / "semantic_quality_repaired.md").exists()
 
 
+def test_final_hard_error_gate_skips_classical_reference_pairs_without_llm(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    markdown = """@最终书名
+菜根谭（白话版）
+@正文
+@1. 菜根谭
+（原文）路径窄处，留一步与人行；滋味浓处，减三分让人嗜。此是涉世一极乐法。
+（翻译）路走到狭窄的地方，要留出一步让别人同行；滋味正浓的时候，要减去三分让别人也能品尝。这是处世中一种很快乐的办法。
+"""
+
+    async def fail_if_called(*args, **kwargs) -> str:
+        raise AssertionError("paired reference translation should not call the writer")
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fail_if_called)
+
+    result = asyncio.run(
+        content_engine._repair_final_hard_errors_once(
+            markdown,
+            category="classical_chinese_reference_rewrite",
+            output_dir=tmp_path,
+        )
+    )
+
+    assert result == markdown
+    assert not (tmp_path / "semantic_quality_repaired.md").exists()
+
+
 def test_final_hard_error_gate_fails_when_repair_keeps_blocking_issue(monkeypatch, tmp_path) -> None:
     markdown = """@最终书名
 测试书

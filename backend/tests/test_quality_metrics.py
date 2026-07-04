@@ -192,6 +192,22 @@ def test_final_hard_error_gate_allows_classical_interleaved_original_labels() ->
     assert not hits
 
 
+def test_final_hard_error_gate_allows_classical_reference_original_translation_pairs() -> None:
+    markdown = """@最终书名
+菜根谭（白话版）
+@正文
+@1. 菜根谭
+（原文）路径窄处，留一步与人行；滋味浓处，减三分让人嗜。此是涉世一极乐法。
+（翻译）路走到狭窄的地方，要留出一步让别人同行；滋味正浓的时候，要减去三分让别人也能品尝。这是处世中一种很快乐的办法。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
+
+    assert "正文内小标题未标准化为 ###" not in hits
+    assert "裸短小标题" not in hits
+    assert not hits
+
+
 def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
     chapters: list[str] = []
     for index in range(1, 31):
