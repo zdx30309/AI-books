@@ -210,7 +210,7 @@ def test_default_classical_reference_template_can_attach_to_config(tmp_path, mon
     reference_dir.mkdir(parents=True)
     text_path = reference_dir / "default_reference.txt"
     meta_path = reference_dir / "default_reference.json"
-    text_path.write_text("【译文】一段参照译文。\n【点评】一段讲解。", encoding="utf-8")
+    text_path.write_text("原文：栖守道德者，寂寞一时。\n译文：守住道德的人，也许会一时寂寞。", encoding="utf-8")
     meta_path.write_text(
         '{"name":"菜根谭-中华书局参照范本","source_filename":"菜根谭-中华书局.docx"}',
         encoding="utf-8",
@@ -226,7 +226,7 @@ def test_default_classical_reference_template_can_attach_to_config(tmp_path, mon
     assert cfg["default_style_reference_enabled"] is True
     assert cfg["style_reference"] == "菜根谭-中华书局参照范本"
     assert cfg["style_notes_path"].endswith("default_reference.txt")
-    assert "固定参照译本体例范本" in cfg["style_notes"]
+    assert "固定参照译本字词校准范本" in cfg["style_notes"]
 
 
 def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
@@ -299,7 +299,7 @@ def test_default_reference_template_feeds_reference_rewrite_worker(tmp_path, mon
     reference_dir.mkdir(parents=True)
     text_path = reference_dir / "default_reference.txt"
     meta_path = reference_dir / "default_reference.json"
-    text_path.write_text("【译文】一段参照译文。\n【点评】一段讲解。", encoding="utf-8")
+    text_path.write_text("原文：栖守道德者，寂寞一时。\n译文：守住道德的人，也许会一时寂寞。", encoding="utf-8")
     meta_path.write_text('{"name":"菜根谭-中华书局参照范本"}', encoding="utf-8")
     monkeypatch.setattr(ref_templates, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(ref_templates, "DEFAULT_REFERENCE_TEXT_PATH", text_path)
@@ -311,6 +311,6 @@ def test_default_reference_template_feeds_reference_rewrite_worker(tmp_path, mon
         task_label="test",
     )
 
-    assert "固定参照译本体例范本" in loaded
-    assert "【译文】一段参照译文" in loaded
-    assert "【点评】一段讲解" in loaded
+    assert "固定参照译本字词校准范本" in loaded
+    assert "原文：栖守道德者" in loaded
+    assert "译文：守住道德的人" in loaded

@@ -198,7 +198,7 @@ def test_classical_normalize_removes_spacers_spaces_and_half_width_punctuation()
         assert punct not in prose
 
 
-def test_classical_reference_rewrite_normalize_matches_annotated_layout() -> None:
+def test_classical_reference_rewrite_normalize_keeps_only_original_translation_pairs() -> None:
     markdown = """@最终书名
 守株待兔（白话版）
 @正文
@@ -211,16 +211,15 @@ def test_classical_reference_rewrite_normalize_matches_annotated_layout() -> Non
 
     assert "【原文定位】" not in result
     assert "【P0001】" not in result
-    assert "\n一\n宋国有个种田人" in result
-    assert "\n二\n欲做精金美玉的人品①" in result
-    assert "\n三\n处世让一步为高①" in result
-    assert "\n【注释】\n" in result
-    assert "\n【译文】\n" in result
-    assert "\n【点评】\n" in result
-    assert "\n①宋人：宋国人。\n②耕者：种田的人。\n③株：树桩。\n" in result
-    assert "【注释】①宋人" not in result
-    assert "【译文】宋国有个种田人" not in result
-    assert "【点评】这则寓言" not in result
+    assert "\n（原文）宋国有个种田人，田中有株，兔走触株，折颈而死。\n（翻译）宋国有个种田人，看见兔子撞在树桩上死了。" in result
+    assert "\n（原文）欲做精金美玉的人品①，定从烈火中煅来②。\n（翻译）若想成就好品格，就要经受历练。" in result
+    assert "\n（原文）处世让一步为高①。\n（翻译）处世时懂得退让，反而是一种高明。" in result
+    assert "【注释】" not in result
+    assert "【译文】" not in result
+    assert "【点评】" not in result
+    assert "①宋人：宋国人" not in result
+    assert "\n一\n" not in result
+    assert "\n二\n" not in result
 
 
 def test_normalize_removes_bold_prefix_pseudo_heading_from_body() -> None:

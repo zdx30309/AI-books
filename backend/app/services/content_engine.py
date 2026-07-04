@@ -882,7 +882,7 @@ _CLASSICAL_AI_RESIDUE_RE = re.compile(
     r"^(?:请问您是否需要|如果您需要|如需继续|需要我继续|以上就是|以上是)"
 )
 _CLASSICAL_REFERENCE_LABEL_RE = re.compile(r"(【\s*(?:原文定位|原文|注释|译文|点评)\s*】)")
-_CLASSICAL_REFERENCE_OUTPUT_LABELS = {"注释", "译文", "点评"}
+_CLASSICAL_REFERENCE_SKIP_LABELS = {"注释", "点评"}
 _CIRCLED_NOTE_RE = re.compile(r"(?=①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩)")
 
 
@@ -959,6 +959,67 @@ def _chinese_order_label(value: int) -> str:
     return str(value)
 
 
+def _classical_reference_label_name(token: str) -> str | None:
+    label_match = _CLASSICAL_REFERENCE_LABEL_RE.fullmatch((token or "").strip())
+    if not label_match:
+        return None
+    return re.sub(r"[【】\s]", "", label_match.group(0))
+
+
+def _ensure_classical_reference_pair_label(line: str, kind: str) -> str:
+    cleaned = (line or "").strip()
+    if not cleaned:
+        return ""
+    if kind == "original":
+        if _CLASSICAL_ORIGINAL_LABEL_RE.match(cleaned):
+            return cleaned
+        return f"（原文）{cleaned}"
+    if kind == "translation":
+        if _CLASSICAL_TRANSLATION_LABEL_RE.match(cleaned):
+            return cleaned
+        return f"（翻译）{cleaned}"
+    return cleaned
+
+
+def _split_legacy_reference_annotation_line(raw_line: str) -> list[str] | None:
+    cleaned = _clean_classical_body_text(raw_line)
+    if not cleaned or _CLASSICAL_PUNCT_ONLY_RE.fullmatch(cleaned):
+        return []
+    tokens = [token for token in _CLASSICAL_REFERENCE_LABEL_RE.split(cleaned) if token]
+    if len(tokens) == 1:
+        return None
+
+    original_parts: list[str] = []
+    translation_parts: list[str] = []
+    mode = "original"
+    for token in tokens:
+        label = _classical_reference_label_name(token)
+        if label:
+            if label in {"原文", "原文定位"}:
+                mode = "original"
+            elif label == "译文":
+                mode = "translation"
+            elif label in _CLASSICAL_REFERENCE_SKIP_LABELS:
+                mode = "skip"
+            continue
+        content = token.strip()
+        if not content or _CLASSICAL_PUNCT_ONLY_RE.fullmatch(content):
+            continue
+        if mode == "translation":
+            translation_parts.append(content)
+        elif mode == "original":
+            original_parts.append(content)
+
+    lines: list[str] = []
+    original = "".join(original_parts).strip()
+    translation = "".join(translation_parts).strip()
+    if original:
+        lines.append(_ensure_classical_reference_pair_label(original, "original"))
+    if translation:
+        lines.append(_ensure_classical_reference_pair_label(translation, "translation"))
+    return lines
+
+
 def _split_classical_reference_labels(raw_line: str) -> list[str]:
     stripped = (raw_line or "").strip()
     if not stripped:
@@ -981,13 +1042,15 @@ def _split_classical_reference_labels(raw_line: str) -> list[str]:
 
     lines: list[str] = []
     for token in tokens:
-        label_match = _CLASSICAL_REFERENCE_LABEL_RE.fullmatch(token)
-        if label_match:
-            label = re.sub(r"[【】\s]", "", label_match.group(0))
-            if label in _CLASSICAL_REFERENCE_OUTPUT_LABELS:
-                if not lines or lines[-1] != f"【{label}】":
-                    lines.append(f"【{label}】")
-            # Drop 【原文】/【原文定位】 labels; keep following content as ordinary text.
+        label = _classical_reference_label_name(token)
+        if label:
+            if label == "译文":
+                if not lines or lines[-1] != "（翻译）":
+                    lines.append("（翻译）")
+            elif label in {"原文", "原文定位"}:
+                if not lines or lines[-1] != "（原文）":
+                    lines.append("（原文）")
+            # Drop annotation/comment labels for the new paired-output mode.
             continue
         content = token.strip()
         if content and not _CLASSICAL_PUNCT_ONLY_RE.fullmatch(content):
@@ -1004,40 +1067,40 @@ def _split_circled_note_items(line: str) -> list[str]:
 
 
 def _clean_classical_reference_body_lines(body: str) -> list[str]:
-    raw_lines = body.split("\n")
-    marker_numbers = [
-        int(match.group(1))
-        for raw_line in raw_lines
-        for match in [CLASSICAL_PARAGRAPH_MARKER_RE.search(raw_line)]
-        if match
-    ]
-    should_number_entries = len(set(marker_numbers)) >= 3
-    seen_markers: set[int] = set()
     cleaned: list[str] = []
     current_reference_label: str | None = None
-    for raw_line in raw_lines:
-        marker_match = CLASSICAL_PARAGRAPH_MARKER_RE.search(raw_line)
-        marker_number = int(marker_match.group(1)) if marker_match else None
-        if (
-            should_number_entries
-            and marker_number is not None
-            and marker_number not in seen_markers
-        ):
-            seen_markers.add(marker_number)
-            label = _chinese_order_label(len(seen_markers))
-            if not cleaned or cleaned[-1] != label:
-                cleaned.append(label)
-        for line in _split_classical_reference_labels(raw_line):
-            if line:
-                if line in {"【注释】", "【译文】", "【点评】"}:
-                    current_reference_label = line
-                    cleaned.append(line)
-                    continue
-                if current_reference_label == "【注释】":
-                    cleaned.extend(_split_circled_note_items(line))
-                else:
-                    cleaned.append(line)
-    return cleaned
+    for raw_line in body.split("\n"):
+        stripped = (raw_line or "").strip()
+        if not stripped:
+            continue
+        plain = _clean_classical_body_text(stripped)
+        label = _classical_reference_label_name(plain)
+        if label:
+            current_reference_label = label
+            continue
+
+        legacy_pair = _split_legacy_reference_annotation_line(raw_line)
+        if legacy_pair is not None:
+            cleaned.extend(line for line in legacy_pair if line)
+            current_reference_label = None
+            continue
+
+        line = _clean_classical_body_line(raw_line)
+        if not line:
+            continue
+        if current_reference_label in _CLASSICAL_REFERENCE_SKIP_LABELS:
+            continue
+        if current_reference_label == "译文":
+            cleaned.append(_ensure_classical_reference_pair_label(line, "translation"))
+            continue
+        if current_reference_label in {"原文", "原文定位"}:
+            cleaned.append(_ensure_classical_reference_pair_label(line, "original"))
+            continue
+        if CLASSICAL_PARAGRAPH_MARKER_RE.search(raw_line) and not _classical_interleaved_label_kind(line):
+            cleaned.append(_ensure_classical_reference_pair_label(line, "original"))
+            continue
+        cleaned.append(line)
+    return _collapse_extra_classical_interleaved_translation_lines(cleaned)
 
 
 def _clean_classical_body_lines(body: str) -> list[str]:
@@ -1653,16 +1716,17 @@ def _classical_segment_writer_prompt(
     before_block = before.strip() or "无"
     after_block = after.strip() or "无"
     is_reference_translation = str(variant or "").strip() == "reference_translation"
+    paired_original_translation = interleaved or is_reference_translation
     output_mode_rule = (
         "把当前分段范围内的原文逐段完整输出为原文翻译穿插结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
         if interleaved
-        else "把当前分段范围内的原文逐条写成全注全译式条目。只输出本段 P 编号正文；每条按“原文原句、【注释】、【译文】、【点评】”换行排版，不输出 @最终书名、@最终简介、@目录、@导言、@正文。"
+        else "把当前分段范围内的原文逐段完整输出为原文翻译对照结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。参考译本只用于校准字词和断句。"
         if is_reference_translation
         else "把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
     )
     interleaved_rule = (
         "\n- 每个原文段落必须输出两个连续自然段：第一段为【P0001】（原文）原文内容，第二段为（翻译）现代汉语译文。\n- 原文段必须逐字保留任务包中的对应原文，不得改写；翻译段必须完整翻译上一段原文，不得漏译。\n- 不得把原文和翻译合并成一段，不得集中输出全部原文后再输出全部翻译。"
-        if interleaved
+        if paired_original_translation
         else ""
     )
     return f"""你是一名成熟的古文白话写作者。现在处理的是长篇古文白话工程中的一个连续分段。
@@ -1678,7 +1742,7 @@ def _classical_segment_writer_prompt(
 - 每段开头必须保留原来的 P 编号，从 {_classical_marker_label(start_index)} 连续到 {_classical_marker_label(end_index)}。
 - 上文和下文只供理解人物关系、语气和词义，不属于本次输出范围，绝对不要翻译上下文参考。
 - 输出时不得出现没有 P 编号的小标题、Markdown 标题、任务说明或模型过程词。
-- 如果是参照译写版，【注释】【译文】【点评】是合法条目层级，必须单独成行；不得输出【原文定位】标签。
+- 如果是参照译写版，最终只能输出（原文）/（翻译）成对段落；不得输出【注释】【译文】【点评】【原文定位】、赏析、解析、译者按或圈号注释。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - 古今异义、器物名、职官名和旧称必须按上下文处理；不确定时保守表达，不要改成另一层意思。
 - 不要为了顺口改剧情，不要新增情节、人物、心理和结尾。
@@ -5257,8 +5321,8 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
         "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
     CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
-        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度，以及“原文理解、必要注释、现代译文、点评阐发”的全注全译体例。",
-        "必须回到古文原文和古汉语词典生成新的白话表达；可以学习参照译本的条目结构、注释密度、译文顺序和点评讲解技法，但不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
+        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性；不再学习参照译本的注释、点评或排版体例。",
+        "必须回到古文原文和古汉语词典生成新的白话翻译；只能参考字词释义和断句判断，不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
     ),
 }
 
@@ -5368,9 +5432,9 @@ def _append_style_reference_prompt(
     if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
         parts.extend(
             [
-                "- 请提炼参考对象的条目体例、注释取舍、译文顺序、点评深度、事例佐证方式、古籍普及读物语气和信息密度。",
-                "- 每个原文条目都不能只输出粗浅翻译；必须体现原文理解、必要注释、现代译文和点评阐发的完整层次。",
-                "- 只能学习体例和技法，必须生成新的白话书稿；不要复刻、改写或搬运任何现成译文句子。",
+                "- 请只参考对象中的字词释义、术语译法、断句、称谓和语气准确性，不要学习其注释、点评、章节讲解或排版体例。",
+                "- 最终输出只允许每个原文段后紧跟一个翻译段，不得加入注释、点评、赏析、解析或圈号说明。",
+                "- 必须生成新的白话翻译；不要复刻、改写或搬运任何现成译文句子。",
                 f"- {boundary}",
             ]
         )

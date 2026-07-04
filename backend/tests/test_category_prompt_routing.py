@@ -456,21 +456,22 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert meta["label"] == "古文白话（参照译写版）"
     assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话"
     assert "{raw_text}" in writer
-    assert "参照译写白话加工稿" in writer
+    assert "原文翻译对照稿" in writer
     assert "若参考到已有译文，只能吸收释义判断、术语、断句和语气密度" in writer
-    assert "不是把古文简单翻译成现代汉语" in writer
-    assert "词义校准" in writer
-    assert "顺译成文" in writer
-    assert "点评式阐发" in writer
-    assert "对《菜根谭》这类格言、清言、小品、语录体文本" in writer
+    assert "最终正文只输出原文与翻译成对段落" in writer
+    assert "原文一段、翻译一段" in writer
+    assert "不再参考《菜根谭》类全注全译" in writer
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
     assert "输出必须回到古文原文和古汉语词典" in writer
+    assert "不得输出【注释】【译文】【点评】【原文定位】" in writer
     assert "知名译本参照" in source_pack
     assert "参考已有译本或白话稿时" in source_pack
-    assert "不是简单翻译" in source_pack
-    assert "点评式阐发" in source_pack
+    assert "最终输出形态只做原文与翻译对照" in source_pack
+    assert "【P0001】（原文）原文内容" in source_pack
+    assert "（翻译）现代白话译文" in source_pack
     assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
+    assert "【注释】【译文】【点评】必须单独成行" not in source_pack
 
 
 def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> None:
@@ -492,8 +493,9 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "古文白话参照译写版专用的参照译本输入项" in with_reference
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
-    assert "原文理解、必要注释、现代译文、点评阐发" in with_reference
-    assert "全注全译体例" in with_reference
+    assert "只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性" in with_reference
+    assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
+    assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
 
 
