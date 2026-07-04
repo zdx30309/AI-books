@@ -197,6 +197,240 @@ def test_extract_copyright_holder_from_book_detail_payload() -> None:
     assert weread_tools._extract_copyright_holder(body) == "简读互动"
 
 
+def test_extract_copyright_id_from_book_detail_payload() -> None:
+    body = '{"bookInfo":{"cpid":39149647,"copyrightInfo":{"id":39149647,"name":"佳润互众"}}}'
+
+    assert weread_tools._extract_copyright_id(body) == "39149647"
+
+
+def test_parse_company_lookup_input_keeps_seed_link() -> None:
+    lookup = weread_tools._parse_company_lookup_input(
+        "佳润互众\nhttps://weread.qq.com/web/reader/b3a32f00813aba926g018a42"
+    )
+
+    assert lookup.company_name == "佳润互众"
+    assert lookup.seed_items == [
+        CatalogBook(
+            title="https://weread.qq.com/web/reader/b3a32f00813aba926g018a42",
+            source_url="https://weread.qq.com/web/reader/b3a32f00813aba926g018a42",
+        )
+    ]
+
+
+def test_company_index_upserts_and_returns_cached_cards(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
+    monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)
+
+    weread_tools._upsert_company_index_from_result(
+        WeReadBookResult(
+            query_title="天涯神贴智慧大全",
+            query_author="玄谷",
+            matched_title="天涯神贴智慧大全",
+            matched_author="玄谷",
+            recommendation=66.4,
+            rating_count="223人点评",
+            reading_count="4.1万人",
+            company_name="佳润互众",
+            copyright_id="39149647",
+            source_url="https://weread.qq.com/web/reader/b3a32f00813aba926g018a42",
+            status="matched",
+        )
+    )
+
+    cards = weread_tools._company_candidate_cards_from_cache("佳润互众", target_ids=set(), max_books=10)
+
+    assert cards[0]["title"] == "天涯神贴智慧大全"
+    assert cards[0]["company_name"] == "佳润互众"
+    assert cards[0]["copyright_id"] == "39149647"
+    assert cards[0]["reading_count"] == "4.1万人"
+
+
+def test_parse_api_book_cards_keeps_company_metrics_and_url() -> None:
+    cards = weread_tools._parse_api_book_cards(
+        {
+            "books": [
+                {
+                    "bookInfo": {
+                        "bookId": "3300170628",
+                        "encodeId": "b3a32f00813aba926g018a42",
+                        "title": "天涯神贴智慧大全",
+                        "author": "玄谷",
+                        "newRating": 662,
+                        "newRatingCount": 222,
+                        "copyrightInfo": {"id": 39149647, "name": "佳润互众"},
+                    },
+                    "readingCount": 674,
+                    "searchIdx": 2,
+                }
+            ]
+        }
+    )
+
+    assert cards == [
+        {
+            "title": "天涯神贴智慧大全",
+            "author": "玄谷",
+            "source_url": "https://weread.qq.com/web/reader/b3a32f00813aba926g018a42",
+            "company_name": "佳润互众",
+            "copyright_id": "39149647",
+            "recommendation": 66.2,
+            "rating_count": "222人点评",
+            "today_reading": "674人",
+            "reading_count": "674人",
+            "search_idx": 2,
+        }
+    ]
+
+
+def test_analyze_weread_company_books_filters_noise_by_detail_company(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
+    monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)
+
+    async def fake_collect(client, company_name, *, max_books, **kwargs):
+        return [
+            {
+                "title": "天涯神贴智慧大全",
+                "author": "玄谷",
+                "source_url": "https://weread.qq.com/web/reader/right",
+                "company_name": None,
+            },
+            {
+                "title": "佳偶天成",
+                "author": "十四郎",
+                "source_url": "https://weread.qq.com/web/reader/noise",
+                "company_name": None,
+            },
+        ]
+
+    async def fake_fetch_reader_result(client, item):
+        if item.source_url.endswith("right"):
+            return WeReadBookResult(
+                query_title=item.title,
+                query_author=item.author,
+                matched_title=item.title,
+                matched_author=item.author,
+                recommendation=66.2,
+                rating_count="222人点评",
+                total_reading="4.1万人",
+                reading_count="4.1万人",
+                comment_count="222人点评",
+                company_name="佳润互众",
+                copyright_id="39149647",
+                source_url=item.source_url,
+                status="matched",
+            )
+        return WeReadBookResult(
+            query_title=item.title,
+            query_author=item.author,
+            matched_title=item.title,
+            matched_author=item.author,
+            recommendation=82.9,
+            company_name="别的公司",
+            copyright_id="1000000190",
+            source_url=item.source_url,
+            status="matched",
+        )
+
+    monkeypatch.setattr(weread_tools, "_collect_company_book_candidates", fake_collect)
+    monkeypatch.setattr(weread_tools, "fetch_reader_result", fake_fetch_reader_result)
+    monkeypatch.setattr(weread_tools, "_attach_project_match", lambda result: None)
+
+    rows = asyncio.run(weread_tools.analyze_weread_company_books("佳润互众"))
+
+    assert len(rows) == 1
+    assert rows[0].matched_title == "天涯神贴智慧大全"
+    assert rows[0].company_name == "佳润互众"
+    assert rows[0].copyright_id == "39149647"
+    assert rows[0].reading_count == "4.1万人"
+    assert rows[0].comment_count == "222人点评"
+
+
+def test_analyze_weread_company_books_reuses_company_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
+    monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)
+    weread_tools._upsert_company_index_from_result(
+        WeReadBookResult(
+            query_title="天涯神贴智慧大全",
+            query_author="玄谷",
+            matched_title="天涯神贴智慧大全",
+            matched_author="玄谷",
+            recommendation=66.4,
+            rating_count="223人点评",
+            reading_count="4.1万人",
+            company_name="佳润互众",
+            copyright_id="39149647",
+            source_url="https://weread.qq.com/web/reader/b3a32f00813aba926g018a42",
+            status="matched",
+        )
+    )
+
+    async def fake_fetch_reader_result(client, item):
+        return WeReadBookResult(
+            query_title=item.title,
+            query_author=item.author,
+            matched_title="天涯神贴智慧大全",
+            matched_author="玄谷",
+            recommendation=66.4,
+            rating_count="223人点评",
+            reading_count="4.1万人",
+            company_name="佳润互众",
+            copyright_id="39149647",
+            source_url=item.source_url,
+            status="matched",
+        )
+
+    async def fake_no_cards(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(weread_tools, "fetch_reader_result", fake_fetch_reader_result)
+    monkeypatch.setattr(weread_tools, "_fetch_publisher_book_cards", fake_no_cards)
+    monkeypatch.setattr(weread_tools, "_fetch_search_book_cards", fake_no_cards)
+    monkeypatch.setattr(weread_tools, "_fetch_private_copyright_book_cards", fake_no_cards)
+    monkeypatch.setattr(weread_tools, "_attach_project_match", lambda result: None)
+
+    rows = asyncio.run(weread_tools.analyze_weread_company_books("佳润互众"))
+
+    assert len(rows) == 1
+    assert rows[0].matched_title == "天涯神贴智慧大全"
+    assert rows[0].company_name == "佳润互众"
+    assert rows[0].comment_count == "223人点评"
+
+
+def test_analyze_weread_company_books_accepts_seed_title_copyright_id(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
+    monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)
+
+    async def fake_search_cards(client, keyword, *, max_books):
+        if keyword == "孟姜女（经典版）":
+            return [
+                {
+                    "title": "孟姜女（经典版）",
+                    "author": "张恨水",
+                    "source_url": "https://weread.qq.com/web/bookDetail/3300187542",
+                    "copyright_id": "39149647",
+                    "recommendation": None,
+                    "rating_count": "0人点评",
+                    "reading_count": "1人",
+                }
+            ]
+        return []
+
+    async def fake_no_cards(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(weread_tools, "_fetch_search_book_cards", fake_search_cards)
+    monkeypatch.setattr(weread_tools, "_fetch_publisher_book_cards", fake_no_cards)
+    monkeypatch.setattr(weread_tools, "_fetch_private_copyright_book_cards", fake_no_cards)
+    monkeypatch.setattr(weread_tools, "_attach_project_match", lambda result: None)
+
+    rows = asyncio.run(weread_tools.analyze_weread_company_books("佳润互众\n孟姜女（经典版）"))
+
+    assert len(rows) == 1
+    assert rows[0].matched_title == "孟姜女（经典版）"
+    assert rows[0].copyright_id == "39149647"
+    assert rows[0].reading_count == "1人"
+
+
 def test_extract_translator_from_weread_payload() -> None:
     body = '{"translator":"刘半农（译） 单华伟（编）","title":"1793乾隆英使觐见记"}'
 

@@ -76,6 +76,7 @@ import type {
   WeReadAnalyzeRequest,
   WeReadAnalyzeResponse,
   WeReadBookRow,
+  WeReadCompanyRequest,
   WeReadExcelImportResponse,
 } from "./types";
 
@@ -839,6 +840,11 @@ export const api = {
   // 微信读书推荐值
   analyzeWeReadBooks: (body: WeReadAnalyzeRequest) =>
     request<WeReadAnalyzeResponse>("/weread/analyze", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  analyzeWeReadCompanyBooks: (body: WeReadCompanyRequest) =>
+    request<WeReadAnalyzeResponse>("/weread/company", {
       method: "POST",
       body: JSON.stringify(body),
     }),

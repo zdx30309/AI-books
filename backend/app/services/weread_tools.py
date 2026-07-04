@@ -4,10 +4,11 @@ from __future__ import annotations
 import csv
 import html
 import json
+import os
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -19,12 +20,18 @@ from openpyxl import load_workbook
 
 
 WEREAD_HOST = "https://weread.qq.com"
+WEREAD_I_HOST = "https://i.weread.qq.com"
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_INDEX_PATH = Path(__file__).resolve().parent / "reference_assets" / "weread_project_index.json"
+WEREAD_COMPANY_INDEX_PATH = Path(
+    os.getenv("WEREAD_COMPANY_INDEX_PATH", str(REPO_ROOT / ".local" / "weread_company_index.json"))
+)
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 _PROJECT_INDEX_CACHE: list[dict[str, Any]] | None = None
+_COMPANY_INDEX_CACHE: dict[str, Any] | None = None
 _EXCEL_TITLE_HEADERS = ("书名", "原始书名", "标题", "原始标题", "图书", "作品", "项目名称")
 _EXCEL_AUTHOR_HEADERS = ("原著作者", "原始作者", "作者", "匹配作者")
 _EXCEL_URL_HEADERS = ("微信读书链接", "微信链接", "来源链接", "原始链接", "匹配链接", "链接", "url")
@@ -41,6 +48,12 @@ class CatalogBook:
 
 
 @dataclass
+class CompanyLookupInput:
+    company_name: str | None
+    seed_items: list[CatalogBook]
+
+
+@dataclass
 class WeReadBookResult:
     query_title: str
     query_author: str | None
@@ -54,6 +67,7 @@ class WeReadBookResult:
     reading_count: str | None = None
     comment_count: str | None = None
     company_name: str | None = None
+    copyright_id: str | None = None
     translator: str | None = None
     source_url: str | None = None
     profit: float | None = None
@@ -97,6 +111,7 @@ class WeReadBookResult:
             "reading_count": self.reading_count,
             "comment_count": self.comment_count,
             "company_name": self.company_name,
+            "copyright_id": self.copyright_id,
             "translator": self.translator,
             "source_url": self.source_url,
             "profit": self.profit,
@@ -398,7 +413,137 @@ async def analyze_weread_catalog(
 
             result.profit = _match_profit(profits, result)
             _attach_project_match(result)
+            _upsert_company_index_from_result(result)
             results.append(result)
+        return results
+
+
+async def analyze_weread_company_books(company_name: str, limit: int | None = None) -> list[WeReadBookResult]:
+    lookup = _parse_company_lookup_input(company_name)
+    target = _valid_company_name(lookup.company_name)
+    max_books = max(1, limit or 500)
+    timeout = httpx.Timeout(16.0, connect=8.0)
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+        seed_details: list[WeReadBookResult] = []
+        if lookup.seed_items:
+            for seed in lookup.seed_items[:10]:
+                if not seed.source_url:
+                    continue
+                try:
+                    detail = await fetch_reader_result(client, seed)
+                except Exception:
+                    continue
+                if detail.company_name or detail.copyright_id:
+                    seed_details.append(detail)
+                    _upsert_company_index_from_result(detail)
+                    if not target and detail.company_name:
+                        target = detail.company_name
+
+        if not target:
+            return []
+
+        target_ids = _target_company_ids_from_index(target)
+        target_ids.update(
+            str(detail.copyright_id)
+            for detail in seed_details
+            if detail.copyright_id and _company_matches(detail.company_name, target)
+        )
+        if target.isdigit():
+            target_ids.add(target)
+
+        candidates = await _collect_company_book_candidates(
+            client,
+            target,
+            max_books=max_books,
+            seed_items=lookup.seed_items,
+            target_ids=target_ids,
+        )
+        results: list[WeReadBookResult] = []
+        processed: set[str] = set()
+        queued: set[str] = {
+            key for key in (_candidate_seen_key(card) for card in candidates) if key
+        }
+        accepted: set[str] = set()
+        expanded_keywords: set[str] = set()
+        target_ids.update(
+            str(card.get("copyright_id"))
+            for card in candidates
+            if (
+                _company_matches(card.get("company_name"), target)
+                or card.get("source_kind") == "seed_search"
+            )
+            and card.get("copyright_id")
+        )
+
+        index = 0
+        while index < len(candidates) and len(results) < max_books:
+            card = candidates[index]
+            index += 1
+            if len(results) >= max_books:
+                break
+            key = _candidate_seen_key(card)
+            if not key or key in processed:
+                continue
+            processed.add(key)
+
+            result = _result_from_company_card(card, target)
+            detail: WeReadBookResult | None = None
+            if card.get("source_url"):
+                try:
+                    detail = await fetch_reader_result(
+                        client,
+                        CatalogBook(
+                            title=card.get("title") or target,
+                            author=card.get("author"),
+                            source_url=card.get("source_url"),
+                        ),
+                    )
+                except Exception as exc:  # pragma: no cover - public network boundary
+                    result.status = "partial"
+                    result.error = f"详情页补充失败：{str(exc)[:120]}"
+
+            if detail:
+                result = _merge_company_detail(result, detail)
+                if result.copyright_id and _company_matches(result.company_name, target):
+                    target_ids.add(result.copyright_id)
+
+            if _company_result_matches(result, target, target_ids):
+                _attach_project_match(result)
+                result.company_name = result.company_name or target
+                result.comment_count = _comment_count_for_display(result.comment_count or result.rating_count)
+                result.status = "matched" if result.recommendation is not None else "partial"
+                if result.status == "matched":
+                    result.error = None
+                _upsert_company_index_from_result(result)
+                result_key = _company_result_key(result)
+                if result_key and result_key in accepted:
+                    continue
+                if result_key:
+                    accepted.add(result_key)
+                results.append(result)
+
+                for keyword in _company_expansion_keywords(result):
+                    if keyword in expanded_keywords or len(candidates) >= max_books * 4:
+                        continue
+                    expanded_keywords.add(keyword)
+                    await _add_company_cards(
+                        candidates,
+                        queued,
+                        await _fetch_search_book_cards(client, keyword, max_books=40),
+                    )
+
+                if result.copyright_id:
+                    await _add_company_cards(
+                        candidates,
+                        queued,
+                        await _fetch_private_copyright_book_cards(
+                            client,
+                            result.copyright_id,
+                            max_books=max_books,
+                        ),
+                    )
+
         return results
 
 
@@ -490,6 +635,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
     total_reading = _extract_stat(body, "阅读")
     word_count = _extract_stat(body, "字数")
     company_name = _extract_copyright_holder(body)
+    copyright_id = _extract_copyright_id(body)
     translator = _extract_translator(body)
 
     clean_title = _clean_text(title) or item.title
@@ -505,6 +651,7 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
         total_reading=total_reading,
         word_count=word_count,
         company_name=company_name,
+        copyright_id=copyright_id,
         translator=translator,
         source_url=item.source_url,
         status="not_found" if author_mismatch else ("matched" if recommendation is not None else "partial"),
@@ -514,6 +661,488 @@ async def fetch_reader_result(client: httpx.AsyncClient, item: CatalogBook) -> W
             else (None if recommendation is not None else "已读取书籍页，但未找到推荐值")
         ),
     )
+
+
+async def _collect_company_book_candidates(
+    client: httpx.AsyncClient,
+    company_name: str,
+    *,
+    max_books: int,
+    seed_items: list[CatalogBook] | None = None,
+    target_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    async def add_cards(cards: list[dict[str, Any]]) -> None:
+        await _add_company_cards(candidates, seen, cards)
+
+    await add_cards(_company_seed_cards(seed_items or []))
+    for seed in seed_items or []:
+        if seed.source_url:
+            continue
+        seed_title = _clean_text(seed.title)
+        if not seed_title:
+            continue
+        seed_cards = await _fetch_search_book_cards(client, seed_title, max_books=min(20, max_books))
+        for card in seed_cards:
+            card["source_kind"] = "seed_search"
+        await add_cards(seed_cards)
+    await add_cards(_company_candidate_cards_from_cache(company_name, target_ids=target_ids or set(), max_books=max_books))
+    await add_cards(await _fetch_publisher_book_cards(client, company_name, max_books=max_books))
+    await add_cards(_company_candidate_cards_from_project_index(company_name, max_books=max_books))
+
+    if len(candidates) < max_books:
+        for keyword in _company_search_keywords(company_name):
+            await add_cards(await _fetch_search_book_cards(client, keyword, max_books=min(40, max_books)))
+            if len(candidates) >= max_books:
+                break
+
+    return candidates[:max_books]
+
+
+async def _add_company_cards(
+    candidates: list[dict[str, Any]],
+    seen: set[str],
+    cards: list[dict[str, Any]],
+) -> None:
+    for card in cards:
+        key = _candidate_seen_key(card)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(card)
+
+
+def _company_seed_cards(seed_items: list[CatalogBook]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for item in seed_items:
+        if not item.source_url:
+            continue
+        cards.append(
+            {
+                "title": item.title or item.source_url,
+                "author": item.author,
+                "source_url": item.source_url,
+                "source_kind": "seed",
+            }
+        )
+    return cards
+
+
+async def _fetch_publisher_book_cards(
+    client: httpx.AsyncClient,
+    keyword: str,
+    *,
+    max_books: int,
+) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    max_idx = 0
+    page_size = min(40, max(1, max_books))
+    for _ in range(20):
+        url = (
+            f"{WEREAD_HOST}/web/search/publisher_books"
+            f"?keyword={quote(keyword)}&maxIdx={max_idx}&count={page_size}"
+        )
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+        page_cards = _parse_api_book_cards(payload)
+        if not page_cards:
+            break
+        for card in page_cards:
+            card.setdefault("company_name", keyword)
+            card.setdefault("source_kind", "publisher")
+        cards.extend(page_cards)
+        if len(cards) >= max_books or not payload.get("hasMore"):
+            break
+        next_idx = max(_parse_int(card.get("search_idx")) or 0 for card in page_cards)
+        if next_idx <= max_idx:
+            break
+        max_idx = next_idx
+    return cards[:max_books]
+
+
+async def _fetch_search_book_cards(
+    client: httpx.AsyncClient,
+    keyword: str,
+    *,
+    max_books: int,
+) -> list[dict[str, Any]]:
+    url = f"{WEREAD_HOST}/web/search/global?keyword={quote(keyword)}"
+    response = await client.get(url)
+    response.raise_for_status()
+    try:
+        cards = _parse_api_book_cards(response.json())
+    except json.JSONDecodeError:
+        cards = _parse_search_cards(response.text)
+    for card in cards:
+        card.setdefault("source_kind", "search")
+    return cards[:max_books]
+
+
+async def _fetch_private_copyright_book_cards(
+    client: httpx.AsyncClient,
+    copyright_id: str,
+    *,
+    max_books: int,
+) -> list[dict[str, Any]]:
+    cookie = _weread_auth_cookie()
+    if not cookie or not copyright_id:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    max_idx = 0
+    page_size = min(50, max(1, max_books))
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": WEREAD_HOST,
+    }
+    for _ in range(30):
+        urls = (
+            f"{WEREAD_I_HOST}/book/copyright?cpid={quote(copyright_id)}&maxIdx={max_idx}&count={page_size}",
+            f"{WEREAD_I_HOST}/book/copyright?copyrightId={quote(copyright_id)}&maxIdx={max_idx}&count={page_size}",
+        )
+        page_cards: list[dict[str, Any]] = []
+        payload: Any = None
+        for url in urls:
+            response = await client.get(url, headers=headers)
+            if response.status_code in {401, 403, 404}:
+                continue
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except json.JSONDecodeError:
+                payload = {}
+            page_cards = _parse_api_book_cards(payload)
+            if page_cards:
+                break
+        if not page_cards:
+            break
+        for card in page_cards:
+            card.setdefault("copyright_id", copyright_id)
+            card.setdefault("source_kind", "private_copyright")
+        cards.extend(page_cards)
+        if len(cards) >= max_books or not _payload_has_more(payload):
+            break
+        next_idx = max(_parse_int(card.get("search_idx")) or 0 for card in page_cards)
+        if next_idx <= max_idx:
+            max_idx += len(page_cards)
+        else:
+            max_idx = next_idx
+    return cards[:max_books]
+
+
+def _company_candidate_cards_from_cache(
+    company_name: str,
+    *,
+    target_ids: set[str],
+    max_books: int,
+) -> list[dict[str, Any]]:
+    index = _load_company_index()
+    company_keys = {normalize_title(company_name)}
+    company_keys.update(
+        normalize_title(index.get("copyright_ids", {}).get(str(copyright_id)))
+        for copyright_id in target_ids
+        if index.get("copyright_ids", {}).get(str(copyright_id))
+    )
+    cards: list[dict[str, Any]] = []
+    for company_key in company_keys:
+        if not company_key:
+            continue
+        company = index.get("companies", {}).get(company_key)
+        if not isinstance(company, dict):
+            continue
+        for raw_card in (company.get("books") or {}).values():
+            if not isinstance(raw_card, dict):
+                continue
+            card = dict(raw_card)
+            card.setdefault("company_name", company.get("company_name") or company_name)
+            card.setdefault("source_kind", "company_cache")
+            cards.append(card)
+            if len(cards) >= max_books:
+                return cards
+    return cards
+
+
+def _company_candidate_cards_from_project_index(company_name: str, *, max_books: int) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for record in _load_project_records():
+        if not _company_matches(record.get("company_name"), company_name):
+            continue
+        url = _project_text(record, "project_weread_url")
+        title = _project_text(record, "title")
+        if not title and not url:
+            continue
+        cards.append(
+            {
+                "title": title or url,
+                "author": _project_text(record, "original_author") or _project_text(record, "pen_name"),
+                "source_url": url,
+                "company_name": _project_text(record, "company_name"),
+                "recommendation": _project_recommendation_value(record.get("project_recommendation")),
+                "rating_count": _normalize_comment_count(record.get("project_comment_count")),
+                "reading_count": _project_text(record, "project_reading_count"),
+                "source_kind": "project_index",
+            }
+        )
+        if len(cards) >= max_books:
+            break
+    return cards
+
+
+def _parse_company_lookup_input(raw_value: str) -> CompanyLookupInput:
+    target: str | None = None
+    seed_items: list[CatalogBook] = []
+    for raw_line in str(raw_value or "").splitlines():
+        line = _clean_text(raw_line)
+        if not line:
+            continue
+        url = _extract_first_url(line)
+        if url:
+            title = _clean_text(line.replace(url, " ").strip(" ，,。；;"))
+            if title and not target:
+                target = title
+            seed_items.append(CatalogBook(title=title or url, source_url=url))
+            continue
+        if not target:
+            target = line
+        else:
+            seed_items.append(CatalogBook(title=line))
+    return CompanyLookupInput(company_name=target, seed_items=seed_items)
+
+
+def _target_company_ids_from_index(company_name: str) -> set[str]:
+    index = _load_company_index()
+    company = index.get("companies", {}).get(normalize_title(company_name))
+    if not isinstance(company, dict):
+        return set()
+    return {
+        str(value)
+        for value in company.get("copyright_ids") or []
+        if str(value).strip()
+    }
+
+
+def _company_expansion_keywords(result: WeReadBookResult) -> list[str]:
+    title = _clean_text(result.matched_title or result.query_title)
+    if not title:
+        return []
+    stems = [
+        title,
+        re.split(r"[（(：:：·•\s]", title, maxsplit=1)[0],
+        re.split(r"[第上下中前后续]", title, maxsplit=1)[0],
+    ]
+    if len(title) >= 6:
+        stems.append(title[:6])
+    if len(title) >= 4:
+        stems.append(title[:4])
+    keywords: list[str] = []
+    for stem in stems:
+        clean = _clean_text(stem).strip("《》“”\"'：:，,。；;、")
+        if len(clean) < 2 or clean in keywords:
+            continue
+        keywords.append(clean)
+    return keywords[:5]
+
+
+def _company_search_keywords(company_name: str) -> list[str]:
+    text = _clean_text(company_name)
+    keywords = [text]
+    if text.endswith(("文化", "出版", "传媒", "互众", "互动", "工作室")) and len(text) > 4:
+        keywords.append(text[:-2])
+    return [keyword for index, keyword in enumerate(keywords) if keyword and keyword not in keywords[:index]]
+
+
+def _parse_api_book_cards(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_books = _api_book_rows(payload)
+    cards: list[dict[str, Any]] = []
+    for raw in raw_books:
+        if not isinstance(raw, dict):
+            continue
+        book = raw.get("bookInfo") if isinstance(raw.get("bookInfo"), dict) else raw
+        title = _clean_text(str(book.get("title") or ""))
+        if not title:
+            continue
+        author = _clean_text(str(book.get("author") or "")) or None
+        source_url = _book_source_url(book)
+        copyright_info = book.get("copyrightInfo") if isinstance(book.get("copyrightInfo"), dict) else {}
+        company_name = _valid_company_name(copyright_info.get("name") if copyright_info else None)
+        publisher = _valid_company_name(book.get("publisher"))
+        copyright_id = (
+            str(copyright_info.get("id"))
+            if copyright_info and copyright_info.get("id") not in (None, "")
+            else str(book.get("cpid")) if book.get("cpid") not in (None, "", 0) else None
+        )
+        cards.append(
+            {
+                "title": title,
+                "author": author,
+                "source_url": source_url,
+                "company_name": company_name or publisher,
+                "copyright_id": copyright_id,
+                "recommendation": _rating_to_percent(book.get("newRating")),
+                "rating_count": _normalize_comment_count(book.get("newRatingCount")),
+                "today_reading": _format_people_count(raw.get("readingCount") or raw.get("reading")),
+                "reading_count": _format_people_count(
+                    raw.get("totalReadingCount")
+                    or raw.get("readCount")
+                    or raw.get("readingTotal")
+                    or raw.get("readingCount")
+                    or raw.get("reading")
+                ),
+                "search_idx": raw.get("searchIdx"),
+            }
+        )
+    return cards
+
+
+def _api_book_rows(payload: dict[str, Any]) -> list[Any]:
+    for key in ("books", "bookInfos", "items", "list"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("books", "bookInfos", "items", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _payload_has_more(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for key in ("hasMore", "has_more", "more", "hasNext"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, str)):
+            return str(value).lower() in {"1", "true", "yes"}
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _payload_has_more(data)
+    return False
+
+
+def _book_source_url(book: dict[str, Any]) -> str | None:
+    deep_link = str(book.get("deepLink") or "")
+    if deep_link.startswith("http"):
+        return deep_link.replace("\\u002F", "/")
+    encode_id = str(book.get("encodeId") or "")
+    if encode_id:
+        path = "bookDetail" if book.get("soldout") or book.get("autoBookRequest") else "reader"
+        return f"{WEREAD_HOST}/web/{path}/{encode_id}"
+    book_id = str(book.get("bookId") or "")
+    if book_id:
+        return f"{WEREAD_HOST}/web/bookDetail/{book_id}"
+    return None
+
+
+def _result_from_company_card(card: dict[str, Any], company_name: str) -> WeReadBookResult:
+    title = _clean_text(str(card.get("title") or company_name))
+    return WeReadBookResult(
+        query_title=title,
+        query_author=card.get("author"),
+        matched_title=title,
+        matched_author=card.get("author"),
+        recommendation=_parse_float(card.get("recommendation")),
+        rating_count=card.get("rating_count"),
+        today_reading=card.get("today_reading"),
+        total_reading=card.get("reading_count"),
+        reading_count=card.get("reading_count"),
+        word_count=card.get("word_count"),
+        comment_count=_comment_count_for_display(card.get("rating_count")),
+        company_name=card.get("company_name"),
+        copyright_id=str(card.get("copyright_id")) if card.get("copyright_id") else None,
+        translator=card.get("translator"),
+        source_url=card.get("source_url"),
+        status="partial",
+    )
+
+
+def _merge_company_detail(base: WeReadBookResult, detail: WeReadBookResult) -> WeReadBookResult:
+    base.matched_title = detail.matched_title or base.matched_title
+    base.matched_author = detail.matched_author or base.matched_author
+    base.recommendation = detail.recommendation if detail.recommendation is not None else base.recommendation
+    base.rating_count = detail.rating_count or base.rating_count
+    base.total_reading = detail.total_reading or base.total_reading
+    base.reading_count = detail.reading_count or detail.total_reading or base.reading_count
+    base.word_count = detail.word_count or base.word_count
+    base.company_name = detail.company_name or base.company_name
+    base.copyright_id = detail.copyright_id or base.copyright_id
+    base.translator = detail.translator or base.translator
+    base.source_url = detail.source_url or base.source_url
+    base.comment_count = _comment_count_for_display(detail.comment_count or detail.rating_count or base.comment_count)
+    return base
+
+
+def _company_result_matches(result: WeReadBookResult, company_name: str, target_ids: set[str]) -> bool:
+    if _company_matches(result.company_name, company_name):
+        return True
+    return bool(result.copyright_id and result.copyright_id in target_ids)
+
+
+def _company_matches(value: Any, target: str) -> bool:
+    wanted = normalize_title(target)
+    actual = normalize_title(str(value or ""))
+    if not wanted or not actual:
+        return False
+    return wanted == actual or wanted in actual or actual in wanted
+
+
+def _candidate_seen_key(card: dict[str, Any]) -> str:
+    url_key = _project_url_key(card.get("source_url"))
+    if url_key:
+        return url_key
+    return "|".join(
+        part
+        for part in (
+            normalize_title(card.get("title")),
+            normalize_title(card.get("author")),
+        )
+        if part
+    )
+
+
+def _company_result_key(result: WeReadBookResult) -> str:
+    return "|".join(
+        part
+        for part in (
+            normalize_title(result.matched_title or result.query_title),
+            normalize_title(result.matched_author or result.query_author),
+            str(result.copyright_id or ""),
+        )
+        if part
+    )
+
+
+def _rating_to_percent(value: Any) -> float | None:
+    number = _parse_float(value)
+    if number is None:
+        return None
+    return number / 10 if number > 100 else number
+
+
+def _format_people_count(value: Any) -> str | None:
+    number = _parse_float(value)
+    if number is None:
+        return None
+    if number >= 10000:
+        return f"{number / 10000:.1f}万人".replace(".0万", "万")
+    return f"{int(number)}人"
+
+
+def _parse_int(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
@@ -610,6 +1239,14 @@ def _company_for_display(value: Any) -> str:
 
 def _comment_count_for_display(value: Any) -> str:
     return _normalize_comment_count(value) or "0人点评"
+
+
+def _weread_auth_cookie() -> str:
+    return (
+        os.getenv("WEREAD_COOKIE")
+        or os.getenv("WEREAD_AUTH_COOKIE")
+        or ""
+    ).strip()
 
 
 def _parse_search_cards(html_text: str) -> list[dict[str, str | None]]:
@@ -775,6 +1412,105 @@ def _load_project_records() -> list[dict[str, Any]]:
         records.append(record)
     _PROJECT_INDEX_CACHE = records
     return records
+
+
+def _load_company_index() -> dict[str, Any]:
+    global _COMPANY_INDEX_CACHE
+    if _COMPANY_INDEX_CACHE is not None:
+        return _COMPANY_INDEX_CACHE
+    if not WEREAD_COMPANY_INDEX_PATH.exists():
+        _COMPANY_INDEX_CACHE = {"version": 1, "companies": {}, "copyright_ids": {}}
+        return _COMPANY_INDEX_CACHE
+    try:
+        payload = json.loads(WEREAD_COMPANY_INDEX_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("version", 1)
+    payload.setdefault("companies", {})
+    payload.setdefault("copyright_ids", {})
+    _COMPANY_INDEX_CACHE = payload
+    return _COMPANY_INDEX_CACHE
+
+
+def _save_company_index(index: dict[str, Any]) -> None:
+    try:
+        WEREAD_COMPANY_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = WEREAD_COMPANY_INDEX_PATH.with_suffix(".tmp")
+        tmp_path.write_text(
+            json.dumps(index, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(WEREAD_COMPANY_INDEX_PATH)
+    except OSError:
+        return
+
+
+def _upsert_company_index_from_result(result: WeReadBookResult) -> None:
+    company_name = _valid_company_name(result.company_name)
+    if not company_name:
+        return
+    title = _clean_text(result.matched_title or result.query_title)
+    source_url = result.source_url or result.project_weread_url
+    if not title and not source_url:
+        return
+
+    index = _load_company_index()
+    company_key = normalize_title(company_name)
+    companies = index.setdefault("companies", {})
+    company = companies.setdefault(
+        company_key,
+        {
+            "company_name": company_name,
+            "copyright_ids": [],
+            "books": {},
+        },
+    )
+    company["company_name"] = company_name
+    if result.copyright_id:
+        copyright_id = str(result.copyright_id)
+        copyright_ids = list(company.get("copyright_ids") or [])
+        if copyright_id not in copyright_ids:
+            copyright_ids.append(copyright_id)
+        company["copyright_ids"] = copyright_ids
+        index.setdefault("copyright_ids", {})[copyright_id] = company_name
+
+    card = {
+        "title": title,
+        "author": _clean_text(result.matched_author or result.query_author) or None,
+        "source_url": source_url,
+        "company_name": company_name,
+        "copyright_id": str(result.copyright_id) if result.copyright_id else None,
+        "recommendation": result.recommendation,
+        "rating_count": _comment_count_for_display(result.comment_count or result.rating_count),
+        "reading_count": result.reading_count or result.total_reading,
+        "word_count": result.word_count,
+        "translator": result.translator,
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    book_key = _company_cache_book_key(card)
+    if not book_key:
+        return
+    books = company.setdefault("books", {})
+    existing = books.get(book_key) if isinstance(books.get(book_key), dict) else {}
+    books[book_key] = {**existing, **{key: value for key, value in card.items() if value not in (None, "")}}
+    index["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    _save_company_index(index)
+
+
+def _company_cache_book_key(card: dict[str, Any]) -> str:
+    url_key = _project_url_key(card.get("source_url"))
+    if url_key:
+        return url_key
+    return "|".join(
+        part
+        for part in (
+            normalize_title(card.get("title")),
+            normalize_title(card.get("author")),
+        )
+        if part
+    )
 
 
 def _known_project_editors() -> set[str]:
@@ -1029,6 +1765,19 @@ def _extract_copyright_holder(text: str) -> str | None:
         clean_value = _valid_company_name(value)
         if clean_value:
             return clean_value
+    return None
+
+
+def _extract_copyright_id(text: str) -> str | None:
+    for pattern in (
+        r'"copyrightInfo"\s*:\s*\{[^{}]*"id"\s*:\s*([0-9]+)',
+        r"\bcopyrightInfo\s*:\s*\{[^{}]*\bid\s*:\s*([0-9]+)",
+        r'"cpid"\s*:\s*([0-9]+)',
+        r"\bcpid\s*:\s*([0-9]+)",
+    ):
+        match = re.search(pattern, text)
+        if match and match.group(1) != "0":
+            return match.group(1)
     return None
 
 

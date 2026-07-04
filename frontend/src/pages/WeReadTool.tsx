@@ -3,6 +3,7 @@ import {
   AlertCircle,
   BadgeDollarSign,
   BookOpenCheck,
+  Building2,
   Download,
   FileSpreadsheet,
   FileUp,
@@ -65,11 +66,13 @@ export function WeReadTool() {
   const [profitText, setProfitText] = useState("");
   const [rows, setRows] = useState<WeReadBookRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [companyLoading, setCompanyLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importedFileName, setImportedFileName] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [companyName, setCompanyName] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
@@ -108,6 +111,40 @@ export function WeReadTool() {
       setError(msg);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const analyzeCompany = async () => {
+    const name = companyName.trim();
+    if (!name) {
+      setError("请先输入版权方或公司名字");
+      return;
+    }
+    setCompanyLoading(true);
+    setError(null);
+    setRows([]);
+    setImportProgress(null);
+    try {
+      const result = await api.analyzeWeReadCompanyBooks({
+        company_name: name,
+        max_books: 500,
+      });
+      setRows(result.items);
+      setImportedFileName(`版权方：${name}`);
+      setImportProgress({ done: result.items.length, total: result.total });
+      if (result.items.length === 0) {
+        setError(`没有在公开入口或本地版权方索引中抓到「${name}」名下书籍。可在同一输入框追加该版权方的已知书名或微信读书链接作为种子，系统会识别版权方后继续扩展并沉淀索引。`);
+      }
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.detail
+          : e instanceof Error
+            ? e.message
+            : "版权方书单抓取失败";
+      setError(msg);
+    } finally {
+      setCompanyLoading(false);
     }
   };
 
@@ -193,7 +230,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={loading || importing}
+            disabled={loading || importing || companyLoading}
             className="btn-ghost"
           >
             {importing ? (
@@ -217,7 +254,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={downloadExcel}
-            disabled={rows.length === 0 || downloading || importing}
+            disabled={rows.length === 0 || downloading || importing || companyLoading}
             className="btn-gold"
           >
             {downloading ? (
@@ -229,6 +266,41 @@ export function WeReadTool() {
           </button>
         </div>
       </div>
+
+      <section className="card-warm p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-serif text-xl tracking-wide text-warm-100">
+              版权方书单
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-warm-500">
+              输入版权方或公司名，抓取其公开书单并补齐书名、作者、译者、阅读人数、评论数量和推荐值；也可同框追加该版权方的书名或微信读书链接作为种子。
+            </p>
+          </div>
+          <Building2 className="h-5 w-5 text-gold-300" strokeWidth={1.7} />
+        </div>
+        <div className="flex flex-col gap-3 md:flex-row">
+          <textarea
+            value={companyName}
+            onChange={(event) => setCompanyName(event.target.value)}
+            placeholder={"例如：佳润互众\n孟姜女（经典版）\nhttps://weread.qq.com/web/reader/..."}
+            className="min-h-[76px] flex-1 resize-y rounded-xl border border-gold-500/15 bg-base-800/70 px-4 py-3 text-sm leading-6 text-warm-100 outline-none transition-colors placeholder:text-warm-600 focus:border-gold-400/45"
+          />
+          <button
+            type="button"
+            onClick={analyzeCompany}
+            disabled={loading || importing || companyLoading}
+            className="btn-gold md:min-w-[220px]"
+          >
+            {companyLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+            ) : (
+              <Search className="h-4 w-4" strokeWidth={2} />
+            )}
+            <span className="tracking-widest">抓取版权方书单</span>
+          </button>
+        </div>
+      </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
         <div className="card-warm p-5">
@@ -273,7 +345,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={analyze}
-              disabled={loading}
+              disabled={loading || companyLoading}
               className="btn-gold flex-1"
             >
               {loading ? (
@@ -288,7 +360,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={downloadExcel}
-              disabled={rows.length === 0 || downloading || importing}
+              disabled={rows.length === 0 || downloading || importing || companyLoading}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-gold-400/45 bg-gold-500/10 px-5 py-3 text-sm font-medium tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? (
@@ -348,7 +420,7 @@ export function WeReadTool() {
               等待抓取
             </div>
             <p className="mt-2 text-sm text-warm-500">
-              输入目录后点击「抓取推荐值」，这里会显示匹配结果。
+              输入目录、Excel 或版权方后开始抓取，这里会显示匹配结果。
             </p>
           </div>
         ) : (

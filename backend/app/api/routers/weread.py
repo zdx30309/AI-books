@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
+    analyze_weread_company_books,
     analyze_weread_catalog,
     analyze_weread_books,
     build_weread_xlsx,
@@ -26,6 +27,11 @@ class WeReadAnalyzeRequest(BaseModel):
     profit_text: str | None = None
 
 
+class WeReadCompanyRequest(BaseModel):
+    company_name: str = Field(..., min_length=1)
+    max_books: int | None = Field(default=500, ge=1, le=1000)
+
+
 class WeReadBookRow(BaseModel):
     query_title: str
     query_author: str | None = None
@@ -39,6 +45,7 @@ class WeReadBookRow(BaseModel):
     reading_count: str | None = None
     comment_count: str | None = None
     company_name: str | None = None
+    copyright_id: str | None = None
     translator: str | None = None
     source_url: str | None = None
     profit: float | None = None
@@ -102,6 +109,21 @@ async def analyze_books(
 ) -> WeReadAnalyzeResponse:
     rows = await analyze_weread_books(req.catalog_text, req.profit_text)
     return _rows_response(rows)
+
+
+@router.post(
+    "/company",
+    response_model=WeReadAnalyzeResponse,
+    summary="按版权方/公司名抓取微信读书公开书单与推荐值",
+)
+async def analyze_company_books(
+    req: WeReadCompanyRequest,
+    _: User = Depends(get_current_user),
+) -> WeReadAnalyzeResponse:
+    rows = await analyze_weread_company_books(req.company_name, limit=req.max_books)
+    items = [WeReadBookRow(**row.as_dict()) for row in rows]
+    matched = sum(1 for item in items if item.status in {"matched", "partial"})
+    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items)
 
 
 @router.post(

@@ -343,6 +343,11 @@ export interface WeReadAnalyzeRequest {
   profit_text?: string | null;
 }
 
+export interface WeReadCompanyRequest {
+  company_name: string;
+  max_books?: number | null;
+}
+
 export interface WeReadBookRow {
   query_title: string;
   query_author: string | null;
@@ -356,6 +361,7 @@ export interface WeReadBookRow {
   reading_count: string | null;
   comment_count: string | null;
   company_name: string | null;
+  copyright_id: string | null;
   translator: string | null;
   source_url: string | null;
   profit: number | null;
