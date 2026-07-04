@@ -275,11 +275,89 @@ def test_parse_api_book_cards_keeps_company_metrics_and_url() -> None:
             "copyright_id": "39149647",
             "recommendation": 66.2,
             "rating_count": "222人点评",
+            "translator": None,
+            "word_count": None,
             "today_reading": "674人",
             "reading_count": "674人",
             "search_idx": 2,
         }
     ]
+
+
+def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch) -> None:
+    monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def get(self, url, *, params=None, headers=None):
+            calls.append((url, dict(params or {}), dict(headers or {})))
+            if (params or {}).get("maxIdx") == 0:
+                return FakeResponse(
+                    {
+                        "books": [
+                            {
+                                "bookInfo": {
+                                    "encodeId": "book-a",
+                                    "title": "\u5929\u6daf\u795e\u8d34\u667a\u6167\u5927\u5168",
+                                    "author": "\u7384\u8c37",
+                                    "newRating": 664,
+                                    "newRatingCount": 223,
+                                },
+                                "readingCount": 100,
+                                "searchIdx": 5,
+                            }
+                        ],
+                        "hasMore": True,
+                    }
+                )
+            return FakeResponse(
+                {
+                    "books": [
+                        {
+                            "bookInfo": {
+                                "encodeId": "book-b",
+                                "title": "\u5b5f\u59dc\u5973\uff08\u7ecf\u5178\u7248\uff09",
+                                "author": "\u5f20\u6068\u6c34",
+                                "newRating": 950,
+                                "newRatingCount": 34,
+                            },
+                            "readingCount": 200,
+                            "searchIdx": 9,
+                        }
+                    ],
+                    "hasMore": False,
+                }
+            )
+
+    cards = asyncio.run(
+        weread_tools._fetch_app_publisher_book_cards(
+            FakeClient(),
+            "\u4f73\u6da6\u4e92\u4f17",
+            max_books=20,
+            from_book_id="seed-book-id",
+        )
+    )
+
+    assert len(cards) == 2
+    assert [call[1]["maxIdx"] for call in calls] == [0, 5]
+    assert calls[0][1]["type"] == 8
+    assert calls[0][1]["keyword"] == "\u4f73\u6da6\u4e92\u4f17"
+    assert calls[0][1]["fromBookId"] == "seed-book-id"
+    assert calls[0][2]["Cookie"] == "wr-test-cookie"
+    assert cards[0]["source_kind"] == "app_publisher"
+    assert cards[0]["company_name"] == "\u4f73\u6da6\u4e92\u4f17"
 
 
 def test_analyze_weread_company_books_filters_noise_by_detail_company(tmp_path, monkeypatch) -> None:

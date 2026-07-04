@@ -689,6 +689,14 @@ async def _collect_company_book_candidates(
             card["source_kind"] = "seed_search"
         await add_cards(seed_cards)
     await add_cards(_company_candidate_cards_from_cache(company_name, target_ids=target_ids or set(), max_books=max_books))
+    await add_cards(
+        await _fetch_app_publisher_book_cards(
+            client,
+            company_name,
+            max_books=max_books,
+            from_book_id=_seed_from_book_id(seed_items or []),
+        )
+    )
     await add_cards(await _fetch_publisher_book_cards(client, company_name, max_books=max_books))
     await add_cards(_company_candidate_cards_from_project_index(company_name, max_books=max_books))
 
@@ -758,6 +766,76 @@ async def _fetch_publisher_book_cards(
             break
         next_idx = max(_parse_int(card.get("search_idx")) or 0 for card in page_cards)
         if next_idx <= max_idx:
+            break
+        max_idx = next_idx
+    return cards[:max_books]
+
+
+async def _fetch_app_publisher_book_cards(
+    client: httpx.AsyncClient,
+    keyword: str,
+    *,
+    max_books: int,
+    from_book_id: str | None = None,
+) -> list[dict[str, Any]]:
+    cookie = _weread_auth_cookie()
+    keyword = _clean_text(keyword)
+    if not cookie or not keyword:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_idx = 0
+    page_size = min(20, max(1, max_books))
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": WEREAD_HOST,
+    }
+    for _ in range(80):
+        params: dict[str, Any] = {
+            "type": 8,
+            "keyword": keyword,
+            "maxIdx": max_idx,
+            "count": page_size,
+            "outer": 1,
+            "v": 2,
+        }
+        if from_book_id:
+            params["fromBookId"] = from_book_id
+
+        response = await client.get(f"{WEREAD_I_HOST}/store/search", params=params, headers=headers)
+        if response.status_code in {401, 403}:
+            break
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            break
+
+        page_cards = _parse_api_book_cards(payload)
+        if not page_cards:
+            break
+        before_count = len(cards)
+        for card in page_cards:
+            if not card.get("company_name"):
+                card["company_name"] = keyword
+            card.setdefault("source_kind", "app_publisher")
+            key = _candidate_seen_key(card)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+            if len(cards) >= max_books:
+                break
+
+        if len(cards) >= max_books or not _payload_has_more(payload):
+            break
+        next_idx = _payload_next_max_idx(payload, page_cards, max_idx)
+        if next_idx <= max_idx:
+            next_idx = max_idx + max(1, len(page_cards))
+        if next_idx <= max_idx or len(cards) == before_count:
             break
         max_idx = next_idx
     return cards[:max_books]
@@ -987,6 +1065,16 @@ def _parse_api_book_cards(payload: Any) -> list[dict[str, Any]]:
                 "copyright_id": copyright_id,
                 "recommendation": _rating_to_percent(book.get("newRating")),
                 "rating_count": _normalize_comment_count(book.get("newRatingCount")),
+                "translator": _clean_text(
+                    book.get("translator")
+                    or book.get("translators")
+                    or book.get("translatorName")
+                    or ""
+                )
+                or None,
+                "word_count": _format_people_count(book.get("wordCount")).replace("\u4eba", "\u5b57")
+                if book.get("wordCount") not in (None, "")
+                else None,
                 "today_reading": _format_people_count(raw.get("readingCount") or raw.get("reading")),
                 "reading_count": _format_people_count(
                     raw.get("totalReadingCount")
@@ -1028,6 +1116,55 @@ def _payload_has_more(payload: Any) -> bool:
     if isinstance(data, dict):
         return _payload_has_more(data)
     return False
+
+
+def _payload_next_max_idx(payload: Any, page_cards: list[dict[str, Any]], current: int) -> int:
+    if isinstance(payload, dict):
+        for key in ("nextMaxIdx", "maxIdx", "nextIdx", "lastIdx"):
+            value = _parse_int(payload.get(key))
+            if value is not None and value > current:
+                return value
+        data = payload.get("data")
+        if isinstance(data, dict):
+            nested = _payload_next_max_idx(data, page_cards, current)
+            if nested > current:
+                return nested
+    indexes = [
+        value
+        for value in (_parse_int(card.get("search_idx")) for card in page_cards)
+        if value is not None
+    ]
+    if indexes:
+        return max(indexes)
+    return current
+
+
+def _seed_from_book_id(seed_items: list[CatalogBook]) -> str | None:
+    for item in seed_items:
+        source_id = _source_book_id_from_url(item.source_url)
+        if source_id:
+            return source_id
+    return None
+
+
+def _source_book_id_from_url(value: Any) -> str | None:
+    url = _extract_first_url(str(value or ""))
+    if not url:
+        return None
+    direct = re.search(r"/web/(?:reader|bookDetail)/([^/?#]+)", url)
+    if direct:
+        return direct.group(1)
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    return next(
+        (
+            candidate.strip()
+            for key in ("bookId", "bookid", "v")
+            for candidate in (query.get(key) or [])
+            if candidate and candidate.strip()
+        ),
+        None,
+    )
 
 
 def _book_source_url(book: dict[str, Any]) -> str | None:
