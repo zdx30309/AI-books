@@ -848,6 +848,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  analyzeWeReadCompanyCapture: (file: File, companyName: string, maxBooks = 1000) =>
+    uploadFile<WeReadAnalyzeResponse>("/weread/company-capture", file, {
+      company_name: companyName,
+      max_books: String(maxBooks),
+    }),
   importWeReadExcel: (file: File) =>
     uploadFile<WeReadExcelImportResponse>("/weread/import-excel", file),
   analyzeWeReadExcel: (file: File) =>

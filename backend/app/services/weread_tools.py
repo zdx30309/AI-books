@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import html
 import json
 import os
@@ -430,6 +431,72 @@ async def analyze_weread_catalog(
 
 async def analyze_weread_company_books(company_name: str, limit: int | None = None) -> list[WeReadBookResult]:
     return (await analyze_weread_company_books_report(company_name, limit=limit)).rows
+
+
+async def analyze_weread_company_capture_report(
+    company_name: str,
+    content: bytes,
+    *,
+    filename: str | None = None,
+    limit: int | None = None,
+) -> WeReadCompanyAnalysis:
+    warnings: list[str] = []
+    target = _valid_company_name(company_name) or _clean_text(company_name)
+    max_books = max(1, limit or 1000)
+    cards = _parse_weread_capture_book_cards(content, filename=filename, max_books=max_books)
+    if not cards:
+        _append_warning(
+            warnings,
+            "没有在上传的抓包/HAR/JSON 文件里识别到微信读书书籍列表。请确认文件中包含版权方“全部作品”接口响应。",
+        )
+        return WeReadCompanyAnalysis(rows=[], warnings=warnings)
+
+    results: list[WeReadBookResult] = []
+    accepted: set[str] = set()
+    timeout = httpx.Timeout(16.0, connect=8.0)
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+        for card in cards:
+            if len(results) >= max_books:
+                break
+            card.setdefault("company_name", target)
+            card.setdefault("source_kind", "capture_import")
+            result = _result_from_company_card(card, target)
+            if result.source_url:
+                try:
+                    detail = await fetch_reader_result(
+                        client,
+                        CatalogBook(
+                            title=result.matched_title or result.query_title,
+                            author=result.matched_author or result.query_author,
+                            source_url=result.source_url,
+                        ),
+                    )
+                    result = _merge_company_detail(result, detail)
+                except Exception as exc:  # pragma: no cover - network boundary
+                    result.status = "partial"
+                    result.error = f"详情页补充失败：{str(exc)[:120]}"
+            result.company_name = result.company_name or target
+            result.comment_count = _comment_count_for_display(result.comment_count or result.rating_count)
+            result.status = "matched" if result.recommendation is not None else "partial"
+            if result.status == "matched":
+                result.error = None
+            result_key = _company_result_key(result)
+            if result_key and result_key in accepted:
+                continue
+            if result_key:
+                accepted.add(result_key)
+            _attach_project_match(result)
+            _upsert_company_index_from_result(result)
+            results.append(result)
+
+    if len(results) < len(cards):
+        _append_warning(warnings, f"抓包中识别到 {len(cards)} 条候选，去重/过滤后保留 {len(results)} 条。")
+    _append_warning(
+        warnings,
+        "已按上传抓包/HAR/JSON 解析版权方作品；这条链路不依赖微信读书官方 Skill 是否开放版权方全量接口。",
+    )
+    return WeReadCompanyAnalysis(rows=results, warnings=warnings)
 
 
 async def analyze_weread_company_books_report(company_name: str, limit: int | None = None) -> WeReadCompanyAnalysis:
@@ -1422,6 +1489,126 @@ def _parse_api_book_cards(payload: Any) -> list[dict[str, Any]]:
             }
         )
     return cards
+
+
+def _parse_weread_capture_book_cards(
+    content: bytes,
+    *,
+    filename: str | None = None,
+    max_books: int = 1000,
+) -> list[dict[str, Any]]:
+    text = _decode_capture_text(content)
+    payload = _capture_json_from_text(text)
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    if payload is not None:
+        _collect_capture_cards(payload, cards, seen, max_books=max_books)
+    if len(cards) < max_books:
+        for nested_text in _iter_capture_json_texts(text):
+            nested_payload = _capture_json_from_text(nested_text)
+            if nested_payload is None:
+                continue
+            _collect_capture_cards(nested_payload, cards, seen, max_books=max_books)
+            if len(cards) >= max_books:
+                break
+    return cards[:max_books]
+
+
+def _decode_capture_text(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="ignore")
+
+
+def _capture_json_from_text(text: str) -> Any:
+    clean = (text or "").strip()
+    if not clean:
+        return None
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        pass
+    if clean.startswith(("'", '"')) and clean.endswith(("'", '"')):
+        try:
+            return json.loads(json.loads(clean))
+        except (TypeError, json.JSONDecodeError):
+            return None
+    return None
+
+
+def _iter_capture_json_texts(text: str) -> list[str]:
+    snippets: list[str] = []
+    pattern = r"\{[\s\S]{0,200000}?(?:bookInfo|books|totalResult|newResult|results)[\s\S]{0,200000}?\}"
+    for match in re.finditer(pattern, text):
+        snippet = match.group(0)
+        if snippet not in snippets:
+            snippets.append(snippet)
+        if len(snippets) >= 50:
+            break
+    return snippets
+
+
+def _collect_capture_cards(
+    payload: Any,
+    cards: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    max_books: int,
+    max_nodes: int = 20000,
+) -> int:
+    node_count = 0
+
+    def add_cards(page_cards: list[dict[str, Any]]) -> None:
+        for card in page_cards:
+            key = _candidate_seen_key(card)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+            if len(cards) >= max_books:
+                break
+
+    def walk(value: Any) -> None:
+        nonlocal node_count
+        if len(cards) >= max_books or node_count >= max_nodes:
+            return
+        node_count += 1
+        if isinstance(value, dict):
+            add_cards(_parse_api_book_cards(value))
+            if isinstance(value.get("bookInfo"), dict):
+                add_cards(_parse_api_book_cards({"books": [value]}))
+            content = value.get("content")
+            if isinstance(content, dict):
+                text = content.get("text")
+                if isinstance(text, str):
+                    nested_text = text
+                    if str(content.get("encoding") or "").lower() == "base64":
+                        try:
+                            nested_text = base64.b64decode(text).decode("utf-8", errors="ignore")
+                        except (ValueError, OSError):
+                            nested_text = text
+                    nested_payload = _capture_json_from_text(nested_text)
+                    if nested_payload is not None:
+                        walk(nested_payload)
+            for nested in value.values():
+                if isinstance(nested, (dict, list)):
+                    walk(nested)
+                elif isinstance(nested, str) and any(key in nested for key in ("bookInfo", "books", "totalResult", "newResult")):
+                    nested_payload = _capture_json_from_text(nested)
+                    if nested_payload is not None:
+                        walk(nested_payload)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+                if len(cards) >= max_books or node_count >= max_nodes:
+                    break
+
+    walk(payload)
+    return node_count
 
 
 def _api_book_rows(payload: dict[str, Any]) -> list[Any]:

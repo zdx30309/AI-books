@@ -67,6 +67,7 @@ export function WeReadTool() {
   const [rows, setRows] = useState<WeReadBookRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [companyLoading, setCompanyLoading] = useState(false);
+  const [captureImporting, setCaptureImporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export function WeReadTool() {
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [companyName, setCompanyName] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const captureFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
     const matched = rows.filter((row) => row.status === "matched" || row.status === "partial").length;
@@ -150,6 +152,41 @@ export function WeReadTool() {
       setError(msg);
     } finally {
       setCompanyLoading(false);
+    }
+  };
+
+  const importCompanyCapture = async (file: File) => {
+    const name = companyName.trim();
+    if (!name) {
+      setError("请先输入版权方或公司名字，再导入抓包文件");
+      if (captureFileInputRef.current) captureFileInputRef.current.value = "";
+      return;
+    }
+    setCaptureImporting(true);
+    setError(null);
+    setWarnings([]);
+    setRows([]);
+    setImportProgress(null);
+    try {
+      const result = await api.analyzeWeReadCompanyCapture(file, name, 1000);
+      setRows(result.items);
+      setWarnings(result.warnings ?? []);
+      setImportedFileName(`版权方抓包：${name} / ${file.name}`);
+      setImportProgress({ done: result.items.length, total: result.total });
+      if (result.items.length === 0) {
+        setError("抓包文件里没有识别到微信读书书籍列表，请确认导出的是版权方“全部作品”分页接口响应或 HAR。");
+      }
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.detail
+          : e instanceof Error
+            ? e.message
+            : "版权方抓包导入失败";
+      setError(msg);
+    } finally {
+      setCaptureImporting(false);
+      if (captureFileInputRef.current) captureFileInputRef.current.value = "";
     }
   };
 
@@ -238,10 +275,20 @@ export function WeReadTool() {
               if (file) void importExcelAndAnalyze(file);
             }}
           />
+          <input
+            ref={captureFileInputRef}
+            type="file"
+            accept=".har,.json,.txt,application/json,text/plain"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importCompanyCapture(file);
+            }}
+          />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={loading || importing || companyLoading}
+            disabled={loading || importing || companyLoading || captureImporting}
             className="btn-ghost"
           >
             {importing ? (
@@ -265,7 +312,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={downloadExcel}
-            disabled={rows.length === 0 || downloading || importing || companyLoading}
+            disabled={rows.length === 0 || downloading || importing || companyLoading || captureImporting}
             className="btn-gold"
           >
             {downloading ? (
@@ -300,7 +347,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={analyzeCompany}
-            disabled={loading || importing || companyLoading}
+            disabled={loading || importing || companyLoading || captureImporting}
             className="btn-gold md:min-w-[220px]"
           >
             {companyLoading ? (
@@ -309,6 +356,19 @@ export function WeReadTool() {
               <Search className="h-4 w-4" strokeWidth={2} />
             )}
             <span className="tracking-widest">抓取版权方书单</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => captureFileInputRef.current?.click()}
+            disabled={loading || importing || companyLoading || captureImporting}
+            className="btn-ghost md:min-w-[220px]"
+          >
+            {captureImporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+            ) : (
+              <FileUp className="h-4 w-4" strokeWidth={1.7} />
+            )}
+            <span className="tracking-widest">导入抓包/HAR</span>
           </button>
         </div>
       </section>
@@ -356,7 +416,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={analyze}
-              disabled={loading || companyLoading}
+              disabled={loading || companyLoading || captureImporting}
               className="btn-gold flex-1"
             >
               {loading ? (
@@ -371,7 +431,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={downloadExcel}
-              disabled={rows.length === 0 || downloading || importing || companyLoading}
+              disabled={rows.length === 0 || downloading || importing || companyLoading || captureImporting}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-gold-400/45 bg-gold-500/10 px-5 py-3 text-sm font-medium tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? (

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
+    analyze_weread_company_capture_report,
     analyze_weread_company_books_report,
     analyze_weread_catalog,
     analyze_weread_books,
@@ -122,6 +123,31 @@ async def analyze_company_books(
     _: User = Depends(get_current_user),
 ) -> WeReadAnalyzeResponse:
     report = await analyze_weread_company_books_report(req.company_name, limit=req.max_books)
+    items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
+    matched = sum(1 for item in items if item.status in {"matched", "partial"})
+    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)
+
+
+@router.post(
+    "/company-capture",
+    response_model=WeReadAnalyzeResponse,
+    summary="导入微信读书版权方页抓包/HAR/JSON 并解析全量作品",
+)
+async def analyze_company_capture(
+    company_name: str = Form(..., min_length=1),
+    max_books: int = Form(default=1000, ge=1, le=3000),
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+) -> WeReadAnalyzeResponse:
+    filename = file.filename or ""
+    if not filename.lower().endswith((".har", ".json", ".txt")):
+        raise HTTPException(status_code=400, detail="请上传 .har、.json 或 .txt 格式的微信读书抓包/响应文件")
+    report = await analyze_weread_company_capture_report(
+        company_name,
+        await file.read(),
+        filename=filename,
+        limit=max_books,
+    )
     items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
     matched = sum(1 for item in items if item.status in {"matched", "partial"})
     return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)

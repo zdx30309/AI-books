@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import zipfile
 from io import BytesIO
 
@@ -294,6 +296,53 @@ def test_parse_api_book_cards_keeps_company_metrics_and_url() -> None:
             "search_idx": 2,
         }
     ]
+
+
+def test_parse_weread_capture_cards_from_har_content() -> None:
+    payload = {
+        "books": [
+            {
+                "bookInfo": {
+                    "encodeId": "book-a",
+                    "title": "天涯神帖智慧大全",
+                    "author": "玄谷",
+                    "newRating": 664,
+                    "newRatingCount": 223,
+                    "copyrightInfo": {"id": 39149647, "name": "佳润互众"},
+                },
+                "readingCount": 100,
+                "searchIdx": 5,
+            }
+        ],
+        "hasMore": False,
+    }
+    har = {
+        "log": {
+            "entries": [
+                {"response": {"content": {"text": json.dumps(payload, ensure_ascii=False)}}}
+            ]
+        }
+    }
+
+    cards = weread_tools._parse_weread_capture_book_cards(
+        json.dumps(har, ensure_ascii=False).encode("utf-8"),
+        filename="capture.har",
+    )
+
+    assert len(cards) == 1
+    assert cards[0]["title"] == "天涯神帖智慧大全"
+    assert cards[0]["company_name"] == "佳润互众"
+    assert cards[0]["copyright_id"] == "39149647"
+
+
+def test_parse_weread_capture_cards_decodes_base64_har_content() -> None:
+    payload = {"totalResult": {"results": [{"bookInfo": {"encodeId": "book-a", "title": "孟姜女", "author": "张恨水"}}]}}
+    encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    har = {"log": {"entries": [{"response": {"content": {"text": encoded, "encoding": "base64"}}}]}}
+
+    cards = weread_tools._parse_weread_capture_book_cards(json.dumps(har).encode("utf-8"))
+
+    assert [card["title"] for card in cards] == ["孟姜女"]
 
 
 def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch) -> None:
