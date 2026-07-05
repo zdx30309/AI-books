@@ -297,6 +297,44 @@ export interface PolishParagraphResponse {
   polished_chars: number;
 }
 
+// Public-domain fusion rewrite
+
+export interface PublicDomainRewriteSource {
+  title: string;
+  text: string;
+  author?: string | null;
+  publication_year?: number | null;
+  rights_note?: string | null;
+}
+
+export interface PublicDomainRewriteRequest {
+  sources: PublicDomainRewriteSource[];
+  target_title?: string | null;
+  target_direction?: string | null;
+  target_length?: number;
+  output_style?: string | null;
+  public_domain_confirmed: boolean;
+}
+
+export interface PublicDomainSourceReport {
+  title: string;
+  chars: number;
+  public_domain_basis: string;
+  sampled_chars: number;
+}
+
+export interface PublicDomainRewriteResponse {
+  title: string;
+  manuscript: string;
+  blueprint: string;
+  quality_report: string;
+  source_reports: PublicDomainSourceReport[];
+  warnings: string[];
+  status: string;
+  source_count: number;
+  manuscript_chars: number;
+}
+
 // 鉴权
 
 export interface RegisterRequest {

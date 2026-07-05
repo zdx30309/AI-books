@@ -57,6 +57,8 @@ import type {
   MarkdownResponse,
   PolishParagraphRequest,
   PolishParagraphResponse,
+  PublicDomainRewriteRequest,
+  PublicDomainRewriteResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
@@ -338,6 +340,37 @@ async function uploadFilesForDownload(
   return { blob: await res.blob(), filename: decodeURIComponent(rawName) };
 }
 
+async function uploadPublicDomainRewriteFiles<T>(
+  files: File[],
+  metadata: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body = new FormData();
+  files.forEach((file) => body.append("files", file));
+  body.append("metadata_json", JSON.stringify(metadata));
+
+  const res = await fetch(`${BASE}/public-domain-rewrite/generate-from-files`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      detail = errorMessageFromBody(errorBody, detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -571,6 +604,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  generatePublicDomainRewrite: (body: PublicDomainRewriteRequest) =>
+    request<PublicDomainRewriteResponse>("/public-domain-rewrite/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  generatePublicDomainRewriteFromFiles: (
+    files: File[],
+    metadata: Omit<PublicDomainRewriteRequest, "sources"> & {
+      sources: Array<Omit<PublicDomainRewriteRequest["sources"][number], "text">>;
+    },
+  ) => uploadPublicDomainRewriteFiles<PublicDomainRewriteResponse>(files, metadata),
 
   // 系统健康（检测 Celery worker 是否在线）
   createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>
