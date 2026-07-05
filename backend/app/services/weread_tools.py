@@ -7,7 +7,7 @@ import json
 import os
 import re
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -53,6 +53,8 @@ class CatalogBook:
 class CompanyLookupInput:
     company_name: str | None
     seed_items: list[CatalogBook]
+    copyright_ids: set[str] = field(default_factory=set)
+    subject_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -457,6 +459,7 @@ async def analyze_weread_company_books_report(company_name: str, limit: int | No
             return WeReadCompanyAnalysis(rows=[], warnings=warnings)
 
         target_ids = _target_company_ids_from_index(target)
+        target_ids.update(lookup.copyright_ids)
         target_ids.update(
             str(detail.copyright_id)
             for detail in seed_details
@@ -471,6 +474,7 @@ async def analyze_weread_company_books_report(company_name: str, limit: int | No
             max_books=max_books,
             seed_items=lookup.seed_items,
             target_ids=target_ids,
+            subject_ids=lookup.subject_ids,
             warnings=warnings,
         )
         results: list[WeReadBookResult] = []
@@ -691,6 +695,7 @@ async def _collect_company_book_candidates(
     max_books: int,
     seed_items: list[CatalogBook] | None = None,
     target_ids: set[str] | None = None,
+    subject_ids: set[str] | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
@@ -717,6 +722,7 @@ async def _collect_company_book_candidates(
             company_name,
             max_books=max_books,
             from_book_id=_seed_from_book_id(seed_items or []),
+            copyright_ids=target_ids or set(),
             warnings=warnings,
         )
     )
@@ -726,9 +732,23 @@ async def _collect_company_book_candidates(
             company_name,
             max_books=max_books,
             from_book_id=_seed_from_book_id(seed_items or []),
+            copyright_ids=target_ids or set(),
             warnings=warnings,
         )
     )
+    await add_cards(
+        await _fetch_uncertified_opus_book_cards(
+            client,
+            company_name,
+            max_books=max_books,
+            from_book_id=_seed_from_book_id(seed_items or []),
+            warnings=warnings,
+        )
+    )
+    for subject_id in sorted(subject_ids or set()):
+        await add_cards(await _fetch_subject_book_cards(client, subject_id, max_books=max_books, warnings=warnings))
+        if len(candidates) >= max_books:
+            break
     await add_cards(await _fetch_publisher_book_cards(client, company_name, max_books=max_books))
     await add_cards(_company_candidate_cards_from_project_index(company_name, max_books=max_books))
 
@@ -809,6 +829,7 @@ async def _fetch_gateway_publisher_book_cards(
     *,
     max_books: int,
     from_book_id: str | None = None,
+    copyright_ids: set[str] | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     api_key = _weread_api_key()
@@ -839,6 +860,11 @@ async def _fetch_gateway_publisher_book_cards(
         }
         if from_book_id:
             body["fromBookId"] = from_book_id
+        first_copyright_id = next((str(value) for value in sorted(copyright_ids or set()) if str(value).strip()), None)
+        if first_copyright_id:
+            body["cpid"] = first_copyright_id
+            body["cpId"] = first_copyright_id
+            body["recordType"] = 2
 
         response = await client.post(WEREAD_AGENT_GATEWAY, json=body, headers=headers)
         if response.status_code in {401, 403}:
@@ -860,6 +886,11 @@ async def _fetch_gateway_publisher_book_cards(
         payload = _unwrap_weread_gateway_payload(raw_payload)
         page_cards = _parse_api_book_cards(payload)
         if not page_cards:
+            if not cards and max_idx == 0:
+                _append_warning(
+                    warnings,
+                    "微信读书官方 API Key 已配置并可访问网关，但官方网关没有返回版权方全量作品页数据；已继续尝试 App 内部分页、公开搜索和本地缓存。",
+                )
             break
         before_count = len(cards)
         for card in page_cards:
@@ -891,6 +922,7 @@ async def _fetch_app_publisher_book_cards(
     *,
     max_books: int,
     from_book_id: str | None = None,
+    copyright_ids: set[str] | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     cookie = _weread_auth_cookie()
@@ -919,6 +951,11 @@ async def _fetch_app_publisher_book_cards(
         }
         if from_book_id:
             params["fromBookId"] = from_book_id
+        first_copyright_id = next((str(value) for value in sorted(copyright_ids or set()) if str(value).strip()), None)
+        if first_copyright_id:
+            params["cpid"] = first_copyright_id
+            params["cpId"] = first_copyright_id
+            params["recordType"] = 2
 
         response = await client.get(f"{WEREAD_I_HOST}/store/search", params=params, headers=headers)
         if response.status_code in {401, 403}:
@@ -935,6 +972,11 @@ async def _fetch_app_publisher_book_cards(
 
         page_cards = _parse_api_book_cards(payload)
         if not page_cards:
+            if not cards and max_idx == 0:
+                _append_warning(
+                    warnings,
+                    "微信读书 App 内部版权方分页接口没有返回作品；如果 App 页面显示几百本而这里为空，通常是当前 Cookie 只代表网页登录，不能访问 App 内部版权方页。",
+                )
             break
         before_count = len(cards)
         for card in page_cards:
@@ -1039,6 +1081,138 @@ async def _fetch_private_copyright_book_cards(
     return cards[:max_books]
 
 
+async def _fetch_uncertified_opus_book_cards(
+    client: httpx.AsyncClient,
+    keyword: str,
+    *,
+    max_books: int,
+    from_book_id: str | None = None,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    cookie = _weread_auth_cookie()
+    keyword = _clean_text(keyword)
+    if not cookie or not keyword:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_idx = 0
+    page_size = min(20, max(1, max_books))
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": WEREAD_HOST,
+    }
+    for _ in range(80):
+        params: dict[str, Any] = {
+            "name": keyword,
+            "nameType": 0,
+            "opType": 0,
+            "count": page_size,
+            "maxIdx": max_idx,
+        }
+        if from_book_id:
+            params["bookId"] = from_book_id
+        response = await client.get(f"{WEREAD_I_HOST}/shelf/uncertifiedopus", params=params, headers=headers)
+        if response.status_code in {401, 403}:
+            _append_warning(
+                warnings,
+                "微信读书 App 内部未认证作品分页接口拒绝当前 Cookie（登录超时/无权限）；已继续使用其它来源兜底。",
+            )
+            break
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            break
+        page_cards = _parse_api_book_cards(payload)
+        if not page_cards:
+            break
+        before_count = len(cards)
+        for card in page_cards:
+            if not card.get("company_name"):
+                card["company_name"] = keyword
+            card.setdefault("source_kind", "app_uncertified_opus")
+            key = _candidate_seen_key(card)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+            if len(cards) >= max_books:
+                break
+        if len(cards) >= max_books or not _payload_has_more(payload):
+            break
+        next_idx = _payload_next_max_idx(payload, page_cards, max_idx)
+        if next_idx <= max_idx:
+            next_idx = max_idx + max(1, len(page_cards))
+        if next_idx <= max_idx or len(cards) == before_count:
+            break
+        max_idx = next_idx
+    return cards[:max_books]
+
+
+async def _fetch_subject_book_cards(
+    client: httpx.AsyncClient,
+    subject_id: str,
+    *,
+    max_books: int,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    cookie = _weread_auth_cookie()
+    subject_id = _clean_text(subject_id)
+    if not cookie or not subject_id:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_idx = 0
+    page_size = min(20, max(1, max_books))
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+        "Content-Type": "application/json",
+        "Referer": WEREAD_HOST,
+    }
+    for _ in range(80):
+        body = {"subjectId": subject_id, "maxIdx": max_idx, "count": page_size}
+        response = await client.post(f"{WEREAD_I_HOST}/special/subject/info", json=body, headers=headers)
+        if response.status_code in {401, 403}:
+            _append_warning(
+                warnings,
+                "微信读书专题分页接口拒绝当前 Cookie（登录超时/无权限）；已跳过 subjectId 兜底。",
+            )
+            break
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            break
+        page_cards = _parse_api_book_cards(payload)
+        if not page_cards:
+            break
+        before_count = len(cards)
+        for card in page_cards:
+            card.setdefault("source_kind", "app_subject")
+            key = _candidate_seen_key(card)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+            if len(cards) >= max_books:
+                break
+        if len(cards) >= max_books or not _payload_has_more(payload):
+            break
+        next_idx = _payload_next_max_idx(payload, page_cards, max_idx)
+        if next_idx <= max_idx:
+            next_idx = max_idx + max(1, len(page_cards))
+        if next_idx <= max_idx or len(cards) == before_count:
+            break
+        max_idx = next_idx
+    return cards[:max_books]
+
+
 def _company_candidate_cards_from_cache(
     company_name: str,
     *,
@@ -1100,10 +1274,15 @@ def _company_candidate_cards_from_project_index(company_name: str, *, max_books:
 def _parse_company_lookup_input(raw_value: str) -> CompanyLookupInput:
     target: str | None = None
     seed_items: list[CatalogBook] = []
+    copyright_ids: set[str] = set()
+    subject_ids: set[str] = set()
     for raw_line in str(raw_value or "").splitlines():
         line = _clean_text(raw_line)
         if not line:
             continue
+        ids = _company_lookup_ids_from_text(line)
+        copyright_ids.update(ids["copyright_ids"])
+        subject_ids.update(ids["subject_ids"])
         url = _extract_first_url(line)
         if url:
             title = _clean_text(line.replace(url, " ").strip(" ，,。；;"))
@@ -1115,7 +1294,37 @@ def _parse_company_lookup_input(raw_value: str) -> CompanyLookupInput:
             target = line
         else:
             seed_items.append(CatalogBook(title=line))
-    return CompanyLookupInput(company_name=target, seed_items=seed_items)
+    return CompanyLookupInput(
+        company_name=target,
+        seed_items=seed_items,
+        copyright_ids=copyright_ids,
+        subject_ids=subject_ids,
+    )
+
+
+def _company_lookup_ids_from_text(value: str) -> dict[str, set[str]]:
+    text = str(value or "")
+    copyright_ids: set[str] = set()
+    subject_ids: set[str] = set()
+    url = _extract_first_url(text)
+    if url:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        for key in ("cpid", "cpId", "copyrightId", "copyright_id"):
+            copyright_ids.update(item.strip() for item in query.get(key) or [] if item.strip())
+        for key in ("subjectId", "subject_id"):
+            subject_ids.update(item.strip() for item in query.get(key) or [] if item.strip())
+    for pattern in (
+        r"(?:cpid|cpId|copyrightId|copyright_id)\s*[:=]\s*([0-9]{3,})",
+        r"版权方\s*ID\s*[:=：]\s*([0-9]{3,})",
+    ):
+        copyright_ids.update(match.group(1) for match in re.finditer(pattern, text, flags=re.IGNORECASE))
+    for pattern in (
+        r"(?:subjectId|subject_id)\s*[:=]\s*([A-Za-z0-9_-]{3,})",
+        r"专题\s*ID\s*[:=：]\s*([A-Za-z0-9_-]{3,})",
+    ):
+        subject_ids.update(match.group(1) for match in re.finditer(pattern, text, flags=re.IGNORECASE))
+    return {"copyright_ids": copyright_ids, "subject_ids": subject_ids}
 
 
 def _target_company_ids_from_index(company_name: str) -> set[str]:
@@ -1220,12 +1429,27 @@ def _api_book_rows(payload: dict[str, Any]) -> list[Any]:
         value = payload.get(key)
         if isinstance(value, list):
             return value
+    for key in ("totalResult", "newResult"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            nested_rows = _api_book_rows(nested)
+            if nested_rows:
+                return nested_rows
+            value = nested.get("results")
+            if isinstance(value, list):
+                return value
     data = payload.get("data")
     if isinstance(data, dict):
         for key in ("books", "bookInfos", "items", "list"):
             value = data.get(key)
             if isinstance(value, list):
                 return value
+        for key in ("totalResult", "newResult"):
+            nested = data.get(key)
+            if isinstance(nested, dict):
+                nested_rows = _api_book_rows(nested)
+                if nested_rows:
+                    return nested_rows
         nested_rows: list[Any] = []
         for group in data.get("results") or []:
             if isinstance(group, dict) and isinstance(group.get("books"), list):
@@ -1268,6 +1492,10 @@ def _payload_has_more(payload: Any) -> bool:
     data = payload.get("data")
     if isinstance(data, dict):
         return _payload_has_more(data)
+    for key in ("totalResult", "newResult"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            return _payload_has_more(nested)
     return False
 
 
@@ -1282,6 +1510,12 @@ def _payload_next_max_idx(payload: Any, page_cards: list[dict[str, Any]], curren
             nested = _payload_next_max_idx(data, page_cards, current)
             if nested > current:
                 return nested
+        for key in ("totalResult", "newResult"):
+            nested_payload = payload.get(key)
+            if isinstance(nested_payload, dict):
+                nested = _payload_next_max_idx(nested_payload, page_cards, current)
+                if nested > current:
+                    return nested
     indexes = [
         value
         for value in (_parse_int(card.get("search_idx")) for card in page_cards)

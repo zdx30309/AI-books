@@ -217,6 +217,18 @@ def test_parse_company_lookup_input_keeps_seed_link() -> None:
     ]
 
 
+def test_parse_company_lookup_input_extracts_ids() -> None:
+    lookup = weread_tools._parse_company_lookup_input(
+        "佳润互众\n"
+        "https://weread.qq.com/web/search?cpId=39149647&subjectId=sub_123\n"
+        "版权方ID：8848"
+    )
+
+    assert lookup.company_name == "佳润互众"
+    assert lookup.copyright_ids == {"39149647", "8848"}
+    assert lookup.subject_ids == {"sub_123"}
+
+
 def test_company_index_upserts_and_returns_cached_cards(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
     monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)
@@ -347,6 +359,7 @@ def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch
             "\u4f73\u6da6\u4e92\u4f17",
             max_books=20,
             from_book_id="seed-book-id",
+            copyright_ids={"39149647"},
         )
     )
 
@@ -355,9 +368,139 @@ def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch
     assert calls[0][1]["type"] == 8
     assert calls[0][1]["keyword"] == "\u4f73\u6da6\u4e92\u4f17"
     assert calls[0][1]["fromBookId"] == "seed-book-id"
+    assert calls[0][1]["cpid"] == "39149647"
+    assert calls[0][1]["recordType"] == 2
     assert calls[0][2]["Cookie"] == "wr-test-cookie"
     assert cards[0]["source_kind"] == "app_publisher"
     assert cards[0]["company_name"] == "\u4f73\u6da6\u4e92\u4f17"
+
+
+def test_fetch_uncertified_opus_book_cards_uses_total_result_pagination(monkeypatch) -> None:
+    monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def get(self, url, *, params=None, headers=None):
+            calls.append((url, dict(params or {}), dict(headers or {})))
+            if (params or {}).get("maxIdx") == 0:
+                return FakeResponse(
+                    {
+                        "totalResult": {
+                            "results": [
+                                {
+                                    "bookInfo": {
+                                        "encodeId": "book-a",
+                                        "title": "天涯神帖智慧大全",
+                                        "author": "玄谷",
+                                        "newRating": 664,
+                                        "newRatingCount": 223,
+                                    },
+                                    "readingCount": 100,
+                                    "searchIdx": 5,
+                                }
+                            ],
+                            "hasMore": True,
+                        }
+                    }
+                )
+            return FakeResponse(
+                {
+                    "totalResult": {
+                        "results": [
+                            {
+                                "bookInfo": {
+                                    "encodeId": "book-b",
+                                    "title": "孟姜女（经典版）",
+                                    "author": "张恨水",
+                                    "newRating": 950,
+                                    "newRatingCount": 34,
+                                },
+                                "readingCount": 200,
+                                "searchIdx": 9,
+                            }
+                        ],
+                        "hasMore": False,
+                    }
+                }
+            )
+
+    cards = asyncio.run(
+        weread_tools._fetch_uncertified_opus_book_cards(
+            FakeClient(),
+            "佳润互众",
+            max_books=20,
+            from_book_id="seed-book-id",
+        )
+    )
+
+    assert len(cards) == 2
+    assert [call[1]["maxIdx"] for call in calls] == [0, 5]
+    assert calls[0][0].endswith("/shelf/uncertifiedopus")
+    assert calls[0][1]["bookId"] == "seed-book-id"
+    assert cards[0]["source_kind"] == "app_uncertified_opus"
+
+
+def test_fetch_subject_book_cards_uses_subject_info_pagination(monkeypatch) -> None:
+    monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def post(self, url, *, json=None, headers=None):
+            calls.append((url, dict(json or {}), dict(headers or {})))
+            if (json or {}).get("maxIdx") == 0:
+                return FakeResponse(
+                    {
+                        "totalResult": {
+                            "results": [
+                                {
+                                    "bookInfo": {
+                                        "encodeId": "book-a",
+                                        "title": "天涯神帖智慧大全",
+                                        "author": "玄谷",
+                                        "newRating": 664,
+                                        "newRatingCount": 223,
+                                    },
+                                    "readingCount": 100,
+                                    "searchIdx": 5,
+                                }
+                            ],
+                            "hasMore": True,
+                        }
+                    }
+                )
+            return FakeResponse({"totalResult": {"results": [], "hasMore": False}})
+
+    cards = asyncio.run(weread_tools._fetch_subject_book_cards(FakeClient(), "sub_123", max_books=20))
+
+    assert len(cards) == 1
+    assert calls[0][0].endswith("/special/subject/info")
+    assert calls[0][1]["subjectId"] == "sub_123"
+    assert calls[0][1]["maxIdx"] == 0
+    assert cards[0]["source_kind"] == "app_subject"
 
 
 def test_fetch_gateway_publisher_book_cards_uses_agent_gateway_pagination(monkeypatch) -> None:
