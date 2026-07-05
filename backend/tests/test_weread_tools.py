@@ -398,6 +398,72 @@ def test_parse_weread_capture_cards_from_store_search_har_pages() -> None:
     assert cards[1]["recommendation"] == 80.0
 
 
+def test_parse_fanqie_capture_cards_from_har_content() -> None:
+    payload = {
+        "data": {
+            "book_list": [
+                {
+                    "book_id": "123456",
+                    "book_name": "Fanqie Book",
+                    "author_name": "Fanqie Author",
+                    "score": "9.6",
+                    "read_count": "166.9万人读过",
+                    "comment_count": 88,
+                    "word_count": 120000,
+                }
+            ]
+        }
+    }
+    har = {
+        "log": {
+            "entries": [
+                {
+                    "request": {"url": "https://fanqienovel.com/api/book/list"},
+                    "response": {"content": {"mimeType": "application/json", "text": json.dumps(payload)}},
+                }
+            ]
+        }
+    }
+
+    cards = weread_tools._parse_fanqie_capture_book_cards(json.dumps(har).encode("utf-8"))
+
+    assert len(cards) == 1
+    assert cards[0]["title"] == "Fanqie Book"
+    assert cards[0]["author"] == "Fanqie Author"
+    assert cards[0]["recommendation"] == 96.0
+    assert cards[0]["reading_count"] == "166.9万人读过"
+    assert cards[0]["rating_count"] == "88人点评"
+    assert cards[0]["source_url"] == "https://fanqienovel.com/page/123456"
+    assert cards[0]["platform"] == "番茄小说"
+
+
+def test_analyze_fanqie_capture_report_returns_platform() -> None:
+    payload = {
+        "books": [
+            {
+                "bookId": "abc001",
+                "bookName": "Second Book",
+                "authorName": "Writer B",
+                "rankScore": 88,
+                "readCount": 2100,
+            }
+        ]
+    }
+    report = asyncio.run(
+        weread_tools.analyze_fanqie_company_capture_report(
+            "番茄样例",
+            json.dumps(payload).encode("utf-8"),
+            filename="fanqie.json",
+            limit=10,
+        )
+    )
+
+    assert report.rows
+    assert report.rows[0].platform == "番茄小说"
+    assert report.rows[0].matched_title == "Second Book"
+    assert report.rows[0].source_url == "https://fanqienovel.com/page/abc001"
+
+
 def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch) -> None:
     monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
     calls = []

@@ -853,6 +853,11 @@ export const api = {
       company_name: companyName,
       max_books: String(maxBooks),
     }),
+  analyzeFanqieCompanyCapture: (file: File, companyName: string, maxBooks = 1000) =>
+    uploadFile<WeReadAnalyzeResponse>("/weread/fanqie-capture", file, {
+      company_name: companyName,
+      max_books: String(maxBooks),
+    }),
   importWeReadExcel: (file: File) =>
     uploadFile<WeReadExcelImportResponse>("/weread/import-excel", file),
   analyzeWeReadExcel: (file: File) =>

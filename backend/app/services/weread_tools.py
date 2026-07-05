@@ -24,6 +24,7 @@ WEREAD_HOST = "https://weread.qq.com"
 WEREAD_I_HOST = "https://i.weread.qq.com"
 WEREAD_AGENT_GATEWAY = f"{WEREAD_I_HOST}/api/agent/gateway"
 WEREAD_SKILL_VERSION = "1.0.4"
+FANQIE_HOST = "https://fanqienovel.com"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_INDEX_PATH = Path(__file__).resolve().parent / "reference_assets" / "weread_project_index.json"
 WEREAD_COMPANY_INDEX_PATH = Path(
@@ -81,6 +82,7 @@ class WeReadBookResult:
     copyright_id: str | None = None
     translator: str | None = None
     source_url: str | None = None
+    platform: str | None = None
     profit: float | None = None
     project_editor: str | None = None
     project_title: str | None = None
@@ -125,6 +127,7 @@ class WeReadBookResult:
             "copyright_id": self.copyright_id,
             "translator": self.translator,
             "source_url": self.source_url,
+            "platform": self.platform,
             "profit": self.profit,
             "project_editor": self.project_editor,
             "project_title": self.project_title,
@@ -495,6 +498,55 @@ async def analyze_weread_company_capture_report(
     _append_warning(
         warnings,
         "已按上传抓包/HAR/JSON 解析版权方作品；这条链路不依赖微信读书官方 Skill 是否开放版权方全量接口。",
+    )
+    return WeReadCompanyAnalysis(rows=results, warnings=warnings)
+
+
+async def analyze_fanqie_company_capture_report(
+    company_name: str,
+    content: bytes,
+    *,
+    filename: str | None = None,
+    limit: int | None = None,
+) -> WeReadCompanyAnalysis:
+    warnings: list[str] = []
+    target = _valid_company_name(company_name) or _clean_text(company_name)
+    max_books = max(1, limit or 1000)
+    cards = _parse_fanqie_capture_book_cards(content, filename=filename, max_books=max_books)
+    if not cards:
+        _append_warning(
+            warnings,
+            "没有在上传的抓包/HAR/JSON 文件里识别到番茄小说书籍列表。请确认文件包含番茄小说搜索、作者页、书单页或详情接口响应。",
+        )
+        return WeReadCompanyAnalysis(rows=[], warnings=warnings)
+
+    results: list[WeReadBookResult] = []
+    accepted: set[str] = set()
+    for card in cards:
+        if len(results) >= max_books:
+            break
+        card.setdefault("company_name", target)
+        card.setdefault("platform", "番茄小说")
+        result = _result_from_company_card(card, target)
+        result.platform = "番茄小说"
+        result.company_name = result.company_name or target
+        result.comment_count = _comment_count_for_display(result.comment_count or result.rating_count)
+        result.status = "matched" if (
+            result.matched_title and (result.recommendation is not None or result.reading_count or result.comment_count)
+        ) else "partial"
+        result_key = _company_result_key(result)
+        if result_key and result_key in accepted:
+            continue
+        if result_key:
+            accepted.add(result_key)
+        _attach_project_match(result)
+        results.append(result)
+
+    if len(results) < len(cards):
+        _append_warning(warnings, f"番茄抓包中识别到 {len(cards)} 条候选，去重/过滤后保留 {len(results)} 条。")
+    _append_warning(
+        warnings,
+        "已按上传抓包/HAR/JSON 解析番茄小说作品；这条链路不依赖番茄小说是否开放稳定公开 API。",
     )
     return WeReadCompanyAnalysis(rows=results, warnings=warnings)
 
@@ -1526,6 +1578,54 @@ def _parse_weread_capture_book_cards(
     return cards[:max_books]
 
 
+def _parse_fanqie_capture_book_cards(
+    content: bytes,
+    *,
+    filename: str | None = None,
+    max_books: int = 1000,
+) -> list[dict[str, Any]]:
+    text = _decode_capture_text(content)
+    payload = _capture_json_from_text(text)
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def collect(payload_value: Any) -> None:
+        _collect_fanqie_cards(payload_value, cards, seen, max_books=max_books)
+
+    used_har_responses = False
+    if payload is not None:
+        har_response_texts = _iter_har_response_texts(payload)
+        used_har_responses = bool(har_response_texts)
+        for response_text in har_response_texts:
+            response_payload = _capture_json_from_text(response_text)
+            if response_payload is None:
+                continue
+            collect(response_payload)
+            if len(cards) >= max_books:
+                break
+        if not har_response_texts:
+            collect(payload)
+
+    if not used_har_responses and len(cards) < max_books:
+        for nested_text in _iter_capture_json_texts(text):
+            nested_payload = _capture_json_from_text(nested_text)
+            if nested_payload is None:
+                continue
+            collect(nested_payload)
+            if len(cards) >= max_books:
+                break
+
+    if not cards and (filename or "").lower().endswith((".html", ".htm", ".txt")):
+        html_cards = _parse_fanqie_html_cards(text, max_books=max_books)
+        for card in html_cards:
+            key = _candidate_seen_key(card)
+            if key and key not in seen:
+                seen.add(key)
+                cards.append(card)
+
+    return cards[:max_books]
+
+
 def _decode_capture_text(content: bytes) -> str:
     for encoding in ("utf-8-sig", "utf-8", "gb18030"):
         try:
@@ -1586,14 +1686,22 @@ def _iter_har_response_texts(payload: Any) -> list[str]:
             marker in searchable
             for marker in (
                 "/api/store/search",
+                "fanqienovel",
+                "fanqie",
                 "/web/shelf",
                 "/shelf/",
                 "/book/",
+                "/page/",
                 "bookInfo",
                 '"books"',
                 '"results"',
                 "totalResult",
                 "newResult",
+                "book_name",
+                "bookId",
+                "book_id",
+                "novel_id",
+                "author_name",
             )
         ):
             texts.append(nested_text)
@@ -1669,6 +1777,358 @@ def _collect_capture_cards(
 
     walk(payload)
     return node_count
+
+
+def _collect_fanqie_cards(
+    payload: Any,
+    cards: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    max_books: int,
+    max_nodes: int = 80000,
+) -> int:
+    node_count = 0
+
+    def add_card(raw: dict[str, Any]) -> None:
+        card = _fanqie_card_from_raw(raw)
+        if not card:
+            return
+        key = _candidate_seen_key(card)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        cards.append(card)
+
+    def walk(value: Any) -> None:
+        nonlocal node_count
+        if len(cards) >= max_books or node_count >= max_nodes:
+            return
+        node_count += 1
+        if isinstance(value, dict):
+            add_card(value)
+            for nested in value.values():
+                if isinstance(nested, (dict, list)):
+                    walk(nested)
+                elif isinstance(nested, str) and _string_may_contain_fanqie_json(nested):
+                    nested_payload = _capture_json_from_text(nested)
+                    if nested_payload is not None:
+                        walk(nested_payload)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+                if len(cards) >= max_books or node_count >= max_nodes:
+                    break
+
+    walk(payload)
+    return node_count
+
+
+def _fanqie_card_from_raw(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    nested = next(
+        (
+            raw.get(key)
+            for key in (
+                "bookInfo",
+                "book_info",
+                "book",
+                "novel",
+                "item",
+                "data",
+                "abstract",
+                "info",
+            )
+            if isinstance(raw.get(key), dict)
+        ),
+        None,
+    )
+    merged = {**nested, **raw} if isinstance(nested, dict) else raw
+    title = _first_clean_value(
+        merged,
+        (
+            "book_name",
+            "bookName",
+            "book_title",
+            "bookTitle",
+            "novel_name",
+            "novelName",
+            "fiction_name",
+            "fictionName",
+            "title",
+            "name",
+        ),
+    )
+    author = _first_clean_value(
+        merged,
+        (
+            "author_name",
+            "authorName",
+            "author",
+            "writer_name",
+            "writerName",
+            "pen_name",
+            "penName",
+            "user_name",
+            "username",
+        ),
+    )
+    book_id = _first_clean_value(
+        merged,
+        (
+            "book_id",
+            "bookId",
+            "bookID",
+            "novel_id",
+            "novelId",
+            "fiction_id",
+            "fictionId",
+            "item_id",
+            "itemId",
+            "gid",
+        ),
+    )
+    if not title or not _looks_like_fanqie_book(merged, title, book_id):
+        return None
+
+    reading_count = _fanqie_count_for_display(
+        _first_value(
+            merged,
+            (
+                "read_count_desc",
+                "readCountDesc",
+                "read_count",
+                "readCount",
+                "reader_count",
+                "readerCount",
+                "reading_count",
+                "readingCount",
+                "popularity",
+                "hot_value",
+                "hotValue",
+                "click_count",
+                "clickCount",
+            ),
+        )
+    )
+    comment_count = _comment_count_for_display(
+        _fanqie_count_for_display(
+            _first_value(
+                merged,
+                (
+                    "comment_count",
+                    "commentCount",
+                    "review_count",
+                    "reviewCount",
+                    "discussion_count",
+                    "discussionCount",
+                    "score_user_count",
+                    "scoreUserCount",
+                ),
+            )
+        )
+    )
+    rating_count = comment_count if comment_count and comment_count != "0人点评" else None
+
+    return {
+        "title": title,
+        "author": author,
+        "source_url": _fanqie_book_source_url(merged, book_id),
+        "company_name": _first_clean_value(
+            merged,
+            (
+                "publisher",
+                "publisher_name",
+                "copyright",
+                "copyright_name",
+                "copyright_owner",
+                "copyrightOwner",
+                "provider",
+                "provider_name",
+                "source",
+            ),
+        ),
+        "copyright_id": _first_clean_value(
+            merged,
+            ("copyright_id", "copyrightId", "publisher_id", "publisherId", "provider_id", "providerId"),
+        ),
+        "recommendation": _fanqie_rating_to_percent(
+            _first_value(
+                merged,
+                (
+                    "score",
+                    "rank_score",
+                    "rankScore",
+                    "recommend_score",
+                    "recommendScore",
+                    "rating",
+                    "rate",
+                    "avg_score",
+                    "avgScore",
+                    "star",
+                ),
+            )
+        ),
+        "rating_count": rating_count,
+        "today_reading": _fanqie_count_for_display(
+            _first_value(merged, ("today_read_count", "todayReadCount", "today_reading", "todayReading"))
+        ),
+        "reading_count": reading_count,
+        "word_count": _fanqie_word_count_for_display(
+            _first_value(merged, ("word_count", "wordCount", "word_number", "wordNumber", "words"))
+        ),
+        "translator": None,
+        "platform": "番茄小说",
+    }
+
+
+def _parse_fanqie_html_cards(text: str, *, max_books: int) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for match in re.finditer(r"https?://(?:www\.)?fanqienovel\.com/page/([0-9A-Za-z_-]+)", text):
+        if len(cards) >= max_books:
+            break
+        book_id = match.group(1)
+        cards.append(
+            {
+                "title": book_id,
+                "author": None,
+                "source_url": f"{FANQIE_HOST}/page/{book_id}",
+                "platform": "番茄小说",
+            }
+        )
+    return cards
+
+
+def _looks_like_fanqie_book(raw: dict[str, Any], title: str, book_id: str | None) -> bool:
+    if book_id:
+        return True
+    if not title or len(title) > 80:
+        return False
+    keys = {str(key) for key in raw.keys()}
+    markers = {
+        "author",
+        "author_name",
+        "authorName",
+        "book_name",
+        "bookName",
+        "book_id",
+        "bookId",
+        "novel_id",
+        "novelId",
+        "score",
+        "read_count",
+        "readCount",
+        "word_count",
+        "wordCount",
+        "category",
+        "tags",
+    }
+    return bool(keys & markers)
+
+
+def _string_may_contain_fanqie_json(value: str) -> bool:
+    return any(
+        marker in value
+        for marker in (
+            "book_name",
+            "bookName",
+            "book_id",
+            "bookId",
+            "fanqienovel",
+            "novel_id",
+            "read_count",
+            "author_name",
+        )
+    )
+
+
+def _fanqie_book_source_url(raw: dict[str, Any], book_id: str | None) -> str | None:
+    url = _extract_first_url(
+        str(
+            _first_value(
+                raw,
+                (
+                    "source_url",
+                    "sourceUrl",
+                    "url",
+                    "book_url",
+                    "bookUrl",
+                    "share_url",
+                    "shareUrl",
+                    "detail_url",
+                    "detailUrl",
+                    "schema",
+                    "deep_link",
+                    "deepLink",
+                ),
+            )
+            or ""
+        )
+    )
+    if url:
+        return url
+    if book_id:
+        return f"{FANQIE_HOST}/page/{book_id}"
+    return None
+
+
+def _fanqie_rating_to_percent(value: Any) -> float | None:
+    number = _parse_float(value)
+    if number is None:
+        return None
+    if number <= 10:
+        return number * 10
+    if number > 100:
+        return number / 10
+    return number
+
+
+def _fanqie_count_for_display(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = _clean_text(value)
+        if not text:
+            return None
+        if any(unit in text for unit in ("人", "万", "亿", "次", "读")):
+            return text if "人" in text or "次" in text else f"{text}人"
+        number = _parse_float(text)
+    else:
+        number = _parse_float(value)
+    if number is None:
+        return _clean_text(str(value)) or None
+    return _format_people_count(number)
+
+
+def _fanqie_word_count_for_display(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = _clean_text(value)
+        if any(unit in text for unit in ("字", "万", "亿")):
+            return text if "字" in text else f"{text}字"
+        number = _parse_float(text)
+    else:
+        number = _parse_float(value)
+    if number is None:
+        return _clean_text(str(value)) or None
+    return _format_people_count(number).replace("人", "字")
+
+
+def _first_value(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _first_clean_value(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    value = _first_value(payload, keys)
+    if value in (None, ""):
+        return None
+    text = _clean_text(str(value))
+    return text or None
 
 
 def _api_book_rows(payload: dict[str, Any]) -> list[Any]:
@@ -1833,6 +2293,7 @@ def _result_from_company_card(card: dict[str, Any], company_name: str) -> WeRead
         copyright_id=str(card.get("copyright_id")) if card.get("copyright_id") else None,
         translator=card.get("translator"),
         source_url=card.get("source_url"),
+        platform=card.get("platform"),
         status="partial",
     )
 
@@ -1849,6 +2310,7 @@ def _merge_company_detail(base: WeReadBookResult, detail: WeReadBookResult) -> W
     base.copyright_id = detail.copyright_id or base.copyright_id
     base.translator = detail.translator or base.translator
     base.source_url = detail.source_url or base.source_url
+    base.platform = detail.platform or base.platform
     base.comment_count = _comment_count_for_display(detail.comment_count or detail.rating_count or base.comment_count)
     return base
 
@@ -1918,6 +2380,7 @@ def _parse_int(value: Any) -> int | None:
 
 def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
     headers = [
+        "平台",
         "原始书名",
         "原始链接",
         "匹配书名",
@@ -1932,6 +2395,7 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
     for row in rows:
         body_rows.append(
             [
+                row.get("platform") or "微信读书",
                 row.get("query_title"),
                 _source_link_for_export(row),
                 row.get("matched_title"),
@@ -1971,8 +2435,8 @@ def build_weread_xlsx(rows: list[dict[str, Any]]) -> bytes:
     sheet_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <cols>
-    <col min="1" max="4" width="24" customWidth="1"/>
-    <col min="5" max="9" width="18" customWidth="1"/>
+    <col min="1" max="5" width="24" customWidth="1"/>
+    <col min="6" max="10" width="18" customWidth="1"/>
   </cols>
   <sheetData>{"".join(sheet_rows)}</sheetData>
 </worksheet>"""

@@ -364,6 +364,7 @@ export interface WeReadBookRow {
   copyright_id: string | null;
   translator: string | null;
   source_url: string | null;
+  platform: string | null;
   profit: number | null;
   project_editor: string | null;
   project_title: string | null;
