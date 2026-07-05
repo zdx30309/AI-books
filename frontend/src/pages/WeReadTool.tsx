@@ -70,6 +70,7 @@ export function WeReadTool() {
   const [importing, setImporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [importedFileName, setImportedFileName] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [companyName, setCompanyName] = useState("");
@@ -93,12 +94,14 @@ export function WeReadTool() {
     }
     setLoading(true);
     setError(null);
+    setWarnings([]);
     try {
       const result = await api.analyzeWeReadBooks({
         catalog_text: catalogText,
         profit_text: profitText || null,
       });
       setRows(result.items);
+      setWarnings(result.warnings ?? []);
       setImportedFileName(null);
       setImportProgress(null);
     } catch (e) {
@@ -122,6 +125,7 @@ export function WeReadTool() {
     }
     setCompanyLoading(true);
     setError(null);
+    setWarnings([]);
     setRows([]);
     setImportProgress(null);
     try {
@@ -130,6 +134,7 @@ export function WeReadTool() {
         max_books: 500,
       });
       setRows(result.items);
+      setWarnings(result.warnings ?? []);
       setImportedFileName(`版权方：${name}`);
       setImportProgress({ done: result.items.length, total: result.total });
       if (result.items.length === 0) {
@@ -173,6 +178,7 @@ export function WeReadTool() {
   const importExcelAndAnalyze = async (file: File) => {
     setImporting(true);
     setError(null);
+    setWarnings([]);
     setRows([]);
     setImportProgress(null);
     try {
@@ -180,6 +186,7 @@ export function WeReadTool() {
       setImportedFileName(file.name);
       setImportProgress({ done: 0, total: imported.total });
       const mergedRows: WeReadBookRow[] = [];
+      const mergedWarnings: string[] = [];
       for (let start = 0; start < imported.items.length; start += EXCEL_ANALYZE_BATCH_SIZE) {
         const chunk = imported.items.slice(start, start + EXCEL_ANALYZE_BATCH_SIZE);
         const result = await api.analyzeWeReadBooks({
@@ -187,7 +194,11 @@ export function WeReadTool() {
           profit_text: null,
         });
         mergedRows.push(...result.items);
+        (result.warnings ?? []).forEach((warning) => {
+          if (!mergedWarnings.includes(warning)) mergedWarnings.push(warning);
+        });
         setRows([...mergedRows]);
+        setWarnings([...mergedWarnings]);
         setImportProgress({ done: mergedRows.length, total: imported.total });
       }
     } catch (e) {
@@ -395,6 +406,17 @@ export function WeReadTool() {
               {importing ? "正在分批抓取" : "抓取完成"} {importProgress.done}/{importProgress.total}
             </span>
           )}
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="space-y-2 rounded-xl border border-gold-400/25 bg-gold-500/10 px-4 py-3 text-sm leading-6 text-gold-100">
+          {warnings.map((warning) => (
+            <div key={warning} className="flex gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.7} />
+              <span>{warning}</span>
+            </div>
+          ))}
         </div>
       )}
 

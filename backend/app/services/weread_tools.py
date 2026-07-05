@@ -21,6 +21,8 @@ from openpyxl import load_workbook
 
 WEREAD_HOST = "https://weread.qq.com"
 WEREAD_I_HOST = "https://i.weread.qq.com"
+WEREAD_AGENT_GATEWAY = f"{WEREAD_I_HOST}/api/agent/gateway"
+WEREAD_SKILL_VERSION = "1.0.4"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_INDEX_PATH = Path(__file__).resolve().parent / "reference_assets" / "weread_project_index.json"
 WEREAD_COMPANY_INDEX_PATH = Path(
@@ -51,6 +53,12 @@ class CatalogBook:
 class CompanyLookupInput:
     company_name: str | None
     seed_items: list[CatalogBook]
+
+
+@dataclass
+class WeReadCompanyAnalysis:
+    rows: list["WeReadBookResult"]
+    warnings: list[str]
 
 
 @dataclass
@@ -419,6 +427,11 @@ async def analyze_weread_catalog(
 
 
 async def analyze_weread_company_books(company_name: str, limit: int | None = None) -> list[WeReadBookResult]:
+    return (await analyze_weread_company_books_report(company_name, limit=limit)).rows
+
+
+async def analyze_weread_company_books_report(company_name: str, limit: int | None = None) -> WeReadCompanyAnalysis:
+    warnings: list[str] = []
     lookup = _parse_company_lookup_input(company_name)
     target = _valid_company_name(lookup.company_name)
     max_books = max(1, limit or 500)
@@ -441,7 +454,7 @@ async def analyze_weread_company_books(company_name: str, limit: int | None = No
                         target = detail.company_name
 
         if not target:
-            return []
+            return WeReadCompanyAnalysis(rows=[], warnings=warnings)
 
         target_ids = _target_company_ids_from_index(target)
         target_ids.update(
@@ -458,6 +471,7 @@ async def analyze_weread_company_books(company_name: str, limit: int | None = No
             max_books=max_books,
             seed_items=lookup.seed_items,
             target_ids=target_ids,
+            warnings=warnings,
         )
         results: list[WeReadBookResult] = []
         processed: set[str] = set()
@@ -541,10 +555,17 @@ async def analyze_weread_company_books(company_name: str, limit: int | None = No
                             client,
                             result.copyright_id,
                             max_books=max_books,
+                            warnings=warnings,
                         ),
                     )
 
-        return results
+        if len(results) < max_books and not _weread_api_key():
+            _append_warning(
+                warnings,
+                "未配置微信读书官方 WEREAD_API_KEY，版权方全量分页只能走公开页面、旧 Cookie 和本地缓存；如果微信读书 App 显示约 478 本，而这里明显更少，请在服务器配置官方 API Key 后再抓。",
+            )
+
+        return WeReadCompanyAnalysis(rows=results, warnings=warnings)
 
 
 async def fetch_search_result(client: httpx.AsyncClient, item: CatalogBook) -> WeReadBookResult:
@@ -670,6 +691,7 @@ async def _collect_company_book_candidates(
     max_books: int,
     seed_items: list[CatalogBook] | None = None,
     target_ids: set[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -690,11 +712,21 @@ async def _collect_company_book_candidates(
         await add_cards(seed_cards)
     await add_cards(_company_candidate_cards_from_cache(company_name, target_ids=target_ids or set(), max_books=max_books))
     await add_cards(
+        await _fetch_gateway_publisher_book_cards(
+            client,
+            company_name,
+            max_books=max_books,
+            from_book_id=_seed_from_book_id(seed_items or []),
+            warnings=warnings,
+        )
+    )
+    await add_cards(
         await _fetch_app_publisher_book_cards(
             client,
             company_name,
             max_books=max_books,
             from_book_id=_seed_from_book_id(seed_items or []),
+            warnings=warnings,
         )
     )
     await add_cards(await _fetch_publisher_book_cards(client, company_name, max_books=max_books))
@@ -771,12 +803,95 @@ async def _fetch_publisher_book_cards(
     return cards[:max_books]
 
 
+async def _fetch_gateway_publisher_book_cards(
+    client: httpx.AsyncClient,
+    keyword: str,
+    *,
+    max_books: int,
+    from_book_id: str | None = None,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    api_key = _weread_api_key()
+    keyword = _clean_text(keyword)
+    if not api_key or not keyword:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_idx = 0
+    page_size = min(20, max(1, max_books))
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": USER_AGENT,
+    }
+    for _ in range(80):
+        body: dict[str, Any] = {
+            "api_name": "/store/search",
+            "keyword": keyword,
+            "type": 8,
+            "maxIdx": max_idx,
+            "count": page_size,
+            "outer": 1,
+            "v": 2,
+            "skill_version": WEREAD_SKILL_VERSION,
+        }
+        if from_book_id:
+            body["fromBookId"] = from_book_id
+
+        response = await client.post(WEREAD_AGENT_GATEWAY, json=body, headers=headers)
+        if response.status_code in {401, 403}:
+            _append_warning(warnings, "微信读书官方 API Key 鉴权失败，已自动降级到旧 Cookie/公开搜索；请检查 WEREAD_API_KEY 是否完整或是否已重置。")
+            break
+        response.raise_for_status()
+        try:
+            raw_payload = response.json()
+        except json.JSONDecodeError:
+            _append_warning(warnings, "微信读书官方 API Key 网关返回了非 JSON 内容，已自动降级到旧 Cookie/公开搜索。")
+            break
+        if isinstance(raw_payload, dict):
+            errcode = _parse_int(raw_payload.get("errcode"))
+            if errcode not in (None, 0):
+                errmsg = _clean_text(str(raw_payload.get("errmsg") or raw_payload.get("errlog") or "未知错误"))
+                _append_warning(warnings, f"微信读书官方 API Key 网关返回错误：{errmsg}，已自动降级到旧 Cookie/公开搜索。")
+                break
+
+        payload = _unwrap_weread_gateway_payload(raw_payload)
+        page_cards = _parse_api_book_cards(payload)
+        if not page_cards:
+            break
+        before_count = len(cards)
+        for card in page_cards:
+            if not card.get("company_name"):
+                card["company_name"] = keyword
+            card.setdefault("source_kind", "agent_gateway_publisher")
+            key = _candidate_seen_key(card)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+            if len(cards) >= max_books:
+                break
+
+        if len(cards) >= max_books or not _payload_has_more(payload):
+            break
+        next_idx = _payload_next_max_idx(payload, page_cards, max_idx)
+        if next_idx <= max_idx:
+            next_idx = max_idx + max(1, len(page_cards))
+        if next_idx <= max_idx or len(cards) == before_count:
+            break
+        max_idx = next_idx
+    return cards[:max_books]
+
+
 async def _fetch_app_publisher_book_cards(
     client: httpx.AsyncClient,
     keyword: str,
     *,
     max_books: int,
     from_book_id: str | None = None,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     cookie = _weread_auth_cookie()
     keyword = _clean_text(keyword)
@@ -807,6 +922,10 @@ async def _fetch_app_publisher_book_cards(
 
         response = await client.get(f"{WEREAD_I_HOST}/store/search", params=params, headers=headers)
         if response.status_code in {401, 403}:
+            _append_warning(
+                warnings,
+                "旧微信读书 Cookie 已被 i.weread.qq.com 版权方分页接口拒绝（登录超时/无权限）。网页仍显示登录不代表 App 侧接口可用，已自动降级到公开搜索和本地缓存。",
+            )
             break
         response.raise_for_status()
         try:
@@ -864,6 +983,7 @@ async def _fetch_private_copyright_book_cards(
     copyright_id: str,
     *,
     max_books: int,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     cookie = _weread_auth_cookie()
     if not cookie or not copyright_id:
@@ -887,7 +1007,13 @@ async def _fetch_private_copyright_book_cards(
         payload: Any = None
         for url in urls:
             response = await client.get(url, headers=headers)
-            if response.status_code in {401, 403, 404}:
+            if response.status_code in {401, 403}:
+                _append_warning(
+                    warnings,
+                    "旧微信读书 Cookie 已被 i.weread.qq.com 版权方详情接口拒绝（登录超时/无权限）。后续只能保留已抓到的数据，并继续用公开搜索兜底。",
+                )
+                continue
+            if response.status_code == 404:
                 continue
             response.raise_for_status()
             try:
@@ -1100,7 +1226,34 @@ def _api_book_rows(payload: dict[str, Any]) -> list[Any]:
             value = data.get(key)
             if isinstance(value, list):
                 return value
+        nested_rows: list[Any] = []
+        for group in data.get("results") or []:
+            if isinstance(group, dict) and isinstance(group.get("books"), list):
+                nested_rows.extend(group["books"])
+        if nested_rows:
+            return nested_rows
+    rows: list[Any] = []
+    for group in payload.get("results") or []:
+        if isinstance(group, dict) and isinstance(group.get("books"), list):
+            rows.extend(group["books"])
+    if rows:
+        return rows
     return []
+
+
+def _unwrap_weread_gateway_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    for key in ("data", "result", "response", "payload"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(value, dict) and any(k in value for k in ("books", "bookInfos", "items", "list", "results", "hasMore")):
+            return value
+    return payload
 
 
 def _payload_has_more(payload: Any) -> bool:
@@ -1384,6 +1537,21 @@ def _weread_auth_cookie() -> str:
         or os.getenv("WEREAD_AUTH_COOKIE")
         or ""
     ).strip()
+
+
+def _weread_api_key() -> str:
+    return (
+        os.getenv("WEREAD_API_KEY")
+        or os.getenv("WEREAD_SKILL_API_KEY")
+        or ""
+    ).strip()
+
+
+def _append_warning(warnings: list[str] | None, message: str) -> None:
+    if warnings is None or not message:
+        return
+    if message not in warnings:
+        warnings.append(message)
 
 
 def _parse_search_cards(html_text: str) -> list[dict[str, str | None]]:

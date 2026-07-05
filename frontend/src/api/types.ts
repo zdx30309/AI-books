@@ -396,6 +396,7 @@ export interface WeReadAnalyzeResponse {
   total: number;
   matched: number;
   items: WeReadBookRow[];
+  warnings?: string[];
 }
 
 export interface WeReadCatalogItem {

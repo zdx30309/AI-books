@@ -360,6 +360,122 @@ def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch
     assert cards[0]["company_name"] == "\u4f73\u6da6\u4e92\u4f17"
 
 
+def test_fetch_gateway_publisher_book_cards_uses_agent_gateway_pagination(monkeypatch) -> None:
+    monkeypatch.setenv("WEREAD_API_KEY", "wrk-test-key")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def post(self, url, *, json=None, headers=None):
+            calls.append((url, dict(json or {}), dict(headers or {})))
+            if (json or {}).get("maxIdx") == 0:
+                return FakeResponse(
+                    {
+                        "errcode": 0,
+                        "data": {
+                            "books": [
+                                {
+                                    "bookInfo": {
+                                        "encodeId": "book-a",
+                                        "title": "天涯神贴智慧大全",
+                                        "author": "玄谷",
+                                        "newRating": 664,
+                                        "newRatingCount": 223,
+                                    },
+                                    "readingCount": 100,
+                                    "searchIdx": 5,
+                                }
+                            ],
+                            "hasMore": True,
+                        },
+                    }
+                )
+            return FakeResponse(
+                {
+                    "errcode": 0,
+                    "data": {
+                        "books": [
+                            {
+                                "bookInfo": {
+                                    "encodeId": "book-b",
+                                    "title": "孟姜女（经典版）",
+                                    "author": "张恨水",
+                                    "newRating": 950,
+                                    "newRatingCount": 34,
+                                },
+                                "readingCount": 200,
+                                "searchIdx": 9,
+                            }
+                        ],
+                        "hasMore": False,
+                    },
+                }
+            )
+
+    warnings: list[str] = []
+    cards = asyncio.run(
+        weread_tools._fetch_gateway_publisher_book_cards(
+            FakeClient(),
+            "佳润互众",
+            max_books=20,
+            from_book_id="seed-book-id",
+            warnings=warnings,
+        )
+    )
+
+    assert warnings == []
+    assert len(cards) == 2
+    assert [call[1]["maxIdx"] for call in calls] == [0, 5]
+    assert calls[0][0] == weread_tools.WEREAD_AGENT_GATEWAY
+    assert calls[0][1]["api_name"] == "/store/search"
+    assert calls[0][1]["type"] == 8
+    assert calls[0][1]["skill_version"] == weread_tools.WEREAD_SKILL_VERSION
+    assert calls[0][1]["fromBookId"] == "seed-book-id"
+    assert calls[0][2]["Authorization"] == "Bearer wrk-test-key"
+    assert cards[0]["source_kind"] == "agent_gateway_publisher"
+    assert cards[0]["company_name"] == "佳润互众"
+
+
+def test_fetch_app_publisher_book_cards_warns_when_cookie_is_rejected(monkeypatch) -> None:
+    monkeypatch.delenv("WEREAD_API_KEY", raising=False)
+    monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
+
+    class FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        async def get(self, url, *, params=None, headers=None):
+            return FakeResponse()
+
+    warnings: list[str] = []
+    cards = asyncio.run(
+        weread_tools._fetch_app_publisher_book_cards(
+            FakeClient(),
+            "佳润互众",
+            max_books=20,
+            warnings=warnings,
+        )
+    )
+
+    assert cards == []
+    assert warnings
+    assert "网页仍显示登录" in warnings[0]
+
+
 def test_analyze_weread_company_books_filters_noise_by_detail_company(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(weread_tools, "WEREAD_COMPANY_INDEX_PATH", tmp_path / "weread_company_index.json")
     monkeypatch.setattr(weread_tools, "_COMPANY_INDEX_CACHE", None)

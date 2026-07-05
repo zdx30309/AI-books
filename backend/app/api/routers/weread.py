@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
-    analyze_weread_company_books,
+    analyze_weread_company_books_report,
     analyze_weread_catalog,
     analyze_weread_books,
     build_weread_xlsx,
@@ -80,6 +80,7 @@ class WeReadAnalyzeResponse(BaseModel):
     total: int
     matched: int
     items: list[WeReadBookRow]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WeReadCatalogItem(BaseModel):
@@ -120,10 +121,10 @@ async def analyze_company_books(
     req: WeReadCompanyRequest,
     _: User = Depends(get_current_user),
 ) -> WeReadAnalyzeResponse:
-    rows = await analyze_weread_company_books(req.company_name, limit=req.max_books)
-    items = [WeReadBookRow(**row.as_dict()) for row in rows]
+    report = await analyze_weread_company_books_report(req.company_name, limit=req.max_books)
+    items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
     matched = sum(1 for item in items if item.status in {"matched", "partial"})
-    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items)
+    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)
 
 
 @router.post(
