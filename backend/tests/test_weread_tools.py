@@ -345,6 +345,59 @@ def test_parse_weread_capture_cards_decodes_base64_har_content() -> None:
     assert [card["title"] for card in cards] == ["孟姜女"]
 
 
+def test_parse_weread_capture_cards_from_store_search_har_pages() -> None:
+    payload = {
+        "sid": "search-session",
+        "results": [
+            {
+                "title": "ebooks",
+                "scopeCount": 2,
+                "books": [
+                    {
+                        "bookInfo": {
+                            "bookId": "book-1",
+                            "title": "Book One",
+                            "author": "Author A",
+                            "newRating": 885,
+                            "newRatingCount": 11,
+                        },
+                        "readingCount": 123,
+                        "searchIdx": 1,
+                    },
+                    {
+                        "bookInfo": {
+                            "bookId": "book-2",
+                            "title": "Book Two",
+                            "author": "Author B",
+                            "newRating": 800,
+                            "newRatingCount": 22,
+                        },
+                        "readingCount": 456,
+                        "searchIdx": 2,
+                    },
+                ],
+            }
+        ],
+    }
+    har = {
+        "log": {
+            "entries": [
+                {"request": {"url": "https://weread.qq.com/"}, "response": {"content": {"text": ""}}},
+                {
+                    "request": {"url": "https://weread.qq.com/api/store/search?keyword=x&scope=17"},
+                    "response": {"content": {"mimeType": "application/json", "text": json.dumps(payload)}},
+                },
+            ]
+        }
+    }
+
+    cards = weread_tools._parse_weread_capture_book_cards(json.dumps(har).encode("utf-8"))
+
+    assert [card["title"] for card in cards] == ["Book One", "Book Two"]
+    assert cards[0]["reading_count"] == "123人"
+    assert cards[1]["recommendation"] == 80.0
+
+
 def test_fetch_app_publisher_book_cards_uses_store_search_pagination(monkeypatch) -> None:
     monkeypatch.setenv("WEREAD_COOKIE", "wr-test-cookie")
     calls = []

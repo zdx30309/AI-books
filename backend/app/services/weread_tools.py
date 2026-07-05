@@ -1501,10 +1501,21 @@ def _parse_weread_capture_book_cards(
     payload = _capture_json_from_text(text)
     cards: list[dict[str, Any]] = []
     seen: set[str] = set()
+    used_har_responses = False
 
     if payload is not None:
-        _collect_capture_cards(payload, cards, seen, max_books=max_books)
-    if len(cards) < max_books:
+        har_response_texts = _iter_har_response_texts(payload)
+        used_har_responses = bool(har_response_texts)
+        for response_text in har_response_texts:
+            response_payload = _capture_json_from_text(response_text)
+            if response_payload is None:
+                continue
+            _collect_capture_cards(response_payload, cards, seen, max_books=max_books)
+            if len(cards) >= max_books:
+                break
+        if not har_response_texts:
+            _collect_capture_cards(payload, cards, seen, max_books=max_books)
+    if not used_har_responses and len(cards) < max_books:
         for nested_text in _iter_capture_json_texts(text):
             nested_payload = _capture_json_from_text(nested_text)
             if nested_payload is None:
@@ -1538,6 +1549,55 @@ def _capture_json_from_text(text: str) -> Any:
         except (TypeError, json.JSONDecodeError):
             return None
     return None
+
+
+def _iter_har_response_texts(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    log = payload.get("log")
+    if not isinstance(log, dict):
+        return []
+    entries = log.get("entries")
+    if not isinstance(entries, list):
+        return []
+
+    texts: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+        content = response.get("content") if isinstance(response.get("content"), dict) else {}
+        raw_text = content.get("text")
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            continue
+
+        nested_text = raw_text
+        if str(content.get("encoding") or "").lower() == "base64":
+            try:
+                nested_text = base64.b64decode(raw_text).decode("utf-8", errors="ignore")
+            except (ValueError, OSError):
+                nested_text = raw_text
+
+        url = str(request.get("url") or "")
+        mime_type = str(content.get("mimeType") or "")
+        searchable = f"{url}\n{mime_type}\n{nested_text[:5000]}"
+        if any(
+            marker in searchable
+            for marker in (
+                "/api/store/search",
+                "/web/shelf",
+                "/shelf/",
+                "/book/",
+                "bookInfo",
+                '"books"',
+                '"results"',
+                "totalResult",
+                "newResult",
+            )
+        ):
+            texts.append(nested_text)
+    return texts
 
 
 def _iter_capture_json_texts(text: str) -> list[str]:
