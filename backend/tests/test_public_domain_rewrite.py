@@ -36,18 +36,42 @@ def _source(title: str, seed: str = "山中旧事") -> PublicDomainSource:
     )
 
 
-def test_public_domain_rewrite_requires_two_or_three_sources(monkeypatch) -> None:
+def test_public_domain_rewrite_rejects_empty_sources(monkeypatch) -> None:
     monkeypatch.setattr(
         service,
         "deepseek_generate_text",
         lambda *args, **kwargs: pytest.fail("validation should happen before LLM call"),
     )
 
-    with pytest.raises(PublicDomainRewriteError, match="2 到 3"):
+    with pytest.raises(PublicDomainRewriteError, match="1 到 3"):
         rewrite_public_domain_fusion(
-            sources=[_source("只传一本")],
+            sources=[],
             public_domain_confirmed=True,
         )
+
+
+def test_public_domain_rewrite_accepts_single_source_with_mocked_llm(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_generate(prompt: str, **kwargs) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "@拟题\n窗边的风雨\n@核心问题\n孩子如何在孤独处境中重新组织自己的精神世界"
+        return "窗边的风雨\n\n雨打在窗上，屋里的人声隔着门传来。孩子把书摊在膝上，看见荒凉海岸和远处的船影，也看见自己被排除在热闹之外的处境。后来，她没有照着旧句子复述这一切，而是把那种冷、怕和不服气，重新写成一段新的内心历程。"
+
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+
+    result = rewrite_public_domain_fusion(
+        sources=[_source("来源一")],
+        target_title="窗边的风雨",
+        public_domain_confirmed=True,
+    )
+
+    assert result.title == "窗边的风雨"
+    assert len(result.source_reports) == 1
+    assert "单来源" in calls[0]
+    assert "单来源改写" in calls[1]
+    assert len(calls) == 2
 
 
 def test_public_domain_rewrite_requires_public_domain_confirmation(monkeypatch) -> None:

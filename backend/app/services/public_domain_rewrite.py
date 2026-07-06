@@ -1,8 +1,8 @@
-"""Public-domain multi-source fusion rewrite service.
+"""Public-domain rewrite/fusion service.
 
 This module is intentionally isolated from the existing short-form and epic
-novel workflows. It accepts two or three public-domain sources,
-builds a fusion blueprint, generates a new manuscript, and then runs a local
+novel workflows. It accepts one to three public-domain sources, builds a
+rewrite/fusion blueprint, generates a new manuscript, and then runs a local
 hard QA gate for obvious source-overlap risk.
 """
 from __future__ import annotations
@@ -110,9 +110,11 @@ def rewrite_public_domain_fusion(
     target_length = _auto_target_length(clean_sources, target_length)
     source_reports = tuple(_build_source_report(item) for item in clean_sources)
     source_briefs = "\n\n".join(_source_brief(item, idx + 1) for idx, item in enumerate(clean_sources))
+    source_count = len(clean_sources)
 
     blueprint_prompt = _build_blueprint_prompt(
         source_briefs=source_briefs,
+        source_count=source_count,
         target_title=target_title,
         target_direction=target_direction,
         target_length=target_length,
@@ -133,6 +135,7 @@ def rewrite_public_domain_fusion(
     manuscript_prompt = _build_manuscript_prompt(
         blueprint=blueprint,
         source_briefs=source_briefs,
+        source_count=source_count,
         target_title=target_title,
         target_direction=target_direction,
         target_length=target_length,
@@ -190,8 +193,8 @@ def _validate_sources(
     *,
     public_domain_confirmed: bool,
 ) -> list[PublicDomainSource]:
-    if len(sources) < 2 or len(sources) > 3:
-        raise PublicDomainRewriteError("必须提供 2 到 3 本公版/公共领域来源书稿。")
+    if len(sources) < 1 or len(sources) > 3:
+        raise PublicDomainRewriteError("必须提供 1 到 3 个公版/公共领域来源书稿。")
     if not public_domain_confirmed:
         raise PublicDomainRewriteError("请先确认所有输入均为公版或公共领域文本。")
 
@@ -301,23 +304,31 @@ def _sample_source(text: str) -> str:
 def _build_blueprint_prompt(
     *,
     source_briefs: str,
+    source_count: int,
     target_title: str | None,
     target_direction: str | None,
     target_length: int,
     output_style: str | None,
 ) -> str:
+    source_mode = (
+        "当前只有 1 个来源：这是单本/单篇公版改写，不要假装有多本融合。请从这一个来源中提炼人物处境、叙事功能、情绪逻辑、场景顺序和主题压力，重新组织成一篇新的成稿方案。"
+        if source_count == 1
+        else "当前有 2-3 个来源：必须让每个来源都进入方案，各自承担不同功能，不能只改写其中一本。"
+    )
     return f"""
-请基于下列 2-3 本公版/公共领域来源，设计一篇新的中文融合改写稿蓝图。
+来源数量：{source_count}
+来源模式：{source_mode}
+请基于下列 1-3 个公版/公共领域来源，设计一篇新的中文重构改写稿蓝图。
 
 目标标题：{target_title or "请自动拟定，标题必须服务于融合后的新稿"}
-目标方向：{target_direction or "不用等待人工指定，直接从 2-3 本来源中提炼最有价值的共通母题、人物困境、思想冲突和新表达角度"}
+目标方向：{target_direction or "不用等待人工指定，直接从来源中提炼最有价值的母题、人物困境、思想冲突和新表达角度"}
 篇幅原则：不设固定字数，优先把来源的关键精神、故事功能和思想关系讲完整；系统为你预留约 {target_length} 字输出空间
 风格倾向：{output_style or "成熟、自然、通顺，有新结构和新表达，不像资料拼贴，不像机械翻译"}
 
 硬性规则：
 1. 只能吸收公版来源中的主题、逻辑、人物机制、叙事功能和思想资源。
 2. 不得照搬任何来源的连续句子、段落、固定场景顺序、独特表达和专名组合。
-3. 必须让 2-3 个来源都进入方案，各自承担不同功能，不能只改写其中一本。
+3. 单来源时要做深度重构，完整吸收原文处境、情绪与结构后重新铺陈；多来源时必须让 2-3 个来源都进入方案，各自承担不同功能，不能只改写其中一本。
 4. 方案必须有新的中心问题、新的结构顺序、新的叙述逻辑和新的表达角度。
 5. 要发挥最大综合能力，主动判断哪些素材适合做主轴、哪些适合做反照、哪些适合做思想补强。
 6. 不要写成版权规避，不要写“洗稿”，只写原创融合重构蓝图。
@@ -339,17 +350,25 @@ def _build_manuscript_prompt(
     *,
     blueprint: str,
     source_briefs: str,
+    source_count: int,
     target_title: str | None,
     target_direction: str | None,
     target_length: int,
     output_style: str | None,
 ) -> str:
+    source_mode = (
+        "当前是单来源改写：请把原来源的完整信息吃透后重新铺陈，不要逐句改写，不要只改几个词，也不要强行编造第二来源。"
+        if source_count == 1
+        else "当前是多来源融合：必须把 2-3 个来源的思想、故事机制或论证逻辑融会贯通，形成新的完整表达。"
+    )
     return f"""
+来源数量：{source_count}
+来源模式：{source_mode}
 根据“融合蓝图”写出一篇新的中文成稿。
 
 成稿要求：
-- 这是一篇公版图书融合改写稿，不是逐句翻译，不是复述，不是资料拼贴。
-- 必须把 2-3 个来源的思想、故事机制或论证逻辑融会贯通，形成新的完整表达。
+- 这是一篇公版图书重构改写稿，不是逐句翻译，不是复述，不是资料拼贴。
+- {source_mode}
 - 可以保留公版作品中通用的思想资源和公共文化常识，但不能连续复刻来源句子。
 - 不要出现“本文/本稿/以下/作为AI/根据要求/参考来源”等说明语。
 - 不要输出蓝图、分析过程或版权声明，只输出成稿。

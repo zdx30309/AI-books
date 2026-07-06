@@ -8,9 +8,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
-from app.models import User
+from app.db.session import get_db
+from app.models import Chapter, Task, TaskStatus, User
 from app.services.public_domain_rewrite import (
     PublicDomainRewriteError,
     PublicDomainSource,
@@ -33,7 +35,7 @@ class PublicDomainSourcePayload(BaseModel):
 
 
 class PublicDomainRewriteRequest(BaseModel):
-    sources: list[PublicDomainSourcePayload] = Field(..., min_length=2, max_length=3)
+    sources: list[PublicDomainSourcePayload] = Field(..., min_length=1, max_length=3)
     target_title: str | None = Field(default=None, max_length=200)
     target_direction: str | None = Field(default=None, max_length=2000)
     target_length: int | None = Field(default=None, ge=800, le=20000)
@@ -49,6 +51,7 @@ class SourceReportPayload(BaseModel):
 
 
 class PublicDomainRewriteResponse(BaseModel):
+    task_id: str | None = None
     title: str
     manuscript: str
     blueprint: str
@@ -63,11 +66,12 @@ class PublicDomainRewriteResponse(BaseModel):
 @router.post(
     "/generate",
     response_model=PublicDomainRewriteResponse,
-    summary="2-3 本公版/公共领域图书融合改写",
+    summary="1-3 个公版/公共领域来源重构改写",
 )
 async def generate_public_domain_rewrite(
     req: PublicDomainRewriteRequest,
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> PublicDomainRewriteResponse:
     try:
         result = await asyncio.to_thread(
@@ -84,18 +88,20 @@ async def generate_public_domain_rewrite(
     except Exception as exc:
         logger.exception("Public-domain rewrite generation failed")
         raise HTTPException(status_code=502, detail=f"公版融合改写失败: {exc}") from exc
-    return _to_response(result)
+    task = _save_public_domain_bookshelf_item(db, _user, result)
+    return _to_response(result, task_id=str(task.id))
 
 
 @router.post(
     "/generate-from-files",
     response_model=PublicDomainRewriteResponse,
-    summary="上传 2-3 个 txt/md/docx/图片 文件并做公版融合改写",
+    summary="上传 1-3 个 txt/md/docx/图片 文件并做公版重构改写",
 )
 async def generate_public_domain_rewrite_from_files(
     files: list[UploadFile] = File(...),
     metadata_json: str = Form("{}"),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> PublicDomainRewriteResponse:
     try:
         metadata = json.loads(metadata_json or "{}")
@@ -104,8 +110,8 @@ async def generate_public_domain_rewrite_from_files(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"metadata_json 格式错误: {exc}") from exc
 
-    if len(files) < 2 or len(files) > 3:
-        raise HTTPException(status_code=400, detail="请上传 2 到 3 个来源文件。")
+    if len(files) < 1 or len(files) > 3:
+        raise HTTPException(status_code=400, detail="请上传 1 到 3 个来源文件。")
 
     source_meta = metadata.get("sources") or []
     if source_meta and not isinstance(source_meta, list):
@@ -134,7 +140,7 @@ async def generate_public_domain_rewrite_from_files(
         output_style=metadata.get("output_style"),
         public_domain_confirmed=bool(metadata.get("public_domain_confirmed")),
     )
-    return await generate_public_domain_rewrite(request, _user)
+    return await generate_public_domain_rewrite(request, _user, db)
 
 
 def _to_service_source(item: PublicDomainSourcePayload) -> PublicDomainSource:
@@ -147,8 +153,77 @@ def _to_service_source(item: PublicDomainSourcePayload) -> PublicDomainSource:
     )
 
 
-def _to_response(result) -> PublicDomainRewriteResponse:
+PUBLIC_DOMAIN_BOOKSHELF = "公版图书洗稿"
+
+
+def _save_public_domain_bookshelf_item(db: Session, user: User, result) -> Task:
+    markdown = _public_domain_result_markdown(result)
+    source_reports = [
+        {
+            "title": item.title,
+            "chars": item.chars,
+            "public_domain_basis": item.public_domain_basis,
+            "sampled_chars": item.sampled_chars,
+        }
+        for item in result.source_reports
+    ]
+    task = Task(
+        source_url="manual://public-domain-rewrite",
+        owner_id=user.id,
+        status=TaskStatus.COMPLETED,
+        progress=100,
+        current_step="已完成",
+        config={
+            "title": result.title,
+            "bookshelf": PUBLIC_DOMAIN_BOOKSHELF,
+            "category": "public_domain_rewrite",
+            "category_label": PUBLIC_DOMAIN_BOOKSHELF,
+            "markdown": markdown,
+            "markdown_chars": len(markdown),
+            "public_domain_rewrite": True,
+            "source_count": len(source_reports),
+            "source_reports": source_reports,
+            "warnings": list(result.warnings),
+            "status": result.status,
+            "quality_report": result.quality_report,
+            "quality_report_summary": result.quality_report[:2000],
+            "public_domain_blueprint": result.blueprint[:12000],
+            "cover_disabled": True,
+        },
+    )
+    chapter = Chapter(
+        task=task,
+        chapter_num=1,
+        title=(result.title or PUBLIC_DOMAIN_BOOKSHELF)[:512],
+        content=result.manuscript,
+        word_count=len(result.manuscript or ""),
+    )
+    try:
+        db.add(task)
+        db.add(chapter)
+        db.commit()
+        db.refresh(task)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to persist public-domain rewrite result")
+        raise HTTPException(status_code=500, detail="公版洗稿已生成，但写入书架失败。")
+    return task
+
+
+def _public_domain_result_markdown(result) -> str:
+    title = (result.title or PUBLIC_DOMAIN_BOOKSHELF).strip()
+    manuscript = (result.manuscript or "").strip()
+    return (
+        f"@最终书名\n{title}\n\n"
+        f"@最终简介\n由公版/公共领域来源重构生成的改写稿。\n\n"
+        f"@目录\n1. {title}\n\n"
+        f"@正文\n@1. {title}\n{manuscript}\n"
+    )
+
+
+def _to_response(result, task_id: str | None = None) -> PublicDomainRewriteResponse:
     return PublicDomainRewriteResponse(
+        task_id=task_id,
         title=result.title,
         manuscript=result.manuscript,
         blueprint=result.blueprint,

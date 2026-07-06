@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   BookOpenText,
@@ -39,7 +40,7 @@ function formatChars(value: string) {
 }
 
 export function PublicDomainRewrite() {
-  const [sources, setSources] = useState<SourceDraft[]>([emptySource(1), emptySource(2)]);
+  const [sources, setSources] = useState<SourceDraft[]>([emptySource(1)]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<PublicDomainRewriteResponse | null>(null);
@@ -50,7 +51,7 @@ export function PublicDomainRewrite() {
   );
   const fileMode = preparedSources.length > 0 && preparedSources.every((item) => item.file);
   const mixedMode = preparedSources.some((item) => item.file) && !fileMode;
-  const canSubmit = preparedSources.length >= 2 && preparedSources.length <= 3 && !mixedMode && !loading;
+  const canSubmit = preparedSources.length >= 1 && preparedSources.length <= 3 && !mixedMode && !loading;
 
   const updateSource = (index: number, patch: Partial<SourceDraft>) => {
     setSources((items) => items.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
@@ -61,7 +62,7 @@ export function PublicDomainRewrite() {
   };
 
   const removeSource = (index: number) => {
-    setSources((items) => (items.length <= 2 ? items : items.filter((_, idx) => idx !== index)));
+    setSources((items) => (items.length <= 1 ? items : items.filter((_, idx) => idx !== index)));
   };
 
   const submit = async () => {
@@ -71,7 +72,7 @@ export function PublicDomainRewrite() {
       setError(
         mixedMode
           ? "请统一使用文本模式或文件模式，不要在同一次生成里混合粘贴文本和上传文件。"
-          : "请输入 2 到 3 本公版图书。",
+          : "请输入 1 到 3 个公版/公共领域来源。",
       );
       return;
     }
@@ -112,7 +113,7 @@ export function PublicDomainRewrite() {
           </div>
           <h1 className="font-serif text-4xl text-warm-50">公版图书洗稿</h1>
           <p className="mt-3 max-w-3xl text-sm leading-7 text-warm-300">
-            直接输入 2 到 3 本公版书稿，系统会自动判断融合方向、重构结构和成稿表达。
+            直接输入 1 到 3 个公版/公共领域书稿，单篇会做深度重构，多篇会自动判断融合方向、重构结构和成稿表达。
           </p>
         </div>
         <button
@@ -142,7 +143,7 @@ export function PublicDomainRewrite() {
                     </div>
                   </div>
                 </div>
-                {sources.length > 2 && (
+                {sources.length > 1 && (
                   <button
                     type="button"
                     onClick={() => removeSource(index)}
@@ -189,7 +190,7 @@ export function PublicDomainRewrite() {
             className="btn-ghost inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="h-4 w-4" />
-            添加第三本公版图书
+            添加一本公版图书
           </button>
         </div>
 
@@ -212,19 +213,27 @@ export function PublicDomainRewrite() {
                   {result?.title || (loading ? "正在洗稿" : "等待执行")}
                 </h2>
               </div>
-              <button
-                type="button"
-                onClick={copyResult}
-                disabled={!result?.manuscript}
-                className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <ClipboardCopy className="h-4 w-4" />
-                复制
-              </button>
+              <div className="flex items-center gap-2">
+                {result?.task_id && (
+                  <Link to={`/book/${result.task_id}`} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm">
+                    <BookOpenText className="h-4 w-4" />
+                    打开书稿
+                  </Link>
+                )}
+                <button
+                  type="button"
+                  onClick={copyResult}
+                  disabled={!result?.manuscript}
+                  className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ClipboardCopy className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
             </div>
 
             <pre className="min-h-[560px] whitespace-pre-wrap break-words rounded-lg border border-gold-500/10 bg-base-950/60 p-5 text-sm leading-7 text-warm-100">
-              {loading ? "模型正在自动融合 2-3 本公版图书并生成成稿..." : result?.manuscript || "这里会直接显示最终成稿。"}
+              {loading ? "模型正在处理 1-3 个公版来源并生成成稿..." : result?.manuscript || "这里会直接显示最终成稿。"}
             </pre>
           </div>
         </aside>

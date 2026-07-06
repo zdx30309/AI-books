@@ -324,6 +324,7 @@ export interface PublicDomainSourceReport {
 }
 
 export interface PublicDomainRewriteResponse {
+  task_id?: string | null;
   title: string;
   manuscript: string;
   blueprint: string;
