@@ -69,8 +69,11 @@ def test_public_domain_rewrite_accepts_single_source_with_mocked_llm(monkeypatch
 
     assert result.title == "窗边的风雨"
     assert len(result.source_reports) == 1
-    assert "单来源" in calls[0]
-    assert "单来源改写" in calls[1]
+    assert "单本/单篇公版同质改写" in calls[0]
+    assert "实质不变、表达换形" in calls[0]
+    assert "单来源同稿改写" in calls[1]
+    assert "小说放进来，输出仍然必须是那本小说" in calls[1]
+    assert "新的中心问题" not in calls[0]
     assert len(calls) == 2
 
 
@@ -128,6 +131,9 @@ def test_public_domain_rewrite_generates_with_mocked_llm(monkeypatch) -> None:
     assert result.title == "风雪归途"
     assert result.source_reports[0].title == "来源一"
     assert "融合蓝图" not in result.manuscript
+    assert "多来源同质编排" in calls[1]
+    assert "不能创作另一本书" in calls[1]
+    assert "创新重构" not in calls[0]
     assert len(calls) == 2
 
 

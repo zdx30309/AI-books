@@ -465,18 +465,36 @@ def test_classical_novel_style_prompt_uses_novel_polish_rules() -> None:
     assert meta["label"] == "古文白话小说风格版"
     assert "纯白话小说风格稿" in writer
     assert "小说风格版专属工作流" in writer
-    assert "准确白话底稿" in writer
-    assert "小说化润色" in writer
+    assert "原文理解" in writer
+    assert "故事化白话改写" in writer
+    assert "小故事式白话叙事" in writer
     assert "不得凭空添加新桥段" in writer
     assert "最终只输出纯白话成稿" in writer
     assert "小说风格版" in source_pack
-    assert "先准确翻译原文，再对翻译完的白话稿做小说风格润色" in source_pack
+    assert "不是把文言文逐句翻成大白话" in source_pack
+    assert "忠于原文的小故事式白话叙事" in source_pack
     assert "小说风格版段落硬规则" in source_pack
     assert "可以把同一个 P 编号对应的白话内容拆成两个或多个自然段" in source_pack
     for stage_prompt in (polish, refine, formatter):
         assert "古文白话小说风格版锁定规则" in stage_prompt
         assert "先保证字词、主语、动作、因果和时序准确" in stage_prompt
+        assert "普通直译" in stage_prompt
         assert "不得新增原文没有的人物" in stage_prompt
+
+
+def test_classical_novel_style_segment_writer_uses_story_rewrite_mode() -> None:
+    prompt = content_engine._classical_segment_writer_prompt(
+        segment_text="其人夜入古寺，闻壁间有声。",
+        all_lines=["其人夜入古寺，闻壁间有声。"],
+        start_index=1,
+        variant=classical_variant_for_category(CLASSICAL_NOVEL_STYLE_CATEGORY),
+        original_title="志怪录",
+    )
+
+    assert "小故事式白话叙事" in prompt
+    assert "不能只是逐字逐句翻译成大白话" in prompt
+    assert "小说化只能发生在表达层" in prompt
+    assert "逐段完整白话化" not in prompt
 
 
 def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
