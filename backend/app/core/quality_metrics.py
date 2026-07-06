@@ -468,6 +468,12 @@ _SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
         r"读起来(?:很|非常|特别|也|并不|不)?好听"
     ),
 }
+_CLASSICAL_TRANSLATION_HARD_ERROR_RULES: dict[str, str] = {
+    "古文误译硬伤：便觉等感知词不应译成导致": (
+        r"re:(?:导致|造成|引发|致使|酿成)"
+        r"[^。！？；\n]{0,40}(?:百行皆非|皆非|全都错|全错|都错|所有行为|一切行为)"
+    ),
+}
 _PROMPT_RESIDUAL_RULES: dict[str, str] = {
     "输出要求残留": r"re:^(?:输出要求|任务|要求)[:：]",
     "提示词残留": r"re:(?:只输出成稿|不要解释|不要输出分析|以下是根据|我将为你(?:生成|整理|撰写|分析|改写|输出))",
@@ -743,6 +749,11 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
         hits = _detect(markdown, pattern)
         if hits:
             results[name] = hits
+    if category_key in _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES or category_key == "classical_chinese":
+        for name, pattern in _CLASSICAL_TRANSLATION_HARD_ERROR_RULES.items():
+            hits = _detect(markdown, pattern)
+            if hits:
+                results[name] = hits
     merge(_detect_format_noise(markdown, category=category_key))
     merge(_detect_inline_pseudo_subheading(markdown, category=category_key))
     merge(_detect_empty_front_sections(markdown))

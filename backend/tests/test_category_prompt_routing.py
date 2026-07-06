@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 
+from app.core.quality_metrics import detect_final_hard_errors
 from app.prompts.goal_driven_templates import (
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
@@ -463,7 +464,9 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "不再参考《菜根谭》类全注全译" in writer
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
-    assert "输出必须回到古文原文和古汉语词典" in writer
+    assert "权威参照译本和古汉语词典三方校准" in writer
+    assert "菜根谭-中华书局参照范本" in writer
+    assert "便觉百行皆非" in writer
     assert "不得输出【注释】【译文】【点评】【原文定位】" in writer
     assert "知名译本参照" in source_pack
     assert "参考已有译本或白话稿时" in source_pack
@@ -471,6 +474,8 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "【P0001】（原文）原文内容" in source_pack
     assert "（翻译）现代白话译文" in source_pack
     assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
+    assert "以该权威译本的断句、关键字词释义" in source_pack
+    assert "便觉百行皆非" in source_pack
     assert "【注释】【译文】【点评】必须单独成行" not in source_pack
 
 
@@ -494,9 +499,11 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
     assert "校准释义、术语、断句、称谓、语气密度和关键字词准确性" in with_reference
+    assert "菜根谭-中华书局参照范本" in with_reference
     assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
+    assert "便觉、始觉、方觉" in with_reference
 
 
 def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
@@ -527,6 +534,7 @@ def test_classical_reference_notes_match_current_source_instead_of_head_tail() -
     )
 
     assert "当前原文对应参考译文召回" in excerpt
+    assert "以这些片段的释义和断句为第一依据" in excerpt
     assert "精金美玉" in excerpt
     assert "完美无瑕的人格品行" in excerpt
     assert "这是一段很长但不相关的参考说明" not in excerpt
@@ -1802,14 +1810,25 @@ def test_classical_chinese_detects_structure_and_known_translation_issues() -> N
         expected_count=3,
     )
     mistranslation = content_engine._classical_translation_issues(  # noqa: SLF001
-        "家人捉双卫来寻生。\n婢子不宜好相识。",
-        "@正文\n【P0001】家里的仆人带着两个侍卫来找他。\n【P0002】这丫头，确实不该结交什么好相识。",
+        "家人捉双卫来寻生。\n婢子不宜好相识。\n一念错，便觉百行皆非。",
+        "@正文\n【P0001】家里的仆人带着两个侍卫来找他。\n【P0002】这丫头，确实不该结交什么好相识。\n【P0003】一念之差，往往会导致所有行为都变成错误。",
+    )
+    clean_translation = content_engine._classical_translation_issues(  # noqa: SLF001
+        "一念错，便觉百行皆非。",
+        "@正文\n【P0001】一念起错，便会觉得许多行为都不对。",
+    )
+    hard_errors = detect_final_hard_errors(
+        "@正文\n【P0001】（原文）一念错，便觉百行皆非。\n（翻译）一念之差，往往会导致所有行为都变成错误。",
+        category=CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     )
 
     assert any("缺少原文段落编号" in issue for issue in missing)
     assert any("Markdown 伪小标题" in issue for issue in missing)
     assert any("双卫" in issue for issue in mistranslation)
     assert any("婢子不宜好相识" in issue for issue in mistranslation)
+    assert any("便觉" in issue for issue in mistranslation)
+    assert not clean_translation
+    assert any("便觉" in name for name in hard_errors)
 
 
 def test_classical_paragraph_markers_support_100w_scale_counts() -> None:
