@@ -35,7 +35,7 @@ class PublicDomainRewriteRequest(BaseModel):
     sources: list[PublicDomainSourcePayload] = Field(..., min_length=2, max_length=3)
     target_title: str | None = Field(default=None, max_length=200)
     target_direction: str | None = Field(default=None, max_length=2000)
-    target_length: int = Field(default=4000, ge=800, le=20000)
+    target_length: int | None = Field(default=None, ge=800, le=20000)
     output_style: str | None = Field(default=None, max_length=1000)
     public_domain_confirmed: bool = False
 
@@ -129,7 +129,7 @@ async def generate_public_domain_rewrite_from_files(
         sources=sources,
         target_title=metadata.get("target_title"),
         target_direction=metadata.get("target_direction"),
-        target_length=int(metadata.get("target_length") or 4000),
+        target_length=_optional_int(metadata.get("target_length")),
         output_style=metadata.get("output_style"),
         public_domain_confirmed=bool(metadata.get("public_domain_confirmed")),
     )
@@ -166,6 +166,15 @@ def _to_response(result) -> PublicDomainRewriteResponse:
         source_count=len(result.source_reports),
         manuscript_chars=len(result.manuscript or ""),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="target_length 必须是数字。") from exc
 
 
 async def _read_uploaded_text(file: UploadFile) -> str:

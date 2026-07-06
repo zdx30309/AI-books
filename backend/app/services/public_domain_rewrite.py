@@ -99,7 +99,7 @@ def rewrite_public_domain_fusion(
     sources: Iterable[PublicDomainSource],
     target_title: str | None = None,
     target_direction: str | None = None,
-    target_length: int = 4000,
+    target_length: int | None = None,
     output_style: str | None = None,
     public_domain_confirmed: bool = False,
 ) -> PublicDomainFusionResult:
@@ -107,7 +107,7 @@ def rewrite_public_domain_fusion(
         list(sources),
         public_domain_confirmed=public_domain_confirmed,
     )
-    target_length = max(800, min(int(target_length or 4000), 20_000))
+    target_length = _auto_target_length(clean_sources, target_length)
     source_reports = tuple(_build_source_report(item) for item in clean_sources)
     source_briefs = "\n\n".join(_source_brief(item, idx + 1) for idx, item in enumerate(clean_sources))
 
@@ -207,11 +207,6 @@ def _validate_sources(
             text = text[:MAX_SOURCE_CHARS]
 
         rights_note = (item.rights_note or "").strip()
-        basis = _public_domain_basis(item, rights_note)
-        if not basis:
-            raise PublicDomainRewriteError(
-                f"《{title}》缺少明确的公版/公共领域依据。请填写出版年份或来源说明。"
-            )
         lowered_text = text.lower()
         if any(marker in lowered_text for marker in _COPYRIGHT_MARKERS):
             raise PublicDomainRewriteError(
@@ -242,7 +237,7 @@ def _build_source_report(item: PublicDomainSource) -> SourceReport:
     return SourceReport(
         title=item.title,
         chars=len(item.text or ""),
-        public_domain_basis=_public_domain_basis(item, item.rights_note or ""),
+        public_domain_basis=_public_domain_basis(item, item.rights_note or "") or "用户确认公版/公共领域",
         sampled_chars=len(_sample_source(item.text)),
     )
 
@@ -314,17 +309,18 @@ def _build_blueprint_prompt(
     return f"""
 请基于下列 2-3 本公版/公共领域来源，设计一篇新的中文融合改写稿蓝图。
 
-目标标题：{target_title or "请自行拟定"}
-目标方向：{target_direction or "从来源中提炼共同问题、冲突、人物处境和思想价值，写成新的完整稿件"}
-目标长度：约 {target_length} 字，可按表达完整度自然浮动
-风格倾向：{output_style or "自然、连贯、有知识密度，有明确新结构，不像机械翻译或资料拼贴"}
+目标标题：{target_title or "请自动拟定，标题必须服务于融合后的新稿"}
+目标方向：{target_direction or "不用等待人工指定，直接从 2-3 本来源中提炼最有价值的共通母题、人物困境、思想冲突和新表达角度"}
+篇幅原则：不设固定字数，优先把来源的关键精神、故事功能和思想关系讲完整；系统为你预留约 {target_length} 字输出空间
+风格倾向：{output_style or "成熟、自然、通顺，有新结构和新表达，不像资料拼贴，不像机械翻译"}
 
 硬性规则：
 1. 只能吸收公版来源中的主题、逻辑、人物机制、叙事功能和思想资源。
 2. 不得照搬任何来源的连续句子、段落、固定场景顺序、独特表达和专名组合。
 3. 必须让 2-3 个来源都进入方案，各自承担不同功能，不能只改写其中一本。
-4. 方案必须有新的中心问题、新的结构顺序和新的表达角度。
-5. 不要写成版权规避，不要写“洗稿”，只写原创融合重构蓝图。
+4. 方案必须有新的中心问题、新的结构顺序、新的叙述逻辑和新的表达角度。
+5. 要发挥最大综合能力，主动判断哪些素材适合做主轴、哪些适合做反照、哪些适合做思想补强。
+6. 不要写成版权规避，不要写“洗稿”，只写原创融合重构蓝图。
 
 请按以下格式输出：
 @拟题
@@ -358,7 +354,7 @@ def _build_manuscript_prompt(
 - 不要出现“本文/本稿/以下/作为AI/根据要求/参考来源”等说明语。
 - 不要输出蓝图、分析过程或版权声明，只输出成稿。
 - 段落要舒展，表达要自然，结构清楚，读起来像一篇真正完成的文章。
-- 目标长度约 {target_length} 字，优先保证表达完整，不为了凑字硬扩写。
+- 不设固定字数，优先保证表达完整；系统为你预留约 {target_length} 字输出空间，不要为了短而压缩核心内容，也不要为了长而空转。
 
 目标标题：{target_title or "请根据成稿自然拟题"}
 目标方向：{target_direction or "融合来源的核心矛盾和思想价值，写成新的完整稿件"}
@@ -512,6 +508,15 @@ def _pick_title(target_title: str | None, manuscript: str) -> str:
         if clean and len(clean) <= 40:
             return clean
     return "公版融合改写稿"
+
+
+def _auto_target_length(sources: list[PublicDomainSource], requested: int | None) -> int:
+    if requested and int(requested) > 0:
+        return max(1500, min(int(requested), 20_000))
+    source_chars = sum(len(item.text or "") for item in sources)
+    if source_chars <= 0:
+        return 6000
+    return max(5000, min(12_000, source_chars // 8))
 
 
 def _tokens_for_target(target_length: int) -> int:
