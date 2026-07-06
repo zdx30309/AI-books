@@ -448,6 +448,9 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     meta = get_category_meta(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
     prompts = get_prompts(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
     writer = prompts["full_book_writer"]
+    polish = prompts["gemini_fast_polish"]
+    refine = prompts["gemini_fast_refine"]
+    formatter = prompts["final_book_format"]
     source_pack = build_classical_prompt_source(
         "子曰：学而时习之，不亦说乎。",
         variant=classical_variant_for_category(CLASSICAL_REFERENCE_REWRITE_CATEGORY),
@@ -477,6 +480,11 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "以该权威译本的断句、关键字词释义" in source_pack
     assert "便觉百行皆非" in source_pack
     assert "【注释】【译文】【点评】必须单独成行" not in source_pack
+    for stage_prompt in (polish, refine, formatter):
+        assert "古文白话参照译写版语义锁" in stage_prompt
+        assert "不得重新翻译古文" in stage_prompt
+        assert "古汉语词典只用于核对和补足" in stage_prompt
+        assert "便觉、始觉、方觉" in stage_prompt
 
 
 def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> None:
@@ -503,6 +511,7 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
+    assert "权威译本方向，再用古汉语词典补缺" in with_reference
     assert "便觉、始觉、方觉" in with_reference
 
 
@@ -535,6 +544,7 @@ def test_classical_reference_notes_match_current_source_instead_of_head_tail() -
 
     assert "当前原文对应参考译文召回" in excerpt
     assert "以这些片段的释义和断句为第一依据" in excerpt
+    assert "权威释义复写" in excerpt
     assert "精金美玉" in excerpt
     assert "完美无瑕的人格品行" in excerpt
     assert "这是一段很长但不相关的参考说明" not in excerpt

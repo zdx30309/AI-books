@@ -1491,6 +1491,31 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 """
 
 
+CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT = """【古文白话参照译写版语义锁】
+- 本稿的翻译段已经按中华书局或用户指定权威参照译本校准。你现在只能做语言顺滑、标点整理、轻微去翻译腔和格式保护；不得重新翻译古文，不得自行重断句，不得自行改义项。
+- 中华书局对应译文覆盖到的地方，断句、关键字词释义、术语方向、主谓宾关系、比喻方向、承接关系、语气轻重都按中华书局为第一依据。古汉语词典只用于核对和补足中华书局未覆盖或拿不准的字词，不得推翻已命中的中华书局释义。
+- 严禁为了顺口把并列改成因果、把感知改成结果、把条件改成结论、把比喻改成事实、把修身判断改成现代鸡汤。
+- “便、乃、遂、始、方、则、即、须、假、行、觉、见、知、识、容、非、是”等虚词、承接词、判断词和古今异义词不得按现代字面义硬改；拿不准时保留现有译法或按古汉语词典补缺。
+- “便觉、始觉、方觉、乃觉、忽觉”里的“觉”按“觉得、感到、发觉”处理，不得译成“导致、造成、引发、致使”。
+- 不得新增注释、点评、赏析、解释表、译者按或圈号说明；最终仍然只保留“（原文）/（翻译）”成对段落。
+- 可以让句子更自然，但不能改变原稿已经对齐好的意思。若一句话语义拿不准，宁可少改，不要自作聪明。
+"""
+
+
+CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_POLISH_PROMPT = (
+    CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+)
+
+
+CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_REFINE_PROMPT = (
+    CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+)
+
+
 CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT = """【古文白话专属保护】
 - @正文 中的【P0001】、【P0002】这类内部段落编号必须逐字保留，不能删除、改号、跳号、重号或调换顺序；这些编号由系统最终清理，不属于你要处理的格式。
 - 如果正文采用“（原文）/（翻译）”穿插结构，必须保留原文段和翻译段的相邻关系；不得删除“（原文）”“（翻译）”标注，不得把原文和翻译合并成一段。
@@ -1505,6 +1530,20 @@ CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT = """【古文白话专属保护】
 CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.replace(
     "\n【文本】",
     f"\n\n{CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT}\n【文本】",
+    1,
+)
+
+
+CLASSICAL_REFERENCE_REWRITE_FORMAT_PROTECTION_PROMPT = (
+    CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+)
+
+
+CLASSICAL_REFERENCE_REWRITE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.replace(
+    "\n【文本】",
+    f"\n\n{CLASSICAL_REFERENCE_REWRITE_FORMAT_PROTECTION_PROMPT}\n【文本】",
     1,
 )
 
@@ -1951,9 +1990,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     ),
     "classical_chinese_reference_rewrite": _prompt_set(
         CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT,
-        polish=CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT,
-        refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
-        formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
+        polish=CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_POLISH_PROMPT,
+        refine=CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_REFERENCE_REWRITE_FINAL_BOOK_FORMAT_PROMPT,
     ),
     "comic_series": _prompt_set(
         COMIC_SERIES_FULL_BOOK_WRITER_PROMPT,
