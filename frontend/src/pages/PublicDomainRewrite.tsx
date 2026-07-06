@@ -164,13 +164,13 @@ export function PublicDomainRewrite() {
               <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gold-500/25 bg-base-900/45 px-4 py-5 text-center text-sm text-warm-300 transition hover:border-gold-300/45 hover:text-warm-100">
                 <input
                   type="file"
-                  accept=".txt,.md,.markdown,.docx"
+                  accept=".txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.webp,.bmp,image/png,image/jpeg,image/webp,image/bmp"
                   className="hidden"
                   onChange={(event) => updateSource(index, { file: event.target.files?.[0] ?? null })}
                 />
                 <UploadCloud className="mb-2 h-5 w-5 text-gold-200" />
-                <span className="text-gold-200">{source.file ? source.file.name : "可上传 txt / md / docx"}</span>
-                <span className="mt-1 text-xs text-warm-500">也可以不上传，直接在下方粘贴全文。</span>
+                <span className="text-gold-200">{source.file ? source.file.name : "可上传 txt / md / docx / 图片"}</span>
+                <span className="mt-1 text-xs text-warm-500">图片会先 OCR 成文本；也可以不上传，直接在下方粘贴全文。</span>
               </label>
 
               <textarea

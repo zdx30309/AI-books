@@ -208,6 +208,36 @@ def test_final_hard_error_gate_allows_classical_reference_original_translation_p
     assert not hits
 
 
+def test_final_hard_error_gate_detects_classical_reference_stiff_direct_translation() -> None:
+    markdown = """@最终书名
+菜根谭（白话版）
+@正文
+@1. 菜根谭
+（原文）欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。
+（翻译）想要磨炼出如精金美玉般纯粹的人品，定要经过烈火般的煅烧；想要建立惊天动地的功业，必须像脚踩薄冰一样，谨慎地走过险境。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
+
+    assert hits["古文参照译写硬伤：精金美玉句停留在直译腔"]
+
+
+def test_final_hard_error_gate_allows_classical_reference_plain_modern_rewrite() -> None:
+    markdown = """@最终书名
+菜根谭（白话版）
+@正文
+@1. 菜根谭
+（原文）欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。
+（翻译）一个人要想拥有真正过硬的好品格，就必须在现实的严酷考验中不断捶打自己；要想建立了不起的功业，就必须在如履薄冰的压力下，踏踏实实走好每一步，熬过所有的磨难。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
+
+    assert "古文参照译写硬伤：精金美玉句停留在直译腔" not in hits
+    assert "古文参照译写硬伤：古典意象未转成大白话" not in hits
+    assert not hits
+
+
 def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
     chapters: list[str] = []
     for index in range(1, 31):

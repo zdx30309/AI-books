@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     FINANCE_WEB_SEARCH_MODEL: str = ""
     FINANCE_WEB_SEARCH_TIMEOUT_SECONDS: int = 240
     FINANCE_WEB_SEARCH_CONTEXT_SIZE: str = "medium"
+    OPENAI_OCR_MODEL: str = ""
+    OPENAI_OCR_MAX_OUTPUT_TOKENS: int = 5000
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False

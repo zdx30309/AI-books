@@ -474,6 +474,15 @@ _CLASSICAL_TRANSLATION_HARD_ERROR_RULES: dict[str, str] = {
         r"[^。！？；\n]{0,40}(?:百行皆非|皆非|全都错|全错|都错|所有行为|一切行为)"
     ),
 }
+_CLASSICAL_REFERENCE_DIRECT_TRANSLATION_RULES: dict[str, str] = {
+    "古文参照译写硬伤：精金美玉句停留在直译腔": (
+        r"re:(?:如精金美玉般纯粹的人品|纯粹的人品[^。！？；\n]{0,24}烈火般的煅烧|"
+        r"惊天动地的功业[^。！？；\n]{0,40}脚踩薄冰|像脚踩薄冰一样[^。！？；\n]{0,40}走过险境)"
+    ),
+    "古文参照译写硬伤：古典意象未转成大白话": (
+        r"re:(?:磨炼出如精金美玉|经过烈火般的煅烧|建立惊天动地的功业|谨慎地走过险境)"
+    ),
+}
 _PROMPT_RESIDUAL_RULES: dict[str, str] = {
     "输出要求残留": r"re:^(?:输出要求|任务|要求)[:：]",
     "提示词残留": r"re:(?:只输出成稿|不要解释|不要输出分析|以下是根据|我将为你(?:生成|整理|撰写|分析|改写|输出))",
@@ -751,6 +760,11 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
             results[name] = hits
     if category_key in _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES or category_key == "classical_chinese":
         for name, pattern in _CLASSICAL_TRANSLATION_HARD_ERROR_RULES.items():
+            hits = _detect(markdown, pattern)
+            if hits:
+                results[name] = hits
+    if category_key == "classical_chinese_reference_rewrite":
+        for name, pattern in _CLASSICAL_REFERENCE_DIRECT_TRANSLATION_RULES.items():
             hits = _detect(markdown, pattern)
             if hits:
                 results[name] = hits

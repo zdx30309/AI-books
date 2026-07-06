@@ -302,6 +302,7 @@ def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories(
         "healing_comic",
         "classical_chinese",
         "classical_chinese_interleaved",
+        "classical_chinese_novel_style",
         "classical_chinese_reference_rewrite",
     }
 

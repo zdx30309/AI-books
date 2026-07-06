@@ -1,7 +1,18 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
+import io
+import sys
+from pathlib import Path
 
+import pytest
+from fastapi import UploadFile
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.api.routers import public_domain_rewrite as router
 from app.services import public_domain_rewrite as service
 from app.services.public_domain_rewrite import (
     PublicDomainRewriteError,
@@ -102,3 +113,19 @@ def test_overlap_issue_flags_exact_source_copy() -> None:
 
     assert issue is not None
     assert issue.ratio >= service.OVERLAP_RATIO_BLOCK
+
+
+def test_generate_from_files_reads_supported_images_with_ocr(monkeypatch) -> None:
+    calls: list[tuple[bytes, str]] = []
+
+    def fake_ocr(content: bytes, *, filename: str = "") -> str:
+        calls.append((content, filename))
+        return "第一章\n这是图片 OCR 出来的公版正文。"
+
+    monkeypatch.setattr(router, "ocr_image_bytes", fake_ocr)
+
+    upload = UploadFile(filename="source.png", file=io.BytesIO(b"image-bytes"))
+    text = asyncio.run(router._read_uploaded_text(upload))  # noqa: SLF001
+
+    assert "图片 OCR" in text
+    assert calls == [(b"image-bytes", "source.png")]

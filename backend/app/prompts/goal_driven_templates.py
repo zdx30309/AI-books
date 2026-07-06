@@ -322,6 +322,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "classical_chinese_novel_style",
+        "label": "古文白话小说风格版",
+        "core_feature": "先准确白话化，再做小说风格润色，让叙事、动作、对白和氛围更可读",
+        "directions": "古代小说、史传、志怪、笔记、故事性古文、纯白话小说化润色",
+        "prompt_status": "ready",
+    },
+    {
         "id": "buddhist_scripture_story",
         "label": "佛经白话",
         "core_feature": "把佛经经文译成自然连贯的白话故事稿，忠于原文讲述和道理",
@@ -338,7 +345,7 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "classical_chinese_reference_rewrite",
         "label": "古文白话（参照译写版）",
-        "core_feature": "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话",
+        "core_feature": "参考已有译文的释义和术语，结合古汉语词典，重新写成更大白话一点的自然白话",
         "directions": "古文原文、已有白话译文参照、知名译本参照、古汉语词典校义、长篇古籍白话化",
         "prompt_status": "ready",
     },
@@ -1313,12 +1320,35 @@ CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT = CLASSICAL_CHINESE_FULL_B
 )
 
 
+CLASSICAL_CHINESE_NOVEL_STYLE_FULL_BOOK_WRITER_PROMPT = "当前分类：古文白话小说风格版\n\n" + CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT.replace(
+    "任务：根据用户粘贴的原文和系统提供的细分方向、分类翻译要求、古汉语词典摘录，直接生成一份白话加工稿。这个题材不处理视频链接，不调用轻抖文案解析。",
+    "任务：根据用户粘贴的古文原文、系统提供的细分方向、分类翻译要求和古汉语词典摘录，生成一份纯白话小说风格稿。这个题材不处理视频链接，不调用轻抖文案解析。",
+).replace(
+    "- @正文 的段落必须和原文段落一一对应：原文第几段，白话正文就第几段。不要强制分段，不要合并原文段落，不要拆散原文段落，不要重排段落顺序。",
+    "- @正文 不穿插原文，只输出白话小说风格正文。必须按原文顺序覆盖全部内容，不漏段、不跳剧情、不重排事件；可在不遗漏信息的前提下按阅读节奏拆段，让正文更像自然小说。",
+).replace(
+    "- 白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。",
+    "- 白话加工必须先忠实翻译，再做小说风格润色；允许调整用词、语序、段落节奏、对白口吻和动作承接，让故事可读性更高，但不得新增原文没有的人物、事件、地点、冲突、结局或观点。",
+) + """
+
+【小说风格版专属工作流】
+- 内部必须先做“准确白话底稿”：根据原文和古汉语词典确定字词、主语、动作、因果和时序，不能望文生义。
+- 在准确白话底稿基础上再做“小说化润色”：让叙事更顺，动作更清楚，对白更自然，人物反应更连贯，场景氛围更有画面感。
+- 小说化不是改剧情。只允许补足原文已经包含或明确暗示的承接、指代、动作方向和心理反应；不得凭空添加新桥段、新冲突、新人物关系或现代设定。
+- 如果原文是史传、笔记、志怪或古代小说，保留时代气息和人物分寸；语言白话、好读，但不要写成现代爽文、玄幻网文、影视解说或营销口播。
+- 对白要像人物在当时处境里会说的话：更短、更顺、更有人味，但不能换成现代网络腔。
+- 场景描写点到为止，只服务于原文已经有的情境；不要为了“小说感”扩写无关景物。
+- 长篇必须完整覆盖原文全本；每一段原文都要在正文里有对应信息，不得只写前半段或概括成总故事。
+- 最终只输出纯白话成稿，不输出原文、P 编号、注释、译者按、资料说明或翻译过程。
+"""
+
+
 CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT = "当前分类：古文白话（参照译写版）\n\n" + CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT.replace(
     "任务：根据用户粘贴的原文和系统提供的细分方向、分类翻译要求、古汉语词典摘录，直接生成一份白话加工稿。这个题材不处理视频链接，不调用轻抖文案解析。",
     "任务：根据用户粘贴的古文原文、系统提供的细分方向、分类翻译要求、古汉语词典摘录，以及可能附带的参考译文信息，直接生成一份原文翻译对照稿。这个题材不处理视频链接，不调用轻抖文案解析。",
 ).replace(
     "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。",
-    "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。若参考到已有译文，只能吸收释义判断、术语、断句和语气密度，必须重写为新的表达，不得逐句复刻、同义替换或贴近洗稿。最终正文只输出原文与翻译成对段落，不输出注释、点评或赏析。",
+    "白话加工要忠实原意，但不能直接机翻；允许调整用词和语序，让语言更流畅自然，避免版权风险和翻译腔。若参考到已有译文，只能吸收释义判断、术语、断句和语气密度，必须重写为更大白话一点的新表达，不得逐句复刻、同义替换或贴近洗稿。最终正文只输出原文与翻译成对段落，不输出注释、点评或赏析。",
 ) + "\n\n" + CLASSICAL_REFERENCE_REWRITE_PROFILE + """
 
 【参照译写安全硬规则】
@@ -1327,6 +1357,8 @@ CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT = "当前分类：�
 - 如果召回片段来自“菜根谭-中华书局参照范本”或用户指定权威参照译本，并且覆盖当前原文，必须以该译本的断句、关键字词释义、术语方向和语气密度为第一依据；古汉语词典只用于核对和补足未覆盖字词。
 - 不得逐句模仿、不得保留参考译文的独特句式、不得把参考译文换几个词后输出、不得沿用参考译文连续三句以上的表达顺序。
 - 输出必须回到古文原文、权威参照译本和古汉语词典三方校准：先判断原文讲什么，凡中华书局或用户指定译本命中的地方以权威参照译本为准，再用自己的现代汉语重新写。
+- 重新写不是硬直译。要在中华书局释义基础上更大白话一点：把古典比喻、修身判断和省略关系转成普通读者能直接读懂的现代话，少用“纯粹的人品、煅烧、事功”这种直译腔。
+- 示例：原文“欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。”不要只译成“想要磨炼出如精金美玉般纯粹的人品，定要经过烈火般的煅烧”；目标表达应接近“一个人要想拥有真正过硬的好品格，就必须在现实的严酷考验中不断捶打自己；要想建立了不起的功业，就必须在如履薄冰的压力下，踏踏实实走好每一步，熬过所有的磨难。”这种清楚、自然、更大白话的现代汉语。
 - 若参考译文很顺，可以学习其“通顺、不翻译腔”的效果，但不能复制其句子、段落推进和可识别表达。
 - 如果权威参考译文与古汉语词典或模型直觉冲突，优先按权威参考译文和原文上下文处理；只有参考译文未覆盖或明显不属于当前原文时，才用古汉语词典保守补足。
 - “便觉、始觉、方觉、乃觉、忽觉”等承接短语中的“觉”通常是“觉得、感到、发觉”，不得写成“导致、造成、引发、致使”；例如“便觉百行皆非”应理解为“便会觉得许多行为都不对”，不能写成“导致百行皆非”。
@@ -1494,6 +1526,8 @@ CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT = """二次润色（微调）。这�
 CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT = """【古文白话参照译写版语义锁】
 - 本稿的翻译段已经按中华书局或用户指定权威参照译本校准。你现在只能做语言顺滑、标点整理、轻微去翻译腔和格式保护；不得重新翻译古文，不得自行重断句，不得自行改义项。
 - 中华书局对应译文覆盖到的地方，断句、关键字词释义、术语方向、主谓宾关系、比喻方向、承接关系、语气轻重都按中华书局为第一依据。古汉语词典只用于核对和补足中华书局未覆盖或拿不准的字词，不得推翻已命中的中华书局释义。
+- 终稿目标是在中华书局释义基础上更大白话一点：允许把古典直译腔改成普通读者能直接理解的现代说法，但不得改变义项、逻辑、轻重、比喻方向。
+- 例如“精金美玉的人品、烈火中煅、掀天揭地的事功、薄冰上履”应尽量转成“过硬的好品格、现实的严酷考验、了不起的功业、如履薄冰的压力下踏实走好每一步”这类大白话表达，而不是停留在“纯粹的人品、烈火般煅烧、惊天动地功业”的硬直译。
 - 严禁为了顺口把并列改成因果、把感知改成结果、把条件改成结论、把比喻改成事实、把修身判断改成现代鸡汤。
 - “便、乃、遂、始、方、则、即、须、假、行、觉、见、知、识、容、非、是”等虚词、承接词、判断词和古今异义词不得按现代字面义硬改；拿不准时保留现有译法或按古汉语词典补缺。
 - “便觉、始觉、方觉、乃觉、忽觉”里的“觉”按“觉得、感到、发觉”处理，不得译成“导致、造成、引发、致使”。
@@ -1544,6 +1578,36 @@ CLASSICAL_REFERENCE_REWRITE_FORMAT_PROTECTION_PROMPT = (
 CLASSICAL_REFERENCE_REWRITE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.replace(
     "\n【文本】",
     f"\n\n{CLASSICAL_REFERENCE_REWRITE_FORMAT_PROTECTION_PROMPT}\n【文本】",
+    1,
+)
+
+
+CLASSICAL_NOVEL_STYLE_LOCK_PROMPT = """【古文白话小说风格版锁定规则】
+- 当前稿件是纯白话小说风格版，不得恢复原文穿插，不得加入“（原文）/（翻译）”、P 编号、注释、译者按或翻译过程。
+- 必须先保证字词、主语、动作、因果和时序准确，再做小说风格润色；小说化只发生在表达层，不改变原文事实。
+- 可以让叙事更顺、动作更清楚、对白更自然、场景气息更有画面感，但不得新增原文没有的人物、地点、事件、冲突、支线、结局、现代设定或价值判断。
+- 不得删减原文信息，不得只保留故事梗概；每个原文段落的关键信息都必须在正文里有对应呈现。
+- 不要写成爽文、影视解说、现代营销文或资料讲义；保留古代故事的时代气息和人物分寸。
+"""
+
+
+CLASSICAL_NOVEL_STYLE_GEMINI_FAST_POLISH_PROMPT = (
+    CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT
+    + "\n\n"
+    + CLASSICAL_NOVEL_STYLE_LOCK_PROMPT
+)
+
+
+CLASSICAL_NOVEL_STYLE_GEMINI_FAST_REFINE_PROMPT = (
+    CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT
+    + "\n\n"
+    + CLASSICAL_NOVEL_STYLE_LOCK_PROMPT
+)
+
+
+CLASSICAL_NOVEL_STYLE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.replace(
+    "\n【文本】",
+    f"\n\n{CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT}\n\n{CLASSICAL_NOVEL_STYLE_LOCK_PROMPT}\n【文本】",
     1,
 )
 
@@ -1988,6 +2052,12 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
         refine=CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT,
         formatter=CLASSICAL_CHINESE_FINAL_BOOK_FORMAT_PROMPT,
     ),
+    "classical_chinese_novel_style": _prompt_set(
+        CLASSICAL_CHINESE_NOVEL_STYLE_FULL_BOOK_WRITER_PROMPT,
+        polish=CLASSICAL_NOVEL_STYLE_GEMINI_FAST_POLISH_PROMPT,
+        refine=CLASSICAL_NOVEL_STYLE_GEMINI_FAST_REFINE_PROMPT,
+        formatter=CLASSICAL_NOVEL_STYLE_FINAL_BOOK_FORMAT_PROMPT,
+    ),
     "classical_chinese_reference_rewrite": _prompt_set(
         CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT,
         polish=CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_POLISH_PROMPT,
@@ -2082,6 +2152,13 @@ CATEGORY_ALIASES: dict[str, str] = {
     "白话原文翻译穿插版": "classical_chinese_interleaved",
     "classical_chinese_interleaved": "classical_chinese_interleaved",
     "classical_interleaved": "classical_chinese_interleaved",
+    "古文白话小说风格版": "classical_chinese_novel_style",
+    "古文白话（小说风格版）": "classical_chinese_novel_style",
+    "古文白话(小说风格版)": "classical_chinese_novel_style",
+    "古文白话小说版": "classical_chinese_novel_style",
+    "古文白话小说风格润色版": "classical_chinese_novel_style",
+    "classical_chinese_novel_style": "classical_chinese_novel_style",
+    "classical_novel_style": "classical_chinese_novel_style",
     "古文白话参照译写版": "classical_chinese_reference_rewrite",
     "古文白话（参照译写版）": "classical_chinese_reference_rewrite",
     "古文白话(参照译写版)": "classical_chinese_reference_rewrite",
@@ -2139,6 +2216,7 @@ __all__ = [
     "LIFE_PHILOSOPHY_FINAL_BOOK_FORMAT_PROMPT",
     "CLASSICAL_CHINESE_FULL_BOOK_WRITER_PROMPT",
     "CLASSICAL_CHINESE_INTERLEAVED_FULL_BOOK_WRITER_PROMPT",
+    "CLASSICAL_CHINESE_NOVEL_STYLE_FULL_BOOK_WRITER_PROMPT",
     "CLASSICAL_CHINESE_REFERENCE_REWRITE_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT",
     "FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT",

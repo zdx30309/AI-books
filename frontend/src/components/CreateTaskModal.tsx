@@ -30,6 +30,7 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
   { id: "buddhist_story", label: "佛经白话故事版" },
+  { id: "novel_style", label: "小说风格润色版" },
   { id: "reference_translation", label: "知名译本参照" },
 ] as const;
 const LONG_NOVEL_CONFLICT_OPTIONS = [
@@ -68,6 +69,7 @@ const LONG_NOVEL_MODULES = [
 const CLASSICAL_CHINESE_CATEGORY_IDS = new Set([
   "classical_chinese",
   "classical_chinese_interleaved",
+  "classical_chinese_novel_style",
   "classical_chinese_reference_rewrite",
   "buddhist_scripture_story",
 ]);
@@ -184,12 +186,20 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
   const isBuddhistScripture = category === "buddhist_scripture_story";
+  const isClassicalNovelStyle = category === "classical_chinese_novel_style";
   const isClassicalReferenceRewrite = category === "classical_chinese_reference_rewrite";
   const isClassicalButtonActive = category === "classical_chinese";
+  const isClassicalNovelStyleButtonActive = isClassicalNovelStyle;
   const isClassicalReferenceButtonActive = isClassicalReferenceRewrite;
-  const classicalDisplayName = isBuddhistScripture ? "佛经白话" : "古文白话";
+  const classicalDisplayName = isBuddhistScripture
+    ? "佛经白话"
+    : isClassicalNovelStyle
+      ? "古文白话小说风格版"
+      : "古文白话";
   const effectiveClassicalVariant = isBuddhistScripture
     ? "buddhist_story"
+    : isClassicalNovelStyle
+      ? "novel_style"
     : isClassicalReferenceRewrite && classicalVariant === "plain"
       ? "reference_translation"
       : classicalVariant;
@@ -283,6 +293,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     if (category === "classical_chinese_reference_rewrite") {
       setClassicalVariant("reference_translation");
       setClassicalInputMode("docx");
+    } else if (category === "classical_chinese_novel_style") {
+      setClassicalVariant("novel_style");
+      setClassicalInputMode("text");
     } else if (category === "buddhist_scripture_story") {
       setClassicalVariant("buddhist_story");
     }
@@ -826,6 +839,23 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               type="button"
               onClick={() => {
                 setMode("single");
+                setCategory("classical_chinese_novel_style");
+                setClassicalVariant("novel_style");
+                setClassicalInputMode("text");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                isClassicalNovelStyleButtonActive
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+              古文小说
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("single");
                 setCategory("classical_chinese_reference_rewrite");
                 setClassicalVariant("reference_translation");
                 setClassicalInputMode("docx");
@@ -915,6 +945,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   setClassicalVariant(
                     nextCategory === "buddhist_scripture_story"
                       ? "buddhist_story"
+                      : nextCategory === "classical_chinese_novel_style"
+                        ? "novel_style"
                       : nextCategory === "classical_chinese_reference_rewrite"
                         ? "reference_translation"
                       : "plain",
@@ -1363,7 +1395,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       id="classical-variant"
                       value={effectiveClassicalVariant}
                       onChange={(e) => setClassicalVariant(e.target.value)}
-                      disabled={isBuddhistScripture}
+                      disabled={isBuddhistScripture || isClassicalNovelStyle}
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
                     >
                       {CLASSICAL_VARIANTS.map((item) => (

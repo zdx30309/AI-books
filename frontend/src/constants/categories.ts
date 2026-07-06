@@ -152,6 +152,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "classical_chinese_novel_style",
+    label: "古文白话小说风格版",
+    core_feature: "先准确白话化，再做小说风格润色，让叙事、动作、对白和氛围更可读",
+    directions: "古代小说、史传、志怪、笔记、故事性古文、纯白话小说化润色",
+    prompt_status: "ready",
+  },
+  {
     id: "buddhist_scripture_story",
     label: "佛经白话",
     core_feature: "把佛经经文译成自然连贯的白话故事稿，忠于原文讲述和道理",
@@ -234,6 +241,7 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
   "buddhist_scripture_story",
+  "classical_chinese_novel_style",
   "classical_chinese_interleaved",
   "classical_chinese_reference_rewrite",
 ] as const;

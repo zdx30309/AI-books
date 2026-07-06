@@ -22,6 +22,11 @@ CLASSICAL_VARIANT_OPTIONS: tuple[dict[str, str], ...] = (
         "description": "通俗连贯地重新表达古文内容，忠实原意，避免翻译腔。",
     },
     {
+        "id": "novel_style",
+        "label": "小说风格润色版",
+        "description": "先准确白话化，再做小说化润色，让故事、动作、对白和氛围更可读。",
+    },
+    {
         "id": "zhiguai_web",
         "label": "志怪小说爽读版",
         "description": "保留志怪故事主线，强化剧情、对白、冲突和悬念。",
@@ -44,7 +49,7 @@ CLASSICAL_VARIANT_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "reference_translation",
         "label": "知名译本参照",
-        "description": "参考已有译文的释义、术语和断句，结合古汉语词典，重新写成自然原创白话。",
+        "description": "参考已有译文的释义、术语和断句，结合古汉语词典，重新写成更大白话一点的自然白话。",
     },
 )
 
@@ -55,6 +60,10 @@ _VARIANT_ALIASES: dict[str, str] = {
     "plain": "plain",
     "通俗白话": "plain",
     "白话": "plain",
+    "小说风格": "novel_style",
+    "小说风格润色版": "novel_style",
+    "古文白话小说风格版": "novel_style",
+    "novel_style": "novel_style",
     "志怪": "zhiguai_web",
     "志怪小说": "zhiguai_web",
     "志怪小说爽读版": "zhiguai_web",
@@ -86,6 +95,12 @@ _VARIANT_RULES: dict[str, str] = {
 - 通俗连贯地重新表达原文，调整用词和语序，但不得脱离原意。
 - 不要直接机翻，不要翻译腔；对白要像人正常说话，不要像书面语硬译。
 - 不随意添加细节，不臆测场景，不添加新观点，只对语言做通俗、连贯的表达。""",
+    "novel_style": """- 这是古文白话小说风格版：先准确翻译原文，再对翻译完的白话稿做小说风格润色。
+- 第一优先级是准确和完整：原文的人物、关系、事件、动作、对白、因果、顺序和结局不能改，不能漏段，不能跳剧情。
+- 第二优先级是可读性：在不新增事实的前提下，让叙事更顺，动作更清楚，对白更像人说话，场景氛围更有画面感，段落节奏更像一篇可读小说。
+- 小说化只发生在表达层面：可以补足代词指向、动作承接、心理感受和场景过渡，但必须来自原文已经包含或明确暗示的信息。
+- 不要把古文改成爽文、玄幻新剧情、现代设定或营销故事；不要新增人物、地点、冲突、支线、结局和价值判断。
+- 如果原文是史传、笔记、志怪、古代小说或叙事散文，要保留原有时代气息和人物分寸；语言更白话，但不油滑、不网感过重。""",
     "zhiguai_web": """- 请将志怪小说原文改写为网文爽读风格。
 - 以剧情和人物对话为核心，对白鲜活、简短有力，推动情节发展。
 - 保留故事主线，不篡改剧情，不自己加剧情，不跳剧情。
@@ -117,6 +132,8 @@ _VARIANT_RULES: dict[str, str] = {
 - 不再采用《菜根谭》类全注全译体例；不得输出【注释】【译文】【点评】【原文定位】、赏析、解析、译者按或圈号注释。
 - 原文段必须忠实保留输入原文，不改字、不删句、不调换顺序；翻译段必须完整覆盖上一段原文。
 - 最终正文必须重新组织翻译句子，让读者读到的是新的白话译文，而不是某个译本的洗稿版。
+- 输出目标是在权威译本释义基础上更大白话一点：不要只是保留古典意象做直译，要把“精金美玉的人品、烈火中煅、掀天揭地的事功、薄冰上履”这类表达转成普通读者能直接理解的“过硬品格、严酷考验、了不起的功业、如履薄冰的压力和谨慎行动”等现代说法。
+- 大白话不是乱发挥：可以让句子更顺、更生活化，但不得改变中华书局或用户指定权威译本确定的意思、轻重、比喻方向和句内逻辑。
 - 参考译文、古汉语词典和上下文必须互相校核：参考译文帮助确定古文真正说什么，词典帮助判断关键字词义项；权威参考译文与古汉语词典或模型直觉冲突时，以权威参考译文为主，只有参考译文未覆盖当前字词时才按原文上下文和词典保守判断。
 - 禁止在未校准关键字词前按现代字面义硬翻；尤其是古今异义、虚词承接、职官器物、典故、称谓和省略主语，必须先判义再落笔。
 - “便觉、始觉、方觉、乃觉、忽觉”等承接短语中的“觉”通常是“觉得、感到、发觉”，不得写成“导致、造成、引发、致使”；如“便觉百行皆非”应译作“便会觉得许多行为都不对”一类感知判断。
@@ -133,12 +150,14 @@ CLASSICAL_PARAGRAPH_MARKER_RE = re.compile(r"【P(\d{4,})】\s*")
 _TITLE_SUFFIX = "（白话版）"
 BUDDHIST_SCRIPTURE_DEFAULT_TITLE = "佛经白话"
 CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
+CLASSICAL_NOVEL_STYLE_CATEGORY = "classical_chinese_novel_style"
 CLASSICAL_REFERENCE_REWRITE_CATEGORY = "classical_chinese_reference_rewrite"
 BUDDHIST_SCRIPTURE_STORY_CATEGORY = "buddhist_scripture_story"
 BUDDHIST_SCRIPTURE_VARIANT = "buddhist_story"
 CLASSICAL_CHINESE_CATEGORY_IDS = frozenset(
     {
         "classical_chinese",
+        CLASSICAL_NOVEL_STYLE_CATEGORY,
         CLASSICAL_INTERLEAVED_CATEGORY,
         CLASSICAL_REFERENCE_REWRITE_CATEGORY,
         BUDDHIST_SCRIPTURE_STORY_CATEGORY,
@@ -156,6 +175,8 @@ class BuddhistStoryUnit:
 def classical_variant_for_category(category: object, variant: object = None) -> str:
     if str(category or "").strip() == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         return BUDDHIST_SCRIPTURE_VARIANT
+    if str(category or "").strip() == CLASSICAL_NOVEL_STYLE_CATEGORY and not str(variant or "").strip():
+        return "novel_style"
     if str(category or "").strip() == CLASSICAL_REFERENCE_REWRITE_CATEGORY and not str(variant or "").strip():
         return "reference_translation"
     return normalize_classical_variant(variant)
@@ -390,12 +411,13 @@ def build_classical_prompt_source(
 ) -> str:
     meta = get_classical_variant_meta(variant)
     is_reference_translation = meta["id"] == "reference_translation"
+    is_novel_style = meta["id"] == "novel_style"
     dictionary_context = build_classical_dictionary_context(raw_text)
     final_title = classical_final_title(original_title)
     marked_source = build_classical_marked_source(raw_text, start_index=start_index)
     structure_checklist = build_classical_structure_checklist(raw_text, start_index=start_index)
-    paragraph_rules = (
-        """【参照译写排版硬规则】
+    if is_reference_translation:
+        paragraph_rules = """【参照译写排版硬规则】
 - 本任务只输出原文与翻译对照，不再输出注释、点评或讲解体例。
 - @正文 下的每个原文段落必须输出两个连续自然段，顺序固定为：先原文，后翻译。
 - 每个原文段必须以对应 P 编号开头，格式为：【P0001】（原文）原文内容。
@@ -406,10 +428,19 @@ def build_classical_prompt_source(
 - 参考译本只用于校准字词、术语、断句、称谓和语气准确性；最终表达必须回到原文和古汉语词典重新组织，不得复制或贴近改写参考译文。
 - 如果系统提供了“当前原文对应参考译文召回”，必须先用召回片段校准本段的断句、义项和术语，再重新组织自然白话；不得越过召回片段直接按现代字面义硬翻。
 - 如果召回片段来自“菜根谭-中华书局参照范本”或用户指定权威参照译本，并且覆盖当前原文，必须以该参照译本为第一依据；古汉语词典只用于核对和补足，不得推翻已命中的断句和义项。
+- 翻译段要在权威释义基础上更大白话一点：少保留“纯粹的人品、煅烧、事功”等直译腔，多写成“过硬的好品格、现实的严酷考验、了不起的功业、如履薄冰的压力下踏实走好每一步”等现代读者能直接读懂的表达。
 - 翻译时先在内部完成“断句 → 关键字词义项 → 参考译文校准 → 词典校核 → 自然白话落笔”，不要输出这个过程。
 - 正文标点统一使用中文全角标点和中文引号；中文之间、中文和标点之间不要加排版空格。"""
-        if is_reference_translation
-        else """【段落硬规则】
+    elif is_novel_style:
+        paragraph_rules = """【小说风格版段落硬规则】
+- 必须按 P 编号顺序覆盖全部原文段落，不漏段、不跳号、不调换顺序；每个原文段落的关键信息都必须在白话小说稿里出现。
+- 每个原文段落对应内容的第一个自然段必须在段首保留对应内部编号，如【P0001】、【P0002】。这些编号是系统校验用，最终会由系统自动移除；你不得删除、改写、跳号、重号或调换顺序。
+- 为了小说阅读节奏，可以把同一个 P 编号对应的白话内容拆成两个或多个自然段；拆出的后续段落不得新增 P 编号，不得变成新章节或新小标题。
+- 可以补足原文已经包含或明确暗示的动作承接、代词指向、人物反应和场景过渡，但不得新增原文没有的人物、地点、事件、冲突、支线、结局或现代设定。
+- 不得把长篇原文压缩成故事梗概；每一段都要讲清楚，不要只翻译前半段或只保留大意。
+- 正文标点统一使用中文全角标点和中文引号；中文之间、中文和标点之间不要加排版空格。"""
+    else:
+        paragraph_rules = """【段落硬规则】
 - 原文段落边界以换行分隔为准。白话正文必须按原文段落一一对应输出：原文第几段，白话正文就第几段。
 - 不要为了阅读节奏强制分段，不要合并原文段落，不要拆散原文段落，不要重排段落顺序。
 - 白话正文段落之间不要插入空白行，不要输出只有空格或单独标点的空段。
@@ -420,7 +451,6 @@ def build_classical_prompt_source(
 - 原文中整段加粗的作者或署名行会以 **作者名** 形式出现，输出时必须保留加粗标记；其他段落不要自行加粗。
 - 不得凭空增加没有 P 编号的小标题、Markdown 标题、资料型提示或解释性小节；不得出现 ### 这类标题符号。
 - 如果某段无法完全确定词义，必须保守表达，并尽量保留原句关系，不得为了顺口而改成另一层意思。"""
-    )
     interleaved_rules = (
         """
 【原文翻译穿插版硬规则】

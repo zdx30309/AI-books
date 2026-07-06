@@ -27,6 +27,7 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
+    CLASSICAL_NOVEL_STYLE_CATEGORY,
     CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     build_buddhist_scripture_story_source,
     build_classical_prompt_source,
@@ -79,6 +80,8 @@ def test_generate_full_book_routes_writer_prompt_by_category(
         expected_raw_text = build_classical_prompt_source(raw_text)
     elif category == "classical_chinese_interleaved":
         expected_raw_text = build_classical_prompt_source(raw_text, interleaved=True)
+    elif category == CLASSICAL_NOVEL_STYLE_CATEGORY:
+        expected_raw_text = build_classical_prompt_source(raw_text, variant="novel_style")
     elif category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
         expected_raw_text = build_classical_prompt_source(raw_text, variant="reference_translation")
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
@@ -437,11 +440,43 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
     assert normalize_category("古文白话（原文翻译穿插版）") == "classical_chinese_interleaved"
+    assert normalize_category("古文白话小说风格版") == CLASSICAL_NOVEL_STYLE_CATEGORY
+    assert normalize_category("古文白话（小说风格版）") == CLASSICAL_NOVEL_STYLE_CATEGORY
     assert normalize_category("古文白话参照译写版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("古文白话（参照译写版）") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("古文白话抄袭版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("佛经白话") == "buddhist_scripture_story"
     assert normalize_category("佛经白话故事版") == "buddhist_scripture_story"
+
+
+def test_classical_novel_style_prompt_uses_novel_polish_rules() -> None:
+    meta = get_category_meta(CLASSICAL_NOVEL_STYLE_CATEGORY)
+    prompts = get_prompts(CLASSICAL_NOVEL_STYLE_CATEGORY)
+    writer = prompts["full_book_writer"]
+    polish = prompts["gemini_fast_polish"]
+    refine = prompts["gemini_fast_refine"]
+    formatter = prompts["final_book_format"]
+    source_pack = build_classical_prompt_source(
+        "其人夜入古寺，闻壁间有声。",
+        variant=classical_variant_for_category(CLASSICAL_NOVEL_STYLE_CATEGORY),
+        original_title="志怪录",
+    )
+
+    assert meta["label"] == "古文白话小说风格版"
+    assert "纯白话小说风格稿" in writer
+    assert "小说风格版专属工作流" in writer
+    assert "准确白话底稿" in writer
+    assert "小说化润色" in writer
+    assert "不得凭空添加新桥段" in writer
+    assert "最终只输出纯白话成稿" in writer
+    assert "小说风格版" in source_pack
+    assert "先准确翻译原文，再对翻译完的白话稿做小说风格润色" in source_pack
+    assert "小说风格版段落硬规则" in source_pack
+    assert "可以把同一个 P 编号对应的白话内容拆成两个或多个自然段" in source_pack
+    for stage_prompt in (polish, refine, formatter):
+        assert "古文白话小说风格版锁定规则" in stage_prompt
+        assert "先保证字词、主语、动作、因果和时序准确" in stage_prompt
+        assert "不得新增原文没有的人物" in stage_prompt
 
 
 def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
@@ -458,7 +493,7 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     )
 
     assert meta["label"] == "古文白话（参照译写版）"
-    assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话"
+    assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成更大白话一点的自然白话"
     assert "{raw_text}" in writer
     assert "原文翻译对照稿" in writer
     assert "若参考到已有译文，只能吸收释义判断、术语、断句和语气密度" in writer
@@ -468,6 +503,9 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
     assert "权威参照译本和古汉语词典三方校准" in writer
+    assert "更大白话一点" in writer
+    assert "过硬的好品格" in writer
+    assert "如履薄冰的压力" in writer
     assert "菜根谭-中华书局参照范本" in writer
     assert "便觉百行皆非" in writer
     assert "不得输出【注释】【译文】【点评】【原文定位】" in writer
@@ -484,6 +522,8 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
         assert "古文白话参照译写版语义锁" in stage_prompt
         assert "不得重新翻译古文" in stage_prompt
         assert "古汉语词典只用于核对和补足" in stage_prompt
+        assert "更大白话一点" in stage_prompt
+        assert "过硬的好品格" in stage_prompt
         assert "便觉、始觉、方觉" in stage_prompt
 
 
@@ -512,6 +552,8 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
     assert "权威译本方向，再用古汉语词典补缺" in with_reference
+    assert "更大白话一点" in with_reference
+    assert "过硬品格、现实严酷考验" in with_reference
     assert "便觉、始觉、方觉" in with_reference
 
 
@@ -544,7 +586,7 @@ def test_classical_reference_notes_match_current_source_instead_of_head_tail() -
 
     assert "当前原文对应参考译文召回" in excerpt
     assert "以这些片段的释义和断句为第一依据" in excerpt
-    assert "权威释义复写" in excerpt
+    assert "权威释义定准后的大白话复写" in excerpt
     assert "精金美玉" in excerpt
     assert "完美无瑕的人格品行" in excerpt
     assert "这是一段很长但不相关的参考说明" not in excerpt

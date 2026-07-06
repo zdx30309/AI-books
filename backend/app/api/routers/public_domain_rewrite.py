@@ -16,6 +16,7 @@ from app.services.public_domain_rewrite import (
     PublicDomainSource,
     rewrite_public_domain_fusion,
 )
+from app.services.image_ocr import ImageOcrError, is_supported_ocr_image_suffix, ocr_image_bytes
 from app.utils.docx_text import DocxTextError, extract_docx_text
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ async def generate_public_domain_rewrite(
 @router.post(
     "/generate-from-files",
     response_model=PublicDomainRewriteResponse,
-    summary="上传 2-3 个 txt/md/docx 文件并做公版融合改写",
+    summary="上传 2-3 个 txt/md/docx/图片 文件并做公版融合改写",
 )
 async def generate_public_domain_rewrite_from_files(
     files: list[UploadFile] = File(...),
@@ -183,11 +184,15 @@ async def _read_uploaded_text(file: UploadFile) -> str:
     try:
         if suffix == ".docx":
             return extract_docx_text(content)
+        if is_supported_ocr_image_suffix(suffix):
+            return await asyncio.to_thread(ocr_image_bytes, content, filename=file.filename or "")
         if suffix not in {".txt", ".md", ".markdown", ""}:
-            raise HTTPException(status_code=400, detail=f"暂不支持 {suffix or '未知'} 文件格式，请上传 txt/md/docx。")
+            raise HTTPException(status_code=400, detail=f"暂不支持 {suffix or '未知'} 文件格式，请上传 txt/md/docx/png/jpg/webp。")
         return _decode_text(content)
     except DocxTextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ImageOcrError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _decode_text(content: bytes) -> str:
