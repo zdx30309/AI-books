@@ -493,10 +493,44 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "古文白话参照译写版专用的参照译本输入项" in with_reference
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
-    assert "只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性" in with_reference
+    assert "校准释义、术语、断句、称谓、语气密度和关键字词准确性" in with_reference
     assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
+
+
+def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
+    notes = "\n".join(
+        [
+            "前言",
+            "这是一段很长但不相关的参考说明。" * 80,
+            "一",
+            "欲做精金美玉的人品①，定从烈火中煅来②；思立掀天揭地的事功③，须向薄冰上履过④。",
+            "【注释】",
+            "①精金美玉：比喻纯洁完美的人或事物。",
+            "②煅：锻炼，烧制。",
+            "【译文】",
+            "若想成就精金美玉般完美无瑕的人格品行，一定要经受烈火煅烧般的历练。",
+            "【点评】",
+            "这一段点评不应该被召回给模型学习排版体例。",
+            "二",
+            "完全无关的后续条目。",
+        ]
+    )
+
+    excerpt = content_engine._style_reference_notes_for_classical_segment(  # noqa: SLF001
+        notes,
+        start_index=1,
+        end_index=1,
+        total_source_lines=1,
+        source_segment_text="欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。",
+    )
+
+    assert "当前原文对应参考译文召回" in excerpt
+    assert "精金美玉" in excerpt
+    assert "完美无瑕的人格品行" in excerpt
+    assert "这是一段很长但不相关的参考说明" not in excerpt
+    assert "这一段点评不应该被召回" not in excerpt
 
 
 def test_finance_technology_category_uses_dedicated_prompt() -> None:

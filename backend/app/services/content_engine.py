@@ -1944,6 +1944,7 @@ async def _generate_classical_segmented_writer(
                     start_index=start_index,
                     end_index=end_index,
                     total_source_lines=expected_count,
+                    source_segment_text=segment_text,
                 ),
             )
             raw_segment = await _route_writer_call(
@@ -5321,13 +5322,175 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
         "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
     CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
-        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性；不再学习参照译本的注释、点评或排版体例。",
-        "必须回到古文原文和古汉语词典生成新的白话翻译；只能参考字词释义和断句判断，不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
+        "这是古文白话参照译写版专用的参照译本输入项。若系统召回到当前原文对应的参考片段，必须优先用它校准释义、术语、断句、称谓、语气密度和关键字词准确性；不学习参照译本的注释、点评或排版体例。",
+        "必须先按当前原文、参考译文召回片段和古汉语词典确定语义，再生成新的自然白话翻译；不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
     ),
 }
 
 
 STYLE_REFERENCE_NOTES_PROMPT_CHAR_LIMIT = 8_000
+CLASSICAL_REFERENCE_MATCH_PROMPT_CHAR_LIMIT = 7_200
+CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT = 1_800
+_CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_CLASSICAL_REFERENCE_SHORT_HEADING_RE = re.compile(
+    r"^\s*(?:[一二三四五六七八九十百零〇两]{1,6}|\d{1,4})\s*$"
+)
+_CLASSICAL_REFERENCE_SECTION_HEADING_RE = re.compile(
+    r"^\s*(?:前言|序|跋|修省|应酬|评议|闲适|概论|上卷|下卷|前集|后集|卷[一二三四五六七八九十百零〇两\d]+)\s*$"
+)
+
+
+def _classical_reference_key(text: str) -> str:
+    cleaned = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", text or "")
+    cleaned = re.sub(r"[【】（）()《》〈〉「」『』“”‘’\[\]{}]", "", cleaned)
+    cleaned = re.sub(r"(?:原文定位|参考译文|固定参照译本|来源文件|全文字数|原文|翻译|译文|注释|点评)", "", cleaned)
+    return "".join(_CJK_TEXT_RE.findall(cleaned))
+
+
+def _classical_reference_ngrams(text: str, size: int = 2) -> set[str]:
+    if len(text) < size:
+        return set()
+    return {text[idx : idx + size] for idx in range(0, len(text) - size + 1)}
+
+
+def _is_classical_reference_boundary(line: str) -> bool:
+    stripped = (line or "").strip()
+    return bool(
+        _CLASSICAL_REFERENCE_SHORT_HEADING_RE.match(stripped)
+        or _CLASSICAL_REFERENCE_SECTION_HEADING_RE.match(stripped)
+    )
+
+
+def _trim_classical_reference_window(lines: list[str]) -> str:
+    trimmed: list[str] = []
+    for line in lines:
+        stripped = (line or "").strip()
+        if stripped == "【点评】" or stripped.startswith("【点评】"):
+            break
+        trimmed.append(line)
+    block = "\n".join(line for line in trimmed if line.strip()).strip()
+    if len(block) <= CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT:
+        return block
+    return _style_reference_prompt_excerpt(
+        block,
+        max_chars=CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT,
+    )
+
+
+def _classical_reference_window(lines: list[str], line_index: int) -> str:
+    start = max(0, line_index - 2)
+    for cursor in range(line_index - 1, -1, -1):
+        if _is_classical_reference_boundary(lines[cursor]):
+            start = cursor
+            break
+
+    end = min(len(lines), line_index + 6)
+    for cursor in range(line_index + 1, len(lines)):
+        if _is_classical_reference_boundary(lines[cursor]):
+            end = cursor
+            break
+        if cursor - line_index >= 18:
+            end = cursor + 1
+            break
+
+    return _trim_classical_reference_window(lines[start:end])
+
+
+def _classical_reference_line_score(
+    ref_key: str,
+    *,
+    source_keys: list[str],
+    source_gram_sets: list[set[str]],
+) -> float:
+    if not ref_key:
+        return 0.0
+    ref_grams = _classical_reference_ngrams(ref_key)
+    score = 0.0
+    for source_key, source_grams in zip(source_keys, source_gram_sets):
+        if not source_key:
+            continue
+        if len(source_key) >= 8 and source_key in ref_key:
+            score += 1_000 + min(len(source_key), 120)
+            continue
+        if len(ref_key) >= 8 and ref_key in source_key:
+            score += 420 + min(len(ref_key), 80)
+            continue
+        if not source_grams or not ref_grams:
+            continue
+        overlap = len(source_grams & ref_grams)
+        if overlap <= 0:
+            continue
+        ratio = overlap / max(1, min(len(source_grams), len(ref_grams)))
+        if ratio >= 0.38:
+            score += ratio * 120
+    return score
+
+
+def _matched_classical_reference_excerpt(
+    notes: str | None,
+    source_segment_text: str | None,
+    *,
+    max_chars: int = CLASSICAL_REFERENCE_MATCH_PROMPT_CHAR_LIMIT,
+) -> str:
+    text = (notes or "").strip()
+    if not text or not (source_segment_text or "").strip():
+        return ""
+
+    source_keys: list[str] = []
+    for line in classical_source_lines(source_segment_text or ""):
+        key = _classical_reference_key(line)
+        if len(key) >= 4:
+            source_keys.append(key[:260])
+    if not source_keys:
+        key = _classical_reference_key(source_segment_text or "")
+        if len(key) >= 4:
+            source_keys.append(key[:320])
+    if not source_keys:
+        return ""
+
+    source_gram_sets = [_classical_reference_ngrams(key) for key in source_keys]
+    note_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    scored: list[tuple[float, int]] = []
+    for index, line in enumerate(note_lines):
+        ref_key = _classical_reference_key(line)
+        if len(ref_key) < 4:
+            continue
+        score = _classical_reference_line_score(
+            ref_key,
+            source_keys=source_keys,
+            source_gram_sets=source_gram_sets,
+        )
+        if score >= 45:
+            scored.append((score, index))
+    if not scored:
+        return ""
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    for _, index in sorted(scored, key=lambda item: (-item[0], item[1])):
+        block = _classical_reference_window(note_lines, index)
+        key = _classical_reference_key(block)
+        if len(key) < 4:
+            continue
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        if digest in seen:
+            continue
+        projected = used + len(block) + 80
+        if projected > max_chars and selected:
+            continue
+        seen.add(digest)
+        selected.append(f"【参考片段{len(selected) + 1}】\n{block}")
+        used = projected
+        if len(selected) >= 6 or used >= max_chars:
+            break
+
+    if not selected:
+        return ""
+    body = "\n\n".join(selected)
+    return f"""【当前原文对应参考译文召回】
+以下片段是系统根据当前原文，从完整参考译本中自动检索出的最相关段落。它们只用于校准字词义项、断句、称谓、语气和翻译密度；不得复制、近似改写或沿用连续表达。
+{body}"""
 
 
 def _style_reference_prompt_excerpt(
@@ -5354,10 +5517,18 @@ def _style_reference_notes_for_classical_segment(
     start_index: int,
     end_index: int,
     total_source_lines: int,
+    source_segment_text: str | None = None,
 ) -> str:
     text = (notes or "").strip()
     if not text:
         return ""
+    matched_excerpt = _matched_classical_reference_excerpt(
+        text,
+        source_segment_text,
+    )
+    if matched_excerpt:
+        return matched_excerpt
+
     note_lines = classical_source_lines(text)
     if not note_lines:
         return _style_reference_prompt_excerpt(text)
@@ -5432,9 +5603,10 @@ def _append_style_reference_prompt(
     if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
         parts.extend(
             [
+                "- 若补充要求里出现“当前原文对应参考译文召回”，请把它当作本段释义、断句和术语校准的优先依据，再结合古汉语词典保守判断。",
                 "- 请只参考对象中的字词释义、术语译法、断句、称谓和语气准确性，不要学习其注释、点评、章节讲解或排版体例。",
                 "- 最终输出只允许每个原文段后紧跟一个翻译段，不得加入注释、点评、赏析、解析或圈号说明。",
-                "- 必须生成新的白话翻译；不要复刻、改写或搬运任何现成译文句子。",
+                "- 必须生成新的白话翻译；不要复刻、改写或搬运任何现成译文句子，也不要在没有校准词义前按现代字面义硬翻。",
                 f"- {boundary}",
             ]
         )
@@ -5656,11 +5828,20 @@ async def generate_full_book(
             )
         else:
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
+            effective_style_notes = style_notes
+            if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
+                effective_style_notes = _style_reference_notes_for_classical_segment(
+                    style_notes,
+                    start_index=1,
+                    end_index=classical_expected_count,
+                    total_source_lines=classical_expected_count,
+                    source_segment_text=classical_source_text,
+                )
             writer_prompt = _append_style_reference_prompt(
                 writer_prompt,
                 category=normalized_category,
                 style_reference=style_reference,
-                style_notes=style_notes,
+                style_notes=effective_style_notes,
             )
             writer_prompt = _append_reference_article_prompt(
                 writer_prompt,
