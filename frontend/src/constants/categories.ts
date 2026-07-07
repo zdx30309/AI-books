@@ -154,8 +154,8 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "classical_chinese_novel_style",
     label: "古文白话小说风格版",
-    core_feature: "先准确白话化，再做小说风格润色，让叙事、动作、对白和氛围更可读",
-    directions: "古代小说、史传、志怪、笔记、故事性古文、纯白话小说化润色",
+    core_feature: "先准确理解古文，再按原文类型改成故事化白话；格言哲理也会转成小故事载体",
+    directions: "古代小说、史传、志怪、笔记、故事性古文、修身格言、哲理短句、纯白话故事化改写",
     prompt_status: "ready",
   },
   {
