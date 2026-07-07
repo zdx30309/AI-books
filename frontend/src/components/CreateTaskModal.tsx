@@ -741,7 +741,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-base-900/80 backdrop-blur-sm animate-fade-in-up"
+      className="app-overlay fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm animate-fade-in-up"
       onClick={onClose}
     >
       <div

@@ -48,7 +48,7 @@ function cellValue(row: DataAnalysisRow, key: keyof DataAnalysisRow) {
 }
 
 function groupClass(group: string, isHeader = false) {
-  const base = isHeader ? "font-semibold text-base-900" : "text-black";
+  const base = isHeader ? "font-semibold text-black" : "text-black";
   if (isHeader && (group === "date" || group === "total")) return `${base} bg-[#fff200]`;
   if (isHeader && group === "company") return `${base} bg-[#9db45f]`;
   if (group === "ai") return `${base} bg-[#f3dcdf]`;

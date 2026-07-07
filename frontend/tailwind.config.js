@@ -1,36 +1,37 @@
 /** @type {import('tailwindcss').Config} */
+const themeColor = (token) => `rgb(var(--color-${token}) / <alpha-value>)`;
+
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        // 暗色主基调 — 偏暖的深棕黑
+        // Theme colors are resolved from CSS variables so every route can switch
+        // themes without rewriting component class names.
         base: {
-          900: "#0a0908",
-          800: "#13110f",
-          700: "#1a1614",
-          600: "#221d1a",
-          500: "#2a2421",
+          900: themeColor("base-900"),
+          800: themeColor("base-800"),
+          700: themeColor("base-700"),
+          600: themeColor("base-600"),
+          500: themeColor("base-500"),
         },
-        // 琥珀金主题色
         gold: {
-          50: "#faf3e6",
-          100: "#f0e2c2",
-          200: "#e8d09a",
-          300: "#dcbc73",
-          400: "#d4a874",
-          500: "#c4a572",
-          600: "#a88959",
-          700: "#806840",
+          50: themeColor("gold-50"),
+          100: themeColor("gold-100"),
+          200: themeColor("gold-200"),
+          300: themeColor("gold-300"),
+          400: themeColor("gold-400"),
+          500: themeColor("gold-500"),
+          600: themeColor("gold-600"),
+          700: themeColor("gold-700"),
         },
-        // 暖色文字
         warm: {
-          100: "#f5f0e8",
-          200: "#e8ddc9",
-          300: "#c9b9a1",
-          400: "#9b9285",
-          500: "#7a7269",
-          600: "#5a544c",
+          100: themeColor("warm-100"),
+          200: themeColor("warm-200"),
+          300: themeColor("warm-300"),
+          400: themeColor("warm-400"),
+          500: themeColor("warm-500"),
+          600: themeColor("warm-600"),
         },
       },
       fontFamily: {
@@ -54,16 +55,16 @@ export default {
       },
       backgroundImage: {
         "hero-glow":
-          "radial-gradient(ellipse 80% 60% at 75% 30%, rgba(212, 168, 116, 0.18), transparent 65%), radial-gradient(ellipse 60% 80% at 90% 10%, rgba(232, 199, 146, 0.12), transparent 60%)",
+          "radial-gradient(ellipse 80% 60% at 75% 30%, rgb(var(--color-gold-400) / 0.18), transparent 65%), radial-gradient(ellipse 60% 80% at 90% 10%, rgb(var(--color-gold-200) / 0.12), transparent 60%)",
         "card-gloss":
-          "linear-gradient(135deg, rgba(212, 168, 116, 0.06) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(212, 168, 116, 0.04) 100%)",
+          "linear-gradient(135deg, rgb(var(--color-gold-400) / 0.06) 0%, rgb(255 255 255 / 0.02) 50%, rgb(var(--color-gold-400) / 0.04) 100%)",
         "gold-gradient":
-          "linear-gradient(135deg, #e8c792 0%, #d4a874 50%, #b88a52 100%)",
+          "linear-gradient(135deg, rgb(var(--color-gold-200)) 0%, rgb(var(--color-gold-400)) 50%, rgb(var(--color-gold-600)) 100%)",
       },
       boxShadow: {
-        "gold-glow": "0 0 30px rgba(212, 168, 116, 0.25)",
-        "gold-soft": "0 4px 20px rgba(212, 168, 116, 0.15)",
-        "card-warm": "0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(212, 168, 116, 0.08)",
+        "gold-glow": "var(--shadow-gold-glow)",
+        "gold-soft": "var(--shadow-gold-soft)",
+        "card-warm": "var(--shadow-card-warm)",
       },
     },
   },

@@ -22,7 +22,7 @@ export function UserBadge() {
             className="h-full w-full object-cover"
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-gold-300 to-gold-600 font-serif text-base font-medium text-base-900">
+          <div className="text-on-accent flex h-full w-full items-center justify-center bg-gradient-to-br from-gold-300 to-gold-600 font-serif text-base font-medium">
             {avatarChar}
           </div>
         )}
