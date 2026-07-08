@@ -203,6 +203,21 @@ def test_final_hard_error_gate_detects_inline_noun_phrase_pseudo_subheading() ->
     assert len(hits["正文内小标题未标准化为 ###"]) == 2
 
 
+def test_final_hard_error_gate_allows_finance_explanatory_sentences_with_keyword_prefixes() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 再融资规则
+再融资规则要解决的核心矛盾，并不是简单的“能不能融资”，而是资本市场的钱该流向谁、卖什么价、在公司里受什么约束。
+这次规则调整最耐人寻味的是，它没有简单地选择“全面放开”或“全面收紧”。
+如果这些规则能稳稳地执行下去，市场就会慢慢冷静下来。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="finance_technology_recommendation")
+
+    assert "正文内小标题未标准化为 ###" not in hits
+
+
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
     markdown = """@最终书名
 盐铁论（白话版）

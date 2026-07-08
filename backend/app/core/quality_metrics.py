@@ -458,15 +458,23 @@ _INLINE_SUBHEADING_SENTENCE_HINTS = (
     "它",
     "大家",
     "人们",
+    "如果",
+    "只要",
+    "当",
+    "因为",
+    "所以",
     "可能",
     "可以",
     "能够",
+    "能",
     "能不能",
     "能否",
     "应该",
     "必须",
     "需要",
+    "要",
     "值得",
+    "并不是",
     "不是",
     "不会",
     "不能",
@@ -477,8 +485,12 @@ _INLINE_SUBHEADING_SENTENCE_HINTS = (
     "让",
     "把",
     "被",
+    "没有",
+    "的是",
+    "在于",
     "成为",
     "变成",
+    "说明",
     "意味着",
     "取决于",
 )
@@ -561,7 +573,7 @@ def _looks_like_inline_pseudo_subheading_title(title: str) -> bool:
         return False
     if not any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS):
         return False
-    if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
+    if title.startswith(("这个", "这则", "这一", "这种", "这类", "这次", "这些", "那则", "那个")):
         return False
     # Inline pseudo-headings are usually short noun labels such as
     # “扎堆竞争的代价，...”. Normal topic sentences can also contain words like
