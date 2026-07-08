@@ -18,6 +18,7 @@ from app.prompts.family_long_novel_prompts import (
     FAST_PACING_AND_CUSTOM_PLOT_RULES,
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
+    ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
     ZHOULI_BIBLE_PROMPT,
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
@@ -62,6 +63,8 @@ def test_family_long_novel_prompts_are_dedicated() -> None:
     assert "开章要更快进入矛盾" in rendered
     assert "sourceType 是 custom_plot" in rendered
     assert "开头过慢" in ZHOULI_QUALITY_CHECK_PROMPT
+    assert "扩容上下文" in ZHOULI_30W_CONTINUATION_REPLAN_PROMPT
+    assert "只规划后续，不改写已完成章节正文" in ZHOULI_30W_CONTINUATION_REPLAN_PROMPT
 
 
 def test_general_novel_guardrails_cover_editor_ai_prose_complaints() -> None:
@@ -93,17 +96,26 @@ def test_family_workflow_appends_general_novel_prose_guardrails() -> None:
     assert source.count("GENERAL_NOVEL_PROSE_GUARDRAILS") == 5
 
 
-def test_sister_account_extension_is_plan_only_and_no_model_call() -> None:
+def test_sister_account_extension_uses_system_replan_not_local_templates() -> None:
     source = inspect.getsource(family_long_novel.extend_family_project_to_target)
     assert "_call_text" not in source
-    assert "_call_json" not in source
+    assert "_call_json" in source
     assert "_route_writer_call" not in source
-    assert "LongNovelChapterPlan" in source
     assert "LongNovelChapter(" not in source
-    assert "chapter_number > current_chapter" in source
-    assert "sister_account_book_300k" in inspect.getsource(
-        family_long_novel._sister_account_expansion_plan
-    )
+    assert "_write_future_plans_from_replan" in source
+    assert "replan_30w_continuation" in source
+    assert "ZHOULI_30W_CONTINUATION_REPLAN_PROMPT" in source
+    assert "_is_sister_account_project" in source
+    writer_source = inspect.getsource(family_long_novel._write_future_plans_from_replan)
+    assert "LongNovelChapterPlan" in writer_source
+    assert "chapter_number > current_chapter" in writer_source
+
+
+def test_sister_account_extension_validates_full_future_coverage() -> None:
+    source = inspect.getsource(family_long_novel._validate_continuation_replan)
+    assert "missing=" in source
+    assert "duplicates=" in source
+    assert "unique_conflicts" in source
 
 
 def test_family_long_novel_tables_are_registered() -> None:

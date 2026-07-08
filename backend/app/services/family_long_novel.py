@@ -34,6 +34,7 @@ from app.models import (
 from app.prompts.family_long_novel_prompts import (
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
+    ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
     ZHOULI_BIBLE_PROMPT,
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
@@ -861,115 +862,332 @@ def generate_family_novel_outline(
     return project
 
 
-_SISTER_ACCOUNT_EXPANSION_TITLES = [
-    "旧账又响",
-    "借条露头",
-    "饭桌翻脸",
-    "病历压人",
-    "钥匙不见",
-    "亲戚围门",
-    "房证落灰",
-    "账本缺页",
-    "养老摊牌",
-    "大嫂开口",
-]
+_SISTER_ACCOUNT_EXPANSION_TITLES = {"嫂子的账本", "嫂子的帐本"}
 
 
-def _sister_account_expansion_phase(position: int, total: int) -> dict[str, str]:
-    ratio = position / max(total, 1)
-    if ratio <= 0.22:
-        return {
-            "name": "旧账重翻",
-            "goal": "把已完成章节留下的账本、养老、房产和亲戚舆论重新接上，让旧矛盾在新证据里继续发酵。",
-            "conflict": "围绕一笔旧账、一张借条或一次饭桌质问，让婆家把亲情压力重新压到女主身上。",
-            "hook": "有人拿出一条看似不起眼的新账目，让下一章必须继续追问。",
-        }
-    if ratio <= 0.48:
-        return {
-            "name": "人情围堵",
-            "goal": "扩大亲戚舆论和家庭站队，让女主不再只面对一个人，而是面对整套人情账。",
-            "conflict": "亲戚、妯娌和丈夫各自用养老、孩子、面子或旧恩情逼女主让步。",
-            "hook": "女主发现有人把账本里的一个数字故意说反，局面开始反咬。",
-        }
-    if ratio <= 0.72:
-        return {
-            "name": "证据反转",
-            "goal": "让证据链一点点变硬，旧账不再只是争吵，而开始改变家庭里的权力位置。",
-            "conflict": "房产证、存折、病历、收据或转账记录出现新的对应关系，逼每个人重新表态。",
-            "hook": "一份原本被忽略的凭证指向更早的一笔账，下一章必须追到源头。",
-        }
-    if ratio <= 0.9:
-        return {
-            "name": "分家逼宫",
-            "goal": "把账本线推到分家、养老、房产和亲情决裂的综合冲突上。",
-            "conflict": "婆家试图用分家协议或养老安排锁死女主，女主用账本和人证逼对方付出代价。",
-            "hook": "摊牌前夜，关键证人或关键物件突然被人动过。",
-        }
-    return {
-        "name": "账本摊牌",
-        "goal": "把长期积累的账目、偏心和关系债推向最后洗牌，但不靠机械降神。",
-        "conflict": "所有人围绕账本最后一次表态，谁欠了谁、谁占了谁、谁还想装糊涂都必须落到具体证据上。",
-        "hook": "最后一个没算清的人情账浮出来，推动终局收束。",
-    }
+def _is_sister_account_project(project: LongNovelProject) -> bool:
+    title = (project.title or "").strip()
+    return any(name in title for name in _SISTER_ACCOUNT_EXPANSION_TITLES)
 
 
-def _future_plan_conflict_keys(active_conflicts: list[dict[str, Any]], offset: int) -> list[str]:
-    keys = [
-        str(item.get("conflictKey") or item.get("name") or "").strip()
-        for item in active_conflicts
-        if str(item.get("conflictKey") or item.get("name") or "").strip()
+def _completed_chapter_payloads(db: Session, project: LongNovelProject) -> list[dict[str, Any]]:
+    chapters = (
+        db.query(LongNovelChapter)
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.status == LongNovelChapterStatus.COMPLETED,
+        )
+        .order_by(LongNovelChapter.chapter_number.asc())
+        .all()
+    )
+    payloads: list[dict[str, Any]] = []
+    for chapter in chapters:
+        _ensure_chapter_state_floor(db, project, chapter)
+        payloads.append(
+            {
+                "chapterNumber": chapter.chapter_number,
+                "title": chapter.title,
+                "summary": _chapter_summary(chapter),
+                "endingHook": _chapter_ending_hook(db, project.id, chapter.chapter_number, chapter),
+                "wordCount": chapter.word_count,
+                "last600Chars": _clip_text(chapter.content, 600),
+            }
+        )
+    db.flush()
+    return payloads
+
+
+def _family_members_payload(project: LongNovelProject) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": row.name,
+            "familyRole": row.family_role,
+            "publicImage": row.public_image,
+            "privateDesire": row.private_desire,
+            "grievance": row.grievance,
+            "leverage": row.leverage,
+            "weakness": row.weakness,
+            "secret": row.secret,
+            "relationshipToHeroine": row.relationship_to_heroine,
+            "arcStart": row.arc_start,
+            "arcEnd": row.arc_end,
+            "ending": row.ending,
+        }
+        for row in project.family_members
     ]
-    if not keys:
-        keys = ["账本线", "养老线", "房产线", "亲戚舆论线"]
-    first = keys[(offset - 1) % len(keys)]
-    second = keys[offset % len(keys)] if len(keys) > 1 else first
-    return list(dict.fromkeys([first, second]))
 
 
-def _sister_account_expansion_plan(
+def _family_relations_payload(project: LongNovelProject) -> list[dict[str, Any]]:
+    return [
+        {
+            "fromMember": row.from_member,
+            "toMember": row.to_member,
+            "relationType": row.relation_type,
+            "surfaceRelation": row.surface_relation,
+            "hiddenConflict": row.hidden_conflict,
+            "interestConflict": row.interest_conflict,
+            "emotionalDebt": row.emotional_debt,
+            "currentTensionLevel": row.current_tension_level,
+        }
+        for row in project.family_relations
+    ]
+
+
+def _continuation_replan_context(
+    db: Session,
     project: LongNovelProject,
     *,
-    number: int,
     current_chapter: int,
-    target_chapters: int,
     target_words: int,
-    active_conflicts: list[dict[str, Any]],
+    target_chapters: int,
+    target_words_per_chapter: int,
     expansion_notes: str | None,
 ) -> dict[str, Any]:
-    offset = number - current_chapter
-    total_future = max(1, target_chapters - current_chapter)
-    phase = _sister_account_expansion_phase(offset, total_future)
-    conflict_keys = _future_plan_conflict_keys(active_conflicts, offset)
-    title_seed = _SISTER_ACCOUNT_EXPANSION_TITLES[(offset - 1) % len(_SISTER_ACCOUNT_EXPANSION_TITLES)]
-    note = (expansion_notes or "").strip()
-    note_event = f"结合扩容备注推进：{note[:80]}" if note else f"沿着“{phase['name']}”阶段继续推进账本、养老、房产和舆论冲突"
+    next_chapter = current_chapter + 1
+    completed = _completed_chapter_payloads(db, project)
+    canon_facts = (
+        db.query(LongNovelCanonFact)
+        .filter(LongNovelCanonFact.project_id == project.id, LongNovelCanonFact.chapter_number <= current_chapter)
+        .order_by(LongNovelCanonFact.chapter_number.asc(), LongNovelCanonFact.id.asc())
+        .limit(160)
+        .all()
+    )
+    open_issues = (
+        db.query(LongNovelContinuityIssue)
+        .filter(
+            LongNovelContinuityIssue.project_id == project.id,
+            LongNovelContinuityIssue.status == "open",
+        )
+        .order_by(LongNovelContinuityIssue.chapter_number.asc(), LongNovelContinuityIssue.created_at.asc())
+        .limit(80)
+        .all()
+    )
     return {
-        "chapterNumber": number,
-        "volumeNumber": max(1, (number - 1) // 12 + 1),
-        "title": title_seed,
-        "targetWords": target_words,
-        "chapterGoal": phase["goal"],
-        "domesticConflict": phase["conflict"],
-        "emotionalHook": phase["hook"],
-        "requiredEvents": [
-            "开章 300-500 字内进入具体家庭矛盾，不写长铺垫",
-            note_event,
-            "让账目、证据、关系站队或利益位置至少发生一次明确变化",
+        "project": {
+            **_project_payload(project),
+            "targetWords": target_words,
+            "targetChapters": target_chapters,
+            "averageChapterTargetWords": target_words_per_chapter,
+            "completedChapterCount": current_chapter,
+            "completedWords": int(project.total_words or 0),
+            "futureStartChapter": next_chapter,
+            "futureEndChapter": target_chapters,
+            "futureChapterCount": max(0, target_chapters - current_chapter),
+        },
+        "instruction": {
+            "scope": f"只重规划第 {next_chapter}-{target_chapters} 章，不改第 1-{current_chapter} 章正文。",
+            "mustPreserve": [
+                "已完成正文",
+                "已完成章节摘要",
+                "已登记人物状态",
+                "已登记物品状态",
+                "已登记事实",
+                "已存在矛盾线",
+                "已存在家庭关系",
+            ],
+            "expansionNotes": (expansion_notes or "").strip(),
+        },
+        "currentBible": project.bible.raw_json if project.bible else {},
+        "completedChapters": completed,
+        "recentCompletedChapters": completed[-5:],
+        "familyMembers": _family_members_payload(project),
+        "familyRelations": _family_relations_payload(project),
+        "activeConflictLines": _active_conflict_payloads(db, project.id),
+        "latestCharacterStates": _latest_states(db, project.id, next_chapter, project=project),
+        "latestObjectStates": _latest_object_states(db, project.id, next_chapter),
+        "canonFacts": [
+            {
+                "chapterNumber": row.chapter_number,
+                "fact": row.fact,
+                "factType": row.fact_type,
+                "entities": row.entities,
+                "confidence": row.confidence,
+            }
+            for row in canon_facts
         ],
-        "characterArcMove": [
-            "女主保持循序渐进的清醒和反击，不突然无敌",
-            "丈夫、婆婆、妯娌或亲戚至少一方因证据变化改变话术或位置",
+        "openContinuityIssues": [
+            {
+                "chapterNumber": row.chapter_number,
+                "severity": row.severity,
+                "issueType": row.issue_type,
+                "description": row.description,
+                "evidence": row.evidence,
+                "suggestedFix": row.suggested_fix,
+            }
+            for row in open_issues
         ],
-        "conflictLinesToAdvance": conflict_keys,
-        "forbiddenReveals": [
-            "不得推翻已完成章节事实",
-            "不得提前解决终局矛盾",
-            "不得新增重生、系统、霸总救场或机械降神",
-        ],
-        "endingHook": phase["hook"],
-        "extensionMode": "sister_account_book_300k",
-        "sourceProjectTitle": project.title,
     }
+
+
+def _validate_continuation_replan(
+    data: dict[str, Any],
+    *,
+    current_chapter: int,
+    target_chapters: int,
+) -> None:
+    expected_numbers = set(range(current_chapter + 1, target_chapters + 1))
+    chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
+    numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
+    got_numbers = {number for number in numbers if number > 0}
+    missing = sorted(expected_numbers - got_numbers)
+    extra = sorted(got_numbers - expected_numbers)
+    duplicate_count = len(numbers) - len(got_numbers)
+    if missing or extra or duplicate_count:
+        raise FamilyLongNovelError(
+            f"30万续规划章节覆盖失败：missing={missing[:8]} extra={extra[:8]} duplicates={duplicate_count}"
+        )
+    bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
+    if not bible_patch:
+        raise FamilyLongNovelError("30万续规划缺少 biblePatch，不能升级作品圣经")
+    conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
+    if len(conflicts) < 6:
+        raise FamilyLongNovelError("30万续规划矛盾线过少，不能支撑长篇扩容")
+    future_count = max(1, target_chapters - current_chapter)
+    unique_conflicts = {
+        _text(item, "domesticConflict", "domestic_conflict")
+        for item in chapters
+        if _text(item, "domesticConflict", "domestic_conflict")
+    }
+    unique_hooks = {
+        _text(item, "endingHook", "ending_hook")
+        for item in chapters
+        if _text(item, "endingHook", "ending_hook")
+    }
+    minimum_unique = min(future_count, max(12, int(future_count * 0.65)))
+    if len(unique_conflicts) < minimum_unique or len(unique_hooks) < minimum_unique:
+        raise FamilyLongNovelError(
+            f"30万续规划重复度过高：unique_conflicts={len(unique_conflicts)} unique_hooks={len(unique_hooks)} required={minimum_unique}"
+        )
+
+
+def _apply_bible_patch(project: LongNovelProject, data: dict[str, Any], *, current_chapter: int, target_words: int, target_chapters: int) -> None:
+    patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
+    bible = project.bible or LongNovelBible(project_id=project.id)
+    bible.theme = _text(patch, "theme", default=bible.theme or "")
+    bible.core_promise = _text(patch, "corePromise", "core_promise", default=bible.core_promise or "")
+    bible.emotional_hook = _text(patch, "emotionalHook", "emotional_hook", default=bible.emotional_hook or "")
+    bible.family_background = _text(patch, "familyBackground", "family_background", default=bible.family_background or "")
+    bible.main_conflict = _text(patch, "mainConflict", "main_conflict", default=bible.main_conflict or "")
+    bible.ending_direction = _text(patch, "endingDirection", "ending_direction", default=bible.ending_direction or "")
+    bible.world_rules = _as_list(_get(patch, "worldRules", "world_rules")) or bible.world_rules
+    bible.style_rules = _as_list(_get(patch, "styleRules", "style_rules")) or bible.style_rules
+    bible.forbidden_rules = _as_list(_get(patch, "forbiddenRules", "forbidden_rules")) or bible.forbidden_rules
+    raw = dict(bible.raw_json or {})
+    raw.update({key: value for key, value in patch.items() if value not in (None, "", [], {})})
+    raw["targetWordExpansion"] = {
+        **_as_dict(_get(patch, "targetExpansion", "target_expansion")),
+        "mode": "system_replan_30w_continuation",
+        "lockedCompletedChapters": current_chapter,
+        "targetWords": target_words,
+        "targetChapters": target_chapters,
+    }
+    bible.raw_json = raw
+    project.bible = bible
+
+
+def _upsert_family_members_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any]) -> None:
+    existing = {row.name: row for row in project.family_members}
+    for item in [row for row in _as_list(_get(data, "familyMembers", "family_members")) if isinstance(row, dict)]:
+        name = _text(item, "name")
+        if not name:
+            continue
+        row = existing.get(name) or LongNovelFamilyMember(project_id=project.id, name=name)
+        row.family_role = _text(item, "familyRole", "family_role", default=row.family_role or "")
+        row.public_image = _text(item, "publicImage", "public_image", default=row.public_image or "")
+        row.private_desire = _text(item, "privateDesire", "private_desire", default=row.private_desire or "")
+        row.grievance = _text(item, "grievance", default=row.grievance or "")
+        row.leverage = _text(item, "leverage", default=row.leverage or "")
+        row.weakness = _text(item, "weakness", default=row.weakness or "")
+        row.secret = _text(item, "secret", REMOVED_PRIVATE_CREDENTIAL or "")
+        row.relationship_to_heroine = _text(item, "relationshipToHeroine", "relationship_to_heroine", default=row.relationship_to_heroine or "")
+        row.arc_start = _text(item, "arcStart", "arc_start", default=row.arc_start or "")
+        row.arc_end = _text(item, "arcEnd", "arc_end", default=row.arc_end or "")
+        row.ending = _text(item, "ending", default=row.ending or "")
+        row.raw_json = {**(row.raw_json or {}), **item}
+        db.add(row)
+
+
+def _upsert_family_relations_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any]) -> None:
+    existing = {(row.from_member, row.to_member, row.relation_type or ""): row for row in project.family_relations}
+    for item in [row for row in _as_list(_get(data, "familyRelations", "family_relations")) if isinstance(row, dict)]:
+        from_member = _text(item, "fromMember", "from_member")
+        to_member = _text(item, "toMember", "to_member")
+        if not from_member or not to_member:
+            continue
+        relation_type = _text(item, "relationType", "relation_type")
+        key = (from_member, to_member, relation_type or "")
+        row = existing.get(key) or LongNovelFamilyRelation(project_id=project.id, from_member=from_member, to_member=to_member)
+        row.relation_type = relation_type or row.relation_type
+        row.surface_relation = _text(item, "surfaceRelation", "surface_relation", default=row.surface_relation or "")
+        row.hidden_conflict = _text(item, "hiddenConflict", "hidden_conflict", default=row.hidden_conflict or "")
+        row.interest_conflict = _text(item, "interestConflict", "interest_conflict", default=row.interest_conflict or "")
+        row.emotional_debt = _text(item, "emotionalDebt", "emotional_debt", default=row.emotional_debt or "")
+        row.current_tension_level = _int_value(_get(item, "currentTensionLevel", "current_tension_level"), row.current_tension_level or 1)
+        row.raw_json = {**(row.raw_json or {}), **item}
+        db.add(row)
+
+
+def _upsert_conflicts_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any], *, current_chapter: int, target_chapters: int) -> None:
+    existing = {row.conflict_key: row for row in project.conflict_lines}
+    for item in [row for row in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(row, dict)]:
+        key = _text(item, "conflictKey", "conflict_key") or _text(item, "name")
+        name = _text(item, "name") or key
+        if not key or not name:
+            continue
+        row = existing.get(key) or LongNovelConflictLine(project_id=project.id, conflict_key=key, name=name)
+        row.name = name
+        row.conflict_type = _text(item, "conflictType", "conflict_type", default=row.conflict_type or "")
+        row.description = _text(item, "description", default=row.description or "")
+        row.introduced_chapter = min(target_chapters, max(1, _int_value(_get(item, "introducedChapter", "introduced_chapter"), row.introduced_chapter or 1)))
+        explosion = _int_value(_get(item, "plannedExplosionChapter", "planned_explosion_chapter"), row.planned_explosion_chapter or current_chapter + 5)
+        resolution = _int_value(_get(item, "plannedResolutionChapter", "planned_resolution_chapter"), row.planned_resolution_chapter or target_chapters)
+        row.planned_explosion_chapter = min(target_chapters, max(current_chapter + 1, explosion))
+        row.planned_resolution_chapter = min(target_chapters, max(row.planned_explosion_chapter, resolution))
+        row.status = _text(item, "status", default=row.status or "open") or "open"
+        row.importance = _text(item, "importance", default=row.importance or "normal") or "normal"
+        db.add(row)
+
+
+def _write_future_plans_from_replan(
+    db: Session,
+    project: LongNovelProject,
+    data: dict[str, Any],
+    *,
+    current_chapter: int,
+    target_chapters: int,
+    target_words_per_chapter: int,
+) -> None:
+    db.query(LongNovelChapterPlan).filter(
+        LongNovelChapterPlan.project_id == project.id,
+        LongNovelChapterPlan.chapter_number > current_chapter,
+    ).delete(synchronize_session=False)
+    by_number = {
+        _int_value(_get(item, "chapterNumber", "chapter_number"), 0): item
+        for item in _as_list(_get(data, "chapters"))
+        if isinstance(item, dict)
+    }
+    for number in range(current_chapter + 1, target_chapters + 1):
+        item = by_number[number]
+        plan = LongNovelChapterPlan(project_id=project.id, chapter_number=number)
+        plan.volume_number = _int_value(_get(item, "volumeNumber", "volume_number"), max(1, (number - 1) // 12 + 1))
+        plan.title = _clean_title(_text(item, "title"), f"第{number}章")
+        plan.target_words = target_words_per_chapter
+        plan.chapter_goal = _text(item, "chapterGoal", "chapter_goal")
+        plan.domestic_conflict = _text(item, "domesticConflict", "domestic_conflict")
+        plan.emotional_hook = _text(item, "emotionalHook", "emotional_hook")
+        plan.required_events = _as_list(_get(item, "requiredEvents", "required_events"))
+        plan.character_arc_move = _as_list(_get(item, "characterArcMove", "character_arc_move"))
+        plan.conflict_lines_to_advance = _as_list(_get(item, "conflictLinesToAdvance", "conflict_lines_to_advance"))
+        plan.forbidden_reveals = _as_list(_get(item, "forbiddenReveals", "forbidden_reveals"))
+        plan.ending_hook = _text(item, "endingHook", "ending_hook")
+        plan.raw_json = {
+            **item,
+            "targetWords": target_words_per_chapter,
+            "extensionMode": "system_replan_30w_continuation",
+            "lockedCompletedChapters": current_chapter,
+        }
+        plan.status = LongNovelChapterStatus.PLANNED
+        db.add(plan)
 
 
 def extend_family_project_to_target(
@@ -989,8 +1207,12 @@ def extend_family_project_to_target(
 
     project = _get_project(db, project_id, user)
     project = sync_family_project_progress(db, project)
+    if not _is_sister_account_project(project):
+        raise FamilyLongNovelError("30万续规划扩容目前只允许用于《嫂子的账本》这个项目，避免误伤其它长篇")
     current_chapter = max(0, int(project.current_chapter or 0))
     current_words = max(0, int(project.total_words or 0))
+    if current_chapter <= 0:
+        raise FamilyLongNovelError("项目还没有已完成章节，不能做承接式30万续规划")
     target_words = max(current_words + 1, min(500000, int(target_words or 300000)))
     future_chapter_words = max(1200, min(12000, int(future_chapter_words or 4000)))
     remaining_words = max(0, target_words - current_words)
@@ -1003,52 +1225,60 @@ def extend_family_project_to_target(
     actual_future_count = max(1, target_chapters - current_chapter)
     actual_future_words = max(1200, int(round(remaining_words / actual_future_count)))
 
-    active_conflicts = _active_conflict_payloads(db, project.id)
-    db.query(LongNovelChapterPlan).filter(
-        LongNovelChapterPlan.project_id == project.id,
-        LongNovelChapterPlan.chapter_number > current_chapter,
-    ).delete(synchronize_session=False)
-
-    for number in range(current_chapter + 1, target_chapters + 1):
-        item = _sister_account_expansion_plan(
-            project,
-            number=number,
-            current_chapter=current_chapter,
-            target_chapters=target_chapters,
-            target_words=actual_future_words,
-            active_conflicts=active_conflicts,
-            expansion_notes=expansion_notes,
-        )
-        plan = LongNovelChapterPlan(
-            project_id=project.id,
-            chapter_number=number,
-            volume_number=item["volumeNumber"],
-            title=_clean_title(item["title"], f"第{number}章"),
-            target_words=actual_future_words,
-            chapter_goal=item["chapterGoal"],
-            domestic_conflict=item["domesticConflict"],
-            emotional_hook=item["emotionalHook"],
-            required_events=item["requiredEvents"],
-            character_arc_move=item["characterArcMove"],
-            conflict_lines_to_advance=item["conflictLinesToAdvance"],
-            forbidden_reveals=item["forbiddenReveals"],
-            ending_hook=item["endingHook"],
-            raw_json=item,
-            status=LongNovelChapterStatus.PLANNED,
-        )
-        db.add(plan)
-
-    for row in db.query(LongNovelConflictLine).filter(LongNovelConflictLine.project_id == project.id).all():
-        if row.status not in {"resolved", "closed", "done"}:
-            resolution_chapter = max(current_chapter + 1, target_chapters - 2)
-            explosion_chapter = max(current_chapter + 1, min(resolution_chapter, current_chapter + 8))
-            row.planned_resolution_chapter = max(row.planned_resolution_chapter or 0, resolution_chapter)
-            row.planned_explosion_chapter = max(row.planned_explosion_chapter or 0, explosion_chapter)
-            db.add(row)
-
     project.target_words = target_words
     project.target_chapters = target_chapters
+    db.add(project)
+    db.flush()
+
+    context = _continuation_replan_context(
+        db,
+        project,
+        current_chapter=current_chapter,
+        target_words=target_words,
+        target_chapters=target_chapters,
+        target_words_per_chapter=actual_future_words,
+        expansion_notes=expansion_notes,
+    )
+    prompt = render_prompt(
+        ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
+        expansion_context=_json_dumps(context),
+    )
+    _mark_project_generating(db, project)
+    try:
+        data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=None,
+            action="replan_30w_continuation",
+            tier="strong",
+            prompt=prompt,
+            max_output_tokens=_outline_max_output_tokens(project),
+        )
+        _validate_continuation_replan(
+            data,
+            current_chapter=current_chapter,
+            target_chapters=target_chapters,
+        )
+    except Exception:
+        _mark_generation_failed(db, project)
+        raise
+
+    _apply_bible_patch(project, data, current_chapter=current_chapter, target_words=target_words, target_chapters=target_chapters)
+    db.add(project.bible)
+    _upsert_family_members_from_replan(db, project, data)
+    _upsert_family_relations_from_replan(db, project, data)
+    _upsert_conflicts_from_replan(db, project, data, current_chapter=current_chapter, target_chapters=target_chapters)
+    _write_future_plans_from_replan(
+        db,
+        project,
+        data,
+        current_chapter=current_chapter,
+        target_chapters=target_chapters,
+        target_words_per_chapter=actual_future_words,
+    )
     if project.status not in {LongNovelProjectStatus.PAUSED, LongNovelProjectStatus.GENERATING}:
+        project.status = LongNovelProjectStatus.ACTIVE
+    else:
         project.status = LongNovelProjectStatus.ACTIVE
     db.add(project)
     db.add(
@@ -1056,13 +1286,13 @@ def extend_family_project_to_target(
             project_id=project.id,
             chapter_number=None,
             action="extend_target",
-            provider="local",
-            model="deterministic-plan",
+            provider=settings.WRITER_PROVIDER,
+            model=_model_for_tier("strong"),
             prompt_tokens=0,
             completion_tokens=0,
             estimated_cost=0.0,
             status="completed",
-            error=f"target_words={target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
+            error=f"system_replan_30w_continuation target_words={target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
         )
     )
     db.commit()

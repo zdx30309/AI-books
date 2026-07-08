@@ -173,6 +173,125 @@ ZHOULI_OUTLINE_PROMPT = """
 """.strip()
 
 
+ZHOULI_30W_CONTINUATION_REPLAN_PROMPT = """
+你是现有长篇小说工程的总编剧和连续性规划器。现在不是新开一本书，也不是人工续写几章，而是把一本已经完成前文的家长里短长篇，基于现有正文和状态，重新升级为目标字数的完整长篇项目。
+
+{common_rules}
+
+核心任务：
+- 只规划后续，不改写已完成章节正文。
+- 必须把已完成章节、已登记人物状态、物品状态、事实、矛盾线、关系网和作品圣经全部当成硬事实。
+- 必须像重新规划一个目标字数项目一样，升级作品圣经、后续终局、分卷大纲、矛盾线时间表、人物关系推进、未来章节计划。
+- 后续章节必须承接前文已经发生的剧情，不能把人物、物品、矛盾、账目、亲戚关系、上一章钩子忘掉或推翻。
+- 可以新增后续人物、后续矛盾线、后续证据物、后续关系变化，但必须从前文已经存在的家庭结构、账目、物品、关系或事件中自然长出来。
+- 不能使用固定模板，不能让多个章节只换标题但目标、冲突、钩子相同。
+- 不要生成正文，只输出规划 JSON。
+
+规划原则：
+- 已完成章节是地基，后续所有章节都必须解释为“从这些地基上长出来”。
+- 30 万字体量需要中段足够厚：每 3-5 章一个小推进，每 10-15 章一个大爆点，最后 6-10 章收束主线。
+- 每章必须至少有一个具体变化：信息变化、证据变化、利益位置变化、人物站队变化、关系变化、物品状态变化或情绪边界变化。
+- 结局不能原地收掉，必须把终局延后，让账、责任、边界、关系和代价逐步落地。
+- 如果旧大纲、旧结局或旧章节计划太短，要明确在 biblePatch/targetExpansion 中写清楚如何延后和扩容。
+
+扩容上下文：
+{expansion_context}
+
+输出严格 JSON，不要代码块：
+{{
+  "biblePatch": {{
+    "theme": "",
+    "corePromise": "",
+    "mainConflict": "",
+    "emotionalHook": "",
+    "familyBackground": "",
+    "endingDirection": "",
+    "worldRules": [],
+    "styleRules": [],
+    "forbiddenRules": [],
+    "targetExpansion": {{
+      "lockedCompletedChapters": 0,
+      "continuityPrinciples": [],
+      "futureVolumeArcs": [
+        {{
+          "volumeNumber": 2,
+          "title": "",
+          "startChapter": 11,
+          "endChapter": 22,
+          "goal": "",
+          "majorExplosion": "",
+          "mustCarryFromCompletedChapters": []
+        }}
+      ]
+    }}
+  }},
+  "familyMembers": [
+    {{
+      "name": "",
+      "familyRole": "",
+      "publicImage": "",
+      "privateDesire": "",
+      "grievance": "",
+      "leverage": "",
+      "weakness": "",
+      "secret": "",
+      "relationshipToHeroine": "",
+      "arcStart": "",
+      "arcEnd": "",
+      "ending": ""
+    }}
+  ],
+  "familyRelations": [
+    {{
+      "fromMember": "",
+      "toMember": "",
+      "relationType": "",
+      "surfaceRelation": "",
+      "hiddenConflict": "",
+      "interestConflict": "",
+      "emotionalDebt": "",
+      "currentTensionLevel": 5
+    }}
+  ],
+  "conflictLines": [
+    {{
+      "conflictKey": "",
+      "name": "",
+      "conflictType": "",
+      "description": "",
+      "introducedChapter": 1,
+      "plannedExplosionChapter": 20,
+      "plannedResolutionChapter": 60,
+      "status": "open",
+      "importance": "core"
+    }}
+  ],
+  "chapters": [
+    {{
+      "chapterNumber": 11,
+      "volumeNumber": 2,
+      "title": "",
+      "targetWords": 4000,
+      "chapterGoal": "",
+      "domesticConflict": "",
+      "emotionalHook": "",
+      "requiredEvents": [],
+      "characterArcMove": [],
+      "conflictLinesToAdvance": [],
+      "forbiddenReveals": [],
+      "endingHook": ""
+    }}
+  ],
+  "qualitySelfCheck": {{
+    "completedChaptersPreserved": true,
+    "futureChapterCoverage": "",
+    "continuityRisks": [],
+    "whyThisStillFeelsLikeOneNovel": ""
+  }}
+}}
+""".strip()
+
+
 ZHOULI_CHAPTER_PLAN_PROMPT = """
 你是妯娌长篇小说分章导演。请为指定章节生成 3-5 个可执行场景。
 
