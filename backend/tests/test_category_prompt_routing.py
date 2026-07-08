@@ -544,6 +544,10 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
     assert "权威参照译本和古汉语词典三方校准" in writer
+    assert "联网检索专业网站" in writer
+    assert "不得用百科摘抄、论坛、营销号" in writer
+    assert "不能望文生义" in writer
+    assert "现代汉语常见意思拆字" in writer
     assert "更大白话一点" in writer
     assert "过硬的好品格" in writer
     assert "如履薄冰的压力" in writer
@@ -557,12 +561,17 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "（翻译）现代白话译文" in source_pack
     assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
     assert "以该权威译本的断句、关键字词释义" in source_pack
+    assert "联网检索专业网站做交叉验证" in source_pack
+    assert "不得用百科摘抄、论坛、营销号" in source_pack
+    assert "不得按现代汉语常见意思拆字理解原文" in source_pack
     assert "便觉百行皆非" in source_pack
     assert "【注释】【译文】【点评】必须单独成行" not in source_pack
     for stage_prompt in (polish, refine, formatter):
         assert "古文白话参照译写版语义锁" in stage_prompt
         assert "不得重新翻译古文" in stage_prompt
         assert "古汉语词典只用于核对和补足" in stage_prompt
+        assert "联网检索专业网站" in stage_prompt
+        assert "不得根据现代汉语常见意思望文生义" in stage_prompt
         assert "更大白话一点" in stage_prompt
         assert "过硬的好品格" in stage_prompt
         assert "便觉、始觉、方觉" in stage_prompt
@@ -592,7 +601,9 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
-    assert "权威译本方向，再用古汉语词典补缺" in with_reference
+    assert "权威译本方向，再用联网专业资料和古汉语词典补缺" in with_reference
+    assert "联网检索专业网站交叉验证" in with_reference
+    assert "不得按现代汉语常见意思拆字理解原文" in with_reference
     assert "更大白话一点" in with_reference
     assert "过硬品格、现实严酷考验" in with_reference
     assert "便觉、始觉、方觉" in with_reference

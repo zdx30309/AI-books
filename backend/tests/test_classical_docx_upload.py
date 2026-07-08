@@ -227,6 +227,8 @@ def test_default_classical_reference_template_can_attach_to_config(tmp_path, mon
     assert cfg["style_reference"] == "菜根谭-中华书局参照范本"
     assert cfg["style_notes_path"].endswith("default_reference.txt")
     assert "固定参照译本字词校准范本" in cfg["style_notes"]
+    assert "联网检索专业网站交叉验证" in cfg["style_notes"]
+    assert "不得望文生义" in cfg["style_notes"]
 
 
 def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
@@ -312,5 +314,7 @@ def test_default_reference_template_feeds_reference_rewrite_worker(tmp_path, mon
     )
 
     assert "固定参照译本字词校准范本" in loaded
+    assert "联网检索专业网站交叉验证" in loaded
+    assert "不得望文生义" in loaded
     assert "原文：栖守道德者" in loaded
     assert "译文：守住道德的人" in loaded
