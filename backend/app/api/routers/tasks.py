@@ -93,7 +93,7 @@ from app.services.classical_reference_templates import (
 )
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
-from app.utils.docx_text import DocxTextError, extract_classical_docx_text
+from app.utils.docx_text import DocxTextError, extract_classical_document_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
@@ -1058,7 +1058,7 @@ def create_emotion_reference_article_task_batch(
     "/classical-chinese/docx",
     response_model=CreateTaskResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="上传 Word 并创建古文白话任务",
+    summary="上传 Word/PDF 并创建古文白话任务",
 )
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
@@ -1073,11 +1073,11 @@ async def create_classical_chinese_from_docx(
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
     filename = file.filename or "classical_chinese.docx"
-    if not filename.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="请上传 .docx 格式的 Word 文件")
+    if Path(filename).suffix.lower() not in {".docx", ".pdf"}:
+        raise HTTPException(status_code=400, detail="请上传 .docx 或 .pdf 格式的古文原文文件")
     content = await file.read()
     try:
-        raw_text = extract_classical_docx_text(content)
+        raw_text = extract_classical_document_text(content, filename)
     except DocxTextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     try:
@@ -1085,18 +1085,18 @@ async def create_classical_chinese_from_docx(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS:
-        raise HTTPException(status_code=400, detail="Word 上传只支持古文白话相关分类")
+        raise HTTPException(status_code=400, detail="Word/PDF 上传只支持古文白话相关分类")
     reference_text = ""
     reference_filename = ""
     if reference_file is not None and (reference_file.filename or "").strip():
         if normalized_category != CLASSICAL_REFERENCE_REWRITE_CATEGORY:
             raise HTTPException(status_code=400, detail="参考译文文件只支持古文白话（参照译写版）")
         reference_filename = (reference_file.filename or "reference_translation.docx")[:255]
-        if not reference_filename.lower().endswith(".docx"):
-            raise HTTPException(status_code=400, detail="参考译文请上传 .docx 格式的 Word 文件")
+        if Path(reference_filename).suffix.lower() not in {".docx", ".pdf"}:
+            raise HTTPException(status_code=400, detail="参考译文请上传 .docx 或 .pdf 格式的文件")
         reference_content = await reference_file.read()
         try:
-            reference_text = extract_classical_docx_text(reference_content).strip()
+            reference_text = extract_classical_document_text(reference_content, reference_filename).strip()
         except DocxTextError as exc:
             raise HTTPException(status_code=exc.status_code, detail=f"参考译文读取失败：{exc}") from exc
     cfg = _normalize_task_config(
@@ -1107,7 +1107,7 @@ async def create_classical_chinese_from_docx(
             "title": (title.strip() or Path(filename).stem.strip())[:120],
             "raw_text_chars": len(raw_text),
             "source_filename": filename[:255],
-            "input_source": "docx_upload",
+            "input_source": "document_upload",
         }
     )
     style_notes_parts = [style_notes.strip()]
@@ -1138,7 +1138,7 @@ async def create_classical_chinese_from_docx(
         if should_externalize_style_notes:
             cfg["style_notes_preview_chars"] = len(cfg["style_notes"])
     response = _create_and_dispatch_task(
-        source_url=f"manual://{normalized_category}_docx/{filename[:120]}",
+        source_url=f"manual://{normalized_category}_document/{filename[:120]}",
         config=cfg,
         db=db,
         user=user,
@@ -1167,7 +1167,7 @@ async def create_classical_chinese_from_docx(
         db.commit()
         raise HTTPException(
             status_code=503,
-            detail=f"Word 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
+            detail=f"Word/PDF 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
         ) from exc
     return response
 

@@ -669,7 +669,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
     if (isClassicalChinese && classicalInputMode === "docx") {
       if (!classicalDocxFile) {
-        setError("请上传 .docx 格式的 Word 文件");
+        setError("请上传 .docx 或 .pdf 格式的文件");
         return;
       }
       setSubmitting(true);
@@ -1025,8 +1025,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     </div>
                     <p className="mt-1 text-xs leading-relaxed text-warm-500">
                       {classicalReferenceTemplate?.enabled
-                        ? `${classicalReferenceTemplate.name || classicalReferenceTemplate.source_filename}，约 ${formatChineseCharCount(classicalReferenceTemplate.chars)}。未上传第二份 Word 时默认使用；上传第二份 Word 时本次优先使用上传文件。`
-                        : "服务器还没有固定参照范本；可先上传第二份参照译本 Word。"}
+                        ? `${classicalReferenceTemplate.name || classicalReferenceTemplate.source_filename}，约 ${formatChineseCharCount(classicalReferenceTemplate.chars)}。未上传第二份 Word/PDF 时默认使用；上传第二份 Word/PDF 时本次优先使用上传文件。`
+                        : "服务器还没有固定参照范本；可先上传第二份参照译本 Word/PDF。"}
                     </p>
                   </div>
                 )}
@@ -1060,7 +1060,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     >
                       <UploadCloud className="mb-2 h-5 w-5 text-gold-300" strokeWidth={1.5} />
                       <span className="text-sm text-warm-100">
-                        {classicalReferenceDocxFile?.name || "第二份：可选上传参照译本 Word"}
+                        {classicalReferenceDocxFile?.name || "第二份：可选上传参照译本 Word/PDF"}
                       </span>
                       <span className="mt-1 text-xs leading-relaxed text-warm-500">
                         这是第二份文档，用于释义、术语和断句参考，不复制译文句子
@@ -1069,7 +1069,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     <input
                       id="classical-reference-docx"
                       type="file"
-                      accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                       className="sr-only"
                       onChange={(event) => {
                         setClassicalReferenceDocxFile(event.target.files?.[0] ?? null);
@@ -1080,7 +1080,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 )}
                 <p className="text-xs leading-relaxed text-warm-500">
                   {isClassicalReferenceRewrite
-                    ? "原文 Word 是生成依据；参照译本 Word 只用于释义、术语、断句和语气密度参考，不会复制参考译文句子。"
+                    ? "原文 Word/PDF 是生成依据；参照译本 Word/PDF 只用于释义、术语、断句和语气密度参考，不会复制参考译文句子。"
                     : "系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。"}
                 </p>
               </div>
@@ -1380,8 +1380,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     />
                     <p className="mt-2 text-xs leading-relaxed text-warm-500">
                       {isClassicalReferenceRewrite
-                        ? "参照译写需要两份材料：原文 Word 作为生成依据，参照译本 Word 作为可选参考。最终书名固定为“原书名（白话版）”。"
-                        : "最终书名会固定为“原书名（白话版）”。上传 Word 时可留空，系统会用文件名作为原书名。"}
+                        ? "参照译写需要两份材料：原文 Word/PDF 作为生成依据，参照译本 Word/PDF 作为可选参考。最终书名固定为“原书名（白话版）”。"
+                        : "最终书名会固定为“原书名（白话版）”。上传 Word/PDF 时可留空，系统会用文件名作为原书名。"}
                     </p>
                   </div>
                   <div>
@@ -1426,7 +1426,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                           : "text-warm-500 hover:text-warm-200"
                       }`}
                     >
-                      {isClassicalReferenceRewrite ? "上传原文 Word" : "上传 Word"}
+                      {isClassicalReferenceRewrite ? "上传原文 Word/PDF" : "上传 Word/PDF"}
                     </button>
                   </div>
                 </div>
@@ -1438,7 +1438,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     htmlFor="classical-docx"
                     className="mb-2 block text-[11px] tracking-widest text-warm-300"
                   >
-                    {isClassicalReferenceRewrite ? "第一份：原文 Word 文档" : "Word 文档"}
+                    {isClassicalReferenceRewrite ? "第一份：原文 Word/PDF 文档" : "Word/PDF 文档"}
                   </label>
                   <label
                     htmlFor="classical-docx"
@@ -1446,18 +1446,18 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   >
                     <UploadCloud className="mb-3 h-7 w-7 text-gold-300" strokeWidth={1.5} />
                     <span className="text-sm text-warm-100">
-                      {classicalDocxFile?.name || (isClassicalReferenceRewrite ? "选择原文 .docx 文件" : "选择 .docx 文件")}
+                      {classicalDocxFile?.name || (isClassicalReferenceRewrite ? "选择原文 .docx / .pdf 文件" : "选择 .docx / .pdf 文件")}
                     </span>
                     <span className="mt-2 text-xs leading-relaxed text-warm-500">
                       {isClassicalReferenceRewrite
-                        ? "系统会读取这份 Word 作为古文原文，再结合参考译文生成参照译写稿"
-                        : `系统会读取 Word 正文，并按${classicalDisplayName}流程生成`}
+                        ? "系统会读取这份 Word/PDF 作为古文原文，再结合参考译文生成参照译写稿"
+                        : `系统会读取 Word/PDF 正文，并按${classicalDisplayName}流程生成`}
                     </span>
                   </label>
                   <input
                     id="classical-docx"
                     type="file"
-                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     className="sr-only"
                     onChange={(event) => {
                       setClassicalDocxFile(event.target.files?.[0] ?? null);
