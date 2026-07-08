@@ -176,6 +176,33 @@ def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
     assert not hits
 
 
+def test_final_hard_error_gate_allows_normal_finance_topic_sentence_with_risk_keyword() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 财经科技
+技术创新才可能真正帮我们管理风险，而不是制造麻烦。如果这些账算得不明不白，那些看起来简单好用的交易界面，其实只会掩盖背后复杂的风险分配陷阱。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="finance_technology")
+
+    assert "正文内小标题未标准化为 ###" not in hits
+
+
+def test_final_hard_error_gate_detects_inline_noun_phrase_pseudo_subheading() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 新药中国路
+扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
+基础研究与转化难题，那些全球首创的药物，往往诞生于对疾病机制的深刻洞察。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="finance_technology")
+
+    assert len(hits["正文内小标题未标准化为 ###"]) == 2
+
+
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
     markdown = """@最终书名
 盐铁论（白话版）

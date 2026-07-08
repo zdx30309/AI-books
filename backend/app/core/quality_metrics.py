@@ -450,6 +450,38 @@ _INLINE_SUBHEADING_KEYWORDS = (
     "竞争",
     "转化",
 )
+_INLINE_SUBHEADING_SENTENCE_HINTS = (
+    "我们",
+    "你",
+    "他",
+    "她",
+    "它",
+    "大家",
+    "人们",
+    "可能",
+    "可以",
+    "能够",
+    "能不能",
+    "能否",
+    "应该",
+    "必须",
+    "需要",
+    "值得",
+    "不是",
+    "不会",
+    "不能",
+    "只会",
+    "才会",
+    "才可能",
+    "帮",
+    "让",
+    "把",
+    "被",
+    "成为",
+    "变成",
+    "意味着",
+    "取决于",
+)
 _SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
     "语义搭配硬伤：菜/饭菜不应写成好喝": (
         r"re:(?:菜|饭菜|菜肴|菜品|饭|米饭|面条|馒头|包子|点心|肉|鱼)"
@@ -523,6 +555,22 @@ def _is_allowed_internal_subheading(line: str) -> bool:
     return bool(match and _looks_like_naked_subheading(match.group(1)))
 
 
+def _looks_like_inline_pseudo_subheading_title(title: str) -> bool:
+    title = title.strip().lstrip("@").strip()
+    if not title or _cjk_ratio(title) < 0.55:
+        return False
+    if not any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS):
+        return False
+    if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
+        return False
+    # Inline pseudo-headings are usually short noun labels such as
+    # “扎堆竞争的代价，...”. Normal topic sentences can also contain words like
+    # “风险/规则”, so do not block long predicate-bearing sentences.
+    if len(title) > 12 and any(hint in title for hint in _INLINE_SUBHEADING_SENTENCE_HINTS):
+        return False
+    return True
+
+
 def _is_classical_interleaved_label_line(line: str, *, category: str | None = None) -> bool:
     if (category or "").strip().lower() not in _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES:
         return False
@@ -586,14 +634,8 @@ def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) 
         match = re.match(r"^([^。！？；，、,.!?;：:\n]{3,16})[，,：:](.{8,})$", line)
         if not match:
             continue
-        title = match.group(1).strip().lstrip("@").strip()
-        if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
-            continue
-        if (
-            title
-            and _cjk_ratio(title) >= 0.55
-            and any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS)
-        ):
+        title = match.group(1)
+        if _looks_like_inline_pseudo_subheading_title(title):
             _add_noise_hit(results, "正文内小标题未标准化为 ###", line)
     return results
 
