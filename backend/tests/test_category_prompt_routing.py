@@ -609,6 +609,81 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "便觉、始觉、方觉" in with_reference
 
 
+def test_classical_reference_rewrite_generation_chain_keeps_online_validation_rules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    final_text = """@最终书名
+菜根谭（白话版）
+@最终简介
+测试简介。
+@目录
+1. 测试
+@导言
+测试导言。
+@正文
+（原文）欲做精金美玉的人品，定从烈火中煅来。
+
+（翻译）一个人要想拥有真正过硬的好品格，就必须在现实的严酷考验中不断捶打自己。
+"""
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        captured["writer"] = prompt
+        return final_text
+
+    async def fake_polish_chunks(text: str, **kwargs: object) -> str:
+        captured["polish_text"] = text
+        captured["polish_system"] = str(kwargs["system_instruction"])
+        return text
+
+    async def fake_refine_chunks(text: str, **kwargs: object) -> str:
+        captured["refine_text"] = text
+        captured["refine_system"] = str(kwargs["system_instruction"])
+        return text
+
+    def fake_format_book_text(text: str, **kwargs: object) -> str:
+        captured["format_text"] = text
+        captured["format_prompt"] = str(kwargs["prompt_template"])
+        return text
+
+    async def fake_repair_classical_quality_once(text: str, **_: object) -> str:
+        return text
+
+    async def fake_repair_final_hard_errors_once(text: str, **_: object) -> str:
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
+    monkeypatch.setattr(content_engine, "_refine_by_paragraph_chunks_strict", fake_refine_chunks)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+    monkeypatch.setattr(content_engine, "_repair_classical_quality_once", fake_repair_classical_quality_once)
+    monkeypatch.setattr(content_engine, "_repair_final_hard_errors_once", fake_repair_final_hard_errors_once)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "欲做精金美玉的人品，定从烈火中煅来。",
+            category="古文白话参照译写版",
+            output_dir=tmp_path / "classical-reference-chain",
+            style_reference="中华书局参照译本",
+            style_notes="参考译文：想要磨炼出如精金美玉般纯粹的人品，定要经过烈火般的煅烧。",
+            classical_original_title="菜根谭",
+        )
+    )
+
+    assert "菜根谭（白话版）" in result
+    assert "联网检索专业网站做交叉验证" in captured["writer"]
+    assert "不得用百科摘抄、论坛、营销号" in captured["writer"]
+    assert "不得按现代汉语常见意思拆字理解原文" in captured["writer"]
+    assert "参考对象：中华书局参照译本" in captured["writer"]
+    assert "参考译文：想要磨炼出如精金美玉般纯粹的人品" in captured["writer"]
+
+    for key in ("polish_system", "refine_system", "format_prompt"):
+        assert "古文白话参照译写版语义锁" in captured[key]
+        assert "联网检索专业网站" in captured[key]
+        assert "不得根据现代汉语常见意思望文生义" in captured[key]
+
+
 def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
     notes = "\n".join(
         [
