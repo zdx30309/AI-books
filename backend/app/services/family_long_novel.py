@@ -861,6 +861,215 @@ def generate_family_novel_outline(
     return project
 
 
+_SISTER_ACCOUNT_EXPANSION_TITLES = [
+    "旧账又响",
+    "借条露头",
+    "饭桌翻脸",
+    "病历压人",
+    "钥匙不见",
+    "亲戚围门",
+    "房证落灰",
+    "账本缺页",
+    "养老摊牌",
+    "大嫂开口",
+]
+
+
+def _sister_account_expansion_phase(position: int, total: int) -> dict[str, str]:
+    ratio = position / max(total, 1)
+    if ratio <= 0.22:
+        return {
+            "name": "旧账重翻",
+            "goal": "把已完成章节留下的账本、养老、房产和亲戚舆论重新接上，让旧矛盾在新证据里继续发酵。",
+            "conflict": "围绕一笔旧账、一张借条或一次饭桌质问，让婆家把亲情压力重新压到女主身上。",
+            "hook": "有人拿出一条看似不起眼的新账目，让下一章必须继续追问。",
+        }
+    if ratio <= 0.48:
+        return {
+            "name": "人情围堵",
+            "goal": "扩大亲戚舆论和家庭站队，让女主不再只面对一个人，而是面对整套人情账。",
+            "conflict": "亲戚、妯娌和丈夫各自用养老、孩子、面子或旧恩情逼女主让步。",
+            "hook": "女主发现有人把账本里的一个数字故意说反，局面开始反咬。",
+        }
+    if ratio <= 0.72:
+        return {
+            "name": "证据反转",
+            "goal": "让证据链一点点变硬，旧账不再只是争吵，而开始改变家庭里的权力位置。",
+            "conflict": "房产证、存折、病历、收据或转账记录出现新的对应关系，逼每个人重新表态。",
+            "hook": "一份原本被忽略的凭证指向更早的一笔账，下一章必须追到源头。",
+        }
+    if ratio <= 0.9:
+        return {
+            "name": "分家逼宫",
+            "goal": "把账本线推到分家、养老、房产和亲情决裂的综合冲突上。",
+            "conflict": "婆家试图用分家协议或养老安排锁死女主，女主用账本和人证逼对方付出代价。",
+            "hook": "摊牌前夜，关键证人或关键物件突然被人动过。",
+        }
+    return {
+        "name": "账本摊牌",
+        "goal": "把长期积累的账目、偏心和关系债推向最后洗牌，但不靠机械降神。",
+        "conflict": "所有人围绕账本最后一次表态，谁欠了谁、谁占了谁、谁还想装糊涂都必须落到具体证据上。",
+        "hook": "最后一个没算清的人情账浮出来，推动终局收束。",
+    }
+
+
+def _future_plan_conflict_keys(active_conflicts: list[dict[str, Any]], offset: int) -> list[str]:
+    keys = [
+        str(item.get("conflictKey") or item.get("name") or "").strip()
+        for item in active_conflicts
+        if str(item.get("conflictKey") or item.get("name") or "").strip()
+    ]
+    if not keys:
+        keys = ["账本线", "养老线", "房产线", "亲戚舆论线"]
+    first = keys[(offset - 1) % len(keys)]
+    second = keys[offset % len(keys)] if len(keys) > 1 else first
+    return list(dict.fromkeys([first, second]))
+
+
+def _sister_account_expansion_plan(
+    project: LongNovelProject,
+    *,
+    number: int,
+    current_chapter: int,
+    target_chapters: int,
+    target_words: int,
+    active_conflicts: list[dict[str, Any]],
+    expansion_notes: str | None,
+) -> dict[str, Any]:
+    offset = number - current_chapter
+    total_future = max(1, target_chapters - current_chapter)
+    phase = _sister_account_expansion_phase(offset, total_future)
+    conflict_keys = _future_plan_conflict_keys(active_conflicts, offset)
+    title_seed = _SISTER_ACCOUNT_EXPANSION_TITLES[(offset - 1) % len(_SISTER_ACCOUNT_EXPANSION_TITLES)]
+    note = (expansion_notes or "").strip()
+    note_event = f"结合扩容备注推进：{note[:80]}" if note else f"沿着“{phase['name']}”阶段继续推进账本、养老、房产和舆论冲突"
+    return {
+        "chapterNumber": number,
+        "volumeNumber": max(1, (number - 1) // 12 + 1),
+        "title": title_seed,
+        "targetWords": target_words,
+        "chapterGoal": phase["goal"],
+        "domesticConflict": phase["conflict"],
+        "emotionalHook": phase["hook"],
+        "requiredEvents": [
+            "开章 300-500 字内进入具体家庭矛盾，不写长铺垫",
+            note_event,
+            "让账目、证据、关系站队或利益位置至少发生一次明确变化",
+        ],
+        "characterArcMove": [
+            "女主保持循序渐进的清醒和反击，不突然无敌",
+            "丈夫、婆婆、妯娌或亲戚至少一方因证据变化改变话术或位置",
+        ],
+        "conflictLinesToAdvance": conflict_keys,
+        "forbiddenReveals": [
+            "不得推翻已完成章节事实",
+            "不得提前解决终局矛盾",
+            "不得新增重生、系统、霸总救场或机械降神",
+        ],
+        "endingHook": phase["hook"],
+        "extensionMode": "sister_account_book_300k",
+        "sourceProjectTitle": project.title,
+    }
+
+
+def extend_family_project_to_target(
+    db: Session,
+    project_id: UUID,
+    user: User | None = None,
+    *,
+    target_words: int = 300000,
+    future_chapter_words: int = 4000,
+    expansion_notes: str | None = None,
+) -> LongNovelProject:
+    """Extend one family project by rebuilding only future chapter plans.
+
+    Completed chapters and extracted canon/state ledgers are intentionally left
+    untouched. This is a project-plan expansion, not a manuscript rewrite.
+    """
+
+    project = _get_project(db, project_id, user)
+    project = sync_family_project_progress(db, project)
+    current_chapter = max(0, int(project.current_chapter or 0))
+    current_words = max(0, int(project.total_words or 0))
+    target_words = max(current_words + 1, min(500000, int(target_words or 300000)))
+    future_chapter_words = max(1200, min(12000, int(future_chapter_words or 4000)))
+    remaining_words = max(0, target_words - current_words)
+    future_count = max(1, (remaining_words + future_chapter_words - 1) // future_chapter_words)
+    target_chapters = min(80, max(int(project.target_chapters or 0), current_chapter + future_count))
+    if target_chapters <= current_chapter:
+        target_chapters = min(80, current_chapter + 1)
+    if target_chapters <= current_chapter:
+        raise FamilyLongNovelError("当前项目已达到最大章节数，无法继续扩容")
+    actual_future_count = max(1, target_chapters - current_chapter)
+    actual_future_words = max(1200, int(round(remaining_words / actual_future_count)))
+
+    active_conflicts = _active_conflict_payloads(db, project.id)
+    db.query(LongNovelChapterPlan).filter(
+        LongNovelChapterPlan.project_id == project.id,
+        LongNovelChapterPlan.chapter_number > current_chapter,
+    ).delete(synchronize_session=False)
+
+    for number in range(current_chapter + 1, target_chapters + 1):
+        item = _sister_account_expansion_plan(
+            project,
+            number=number,
+            current_chapter=current_chapter,
+            target_chapters=target_chapters,
+            target_words=actual_future_words,
+            active_conflicts=active_conflicts,
+            expansion_notes=expansion_notes,
+        )
+        plan = LongNovelChapterPlan(
+            project_id=project.id,
+            chapter_number=number,
+            volume_number=item["volumeNumber"],
+            title=_clean_title(item["title"], f"第{number}章"),
+            target_words=actual_future_words,
+            chapter_goal=item["chapterGoal"],
+            domestic_conflict=item["domesticConflict"],
+            emotional_hook=item["emotionalHook"],
+            required_events=item["requiredEvents"],
+            character_arc_move=item["characterArcMove"],
+            conflict_lines_to_advance=item["conflictLinesToAdvance"],
+            forbidden_reveals=item["forbiddenReveals"],
+            ending_hook=item["endingHook"],
+            raw_json=item,
+            status=LongNovelChapterStatus.PLANNED,
+        )
+        db.add(plan)
+
+    for row in db.query(LongNovelConflictLine).filter(LongNovelConflictLine.project_id == project.id).all():
+        if row.status not in {"resolved", "closed", "done"}:
+            resolution_chapter = max(current_chapter + 1, target_chapters - 2)
+            explosion_chapter = max(current_chapter + 1, min(resolution_chapter, current_chapter + 8))
+            row.planned_resolution_chapter = max(row.planned_resolution_chapter or 0, resolution_chapter)
+            row.planned_explosion_chapter = max(row.planned_explosion_chapter or 0, explosion_chapter)
+            db.add(row)
+
+    project.target_words = target_words
+    project.target_chapters = target_chapters
+    if project.status not in {LongNovelProjectStatus.PAUSED, LongNovelProjectStatus.GENERATING}:
+        project.status = LongNovelProjectStatus.ACTIVE
+    db.add(project)
+    db.add(
+        LongNovelGenerationLog(
+            project_id=project.id,
+            chapter_number=None,
+            action="extend_target",
+            provider="local",
+            model="deterministic-plan",
+            prompt_tokens=0,
+            completion_tokens=0,
+            estimated_cost=0.0,
+            status="completed",
+            error=f"target_words={target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
+        )
+    )
+    db.commit()
+    db.refresh(project)
+    return project
+
+
 def _clip_text(text: str | None, limit: int) -> str:
     value = (text or "").strip()
     return value if len(value) <= limit else value[-limit:]

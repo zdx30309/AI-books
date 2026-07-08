@@ -1551,10 +1551,23 @@ CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT = """【古文白话参照译�
 """
 
 
+CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT = """【古文白话参照译写版文气润色层】
+- 这一步只做“译后润色”，不重新翻译，不新增注释、点评、赏析或人生总结。
+- 翻译段要从“语文教材式解释”改成“普通读者能顺着读下去的大白话”，有气口、有停顿、有一点文气，但不能油滑、煽情或鸡汤。
+- 不要使用“这句话的意思是”“这说明”“所谓”“也就是说”“我们可以看出”“由此可见”等讲义腔开头。
+- 每个翻译段都要像一段自然现代汉语：先把原文的判断说清，再把古典比喻落到现实经验里；句子可以稍微舒展，但不得改义、改轻重、改比喻方向。
+- 中华书局或用户指定参考译文命中的义项、断句和术语仍是第一依据；古汉语词典只用来校核疑难字词，不得推翻已命中的权威译义。
+- 不要把“精金美玉、烈火、薄冰”硬留成直译腔；要落成“过硬的好品格、现实的严酷考验、如履薄冰的压力下踏实走好每一步”这类更大白话的表达。
+- 输出结构仍然只保留“（原文）/（翻译）”成对段落，不得加入新标题、新栏目或说明。
+"""
+
+
 CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_POLISH_PROMPT = (
     CLASSICAL_CHINESE_GEMINI_FAST_POLISH_PROMPT
     + "\n\n"
     + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT
 )
 
 
@@ -1562,6 +1575,8 @@ CLASSICAL_REFERENCE_REWRITE_GEMINI_FAST_REFINE_PROMPT = (
     CLASSICAL_CHINESE_GEMINI_FAST_REFINE_PROMPT
     + "\n\n"
     + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT
 )
 
 
@@ -1587,6 +1602,8 @@ CLASSICAL_REFERENCE_REWRITE_FORMAT_PROTECTION_PROMPT = (
     CLASSICAL_CHINESE_FORMAT_PROTECTION_PROMPT
     + "\n\n"
     + CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+    + "\n\n"
+    + CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT
 )
 
 
@@ -1600,8 +1617,11 @@ CLASSICAL_REFERENCE_REWRITE_FINAL_BOOK_FORMAT_PROMPT = FINAL_BOOK_FORMAT_PROMPT.
 CLASSICAL_NOVEL_STYLE_LOCK_PROMPT = """【古文白话小说风格版锁定规则】
 - 当前稿件是纯白话小说风格版，不得恢复原文穿插，不得加入“（原文）/（翻译）”、P 编号、注释、译者按或翻译过程。
 - 必须先保证字词、主语、动作、因果和时序准确，再保持小故事式白话叙事；叙事型原文不得改变原文事实，抽象格言型原文必须用故事载体表达原文道理。
+- 若本锁定规则与通用古文白话“一段原文一段翻译、逐句解释、不得补动作”等规则冲突，以小说风格版为准：最终必须是故事化白话叙事，不是译文说明。
 - 叙事型原文可以让人物动作、对白、反应、场景气息和转折更连贯，但不得新增原文没有的人物、地点、事件、冲突、支线、结局、现代设定或价值判断。
+- 叙事型古文，尤其《杨家将》这类已有故事的文本，要“更小说话一点”：开头尽快进入人物处境，补足动作承接、场面过渡、人物反应和短对白，让事件顺着走起来；不得只把古文逐句翻成说明文。
 - 抽象格言、议论、训诫、修身判断若本身没有人物事件，允许引入无名人物、普通处境、少量动作和心理转折作为故事化表达载体；这不是新增原文事实，但不得改变原意、不得冒充史实。
+- 抽象格言型原文必须出现人物处境、一次具体选择、行动变化或心理转折，让道理从故事里显出来；不能只写“一个人要怎样”“这说明什么”“这句话是在说什么”。
 - 不得把稿件改回普通直译、大白话句义解释或资料讲义；必须保留故事推进感。抽象格言不得只写成“一个人应该……”式解释，至少要有具体处境、行动变化或心理转折。
 - 不得删减原文信息，不得只保留故事梗概；每个原文段落的关键信息都必须在正文里有对应呈现。
 - 不要写成爽文、影视解说、现代营销文或资料讲义；保留古代故事的时代气息和人物分寸。

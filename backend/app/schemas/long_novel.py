@@ -39,6 +39,12 @@ class FamilyLongNovelBatchRequest(BaseModel):
     retry_failed: bool = True
 
 
+class FamilyLongNovelExtendRequest(BaseModel):
+    target_words: int = Field(default=300000, ge=1000, le=500000)
+    future_chapter_words: int = Field(default=4000, ge=1200, le=12000)
+    expansion_notes: str | None = Field(default=None, max_length=2000)
+
+
 class LongNovelActionResponse(BaseModel):
     project_id: UUID
     status: str

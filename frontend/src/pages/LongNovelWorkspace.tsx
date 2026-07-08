@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowUpRight,
   BookOpenText,
   Download,
   FileText,
@@ -68,6 +69,10 @@ const busyLabels: Record<string, { title: string; detail: string }> = {
   resume: {
     title: "正在继续",
     detail: "正在恢复项目状态",
+  },
+  extend: {
+    title: "扩容计划生成中",
+    detail: "只重建未完成章节计划，不改已完成正文和状态账本",
   },
 };
 
@@ -371,6 +376,27 @@ export function LongNovelWorkspace() {
   const busyProgress = activeBusy ? Math.min(92, 12 + Math.floor((busyElapsed / 1000) * 1.4)) : 0;
   const busyInfo = activeBusy ? busyInfoFor(activeBusy) : null;
   const latestLog = serverBusy?.log ?? detail.logs[0];
+  const expansionRemaining = Math.max(0, 300000 - project.total_words);
+  const expansionExtraChapters = Math.max(1, Math.ceil(expansionRemaining / 4000));
+  const expansionTargetChapters = Math.min(
+    80,
+    Math.max(project.target_chapters, project.current_chapter + expansionExtraChapters),
+  );
+  const canExtendTo300k = project.target_words < 300000 || project.target_chapters < expansionTargetChapters;
+  const confirmExtendTo300k = () => {
+    const ok = window.confirm(
+      `只扩展当前项目的未完成章节计划，不重写已完成正文。\n\n当前：${project.current_chapter} 章 / ${project.total_words} 字\n目标：300000 字，预计调整到 ${expansionTargetChapters} 章\n\n确认扩展到 30 万字？`,
+    );
+    if (!ok) return;
+    void run("extend", () =>
+      api.extendLongNovelTarget(project.id, {
+        target_words: 300000,
+        future_chapter_words: 4000,
+        expansion_notes:
+          "《嫂子的账本》专项扩容：沿用现有家长里短长篇架构，保留已完成章节，延展中段账本、养老、房产、亲戚舆论和证据链冲突，让结局延后到30万字体量。",
+      }),
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -413,6 +439,15 @@ export function LongNovelWorkspace() {
               </button>
               <button type="button" className="btn-ghost" disabled={isBusy} onClick={() => run("outline", () => api.generateLongNovelOutline(project.id))}>
                 <GitBranch className="h-4 w-4" /> 生成大纲
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={isBusy || !canExtendTo300k}
+                onClick={confirmExtendTo300k}
+                title="只重建未完成章节计划，不重写已完成正文"
+              >
+                <ArrowUpRight className="h-4 w-4" /> 扩展到30万
               </button>
               <button
                 type="button"

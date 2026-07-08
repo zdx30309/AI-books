@@ -280,6 +280,50 @@ def test_final_hard_error_gate_allows_classical_reference_plain_modern_rewrite()
     assert not hits
 
 
+def test_final_hard_error_gate_detects_classical_reference_lecture_tone() -> None:
+    markdown = """@最终书名
+菜根谭（白话版）
+@正文
+@1. 菜根谭
+（原文）路径窄处，留一步与人行；滋味浓处，减三分让人嗜。
+（翻译）这句话的意思是，一个人在处世的时候应该懂得退让。这说明为人处世要有胸怀，也体现了传统修身智慧的重要意义。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
+
+    assert hits["古文参照译写硬伤：翻译段仍是讲义解释腔"]
+
+
+def test_final_hard_error_gate_detects_classical_novel_style_without_story() -> None:
+    markdown = """@最终书名
+古文白话（白话版）
+@正文
+@1. 去旧离执
+一个人回过头看昨天，如果知道那时做错了，就不该再把这错散留在心里。错事看似已经翻篇，可只要心里还舍不得放下，病根就还在，死灰底下迟早会重新冒出火星。日子久了，世俗的情念又会缠绕上来，连原本清明的道理也跟着受了拖累。
+至于今天认定的对，也不可死攥住不放。道理固然可贵，可如果执着于“我如今是对的”这一念，心里的杂质就化不干净，清净的理趣反倒会变了味，转而成了滋生欲望的根苗。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_novel_style")
+
+    assert hits["古文小说风格硬伤：抽象格言没有转成故事载体"]
+
+
+def test_final_hard_error_gate_allows_classical_novel_style_story_carrier() -> None:
+    markdown = """@最终书名
+古文白话（白话版）
+@正文
+@1. 去旧离执
+黄昏时，书生把旧信从匣子里取出来，站在灯下看了很久。信上写的是他去年与人争执时说过的狠话。门外风一吹，灯影晃了一下，他忽然觉得那几句话像没灭干净的灰，表面冷了，底下还藏着火。
+他本想把信重新收好，手指却停在匣口。若总把昨日的错留在心里，错就不是过去的事，而会变成新的执念。于是他把信折好，送到炉边烧掉，又给被他伤过的人写了一封短笺。
+第二天，他做成一件好事，心里也暗暗得意。可走到桥边，看见水面映着自己的影子，他才明白，新的对也不能拿来炫耀。旧错不可恋，新是也不可执，人若总被两头牵住，心就很难真正清明。
+"""
+
+    hits = detect_final_hard_errors(markdown, category="classical_chinese_novel_style")
+
+    assert "古文小说风格硬伤：抽象格言没有转成故事载体" not in hits
+    assert "古文小说风格硬伤：只有翻译解释没有故事推进" not in hits
+
+
 def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
     chapters: list[str] = []
     for index in range(1, 31):

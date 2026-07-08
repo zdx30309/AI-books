@@ -14,6 +14,7 @@ from app.models import LongNovelGenerationLog, User
 from app.schemas.long_novel import (
     FamilyLongNovelBatchRequest,
     FamilyLongNovelCreateRequest,
+    FamilyLongNovelExtendRequest,
     LongNovelAssistRequest,
     LongNovelAssistResponse,
     LongNovelActionResponse,
@@ -33,6 +34,7 @@ from app.services.family_long_novel import (
     check_family_continuity,
     create_family_long_novel_project,
     export_family_novel,
+    extend_family_project_to_target,
     generate_family_batch,
     generate_family_chapter,
     generate_family_chapter_plan,
@@ -161,6 +163,27 @@ def generate_outline(
         _raise_http(exc)
     except Exception as exc:
         _raise_upstream_http(exc)
+    return _project_detail(db, project_id, user)
+
+
+@router.post("/projects/{project_id}/extend-target", response_model=LongNovelProjectDetailResponse)
+def extend_project_target(
+    project_id: UUID,
+    req: FamilyLongNovelExtendRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> LongNovelProjectDetailResponse:
+    try:
+        extend_family_project_to_target(
+            db,
+            project_id,
+            user,
+            target_words=req.target_words,
+            future_chapter_words=req.future_chapter_words,
+            expansion_notes=req.expansion_notes,
+        )
+    except FamilyLongNovelError as exc:
+        _raise_http(exc)
     return _project_detail(db, project_id, user)
 
 

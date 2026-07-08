@@ -23,6 +23,17 @@ COMMON_GENRE_RULES = """
 """
 
 
+FAST_PACING_AND_CUSTOM_PLOT_RULES = """
+【剧情节奏与自定义路线】
+- 开章要更快进入矛盾：本章前 300-500 字内必须出现具体家庭利益、情绪压迫、信息差、账目证据或关系冲突，不能先铺大段背景。
+- 每一章都要有实际推进：至少出现一个“信息变化、证据变化、利益位置变化、人物关系变化、情绪立场变化、物品/账目归属变化”。
+- 每个场景都必须带着目的推进，不要只写聊天、回忆、解释设定或重复委屈；没有推进的寒暄和铺垫要压缩。
+- 章节结尾必须留出下一章可接的钩子：新证据、新质问、新账目、新人证、新误会、新利益交换或一次关系翻脸。
+- 如果项目输入里的 sourceType 是 custom_plot，sourceText 就是用户指定的后续剧情路线、爆点和关系变化。它不是普通素材，要作为后续圣经、大纲、分章和正文的硬方向执行；只有与已完成连续性冲突时才做小幅顺延。
+- 自定义剧情路线只能影响未生成的后续章节，不能推翻已完成章节、已登记人物状态、物品状态和已解决矛盾。
+"""
+
+
 ZHOULI_BIBLE_PROMPT = """
 你是成熟的家长里短妯娌长篇小说总编剧。请根据项目输入，生成一份专属作品圣经。
 
@@ -349,6 +360,7 @@ ZHOULI_QUALITY_CHECK_PROMPT = """
 - 是否有具体生活矛盾和真实利益冲突。
 - 是否有憋屈感、爽感和结尾钩子。
 - 是否推动冲突线，称谓是否清楚，人物动机是否合理。
+- 是否开头过慢、铺垫过多、整章只有情绪重复没有新的信息/证据/利益推进；若存在，应在 problems 中明确指出。
 
 章节上下文：
 {chapter_context}
@@ -373,4 +385,5 @@ ZHOULI_QUALITY_CHECK_PROMPT = """
 def render_prompt(template: str, **kwargs: object) -> str:
     """Render a prompt with the shared genre rules injected."""
 
-    return template.format(common_rules=COMMON_GENRE_RULES.strip(), **kwargs)
+    common_rules = f"{COMMON_GENRE_RULES.strip()}\n\n{FAST_PACING_AND_CUSTOM_PLOT_RULES.strip()}"
+    return template.format(common_rules=common_rules, **kwargs)

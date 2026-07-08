@@ -1245,6 +1245,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   <option value="video_transcript">视频文稿</option>
                   <option value="wechat_article">公众号文章</option>
                   <option value="short_story">已有短篇</option>
+                  <option value="custom_plot">自定义剧情路线</option>
                 </select>
               </div>
               <div>
@@ -1258,7 +1259,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   id="long-novel-source"
                   value={longNovelSourceText}
                   onChange={(e) => setLongNovelSourceText(e.target.value)}
-                  placeholder="可粘贴视频文稿、公众号正文、已有短篇或补充素材。"
+                  placeholder={
+                    longNovelSourceType === "custom_plot"
+                      ? "写清后续剧情路线、爆点、关系变化、要保留的矛盾和不要提前解决的内容。"
+                      : "可粘贴视频文稿、公众号正文、已有短篇或补充素材。"
+                  }
                   rows={5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />

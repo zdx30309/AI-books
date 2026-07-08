@@ -44,6 +44,7 @@ import type {
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
+  FamilyLongNovelExtendRequest,
   LongNovelAssistRequest,
   LongNovelAssistResponse,
   LongNovelBatchResponse,
@@ -640,6 +641,11 @@ export const api = {
   generateLongNovelOutline: (id: string) =>
     request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/outline`, {
       method: "POST",
+    }),
+  extendLongNovelTarget: (id: string, body: FamilyLongNovelExtendRequest) =>
+    request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/extend-target`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   generateLongNovelChapterPlan: (id: string, chapterNumber: number) =>
     request<LongNovelChapterPlan>(

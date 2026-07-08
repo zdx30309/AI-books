@@ -789,6 +789,192 @@ def _detect_buddhist_story_shape_errors(text: str, *, category: str | None = Non
     return results
 
 
+def _body_text_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    in_body = False
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+        if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _detect_classical_reference_style_errors(text: str, *, category: str | None = None) -> dict[str, list[str]]:
+    if (category or "").strip().lower() != "classical_chinese_reference_rewrite":
+        return {}
+    results: dict[str, list[str]] = {}
+    lecture_phrases = (
+        "这句话的意思是",
+        "这段话的意思是",
+        "这说明",
+        "这告诉我们",
+        "由此可见",
+        "我们可以看出",
+        "也就是说",
+        "所谓",
+        "换句话说",
+        "从中可以看出",
+    )
+    textbook_phrases = (
+        "应当认识到",
+        "具有重要意义",
+        "这是一种",
+        "体现了",
+        "说明了",
+        "告诉人们",
+        "我们应该",
+    )
+    for line in _body_text_lines(text):
+        if not _CLASSICAL_LABEL_LINE_RE.match(line):
+            continue
+        markerless = re.sub(r"^(?:\u3010P\d{4}\u3011\s*)?\uff08\u7ffb\u8bd1\uff09", "", line).strip()
+        if not markerless:
+            continue
+        if any(phrase in markerless for phrase in lecture_phrases):
+            _add_noise_hit(results, "古文参照译写硬伤：翻译段仍是讲义解释腔", line)
+            continue
+        textbook_count = sum(1 for phrase in textbook_phrases if phrase in markerless)
+        if textbook_count >= 2 and _cjk_count(markerless) >= 45:
+            _add_noise_hit(results, "古文参照译写硬伤：翻译段像教材总结而非自然白话", line)
+    return results
+
+
+def _detect_classical_novel_style_shape_errors(text: str, *, category: str | None = None) -> dict[str, list[str]]:
+    if (category or "").strip().lower() != "classical_chinese_novel_style":
+        return {}
+    body_lines = _body_text_lines(text)
+    if not body_lines:
+        return {}
+    body = "\n".join(body_lines)
+    body_cjk = _cjk_count(body)
+    if body_cjk < 80:
+        return {}
+
+    results: dict[str, list[str]] = {}
+    lecture_phrases = (
+        "这句话的意思是",
+        "这段话是在说",
+        "这说明",
+        "这告诉我们",
+        "由此可见",
+        "所谓",
+        "也就是说",
+        "一个人应该",
+        "一个人要懂得",
+        "一个人要明白",
+    )
+    if any(phrase in body for phrase in lecture_phrases):
+        _add_noise_hit(results, "古文小说风格硬伤：仍是句义解释或讲义腔", body_lines[0])
+
+    scene_markers = (
+        "门",
+        "屋",
+        "院",
+        "堂",
+        "街",
+        "路",
+        "桥",
+        "店",
+        "桌",
+        "灯",
+        "炉",
+        "灶",
+        "雨",
+        "风",
+        "雪",
+        "马",
+        "兵",
+        "城",
+        "河",
+        "船",
+        "席",
+        "书房",
+        "客厅",
+        "村",
+        "家中",
+        "夜里",
+        "清晨",
+    )
+    action_markers = (
+        "走",
+        "进",
+        "出",
+        "站",
+        "坐",
+        "看",
+        "听",
+        "问",
+        "答",
+        "说",
+        "想",
+        "拿",
+        "放",
+        "推",
+        "抬",
+        "低",
+        "转身",
+        "回头",
+        "停",
+        "跪",
+        "拜",
+        "哭",
+        "笑",
+        "怒",
+        "惊",
+        "叹",
+        "赶",
+        "扶",
+        "敲",
+    )
+    turn_markers = (
+        "忽然",
+        "不料",
+        "这时",
+        "于是",
+        "后来",
+        "却",
+        "偏偏",
+        "心里",
+        "脸色",
+        "沉默",
+        "犹豫",
+        "明白",
+        "发觉",
+    )
+    generic_markers = (
+        "一个人回过头",
+        "一个人要想",
+        "一个人如果",
+        "至于今天",
+        "昨日之非",
+        "今日之是",
+        "世俗的情念",
+        "理趣",
+        "道理固然",
+        "旧念头",
+    )
+    scene_count = sum(body.count(item) for item in scene_markers)
+    action_count = sum(body.count(item) for item in action_markers)
+    turn_count = sum(body.count(item) for item in turn_markers)
+    narrative_dialogue_count = len(re.findall(r"(?:说|问|答|喊|低声|开口)[^。！？\n]{0,16}“", body))
+    generic_count = sum(1 for item in generic_markers if item in body)
+
+    if generic_count >= 2 and scene_count < 2 and narrative_dialogue_count == 0:
+        _add_noise_hit(results, "古文小说风格硬伤：抽象格言没有转成故事载体", body_lines[0])
+    if body_cjk >= 140 and scene_count < 2 and action_count < 8 and turn_count < 2 and narrative_dialogue_count == 0:
+        _add_noise_hit(results, "古文小说风格硬伤：只有翻译解释没有故事推进", body_lines[0])
+    return results
+
+
 def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> dict[str, list[str]]:
     """Detect high-confidence final manuscript errors that should block delivery."""
     category_key = (category or "").strip().lower()
@@ -827,6 +1013,8 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
     merge(_detect_empty_front_sections(markdown))
     merge(_detect_duplicate_body_headings(markdown))
     merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))
+    merge(_detect_classical_reference_style_errors(markdown, category=category_key))
+    merge(_detect_classical_novel_style_shape_errors(markdown, category=category_key))
     return results
 
 

@@ -15,11 +15,16 @@ from app.db.session import Base
 from app.models import LongNovelProject
 from app.prompts.family_long_novel_prompts import (
     COMMON_GENRE_RULES,
+    FAST_PACING_AND_CUSTOM_PLOT_RULES,
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
     ZHOULI_BIBLE_PROMPT,
+    ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
+    ZHOULI_OUTLINE_PROMPT,
+    ZHOULI_QUALITY_CHECK_PROMPT,
+    render_prompt,
 )
 from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
 from app.schemas.long_novel import LongNovelAssistRequest
@@ -39,12 +44,24 @@ from app.services.family_long_novel import (
 def test_family_long_novel_prompts_are_dedicated() -> None:
     assert FAMILY_LONG_NOVEL_TYPE == "family_sisters_in_law_longform"
     assert FAMILY_LONG_NOVEL_LABEL == "家长里短·妯娌"
-    for prompt in [ZHOULI_BIBLE_PROMPT, ZHOULI_CHAPTER_WRITE_PROMPT, ZHOULI_CONTINUITY_CHECK_PROMPT]:
+    for prompt in [
+        ZHOULI_BIBLE_PROMPT,
+        ZHOULI_OUTLINE_PROMPT,
+        ZHOULI_CHAPTER_PLAN_PROMPT,
+        ZHOULI_CHAPTER_WRITE_PROMPT,
+        ZHOULI_CONTINUITY_CHECK_PROMPT,
+    ]:
         assert "{common_rules}" in prompt
     assert "家长里短" in COMMON_GENRE_RULES
     assert "妯娌" in COMMON_GENRE_RULES
     assert "重生" in COMMON_GENRE_RULES
     assert "系统" in COMMON_GENRE_RULES
+    assert "开章要更快进入矛盾" in FAST_PACING_AND_CUSTOM_PLOT_RULES
+    assert "sourceType 是 custom_plot" in FAST_PACING_AND_CUSTOM_PLOT_RULES
+    rendered = render_prompt(ZHOULI_CHAPTER_WRITE_PROMPT, chapter_context="{}")
+    assert "开章要更快进入矛盾" in rendered
+    assert "sourceType 是 custom_plot" in rendered
+    assert "开头过慢" in ZHOULI_QUALITY_CHECK_PROMPT
 
 
 def test_general_novel_guardrails_cover_editor_ai_prose_complaints() -> None:
@@ -76,6 +93,19 @@ def test_family_workflow_appends_general_novel_prose_guardrails() -> None:
     assert source.count("GENERAL_NOVEL_PROSE_GUARDRAILS") == 5
 
 
+def test_sister_account_extension_is_plan_only_and_no_model_call() -> None:
+    source = inspect.getsource(family_long_novel.extend_family_project_to_target)
+    assert "_call_text" not in source
+    assert "_call_json" not in source
+    assert "_route_writer_call" not in source
+    assert "LongNovelChapterPlan" in source
+    assert "LongNovelChapter(" not in source
+    assert "chapter_number > current_chapter" in source
+    assert "sister_account_book_300k" in inspect.getsource(
+        family_long_novel._sister_account_expansion_plan
+    )
+
+
 def test_family_long_novel_tables_are_registered() -> None:
     expected = {
         "long_novel_projects",
@@ -101,6 +131,7 @@ def test_family_long_novel_routes_are_registered() -> None:
     assert "/api/v1/long-novel/assist" in paths
     assert "/api/v1/long-novel/family/projects" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/bible" in paths
+    assert "/api/v1/long-novel/family/projects/{project_id}/extend-target" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/generate-batch" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/chapters/{chapter_number}/context-pack" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/export" in paths

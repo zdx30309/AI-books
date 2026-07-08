@@ -505,6 +505,12 @@ export interface FamilyLongNovelBatchRequest {
   retry_failed?: boolean;
 }
 
+export interface FamilyLongNovelExtendRequest {
+  target_words?: number;
+  future_chapter_words?: number;
+  expansion_notes?: string | null;
+}
+
 export interface LongNovelAssistRequest {
   module_type?: string;
   field: "premise" | "family_setup" | "conflict_tags" | "source_text" | "forbidden_rules";
