@@ -1068,9 +1068,6 @@ def _validate_global_continuation_replan(data: dict[str, Any]) -> None:
     conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
     if len(conflicts) < 6:
         raise FamilyLongNovelError("30万全局续规划矛盾线过少，不能支撑后续分章")
-    strategy = _as_dict(_get(data, "continuationStrategy", "continuation_strategy"))
-    if not strategy:
-        raise FamilyLongNovelError("30万全局续规划缺少 continuationStrategy")
 
 
 def _validate_chapter_batch_replan(data: dict[str, Any], *, batch_start: int, batch_end: int) -> list[dict[str, Any]]:
