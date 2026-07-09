@@ -276,7 +276,6 @@ def test_final_hard_error_gate_allows_classical_reference_plain_modern_rewrite()
     hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
 
     assert "古文参照译写硬伤：精金美玉句停留在直译腔" not in hits
-    assert "古文参照译写硬伤：古典意象未转成大白话" not in hits
     assert not hits
 
 

@@ -482,7 +482,7 @@ def test_classical_novel_style_prompt_uses_novel_polish_rules() -> None:
     assert "不能只解释句义" in source_pack
     for stage_prompt in (polish, refine, formatter):
         assert "古文白话小说风格版锁定规则" in stage_prompt
-        assert "先保证字词、主语、动作、因果和时序准确" in stage_prompt
+        assert "剧情事实准确，不是要求逐字逐句对译" in stage_prompt
         assert "普通直译" in stage_prompt
         assert "抽象格言" in stage_prompt
         assert "无名人物" in stage_prompt
@@ -550,8 +550,8 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "不能望文生义" in writer
     assert "现代汉语常见意思拆字" in writer
     assert "更大白话一点" in writer
-    assert "过硬的好品格" in writer
-    assert "如履薄冰的压力" in writer
+    assert "精金美玉般纯正坚实的人品" in writer
+    assert "如履薄冰”的艰险与戒慎" in writer
     assert "菜根谭-中华书局参照范本" in writer
     assert "便觉百行皆非" in writer
     assert "不得输出【注释】【译文】【点评】【原文定位】" in writer
@@ -574,7 +574,7 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
         assert "联网检索专业网站" in stage_prompt
         assert "不得根据现代汉语常见意思望文生义" in stage_prompt
         assert "更大白话一点" in stage_prompt
-        assert "过硬的好品格" in stage_prompt
+        assert "保留其核心意象和比喻方向" in stage_prompt
         assert "便觉、始觉、方觉" in stage_prompt
 
 
@@ -606,7 +606,7 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "联网检索专业网站交叉验证" in with_reference
     assert "不得按现代汉语常见意思拆字理解原文" in with_reference
     assert "更大白话一点" in with_reference
-    assert "过硬品格、现实严酷考验" in with_reference
+    assert "精金美玉、烈火、如履薄冰" in with_reference
     assert "便觉、始觉、方觉" in with_reference
 
 
