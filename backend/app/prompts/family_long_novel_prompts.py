@@ -375,7 +375,8 @@ ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT = """
 - 本批每章都必须有独立的具体家庭事件、具体证据/物品/账目变化、人物站队变化或利益位置变化。
 - 不允许多个章节只换标题但 chapterGoal、domesticConflict、endingHook 近似重复。
 - 不允许提前推翻已完成章节，不允许提前解决终局矛盾。
-- 章节必须覆盖 batchStart 到 batchEnd 的每一章，不能缺章、不能多章、不能重复章号。
+- 章节必须严格覆盖 expectedChapterNumbers 里的每一个章号，不能缺章、不能多章、不能重复章号。
+- 如果 expectedChapterNumbers 是 [11, 12, 13]，chapters 数组就必须恰好有 3 项，章号分别是 11、12、13。
 
 分批上下文：
 {batch_context}

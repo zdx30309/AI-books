@@ -1130,6 +1130,7 @@ def _continuation_batch_context(
         "instruction": base_context.get("instruction", {}),
         "batchStart": batch_start,
         "batchEnd": batch_end,
+        "expectedChapterNumbers": list(range(batch_start, batch_end + 1)),
         "completedChapters": base_context.get("completedChapters", []),
         "recentCompletedChapters": base_context.get("recentCompletedChapters", []),
         "latestCharacterStates": base_context.get("latestCharacterStates", []),
@@ -1169,7 +1170,7 @@ def _run_batched_continuation_replan(
     _validate_global_continuation_replan(global_plan)
 
     planned_chapters: list[dict[str, Any]] = []
-    batch_size = 10
+    batch_size = 3
     for batch_start in range(current_chapter + 1, target_chapters + 1, batch_size):
         batch_end = min(target_chapters, batch_start + batch_size - 1)
         batch_context = _continuation_batch_context(
