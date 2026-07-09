@@ -18,7 +18,9 @@ from app.prompts.family_long_novel_prompts import (
     FAST_PACING_AND_CUSTOM_PLOT_RULES,
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
+    ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
     ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
+    ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
     ZHOULI_BIBLE_PROMPT,
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
@@ -65,6 +67,8 @@ def test_family_long_novel_prompts_are_dedicated() -> None:
     assert "开头过慢" in ZHOULI_QUALITY_CHECK_PROMPT
     assert "扩容上下文" in ZHOULI_30W_CONTINUATION_REPLAN_PROMPT
     assert "只规划后续，不改写已完成章节正文" in ZHOULI_30W_CONTINUATION_REPLAN_PROMPT
+    assert "只做全局承接规划" in ZHOULI_30W_GLOBAL_REPLAN_PROMPT
+    assert "分批上下文" in ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT
 
 
 def test_general_novel_guardrails_cover_editor_ai_prose_complaints() -> None:
@@ -99,13 +103,17 @@ def test_family_workflow_appends_general_novel_prose_guardrails() -> None:
 def test_sister_account_extension_uses_system_replan_not_local_templates() -> None:
     source = inspect.getsource(family_long_novel.extend_family_project_to_target)
     assert "_call_text" not in source
-    assert "_call_json" in source
     assert "_route_writer_call" not in source
     assert "LongNovelChapter(" not in source
     assert "_write_future_plans_from_replan" in source
-    assert "replan_30w_continuation" in source
-    assert "ZHOULI_30W_CONTINUATION_REPLAN_PROMPT" in source
+    assert "_run_batched_continuation_replan" in source
     assert "_is_sister_account_project" in source
+    batch_source = inspect.getsource(family_long_novel._run_batched_continuation_replan)
+    assert "_call_json" in batch_source
+    assert "replan_30w_global" in batch_source
+    assert "replan_30w_batch_" in batch_source
+    assert "ZHOULI_30W_GLOBAL_REPLAN_PROMPT" in batch_source
+    assert "ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT" in batch_source
     writer_source = inspect.getsource(family_long_novel._write_future_plans_from_replan)
     assert "LongNovelChapterPlan" in writer_source
     assert "chapter_number > current_chapter" in writer_source

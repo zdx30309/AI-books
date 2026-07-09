@@ -292,6 +292,121 @@ ZHOULI_30W_CONTINUATION_REPLAN_PROMPT = """
 """.strip()
 
 
+ZHOULI_30W_GLOBAL_REPLAN_PROMPT = """
+你是现有家长里短长篇小说工程的总编剧和连续性规划器。现在要把一部已经完成前文的小说，承接已有正文和状态，升级为目标字数的完整长篇项目。
+
+{common_rules}
+
+核心任务：
+- 只做全局承接规划，不生成正文，不生成逐章列表。
+- 已完成章节、已登记人物状态、物品状态、事实、矛盾线、关系网和作品圣经都是硬事实，不能推翻。
+- 必须像重开一个目标字数项目一样，升级作品圣经、后续终局、分卷推进、矛盾线时间表、人物关系推进策略。
+- 可以新增后续人物、后续矛盾线、后续证据物、后续关系变化，但必须从前文已有家庭结构、账目、物品、关系或事件里自然长出来。
+- 不能使用固定模板，不能空泛写“继续发酵”“逐步推进”。
+
+扩容上下文：
+{expansion_context}
+
+输出严格 JSON，不要代码块：
+{{
+  "biblePatch": {{
+    "theme": "",
+    "corePromise": "",
+    "mainConflict": "",
+    "emotionalHook": "",
+    "familyBackground": "",
+    "endingDirection": "",
+    "worldRules": [],
+    "styleRules": [],
+    "forbiddenRules": [],
+    "targetExpansion": {{
+      "lockedCompletedChapters": 0,
+      "continuityPrinciples": [],
+      "futureVolumeArcs": [
+        {{
+          "volumeNumber": 2,
+          "title": "",
+          "startChapter": 11,
+          "endChapter": 22,
+          "goal": "",
+          "majorExplosion": "",
+          "mustCarryFromCompletedChapters": []
+        }}
+      ]
+    }}
+  }},
+  "familyMembers": [],
+  "familyRelations": [],
+  "conflictLines": [
+    {{
+      "conflictKey": "",
+      "name": "",
+      "conflictType": "",
+      "description": "",
+      "introducedChapter": 1,
+      "plannedExplosionChapter": 20,
+      "plannedResolutionChapter": 60,
+      "status": "open",
+      "importance": "core"
+    }}
+  ],
+  "continuationStrategy": {{
+    "whatMustBePreservedFromCompletedChapters": [],
+    "newMidgamePressure": [],
+    "lateGamePayoff": [],
+    "antiRepetitionRules": []
+  }},
+  "qualitySelfCheck": {{
+    "completedChaptersPreserved": true,
+    "whyThisStillFeelsLikeOneNovel": ""
+  }}
+}}
+""".strip()
+
+
+ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT = """
+你是现有家长里短长篇小说工程的分章规划器。现在根据全局续规划，为指定章节区间生成逐章计划。
+
+{common_rules}
+
+硬规则：
+- 只规划本批章节，不生成正文。
+- 必须承接已完成章节和前面已经规划的未来章节。
+- 本批每章都必须有独立的具体家庭事件、具体证据/物品/账目变化、人物站队变化或利益位置变化。
+- 不允许多个章节只换标题但 chapterGoal、domesticConflict、endingHook 近似重复。
+- 不允许提前推翻已完成章节，不允许提前解决终局矛盾。
+- 章节必须覆盖 batchStart 到 batchEnd 的每一章，不能缺章、不能多章、不能重复章号。
+
+分批上下文：
+{batch_context}
+
+输出严格 JSON，不要代码块：
+{{
+  "chapters": [
+    {{
+      "chapterNumber": 11,
+      "volumeNumber": 2,
+      "title": "",
+      "targetWords": 4000,
+      "chapterGoal": "",
+      "domesticConflict": "",
+      "emotionalHook": "",
+      "requiredEvents": [],
+      "characterArcMove": [],
+      "conflictLinesToAdvance": [],
+      "forbiddenReveals": [],
+      "endingHook": ""
+    }}
+  ],
+  "batchSelfCheck": {{
+    "coverage": "",
+    "noRepeatedChapterCore": true,
+    "continuityWithPreviousPlans": ""
+  }}
+}}
+""".strip()
+
+
 ZHOULI_CHAPTER_PLAN_PROMPT = """
 你是妯娌长篇小说分章导演。请为指定章节生成 3-5 个可执行场景。
 

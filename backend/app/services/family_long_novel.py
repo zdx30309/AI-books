@@ -34,7 +34,8 @@ from app.models import (
 from app.prompts.family_long_novel_prompts import (
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
-    ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
+    ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
+    ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
     ZHOULI_BIBLE_PROMPT,
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
@@ -1060,6 +1061,151 @@ def _validate_continuation_replan(
         )
 
 
+def _validate_global_continuation_replan(data: dict[str, Any]) -> None:
+    bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
+    if not bible_patch:
+        raise FamilyLongNovelError("30万全局续规划缺少 biblePatch")
+    conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
+    if len(conflicts) < 6:
+        raise FamilyLongNovelError("30万全局续规划矛盾线过少，不能支撑后续分章")
+    strategy = _as_dict(_get(data, "continuationStrategy", "continuation_strategy"))
+    if not strategy:
+        raise FamilyLongNovelError("30万全局续规划缺少 continuationStrategy")
+
+
+def _validate_chapter_batch_replan(data: dict[str, Any], *, batch_start: int, batch_end: int) -> list[dict[str, Any]]:
+    chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
+    expected = set(range(batch_start, batch_end + 1))
+    numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
+    got = {number for number in numbers if number > 0}
+    missing = sorted(expected - got)
+    extra = sorted(got - expected)
+    duplicate_count = len(numbers) - len(got)
+    if missing or extra or duplicate_count:
+        raise FamilyLongNovelError(
+            f"30万分批章节规划覆盖失败：batch={batch_start}-{batch_end} missing={missing} extra={extra} duplicates={duplicate_count}"
+        )
+    for item in chapters:
+        number = _int_value(_get(item, "chapterNumber", "chapter_number"), 0)
+        if not _text(item, "title"):
+            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少标题")
+        if not _text(item, "chapterGoal", "chapter_goal"):
+            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 chapterGoal")
+        if not _text(item, "domesticConflict", "domestic_conflict"):
+            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 domesticConflict")
+        if not _text(item, "endingHook", "ending_hook"):
+            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 endingHook")
+    return sorted(chapters, key=lambda item: _int_value(_get(item, "chapterNumber", "chapter_number"), 0))
+
+
+def _continuation_batch_context(
+    base_context: dict[str, Any],
+    global_plan: dict[str, Any],
+    *,
+    batch_start: int,
+    batch_end: int,
+    planned_chapters: list[dict[str, Any]],
+) -> dict[str, Any]:
+    previous_future = [
+        {
+            "chapterNumber": _int_value(_get(item, "chapterNumber", "chapter_number"), 0),
+            "title": _text(item, "title"),
+            "chapterGoal": _text(item, "chapterGoal", "chapter_goal"),
+            "domesticConflict": _text(item, "domesticConflict", "domestic_conflict"),
+            "endingHook": _text(item, "endingHook", "ending_hook"),
+        }
+        for item in planned_chapters[-8:]
+    ]
+    planned_briefs = [
+        {
+            "chapterNumber": _int_value(_get(item, "chapterNumber", "chapter_number"), 0),
+            "title": _text(item, "title"),
+            "domesticConflict": _text(item, "domesticConflict", "domestic_conflict"),
+            "endingHook": _text(item, "endingHook", "ending_hook"),
+        }
+        for item in planned_chapters
+    ]
+    return {
+        "project": base_context.get("project", {}),
+        "instruction": base_context.get("instruction", {}),
+        "batchStart": batch_start,
+        "batchEnd": batch_end,
+        "completedChapters": base_context.get("completedChapters", []),
+        "recentCompletedChapters": base_context.get("recentCompletedChapters", []),
+        "latestCharacterStates": base_context.get("latestCharacterStates", []),
+        "latestObjectStates": base_context.get("latestObjectStates", []),
+        "openContinuityIssues": base_context.get("openContinuityIssues", []),
+        "globalBiblePatch": _as_dict(_get(global_plan, "biblePatch", "bible_patch")),
+        "globalContinuationStrategy": _as_dict(_get(global_plan, "continuationStrategy", "continuation_strategy")),
+        "globalConflictLines": _as_list(_get(global_plan, "conflictLines", "conflict_lines")),
+        "familyMembers": _as_list(_get(global_plan, "familyMembers", "family_members")) or base_context.get("familyMembers", []),
+        "familyRelations": _as_list(_get(global_plan, "familyRelations", "family_relations")) or base_context.get("familyRelations", []),
+        "previousFutureChapters": previous_future,
+        "allPlannedFutureBriefs": planned_briefs,
+    }
+
+
+def _run_batched_continuation_replan(
+    db: Session,
+    project: LongNovelProject,
+    *,
+    base_context: dict[str, Any],
+    current_chapter: int,
+    target_chapters: int,
+) -> dict[str, Any]:
+    global_prompt = render_prompt(
+        ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
+        expansion_context=_json_dumps(base_context),
+    )
+    global_plan = _call_json(
+        db,
+        project_id=project.id,
+        chapter_number=None,
+        action="replan_30w_global",
+        tier="strong",
+        prompt=global_prompt,
+        max_output_tokens=20000,
+    )
+    _validate_global_continuation_replan(global_plan)
+
+    planned_chapters: list[dict[str, Any]] = []
+    batch_size = 10
+    for batch_start in range(current_chapter + 1, target_chapters + 1, batch_size):
+        batch_end = min(target_chapters, batch_start + batch_size - 1)
+        batch_context = _continuation_batch_context(
+            base_context,
+            global_plan,
+            batch_start=batch_start,
+            batch_end=batch_end,
+            planned_chapters=planned_chapters,
+        )
+        batch_prompt = render_prompt(
+            ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
+            batch_context=_json_dumps(batch_context),
+        )
+        batch_data = _call_json(
+            db,
+            project_id=project.id,
+            chapter_number=None,
+            action=f"replan_30w_batch_{batch_start}_{batch_end}",
+            tier="strong",
+            prompt=batch_prompt,
+            max_output_tokens=12000,
+        )
+        planned_chapters.extend(
+            _validate_chapter_batch_replan(batch_data, batch_start=batch_start, batch_end=batch_end)
+        )
+
+    combined = dict(global_plan)
+    combined["chapters"] = planned_chapters
+    _validate_continuation_replan(
+        combined,
+        current_chapter=current_chapter,
+        target_chapters=target_chapters,
+    )
+    return combined
+
+
 def _apply_bible_patch(project: LongNovelProject, data: dict[str, Any], *, current_chapter: int, target_words: int, target_chapters: int) -> None:
     patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
     bible = project.bible or LongNovelBible(project_id=project.id)
@@ -1239,27 +1385,30 @@ def extend_family_project_to_target(
         target_words_per_chapter=actual_future_words,
         expansion_notes=expansion_notes,
     )
-    prompt = render_prompt(
-        ZHOULI_30W_CONTINUATION_REPLAN_PROMPT,
-        expansion_context=_json_dumps(context),
-    )
     _mark_project_generating(db, project)
     try:
-        data = _call_json(
+        data = _run_batched_continuation_replan(
             db,
-            project_id=project.id,
-            chapter_number=None,
-            action="replan_30w_continuation",
-            tier="strong",
-            prompt=prompt,
-            max_output_tokens=_outline_max_output_tokens(project),
-        )
-        _validate_continuation_replan(
-            data,
+            project,
+            base_context=context,
             current_chapter=current_chapter,
             target_chapters=target_chapters,
         )
-    except Exception:
+    except Exception as exc:
+        db.add(
+            LongNovelGenerationLog(
+                project_id=project.id,
+                chapter_number=None,
+                action="extend_target",
+                provider=settings.WRITER_PROVIDER,
+                model=_model_for_tier("strong"),
+                prompt_tokens=0,
+                completion_tokens=0,
+                estimated_cost=0.0,
+                status="failed",
+                error=str(exc)[:2000],
+            )
+        )
         _mark_generation_failed(db, project)
         raise
 
