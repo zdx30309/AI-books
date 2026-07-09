@@ -222,6 +222,7 @@ def _run_writer(
     max_output_tokens: int,
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     try:
         asyncio.get_running_loop()
@@ -232,9 +233,14 @@ def _run_writer(
                 reasoning_effort=reasoning_effort,
                 verbosity=verbosity,
                 max_output_tokens=max_output_tokens,
+                prompt_cache_key=prompt_cache_key,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
+
+
+def _project_prompt_cache_key(project_id: UUID) -> str:
+    return f"family-long-novel:{project_id}:v1"
 
 
 def _model_for_tier(tier: str) -> str:
@@ -360,6 +366,7 @@ def _log_llm_call(
     tier: str,
     prompt: str,
     max_output_tokens: int,
+    prompt_cache_key: str | None = None,
 ) -> str:
     log = LongNovelGenerationLog(
         project_id=project_id,
@@ -373,7 +380,11 @@ def _log_llm_call(
     db.add(log)
     db.commit()
     try:
-        output = _run_writer(prompt, max_output_tokens=max_output_tokens)
+        output = _run_writer(
+            prompt,
+            max_output_tokens=max_output_tokens,
+            prompt_cache_key=prompt_cache_key,
+        )
     except Exception as exc:
         log.status = "failed"
         log.error = str(exc)[:2000]
@@ -396,6 +407,7 @@ def _call_json(
     tier: str,
     prompt: str,
     max_output_tokens: int = 16000,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     return _json_loads(
         _log_llm_call(
@@ -406,6 +418,7 @@ def _call_json(
             tier=tier,
             prompt=prompt,
             max_output_tokens=max_output_tokens,
+            prompt_cache_key=prompt_cache_key,
         )
     )
 
@@ -419,6 +432,7 @@ def _call_text(
     tier: str,
     prompt: str,
     max_output_tokens: int,
+    prompt_cache_key: str | None = None,
 ) -> str:
     return _log_llm_call(
         db,
@@ -428,6 +442,7 @@ def _call_text(
         tier=tier,
         prompt=prompt,
         max_output_tokens=max_output_tokens,
+        prompt_cache_key=prompt_cache_key,
     ).strip()
 
 
@@ -671,6 +686,7 @@ def generate_family_novel_bible(
             tier="strong",
             prompt=prompt,
             max_output_tokens=24000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except Exception:
         _mark_generation_failed(db, project)
@@ -819,6 +835,7 @@ def generate_family_novel_outline(
             tier="strong",
             prompt=prompt,
             max_output_tokens=_outline_max_output_tokens(project),
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except Exception:
         _mark_generation_failed(db, project)
@@ -1020,12 +1037,22 @@ def _continuation_replan_context(
     }
 
 
+def _continuation_replan_label(target_words: int | None = None) -> str:
+    if not target_words:
+        return "续规划"
+    if target_words >= 10000:
+        return f"{max(1, int(round(target_words / 10000)))}万续规划"
+    return f"{target_words}字续规划"
+
+
 def _validate_continuation_replan(
     data: dict[str, Any],
     *,
     current_chapter: int,
     target_chapters: int,
+    target_words: int | None = None,
 ) -> None:
+    label = _continuation_replan_label(target_words)
     expected_numbers = set(range(current_chapter + 1, target_chapters + 1))
     chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
     numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
@@ -1035,14 +1062,14 @@ def _validate_continuation_replan(
     duplicate_count = len(numbers) - len(got_numbers)
     if missing or extra or duplicate_count:
         raise FamilyLongNovelError(
-            f"30万续规划章节覆盖失败：missing={missing[:8]} extra={extra[:8]} duplicates={duplicate_count}"
+            f"{label}章节覆盖失败：missing={missing[:8]} extra={extra[:8]} duplicates={duplicate_count}"
         )
     bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
     if not bible_patch:
-        raise FamilyLongNovelError("30万续规划缺少 biblePatch，不能升级作品圣经")
+        raise FamilyLongNovelError(f"{label}缺少 biblePatch，不能升级作品圣经")
     conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
     if len(conflicts) < 6:
-        raise FamilyLongNovelError("30万续规划矛盾线过少，不能支撑长篇扩容")
+        raise FamilyLongNovelError(f"{label}矛盾线过少，不能支撑长篇扩容")
     future_count = max(1, target_chapters - current_chapter)
     unique_conflicts = {
         _text(item, "domesticConflict", "domestic_conflict")
@@ -1057,20 +1084,28 @@ def _validate_continuation_replan(
     minimum_unique = min(future_count, max(12, int(future_count * 0.65)))
     if len(unique_conflicts) < minimum_unique or len(unique_hooks) < minimum_unique:
         raise FamilyLongNovelError(
-            f"30万续规划重复度过高：unique_conflicts={len(unique_conflicts)} unique_hooks={len(unique_hooks)} required={minimum_unique}"
+            f"{label}重复度过高：unique_conflicts={len(unique_conflicts)} unique_hooks={len(unique_hooks)} required={minimum_unique}"
         )
 
 
-def _validate_global_continuation_replan(data: dict[str, Any]) -> None:
+def _validate_global_continuation_replan(data: dict[str, Any], *, target_words: int | None = None) -> None:
+    label = _continuation_replan_label(target_words)
     bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
     if not bible_patch:
-        raise FamilyLongNovelError("30万全局续规划缺少 biblePatch")
+        raise FamilyLongNovelError(f"{label}全局规划缺少 biblePatch")
     conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
     if len(conflicts) < 6:
-        raise FamilyLongNovelError("30万全局续规划矛盾线过少，不能支撑后续分章")
+        raise FamilyLongNovelError(f"{label}全局规划矛盾线过少，不能支撑后续分章")
 
 
-def _validate_chapter_batch_replan(data: dict[str, Any], *, batch_start: int, batch_end: int) -> list[dict[str, Any]]:
+def _validate_chapter_batch_replan(
+    data: dict[str, Any],
+    *,
+    batch_start: int,
+    batch_end: int,
+    target_words: int | None = None,
+) -> list[dict[str, Any]]:
+    label = _continuation_replan_label(target_words)
     chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
     expected = set(range(batch_start, batch_end + 1))
     numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
@@ -1080,18 +1115,18 @@ def _validate_chapter_batch_replan(data: dict[str, Any], *, batch_start: int, ba
     duplicate_count = len(numbers) - len(got)
     if missing or extra or duplicate_count:
         raise FamilyLongNovelError(
-            f"30万分批章节规划覆盖失败：batch={batch_start}-{batch_end} missing={missing} extra={extra} duplicates={duplicate_count}"
+            f"{label}分批章节规划覆盖失败：batch={batch_start}-{batch_end} missing={missing} extra={extra} duplicates={duplicate_count}"
         )
     for item in chapters:
         number = _int_value(_get(item, "chapterNumber", "chapter_number"), 0)
         if not _text(item, "title"):
-            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少标题")
+            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少标题")
         if not _text(item, "chapterGoal", "chapter_goal"):
-            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 chapterGoal")
+            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 chapterGoal")
         if not _text(item, "domesticConflict", "domestic_conflict"):
-            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 domesticConflict")
+            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 domesticConflict")
         if not _text(item, "endingHook", "ending_hook"):
-            raise FamilyLongNovelError(f"30万分批章节规划第 {number} 章缺少 endingHook")
+            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 endingHook")
     return sorted(chapters, key=lambda item: _int_value(_get(item, "chapterNumber", "chapter_number"), 0))
 
 
@@ -1125,9 +1160,6 @@ def _continuation_batch_context(
     return {
         "project": base_context.get("project", {}),
         "instruction": base_context.get("instruction", {}),
-        "batchStart": batch_start,
-        "batchEnd": batch_end,
-        "expectedChapterNumbers": list(range(batch_start, batch_end + 1)),
         "completedChapters": base_context.get("completedChapters", []),
         "recentCompletedChapters": base_context.get("recentCompletedChapters", []),
         "latestCharacterStates": base_context.get("latestCharacterStates", []),
@@ -1140,6 +1172,9 @@ def _continuation_batch_context(
         "familyRelations": _as_list(_get(global_plan, "familyRelations", "family_relations")) or base_context.get("familyRelations", []),
         "previousFutureChapters": previous_future,
         "allPlannedFutureBriefs": planned_briefs,
+        "batchStart": batch_start,
+        "batchEnd": batch_end,
+        "expectedChapterNumbers": list(range(batch_start, batch_end + 1)),
     }
 
 
@@ -1150,6 +1185,7 @@ def _run_batched_continuation_replan(
     base_context: dict[str, Any],
     current_chapter: int,
     target_chapters: int,
+    target_words: int,
 ) -> dict[str, Any]:
     global_prompt = render_prompt(
         ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
@@ -1159,12 +1195,13 @@ def _run_batched_continuation_replan(
         db,
         project_id=project.id,
         chapter_number=None,
-        action="replan_30w_global",
+        action="replan_target_global",
         tier="strong",
         prompt=global_prompt,
         max_output_tokens=20000,
+        prompt_cache_key=_project_prompt_cache_key(project.id),
     )
-    _validate_global_continuation_replan(global_plan)
+    _validate_global_continuation_replan(global_plan, target_words=target_words)
 
     planned_chapters: list[dict[str, Any]] = []
     batch_size = 3
@@ -1185,14 +1222,20 @@ def _run_batched_continuation_replan(
             db,
             project_id=project.id,
             chapter_number=None,
-            action=f"replan_30w_batch_{batch_start}_{batch_end}",
+            action=f"replan_target_batch_{batch_start}_{batch_end}",
             tier="strong",
             prompt=batch_prompt,
             max_output_tokens=12000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
         try:
             planned_chapters.extend(
-                _validate_chapter_batch_replan(batch_data, batch_start=batch_start, batch_end=batch_end)
+                _validate_chapter_batch_replan(
+                    batch_data,
+                    batch_start=batch_start,
+                    batch_end=batch_end,
+                    target_words=target_words,
+                )
             )
         except FamilyLongNovelError:
             if batch_start == batch_end:
@@ -1213,16 +1256,18 @@ def _run_batched_continuation_replan(
                     db,
                     project_id=project.id,
                     chapter_number=None,
-                    action=f"replan_30w_batch_{single_number}_{single_number}",
+                    action=f"replan_target_batch_{single_number}_{single_number}",
                     tier="strong",
                     prompt=single_prompt,
                     max_output_tokens=6000,
+                    prompt_cache_key=_project_prompt_cache_key(project.id),
                 )
                 planned_chapters.extend(
                     _validate_chapter_batch_replan(
                         single_data,
                         batch_start=single_number,
                         batch_end=single_number,
+                        target_words=target_words,
                     )
                 )
 
@@ -1232,6 +1277,7 @@ def _run_batched_continuation_replan(
         combined,
         current_chapter=current_chapter,
         target_chapters=target_chapters,
+        target_words=target_words,
     )
     return combined
 
@@ -1252,7 +1298,7 @@ def _apply_bible_patch(project: LongNovelProject, data: dict[str, Any], *, curre
     raw.update({key: value for key, value in patch.items() if value not in (None, "", [], {})})
     raw["targetWordExpansion"] = {
         **_as_dict(_get(patch, "targetExpansion", "target_expansion")),
-        "mode": "system_replan_30w_continuation",
+        "mode": "system_replan_target_continuation",
         "lockedCompletedChapters": current_chapter,
         "targetWords": target_words,
         "targetChapters": target_chapters,
@@ -1359,7 +1405,7 @@ def _write_future_plans_from_replan(
         plan.raw_json = {
             **item,
             "targetWords": target_words_per_chapter,
-            "extensionMode": "system_replan_30w_continuation",
+            "extensionMode": "system_replan_target_continuation",
             "lockedCompletedChapters": current_chapter,
         }
         plan.status = LongNovelChapterStatus.PLANNED
@@ -1371,7 +1417,7 @@ def extend_family_project_to_target(
     project_id: UUID,
     user: User | None = None,
     *,
-    target_words: int = 300000,
+    target_words: int = 200000,
     future_chapter_words: int = 4000,
     expansion_notes: str | None = None,
 ) -> LongNovelProject:
@@ -1384,16 +1430,17 @@ def extend_family_project_to_target(
     project = _get_project(db, project_id, user)
     project = sync_family_project_progress(db, project)
     if not _is_sister_account_project(project):
-        raise FamilyLongNovelError("30万续规划扩容目前只允许用于《嫂子的账本》这个项目，避免误伤其它长篇")
+        raise FamilyLongNovelError("目标字数续规划目前只允许用于《嫂子的账本》这个项目，避免误伤其它长篇")
     current_chapter = max(0, int(project.current_chapter or 0))
     current_words = max(0, int(project.total_words or 0))
     if current_chapter <= 0:
-        raise FamilyLongNovelError("项目还没有已完成章节，不能做承接式30万续规划")
-    target_words = max(current_words + 1, min(500000, int(target_words or 300000)))
+        raise FamilyLongNovelError("项目还没有已完成章节，不能做承接式目标字数续规划")
+    requested_target_words = min(500000, max(1000, int(target_words or 200000)))
+    target_words = max(current_words + 1, requested_target_words)
     future_chapter_words = max(1200, min(12000, int(future_chapter_words or 4000)))
     remaining_words = max(0, target_words - current_words)
     future_count = max(1, (remaining_words + future_chapter_words - 1) // future_chapter_words)
-    target_chapters = min(80, max(int(project.target_chapters or 0), current_chapter + future_count))
+    target_chapters = min(80, current_chapter + future_count)
     if target_chapters <= current_chapter:
         target_chapters = min(80, current_chapter + 1)
     if target_chapters <= current_chapter:
@@ -1423,6 +1470,7 @@ def extend_family_project_to_target(
             base_context=context,
             current_chapter=current_chapter,
             target_chapters=target_chapters,
+            target_words=target_words,
         )
     except Exception as exc:
         db.add(
@@ -1471,7 +1519,7 @@ def extend_family_project_to_target(
             completion_tokens=0,
             estimated_cost=0.0,
             status="completed",
-            error=f"system_replan_30w_continuation target_words={target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
+            error=f"system_replan_target_continuation target_words={target_words}; requested_target_words={requested_target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
         )
     )
     db.commit()
@@ -2257,30 +2305,8 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
     return {
         "contextPackVersion": context_pack.get("contextPackVersion"),
         "promptContextMode": "compact",
-        "purpose": purpose,
-        "chapterNumber": context_pack.get("chapterNumber"),
         "project": _compact_project_for_prompt(_as_dict(context_pack.get("project"))),
         "bible": _compact_bible_for_prompt(_as_dict(context_pack.get("bible"))),
-        "currentPlanRecord": current_plan,
-        "previousChapter": {
-            "chapterNumber": previous.get("chapterNumber"),
-            "title": _clip_prompt_value(previous.get("title"), 80),
-            "summary": _clip_prompt_value(previous.get("summary"), 700),
-            "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
-            "last800Chars": _clip_text(previous.get("last800Chars"), 800),
-            "wordCount": previous.get("wordCount"),
-        }
-        if previous
-        else None,
-        "recentChapters": [
-            {
-                "chapterNumber": item.get("chapterNumber"),
-                "title": _clip_prompt_value(item.get("title"), 80),
-                "summary": _clip_prompt_value(item.get("summary"), 500),
-                "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
-            }
-            for item in recent_chapters[-2:]
-        ],
         "familyRelations": [
             {
                 "fromMember": item.get("fromMember"),
@@ -2352,6 +2378,28 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "suggestedFix": _clip_prompt_value(item.get("suggestedFix"), 220),
             }
             for item in issues[:12]
+        ],
+        "purpose": purpose,
+        "chapterNumber": context_pack.get("chapterNumber"),
+        "currentPlanRecord": current_plan,
+        "previousChapter": {
+            "chapterNumber": previous.get("chapterNumber"),
+            "title": _clip_prompt_value(previous.get("title"), 80),
+            "summary": _clip_prompt_value(previous.get("summary"), 700),
+            "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
+            "last800Chars": _clip_text(previous.get("last800Chars"), 800),
+            "wordCount": previous.get("wordCount"),
+        }
+        if previous
+        else None,
+        "recentChapters": [
+            {
+                "chapterNumber": item.get("chapterNumber"),
+                "title": _clip_prompt_value(item.get("title"), 80),
+                "summary": _clip_prompt_value(item.get("summary"), 500),
+                "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
+            }
+            for item in recent_chapters[-2:]
         ],
         "mustContinueFrom": {
             "previousEndingHook": _clip_prompt_value(must_continue.get("previousEndingHook"), 420),
@@ -2465,6 +2513,7 @@ def generate_family_chapter_plan(
             tier="default",
             prompt=prompt,
             max_output_tokens=16000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -2552,6 +2601,7 @@ def generate_family_chapter(
             tier="default",
             prompt=prompt,
             max_output_tokens=_chapter_write_max_output_tokens(project),
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except Exception:
         _mark_generation_failed(db, project, plan=plan)
@@ -2671,6 +2721,7 @@ def extract_family_chapter_state(
             tier="cheap",
             prompt=prompt,
             max_output_tokens=14000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -2934,6 +2985,7 @@ def check_family_continuity(
             tier="cheap",
             prompt=prompt,
             max_output_tokens=12000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -2998,6 +3050,7 @@ def quality_check_family_chapter(
             tier="cheap",
             prompt=prompt,
             max_output_tokens=8000,
+            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3067,6 +3120,7 @@ def repair_family_chapter(
         tier="default",
         prompt=prompt,
         max_output_tokens=24000,
+        prompt_cache_key=_project_prompt_cache_key(project.id),
     )
     chapter.content = repaired
     chapter.raw_model_output = repaired

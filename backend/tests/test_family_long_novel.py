@@ -110,8 +110,8 @@ def test_sister_account_extension_uses_system_replan_not_local_templates() -> No
     assert "_is_sister_account_project" in source
     batch_source = inspect.getsource(family_long_novel._run_batched_continuation_replan)
     assert "_call_json" in batch_source
-    assert "replan_30w_global" in batch_source
-    assert "replan_30w_batch_" in batch_source
+    assert "replan_target_global" in batch_source
+    assert "replan_target_batch_" in batch_source
     assert "batch_size = 3" in batch_source
     assert "batch_start == batch_end" in batch_source
     assert "max_output_tokens=6000" in batch_source
@@ -128,6 +128,16 @@ def test_sister_account_extension_validates_full_future_coverage() -> None:
     assert "missing=" in source
     assert "duplicates=" in source
     assert "unique_conflicts" in source
+
+
+def test_sister_account_extension_can_replan_down_to_20w_after_30w() -> None:
+    source = inspect.getsource(family_long_novel.extend_family_project_to_target)
+
+    assert "target_words: int = 200000" in source
+    assert "requested_target_words" in source
+    assert "current_chapter + future_count" in source
+    assert "max(int(project.target_chapters" not in source
+    assert "system_replan_target_continuation" in source
 
 
 def test_family_long_novel_tables_are_registered() -> None:
@@ -316,3 +326,53 @@ def test_prompt_context_compaction_preserves_quality_fields_without_raw_payloads
     assert compact["activeConflictLines"][0]["latestUpdate"] == "update"
     assert compact["latestCharacterStates"][0]["memberName"] == "A"
     assert compact["canonFacts"][0]["fact"] == "fact"
+
+
+def test_prompt_context_compaction_keeps_stable_prefix_before_chapter_delta() -> None:
+    compact = _compact_context_for_prompt(
+        {
+            "contextPackVersion": 2,
+            "chapterNumber": 12,
+            "project": {"premise": "premise"},
+            "bible": {"theme": "theme"},
+            "currentPlanRecord": {"chapterNumber": 12, "chapterGoal": "goal"},
+            "previousChapter": {"chapterNumber": 11, "summary": "summary", "endingHook": "hook"},
+            "familyRelations": [{"fromMember": "A", "toMember": "B"}],
+            "activeConflictLines": [{"conflictKey": "c1", "name": "conflict"}],
+            "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 11}],
+            "objectStates": [{"objectName": "ledger", "sourceChapterNumber": 11}],
+            "canonFacts": [{"chapterNumber": 11, "fact": "fact"}],
+            "mustContinueFrom": {"previousEndingHook": "hook", "strictRules": ["rule"]},
+        },
+        "chapter_write",
+    )
+
+    keys = list(compact)
+    assert keys.index("project") < keys.index("chapterNumber")
+    assert keys.index("bible") < keys.index("currentPlanRecord")
+    assert keys.index("familyRelations") < keys.index("previousChapter")
+    assert keys.index("activeConflictLines") < keys.index("mustContinueFrom")
+    assert compact["previousChapter"]["endingHook"] == "hook"
+    assert compact["mustContinueFrom"]["strictRules"] == ["rule"]
+
+
+def test_long_novel_openai_calls_use_project_prompt_cache_key() -> None:
+    source = "\n".join(
+        inspect.getsource(func)
+        for func in [
+            family_long_novel.generate_family_novel_bible,
+            family_long_novel.generate_family_novel_outline,
+            family_long_novel._run_batched_continuation_replan,
+            family_long_novel.generate_family_chapter_plan,
+            family_long_novel.generate_family_chapter,
+            family_long_novel.extract_family_chapter_state,
+            family_long_novel.check_family_continuity,
+            family_long_novel.quality_check_family_chapter,
+            family_long_novel.repair_family_chapter,
+        ]
+    )
+
+    assert source.count("prompt_cache_key=_project_prompt_cache_key(project.id)") >= 10
+    assert "prompt_cache_key" in inspect.signature(family_long_novel._run_writer).parameters
+    assert "prompt_cache_key" in inspect.signature(family_long_novel._call_json).parameters
+    assert "prompt_cache_key" in inspect.signature(family_long_novel._call_text).parameters

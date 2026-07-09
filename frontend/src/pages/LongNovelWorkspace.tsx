@@ -376,24 +376,25 @@ export function LongNovelWorkspace() {
   const busyProgress = activeBusy ? Math.min(92, 12 + Math.floor((busyElapsed / 1000) * 1.4)) : 0;
   const busyInfo = activeBusy ? busyInfoFor(activeBusy) : null;
   const latestLog = serverBusy?.log ?? detail.logs[0];
-  const expansionRemaining = Math.max(0, 300000 - project.total_words);
+  const expansionTargetWords = 200000;
+  const expansionRemaining = Math.max(0, expansionTargetWords - project.total_words);
   const expansionExtraChapters = Math.max(1, Math.ceil(expansionRemaining / 4000));
   const expansionTargetChapters = Math.min(
     80,
-    Math.max(project.target_chapters, project.current_chapter + expansionExtraChapters),
+    project.current_chapter + expansionExtraChapters,
   );
-  const canExtendTo300k = project.target_words < 300000 || project.target_chapters < expansionTargetChapters;
-  const confirmExtendTo300k = () => {
+  const canReplanTo200k = project.target_words !== expansionTargetWords || project.target_chapters !== expansionTargetChapters;
+  const confirmReplanTo200k = () => {
     const ok = window.confirm(
-      `只扩展当前项目的未完成章节计划，不重写已完成正文。\n\n当前：${project.current_chapter} 章 / ${project.total_words} 字\n目标：300000 字，预计调整到 ${expansionTargetChapters} 章\n\n确认扩展到 30 万字？`,
+      `只重算当前项目的未完成章节计划，不重写已完成正文。\n\n当前：${project.current_chapter} 章 / ${project.total_words} 字\n目标：${expansionTargetWords} 字左右，预计调整到 ${expansionTargetChapters} 章\n\n确认按 20 万字重新全局规划？`,
     );
     if (!ok) return;
     void run("extend", () =>
       api.extendLongNovelTarget(project.id, {
-        target_words: 300000,
+        target_words: expansionTargetWords,
         future_chapter_words: 4000,
         expansion_notes:
-          "《嫂子的账本》专项扩容：沿用现有家长里短长篇架构，保留已完成章节，延展中段账本、养老、房产、亲戚舆论和证据链冲突，让结局延后到30万字体量。",
+          "《嫂子的账本》专项重规划：沿用现有家长里短长篇架构，保留已完成章节和所有已登记状态，按20万字左右重新全局规划后续章节，承接账本、养老、房产、亲戚舆论和证据链冲突，让结局自然延后但不要拖成30万体量。",
       }),
     );
   };
@@ -443,11 +444,11 @@ export function LongNovelWorkspace() {
               <button
                 type="button"
                 className="btn-ghost"
-                disabled={isBusy || !canExtendTo300k}
-                onClick={confirmExtendTo300k}
+                disabled={isBusy || !canReplanTo200k}
+                onClick={confirmReplanTo200k}
                 title="只重建未完成章节计划，不重写已完成正文"
               >
-                <ArrowUpRight className="h-4 w-4" /> 扩展到30万
+                <ArrowUpRight className="h-4 w-4" /> 重规划20万
               </button>
               <button
                 type="button"

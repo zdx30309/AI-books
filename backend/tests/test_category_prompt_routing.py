@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import asyncio
+import inspect
 import json
 import re
 
@@ -1014,6 +1015,57 @@ def test_finance_latest_research_pack_uses_cache_without_api_call(
     )
 
     assert result == cached
+
+
+def test_content_engine_prompt_cache_key_is_stable_and_input_sensitive() -> None:
+    key1 = content_engine._content_prompt_cache_key(  # noqa: SLF001
+        "social_science",
+        "same source",
+        input_source=None,
+        classical_variant=None,
+    )
+    key2 = content_engine._content_prompt_cache_key(  # noqa: SLF001
+        "social_science",
+        "same source",
+        input_source=None,
+        classical_variant=None,
+    )
+    key3 = content_engine._content_prompt_cache_key(  # noqa: SLF001
+        "social_science",
+        "different source",
+        input_source=None,
+        classical_variant=None,
+    )
+    key4 = content_engine._content_prompt_cache_key(  # noqa: SLF001
+        "classical_chinese",
+        "same source",
+        input_source=None,
+        classical_variant="novel_style",
+    )
+
+    assert key1 == key2
+    assert key1 != key3
+    assert key1 != key4
+    assert key1.startswith("ce:social_science:")
+
+
+def test_content_engine_openai_writer_paths_thread_prompt_cache_key() -> None:
+    source = "\n".join(
+        inspect.getsource(func)
+        for func in [
+            content_engine.generate_full_book,
+            content_engine._generate_finance_longform_book,  # noqa: SLF001
+            content_engine._finance_expand_writer_to_target,  # noqa: SLF001
+            content_engine._generate_classical_segmented_writer,  # noqa: SLF001
+            content_engine._generate_buddhist_story_unit_writer,  # noqa: SLF001
+            content_engine._repair_final_hard_errors_once,  # noqa: SLF001
+            content_engine._repair_front_matter,  # noqa: SLF001
+        ]
+    )
+
+    assert "task_prompt_cache_key = _content_prompt_cache_key" in source
+    assert source.count("prompt_cache_key=task_prompt_cache_key") >= 12
+    assert source.count("prompt_cache_key=prompt_cache_key") >= 10
 
 
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(

@@ -60,6 +60,48 @@ logger = logging.getLogger(__name__)
 
 _openai_writer_client: OpenAI | None = None
 
+
+def _prompt_cache_digest(*parts: object) -> str:
+    hasher = hashlib.sha256()
+    for part in parts:
+        if part is None:
+            continue
+        hasher.update(str(part).encode("utf-8", errors="ignore"))
+        hasher.update(b"\x1f")
+    return hasher.hexdigest()[:24]
+
+
+def _prompt_cache_slug(value: str | None, *, max_len: int = 24) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "").strip()).strip("-")
+    return (slug[:max_len].strip("-") or "generic").lower()
+
+
+def _content_prompt_cache_key(
+    category: str,
+    raw_text: str,
+    *,
+    input_source: str | None = None,
+    classical_variant: str | None = None,
+    classical_original_title: str | None = None,
+    style_reference: str | None = None,
+    style_notes: str | None = None,
+    source_duration_seconds: int | float | None = None,
+) -> str:
+    """Stable OpenAI prompt-cache namespace for one non-epic generation task."""
+    normalized = normalize_category(category)
+    digest = _prompt_cache_digest(
+        normalized,
+        raw_text,
+        input_source,
+        classical_variant,
+        classical_original_title,
+        style_reference,
+        style_notes,
+        source_duration_seconds,
+    )
+    return f"ce:{_prompt_cache_slug(normalized)}:{digest}:v1"
+
+
 FINANCE_LONGFORM_CHARS_PER_MINUTE = 280
 FINANCE_LONGFORM_BASE_TARGET_WORDS = 50_000
 FINANCE_LONGFORM_MIN_TARGET_WORDS = 8_000
@@ -1452,6 +1494,7 @@ async def _repair_classical_quality_once(
     expected_markers: list[int] | range | None = None,
     segment_only: bool = False,
     interleaved: bool = False,
+    prompt_cache_key: str | None = None,
 ) -> str:
     issues = _classical_quality_issues(
         markdown,
@@ -1531,6 +1574,7 @@ async def _repair_classical_quality_once(
         repair_prompt,
         max_output_tokens=0,
         retry_on_failure=False,
+        prompt_cache_key=prompt_cache_key,
     )
     _dump_stage(output_dir, f"classical_{stage}_quality_repaired.md", repaired)
     remaining = _classical_quality_issues(
@@ -1816,6 +1860,7 @@ async def _generate_classical_frontmatter(
     variant: object,
     original_title: object,
     output_dir: Path | None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     total_paragraphs = len(lines)
     digest = hashlib.sha256(("\n".join(lines)).encode("utf-8")).hexdigest()[:16]
@@ -1839,6 +1884,7 @@ async def _generate_classical_frontmatter(
             prompt,
             max_output_tokens=0,
             retry_on_failure=False,
+            prompt_cache_key=prompt_cache_key,
         )
         if _front_matter_missing(frontmatter):
             raise ValueError("frontmatter missing required sections")
@@ -1869,6 +1915,7 @@ async def _generate_classical_segmented_writer(
     category: str = "classical_chinese",
     style_reference: str | None = None,
     style_notes: str | None = None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     lines = classical_source_lines(source_text)
     if not lines:
@@ -1891,6 +1938,7 @@ async def _generate_classical_segmented_writer(
         variant=variant,
         original_title=original_title,
         output_dir=output_dir,
+        prompt_cache_key=prompt_cache_key,
     )
 
     segment_bodies: list[str] = []
@@ -1961,6 +2009,7 @@ async def _generate_classical_segmented_writer(
                 prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
+                prompt_cache_key=prompt_cache_key,
             )
             body = _classical_segment_output_body(raw_segment, interleaved=interleaved)
             body = await _repair_classical_quality_once(
@@ -1979,6 +2028,7 @@ async def _generate_classical_segmented_writer(
                 output_dir=output_dir,
                 segment_only=True,
                 interleaved=interleaved,
+                prompt_cache_key=prompt_cache_key,
             )
             body = _classical_segment_output_body(body, interleaved=interleaved)
             if cache_path:
@@ -2260,6 +2310,7 @@ async def _repair_buddhist_story_batch_against_source(
     output_dir: Path | None,
     stage: str,
     batch_index: int,
+    prompt_cache_key: str | None = None,
 ) -> str:
     cache_path = _buddhist_story_batch_cache_path(
         output_dir,
@@ -2295,7 +2346,12 @@ async def _repair_buddhist_story_batch_against_source(
 【当前稿件对应章节】
 {_buddhist_story_existing_block(markdown, units)}
 """
-    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+    repaired = await _route_writer_call(
+        prompt,
+        max_output_tokens=0,
+        retry_on_failure=False,
+        prompt_cache_key=prompt_cache_key,
+    )
     body = _buddhist_story_segment_output_body(repaired)
     remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2306,7 +2362,12 @@ async def _repair_buddhist_story_batch_against_source(
 
 请重新输出本批次，必须补足缺失的故事动作、误判、后果和自然收束，仍然只能输出指定章节；不要为了凑字数重复解释。
 """
-        repaired = await _route_writer_call(strict_prompt, max_output_tokens=0, retry_on_failure=False)
+        repaired = await _route_writer_call(
+            strict_prompt,
+            max_output_tokens=0,
+            retry_on_failure=False,
+            prompt_cache_key=prompt_cache_key,
+        )
         body = _buddhist_story_segment_output_body(repaired)
         remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2326,6 +2387,7 @@ async def _repair_buddhist_story_manuscript_against_units(
     output_dir: Path | None,
     stage: str,
     original_title: object = None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     if not units:
         return markdown
@@ -2352,6 +2414,7 @@ async def _repair_buddhist_story_manuscript_against_units(
             output_dir=output_dir,
             stage=stage,
             batch_index=batch_index,
+            prompt_cache_key=prompt_cache_key,
         )
         replacements.update(_buddhist_story_chapter_map(batch_body))
 
@@ -2429,6 +2492,7 @@ async def _repair_buddhist_story_segment_once(
     units: list[BuddhistStoryUnit],
     output_dir: Path | None,
     segment_index: int,
+    prompt_cache_key: str | None = None,
 ) -> str:
     issues = _buddhist_story_manuscript_issues(markdown, units)
     if not issues:
@@ -2457,7 +2521,12 @@ async def _repair_buddhist_story_segment_once(
 【待修复正文】
 {markdown.strip()}
 """
-    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+    repaired = await _route_writer_call(
+        prompt,
+        max_output_tokens=0,
+        retry_on_failure=False,
+        prompt_cache_key=prompt_cache_key,
+    )
     body = _buddhist_story_segment_output_body(repaired)
     remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2516,6 +2585,7 @@ async def _generate_buddhist_story_unit_writer(
     original_title: object,
     output_dir: Path | None,
     on_stage: StageCallback | None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     if not units:
         raise ValueError("佛经白话故事单元为空，无法分单元生成")
@@ -2550,13 +2620,19 @@ async def _generate_buddhist_story_unit_writer(
                 all_units=units,
                 original_title=original_title,
             )
-            raw_segment = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
+            raw_segment = await _route_writer_call(
+                prompt,
+                max_output_tokens=0,
+                retry_on_failure=False,
+                prompt_cache_key=prompt_cache_key,
+            )
             body = _buddhist_story_segment_output_body(raw_segment)
             body = await _repair_buddhist_story_segment_once(
                 body,
                 units=segment_units,
                 output_dir=output_dir,
                 segment_index=segment_index,
+                prompt_cache_key=prompt_cache_key,
             )
             if cache_path:
                 try:
@@ -2857,6 +2933,7 @@ def _stream_openai_writer(
     effort: str,
     verb: str,
     max_tok: int | None,
+    prompt_cache_key: str | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> tuple[str, Any | None]:
     client = _get_openai_writer_client()
@@ -2867,6 +2944,8 @@ def _stream_openai_writer(
         "text": {"verbosity": verb},
         "stream": True,
     }
+    if prompt_cache_key:
+        kwargs["prompt_cache_key"] = prompt_cache_key
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
     stream = client.responses.create(**kwargs)
@@ -2900,6 +2979,7 @@ def _create_openai_writer_response(
     effort: str,
     verb: str,
     max_tok: int | None,
+    prompt_cache_key: str | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
     kwargs: dict[str, Any] = {
@@ -2908,6 +2988,8 @@ def _create_openai_writer_response(
         "reasoning": {"effort": effort},
         "text": {"verbosity": verb},
     }
+    if prompt_cache_key:
+        kwargs["prompt_cache_key"] = prompt_cache_key
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
     return client.responses.create(**kwargs)
@@ -2919,6 +3001,7 @@ def _openai_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
+    prompt_cache_key: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -2946,6 +3029,7 @@ def _openai_writer_call(
                             effort=effort,
                             verb=verb,
                             max_tok=max_tok,
+                            prompt_cache_key=prompt_cache_key,
                             on_progress=on_progress,
                         )
                     except Exception as stream_exc:
@@ -2959,6 +3043,7 @@ def _openai_writer_call(
                             effort=effort,
                             verb=verb,
                             max_tok=max_tok,
+                            prompt_cache_key=prompt_cache_key,
                         )
                         text = _extract_openai_response_text(response)
                 else:
@@ -2967,6 +3052,7 @@ def _openai_writer_call(
                         effort=effort,
                         verb=verb,
                         max_tok=max_tok,
+                        prompt_cache_key=prompt_cache_key,
                     )
                     text = _extract_openai_response_text(response)
             break
@@ -3002,6 +3088,7 @@ def _openai_writer_call(
                         effort=retry_effort,
                         verb=verb,
                         max_tok=max_tok,
+                        prompt_cache_key=prompt_cache_key,
                     )
                 except Exception as exc:
                     _reset_openai_writer_client()
@@ -3028,6 +3115,7 @@ async def _route_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
+    prompt_cache_key: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3037,6 +3125,7 @@ async def _route_writer_call(
         reasoning_effort=reasoning_effort,
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
+        prompt_cache_key=prompt_cache_key,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3058,6 +3147,7 @@ async def _repair_final_hard_errors_once(
     category: str | None,
     output_dir: Path | None,
     stage: str = "format",
+    prompt_cache_key: str | None = None,
 ) -> str:
     from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
 
@@ -3100,6 +3190,7 @@ async def _repair_final_hard_errors_once(
         repair_prompt,
         max_output_tokens=0,
         retry_on_failure=False,
+        prompt_cache_key=prompt_cache_key,
     )
     repaired = normalize_final_markdown(repaired, category=normalized_category)
     _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
@@ -4432,6 +4523,7 @@ async def _finance_expand_writer_to_target(
     category: str,
     output_dir: Path | None,
     on_stage: StageCallback | None,
+    prompt_cache_key: str | None = None,
 ) -> tuple[str, bool]:
     current_markdown = normalize_final_markdown(current_markdown, category=category)
     current_body_chars = _finance_body_chars(current_markdown)
@@ -4491,6 +4583,7 @@ async def _finance_expand_writer_to_target(
                 prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
+                prompt_cache_key=prompt_cache_key,
                 on_progress=(
                     (
                         lambda chars, base=before_body_chars, round_idx=round_index: on_stage(
@@ -4587,6 +4680,7 @@ async def _generate_finance_longform_book(
     output_dir: Path | None,
     on_stage: StageCallback | None,
     source_duration_seconds: int | float | None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     is_advice = _is_finance_advice_category(category)
     duration_seconds = _positive_int(source_duration_seconds) or _finance_duration_seconds_from_text(raw_text)
@@ -4661,6 +4755,7 @@ async def _generate_finance_longform_book(
                 category=category,
                 output_dir=output_dir,
                 stage="finance_resume",
+                prompt_cache_key=prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
             _log_stage("finance 4/4 format (resume)", final_resume_markdown)
@@ -4721,6 +4816,7 @@ async def _generate_finance_longform_book(
                 writer_prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
+                prompt_cache_key=prompt_cache_key,
                 on_progress=(
                     (lambda chars: on_stage("writer_progress", {"chars": chars}))
                     if on_stage
@@ -4754,6 +4850,7 @@ async def _generate_finance_longform_book(
         category=category,
         output_dir=output_dir,
         on_stage=on_stage,
+        prompt_cache_key=prompt_cache_key,
     )
     if writer_expanded:
         resume_polished_markdown = None
@@ -4945,6 +5042,7 @@ async def _generate_finance_longform_book(
         category=category,
         output_dir=output_dir,
         stage="finance_format",
+        prompt_cache_key=prompt_cache_key,
     )
     _log_stage("finance 4/4 format", final_markdown, prev_chars=refine_chars)
     _dump_stage(output_dir, "04_format.md", final_markdown)
@@ -4963,6 +5061,7 @@ async def _repair_front_matter(
     generated_markdown: str,
     *,
     category: str | None = None,
+    prompt_cache_key: str | None = None,
 ) -> str:
     is_finance = _is_finance_longform_category(category)
     source_label = "参考资料全文" if is_finance else "原始视频文稿"
@@ -4999,7 +5098,7 @@ async def _repair_front_matter(
         f"[{source_label}]\n{raw_text.strip()}\n\n"
         f"[当前书稿]\n{generated_markdown.strip()}\n"
     )
-    return await _route_writer_call(repair_prompt)
+    return await _route_writer_call(repair_prompt, prompt_cache_key=prompt_cache_key)
 
 
 def _dump_stage(output_dir: Path | None, filename: str, content: str) -> None:
@@ -5710,6 +5809,17 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    task_prompt_cache_key = _content_prompt_cache_key(
+        normalized_category,
+        writer_input_text,
+        input_source=input_source,
+        classical_variant=classical_variant,
+        classical_original_title=classical_original_title,
+        style_reference=style_reference,
+        style_notes=style_notes,
+        source_duration_seconds=source_duration_seconds,
+    )
+
     if normalized_category == "healing_comic":
         return await _generate_healing_comic_book(
             raw_text,
@@ -5742,6 +5852,7 @@ async def generate_full_book(
             output_dir=output_dir,
             on_stage=on_stage,
             source_duration_seconds=source_duration_seconds,
+            prompt_cache_key=task_prompt_cache_key,
         )
 
     ignore_existing_stages = False
@@ -5772,6 +5883,7 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="resume",
                 original_title=classical_original_title,
+                prompt_cache_key=task_prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
         from app.core.quality_metrics import detect_final_hard_errors
@@ -5793,6 +5905,7 @@ async def generate_full_book(
                 category=normalized_category,
                 output_dir=output_dir,
                 stage="resume",
+                prompt_cache_key=task_prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
             _log_stage("4/4 format (resume fast)", final_resume_markdown)
@@ -5838,6 +5951,7 @@ async def generate_full_book(
                 category=normalized_category,
                 style_reference=style_reference,
                 style_notes=style_notes,
+                prompt_cache_key=task_prompt_cache_key,
             )
         elif use_buddhist_story_unit_writer:
             generated_markdown = await _generate_buddhist_story_unit_writer(
@@ -5846,6 +5960,7 @@ async def generate_full_book(
                 original_title=classical_original_title,
                 output_dir=output_dir,
                 on_stage=on_stage,
+                prompt_cache_key=task_prompt_cache_key,
             )
         else:
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
@@ -5873,6 +5988,7 @@ async def generate_full_book(
             generated_markdown = await _route_writer_call(
                 writer_prompt,
                 max_output_tokens=writer_max_output_tokens,
+                prompt_cache_key=task_prompt_cache_key,
                 on_progress=(
                     (lambda chars: on_stage("writer_progress", {"chars": chars}))
                     if on_stage
@@ -5890,6 +6006,7 @@ async def generate_full_book(
             raw_text,
             generated_markdown,
             category=normalized_category,
+            prompt_cache_key=task_prompt_cache_key,
         )
         if repaired_markdown.strip():
             generated_markdown = repaired_markdown
@@ -5905,6 +6022,7 @@ async def generate_full_book(
             stage="writer",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
+            prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
 
@@ -5981,6 +6099,7 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="polish",
                 original_title=classical_original_title,
+                prompt_cache_key=task_prompt_cache_key,
             )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -5993,6 +6112,7 @@ async def generate_full_book(
             stage="polish",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
+            prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -6087,6 +6207,7 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="refine",
                 original_title=classical_original_title,
+                prompt_cache_key=task_prompt_cache_key,
             )
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
@@ -6099,6 +6220,7 @@ async def generate_full_book(
             stage="refine",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
+            prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
@@ -6203,6 +6325,7 @@ async def generate_full_book(
                     stage="format",
                     output_dir=output_dir,
                     interleaved=is_classical_interleaved,
+                    prompt_cache_key=task_prompt_cache_key,
                 )
     if use_buddhist_story_unit_writer:
         buddhist_final_issues = _buddhist_story_manuscript_issues(
@@ -6216,6 +6339,7 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="final",
                 original_title=classical_original_title,
+                prompt_cache_key=task_prompt_cache_key,
             )
 
     if _front_matter_missing(final_markdown):
@@ -6238,6 +6362,7 @@ async def generate_full_book(
         category=normalized_category,
         output_dir=output_dir,
         stage="format",
+        prompt_cache_key=task_prompt_cache_key,
     )
     _dump_stage(output_dir, "04_format.md", final_markdown)
 
