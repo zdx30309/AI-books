@@ -113,6 +113,8 @@ def test_sister_account_extension_uses_system_replan_not_local_templates() -> No
     assert "replan_30w_global" in batch_source
     assert "replan_30w_batch_" in batch_source
     assert "batch_size = 3" in batch_source
+    assert "batch_start == batch_end" in batch_source
+    assert "max_output_tokens=6000" in batch_source
     assert "ZHOULI_30W_GLOBAL_REPLAN_PROMPT" in batch_source
     assert "ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT" in batch_source
     assert "expectedChapterNumbers" in inspect.getsource(family_long_novel._continuation_batch_context)

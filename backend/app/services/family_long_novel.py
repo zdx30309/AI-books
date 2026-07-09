@@ -1193,9 +1193,41 @@ def _run_batched_continuation_replan(
             prompt=batch_prompt,
             max_output_tokens=12000,
         )
-        planned_chapters.extend(
-            _validate_chapter_batch_replan(batch_data, batch_start=batch_start, batch_end=batch_end)
-        )
+        try:
+            planned_chapters.extend(
+                _validate_chapter_batch_replan(batch_data, batch_start=batch_start, batch_end=batch_end)
+            )
+        except FamilyLongNovelError:
+            if batch_start == batch_end:
+                raise
+            for single_number in range(batch_start, batch_end + 1):
+                single_context = _continuation_batch_context(
+                    base_context,
+                    global_plan,
+                    batch_start=single_number,
+                    batch_end=single_number,
+                    planned_chapters=planned_chapters,
+                )
+                single_prompt = render_prompt(
+                    ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
+                    batch_context=_json_dumps(single_context),
+                )
+                single_data = _call_json(
+                    db,
+                    project_id=project.id,
+                    chapter_number=None,
+                    action=f"replan_30w_batch_{single_number}_{single_number}",
+                    tier="strong",
+                    prompt=single_prompt,
+                    max_output_tokens=6000,
+                )
+                planned_chapters.extend(
+                    _validate_chapter_batch_replan(
+                        single_data,
+                        batch_start=single_number,
+                        batch_end=single_number,
+                    )
+                )
 
     combined = dict(global_plan)
     combined["chapters"] = planned_chapters
