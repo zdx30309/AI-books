@@ -118,6 +118,10 @@ def _ensure_long_novel_schema_columns() -> None:
                     "ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER NOT NULL DEFAULT 0"
                 )
             )
+            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS service_tier VARCHAR(32)"))
+            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_cache_key VARCHAR(255)"))
+            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_prefix_hash VARCHAR(64)"))
+            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS response_id VARCHAR(255)"))
 
 
 def _ensure_epic_schema_columns() -> None:

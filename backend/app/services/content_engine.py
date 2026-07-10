@@ -3002,6 +3002,7 @@ def _stream_openai_writer(
     verb: str,
     max_tok: int | None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> tuple[str, Any | None]:
     client = _get_openai_writer_client()
@@ -3013,6 +3014,9 @@ def _stream_openai_writer(
         "stream": True,
     }
     _apply_prompt_cache_options(kwargs, prompt_cache_key)
+    normalized_tier = str(service_tier or "").strip().lower()
+    if normalized_tier in {"auto", "default", "flex", "priority"}:
+        kwargs["service_tier"] = normalized_tier
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
     stream = client.responses.create(**kwargs)
@@ -3047,6 +3051,10 @@ def _create_openai_writer_response(
     verb: str,
     max_tok: int | None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    background_timeout_seconds: int | None = None,
+    background_poll_interval_seconds: float | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
     kwargs: dict[str, Any] = {
@@ -3056,9 +3064,90 @@ def _create_openai_writer_response(
         "text": {"verbosity": verb},
     }
     _apply_prompt_cache_options(kwargs, prompt_cache_key)
+    normalized_tier = str(service_tier or "").strip().lower()
+    if normalized_tier in {"auto", "default", "flex", "priority"}:
+        kwargs["service_tier"] = normalized_tier
+    if background:
+        kwargs["background"] = True
+        kwargs["store"] = True
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
-    return client.responses.create(**kwargs)
+    response = client.responses.create(**kwargs)
+    if not background:
+        return response
+    return _wait_for_openai_background_response(
+        client,
+        response,
+        timeout_seconds=background_timeout_seconds,
+        poll_interval_seconds=background_poll_interval_seconds,
+    )
+
+
+def _wait_for_openai_background_response(
+    client: Any,
+    response: Any,
+    *,
+    timeout_seconds: int | None,
+    poll_interval_seconds: float | None,
+) -> Any:
+    """Poll one persisted response ID so transient reads never duplicate a generation."""
+
+    response_id = str(_response_attr(response, "id", "") or "").strip()
+    if not response_id:
+        raise RuntimeError("OpenAI background response did not return an id")
+    timeout = max(60, int(timeout_seconds or 3600))
+    poll_interval = max(1.0, float(poll_interval_seconds or 5.0))
+    deadline = time.monotonic() + timeout
+    current = response
+    retrieve_failures = 0
+
+    while str(_response_attr(current, "status", "") or "").lower() in {"queued", "in_progress"}:
+        if time.monotonic() >= deadline:
+            try:
+                client.responses.cancel(response_id)
+            except Exception:
+                logger.warning("Failed to cancel timed-out OpenAI background response %s", response_id)
+            raise TimeoutError(f"OpenAI background response timed out after {timeout}s: {response_id}")
+        time.sleep(poll_interval)
+        try:
+            current = client.responses.retrieve(response_id)
+            retrieve_failures = 0
+        except Exception as exc:
+            retrieve_failures += 1
+            if not _is_retryable_openai_error(exc) or retrieve_failures >= 8:
+                raise
+            sleep_for = min(poll_interval * retrieve_failures, 30.0)
+            logger.warning(
+                "OpenAI background response poll failed; retrying same response id=%s attempt=%d sleep=%.1fs error=%s",
+                response_id,
+                retrieve_failures,
+                sleep_for,
+                str(exc)[:300],
+            )
+            time.sleep(sleep_for)
+
+    status = str(_response_attr(current, "status", "") or "").lower()
+    if status != "completed":
+        raise RuntimeError(
+            f"OpenAI background response ended with status={status or 'unknown'} id={response_id}; "
+            f"{_openai_response_debug_summary(current)}"
+        )
+    return current
+
+
+def _can_fallback_from_flex(exc: Exception) -> bool:
+    if _is_retryable_openai_error(exc):
+        return True
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in message
+        for marker in (
+            "service_tier",
+            "service tier",
+            "flex",
+            "resource unavailable",
+        )
+    )
 
 
 def _openai_writer_call_result(
@@ -3068,9 +3157,14 @@ def _openai_writer_call_result(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    background_timeout_seconds: int | None = None,
+    background_poll_interval_seconds: float | None = None,
+    fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
-) -> tuple[str, dict[str, int]]:
+) -> tuple[str, dict[str, Any]]:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
     raw_max_tok = settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
@@ -3089,66 +3183,100 @@ def _openai_writer_call_result(
     attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1)) if retry_on_failure else 1
     backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
 
-    for attempt in range(1, attempts + 1):
-        try:
-            with distributed_semaphore(
-                "openai-writer",
-                limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
-            ):
-                if settings.OPENAI_WRITER_STREAM:
-                    try:
-                        text, response = _stream_openai_writer(
-                            rendered_prompt,
-                            effort=effort,
-                            verb=verb,
-                            max_tok=max_tok,
-                            prompt_cache_key=prompt_cache_key,
-                            on_progress=on_progress,
-                        )
-                        _merge_openai_usage(total_usage, response)
-                    except Exception as stream_exc:
-                        if not retry_on_failure:
-                            raise
-                        if first_stream_exc is None:
-                            first_stream_exc = stream_exc
-                        _reset_openai_writer_client()
+    requested_tier = str(service_tier or "").strip().lower() or None
+    fallback_tier = str(fallback_service_tier or "").strip().lower() or None
+    service_tiers = [requested_tier]
+    if fallback_tier and fallback_tier != requested_tier:
+        service_tiers.append(fallback_tier)
+    used_tier = requested_tier
+    last_exc: Exception | None = None
+
+    for tier_index, current_tier in enumerate(service_tiers):
+        for attempt in range(1, attempts + 1):
+            try:
+                with distributed_semaphore(
+                    "openai-writer",
+                    limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
+                ):
+                    if settings.OPENAI_WRITER_STREAM and not background:
+                        try:
+                            text, response = _stream_openai_writer(
+                                rendered_prompt,
+                                effort=effort,
+                                verb=verb,
+                                max_tok=max_tok,
+                                prompt_cache_key=prompt_cache_key,
+                                service_tier=current_tier,
+                                on_progress=on_progress,
+                            )
+                            _merge_openai_usage(total_usage, response)
+                        except Exception as stream_exc:
+                            if not retry_on_failure:
+                                raise
+                            if first_stream_exc is None:
+                                first_stream_exc = stream_exc
+                            _reset_openai_writer_client()
+                            response = _create_openai_writer_response(
+                                rendered_prompt,
+                                effort=effort,
+                                verb=verb,
+                                max_tok=max_tok,
+                                prompt_cache_key=prompt_cache_key,
+                                service_tier=current_tier,
+                            )
+                            _merge_openai_usage(total_usage, response)
+                            text = _extract_openai_response_text(response)
+                    else:
                         response = _create_openai_writer_response(
                             rendered_prompt,
                             effort=effort,
                             verb=verb,
                             max_tok=max_tok,
                             prompt_cache_key=prompt_cache_key,
+                            service_tier=current_tier,
+                            background=background,
+                            background_timeout_seconds=background_timeout_seconds,
+                            background_poll_interval_seconds=background_poll_interval_seconds,
                         )
                         _merge_openai_usage(total_usage, response)
                         text = _extract_openai_response_text(response)
-                else:
-                    response = _create_openai_writer_response(
-                        rendered_prompt,
-                        effort=effort,
-                        verb=verb,
-                        max_tok=max_tok,
-                        prompt_cache_key=prompt_cache_key,
+                used_tier = str(_response_attr(response, "service_tier", current_tier or "default") or "default")
+                break
+            except Exception as exc:
+                last_exc = exc
+                _reset_openai_writer_client()
+                retryable = _is_retryable_openai_error(exc)
+                if attempt < attempts and retryable:
+                    sleep_for = min(backoff_seconds * attempt, 30.0)
+                    logger.warning(
+                        "OpenAI Writer 调用失败，准备重试 tier=%s attempt=%d/%d sleep=%.1fs error=%s: %s",
+                        current_tier or "default",
+                        attempt,
+                        attempts,
+                        sleep_for,
+                        exc.__class__.__name__,
+                        str(exc)[:500],
                     )
-                    _merge_openai_usage(total_usage, response)
-                    text = _extract_openai_response_text(response)
-            break
-        except Exception as exc:
-            _reset_openai_writer_client()
-            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
+                    continue
+                has_fallback = tier_index + 1 < len(service_tiers)
+                if has_fallback and current_tier == "flex" and _can_fallback_from_flex(exc):
+                    logger.warning(
+                        "OpenAI Flex unavailable after retries; falling back with identical model/prompt/reasoning params: %s",
+                        str(exc)[:500],
+                    )
+                    break
                 raise RuntimeError(
                     _openai_writer_connection_error_message(exc, first_stream_exc)
                 ) from exc
-            sleep_for = min(backoff_seconds * attempt, 30.0)
-            logger.warning(
-                "OpenAI Writer 调用失败，准备重试 attempt=%d/%d sleep=%.1fs error=%s: %s",
-                attempt,
-                attempts,
-                sleep_for,
-                exc.__class__.__name__,
-                str(exc)[:500],
-            )
-            if sleep_for > 0:
-                time.sleep(sleep_for)
+        if text:
+            break
+    else:
+        if last_exc is not None:
+            raise RuntimeError(
+                _openai_writer_connection_error_message(last_exc, first_stream_exc)
+            ) from last_exc
 
     if not text:
         text = _extract_openai_response_text(response)
@@ -3165,6 +3293,10 @@ def _openai_writer_call_result(
                         verb=verb,
                         max_tok=max_tok,
                         prompt_cache_key=prompt_cache_key,
+                        service_tier=used_tier,
+                        background=background,
+                        background_timeout_seconds=background_timeout_seconds,
+                        background_poll_interval_seconds=background_poll_interval_seconds,
                     )
                     _merge_openai_usage(total_usage, response)
                 except Exception as exc:
@@ -3183,6 +3315,9 @@ def _openai_writer_call_result(
     if not text or not text.strip():
         raise ValueError("OpenAI Writer 返回空响应")
 
+    total_usage["service_tier"] = used_tier or "default"
+    total_usage["requested_service_tier"] = requested_tier or "default"
+    total_usage["response_id"] = str(_response_attr(response, "id", "") or "")
     return text.strip(), total_usage
 
 
@@ -3193,6 +3328,11 @@ def _openai_writer_call(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    background_timeout_seconds: int | None = None,
+    background_poll_interval_seconds: float | None = None,
+    fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3202,6 +3342,11 @@ def _openai_writer_call(
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
         prompt_cache_key=prompt_cache_key,
+        service_tier=service_tier,
+        background=background,
+        background_timeout_seconds=background_timeout_seconds,
+        background_poll_interval_seconds=background_poll_interval_seconds,
+        fallback_service_tier=fallback_service_tier,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3215,6 +3360,11 @@ async def _route_writer_call(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    background_timeout_seconds: int | None = None,
+    background_poll_interval_seconds: float | None = None,
+    fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3225,6 +3375,11 @@ async def _route_writer_call(
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
         prompt_cache_key=prompt_cache_key,
+        service_tier=service_tier,
+        background=background,
+        background_timeout_seconds=background_timeout_seconds,
+        background_poll_interval_seconds=background_poll_interval_seconds,
+        fallback_service_tier=fallback_service_tier,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3237,9 +3392,14 @@ async def _route_writer_call_with_usage(
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    background_timeout_seconds: int | None = None,
+    background_poll_interval_seconds: float | None = None,
+    fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
-) -> tuple[str, dict[str, int]]:
+) -> tuple[str, dict[str, Any]]:
     return await asyncio.to_thread(
         _openai_writer_call_result,
         rendered_prompt,
@@ -3247,6 +3407,11 @@ async def _route_writer_call_with_usage(
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
         prompt_cache_key=prompt_cache_key,
+        service_tier=service_tier,
+        background=background,
+        background_timeout_seconds=background_timeout_seconds,
+        background_poll_interval_seconds=background_poll_interval_seconds,
+        fallback_service_tier=fallback_service_tier,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 import logging
 import re
@@ -115,6 +117,16 @@ def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
 
+def _canonical_json_dumps(data: Any) -> str:
+    return json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
 def _json_loads(text: str) -> dict[str, Any]:
     cleaned = (text or "").strip()
     cleaned = _JSON_FENCE_RE.sub("", cleaned).strip()
@@ -223,6 +235,9 @@ def _run_writer(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     prompt_cache_key: str | None = None,
+    service_tier: str | None = None,
+    background: bool = False,
+    fallback_service_tier: str | None = None,
 ) -> str:
     try:
         asyncio.get_running_loop()
@@ -234,6 +249,11 @@ def _run_writer(
                 verbosity=verbosity,
                 max_output_tokens=max_output_tokens,
                 prompt_cache_key=prompt_cache_key,
+                service_tier=service_tier,
+                background=background,
+                background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
+                background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
+                fallback_service_tier=fallback_service_tier,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
@@ -246,7 +266,10 @@ def _run_writer_with_usage(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     prompt_cache_key: str | None = None,
-) -> tuple[str, dict[str, int]]:
+    service_tier: str | None = None,
+    background: bool = False,
+    fallback_service_tier: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -257,13 +280,37 @@ def _run_writer_with_usage(
                 verbosity=verbosity,
                 max_output_tokens=max_output_tokens,
                 prompt_cache_key=prompt_cache_key,
+                service_tier=service_tier,
+                background=background,
+                background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
+                background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
+                fallback_service_tier=fallback_service_tier,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
 
 
 def _project_prompt_cache_key(project_id: UUID) -> str:
-    return f"family-long-novel:{project_id}:v1"
+    return f"family-long-novel:{project_id}:project:v2"
+
+
+def _chapter_prompt_cache_key(project_id: UUID, chapter_number: int) -> str:
+    return f"family-long-novel:{project_id}:chapter:{chapter_number}:v2"
+
+
+def _long_novel_processing_policy() -> tuple[str | None, bool, str | None]:
+    mode = str(settings.LONG_NOVEL_PROCESSING_MODE or "standard").strip().lower()
+    if mode != "flex" or (settings.WRITER_PROVIDER or "openai").lower() != "openai":
+        return None, False, None
+    fallback = "auto" if settings.LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD else None
+    return "flex", bool(settings.LONG_NOVEL_FLEX_BACKGROUND), fallback
+
+
+def _prompt_prefix_hash(prompt: str) -> str:
+    marker = "[END AUTHORITATIVE ROLLING CHAPTER CONTEXT]"
+    end = prompt.find(marker)
+    prefix = prompt[: end + len(marker)] if end >= 0 else prompt
+    return hashlib.sha256(prefix.encode("utf-8")).hexdigest()
 
 
 def _model_for_tier(tier: str) -> str:
@@ -287,6 +334,7 @@ def _estimate_long_novel_cost(
     prompt_tokens: int,
     cached_prompt_tokens: int,
     completion_tokens: int,
+    service_tier: str | None = None,
 ) -> float:
     input_rate = max(0.0, float(settings.LONG_NOVEL_INPUT_COST_PER_1M or 0.0))
     cached_rate = max(0.0, float(settings.LONG_NOVEL_CACHED_INPUT_COST_PER_1M or 0.0))
@@ -300,6 +348,8 @@ def _estimate_long_novel_cost(
         + (cached * cached_rate)
         + (max(0, completion_tokens) * output_rate)
     ) / 1_000_000
+    if str(service_tier or "").strip().lower() in {"flex", "batch"}:
+        cost *= 0.5
     return round(cost, 8)
 
 
@@ -412,6 +462,7 @@ def _log_llm_call(
     max_output_tokens: int,
     prompt_cache_key: str | None = None,
 ) -> str:
+    requested_service_tier, use_background, fallback_service_tier = _long_novel_processing_policy()
     log = LongNovelGenerationLog(
         project_id=project_id,
         chapter_number=chapter_number,
@@ -419,6 +470,9 @@ def _log_llm_call(
         provider=settings.WRITER_PROVIDER,
         model=_model_for_tier(tier),
         prompt_tokens=max(1, len(prompt) // 4),
+        service_tier=requested_service_tier or "default",
+        prompt_cache_key=prompt_cache_key,
+        prompt_prefix_hash=_prompt_prefix_hash(prompt),
         status="started",
     )
     db.add(log)
@@ -428,6 +482,9 @@ def _log_llm_call(
             prompt,
             max_output_tokens=max_output_tokens,
             prompt_cache_key=prompt_cache_key,
+            service_tier=requested_service_tier,
+            background=use_background,
+            fallback_service_tier=fallback_service_tier,
         )
     except Exception as exc:
         log.status = "failed"
@@ -443,10 +500,14 @@ def _log_llm_call(
     log.cached_prompt_tokens = cached_prompt_tokens
     log.completion_tokens = completion_tokens
     log.reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+    actual_service_tier = str(usage.get("service_tier") or requested_service_tier or "default")
+    log.service_tier = actual_service_tier
+    log.response_id = str(usage.get("response_id") or "") or None
     log.estimated_cost = _estimate_long_novel_cost(
         prompt_tokens=prompt_tokens,
         cached_prompt_tokens=cached_prompt_tokens,
         completion_tokens=completion_tokens,
+        service_tier=actual_service_tier,
     )
     db.add(log)
     db.commit()
@@ -2095,7 +2156,7 @@ def _build_chapter_context_pack_for_project(
             LongNovelCanonFact.project_id == project.id,
             LongNovelCanonFact.chapter_number < chapter_number,
         )
-        .order_by(LongNovelCanonFact.chapter_number.desc())
+        .order_by(LongNovelCanonFact.chapter_number.desc(), LongNovelCanonFact.id.asc())
         .limit(80)
         .all()
     )
@@ -2112,7 +2173,11 @@ def _build_chapter_context_pack_for_project(
             LongNovelContinuityIssue.chapter_number < chapter_number,
             LongNovelContinuityIssue.status == "open",
         )
-        .order_by(LongNovelContinuityIssue.chapter_number.desc(), LongNovelContinuityIssue.created_at.desc())
+        .order_by(
+            LongNovelContinuityIssue.chapter_number.desc(),
+            LongNovelContinuityIssue.created_at.desc(),
+            LongNovelContinuityIssue.id.asc(),
+        )
         .limit(40)
         .all()
     )
@@ -2327,7 +2392,7 @@ def _stable_project_cache_prefix(context_pack: dict[str, Any]) -> str:
         key=lambda item: (str(item.get("conflictKey") or ""), str(item.get("name") or "")),
     )
     stable_payload = {
-        "cachePrefixVersion": "family-long-novel-stable-v3",
+        "cachePrefixVersion": "family-long-novel-stable-v4",
         "purpose": "shared_project_memory_for_prompt_cache",
         "rule": "This stable prefix is shared by all chapter workflow calls for this project. Use it only as project-level memory; the later per-call context is authoritative for current chapter state.",
         "project": project_payload,
@@ -2360,7 +2425,7 @@ def _stable_project_cache_prefix(context_pack: dict[str, Any]) -> str:
         "【长篇项目稳定缓存前缀】\n"
         "以下内容在同一长篇项目内保持稳定，放在提示词最前方用于 prompt cache。"
         "不得用它替代后文的本章动态上下文、上一章结尾、最新人物状态和最新物品状态。\n"
-        f"{_json_dumps(stable_payload)}\n"
+        f"{_canonical_json_dumps(stable_payload)}\n"
         "【长篇项目稳定缓存前缀结束】"
     )
 
@@ -2371,7 +2436,7 @@ def _with_project_cache_prefix(context_pack: dict[str, Any], prompt: str) -> str
         "[AUTHORITATIVE ROLLING CHAPTER CONTEXT]\n"
         "This JSON contains the complete pre-chapter continuity ledger shared by planning, writing, state extraction, and QA. "
         "The later action delta contains only fields that can change between workflow nodes.\n"
-        f"{_json_dumps(rolling_context)}\n"
+        f"{_canonical_json_dumps(rolling_context)}\n"
         "[END AUTHORITATIVE ROLLING CHAPTER CONTEXT]"
     )
     return f"{_stable_project_cache_prefix(context_pack)}\n\n{rolling_prefix}\n\n{prompt}"
@@ -2593,6 +2658,20 @@ def _build_chapter_context(db: Session, project: LongNovelProject, chapter_numbe
     return _build_chapter_context_pack_for_project(db, project, chapter_number)
 
 
+def _chapter_context_snapshot_with_plan(
+    context_pack: dict[str, Any],
+    plan: LongNovelChapterPlan,
+) -> dict[str, Any]:
+    """Freeze one pre-chapter ledger while allowing the newly approved plan as action data."""
+
+    snapshot = copy.deepcopy(context_pack)
+    plan_payload = _plan_payload(plan)
+    snapshot["currentPlan"] = copy.deepcopy(plan.raw_json or {})
+    snapshot["currentPlanRecord"] = plan_payload
+    snapshot["currentChapterOutline"] = copy.deepcopy(plan_payload)
+    return snapshot
+
+
 def generate_family_chapter_plan(
     db: Session,
     project_id: UUID,
@@ -2667,7 +2746,7 @@ def generate_family_chapter_plan(
             tier="default",
             prompt=prompt,
             max_output_tokens=16000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -2725,14 +2804,14 @@ def generate_family_chapter(
         )
         .first()
     )
+    initial_context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(initial_context, chapter_number)
     if plan is None or not plan.scenes:
-        initial_context = _build_chapter_context(db, project, chapter_number)
-        validate_chapter_context_pack(initial_context, chapter_number)
         plan = generate_family_chapter_plan(db, project.id, chapter_number, user, context_pack=initial_context)
         db.refresh(project)
         db.refresh(plan)
 
-    context = _build_chapter_context(db, project, chapter_number)
+    context = _chapter_context_snapshot_with_plan(initial_context, plan)
     validate_chapter_context_pack(context, chapter_number)
 
     project.status = LongNovelProjectStatus.GENERATING
@@ -2756,7 +2835,7 @@ def generate_family_chapter(
             tier="default",
             prompt=prompt,
             max_output_tokens=_chapter_write_max_output_tokens(project),
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except Exception:
         _mark_generation_failed(db, project, plan=plan)
@@ -2784,8 +2863,21 @@ def generate_family_chapter(
     sync_family_project_progress(db, project)
 
     try:
-        extract_family_chapter_state(db, project.id, chapter_number, user)
-        issues = check_family_continuity(db, project.id, chapter_number, user)
+        extracted_state = extract_family_chapter_state(
+            db,
+            project.id,
+            chapter_number,
+            user,
+            context_pack=context,
+        )
+        issues = check_family_continuity(
+            db,
+            project.id,
+            chapter_number,
+            user,
+            context_pack=context,
+            extracted_state=extracted_state,
+        )
         severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
         if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
             chapter = repair_family_chapter(db, project.id, chapter_number, user)
@@ -2847,6 +2939,8 @@ def extract_family_chapter_state(
     project_id: UUID,
     chapter_number: int,
     user: User | None = None,
+    *,
+    context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     project = _get_project(db, project_id, user)
     chapter = (
@@ -2859,7 +2953,7 @@ def extract_family_chapter_state(
     )
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
-    context = _build_chapter_context(db, project, chapter_number)
+    context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
@@ -2876,8 +2970,8 @@ def extract_family_chapter_state(
             action="extract_chapter_state",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=14000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            max_output_tokens=max(6000, int(settings.LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS or 10000)),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3101,11 +3195,32 @@ def _rule_continuity_issues(
     return issues
 
 
+def _compact_state_delta_for_continuity(data: dict[str, Any] | None) -> dict[str, Any]:
+    source = data if isinstance(data, dict) else {}
+    limits = {
+        "events": 8,
+        "canonFacts": 12,
+        "familyMemberStateDeltas": 12,
+        "objectStateChanges": 10,
+        "conflictLineUpdates": 8,
+        "continuityClaims": 10,
+    }
+    compact: dict[str, Any] = {
+        "chapterSummary": _clip_prompt_value(source.get("chapterSummary"), 360),
+    }
+    for key, limit in limits.items():
+        compact[key] = _clip_prompt_value(_as_list(source.get(key))[:limit], 360)
+    return compact
+
+
 def check_family_continuity(
     db: Session,
     project_id: UUID,
     chapter_number: int,
     user: User | None = None,
+    *,
+    context_pack: dict[str, Any] | None = None,
+    extracted_state: dict[str, Any] | None = None,
 ) -> list[LongNovelContinuityIssue]:
     project = _get_project(db, project_id, user)
     chapter = (
@@ -3123,13 +3238,21 @@ def check_family_continuity(
         LongNovelContinuityIssue.project_id == project.id,
         LongNovelContinuityIssue.chapter_number == chapter_number,
     ).delete()
-    context = _build_chapter_context(db, project, chapter_number)
+    context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
         ZHOULI_CONTINUITY_CHECK_PROMPT,
         chapter_context=_context_prompt_json(context, "continuity_check"),
         chapter_text=chapter.content,
+    )
+    audit_seed = {
+        "deterministicCandidateIssues": rule_issues,
+        "acceptedChapterStateDelta": _compact_state_delta_for_continuity(extracted_state),
+    }
+    prompt = (
+        f"{prompt}\n\n连续性审校辅助数据（只用于核对，不得照抄扩写）：\n"
+        f"{_canonical_json_dumps(audit_seed)}"
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
     prompt = _with_project_cache_prefix(context, prompt)
@@ -3141,8 +3264,8 @@ def check_family_continuity(
             action="check_continuity",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=12000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            max_output_tokens=max(5000, int(settings.LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS or 8000)),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3208,7 +3331,7 @@ def quality_check_family_chapter(
             tier="cheap",
             prompt=prompt,
             max_output_tokens=8000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3279,7 +3402,7 @@ def repair_family_chapter(
         tier="default",
         prompt=prompt,
         max_output_tokens=24000,
-        prompt_cache_key=_project_prompt_cache_key(project.id),
+        prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
     )
     chapter.content = repaired
     chapter.raw_model_output = repaired

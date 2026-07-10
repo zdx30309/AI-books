@@ -228,6 +228,10 @@ class LongNovelGenerationLogResponse(BaseModel):
     completion_tokens: int
     reasoning_tokens: int = 0
     estimated_cost: float
+    service_tier: str | None = None
+    prompt_cache_key: str | None = None
+    prompt_prefix_hash: str | None = None
+    response_id: str | None = None
     status: str
     error: str | None = None
     created_at: datetime

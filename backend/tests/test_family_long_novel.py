@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import nullcontext
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +31,7 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_CONTINUITY_CHECK_PROMPT,
     ZHOULI_OUTLINE_PROMPT,
     ZHOULI_QUALITY_CHECK_PROMPT,
+    ZHOULI_STATE_EXTRACT_PROMPT,
     render_prompt,
 )
 from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
@@ -466,7 +469,7 @@ def test_dynamic_context_does_not_repeat_stable_project_blueprints() -> None:
     assert "stable conflict description" not in compact_json
     assert "chapter 12 update" not in compact_json
     assert "chapter 12 update" in combined_prompt
-    assert '"currentTensionLevel": 7' in combined_prompt
+    assert '"currentTensionLevel":7' in combined_prompt
     assert _json_loads(compact_json)["promptContextMode"] == "action_delta"
 
 
@@ -548,7 +551,7 @@ def test_openai_usage_merges_all_billable_responses() -> None:
     }
 
 
-def test_long_novel_openai_calls_use_project_prompt_cache_key() -> None:
+def test_long_novel_openai_calls_use_stable_prompt_cache_keys() -> None:
     source = "\n".join(
         inspect.getsource(func)
         for func in [
@@ -564,9 +567,147 @@ def test_long_novel_openai_calls_use_project_prompt_cache_key() -> None:
         ]
     )
 
-    assert source.count("prompt_cache_key=_project_prompt_cache_key(project.id)") >= 10
+    assert source.count("prompt_cache_key=_project_prompt_cache_key(project.id)") >= 5
+    assert source.count("prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number)") >= 6
     assert source.count("_with_project_cache_prefix(context, prompt)") >= 6
     assert "prompt_cache_key" in inspect.signature(family_long_novel._run_writer).parameters
     assert "prompt_cache_key" in inspect.signature(family_long_novel._run_writer_with_usage).parameters
     assert "prompt_cache_key" in inspect.signature(family_long_novel._call_json).parameters
     assert "prompt_cache_key" in inspect.signature(family_long_novel._call_text).parameters
+
+
+def test_long_novel_flex_policy_preserves_standard_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(family_long_novel.settings, "WRITER_PROVIDER", "openai")
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_PROCESSING_MODE", "flex")
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_FLEX_BACKGROUND", True)
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD", True)
+
+    assert family_long_novel._long_novel_processing_policy() == ("flex", True, "auto")
+
+
+def test_flex_cost_estimate_is_half_of_standard(monkeypatch) -> None:
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_INPUT_COST_PER_1M", 5.0)
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_CACHED_INPUT_COST_PER_1M", 0.5)
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_OUTPUT_COST_PER_1M", 30.0)
+    kwargs = {
+        "prompt_tokens": 40_000,
+        "cached_prompt_tokens": 30_000,
+        "completion_tokens": 8_000,
+    }
+
+    standard = family_long_novel._estimate_long_novel_cost(**kwargs, service_tier="default")
+    flex = family_long_novel._estimate_long_novel_cost(**kwargs, service_tier="flex")
+
+    assert flex == pytest.approx(standard / 2)
+
+
+def test_background_flex_polls_same_response_id(monkeypatch) -> None:
+    class FakeResponses:
+        def __init__(self) -> None:
+            self.created_kwargs: dict[str, object] = {}
+            self.retrieved_ids: list[str] = []
+
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            self.created_kwargs = kwargs
+            return SimpleNamespace(id="resp_same", status="queued")
+
+        def retrieve(self, response_id: str) -> SimpleNamespace:
+            self.retrieved_ids.append(response_id)
+            return SimpleNamespace(id=response_id, status="completed", output_text="完成", service_tier="flex")
+
+        def cancel(self, response_id: str) -> None:
+            raise AssertionError(f"unexpected cancellation: {response_id}")
+
+    responses = FakeResponses()
+    monkeypatch.setattr(content_engine, "_get_openai_writer_client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(content_engine.time, "sleep", lambda _seconds: None)
+
+    result = content_engine._create_openai_writer_response(
+        "prompt",
+        effort="xhigh",
+        verb="medium",
+        max_tok=1000,
+        prompt_cache_key="chapter-key",
+        service_tier="flex",
+        background=True,
+        background_timeout_seconds=60,
+        background_poll_interval_seconds=1,
+    )
+
+    assert result.output_text == "完成"
+    assert responses.retrieved_ids == ["resp_same"]
+    assert responses.created_kwargs["service_tier"] == "flex"
+    assert responses.created_kwargs["background"] is True
+    assert responses.created_kwargs["reasoning"] == {"effort": "xhigh"}
+
+
+def test_flex_resource_failure_falls_back_without_changing_generation_params(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponses:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            if kwargs.get("service_tier") == "flex":
+                raise RuntimeError("429 Resource Unavailable for flex")
+            return SimpleNamespace(
+                id="resp_fallback",
+                status="completed",
+                output_text="同模型完成",
+                service_tier="default",
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                },
+            )
+
+    monkeypatch.setattr(content_engine, "_get_openai_writer_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    monkeypatch.setattr(content_engine, "distributed_semaphore", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(content_engine.settings, "OPENAI_WRITER_MAX_RETRIES", 2)
+    monkeypatch.setattr(content_engine.settings, "OPENAI_WRITER_RETRY_BACKOFF_SECONDS", 0)
+
+    text, usage = content_engine._openai_writer_call_result(
+        "fixed prompt",
+        reasoning_effort="xhigh",
+        verbosity="medium",
+        max_output_tokens=1200,
+        prompt_cache_key="fixed-key",
+        service_tier="flex",
+        fallback_service_tier="auto",
+    )
+
+    assert text == "同模型完成"
+    assert [call.get("service_tier") for call in calls] == ["flex", "flex", "auto"]
+    assert {call["model"] for call in calls} == {content_engine.settings.OPENAI_WRITER_MODEL}
+    assert {str(call["input"]) for call in calls} == {"fixed prompt"}
+    assert {str(call["reasoning"]) for call in calls} == {"{'effort': 'xhigh'}"}
+    assert usage["service_tier"] == "default"
+
+
+def test_chapter_prefix_hash_ignores_action_delta() -> None:
+    context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 13,
+        "project": {"premise": "premise", "targetWords": 200000, "targetChapters": 41},
+        "bible": {"theme": "theme"},
+        "previousChapter": {"chapterNumber": 12, "summary": "summary", "endingHook": "hook"},
+        "familyRelations": [],
+        "activeConflictLines": [],
+        "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 12}],
+        "objectStates": [],
+        "canonFacts": [],
+        "mustContinueFrom": {"previousEndingHook": "hook", "strictRules": ["rule"]},
+    }
+    plan_prompt = _with_project_cache_prefix(context, "plan action")
+    write_prompt = _with_project_cache_prefix(context, "write action")
+
+    assert family_long_novel._prompt_prefix_hash(plan_prompt) == family_long_novel._prompt_prefix_hash(write_prompt)
+
+
+def test_state_extraction_prompt_is_delta_only_and_bounded() -> None:
+    assert "增量账本" in ZHOULI_STATE_EXTRACT_PROMPT
+    assert "events 1-8 项" in ZHOULI_STATE_EXTRACT_PROMPT
+    assert "不得重复输出" in ZHOULI_STATE_EXTRACT_PROMPT
+    assert "不得漏掉" in ZHOULI_STATE_EXTRACT_PROMPT

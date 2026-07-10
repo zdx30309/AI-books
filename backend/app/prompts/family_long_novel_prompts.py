@@ -470,6 +470,14 @@ ZHOULI_CHAPTER_WRITE_PROMPT = """
 ZHOULI_STATE_EXTRACT_PROMPT = """
 你是长篇小说连续性记录员。请从本章正文中抽取状态变化，严格输出 JSON。
 
+这是增量账本，不是正文复述，也不是把旧状态重新抄一遍。必须遵守：
+- 只记录本章新发生或发生变化的内容；上下文中已有且本章未变化的人物、物品、事实、矛盾线不得重复输出。
+- 不得漏掉会约束后续章节的不可逆变化，包括谁知道了什么、证据/钱款/病历/借条由谁持有、人物承诺、关系破裂、支付与欠款、公开信息和秘密泄露。
+- chapterSummary 控制在 120-260 个汉字，只概括本章实际推进。
+- events 1-8 项；canonFacts 0-12 项；familyMemberStateDeltas 0-12 项；objectStateChanges 0-10 项；conflictLineUpdates 0-8 项；continuityClaims 0-10 项。
+- 同一件事的原因、动作和后果合并为一个 event，不得拆成多条近义记录；字段用短句，禁止粘贴大段正文。
+- 本章没有某类变化时输出空数组。不得为了凑数量虚构状态。
+
 章节上下文：
 {chapter_context}
 
@@ -544,6 +552,9 @@ ZHOULI_CONTINUITY_CHECK_PROMPT = """
 - 已爆发或已解决的矛盾线不能又当成新矛盾。
 - 每章是否推进至少一条 conflict line，是否有不可逆家庭影响，结尾是否有 hook。
 - 是否违反禁忌和 forbiddenRules。
+- 只输出真实存在且可定位的问题；不得复述剧情，不得输出审稿过程，不得把同一个问题拆成多条近义问题。
+- issues 最多 10 条，按 severe、high、medium、low 排序。没有问题时必须输出空数组。
+- evidence 和 suggestedFix 各用一到两句精确短句；不能为了显得全面而扩写长篇解释。
 
 章节上下文：
 {chapter_context}
