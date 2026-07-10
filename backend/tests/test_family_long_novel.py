@@ -735,3 +735,24 @@ def test_state_extraction_prompt_is_delta_only_and_bounded() -> None:
     assert "events 1-8 项" in ZHOULI_STATE_EXTRACT_PROMPT
     assert "不得重复输出" in ZHOULI_STATE_EXTRACT_PROMPT
     assert "不得漏掉" in ZHOULI_STATE_EXTRACT_PROMPT
+
+
+def test_postprocess_failure_preserves_body_but_never_silently_completes() -> None:
+    source = inspect.getsource(family_long_novel.generate_family_chapter)
+    failure_handler = inspect.getsource(family_long_novel._mark_saved_chapter_postprocess_failed)
+
+    assert "_mark_saved_chapter_postprocess_failed" in source
+    assert "正文已保留" in source
+    assert "LongNovelChapterStatus.NEEDS_REPAIR" in failure_handler
+    assert "LongNovelProjectStatus.FAILED" in failure_handler
+    assert "fallback state after postprocess error" not in source
+
+
+def test_mechanical_qa_nodes_use_bounded_high_reasoning_without_changing_writer() -> None:
+    state_source = inspect.getsource(family_long_novel.extract_family_chapter_state)
+    continuity_source = inspect.getsource(family_long_novel.check_family_continuity)
+    writer_source = inspect.getsource(family_long_novel.generate_family_chapter)
+
+    assert "LONG_NOVEL_STATE_REASONING_EFFORT" in state_source
+    assert "LONG_NOVEL_CONTINUITY_REASONING_EFFORT" in continuity_source
+    assert "reasoning_effort=" not in writer_source.split('action="generate_chapter"', 1)[1].split(")", 1)[0]

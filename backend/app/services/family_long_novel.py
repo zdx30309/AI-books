@@ -461,6 +461,7 @@ def _log_llm_call(
     prompt: str,
     max_output_tokens: int,
     prompt_cache_key: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     requested_service_tier, use_background, fallback_service_tier = _long_novel_processing_policy()
     log = LongNovelGenerationLog(
@@ -481,6 +482,7 @@ def _log_llm_call(
         output, usage = _run_writer_with_usage(
             prompt,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             prompt_cache_key=prompt_cache_key,
             service_tier=requested_service_tier,
             background=use_background,
@@ -524,6 +526,7 @@ def _call_json(
     prompt: str,
     max_output_tokens: int = 16000,
     prompt_cache_key: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     return _json_loads(
         _log_llm_call(
@@ -535,6 +538,7 @@ def _call_json(
             prompt=prompt,
             max_output_tokens=max_output_tokens,
             prompt_cache_key=prompt_cache_key,
+            reasoning_effort=reasoning_effort,
         )
     )
 
@@ -549,6 +553,7 @@ def _call_text(
     prompt: str,
     max_output_tokens: int,
     prompt_cache_key: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     return _log_llm_call(
         db,
@@ -559,6 +564,7 @@ def _call_text(
         prompt=prompt,
         max_output_tokens=max_output_tokens,
         prompt_cache_key=prompt_cache_key,
+        reasoning_effort=reasoning_effort,
     ).strip()
 
 
@@ -2814,6 +2820,41 @@ def generate_family_chapter(
     context = _chapter_context_snapshot_with_plan(initial_context, plan)
     validate_chapter_context_pack(context, chapter_number)
 
+    saved_chapter = (
+        db.query(LongNovelChapter)
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    if (
+        saved_chapter is not None
+        and (saved_chapter.content or "").strip()
+        and saved_chapter.status == LongNovelChapterStatus.NEEDS_REPAIR
+    ):
+        project.status = LongNovelProjectStatus.GENERATING
+        plan.status = LongNovelChapterStatus.GENERATING
+        db.add(project)
+        db.add(plan)
+        db.commit()
+        try:
+            saved_chapter = _postprocess_family_chapter(
+                db,
+                project,
+                plan,
+                saved_chapter,
+                context,
+                user,
+                auto_repair=auto_repair,
+            )
+        except Exception as exc:
+            _mark_saved_chapter_postprocess_failed(db, project, plan, saved_chapter)
+            raise FamilyLongNovelError(
+                f"第{chapter_number}章正文已保留，但状态抽取或连续性审校失败，可继续从质检节点恢复：{exc}"
+            ) from exc
+        return saved_chapter
+
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
     db.add(project)
@@ -2854,73 +2895,32 @@ def generate_family_chapter(
     chapter.content = content
     chapter.raw_model_output = content
     chapter.word_count = _word_count(content)
-    chapter.status = LongNovelChapterStatus.COMPLETED
-    plan.status = LongNovelChapterStatus.COMPLETED
+    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
     db.add(chapter)
     db.add(plan)
     db.commit()
     db.refresh(chapter)
-    sync_family_project_progress(db, project)
-
     try:
-        extracted_state = extract_family_chapter_state(
+        chapter = _postprocess_family_chapter(
             db,
-            project.id,
-            chapter_number,
+            project,
+            plan,
+            chapter,
+            context,
             user,
-            context_pack=context,
+            auto_repair=auto_repair,
         )
-        issues = check_family_continuity(
-            db,
-            project.id,
-            chapter_number,
-            user,
-            context_pack=context,
-            extracted_state=extracted_state,
-        )
-        severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
-        if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
-            chapter = repair_family_chapter(db, project.id, chapter_number, user)
     except Exception as exc:
         logger.exception(
             "family chapter postprocess failed after content completion project=%s chapter=%s",
             project.id,
             chapter_number,
         )
-        db.rollback()
-        project = _get_project(db, project_id, user)
-        plan = (
-            db.query(LongNovelChapterPlan)
-            .filter(
-                LongNovelChapterPlan.project_id == project.id,
-                LongNovelChapterPlan.chapter_number == chapter_number,
-            )
-            .first()
-        )
-        chapter = (
-            db.query(LongNovelChapter)
-            .filter(
-                LongNovelChapter.project_id == project.id,
-                LongNovelChapter.chapter_number == chapter_number,
-            )
-            .first()
-        )
-        if chapter is None or not (chapter.content or "").strip():
-            _mark_generation_failed(db, project, plan=plan, chapter=chapter)
-            raise
-        chapter.status = LongNovelChapterStatus.COMPLETED
-        if plan is not None:
-            plan.status = LongNovelChapterStatus.COMPLETED
-            db.add(plan)
-        _ensure_chapter_state_floor(db, project, chapter)
-        db.add(chapter)
-        db.commit()
-        logger.warning(
-            "family chapter returned with fallback state after postprocess error project=%s chapter=%s error=%s",
-            project.id,
-            chapter_number,
-            exc,
-        )
+        _mark_saved_chapter_postprocess_failed(db, project, plan, chapter)
+        raise FamilyLongNovelError(
+            f"第{chapter_number}章正文已保留，但状态抽取或连续性审校失败，可继续从质检节点恢复：{exc}"
+        ) from exc
 
     sync_family_project_progress(db, project)
     project.status = (
@@ -2930,6 +2930,62 @@ def generate_family_chapter(
     )
     db.add(project)
     db.commit()
+    db.refresh(chapter)
+    return chapter
+
+
+def _mark_saved_chapter_postprocess_failed(
+    db: Session,
+    project: LongNovelProject,
+    plan: LongNovelChapterPlan,
+    chapter: LongNovelChapter,
+) -> None:
+    db.rollback()
+    project.status = LongNovelProjectStatus.FAILED
+    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
+    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+    db.add(project)
+    db.add(plan)
+    db.add(chapter)
+    db.commit()
+
+
+def _postprocess_family_chapter(
+    db: Session,
+    project: LongNovelProject,
+    plan: LongNovelChapterPlan,
+    chapter: LongNovelChapter,
+    context: dict[str, Any],
+    user: User | None,
+    *,
+    auto_repair: bool,
+) -> LongNovelChapter:
+    extracted_state = extract_family_chapter_state(
+        db,
+        project.id,
+        chapter.chapter_number,
+        user,
+        context_pack=context,
+    )
+    issues = check_family_continuity(
+        db,
+        project.id,
+        chapter.chapter_number,
+        user,
+        context_pack=context,
+        extracted_state=extracted_state,
+    )
+    severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
+    if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
+        chapter = repair_family_chapter(db, project.id, chapter.chapter_number, user)
+    chapter.status = LongNovelChapterStatus.COMPLETED
+    plan.status = LongNovelChapterStatus.COMPLETED
+    project.status = LongNovelProjectStatus.ACTIVE
+    db.add(chapter)
+    db.add(plan)
+    db.add(project)
+    db.commit()
+    sync_family_project_progress(db, project)
     db.refresh(chapter)
     return chapter
 
@@ -2970,8 +3026,9 @@ def extract_family_chapter_state(
             action="extract_chapter_state",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=max(6000, int(settings.LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS or 10000)),
+            max_output_tokens=max(8000, int(settings.LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS or 14000)),
             prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
+            reasoning_effort=str(settings.LONG_NOVEL_STATE_REASONING_EFFORT or "high"),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3264,8 +3321,9 @@ def check_family_continuity(
             action="check_continuity",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=max(5000, int(settings.LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS or 8000)),
+            max_output_tokens=max(6000, int(settings.LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS or 10000)),
             prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
+            reasoning_effort=str(settings.LONG_NOVEL_CONTINUITY_REASONING_EFFORT or "high"),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
