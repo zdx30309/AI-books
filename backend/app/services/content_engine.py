@@ -2974,7 +2974,10 @@ def _merge_openai_usage(total: dict[str, int], response: Any | None) -> None:
 def _apply_prompt_cache_options(kwargs: dict[str, Any], prompt_cache_key: str | None) -> None:
     if not prompt_cache_key:
         return
-    kwargs["prompt_cache_key"] = prompt_cache_key
+    normalized_key = str(prompt_cache_key).strip()
+    if len(normalized_key) > 64:
+        normalized_key = f"pc:{hashlib.sha256(normalized_key.encode('utf-8')).hexdigest()[:60]}"
+    kwargs["prompt_cache_key"] = normalized_key
     retention = str(settings.OPENAI_PROMPT_CACHE_RETENTION or "").strip()
     if retention in {"in_memory", "24h"}:
         kwargs["prompt_cache_retention"] = retention

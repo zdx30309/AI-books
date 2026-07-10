@@ -509,6 +509,30 @@ def test_prompt_cache_options_enable_extended_retention(monkeypatch) -> None:
     }
 
 
+def test_prompt_cache_keys_always_fit_openai_limit() -> None:
+    from uuid import UUID
+
+    project_id = UUID("4deb74d6-5b8b-4e1e-a8a0-fb0d2d95f5af")
+    project_key = family_long_novel._project_prompt_cache_key(project_id)
+    chapter_key = family_long_novel._chapter_prompt_cache_key(project_id, 18)
+
+    assert len(project_key) <= 64
+    assert len(chapter_key) <= 64
+    assert chapter_key == "fln:4deb74d6-5b8b-4e1e-a8a0-fb0d2d95f5af:c18:v2"
+
+
+def test_overlong_prompt_cache_key_is_defensively_hashed(monkeypatch) -> None:
+    monkeypatch.setattr(content_engine.settings, "OPENAI_PROMPT_CACHE_RETENTION", "24h")
+    kwargs: dict[str, object] = {}
+
+    content_engine._apply_prompt_cache_options(kwargs, "x" * 200)
+
+    normalized = str(kwargs["prompt_cache_key"])
+    assert normalized.startswith("pc:")
+    assert len(normalized) == 63
+    assert kwargs["prompt_cache_retention"] == "24h"
+
+
 def test_openai_usage_merges_all_billable_responses() -> None:
     total = {
         "input_tokens": 0,

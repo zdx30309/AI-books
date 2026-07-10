@@ -291,11 +291,11 @@ def _run_writer_with_usage(
 
 
 def _project_prompt_cache_key(project_id: UUID) -> str:
-    return f"family-long-novel:{project_id}:project:v2"
+    return f"fln:{project_id}:p:v2"
 
 
 def _chapter_prompt_cache_key(project_id: UUID, chapter_number: int) -> str:
-    return f"family-long-novel:{project_id}:chapter:{chapter_number}:v2"
+    return f"fln:{project_id}:c{chapter_number}:v2"
 
 
 def _long_novel_processing_policy() -> tuple[str | None, bool, str | None]:
