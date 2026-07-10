@@ -670,7 +670,9 @@ export interface LongNovelGenerationLog {
   provider: string | null;
   model: string | null;
   prompt_tokens: number;
+  cached_prompt_tokens?: number;
   completion_tokens: number;
+  reasoning_tokens?: number;
   estimated_cost: number;
   actual_cost?: number | null;
   status: string;

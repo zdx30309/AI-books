@@ -239,6 +239,29 @@ def _run_writer(
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
 
 
+def _run_writer_with_usage(
+    prompt: str,
+    *,
+    max_output_tokens: int,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[str, dict[str, int]]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            content_engine._route_writer_call_with_usage(
+                prompt,
+                reasoning_effort=reasoning_effort,
+                verbosity=verbosity,
+                max_output_tokens=max_output_tokens,
+                prompt_cache_key=prompt_cache_key,
+            )
+        )
+    raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
+
+
 def _project_prompt_cache_key(project_id: UUID) -> str:
     return f"family-long-novel:{project_id}:v1"
 
@@ -257,6 +280,27 @@ def _model_for_tier(tier: str) -> str:
     if provider == "deepseek":
         return settings.DEEPSEEK_MODEL
     return settings.OPENAI_WRITER_MODEL
+
+
+def _estimate_long_novel_cost(
+    *,
+    prompt_tokens: int,
+    cached_prompt_tokens: int,
+    completion_tokens: int,
+) -> float:
+    input_rate = max(0.0, float(settings.LONG_NOVEL_INPUT_COST_PER_1M or 0.0))
+    cached_rate = max(0.0, float(settings.LONG_NOVEL_CACHED_INPUT_COST_PER_1M or 0.0))
+    output_rate = max(0.0, float(settings.LONG_NOVEL_OUTPUT_COST_PER_1M or 0.0))
+    if input_rate <= 0 and cached_rate <= 0 and output_rate <= 0:
+        return 0.0
+    cached = min(max(0, cached_prompt_tokens), max(0, prompt_tokens))
+    uncached = max(0, prompt_tokens - cached)
+    cost = (
+        (uncached * input_rate)
+        + (cached * cached_rate)
+        + (max(0, completion_tokens) * output_rate)
+    ) / 1_000_000
+    return round(cost, 8)
 
 
 def _chapter_target_words(project: LongNovelProject) -> int:
@@ -380,7 +424,7 @@ def _log_llm_call(
     db.add(log)
     db.commit()
     try:
-        output = _run_writer(
+        output, usage = _run_writer_with_usage(
             prompt,
             max_output_tokens=max_output_tokens,
             prompt_cache_key=prompt_cache_key,
@@ -392,7 +436,18 @@ def _log_llm_call(
         db.commit()
         raise
     log.status = "completed"
-    log.completion_tokens = max(1, len(output) // 4)
+    prompt_tokens = int(usage.get("input_tokens") or 0) or max(1, len(prompt) // 4)
+    completion_tokens = int(usage.get("output_tokens") or 0) or max(1, len(output) // 4)
+    cached_prompt_tokens = min(prompt_tokens, int(usage.get("cached_input_tokens") or 0))
+    log.prompt_tokens = prompt_tokens
+    log.cached_prompt_tokens = cached_prompt_tokens
+    log.completion_tokens = completion_tokens
+    log.reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+    log.estimated_cost = _estimate_long_novel_cost(
+        prompt_tokens=prompt_tokens,
+        cached_prompt_tokens=cached_prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
     db.add(log)
     db.commit()
     return output
@@ -2256,6 +2311,72 @@ def _compact_bible_for_prompt(bible: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _stable_project_cache_prefix(context_pack: dict[str, Any]) -> str:
+    project_payload = _compact_project_for_prompt(_as_dict(context_pack.get("project")))
+    bible_payload = _compact_bible_for_prompt(_as_dict(context_pack.get("bible")))
+    relations = sorted(
+        [item for item in _as_list(context_pack.get("familyRelations")) if isinstance(item, dict)],
+        key=lambda item: (
+            str(item.get("fromMember") or ""),
+            str(item.get("toMember") or ""),
+            str(item.get("relationType") or ""),
+        ),
+    )
+    conflicts = sorted(
+        [item for item in _as_list(context_pack.get("activeConflictLines")) if isinstance(item, dict)],
+        key=lambda item: (str(item.get("conflictKey") or ""), str(item.get("name") or "")),
+    )
+    stable_payload = {
+        "cachePrefixVersion": "family-long-novel-stable-v3",
+        "purpose": "shared_project_memory_for_prompt_cache",
+        "rule": "This stable prefix is shared by all chapter workflow calls for this project. Use it only as project-level memory; the later per-call context is authoritative for current chapter state.",
+        "project": project_payload,
+        "bible": bible_payload,
+        "familyRelations": [
+            {
+                "fromMember": item.get("fromMember"),
+                "toMember": item.get("toMember"),
+                "relationType": item.get("relationType"),
+                "surfaceRelation": _clip_prompt_value(item.get("surfaceRelation"), 220),
+                "hiddenConflict": _clip_prompt_value(item.get("hiddenConflict"), 260),
+                "interestConflict": _clip_prompt_value(item.get("interestConflict"), 260),
+            }
+            for item in relations[:36]
+        ],
+        "conflictLineBlueprints": [
+            {
+                "conflictKey": item.get("conflictKey"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "description": _clip_prompt_value(item.get("description"), 420),
+                "plannedExplosionChapter": item.get("plannedExplosionChapter"),
+                "plannedResolutionChapter": item.get("plannedResolutionChapter"),
+                "importance": item.get("importance"),
+            }
+            for item in conflicts
+        ],
+    }
+    return (
+        "【长篇项目稳定缓存前缀】\n"
+        "以下内容在同一长篇项目内保持稳定，放在提示词最前方用于 prompt cache。"
+        "不得用它替代后文的本章动态上下文、上一章结尾、最新人物状态和最新物品状态。\n"
+        f"{_json_dumps(stable_payload)}\n"
+        "【长篇项目稳定缓存前缀结束】"
+    )
+
+
+def _with_project_cache_prefix(context_pack: dict[str, Any], prompt: str) -> str:
+    rolling_context = _shared_chapter_cache_context(context_pack)
+    rolling_prefix = (
+        "[AUTHORITATIVE ROLLING CHAPTER CONTEXT]\n"
+        "This JSON contains the complete pre-chapter continuity ledger shared by planning, writing, state extraction, and QA. "
+        "The later action delta contains only fields that can change between workflow nodes.\n"
+        f"{_json_dumps(rolling_context)}\n"
+        "[END AUTHORITATIVE ROLLING CHAPTER CONTEXT]"
+    )
+    return f"{_stable_project_cache_prefix(context_pack)}\n\n{rolling_prefix}\n\n{prompt}"
+
+
 def _compact_plan_for_prompt(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(plan, dict):
         return None
@@ -2301,20 +2422,34 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
     facts = [item for item in _as_list(context_pack.get("canonFacts")) if isinstance(item, dict)]
     relations = [item for item in _as_list(context_pack.get("familyRelations")) if isinstance(item, dict)]
     issues = [item for item in _as_list(context_pack.get("openContinuityIssues")) if isinstance(item, dict)]
+    issues_for_prompt = [] if purpose == "state_extract" else issues[:12]
+    recent_limit = 1 if purpose == "state_extract" else 2
+    previous_tail_limit = 500 if purpose == "state_extract" else 800
     must_continue = _as_dict(context_pack.get("mustContinueFrom"))
     return {
         "contextPackVersion": context_pack.get("contextPackVersion"),
         "promptContextMode": "compact",
-        "project": _compact_project_for_prompt(_as_dict(context_pack.get("project"))),
-        "bible": _compact_bible_for_prompt(_as_dict(context_pack.get("bible"))),
+        "stableProjectContext": "Project, Bible, relation definitions, and conflict blueprints are provided once in the stable cache prefix before this JSON.",
+        "projectControls": {
+            key: value
+            for key, value in _compact_project_for_prompt(
+                _as_dict(context_pack.get("project"))
+            ).items()
+            if key
+            in {
+                "sourceType",
+                "targetWords",
+                "targetChapters",
+                "averageChapterTargetWords",
+                "chapterWordTolerance",
+                "generationMode",
+            }
+        },
         "familyRelations": [
             {
                 "fromMember": item.get("fromMember"),
                 "toMember": item.get("toMember"),
                 "relationType": item.get("relationType"),
-                "surfaceRelation": _clip_prompt_value(item.get("surfaceRelation"), 180),
-                "hiddenConflict": _clip_prompt_value(item.get("hiddenConflict"), 220),
-                "interestConflict": _clip_prompt_value(item.get("interestConflict"), 220),
                 "currentTensionLevel": item.get("currentTensionLevel"),
             }
             for item in relations[:30]
@@ -2324,13 +2459,9 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "conflictKey": item.get("conflictKey"),
                 "name": item.get("name"),
                 "type": item.get("type"),
-                "description": _clip_prompt_value(item.get("description"), 360),
                 "latestUpdate": _clip_prompt_value(item.get("latestUpdate"), 360),
                 "status": item.get("status"),
                 "lastEscalatedChapter": item.get("lastEscalatedChapter"),
-                "plannedExplosionChapter": item.get("plannedExplosionChapter"),
-                "plannedResolutionChapter": item.get("plannedResolutionChapter"),
-                "importance": item.get("importance"),
             }
             for item in conflicts[:14]
         ],
@@ -2377,7 +2508,7 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "description": _clip_prompt_value(item.get("description"), 260),
                 "suggestedFix": _clip_prompt_value(item.get("suggestedFix"), 220),
             }
-            for item in issues[:12]
+            for item in issues_for_prompt
         ],
         "purpose": purpose,
         "chapterNumber": context_pack.get("chapterNumber"),
@@ -2387,7 +2518,7 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
             "title": _clip_prompt_value(previous.get("title"), 80),
             "summary": _clip_prompt_value(previous.get("summary"), 700),
             "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
-            "last800Chars": _clip_text(previous.get("last800Chars"), 800),
+            "last800Chars": _clip_text(previous.get("last800Chars"), previous_tail_limit),
             "wordCount": previous.get("wordCount"),
         }
         if previous
@@ -2399,12 +2530,12 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "summary": _clip_prompt_value(item.get("summary"), 500),
                 "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
             }
-            for item in recent_chapters[-2:]
+            for item in recent_chapters[-recent_limit:]
         ],
         "mustContinueFrom": {
             "previousEndingHook": _clip_prompt_value(must_continue.get("previousEndingHook"), 420),
             "previousChapterSummary": _clip_prompt_value(must_continue.get("previousChapterSummary"), 700),
-            "previousLast800Chars": _clip_text(must_continue.get("previousLast800Chars"), 800),
+            "previousLast800Chars": _clip_text(must_continue.get("previousLast800Chars"), previous_tail_limit),
             "requiredCarryOver": _clip_prompt_value(_as_list(must_continue.get("requiredCarryOver"))[:14], 260),
             "strictRules": _as_list(must_continue.get("strictRules")),
         },
@@ -2419,8 +2550,30 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
     }
 
 
+def _shared_chapter_cache_context(context_pack: dict[str, Any]) -> dict[str, Any]:
+    shared = _compact_context_for_prompt(context_pack, "chapter_write")
+    shared.pop("purpose", None)
+    shared.pop("currentPlanRecord", None)
+    shared.pop("omittedForCostControl", None)
+    shared["promptContextMode"] = "shared_chapter_cache_prefix"
+    return shared
+
+
+def _compact_context_delta_for_prompt(context_pack: dict[str, Any], purpose: str) -> dict[str, Any]:
+    full = _compact_context_for_prompt(context_pack, purpose)
+    return {
+        "contextPackVersion": full.get("contextPackVersion"),
+        "promptContextMode": "action_delta",
+        "sharedChapterContext": "See AUTHORITATIVE ROLLING CHAPTER CONTEXT before this action prompt.",
+        "purpose": purpose,
+        "chapterNumber": full.get("chapterNumber"),
+        "currentPlanRecord": full.get("currentPlanRecord"),
+        "omittedForCostControl": full.get("omittedForCostControl"),
+    }
+
+
 def _context_prompt_json(context_pack: dict[str, Any], purpose: str) -> str:
-    return _json_dumps(_compact_context_for_prompt(context_pack, purpose))
+    return _json_dumps(_compact_context_delta_for_prompt(context_pack, purpose))
 
 
 def build_chapter_context_pack(
@@ -2504,6 +2657,7 @@ def generate_family_chapter_plan(
         chapter_context=_context_prompt_json(context, "chapter_plan"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -2592,6 +2746,7 @@ def generate_family_chapter(
         chapter_context=_context_prompt_json(context, "chapter_write"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
     try:
         content = _call_text(
             db,
@@ -2712,6 +2867,7 @@ def extract_family_chapter_state(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_STATE_RULES}"
+    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -2976,6 +3132,7 @@ def check_family_continuity(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -3041,6 +3198,7 @@ def quality_check_family_chapter(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
     try:
         return _call_json(
             db,
@@ -3112,6 +3270,7 @@ def repair_family_chapter(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
     repaired = _call_text(
         db,
         project_id=project.id,

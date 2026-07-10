@@ -2833,8 +2833,8 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
         parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
     if proxy:
         parts.append(
-            "请确认当前 OPENAI_HTTPS_PROXY 可访问 OpenAI 官方地址；"
-            "若 OFFICIAL_API_DIRECT_ONLY=True，代理配置会被忽略。"
+            "请确认 OPENAI_HTTPS_PROXY 是项目配置的可用国外代理服务器，且可以访问 OpenAI 官方地址。"
+            "OFFICIAL_API_DIRECT_ONLY 只锁定官方 base_url，不会禁用代理。"
         )
     return "；".join(parts)
 
@@ -2912,6 +2912,74 @@ def _openai_response_debug_summary(response: Any | None) -> str:
     )
 
 
+def _usage_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _openai_usage_payload(response: Any | None) -> dict[str, int]:
+    usage = _response_attr(response, "usage")
+    if usage is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+
+    input_tokens = _usage_int(
+        _response_attr(usage, "input_tokens", _response_attr(usage, "prompt_tokens", 0))
+    )
+    output_tokens = _usage_int(
+        _response_attr(usage, "output_tokens", _response_attr(usage, "completion_tokens", 0))
+    )
+    total_tokens = _usage_int(_response_attr(usage, "total_tokens", input_tokens + output_tokens))
+
+    input_details = (
+        _response_attr(usage, "input_tokens_details")
+        or _response_attr(usage, "prompt_tokens_details")
+        or {}
+    )
+    output_details = (
+        _response_attr(usage, "output_tokens_details")
+        or _response_attr(usage, "completion_tokens_details")
+        or {}
+    )
+    cached_input_tokens = _usage_int(_response_attr(input_details, "cached_tokens", 0))
+    reasoning_tokens = _usage_int(_response_attr(output_details, "reasoning_tokens", 0))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "reasoning_tokens": reasoning_tokens,
+    }
+
+
+def _merge_openai_usage(total: dict[str, int], response: Any | None) -> None:
+    usage = _openai_usage_payload(response)
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "reasoning_tokens",
+    ):
+        total[key] = _usage_int(total.get(key)) + _usage_int(usage.get(key))
+
+
+def _apply_prompt_cache_options(kwargs: dict[str, Any], prompt_cache_key: str | None) -> None:
+    if not prompt_cache_key:
+        return
+    kwargs["prompt_cache_key"] = prompt_cache_key
+    retention = str(settings.OPENAI_PROMPT_CACHE_RETENTION or "").strip()
+    if retention in {"in_memory", "24h"}:
+        kwargs["prompt_cache_retention"] = retention
+
+
 def _openai_writer_retry_efforts(current_effort: str) -> list[str]:
     efforts = []
     for effort in ("medium", "low"):
@@ -2944,8 +3012,7 @@ def _stream_openai_writer(
         "text": {"verbosity": verb},
         "stream": True,
     }
-    if prompt_cache_key:
-        kwargs["prompt_cache_key"] = prompt_cache_key
+    _apply_prompt_cache_options(kwargs, prompt_cache_key)
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
     stream = client.responses.create(**kwargs)
@@ -2988,14 +3055,13 @@ def _create_openai_writer_response(
         "reasoning": {"effort": effort},
         "text": {"verbosity": verb},
     }
-    if prompt_cache_key:
-        kwargs["prompt_cache_key"] = prompt_cache_key
+    _apply_prompt_cache_options(kwargs, prompt_cache_key)
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
     return client.responses.create(**kwargs)
 
 
-def _openai_writer_call(
+def _openai_writer_call_result(
     rendered_prompt: str,
     *,
     reasoning_effort: str | None = None,
@@ -3004,7 +3070,7 @@ def _openai_writer_call(
     prompt_cache_key: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
     raw_max_tok = settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
@@ -3012,6 +3078,13 @@ def _openai_writer_call(
 
     response: Any | None = None
     text = ""
+    total_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
+    }
     first_stream_exc: Exception | None = None
     attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1)) if retry_on_failure else 1
     backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
@@ -3032,6 +3105,7 @@ def _openai_writer_call(
                             prompt_cache_key=prompt_cache_key,
                             on_progress=on_progress,
                         )
+                        _merge_openai_usage(total_usage, response)
                     except Exception as stream_exc:
                         if not retry_on_failure:
                             raise
@@ -3045,6 +3119,7 @@ def _openai_writer_call(
                             max_tok=max_tok,
                             prompt_cache_key=prompt_cache_key,
                         )
+                        _merge_openai_usage(total_usage, response)
                         text = _extract_openai_response_text(response)
                 else:
                     response = _create_openai_writer_response(
@@ -3054,6 +3129,7 @@ def _openai_writer_call(
                         max_tok=max_tok,
                         prompt_cache_key=prompt_cache_key,
                     )
+                    _merge_openai_usage(total_usage, response)
                     text = _extract_openai_response_text(response)
             break
         except Exception as exc:
@@ -3090,6 +3166,7 @@ def _openai_writer_call(
                         max_tok=max_tok,
                         prompt_cache_key=prompt_cache_key,
                     )
+                    _merge_openai_usage(total_usage, response)
                 except Exception as exc:
                     _reset_openai_writer_client()
                     raise RuntimeError(
@@ -3106,7 +3183,29 @@ def _openai_writer_call(
     if not text or not text.strip():
         raise ValueError("OpenAI Writer 返回空响应")
 
-    return text.strip()
+    return text.strip(), total_usage
+
+
+def _openai_writer_call(
+    rendered_prompt: str,
+    *,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    max_output_tokens: int | None = None,
+    prompt_cache_key: str | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    retry_on_failure: bool = True,
+) -> str:
+    text, _usage = _openai_writer_call_result(
+        rendered_prompt,
+        reasoning_effort=reasoning_effort,
+        verbosity=verbosity,
+        max_output_tokens=max_output_tokens,
+        prompt_cache_key=prompt_cache_key,
+        on_progress=on_progress,
+        retry_on_failure=retry_on_failure,
+    )
+    return text
 
 
 async def _route_writer_call(
@@ -3121,6 +3220,28 @@ async def _route_writer_call(
 ) -> str:
     return await asyncio.to_thread(
         _openai_writer_call,
+        rendered_prompt,
+        reasoning_effort=reasoning_effort,
+        verbosity=verbosity,
+        max_output_tokens=max_output_tokens,
+        prompt_cache_key=prompt_cache_key,
+        on_progress=on_progress,
+        retry_on_failure=retry_on_failure,
+    )
+
+
+async def _route_writer_call_with_usage(
+    rendered_prompt: str,
+    *,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    max_output_tokens: int | None = None,
+    prompt_cache_key: str | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    retry_on_failure: bool = True,
+) -> tuple[str, dict[str, int]]:
+    return await asyncio.to_thread(
+        _openai_writer_call_result,
         rendered_prompt,
         reasoning_effort=reasoning_effort,
         verbosity=verbosity,

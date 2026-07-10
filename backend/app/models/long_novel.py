@@ -324,7 +324,7 @@ class LongNovelObjectState(Base):
     holder = Column(String(128), nullable=True)
     location = Column(String(255), nullable=True)
     known_by = Column(JSONB, nullable=False, default=list)
-    status = Column(String(128), nullable=True)
+    status = Column(Text, nullable=True)
 
     project = relationship("LongNovelProject", back_populates="object_states")
 
@@ -360,7 +360,9 @@ class LongNovelGenerationLog(Base):
     provider = Column(String(64), nullable=True)
     model = Column(String(255), nullable=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
+    cached_prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
+    reasoning_tokens = Column(Integer, nullable=False, default=0)
     estimated_cost = Column(Float, nullable=False, default=0.0)
     status = Column(String(32), nullable=False, default="started")
     error = Column(Text, nullable=True)

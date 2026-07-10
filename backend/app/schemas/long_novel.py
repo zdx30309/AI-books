@@ -224,7 +224,9 @@ class LongNovelGenerationLogResponse(BaseModel):
     provider: str | None = None
     model: str | None = None
     prompt_tokens: int
+    cached_prompt_tokens: int = 0
     completion_tokens: int
+    reasoning_tokens: int = 0
     estimated_cost: float
     status: str
     error: str | None = None

@@ -12,7 +12,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.api.api import api_router
 from app.db.session import Base
-from app.models import LongNovelProject
+from sqlalchemy import Text
+
+from app.models import LongNovelGenerationLog, LongNovelObjectState, LongNovelProject
 from app.prompts.family_long_novel_prompts import (
     COMMON_GENRE_RULES,
     FAST_PACING_AND_CUSTOM_PLOT_RULES,
@@ -32,6 +34,7 @@ from app.prompts.family_long_novel_prompts import (
 from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
 from app.schemas.long_novel import LongNovelAssistRequest
 from app.services import family_long_novel
+from app.services import content_engine
 from app.services.family_long_novel import (
     FamilyLongNovelError,
     MalformedModelJsonError,
@@ -40,6 +43,8 @@ from app.services.family_long_novel import (
     _compact_context_for_prompt,
     _json_loads,
     _outline_max_output_tokens,
+    _stable_project_cache_prefix,
+    _with_project_cache_prefix,
     validate_chapter_context_pack,
 )
 
@@ -158,6 +163,9 @@ def test_family_long_novel_tables_are_registered() -> None:
     }
     assert expected.issubset(set(Base.metadata.tables))
     assert LongNovelProject.__table__.c.type.default.arg == "long_novel"
+    assert isinstance(LongNovelObjectState.__table__.c.status.type, Text)
+    assert "cached_prompt_tokens" in LongNovelGenerationLog.__table__.c
+    assert "reasoning_tokens" in LongNovelGenerationLog.__table__.c
 
 
 def test_family_long_novel_routes_are_registered() -> None:
@@ -317,8 +325,12 @@ def test_prompt_context_compaction_preserves_quality_fields_without_raw_payloads
     compact = _compact_context_for_prompt(full_context, "chapter_write")
 
     assert compact["promptContextMode"] == "compact"
-    assert "sourceText" not in compact["project"]
-    assert len(compact["project"]["sourceTextPreview"]) == 800
+    assert "project" not in compact
+    assert "bible" not in compact
+    assert compact["projectControls"]["targetWords"] == 80000
+    stable_prefix = _stable_project_cache_prefix(full_context)
+    assert "sourceTextPreview" in stable_prefix
+    assert "x" * 800 in stable_prefix
     assert "currentPlan" not in compact
     assert "raw" not in compact["currentPlanRecord"]
     assert compact["previousChapter"]["endingHook"] == "hook"
@@ -348,12 +360,192 @@ def test_prompt_context_compaction_keeps_stable_prefix_before_chapter_delta() ->
     )
 
     keys = list(compact)
-    assert keys.index("project") < keys.index("chapterNumber")
-    assert keys.index("bible") < keys.index("currentPlanRecord")
+    assert keys.index("stableProjectContext") < keys.index("chapterNumber")
+    assert keys.index("projectControls") < keys.index("currentPlanRecord")
     assert keys.index("familyRelations") < keys.index("previousChapter")
     assert keys.index("activeConflictLines") < keys.index("mustContinueFrom")
     assert compact["previousChapter"]["endingHook"] == "hook"
     assert compact["mustContinueFrom"]["strictRules"] == ["rule"]
+
+
+def test_stable_project_cache_prefix_ignores_chapter_specific_delta() -> None:
+    base_context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 12,
+        "project": {"premise": "premise", "targetWords": 200000, "targetChapters": 41},
+        "bible": {
+            "theme": "theme",
+            "corePromise": "promise",
+            "familyMembers": [{"name": "A", "familyRole": "heroine", "privateDesire": "fairness"}],
+        },
+        "currentPlanRecord": {"chapterNumber": 12, "chapterGoal": "goal 12"},
+        "previousChapter": {"chapterNumber": 11, "summary": "summary 11", "endingHook": "hook 11"},
+        "familyRelations": [{"fromMember": "B", "toMember": "A", "relationType": "kin"}],
+        "activeConflictLines": [
+            {
+                "conflictKey": "house",
+                "name": "house conflict",
+                "description": "stable description",
+                "latestUpdate": "dynamic update 12",
+            }
+        ],
+        "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 11, "goal": "dynamic goal"}],
+        "objectStates": [{"objectName": "ledger", "sourceChapterNumber": 11, "status": "dynamic"}],
+        "canonFacts": [{"chapterNumber": 11, "fact": "dynamic fact"}],
+        "mustContinueFrom": {"previousEndingHook": "hook 11", "strictRules": ["rule"]},
+    }
+    next_context = {
+        **base_context,
+        "chapterNumber": 13,
+        "currentPlanRecord": {"chapterNumber": 13, "chapterGoal": "goal 13"},
+        "previousChapter": {"chapterNumber": 12, "summary": "summary 12", "endingHook": "hook 12"},
+        "activeConflictLines": [
+            {
+                "conflictKey": "house",
+                "name": "house conflict",
+                "description": "stable description",
+                "latestUpdate": "dynamic update 13",
+            }
+        ],
+        "mustContinueFrom": {"previousEndingHook": "hook 12", "strictRules": ["rule"]},
+    }
+
+    assert _stable_project_cache_prefix(base_context) == _stable_project_cache_prefix(next_context)
+    prompt = _with_project_cache_prefix(base_context, "CHAPTER DELTA")
+    assert prompt.startswith("【长篇项目稳定缓存前缀】")
+    assert prompt.endswith("CHAPTER DELTA")
+
+
+def test_dynamic_context_does_not_repeat_stable_project_blueprints() -> None:
+    context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 13,
+        "project": {
+            "premise": "stable premise",
+            "targetWords": 200000,
+            "targetChapters": 41,
+            "sourceType": "custom_plot",
+        },
+        "bible": {"theme": "stable theme", "corePromise": "stable promise"},
+        "familyRelations": [
+            {
+                "fromMember": "A",
+                "toMember": "B",
+                "relationType": "kin",
+                "hiddenConflict": "stable hidden conflict",
+                "currentTensionLevel": 7,
+            }
+        ],
+        "activeConflictLines": [
+            {
+                "conflictKey": "debt",
+                "name": "debt line",
+                "description": "stable conflict description",
+                "latestUpdate": "chapter 12 update",
+                "status": "escalating",
+            }
+        ],
+        "previousChapter": {"chapterNumber": 12, "summary": "summary", "endingHook": "hook"},
+        "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 12}],
+        "objectStates": [{"objectName": "ledger", "sourceChapterNumber": 12}],
+        "canonFacts": [{"chapterNumber": 12, "fact": "fact"}],
+        "mustContinueFrom": {"previousEndingHook": "hook", "strictRules": ["rule"]},
+    }
+
+    prefix = _stable_project_cache_prefix(context)
+    compact_json = family_long_novel._context_prompt_json(context, "chapter_write")
+    combined_prompt = _with_project_cache_prefix(context, compact_json)
+
+    assert "stable premise" in prefix
+    assert "stable theme" in prefix
+    assert "stable hidden conflict" in prefix
+    assert "stable conflict description" in prefix
+    assert "stable premise" not in compact_json
+    assert "stable theme" not in compact_json
+    assert "stable hidden conflict" not in compact_json
+    assert "stable conflict description" not in compact_json
+    assert "chapter 12 update" not in compact_json
+    assert "chapter 12 update" in combined_prompt
+    assert '"currentTensionLevel": 7' in combined_prompt
+    assert _json_loads(compact_json)["promptContextMode"] == "action_delta"
+
+
+def test_shared_chapter_cache_context_excludes_changing_plan() -> None:
+    context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 13,
+        "project": {"premise": "premise", "targetWords": 200000, "targetChapters": 41},
+        "bible": {"theme": "theme"},
+        "currentPlanRecord": {"chapterNumber": 13, "chapterGoal": "first plan"},
+        "previousChapter": {"chapterNumber": 12, "summary": "summary", "endingHook": "hook"},
+        "familyRelations": [{"fromMember": "A", "toMember": "B"}],
+        "activeConflictLines": [{"conflictKey": "debt", "latestUpdate": "update"}],
+        "latestCharacterStates": [{"memberName": "A", "sourceChapterNumber": 12}],
+        "objectStates": [{"objectName": "ledger", "sourceChapterNumber": 12}],
+        "canonFacts": [{"chapterNumber": 12, "fact": "fact"}],
+        "mustContinueFrom": {"previousEndingHook": "hook", "strictRules": ["rule"]},
+    }
+    changed_plan_context = {
+        **context,
+        "currentPlanRecord": {"chapterNumber": 13, "chapterGoal": "updated plan"},
+    }
+
+    assert family_long_novel._shared_chapter_cache_context(context) == family_long_novel._shared_chapter_cache_context(changed_plan_context)
+    assert family_long_novel._context_prompt_json(context, "chapter_write") != family_long_novel._context_prompt_json(changed_plan_context, "chapter_write")
+
+
+def test_prompt_cache_options_enable_extended_retention(monkeypatch) -> None:
+    monkeypatch.setattr(content_engine.settings, "OPENAI_PROMPT_CACHE_RETENTION", "24h")
+    kwargs: dict[str, object] = {}
+
+    content_engine._apply_prompt_cache_options(kwargs, "family-long-novel:project:v1")
+
+    assert kwargs == {
+        "prompt_cache_key": "family-long-novel:project:v1",
+        "prompt_cache_retention": "24h",
+    }
+
+
+def test_openai_usage_merges_all_billable_responses() -> None:
+    total = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+    content_engine._merge_openai_usage(
+        total,
+        {
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 300,
+                "total_tokens": 1500,
+                "input_tokens_details": {"cached_tokens": 1024},
+                "output_tokens_details": {"reasoning_tokens": 80},
+            }
+        },
+    )
+    content_engine._merge_openai_usage(
+        total,
+        {
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 500,
+                "total_tokens": 1700,
+                "input_tokens_details": {"cached_tokens": 1200},
+                "output_tokens_details": {"reasoning_tokens": 120},
+            }
+        },
+    )
+
+    assert total == {
+        "input_tokens": 2400,
+        "output_tokens": 800,
+        "total_tokens": 3200,
+        "cached_input_tokens": 2224,
+        "reasoning_tokens": 200,
+    }
 
 
 def test_long_novel_openai_calls_use_project_prompt_cache_key() -> None:
@@ -373,6 +565,8 @@ def test_long_novel_openai_calls_use_project_prompt_cache_key() -> None:
     )
 
     assert source.count("prompt_cache_key=_project_prompt_cache_key(project.id)") >= 10
+    assert source.count("_with_project_cache_prefix(context, prompt)") >= 6
     assert "prompt_cache_key" in inspect.signature(family_long_novel._run_writer).parameters
+    assert "prompt_cache_key" in inspect.signature(family_long_novel._run_writer_with_usage).parameters
     assert "prompt_cache_key" in inspect.signature(family_long_novel._call_json).parameters
     assert "prompt_cache_key" in inspect.signature(family_long_novel._call_text).parameters
