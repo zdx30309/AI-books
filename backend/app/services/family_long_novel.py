@@ -319,13 +319,20 @@ def _ensure_chapter_prompt_cache_warm(
     project_id: UUID,
     chapter_number: int,
     context_pack: dict[str, Any],
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    tier: str = "default",
 ) -> None:
-    """Prime the shared Flex prefix without changing any content-stage output."""
+    """Prime one exact model/effort/verbosity cache bucket without using its output."""
 
     requested_tier, _use_background, _fallback_tier = _long_novel_processing_policy()
     if requested_tier != "flex" or not settings.LONG_NOVEL_PROMPT_CACHE_WARMUP:
         return
 
+    effective_effort = str(reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT or "high").strip().lower()
+    effective_verbosity = str(verbosity or settings.OPENAI_WRITER_VERBOSITY or "medium").strip().lower()
+    effective_tier = str(tier or "default").strip().lower()
+    warm_action = f"warm_prompt_cache_{effective_effort}_{effective_verbosity}"
     cache_key = _chapter_prompt_cache_key(project_id, chapter_number)
     warm_prompt = _with_project_cache_prefix(
         context_pack,
@@ -336,40 +343,21 @@ def _ensure_chapter_prompt_cache_warm(
         ),
     )
     prefix_hash = _prompt_prefix_hash(warm_prompt)
-    now = datetime.now(timezone.utc)
-    verified_after = now - timedelta(hours=20)
-    attempted_after = now - timedelta(minutes=10)
-
-    verified = (
+    reusable_after = datetime.now(timezone.utc) - timedelta(hours=20)
+    existing = (
         db.query(LongNovelGenerationLog)
         .filter(
             LongNovelGenerationLog.project_id == project_id,
             LongNovelGenerationLog.chapter_number == chapter_number,
-            LongNovelGenerationLog.action.in_(["warm_prompt_cache", "verify_prompt_cache"]),
+            LongNovelGenerationLog.action == warm_action,
             LongNovelGenerationLog.status == "completed",
             LongNovelGenerationLog.prompt_cache_key == cache_key,
             LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
-            LongNovelGenerationLog.cached_prompt_tokens >= 1024,
-            LongNovelGenerationLog.created_at >= verified_after,
+            LongNovelGenerationLog.created_at >= reusable_after,
         )
         .first()
     )
-    if verified is not None:
-        return
-
-    recent_attempt = (
-        db.query(LongNovelGenerationLog)
-        .filter(
-            LongNovelGenerationLog.project_id == project_id,
-            LongNovelGenerationLog.chapter_number == chapter_number,
-            LongNovelGenerationLog.action == "verify_prompt_cache",
-            LongNovelGenerationLog.prompt_cache_key == cache_key,
-            LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
-            LongNovelGenerationLog.created_at >= attempted_after,
-        )
-        .first()
-    )
-    if recent_attempt is not None:
+    if existing is not None:
         return
 
     try:
@@ -377,44 +365,21 @@ def _ensure_chapter_prompt_cache_warm(
             db,
             project_id=project_id,
             chapter_number=chapter_number,
-            action="warm_prompt_cache",
-            tier="cheap",
+            action=warm_action,
+            tier=effective_tier,
             prompt=warm_prompt,
             max_output_tokens=512,
             prompt_cache_key=cache_key,
-            reasoning_effort="low",
-        )
-        first = (
-            db.query(LongNovelGenerationLog)
-            .filter(
-                LongNovelGenerationLog.project_id == project_id,
-                LongNovelGenerationLog.chapter_number == chapter_number,
-                LongNovelGenerationLog.action == "warm_prompt_cache",
-                LongNovelGenerationLog.prompt_cache_key == cache_key,
-                LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
-                LongNovelGenerationLog.status == "completed",
-            )
-            .order_by(LongNovelGenerationLog.created_at.desc())
-            .first()
-        )
-        if first is not None and int(first.cached_prompt_tokens or 0) >= 1024:
-            return
-        _log_llm_call(
-            db,
-            project_id=project_id,
-            chapter_number=chapter_number,
-            action="verify_prompt_cache",
-            tier="cheap",
-            prompt=warm_prompt,
-            max_output_tokens=512,
-            prompt_cache_key=cache_key,
-            reasoning_effort="low",
+            reasoning_effort=effective_effort,
+            verbosity=effective_verbosity,
         )
     except Exception as exc:
         logger.warning(
-            "chapter prompt cache warmup failed; continuing unchanged workflow project=%s chapter=%s error=%s",
+            "chapter prompt cache warmup failed; continuing unchanged workflow project=%s chapter=%s effort=%s verbosity=%s error=%s",
             project_id,
             chapter_number,
+            effective_effort,
+            effective_verbosity,
             str(exc)[:500],
         )
 
@@ -568,6 +533,7 @@ def _log_llm_call(
     max_output_tokens: int,
     prompt_cache_key: str | None = None,
     reasoning_effort: str | None = None,
+    verbosity: str | None = None,
 ) -> str:
     requested_service_tier, use_background, fallback_service_tier = _long_novel_processing_policy()
     log = LongNovelGenerationLog(
@@ -589,6 +555,7 @@ def _log_llm_call(
             prompt,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
             prompt_cache_key=prompt_cache_key,
             service_tier=requested_service_tier,
             background=use_background,
@@ -2839,6 +2806,9 @@ def generate_family_chapter_plan(
         project_id=project.id,
         chapter_number=chapter_number,
         context_pack=context,
+        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="default",
     )
 
     project.status = LongNovelProjectStatus.GENERATING
@@ -2936,6 +2906,9 @@ def generate_family_chapter(
         project_id=project.id,
         chapter_number=chapter_number,
         context_pack=context,
+        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="default",
     )
 
     saved_chapter = (
@@ -3134,6 +3107,9 @@ def extract_family_chapter_state(
         project_id=project.id,
         chapter_number=chapter_number,
         context_pack=context,
+        reasoning_effort=settings.LONG_NOVEL_STATE_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="cheap",
     )
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
@@ -3426,6 +3402,9 @@ def check_family_continuity(
         project_id=project.id,
         chapter_number=chapter_number,
         context_pack=context,
+        reasoning_effort=settings.LONG_NOVEL_CONTINUITY_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="cheap",
     )
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
@@ -3503,6 +3482,15 @@ def quality_check_family_chapter(
         raise FamilyLongNovelError("章节不存在，无法质检")
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="cheap",
+    )
     prompt = render_prompt(
         ZHOULI_QUALITY_CHECK_PROMPT,
         chapter_context=_context_prompt_json(context, "quality_check"),
@@ -3564,6 +3552,15 @@ def repair_family_chapter(
         return chapter
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
+        verbosity=settings.OPENAI_WRITER_VERBOSITY,
+        tier="default",
+    )
     issues_payload = [
         {
             "severity": item.severity,

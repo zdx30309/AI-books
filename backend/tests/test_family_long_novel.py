@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -613,12 +614,14 @@ def test_cache_warmup_is_transport_only_and_never_changes_content_nodes() -> Non
     source = inspect.getsource(family_long_novel._ensure_chapter_prompt_cache_warm)
 
     assert "PROMPT CACHE PREFILL ONLY" in source
-    assert 'reasoning_effort="low"' in source
+    assert "effective_effort" in source
+    assert "effective_verbosity" in source
     assert "max_output_tokens=512" in source
     assert "generate_family_chapter(" not in source
     assert "repair_family_chapter(" not in source
     assert "chapter.content" not in source
     assert "continuing unchanged workflow" in source
+    assert "verify_prompt_cache" not in source
 
 
 def test_cache_warmup_is_only_enabled_for_long_novel_flex() -> None:
@@ -626,9 +629,88 @@ def test_cache_warmup_is_only_enabled_for_long_novel_flex() -> None:
 
     assert 'requested_tier != "flex"' in source
     assert "LONG_NOVEL_PROMPT_CACHE_WARMUP" in source
-    assert "cached_prompt_tokens >= 1024" in source
-    assert 'action="warm_prompt_cache"' in source
-    assert 'action="verify_prompt_cache"' in source
+    assert 'warm_action = f"warm_prompt_cache_' in source
+    assert "reasoning_effort=effective_effort" in source
+    assert "verbosity=effective_verbosity" in source
+
+
+def test_cache_warmup_uses_distinct_reasoning_buckets(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeQuery:
+        def filter(self, *_args: object) -> "FakeQuery":
+            return self
+
+        def first(self) -> None:
+            return None
+
+    class FakeDb:
+        def query(self, *_args: object) -> FakeQuery:
+            return FakeQuery()
+
+    context = {
+        "contextPackVersion": 2,
+        "chapterNumber": 21,
+        "project": {"premise": "premise", "targetWords": 200000, "targetChapters": 41},
+        "bible": {"theme": "theme"},
+        "previousChapter": {"chapterNumber": 20, "summary": "summary", "endingHook": "hook"},
+        "familyRelations": [],
+        "activeConflictLines": [],
+        "latestCharacterStates": [],
+        "objectStates": [],
+        "canonFacts": [],
+        "mustContinueFrom": {"previousEndingHook": "hook", "strictRules": []},
+    }
+    monkeypatch.setattr(family_long_novel, "_long_novel_processing_policy", lambda: ("flex", True, "auto"))
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_PROMPT_CACHE_WARMUP", True)
+    monkeypatch.setattr(family_long_novel, "_log_llm_call", lambda *_args, **kwargs: calls.append(kwargs) or "CACHE_READY")
+
+    for effort, tier in [("xhigh", "default"), ("high", "cheap")]:
+        family_long_novel._ensure_chapter_prompt_cache_warm(
+            FakeDb(),
+            project_id=UUID("4deb74d6-5b8b-4e1e-a8a0-fb0d2d95f5af"),
+            chapter_number=21,
+            context_pack=context,
+            reasoning_effort=effort,
+            verbosity="medium",
+            tier=tier,
+        )
+
+    assert [call["reasoning_effort"] for call in calls] == ["xhigh", "high"]
+    assert [call["verbosity"] for call in calls] == ["medium", "medium"]
+    assert calls[0]["action"] == "warm_prompt_cache_xhigh_medium"
+    assert calls[1]["action"] == "warm_prompt_cache_high_medium"
+    assert calls[0]["prompt_cache_key"] == calls[1]["prompt_cache_key"]
+
+
+def test_cache_warmup_failure_never_blocks_generation(monkeypatch) -> None:
+    class FakeQuery:
+        def filter(self, *_args: object) -> "FakeQuery":
+            return self
+
+        def first(self) -> None:
+            return None
+
+    class FakeDb:
+        def query(self, *_args: object) -> FakeQuery:
+            return FakeQuery()
+
+    monkeypatch.setattr(family_long_novel, "_long_novel_processing_policy", lambda: ("flex", True, "auto"))
+    monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_PROMPT_CACHE_WARMUP", True)
+    monkeypatch.setattr(
+        family_long_novel,
+        "_log_llm_call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cache unavailable")),
+    )
+
+    family_long_novel._ensure_chapter_prompt_cache_warm(
+        FakeDb(),
+        project_id=UUID("4deb74d6-5b8b-4e1e-a8a0-fb0d2d95f5af"),
+        chapter_number=21,
+        context_pack={"chapterNumber": 21, "project": {}, "bible": {}},
+        reasoning_effort="xhigh",
+        verbosity="medium",
+    )
 
 
 def test_all_chapter_content_stages_share_the_idempotent_cache_warmup() -> None:
@@ -637,9 +719,12 @@ def test_all_chapter_content_stages_share_the_idempotent_cache_warmup() -> None:
         inspect.getsource(family_long_novel.generate_family_chapter),
         inspect.getsource(family_long_novel.extract_family_chapter_state),
         inspect.getsource(family_long_novel.check_family_continuity),
+        inspect.getsource(family_long_novel.quality_check_family_chapter),
+        inspect.getsource(family_long_novel.repair_family_chapter),
     ]
 
     assert all("_ensure_chapter_prompt_cache_warm" in source for source in sources)
+    assert "verbosity=verbosity" in inspect.getsource(family_long_novel._log_llm_call)
 
 
 def test_flex_cost_estimate_is_half_of_standard(monkeypatch) -> None:
