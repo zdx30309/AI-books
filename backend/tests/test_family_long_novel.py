@@ -713,17 +713,20 @@ def test_cache_warmup_failure_never_blocks_generation(monkeypatch) -> None:
     )
 
 
-def test_all_chapter_content_stages_share_the_idempotent_cache_warmup() -> None:
-    sources = [
-        inspect.getsource(family_long_novel.generate_family_chapter_plan),
-        inspect.getsource(family_long_novel.generate_family_chapter),
-        inspect.getsource(family_long_novel.extract_family_chapter_state),
-        inspect.getsource(family_long_novel.check_family_continuity),
-        inspect.getsource(family_long_novel.quality_check_family_chapter),
-        inspect.getsource(family_long_novel.repair_family_chapter),
-    ]
-
-    assert all("_ensure_chapter_prompt_cache_warm" in source for source in sources)
+def test_cache_warmup_runs_once_per_reusable_effort_pair() -> None:
+    assert "_ensure_chapter_prompt_cache_warm" in inspect.getsource(
+        family_long_novel.generate_family_chapter_plan
+    )
+    assert "_ensure_chapter_prompt_cache_warm" in inspect.getsource(
+        family_long_novel.extract_family_chapter_state
+    )
+    for single_or_consumer_stage in [
+        family_long_novel.generate_family_chapter,
+        family_long_novel.check_family_continuity,
+        family_long_novel.quality_check_family_chapter,
+        family_long_novel.repair_family_chapter,
+    ]:
+        assert "_ensure_chapter_prompt_cache_warm" not in inspect.getsource(single_or_consumer_stage)
     assert "verbosity=verbosity" in inspect.getsource(family_long_novel._log_llm_call)
 
 

@@ -2901,15 +2901,6 @@ def generate_family_chapter(
 
     context = _chapter_context_snapshot_with_plan(initial_context, plan)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="default",
-    )
 
     saved_chapter = (
         db.query(LongNovelChapter)
@@ -3397,15 +3388,6 @@ def check_family_continuity(
     ).delete()
     context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.LONG_NOVEL_CONTINUITY_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="cheap",
-    )
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
         ZHOULI_CONTINUITY_CHECK_PROMPT,
@@ -3482,15 +3464,6 @@ def quality_check_family_chapter(
         raise FamilyLongNovelError("章节不存在，无法质检")
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="cheap",
-    )
     prompt = render_prompt(
         ZHOULI_QUALITY_CHECK_PROMPT,
         chapter_context=_context_prompt_json(context, "quality_check"),
@@ -3552,15 +3525,6 @@ def repair_family_chapter(
         return chapter
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="default",
-    )
     issues_payload = [
         {
             "severity": item.severity,
