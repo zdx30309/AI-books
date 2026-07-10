@@ -313,6 +313,112 @@ def _prompt_prefix_hash(prompt: str) -> str:
     return hashlib.sha256(prefix.encode("utf-8")).hexdigest()
 
 
+def _ensure_chapter_prompt_cache_warm(
+    db: Session,
+    *,
+    project_id: UUID,
+    chapter_number: int,
+    context_pack: dict[str, Any],
+) -> None:
+    """Prime the shared Flex prefix without changing any content-stage output."""
+
+    requested_tier, _use_background, _fallback_tier = _long_novel_processing_policy()
+    if requested_tier != "flex" or not settings.LONG_NOVEL_PROMPT_CACHE_WARMUP:
+        return
+
+    cache_key = _chapter_prompt_cache_key(project_id, chapter_number)
+    warm_prompt = _with_project_cache_prefix(
+        context_pack,
+        (
+            "[PROMPT CACHE PREFILL ONLY]\n"
+            "Do not plan, draft, revise, summarize, or judge the novel. "
+            "Return only CACHE_READY."
+        ),
+    )
+    prefix_hash = _prompt_prefix_hash(warm_prompt)
+    now = datetime.now(timezone.utc)
+    verified_after = now - timedelta(hours=20)
+    attempted_after = now - timedelta(minutes=10)
+
+    verified = (
+        db.query(LongNovelGenerationLog)
+        .filter(
+            LongNovelGenerationLog.project_id == project_id,
+            LongNovelGenerationLog.chapter_number == chapter_number,
+            LongNovelGenerationLog.action.in_(["warm_prompt_cache", "verify_prompt_cache"]),
+            LongNovelGenerationLog.status == "completed",
+            LongNovelGenerationLog.prompt_cache_key == cache_key,
+            LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
+            LongNovelGenerationLog.cached_prompt_tokens >= 1024,
+            LongNovelGenerationLog.created_at >= verified_after,
+        )
+        .first()
+    )
+    if verified is not None:
+        return
+
+    recent_attempt = (
+        db.query(LongNovelGenerationLog)
+        .filter(
+            LongNovelGenerationLog.project_id == project_id,
+            LongNovelGenerationLog.chapter_number == chapter_number,
+            LongNovelGenerationLog.action == "verify_prompt_cache",
+            LongNovelGenerationLog.prompt_cache_key == cache_key,
+            LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
+            LongNovelGenerationLog.created_at >= attempted_after,
+        )
+        .first()
+    )
+    if recent_attempt is not None:
+        return
+
+    try:
+        _log_llm_call(
+            db,
+            project_id=project_id,
+            chapter_number=chapter_number,
+            action="warm_prompt_cache",
+            tier="cheap",
+            prompt=warm_prompt,
+            max_output_tokens=512,
+            prompt_cache_key=cache_key,
+            reasoning_effort="low",
+        )
+        first = (
+            db.query(LongNovelGenerationLog)
+            .filter(
+                LongNovelGenerationLog.project_id == project_id,
+                LongNovelGenerationLog.chapter_number == chapter_number,
+                LongNovelGenerationLog.action == "warm_prompt_cache",
+                LongNovelGenerationLog.prompt_cache_key == cache_key,
+                LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
+                LongNovelGenerationLog.status == "completed",
+            )
+            .order_by(LongNovelGenerationLog.created_at.desc())
+            .first()
+        )
+        if first is not None and int(first.cached_prompt_tokens or 0) >= 1024:
+            return
+        _log_llm_call(
+            db,
+            project_id=project_id,
+            chapter_number=chapter_number,
+            action="verify_prompt_cache",
+            tier="cheap",
+            prompt=warm_prompt,
+            max_output_tokens=512,
+            prompt_cache_key=cache_key,
+            reasoning_effort="low",
+        )
+    except Exception as exc:
+        logger.warning(
+            "chapter prompt cache warmup failed; continuing unchanged workflow project=%s chapter=%s error=%s",
+            project_id,
+            chapter_number,
+            str(exc)[:500],
+        )
+
+
 def _model_for_tier(tier: str) -> str:
     configured = {
         "strong": settings.LONG_NOVEL_STRONG_MODEL,
@@ -2728,6 +2834,12 @@ def generate_family_chapter_plan(
 
     context = context_pack or _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+    )
 
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
@@ -2819,6 +2931,12 @@ def generate_family_chapter(
 
     context = _chapter_context_snapshot_with_plan(initial_context, plan)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+    )
 
     saved_chapter = (
         db.query(LongNovelChapter)
@@ -3011,6 +3129,12 @@ def extract_family_chapter_state(
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
     context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+    )
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
         chapter_context=_context_prompt_json(context, "state_extract"),
@@ -3297,6 +3421,12 @@ def check_family_continuity(
     ).delete()
     context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
+    _ensure_chapter_prompt_cache_warm(
+        db,
+        project_id=project.id,
+        chapter_number=chapter_number,
+        context_pack=context,
+    )
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
         ZHOULI_CONTINUITY_CHECK_PROMPT,

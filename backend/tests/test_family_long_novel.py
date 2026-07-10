@@ -609,6 +609,39 @@ def test_long_novel_flex_policy_preserves_standard_fallback(monkeypatch) -> None
     assert family_long_novel._long_novel_processing_policy() == ("flex", True, "auto")
 
 
+def test_cache_warmup_is_transport_only_and_never_changes_content_nodes() -> None:
+    source = inspect.getsource(family_long_novel._ensure_chapter_prompt_cache_warm)
+
+    assert "PROMPT CACHE PREFILL ONLY" in source
+    assert 'reasoning_effort="low"' in source
+    assert "max_output_tokens=512" in source
+    assert "generate_family_chapter(" not in source
+    assert "repair_family_chapter(" not in source
+    assert "chapter.content" not in source
+    assert "continuing unchanged workflow" in source
+
+
+def test_cache_warmup_is_only_enabled_for_long_novel_flex() -> None:
+    source = inspect.getsource(family_long_novel._ensure_chapter_prompt_cache_warm)
+
+    assert 'requested_tier != "flex"' in source
+    assert "LONG_NOVEL_PROMPT_CACHE_WARMUP" in source
+    assert "cached_prompt_tokens >= 1024" in source
+    assert 'action="warm_prompt_cache"' in source
+    assert 'action="verify_prompt_cache"' in source
+
+
+def test_all_chapter_content_stages_share_the_idempotent_cache_warmup() -> None:
+    sources = [
+        inspect.getsource(family_long_novel.generate_family_chapter_plan),
+        inspect.getsource(family_long_novel.generate_family_chapter),
+        inspect.getsource(family_long_novel.extract_family_chapter_state),
+        inspect.getsource(family_long_novel.check_family_continuity),
+    ]
+
+    assert all("_ensure_chapter_prompt_cache_warm" in source for source in sources)
+
+
 def test_flex_cost_estimate_is_half_of_standard(monkeypatch) -> None:
     monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_INPUT_COST_PER_1M", 5.0)
     monkeypatch.setattr(family_long_novel.settings, "LONG_NOVEL_CACHED_INPUT_COST_PER_1M", 0.5)
