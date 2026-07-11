@@ -25,6 +25,14 @@ const COMIC_STEPS: Step[] = [
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
+const DIRECT_WRITER_STEPS: Step[] = [
+  { key: "queue", label: "排队建库", start: 0 },
+  { key: "fetch", label: "解析原文", start: 8 },
+  { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
+  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
+];
+
 interface Props {
   progress: number;
   currentStep: string;
@@ -38,7 +46,14 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
   const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
     category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
-  const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
+  const isDirectWriterWorkflow =
+    category === "classical_chinese_novel_style" ||
+    category === "classical_chinese_reference_rewrite";
+  const steps = isComicWorkflow
+    ? COMIC_STEPS
+    : isDirectWriterWorkflow
+      ? DIRECT_WRITER_STEPS
+      : STEPS;
 
   return (
     <ol className="space-y-3">

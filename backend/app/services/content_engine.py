@@ -29,6 +29,7 @@ from app.services.classical_chinese import (
     BuddhistStoryUnit,
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
+    CLASSICAL_NOVEL_STYLE_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
     CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     buddhist_scripture_final_title,
@@ -6047,6 +6048,10 @@ async def generate_full_book(
     source_duration_seconds: int | float | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
+    direct_writer_only = normalized_category in {
+        CLASSICAL_NOVEL_STYLE_CATEGORY,
+        CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+    }
     if (
         (input_source or "").strip() == REFERENCE_ARTICLE_INPUT_SOURCE
         and normalized_category != "emotion_relationship"
@@ -6318,7 +6323,7 @@ async def generate_full_book(
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
-    polished_markdown = _read_stage("02_polish.md")
+    polished_markdown = generated_markdown if direct_writer_only else _read_stage("02_polish.md")
     if polished_markdown and use_buddhist_story_unit_writer:
         cached_polish_issues = _buddhist_story_manuscript_issues(
             polished_markdown,
@@ -6330,7 +6335,11 @@ async def generate_full_book(
                 "; ".join(cached_polish_issues),
             )
             polished_markdown = None
-    if polished_markdown:
+    if direct_writer_only:
+        logger.info("%s 使用直出模式，跳过 Gemini 一润", normalized_category)
+        _log_stage("2/4 polish (skipped: direct writer)", polished_markdown, prev_chars=writer_chars)
+        polish_chars = len(polished_markdown)
+    elif polished_markdown:
         logger.info("复用已存在的 02_polish.md")
         _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
         polish_chars = len(polished_markdown)
@@ -6392,7 +6401,7 @@ async def generate_full_book(
             )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
-    if is_classical_category:
+    if is_classical_category and not direct_writer_only:
         polished_markdown = await _repair_classical_quality_once(
             polished_markdown,
             marked_source_text=classical_marked_source_text,
@@ -6407,7 +6416,7 @@ async def generate_full_book(
         polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
-    refined_markdown = _read_stage("03_refine.md")
+    refined_markdown = polished_markdown if direct_writer_only else _read_stage("03_refine.md")
     if refined_markdown and use_buddhist_story_unit_writer:
         cached_refine_issues = _buddhist_story_manuscript_issues(
             refined_markdown,
@@ -6419,7 +6428,11 @@ async def generate_full_book(
                 "; ".join(cached_refine_issues),
             )
             refined_markdown = None
-    if refined_markdown:
+    if direct_writer_only:
+        logger.info("%s 使用直出模式，跳过 Gemini 二润", normalized_category)
+        _log_stage("3/4 refine (skipped: direct writer)", refined_markdown, prev_chars=polish_chars)
+        refine_chars = len(refined_markdown)
+    elif refined_markdown:
         logger.info("复用已存在的 03_refine.md")
         _log_stage("3/4 refine (resume)", refined_markdown, prev_chars=polish_chars)
         refine_chars = len(refined_markdown)
@@ -6500,7 +6513,7 @@ async def generate_full_book(
             )
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
-    if is_classical_category:
+    if is_classical_category and not direct_writer_only:
         refined_markdown = await _repair_classical_quality_once(
             refined_markdown,
             marked_source_text=classical_marked_source_text,

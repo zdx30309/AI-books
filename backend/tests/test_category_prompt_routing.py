@@ -743,11 +743,94 @@ def test_classical_reference_rewrite_generation_chain_uses_word_prompt_layers(
     assert "参考对象：中华书局参照译本" in captured["writer"]
     assert "参考译文：想要磨炼出如精金美玉般纯粹的人品" in captured["writer"]
 
-    for key in ("polish_system", "refine_system", "format_prompt"):
-        assert "古文白话参照译写版语义锁" in captured[key]
-        assert "不得重新翻译古文" in captured[key]
-        assert "语文教材式解释" in captured[key]
-        assert "中华书局或用户指定参考译文命中的义项" in captured[key]
+    assert "polish_system" not in captured
+    assert "refine_system" not in captured
+    assert "古文白话参照译写版语义锁" in captured["format_prompt"]
+    assert "不得重新翻译古文" in captured["format_prompt"]
+    assert "语文教材式解释" in captured["format_prompt"]
+    assert "中华书局或用户指定参考译文命中的义项" in captured["format_prompt"]
+
+
+@pytest.mark.parametrize(
+    ("category", "original_title", "body"),
+    [
+        (
+            CLASSICAL_NOVEL_STYLE_CATEGORY,
+            "杨家将",
+            "杨业披甲出帐，众将随他奔向城门。",
+        ),
+        (
+            CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+            "菜根谭",
+            "（原文）欲做精金美玉的人品，定从烈火中煅来。\n\n"
+            "（翻译）想磨炼出精金美玉般坚实的人品，就要经得住烈火般的考验。",
+        ),
+    ],
+)
+def test_selected_classical_categories_skip_both_gemini_rewrite_stages(
+    category: str,
+    original_title: str,
+    body: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manuscript = f"""@最终书名
+{original_title}（白话版）
+@最终简介
+测试简介。
+@目录
+1. 第一章
+@导言
+测试导言。
+@正文
+{body}
+"""
+    captured: dict[str, str] = {}
+    stages: list[str] = []
+
+    async def fake_route_writer_call(prompt: str, **_: object) -> str:
+        captured["writer_prompt"] = prompt
+        return manuscript
+
+    async def fail_polish(*_: object, **__: object) -> str:
+        raise AssertionError("直出分类不得调用 Gemini 一润")
+
+    async def fail_refine(*_: object, **__: object) -> str:
+        raise AssertionError("直出分类不得调用 Gemini 二润")
+
+    def fake_format_book_text(text: str, **_: object) -> str:
+        captured["format_input"] = text
+        return text
+
+    async def keep_classical_text(text: str, **_: object) -> str:
+        return text
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fail_polish)
+    monkeypatch.setattr(content_engine, "_refine_by_paragraph_chunks_strict", fail_refine)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
+    monkeypatch.setattr(content_engine, "_repair_classical_quality_once", keep_classical_text)
+    monkeypatch.setattr(content_engine, "_repair_final_hard_errors_once", keep_classical_text)
+
+    output_dir = tmp_path / category
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "测试古文原文。",
+            category=category,
+            classical_original_title=original_title,
+            output_dir=output_dir,
+            on_stage=lambda stage, _: stages.append(stage),
+        )
+    )
+
+    assert original_title in result
+    assert captured["format_input"] == manuscript
+    assert (output_dir / "01_writer.md").exists()
+    assert not (output_dir / "02_polish.md").exists()
+    assert not (output_dir / "03_refine.md").exists()
+    assert (output_dir / "04_format.md").exists()
+    assert not any(stage.startswith("polish") for stage in stages)
+    assert not any(stage.startswith("refine") for stage in stages)
 
 
 def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
