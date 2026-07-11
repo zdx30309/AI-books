@@ -609,6 +609,12 @@ export function BookDetail() {
               <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
                 来源：{task.source_url}
               </p>
+              {task.aigc_passed !== null && (
+                <p className="mt-2 text-xs tracking-wide text-emerald-300">
+                  朱雀终稿检测：{task.aigc_passed ? "已通过" : "未通过"}
+                  {task.aigc_max_score !== null ? ` · 最高块分 ${task.aigc_max_score}%` : ""}
+                </p>
+              )}
               {isCompleted && (
                 <div className="mt-5 grid gap-3 md:grid-cols-[1.4fr_1fr_auto]">
                   <div>

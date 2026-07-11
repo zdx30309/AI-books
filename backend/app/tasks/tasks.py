@@ -1219,6 +1219,8 @@ def process_video(_self, task_id: str) -> dict:
             "refine_done": (85, "二润完成"),
             "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
+            "aigc_start": (91, "朱雀终稿检测与低 AI 率质检中"),
+            "aigc_done": (93, "朱雀终稿检测已通过"),
         }
 
         def _on_stage(stage: str, info: dict[str, Any]) -> None:
@@ -1334,7 +1336,19 @@ def process_video(_self, task_id: str) -> dict:
         _ensure_active_run(db, task, run_id)
         markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))
-        _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节", run_id=run_id)
+        aigc_report_path = output_dir / "aigc_quality_report.json"
+        if aigc_report_path.exists():
+            try:
+                aigc_report = json.loads(aigc_report_path.read_text(encoding="utf-8"))
+                _patch_config(
+                    task,
+                    aigc_quality_report=str(aigc_report_path),
+                    aigc_max_score=int(aigc_report.get("maxScore") or 0),
+                    aigc_passed=bool(aigc_report.get("passed")),
+                )
+            except (OSError, ValueError, TypeError):
+                logger.warning("读取朱雀终稿报告失败: %s", aigc_report_path)
+        _update_progress(db, task, progress=94, step="全文生成完成，正在写入章节", run_id=run_id)
 
         if category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
             book_title = buddhist_scripture_final_title(classical_original_title)
@@ -1346,7 +1360,7 @@ def process_video(_self, task_id: str) -> dict:
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown, title=book_title)
 
-        _update_progress(db, task, progress=94, step="正在写入质量报告", run_id=run_id)
+        _update_progress(db, task, progress=96, step="正在写入质量报告", run_id=run_id)
         report = measure_quality(markdown, category=category)
         report_text = format_report(report)
         report_path = output_dir / "quality_report.txt"

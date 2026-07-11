@@ -7,10 +7,16 @@ then runs a local hard QA gate for obvious source-overlap risk.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import re
 from typing import Iterable
 
+from app.core.config import settings
+from app.services.aigc_quality_gate import (
+    enforce_aigc_quality_gate,
+    rewrite_aigc_chunk_with_gemini,
+)
 from app.services.deepseek import generate_text as deepseek_generate_text
 
 
@@ -175,6 +181,23 @@ def rewrite_public_domain_fusion(
                 warnings.append("已触发一次高重叠/残留硬伤局部修复，并使用修复后的终稿。")
             else:
                 warnings.append("已尝试一次局部修复，但仍命中高风险硬伤，建议人工复核或调整来源。")
+
+    if settings.AIGC_GATE_ENABLED:
+        gate_result = asyncio.run(
+            enforce_aigc_quality_gate(
+                manuscript,
+                category="public_domain_rewrite",
+                rewrite_chunk=rewrite_aigc_chunk_with_gemini,
+            )
+        )
+        manuscript = gate_result.text
+        warnings.append(
+            f"终稿已通过朱雀 AIGC 闸门（最高分 {gate_result.max_score}%，"
+            f"检测轮次 {len(gate_result.rounds)}）。"
+        )
+        quality = _quality_check(manuscript, clean_sources)
+        if quality["status"] == "needs_repair":
+            raise RuntimeError("降低 AI 率后的公版终稿未通过来源重合/残留复检")
 
     title = _pick_title(target_title, manuscript)
     report = _format_quality_report(quality, source_reports, len(manuscript))

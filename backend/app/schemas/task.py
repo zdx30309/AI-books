@@ -146,6 +146,8 @@ class TaskStatusResponse(BaseModel):
     bookshelf: str | None = None
     category: str | None = None
     category_label: str | None = None
+    aigc_passed: bool | None = None
+    aigc_max_score: int | None = None
     error_message: str | None = None
     created_at: datetime
 

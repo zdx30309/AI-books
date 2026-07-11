@@ -117,3 +117,13 @@ class Task(Base):
         cfg = self.config or {}
         error = cfg.get("cover_error")
         return error if isinstance(error, str) and error.strip() else None
+
+    @property
+    def aigc_passed(self) -> bool | None:
+        value = (self.config or {}).get("aigc_passed")
+        return value if isinstance(value, bool) else None
+
+    @property
+    def aigc_max_score(self) -> int | None:
+        value = (self.config or {}).get("aigc_max_score")
+        return int(value) if isinstance(value, (int, float)) else None

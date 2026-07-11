@@ -120,6 +120,21 @@ class Settings(BaseSettings):
     GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 0
     GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 0
 
+    # --- 全局朱雀 AI 文本检测闸门 ---
+    AIGC_GATE_ENABLED: bool = False
+    AIGC_GATE_FAIL_CLOSED: bool = True
+    AIGC_GATE_THRESHOLD: int = 50
+    AIGC_GATE_MAX_REWRITE_ROUNDS: int = 2
+    AIGC_GATE_CHUNK_MIN_CHARS: int = 350
+    AIGC_GATE_CHUNK_MAX_CHARS: int = 1800
+    AIGC_GATE_DETECT_CONCURRENCY: int = 4
+    AIGC_GATE_REWRITE_CONCURRENCY: int = 2
+    AIGC_GATE_REWRITE_TEMPERATURE: float = 0.85
+    TENCENTCLOUD_SECRET_ID: str = ""
+    TENCENTCLOUD_SECRET_KEY: str = ""
+    TENCENT_AIGC_BIZ_TYPE: str = ""
+    TENCENT_AIGC_REGION: str = "ap-beijing"
+
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"

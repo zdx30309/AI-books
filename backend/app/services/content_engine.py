@@ -46,6 +46,11 @@ from app.services.classical_chinese import (
 )
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
+from app.services.aigc_quality_gate import (
+    AigcQualityGateError,
+    enforce_aigc_quality_gate,
+    rewrite_aigc_chunk_with_gemini,
+)
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
 
@@ -55,6 +60,7 @@ from app.utils.official_api import official_openai_base_url, official_proxy
 #   polish_start / polish_chunk / polish_done
 #   refine_start / refine_done
 #   format_start / format_done
+#   aigc_start / aigc_done
 StageCallback = Callable[[str, dict[str, Any]], None]
 
 logger = logging.getLogger(__name__)
@@ -6031,6 +6037,58 @@ def _append_style_reference_prompt(
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
 
 
+async def _apply_final_aigc_gate(
+    markdown: str,
+    *,
+    category: str,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+) -> str:
+    """Run the optional global AIGC gate after the existing final QA workflow."""
+    if not settings.AIGC_GATE_ENABLED:
+        return markdown
+    if on_stage:
+        on_stage("aigc_start", {"chars": len(markdown)})
+
+    result = await enforce_aigc_quality_gate(
+        markdown,
+        category=category,
+        rewrite_chunk=rewrite_aigc_chunk_with_gemini,
+        output_dir=output_dir,
+    )
+    final_text = normalize_final_markdown(result.text, category=category)
+
+    from app.core.quality_metrics import detect_final_hard_errors
+
+    hard_errors = detect_final_hard_errors(final_text, category=category)
+    if hard_errors:
+        raise AigcQualityGateError(
+            "降低 AI 率后的终稿命中硬伤，已阻止落盘: " + "; ".join(hard_errors[:8])
+        )
+    _dump_stage(output_dir, "04_format.md", final_text)
+    if output_dir is not None:
+        try:
+            from app.core.quality_metrics import format_report, measure_quality
+
+            report = measure_quality(final_text, category=category)
+            (output_dir / "quality_report.txt").write_text(
+                format_report(report),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("降低 AI 率后的终稿质量报告刷新失败: %s", exc)
+    if on_stage:
+        on_stage(
+            "aigc_done",
+            {
+                "chars": len(final_text),
+                "max_score": result.max_score,
+                "rounds": len(result.rounds),
+            },
+        )
+    return final_text
+
+
 async def generate_full_book(
     raw_text: str,
     category: str = "social_science",
@@ -6103,6 +6161,14 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    async def finish_with_aigc(markdown: str) -> str:
+        return await _apply_final_aigc_gate(
+            markdown,
+            category=normalized_category,
+            output_dir=output_dir,
+            on_stage=on_stage,
+        )
+
     task_prompt_cache_key = _content_prompt_cache_key(
         normalized_category,
         writer_input_text,
@@ -6115,23 +6181,27 @@ async def generate_full_book(
     )
 
     if normalized_category == "healing_comic":
-        return await _generate_healing_comic_book(
-            raw_text,
-            output_dir=output_dir,
-            on_stage=on_stage,
-            panel_count=healing_comic_panel_count or 32,
-            character_prompt=healing_comic_character_prompt,
-            source_content=healing_comic_source_content,
-            should_pause=healing_comic_should_pause,
+        return await finish_with_aigc(
+            await _generate_healing_comic_book(
+                raw_text,
+                output_dir=output_dir,
+                on_stage=on_stage,
+                panel_count=healing_comic_panel_count or 32,
+                character_prompt=healing_comic_character_prompt,
+                source_content=healing_comic_source_content,
+                should_pause=healing_comic_should_pause,
+            )
         )
 
     if normalized_category == "comic_series":
-        return await _generate_comic_series_book(
-            raw_text,
-            category=normalized_category,
-            prompts=prompts,
-            output_dir=output_dir,
-            on_stage=on_stage,
+        return await finish_with_aigc(
+            await _generate_comic_series_book(
+                raw_text,
+                category=normalized_category,
+                prompts=prompts,
+                output_dir=output_dir,
+                on_stage=on_stage,
+            )
         )
 
     if _should_use_finance_longform(
@@ -6139,14 +6209,16 @@ async def generate_full_book(
         writer_input_text,
         source_duration_seconds=source_duration_seconds,
     ):
-        return await _generate_finance_longform_book(
-            writer_input_text,
-            category=normalized_category,
-            prompts=prompts,
-            output_dir=output_dir,
-            on_stage=on_stage,
-            source_duration_seconds=source_duration_seconds,
-            prompt_cache_key=task_prompt_cache_key,
+        return await finish_with_aigc(
+            await _generate_finance_longform_book(
+                writer_input_text,
+                category=normalized_category,
+                prompts=prompts,
+                output_dir=output_dir,
+                on_stage=on_stage,
+                source_duration_seconds=source_duration_seconds,
+                prompt_cache_key=task_prompt_cache_key,
+            )
         )
 
     ignore_existing_stages = False
@@ -6205,7 +6277,7 @@ async def generate_full_book(
             _log_stage("4/4 format (resume fast)", final_resume_markdown)
             if on_stage:
                 on_stage("format_done", {"chars": len(final_resume_markdown)})
-            return final_resume_markdown
+            return await finish_with_aigc(final_resume_markdown)
 
     # ---- 第 1 层: OpenAI Writer ----
     generated_markdown = _read_stage("01_writer.md")
@@ -6685,4 +6757,4 @@ async def generate_full_book(
         except Exception as exc:
             logger.warning("质量度量跳过: %s", exc)
 
-    return final_markdown
+    return await finish_with_aigc(final_markdown)

@@ -56,6 +56,10 @@ from app.schemas.long_novel import (
     LongNovelAssistResponse,
 )
 from app.services import content_engine
+from app.services.aigc_quality_gate import (
+    enforce_aigc_quality_gate,
+    rewrite_aigc_chunk_with_gemini,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3032,6 +3036,74 @@ def _mark_saved_chapter_postprocess_failed(
     db.commit()
 
 
+def _apply_family_aigc_gate(
+    db: Session,
+    text: str,
+    *,
+    project_id: UUID,
+    chapter_number: int,
+) -> str:
+    if not settings.AIGC_GATE_ENABLED:
+        return text
+    input_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cached = (
+        db.query(LongNovelGenerationLog)
+        .filter(
+            LongNovelGenerationLog.project_id == project_id,
+            LongNovelGenerationLog.chapter_number == chapter_number,
+            LongNovelGenerationLog.action == "aigc_final_gate",
+            LongNovelGenerationLog.status == "completed",
+            LongNovelGenerationLog.prompt_prefix_hash == input_digest,
+        )
+        .first()
+    )
+    if cached is not None:
+        logger.info(
+            "reuse family AIGC pass project=%s chapter=%s hash=%s",
+            project_id,
+            chapter_number,
+            input_digest[:12],
+        )
+        return text
+    result = asyncio.run(
+        enforce_aigc_quality_gate(
+            text,
+            category="family_long_novel",
+            rewrite_chunk=rewrite_aigc_chunk_with_gemini,
+        )
+    )
+    logger.info(
+        "family AIGC gate passed project=%s chapter=%s max_score=%s rounds=%s",
+        project_id,
+        chapter_number,
+        result.max_score,
+        len(result.rounds),
+    )
+    request_id = next(
+        (
+            detection.request_id
+            for round_item in reversed(result.rounds)
+            for detection in round_item.detections
+            if detection.request_id
+        ),
+        None,
+    )
+    db.add(
+        LongNovelGenerationLog(
+            project_id=project_id,
+            chapter_number=chapter_number,
+            action="aigc_final_gate",
+            provider="tencent",
+            model="zhuque-text-aigc",
+            prompt_prefix_hash=hashlib.sha256(result.text.encode("utf-8")).hexdigest(),
+            response_id=request_id,
+            status="completed",
+        )
+    )
+    db.commit()
+    return result.text
+
+
 def _postprocess_family_chapter(
     db: Session,
     project: LongNovelProject,
@@ -3042,6 +3114,18 @@ def _postprocess_family_chapter(
     *,
     auto_repair: bool,
 ) -> LongNovelChapter:
+    gated_content = _apply_family_aigc_gate(
+        db,
+        chapter.content,
+        project_id=project.id,
+        chapter_number=chapter.chapter_number,
+    )
+    if gated_content != chapter.content:
+        chapter.content = gated_content
+        chapter.word_count = _word_count(gated_content)
+        chapter.version = (chapter.version or 1) + 1
+        db.add(chapter)
+        db.commit()
     extracted_state = extract_family_chapter_state(
         db,
         project.id,
@@ -3552,6 +3636,12 @@ def repair_family_chapter(
         prompt=prompt,
         max_output_tokens=24000,
         prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
+    )
+    repaired = _apply_family_aigc_gate(
+        db,
+        repaired,
+        project_id=project.id,
+        chapter_number=chapter_number,
     )
     chapter.content = repaired
     chapter.raw_model_output = repaired

@@ -187,6 +187,8 @@ export interface TaskStatusResponse {
   bookshelf: string | null;
   category: string | null;
   category_label: string | null;
+  aigc_passed: boolean | null;
+  aigc_max_score: number | null;
   error_message: string | null;
   created_at: string;
 }
