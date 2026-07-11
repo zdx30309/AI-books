@@ -15,6 +15,10 @@ import pytest
 
 from app.core.quality_metrics import detect_final_hard_errors
 from app.prompts.goal_driven_templates import (
+    CLASSICAL_NOVEL_STYLE_LOCK_PROMPT,
+    CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
+    CLASSICAL_REFERENCE_REWRITE_PROFILE,
+    CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT,
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     POLISH_FIXED_PHRASE_GUARD_PROMPT,
@@ -33,6 +37,7 @@ from app.services.classical_chinese import (
     build_buddhist_scripture_story_source,
     build_classical_prompt_source,
     classical_paragraph_marker,
+    classical_variant_rules,
     classical_variant_for_category,
     get_classical_variant_meta,
     split_buddhist_story_units,
@@ -55,6 +60,53 @@ MINIMAL_MANUSCRIPT = """@最终书名
 测试正文。
 """
 
+
+EXPECTED_CLASSICAL_REFERENCE_REWRITE_PROFILE = """【参照译写默认范式】
+- 这个分类现在只做“原文一段、翻译一段”的干净对照稿，不再参考《菜根谭》类全注全译、注释、点评或讲解体例。
+- 参考译本只用于校准释义、术语译法、断句、称谓和语气准确性；如果系统提供“当前原文对应参考译文召回”，必须优先用召回片段校准本段真正含义。
+- 默认范本是“菜根谭-中华书局参照范本”时，凡召回片段覆盖到当前原文，一律以中华书局版本的断句、关键字词释义、术语方向和语气密度为第一依据；古汉语词典只负责核对、补足未覆盖字词，不得推翻已命中的中华书局释义。
+- 每个原文段落必须先保留原文，再紧跟对应现代白话翻译；不得把全部原文集中放前面，也不得把全部翻译集中放后面。
+- 最终正文只允许出现“（原文）”和“（翻译）”两类成对段落。
+- 输出目标不是古典直译腔，也不是现代励志文、鸡汤文或讲义文，而是在中华书局释义基础上，译成清楚、自然、有文气的现代白话。
+- 古典比喻原则上要保留其核心意象和比喻方向，不要轻易抹掉。只有在现代读者确实难以理解时，才可以补充为更清楚的白话表达。比如“精金美玉”应优先译为“精金美玉般纯正坚实的人品”，不宜直接改成“过硬的好品格”；“薄冰上履过”应保留“如履薄冰”的艰险与戒慎，不宜泛化成“压力下走好每一步”。
+- 所有翻译落笔前，必须在做联网检索交叉验证。检索中华书局等可靠整理本、古汉语词典、权威注释、学术资料。
+- 落不能望文生义，不能用现代汉语常见意思拆字理解原文。遇到“修业、要名、结好、植节、标异见奇、非心、尘氛、芥蒂、圆机”等词语，必须先按古汉语义项和权威注释核定含义，再转成白话。不得把“修业”直接译成现代商业语境的“经营事业”，不得把“要名”译成“索取名声”，不得把“标异见奇”简化成现代意义上的“标新立异”。"""
+
+EXPECTED_CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK = """【古文白话参照译写版语义锁】
+- 本稿的翻译段已经按中华书局或用户指定权威参照译本校准。你现在只能做语言顺滑、标点整理、轻微去翻译腔和格式保护；不得重新翻译古文，不得自行重断句，不得自行改义项。
+- 中华书局对应译文覆盖到的地方，断句、关键字词释义、术语方向、主谓宾关系、比喻方向、承接关系、语气轻重都按中华书局为第一依据。
+- 终稿目标是在中华书局释义基础上更大白话一点：允许把古典直译腔改成普通读者能直接理解的现代说法，但不得改变义项、逻辑、轻重、比喻方向。
+- “便觉、始觉、方觉、乃觉、忽觉”里的“觉”按“觉得、感到、发觉”处理，不得译成“导致、造成、引发、致使”。
+- 不得新增注释、点评、赏析、解释表、译者按或圈号说明；最终仍然只保留“（原文）/（翻译）”成对段落。
+"""
+
+EXPECTED_CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH = """【古文白话参照译写版文气润色层】
+- 这一步只做“译后润色”，不重新翻译，不新增注释、点评、赏析或人生总结。
+- 翻译段要从“语文教材式解释”改成“普通读者能顺着读下去的大白话”，有气口、有停顿、有一点文气，但不能油滑、煽情或鸡汤。
+- 不要使用“这句话的意思是”“这说明”“所谓”“也就是说”“我们可以看出”“由此可见”等讲义腔开头。
+- 每个翻译段都要像一段自然现代汉语：先把原文的判断说清，再把古典比喻落到现实经验里。
+- 中华书局或用户指定参考译文命中的义项、断句和术语仍是第一依据。
+- 输出结构仍然只保留“（原文）/（翻译）”成对段落，不得加入新标题、新栏目或说明。
+"""
+
+EXPECTED_CLASSICAL_NOVEL_STYLE_LOCK = """【古文白话小说风格版锁定规则】
+- 当前稿件是古文故事的现代白话小说重写版，不是逐句翻译稿。最终正文必须是完整、顺畅、有故事推进感的现代白话叙事，不得恢复原文穿插，不得加入“（原文）/（翻译）”、P 编号、注释、译者按或翻译过程。
+- 必须先保证人物关系、事件事实、因果逻辑、行动顺序和结局不变；这里的“准确”指剧情事实准确，不是要求逐字逐句对译。叙事型原文要改写成现代白话小说，不得改变原文事实；抽象格言型原文必须用故事载体表达原文道理。
+- 若本锁定规则与通用古文白话“一段原文一段翻译、逐句解释、不得补动作”等规则冲突，以小说风格版为准：最终必须是故事化白话叙事，不是译文说明。
+- 叙事型原文可以补足必要的动作承接、人物反应、场景气息、对白语气和转折过渡，让故事读起来连贯、有画面。但不得新增会改变剧情事实的人物、地点、事件、冲突、支线、结局、现代设定或价值判断。允许增加“非剧情事实型细节”，例如停顿、抬头等，用来增强画面和节奏，但不能改变原文事件走向。
+- 叙事型古文，尤其《杨家将》这类已有故事的文本，要按现代通俗小说方式重写：开头尽快进入人物处境和主要冲突，压缩交代，强化选择、争执、危机和后果。不要只把古文逐句翻成说明文，也不要写成“某人说、某人又说、某人听罢”的流水账。每一段都要推动情节、加深冲突或完成转折。
+- 抽象格言、议论、训诫、修身判断若本身没有人物事件，允许引入无名人物、普通处境、少量动作和心理转折作为故事化表达载体。
+- 抽象格言型原文必须出现人物处境、一次具体选择、行动变化或心理转折，让道理从故事里显出来；不能只写“一个人要怎样”“这说明什么”“这句话是在说什么”。
+- 不得把稿件改回普通直译、大白话句义解释或资料讲义；必须保留故事推进感。
+- 不得删减原文关键信息，不得只保留故事梗概；但不要求逐字逐句覆盖原文。可以合并重复信息、调整句式顺序、压缩低价值铺陈，把原文的关键信息自然融入新的叙事段落中。保留的是人物、事件、因果、选择、后果和关键对白，不是保留古文句子的表面结构。
+"""
+
+EXPECTED_CLASSICAL_NOVEL_STYLE_VARIANT = """- 这不是把文言文逐句翻成大白话，也不是翻译后轻微润色；要先彻底理解原文讲了什么，再以现代通俗小说的方式重新组织语言。重写时可以改句式、调节奏、合并重复、补过渡、强化冲突，但必须忠于原文的人物关系、事件事实、因果顺序和结局。
+- 第一优先级是准确和完整：叙事型原文的人物、关系、事件、关键动作、关键对白、因果、顺序和结局不能改；但普通叙述句、动作承接、心理反应、场面描写和对白表达方式可以重新写。抽象型原文的核心判断、因果、转折和轻重不能改。
+- 第二优先级是故事感：叙事型要写成有画面、有冲突、有节奏、有转折的现代白话故事。人物开口要有立场，场面推进要有压力，危机到来要有速度，转折发生要有冲击。
+- 小说化要有边界：不能新增具体史实、名人、朝代、地名、复杂冲突、支线、结局反转或新观点。
+- 不要把抽象格言写成讲义、注释、鸡汤或“这句话的意思是……”式解释。"""
+
 WRITER_ROUTING_CATEGORIES = [
     category
     for category in SUPPORTED_CATEGORIES
@@ -66,6 +118,20 @@ WRITER_ROUTING_CATEGORIES = [
         "finance_technology_recommendation",
     }
 ]
+
+
+def test_classical_category_prompt_fragments_match_word_versions_exactly() -> None:
+    assert CLASSICAL_REFERENCE_REWRITE_PROFILE == EXPECTED_CLASSICAL_REFERENCE_REWRITE_PROFILE
+    assert (
+        CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
+        == EXPECTED_CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK
+    )
+    assert (
+        CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT
+        == EXPECTED_CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH
+    )
+    assert CLASSICAL_NOVEL_STYLE_LOCK_PROMPT == EXPECTED_CLASSICAL_NOVEL_STYLE_LOCK
+    assert classical_variant_rules("novel_style") == EXPECTED_CLASSICAL_NOVEL_STYLE_VARIANT
 
 
 @pytest.mark.parametrize("category", WRITER_ROUTING_CATEGORIES)
@@ -570,12 +636,10 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     for stage_prompt in (polish, refine, formatter):
         assert "古文白话参照译写版语义锁" in stage_prompt
         assert "不得重新翻译古文" in stage_prompt
-        assert "古汉语词典只用于核对和补足" in stage_prompt
-        assert "联网检索专业网站" in stage_prompt
-        assert "不得根据现代汉语常见意思望文生义" in stage_prompt
         assert "更大白话一点" in stage_prompt
-        assert "保留其核心意象和比喻方向" in stage_prompt
         assert "便觉、始觉、方觉" in stage_prompt
+        assert "语文教材式解释" in stage_prompt
+        assert "中华书局或用户指定参考译文命中的义项" in stage_prompt
 
 
 def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> None:
@@ -610,7 +674,7 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "便觉、始觉、方觉" in with_reference
 
 
-def test_classical_reference_rewrite_generation_chain_keeps_online_validation_rules(
+def test_classical_reference_rewrite_generation_chain_uses_word_prompt_layers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -681,8 +745,9 @@ def test_classical_reference_rewrite_generation_chain_keeps_online_validation_ru
 
     for key in ("polish_system", "refine_system", "format_prompt"):
         assert "古文白话参照译写版语义锁" in captured[key]
-        assert "联网检索专业网站" in captured[key]
-        assert "不得根据现代汉语常见意思望文生义" in captured[key]
+        assert "不得重新翻译古文" in captured[key]
+        assert "语文教材式解释" in captured[key]
+        assert "中华书局或用户指定参考译文命中的义项" in captured[key]
 
 
 def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
