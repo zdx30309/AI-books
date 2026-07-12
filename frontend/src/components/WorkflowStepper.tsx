@@ -1,4 +1,5 @@
 import { Check, Circle, Loader2, Pause } from "lucide-react";
+import { AIGC_GATE_VISIBLE } from "@/config/featureFlags";
 
 interface Step {
   key: string;
@@ -14,8 +15,10 @@ const STEPS: Step[] = [
   { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
   { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
   { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
-  { key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 },
-  { key: "persist", label: "章节入库 / 写终稿", start: 94 },
+  ...(AIGC_GATE_VISIBLE
+    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
+    : []),
+  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
 ];
 
 const COMIC_STEPS: Step[] = [
@@ -23,8 +26,10 @@ const COMIC_STEPS: Step[] = [
   { key: "fetch", label: "接收漫画短语", start: 8 },
   { key: "structure", label: "生成目录与短语结构", start: 25 },
   { key: "images", label: "封面与短语配图生成", start: 86 },
-  { key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 },
-  { key: "persist", label: "章节入库 / 写终稿", start: 94 },
+  ...(AIGC_GATE_VISIBLE
+    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
+    : []),
+  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
 ];
 
 const DIRECT_WRITER_STEPS: Step[] = [
@@ -32,8 +37,10 @@ const DIRECT_WRITER_STEPS: Step[] = [
   { key: "fetch", label: "解析原文", start: 8 },
   { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
   { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
-  { key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 },
-  { key: "persist", label: "章节入库 / 写终稿", start: 94 },
+  ...(AIGC_GATE_VISIBLE
+    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
+    : []),
+  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
 ];
 
 interface Props {

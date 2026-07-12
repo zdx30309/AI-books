@@ -30,6 +30,7 @@ import {
   normalizeCategoryOptions,
 } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
+import { AIGC_GATE_VISIBLE } from "@/config/featureFlags";
 import { StuckBanner } from "@/components/StuckBanner";
 import type {
   ChapterResponse,
@@ -609,7 +610,7 @@ export function BookDetail() {
               <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
                 来源：{task.source_url}
               </p>
-              {task.aigc_passed !== null && (
+              {AIGC_GATE_VISIBLE && task.aigc_passed !== null && (
                 <p className="mt-2 text-xs tracking-wide text-emerald-300">
                   朱雀终稿检测：{task.aigc_passed ? "已通过" : "未通过"}
                   {task.aigc_max_score !== null ? ` · 最高块分 ${task.aigc_max_score}%` : ""}

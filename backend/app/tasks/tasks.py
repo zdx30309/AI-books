@@ -1348,7 +1348,15 @@ def process_video(_self, task_id: str) -> dict:
                 )
             except (OSError, ValueError, TypeError):
                 logger.warning("读取朱雀终稿报告失败: %s", aigc_report_path)
-        _update_progress(db, task, progress=94, step="全文生成完成，正在写入章节", run_id=run_id)
+        persist_progress = 94 if settings.AIGC_GATE_ENABLED else 92
+        quality_progress = 96 if settings.AIGC_GATE_ENABLED else 94
+        _update_progress(
+            db,
+            task,
+            progress=persist_progress,
+            step="全文生成完成，正在写入章节",
+            run_id=run_id,
+        )
 
         if category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
             book_title = buddhist_scripture_final_title(classical_original_title)
@@ -1360,7 +1368,13 @@ def process_video(_self, task_id: str) -> dict:
         chapter_count = _persist_chapters_from_markdown(db, task, markdown)
         _patch_config(task, markdown=markdown, title=book_title)
 
-        _update_progress(db, task, progress=96, step="正在写入质量报告", run_id=run_id)
+        _update_progress(
+            db,
+            task,
+            progress=quality_progress,
+            step="正在写入质量报告",
+            run_id=run_id,
+        )
         report = measure_quality(markdown, category=category)
         report_text = format_report(report)
         report_path = output_dir / "quality_report.txt"
