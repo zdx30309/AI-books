@@ -7,7 +7,9 @@ import pytest
 from app.services import aigc_report_review as review
 from app.services.aigc_report_review import (
     ZhuqueSegment,
+    compare_zhuque_reports,
     map_segments_to_original,
+    material_rewrite_metrics,
     normalize_manuscript_text,
     optimize_report_segments,
     parse_rewrite_candidate,
@@ -16,6 +18,7 @@ from app.services.aigc_report_review import (
     quality_audit_passed,
     prepare_rewrite_protocol,
     recommend_target_segments,
+    recommend_calibration_segments,
     report_source_match_confidence,
     render_audit_prompt,
     render_rewrite_prompt,
@@ -136,6 +139,18 @@ def test_cost_first_plan_uses_suspected_segments_before_red_segments() -> None:
     )
 
 
+def test_calibration_plan_limits_first_paid_round_to_small_batch() -> None:
+    rows = parse_report_segment_rows(SAMPLE_REPORT_TEXT)
+    source = "甲" * sum(item["char_count"] for item in rows)
+    segments = map_segments_to_original(rows, source)
+
+    selected, projected = recommend_calibration_segments(segments, human_percent=0)
+
+    assert 1 <= len(selected) <= 3
+    selected_share = sum(item.share_percent for item in segments if item.segment_id in selected)
+    assert selected_share <= 20
+    assert projected == pytest.approx(selected_share)
+
 def test_repeated_anchors_and_paragraphs_are_hard_protected() -> None:
     original = "合同金额260元，复核仍为260元。\n\n详见《示例》与https://example.com。"
     missing = "合同金额260元，复核仍为该金额。\n\n详见《示例》与https://example.com。"
@@ -147,6 +162,61 @@ def test_repeated_anchors_and_paragraphs_are_hard_protected() -> None:
     assert first.missing_anchors == ("260元",)
     assert second.passed is False
     assert second.paragraph_count_preserved is False
+
+
+def test_near_copy_is_rejected_before_paid_quality_audit() -> None:
+    original = "\n\n".join(
+        [
+            "这段先交代背景事实，然后按照同一种句式给出判断。",
+            "这一段继续说明既有材料，并在结尾重复前面的判断。",
+            "接下来仍然沿用同样结构，把事实和结论整齐排列。",
+            "第四段只是更换连接词，句子骨架和信息顺序没有变化。",
+            "最后一段再次收束全文，重复已经说过的核心判断。",
+        ]
+    )
+    candidate = original.replace("第四段只是", "第四段仅仅", 1)
+
+    review_result = review_deterministic_constraints(
+        original,
+        candidate,
+        require_material_rewrite=True,
+    )
+
+    assert review_result.passed is False
+    assert review_result.literal_similarity > 0.98
+    assert review_result.rewritten_paragraph_ratio < 0.8
+    assert review_result.material_rewrite_passed is False
+
+
+def test_new_duplicate_function_word_is_a_hard_quality_error() -> None:
+    result = review_deterministic_constraints(
+        "从一次伏击开始，他逐步稳住了位置。",
+        "从从一次伏击说起，他后来才把位置稳住。",
+    )
+
+    assert result.hard_error_absent is False
+    assert any("新增明显叠字硬伤" in reason for reason in result.reasons)
+
+
+def test_material_rewrite_metrics_accept_real_clause_reconstruction() -> None:
+    original = (
+        "行业下行时，公司先缩减预算，随后取消了原定项目，团队因此停止招聘。\n\n"
+        "管理层并未否认压力，他们只是认为现金流比短期规模更重要。"
+    )
+    candidate = (
+        "预算最先被压缩，原定项目也随之取消；招聘停下来，是行业下行传导到团队的结果。\n\n"
+        "压力确实存在，管理层没有回避。只是在他们的判断里，短期规模要让位于现金流。"
+    )
+
+    similarity, coverage, unchanged, editable = material_rewrite_metrics(original, candidate)
+    result = review_deterministic_constraints(original, candidate, require_material_rewrite=True)
+
+    assert 0.25 <= similarity <= 0.82
+    assert coverage == 1
+    assert unchanged == 0
+    assert editable == 2
+    assert result.material_rewrite_passed is True
+    assert result.passed is True
 
 
 def test_structured_protocol_restores_layout_headings_and_repeated_anchors() -> None:
@@ -189,6 +259,19 @@ def test_anchor_occurrence_count_rejects_added_duplicate() -> None:
     assert result.extra_anchors == ("260元",)
 
 
+def test_structured_protocol_rejects_anchor_moved_between_paragraphs() -> None:
+    original = "首段金额260元并说明原因。\n\n次段金额380元并说明结论。"
+    protocol = prepare_rewrite_protocol(original)
+    blocks = protocol.prompt_segment
+    first_token, second_token = [item[0] for item in protocol.protected_values]
+    moved = blocks.replace(first_token, "__SWAP__").replace(second_token, first_token).replace("__SWAP__", second_token)
+
+    _candidate, issues, structured = parse_rewrite_candidate(moved, protocol)
+
+    assert structured is True
+    assert any("移动到错误编号块" in issue for issue in issues)
+
+
 def test_large_report_segment_protocol_keeps_all_blocks_and_anchors() -> None:
     paragraphs = [
         f"第{index}段记载公元852年发生的既有事实，金额260元，详见《旧志》。" + "叙述保持完整。" * 18
@@ -217,6 +300,8 @@ def test_content_type_rules_are_loaded_from_prompt_assets() -> None:
     public_domain = render_audit_prompt("原稿", "候选", [1], content_type="public_domain")
 
     assert "受保护原文必须逐字逐标点保留" in classical
+    assert "句法重建" in classical
+    assert "0.82" in classical
     assert "作品名、作者、出处" in public_domain
 
 
@@ -283,11 +368,11 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
 
 
 def test_quality_failure_never_exports_candidate() -> None:
-    original = "原稿事实完整，没有新增内容。"
+    original = "这份原稿完整记录了既有事实，也明确说明没有添加任何内容。"
     segment = ZhuqueSegment(1, 100, len(original), 0.995, "ai", 0, len(original), original, 1.0, True)
 
     def rewrite_fn(_prompt: str, **_kwargs):
-        return "原稿事实完整，没有新增内容。"
+        return "既有事实已被这份稿子完整记下，其中并未加入新的内容。"
 
     def audit_fn(_prompt: str, **_kwargs):
         return json.dumps(
@@ -322,7 +407,7 @@ def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
         calls.append("rewrite")
         if len(calls) == 1:
             return "第一段遗漏金额。第二段也被合并。", {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.01}
-        return "首段仍保留事实260元。\n\n第二段继续保留结论。", {"input_tokens": 12, "output_tokens": 12, "cost_cny": 0.02}
+        return "260元这一事实留在首段。\n\n结论由下一段继续保留。", {"input_tokens": 12, "output_tokens": 12, "cost_cny": 0.02}
 
     def audit_fn(_prompt: str, **_kwargs):
         calls.append("audit")
@@ -372,3 +457,87 @@ def test_two_failed_attempts_stop_before_paid_full_manuscript_audit() -> None:
     assert result["status"] == "manual_review"
     assert result["segment_results"][0]["rewrite_attempts"] == 2
     assert result["segment_results"][0]["deterministic_review"]["missing_anchors"] == ["260元"]
+
+
+def test_real_wdx_to_eeee_reports_are_aligned_and_expose_failed_direction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    before_rows = [
+        (2709, 0.9707, 24.06), (297, 0.9941, 2.64), (527, 0.9825, 4.68),
+        (545, 0.9954, 4.84), (525, 0.9884, 4.66), (580, 0.9957, 5.15),
+        (538, 0.9860, 4.78), (557, 0.9974, 4.95), (559, 0.9856, 4.96),
+        (541, 0.9940, 4.80), (850, 0.9815, 7.55), (275, 0.9979, 2.44),
+        (2136, 0.9346, 18.97), (622, 0.9942, 5.52),
+    ]
+    after_rows = [
+        (2459, 0.9705, 21.94), (539, 0.9935, 4.81), (575, 0.9772, 5.13),
+        (274, 0.9903, 2.45), (805, 0.9761, 7.18), (1396, 0.9959, 12.46),
+        (800, 0.9723, 7.14), (537, 0.9972, 4.79), (823, 0.9820, 7.34),
+        (302, 0.9947, 2.69), (1973, 0.9228, 17.61), (544, 0.9917, 4.85),
+        (179, 0.9846, 1.60),
+    ]
+
+    def make_segments(rows):
+        cursor = 0
+        values = []
+        for segment_id, (chars, score, share) in enumerate(rows, start=1):
+            values.append(
+                {
+                    "segment_id": segment_id,
+                    "share_percent": share,
+                    "char_count": chars,
+                    "aigc_value": score,
+                    "label": "suspected" if score < 0.99 else "ai",
+                    "start": cursor,
+                    "end": cursor + chars,
+                    "mapped_text": "甲" * chars,
+                    "mapping_confidence": 1.0,
+                    "recommended": False,
+                }
+            )
+            cursor += chars
+        return values
+
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    baseline = {
+        "report_sha256": "before-report",
+        "original_sha256": "original-hash",
+        "human_percent": 0,
+        "segments": make_segments(before_rows),
+    }
+    recheck = {
+        "report_sha256": "after-report",
+        "original_sha256": "candidate-hash",
+        "human_percent": 0,
+        "strict_pass": False,
+        "source_match_verified": True,
+        "segments": make_segments(after_rows),
+    }
+    selected = [1, 3, 9, 11, 13]
+    optimize_result = {
+        "request_id": "real-regression",
+        "original_sha256": "original-hash",
+        "candidate_sha256": "candidate-hash",
+        "selected_segment_ids": selected,
+        "segment_results": [
+            {"segment_id": value, "strategy_id": "syntax_rebuild"}
+            for value in selected
+        ],
+        "cost": {"estimated_cny": 0.0347},
+        "models": {"rewrite": "deepseek-v4-pro", "audit": "gemini-3.1-flash-lite"},
+    }
+
+    compared = compare_zhuque_reports(baseline, recheck, optimize_result)
+    by_id = {item["segment_id"]: item for item in compared["segment_deltas"]}
+
+    assert compared["baseline_human_percent"] == 0
+    assert compared["recheck_human_percent"] == 0
+    assert compared["selected_weighted_delta"] < 0
+    assert compared["selected_weighted_delta"] > -0.01
+    assert by_id[1]["delta"] > 0
+    assert by_id[9]["delta"] == pytest.approx(-0.0133, abs=0.001)
+    assert compared["strategy_effectiveness"][0]["verdict"] == "neutral"
+    assert compared["recommended_next_strategy"] == "evidence_first"
+    assert compared["historical_strategy_summary"][0]["experiment_count"] == 1
+    assert (tmp_path / f"{compared['comparison_id']}.json").exists()

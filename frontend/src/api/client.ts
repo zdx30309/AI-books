@@ -11,6 +11,7 @@ import type {
   BatchRetryTaskResponse,
   AigcQualityReport,
   AigcReviewContentType,
+  AigcReviewComparison,
   AigcReviewOptimizeResult,
   AigcReviewReport,
   AigcReviewStrategy,
@@ -647,6 +648,19 @@ export const api = {
     request<AigcReviewOptimizeResult>("/aigc-review/optimize", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  compareAigcReview: (
+    baselineReport: AigcReviewReport,
+    recheckReport: AigcReviewReport,
+    optimizeResult: AigcReviewOptimizeResult,
+  ) =>
+    request<AigcReviewComparison>("/aigc-review/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        baseline_report: baselineReport,
+        recheck_report: recheckReport,
+        optimize_result: optimizeResult,
+      }),
     }),
 
   // 系统健康（检测 Celery worker 是否在线）

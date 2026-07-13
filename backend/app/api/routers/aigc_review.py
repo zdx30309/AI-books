@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ from app.models import User
 from app.services.aigc_report_review import (
     AigcReviewModelError,
     ZhuqueReportError,
+    compare_zhuque_reports,
     model_strategy,
     normalize_manuscript_text,
     optimize_report_segments,
@@ -45,6 +46,14 @@ class OptimizeAigcReviewRequest(BaseModel):
     content_type: SupportedContentType = "article"
     segments: list[ZhuqueSegmentPayload] = Field(..., min_length=1, max_length=200)
     selected_segment_ids: list[int] = Field(..., min_length=1, max_length=200)
+    iteration: int = Field(1, ge=1, le=20)
+    preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
+
+
+class CompareAigcReviewRequest(BaseModel):
+    baseline_report: dict[str, Any]
+    recheck_report: dict[str, Any]
+    optimize_result: dict[str, Any]
 
 
 @router.get("/strategy", summary="查看最低成本的当前模型路由")
@@ -96,6 +105,8 @@ async def optimize_aigc_report(
             [item.model_dump() for item in req.segments],
             req.selected_segment_ids,
             content_type=req.content_type,
+            iteration=req.iteration,
+            preferred_strategy=req.preferred_strategy,
         )
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -104,3 +115,22 @@ async def optimize_aigc_report(
     except Exception as exc:
         logger.exception("朱雀报告定向审稿失败")
         raise HTTPException(status_code=500, detail=f"朱雀报告定向审稿失败: {exc}") from exc
+
+
+@router.post("/compare", summary="比较真实复检报告并归因各改写策略")
+async def compare_aigc_reports(
+    req: CompareAigcReviewRequest,
+    _user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        return await asyncio.to_thread(
+            compare_zhuque_reports,
+            req.baseline_report,
+            req.recheck_report,
+            req.optimize_result,
+        )
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("朱雀真实复检归因失败")
+        raise HTTPException(status_code=500, detail=f"朱雀真实复检归因失败: {exc}") from exc

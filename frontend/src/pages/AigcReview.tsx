@@ -13,9 +13,18 @@ import {
 import { api } from "@/api/client";
 import type {
   AigcReviewContentType,
+  AigcReviewComparison,
   AigcReviewOptimizeResult,
   AigcReviewReport,
 } from "@/api/types";
+
+type RewriteStrategy = "syntax_rebuild" | "evidence_first" | "rhythm_recompose";
+
+const strategyText: Record<RewriteStrategy, string> = {
+  syntax_rebuild: "句法重建",
+  evidence_first: "证据先行",
+  rhythm_recompose: "节奏重组",
+};
 
 const labelText = {
   human: "人工特征",
@@ -52,6 +61,8 @@ export function AigcReview() {
   const [result, setResult] = useState<AigcReviewOptimizeResult | null>(null);
   const [recheckFile, setRecheckFile] = useState<File | null>(null);
   const [recheck, setRecheck] = useState<AigcReviewReport | null>(null);
+  const [comparison, setComparison] = useState<AigcReviewComparison | null>(null);
+  const [iteration, setIteration] = useState(1);
   const [parsing, setParsing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -78,6 +89,7 @@ export function AigcReview() {
     setReport(null);
     setResult(null);
     setRecheck(null);
+    setComparison(null);
     try {
       const parsed = await api.parseAigcReviewReport(
         reportFile,
@@ -86,6 +98,7 @@ export function AigcReview() {
       );
       setReport(parsed);
       setSelectedIds(new Set(parsed.recommended_segment_ids));
+      setIteration(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "朱雀报告解析失败");
     } finally {
@@ -93,7 +106,7 @@ export function AigcReview() {
     }
   };
 
-  const optimize = async () => {
+  const optimize = async (preferredStrategy: RewriteStrategy | null = null, advance = false) => {
     if (!report || selectedIds.size === 0) {
       setError("至少选择一个风险片段。");
       return;
@@ -102,6 +115,8 @@ export function AigcReview() {
     setOptimizing(true);
     setResult(null);
     setRecheck(null);
+    setComparison(null);
+    const targetIteration = advance ? iteration + 1 : iteration;
     try {
       const response = await api.optimizeAigcReview({
         original_text: normalizeManuscriptText(originalText),
@@ -109,8 +124,11 @@ export function AigcReview() {
         content_type: contentType,
         segments: report.segments,
         selected_segment_ids: [...selectedIds],
+        iteration: targetIteration,
+        preferred_strategy: preferredStrategy,
       });
       setResult(response);
+      setIteration(targetIteration);
     } catch (err) {
       setError(err instanceof Error ? err.message : "定向审稿失败");
     } finally {
@@ -125,6 +143,10 @@ export function AigcReview() {
     try {
       const parsed = await api.parseAigcReviewReport(recheckFile, result.candidate_text, contentType);
       setRecheck(parsed);
+      if (report) {
+        const compared = await api.compareAigcReview(report, parsed, result);
+        setComparison(compared);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "复检报告解析失败");
     } finally {
@@ -232,9 +254,9 @@ export function AigcReview() {
                 {report.page_count} 页 · {report.extraction_method === "local_rapidocr" ? "本地 OCR" : "PDF 文本层"} · 原稿匹配 {Math.round(report.source_match_confidence * 100)}% · 推荐改 {report.recommended_segment_ids.length} 段
               </div>
             </div>
-            <button type="button" onClick={optimize} disabled={optimizing || selectedIds.size === 0 || report.strict_pass} className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:opacity-45">
+            <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass} className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:opacity-45">
               {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {optimizing ? "改写并独立终审中" : `处理选中 ${selectedIds.size} 段`}
+              {optimizing ? "改写并独立终审中" : `校准选中 ${selectedIds.size} 段`}
             </button>
           </div>
 
@@ -244,7 +266,7 @@ export function AigcReview() {
             <ScoreCard label="AI 特征" value={report.ai_percent} tone="red" />
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
-            已选片段占全文 {selectedShare.toFixed(2)}%；假设这些片段复检全部转绿，规划值约 {Math.min(100, report.human_percent + selectedShare).toFixed(2)}%。实际是否转绿必须重新上传朱雀报告确认。
+            当前是低成本校准轮：选中片段占全文 {selectedShare.toFixed(2)}%，会分别使用不同结构策略。系统不再假设改过就会转绿，必须用下一份真实报告逐策略归因后才决定是否扩大处理。
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
 
@@ -309,7 +331,7 @@ export function AigcReview() {
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="font-medium text-warm-50">片段 #{item.segment_id} 机器校验明细</div>
-                      <div className="text-xs text-warm-400">已自动尝试 {item.rewrite_attempts} 次 · 长度比例 {item.deterministic_review.length_ratio.toFixed(3)}</div>
+                      <div className="text-xs text-warm-400">{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 尝试 {item.rewrite_attempts} 次 · 相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}% · 改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%</div>
                     </div>
                     <div className="mt-3 space-y-1 text-warm-300">
                       {[...(lastAttempt?.protocol_issues ?? []), ...item.deterministic_review.reasons].filter((value, index, values) => values.indexOf(value) === index).map((reason) => (
@@ -322,7 +344,7 @@ export function AigcReview() {
                 );
               })}
 
-              <button type="button" onClick={optimize} disabled={optimizing} className="btn-ghost inline-flex items-center justify-center gap-2 disabled:opacity-45">
+              <button type="button" onClick={() => optimize(null, true)} disabled={optimizing} className="btn-ghost inline-flex items-center justify-center gap-2 disabled:opacity-45">
                 {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 {optimizing ? "重新处理并验收中" : "再次处理（会产生新的 API 费用）"}
               </button>
@@ -334,6 +356,15 @@ export function AigcReview() {
                 <AuditCard label="信息完整" value={result.quality_audit?.information_completeness ?? 0} threshold={98} />
                 <AuditCard label="流畅度" value={result.quality_audit?.fluency ?? 0} threshold={90} />
                 <AuditCard label="声音连续" value={result.quality_audit?.voice_continuity ?? 0} threshold={90} />
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                {result.segment_results.map((item) => (
+                  <div key={item.segment_id} className="rounded-lg border border-gold-500/10 bg-base-950/40 p-4 text-xs leading-6 text-warm-300">
+                    <div className="font-medium text-warm-50">片段 #{item.segment_id} · {strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id}</div>
+                    <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（硬范围 25%–82%）</div>
+                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（硬门槛 ≥80%）</div>
+                  </div>
+                ))}
               </div>
               <div className="mt-5 grid gap-5 xl:grid-cols-2">
                 <div>
@@ -354,6 +385,33 @@ export function AigcReview() {
                     <div className="mt-2 text-sm text-warm-300">人工特征 {recheck.human_percent.toFixed(2)}% · 必须严格大于 50%</div>
                     <div className="mt-1 text-xs text-warm-400">报告正文与候选匹配 {Math.round(recheck.source_match_confidence * 100)}% · {recheck.source_match_verified ? "已确认同稿" : "未确认同稿，禁止下载"}</div>
                   </div>}
+                  {comparison && (
+                    <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm leading-6 text-warm-300">
+                      <div className="font-medium text-warm-50">真实复检归因</div>
+                      <div className="mt-2">选中区域加权 AIGC 值变化：{comparison.selected_weighted_delta > 0 ? "+" : ""}{comparison.selected_weighted_delta.toFixed(4)}；负数才是改善。</div>
+                      <div className="mt-3 space-y-2">
+                        {comparison.strategy_effectiveness.map((item) => (
+                          <div key={item.strategy_id} className="flex items-center justify-between gap-3 border-t border-gold-500/10 pt-2">
+                            <span>{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 片段 {item.segment_ids.map((id) => `#${id}`).join("、")}</span>
+                            <span className={item.weighted_delta <= -0.01 ? "text-emerald-200" : item.weighted_delta >= 0.01 ? "text-red-200" : "text-amber-200"}>{item.weighted_delta > 0 ? "+" : ""}{item.weighted_delta.toFixed(4)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 text-xs text-warm-400">{comparison.recommendation_reason}</div>
+                      {comparison.historical_strategy_summary.length > 0 && (
+                        <div className="mt-3 rounded-md border border-gold-500/10 px-3 py-2 text-xs text-warm-400">
+                          累计真实复检：{comparison.historical_strategy_summary.map((item) => `${strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} ${item.experiment_count} 次 / 均值 ${item.average_weighted_delta > 0 ? "+" : ""}${item.average_weighted_delta.toFixed(4)}`).join("；")}
+                        </div>
+                      )}
+                      {!comparison.strict_pass && comparison.recommended_next_strategy && (
+                        <button type="button" onClick={() => optimize(comparison.recommended_next_strategy, true)} disabled={optimizing} className="btn-ghost mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
+                          {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                          按真实反馈采用“{strategyText[comparison.recommended_next_strategy]}”再生成一轮
+                        </button>
+                      )}
+                      {comparison.stop_automatic_spend && <div className="mt-3 text-amber-200">三种策略均无实质改善，系统已停止建议继续烧 API。</div>}
+                    </div>
+                  )}
                   <button type="button" onClick={() => downloadText(result.candidate_text, "朱雀复检通过终稿.txt")} disabled={!finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
                     <Download className="h-4 w-4" />{finalPassed ? "下载双达标终稿" : "复检通过后才能下载终稿"}
                   </button>
