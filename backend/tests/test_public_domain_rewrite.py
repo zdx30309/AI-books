@@ -20,6 +20,7 @@ from app.services.public_domain_rewrite import (
     _overlap_issue,
     rewrite_public_domain_fusion,
 )
+from app.services.aigc_quality_gate import AigcGateResult
 
 
 def _source(title: str, seed: str = "山中旧事") -> PublicDomainSource:
@@ -159,3 +160,41 @@ def test_generate_from_files_reads_supported_images_with_ocr(monkeypatch) -> Non
 
     assert "图片 OCR" in text
     assert calls == [(b"image-bytes", "source.png")]
+
+
+def test_public_domain_aigc_artifacts_bind_to_preallocated_task_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[Path | None] = []
+
+    def fake_generate(prompt: str, **_kwargs) -> str:
+        return "蓝图" if "策划" in prompt or "蓝图" in prompt else "自然成稿，事实完整，表达流畅。" * 20
+
+    async def fake_gate(text: str, **kwargs):
+        calls.append(kwargs.get("output_dir"))
+        return AigcGateResult(
+            text=text,
+            passed=True,
+            max_score=17,
+            rounds=(),
+            initial_max_score=61,
+            rewrite_rounds=1,
+            quality_passed=True,
+            status="passed",
+            report={"status": "passed", "passed": True, "qualityPassed": True},
+        )
+
+    monkeypatch.setattr(service.settings, "AIGC_GATE_ENABLED", True)
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+    monkeypatch.setattr(service, "enforce_aigc_quality_gate", fake_gate)
+    monkeypatch.setattr(service, "_quality_check", lambda *_args, **_kwargs: {"status": "ok", "warnings": [], "overlap_issues": [], "residue_issues": []})
+
+    result = rewrite_public_domain_fusion(
+        sources=[_source("来源一")],
+        public_domain_confirmed=True,
+        aigc_output_dir=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert calls == [tmp_path]

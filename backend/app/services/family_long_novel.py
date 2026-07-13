@@ -8,13 +8,14 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import PROJECT_ROOT, settings
 from app.models import (
     LongNovelBible,
     LongNovelCanonFact,
@@ -57,8 +58,10 @@ from app.schemas.long_novel import (
 )
 from app.services import content_engine
 from app.services.aigc_quality_gate import (
+    AIGC_POLICY_VERSION,
+    AigcManualReviewRequired,
+    AigcTechnicalError,
     enforce_aigc_quality_gate,
-    rewrite_aigc_chunk_with_gemini,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,10 @@ logger = logging.getLogger(__name__)
 
 class FamilyLongNovelError(RuntimeError):
     """Raised when the family long novel workflow cannot continue."""
+
+
+class FamilyAigcManualReview(FamilyLongNovelError):
+    """The chapter draft is preserved but cannot be accepted into state ledgers."""
 
 
 class MalformedModelJsonError(FamilyLongNovelError):
@@ -2934,6 +2941,8 @@ def generate_family_chapter(
                 user,
                 auto_repair=auto_repair,
             )
+        except FamilyAigcManualReview:
+            raise
         except Exception as exc:
             _mark_saved_chapter_postprocess_failed(db, project, plan, saved_chapter)
             raise FamilyLongNovelError(
@@ -2980,6 +2989,10 @@ def generate_family_chapter(
     chapter.title = title
     chapter.content = content
     chapter.raw_model_output = content
+    chapter.pre_aigc_content = content
+    chapter.aigc_policy_version = AIGC_POLICY_VERSION if settings.AIGC_GATE_ENABLED else None
+    chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
+    chapter.aigc_report = {}
     chapter.word_count = _word_count(content)
     chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
     plan.status = LongNovelChapterStatus.NEEDS_REPAIR
@@ -2997,6 +3010,8 @@ def generate_family_chapter(
             user,
             auto_repair=auto_repair,
         )
+    except FamilyAigcManualReview:
+        raise
     except Exception as exc:
         logger.exception(
             "family chapter postprocess failed after content completion project=%s chapter=%s",
@@ -3036,6 +3051,91 @@ def _mark_saved_chapter_postprocess_failed(
     db.commit()
 
 
+def _persist_family_aigc_calls(
+    db: Session,
+    *,
+    project_id: UUID,
+    chapter_number: int,
+    input_digest: str,
+    report: dict[str, object],
+) -> None:
+    for item in report.get("calls") or []:
+        if not isinstance(item, dict):
+            continue
+        db.add(
+            LongNovelGenerationLog(
+                project_id=project_id,
+                chapter_number=chapter_number,
+                action=str(item.get("action") or "aigc_call")[:128],
+                provider=str(item.get("provider") or "")[:64] or None,
+                model=str(item.get("model") or "")[:255] or None,
+                prompt_tokens=int(item.get("inputTokens") or 0),
+                cached_prompt_tokens=int(item.get("cachedInputTokens") or 0),
+                completion_tokens=int(item.get("outputTokens") or 0),
+                reasoning_tokens=int(item.get("reasoningTokens") or 0),
+                estimated_cost=float(item.get("estimatedCost") or 0.0),
+                cost_currency=str(item.get("currency") or "USD")[:8],
+                service_tier=str(item.get("serviceTier") or "")[:32] or None,
+                prompt_prefix_hash=input_digest,
+                response_id=str(item.get("requestId") or "")[:255] or None,
+                status=str(item.get("status") or "completed")[:32],
+                error=str(item.get("error") or "")[:4000] or None,
+            )
+        )
+
+
+def _family_aigc_output_dir(project_id: UUID, chapter_number: int) -> Path:
+    return (
+        PROJECT_ROOT
+        / "backend"
+        / "output"
+        / "family_long_novel"
+        / f"project_{project_id}"
+        / f"chapter_{chapter_number:06d}"
+    )
+
+
+def _family_aigc_report_for_storage(
+    report: dict[str, object] | None,
+    output_dir: Path,
+) -> dict[str, object]:
+    """Store reviewable candidate text without exposing host filesystem paths."""
+    payload = copy.deepcopy(report or {})
+    candidates: list[dict[str, object]] = []
+    root = output_dir.resolve()
+    for raw in payload.get("candidates") or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        artifact = item.pop("artifactPath", None)
+        item["artifactFile"] = Path(str(artifact)).name if artifact else None
+        text = ""
+        if artifact:
+            try:
+                artifact_path = Path(str(artifact)).resolve()
+                if artifact_path.is_relative_to(root) and artifact_path.exists():
+                    text = artifact_path.read_text(encoding="utf-8")
+            except (OSError, ValueError):
+                logger.warning("invalid family AIGC artifact: %s", artifact)
+        item["text"] = text
+        candidates.append(item)
+    payload["candidates"] = candidates
+    payload["selectedCandidates"] = [item for item in candidates if item.get("selected")]
+    safe = [
+        item
+        for item in candidates
+        if item.get("deterministicPassed") is True and isinstance(item.get("detection"), dict)
+    ]
+    safe.sort(
+        key=lambda item: (
+            int((item.get("detection") or {}).get("score") or 101),
+            0 if item.get("selected") else 1,
+        )
+    )
+    payload["bestSafeCandidate"] = safe[0] if safe else None
+    return payload
+
+
 def _apply_family_aigc_gate(
     db: Session,
     text: str,
@@ -3043,21 +3143,29 @@ def _apply_family_aigc_gate(
     project_id: UUID,
     chapter_number: int,
 ) -> str:
-    if not settings.AIGC_GATE_ENABLED:
-        return text
-    input_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    cached = (
-        db.query(LongNovelGenerationLog)
+    chapter = (
+        db.query(LongNovelChapter)
         .filter(
-            LongNovelGenerationLog.project_id == project_id,
-            LongNovelGenerationLog.chapter_number == chapter_number,
-            LongNovelGenerationLog.action == "aigc_final_gate",
-            LongNovelGenerationLog.status == "completed",
-            LongNovelGenerationLog.prompt_prefix_hash == input_digest,
+            LongNovelChapter.project_id == project_id,
+            LongNovelChapter.chapter_number == chapter_number,
         )
         .first()
     )
-    if cached is not None:
+    if chapter is None:
+        raise FamilyLongNovelError("章节不存在，无法执行朱雀终稿闸门")
+    if chapter.aigc_policy_version != AIGC_POLICY_VERSION:
+        return text
+    output_dir = _family_aigc_output_dir(project_id, chapter_number)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "04_format.md").write_text(text, encoding="utf-8")
+    input_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cached_report = dict(chapter.aigc_report or {})
+    if (
+        chapter.aigc_status == "passed"
+        and cached_report.get("policyVersion") == AIGC_POLICY_VERSION
+        and cached_report.get("finalSha256") == input_digest
+        and cached_report.get("passed") is True
+    ):
         logger.info(
             "reuse family AIGC pass project=%s chapter=%s hash=%s",
             project_id,
@@ -3065,13 +3173,64 @@ def _apply_family_aigc_gate(
             input_digest[:12],
         )
         return text
-    result = asyncio.run(
-        enforce_aigc_quality_gate(
-            text,
-            category="family_long_novel",
-            rewrite_chunk=rewrite_aigc_chunk_with_gemini,
+    try:
+        result = asyncio.run(
+            enforce_aigc_quality_gate(
+                text,
+                category="family_long_novel",
+                output_dir=output_dir,
+                required=True,
+            )
         )
-    )
+    except AigcManualReviewRequired as exc:
+        report = _family_aigc_report_for_storage(
+            dict(exc.result.report if exc.result else {}),
+            output_dir,
+        )
+        chapter.aigc_status = "manual_review"
+        chapter.aigc_report = report
+        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+        project = db.get(LongNovelProject, project_id)
+        plan = (
+            db.query(LongNovelChapterPlan)
+            .filter(
+                LongNovelChapterPlan.project_id == project_id,
+                LongNovelChapterPlan.chapter_number == chapter_number,
+            )
+            .first()
+        )
+        if project is not None:
+            project.status = LongNovelProjectStatus.PAUSED
+            db.add(project)
+        if plan is not None:
+            plan.status = LongNovelChapterStatus.NEEDS_REPAIR
+            db.add(plan)
+        _persist_family_aigc_calls(
+            db,
+            project_id=project_id,
+            chapter_number=chapter_number,
+            input_digest=input_digest,
+            report=report,
+        )
+        db.add(chapter)
+        db.commit()
+        raise FamilyAigcManualReview(
+            f"第{chapter_number}章朱雀与文稿质量未能同时达标；原稿已保留，项目已暂停"
+        ) from exc
+    except AigcTechnicalError as exc:
+        report = _family_aigc_report_for_storage(dict(exc.report or {}), output_dir)
+        chapter.aigc_status = "technical_failed"
+        chapter.aigc_report = report
+        _persist_family_aigc_calls(
+            db,
+            project_id=project_id,
+            chapter_number=chapter_number,
+            input_digest=input_digest,
+            report=report,
+        )
+        db.add(chapter)
+        db.commit()
+        raise
     logger.info(
         "family AIGC gate passed project=%s chapter=%s max_score=%s rounds=%s",
         project_id,
@@ -3079,14 +3238,14 @@ def _apply_family_aigc_gate(
         result.max_score,
         len(result.rounds),
     )
-    request_id = next(
-        (
-            detection.request_id
-            for round_item in reversed(result.rounds)
-            for detection in round_item.detections
-            if detection.request_id
-        ),
-        None,
+    chapter.aigc_status = "passed"
+    chapter.aigc_report = _family_aigc_report_for_storage(result.report, output_dir)
+    _persist_family_aigc_calls(
+        db,
+        project_id=project_id,
+        chapter_number=chapter_number,
+        input_digest=input_digest,
+        report=chapter.aigc_report,
     )
     db.add(
         LongNovelGenerationLog(
@@ -3095,11 +3254,20 @@ def _apply_family_aigc_gate(
             action="aigc_final_gate",
             provider="tencent",
             model="zhuque-text-aigc",
-            prompt_prefix_hash=hashlib.sha256(result.text.encode("utf-8")).hexdigest(),
-            response_id=request_id,
+            prompt_prefix_hash=input_digest,
+            response_id=next(
+                (
+                    str(item.get("requestId"))
+                    for item in reversed(chapter.aigc_report.get("calls") or [])
+                    if isinstance(item, dict) and item.get("requestId")
+                ),
+                None,
+            ),
             status="completed",
+            cost_currency="CNY",
         )
     )
+    db.add(chapter)
     db.commit()
     return result.text
 
@@ -3156,6 +3324,59 @@ def _postprocess_family_chapter(
     return chapter
 
 
+def retry_family_chapter_aigc(
+    db: Session,
+    project_id: UUID,
+    chapter_number: int,
+    user: User | None = None,
+) -> LongNovelChapter:
+    """Resume a preserved chapter at the AIGC gate without regenerating prose."""
+    project = _get_project(db, project_id, user)
+    chapter = (
+        db.query(LongNovelChapter)
+        .filter(
+            LongNovelChapter.project_id == project.id,
+            LongNovelChapter.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    plan = (
+        db.query(LongNovelChapterPlan)
+        .filter(
+            LongNovelChapterPlan.project_id == project.id,
+            LongNovelChapterPlan.chapter_number == chapter_number,
+        )
+        .first()
+    )
+    if chapter is None or plan is None:
+        raise FamilyLongNovelError("章节或章节计划不存在，无法仅重试朱雀阶段")
+    original = (chapter.pre_aigc_content or chapter.content or "").strip()
+    if not original:
+        raise FamilyLongNovelError("没有可重试的朱雀前原稿")
+    if chapter.aigc_policy_version != AIGC_POLICY_VERSION:
+        raise FamilyLongNovelError("该历史章节没有绑定 AIGC v2 策略，不能用开关变化追溯处理")
+    chapter.content = original
+    chapter.aigc_status = "pending"
+    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
+    project.status = LongNovelProjectStatus.GENERATING
+    db.add(chapter)
+    db.add(plan)
+    db.add(project)
+    db.commit()
+    context = _build_chapter_context(db, project, chapter_number)
+    validate_chapter_context_pack(context, chapter_number)
+    return _postprocess_family_chapter(
+        db,
+        project,
+        plan,
+        chapter,
+        context,
+        user,
+        auto_repair=True,
+    )
+
+
 def extract_family_chapter_state(
     db: Session,
     project_id: UUID,
@@ -3175,6 +3396,11 @@ def extract_family_chapter_state(
     )
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
+    if (
+        chapter.aigc_policy_version == AIGC_POLICY_VERSION
+        and chapter.aigc_status != "passed"
+    ):
+        raise FamilyLongNovelError("章节尚未通过 AIGC v2 终稿闸门，禁止抽取或写入状态账本")
     context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
     _ensure_chapter_prompt_cache_warm(
@@ -3637,6 +3863,12 @@ def repair_family_chapter(
         max_output_tokens=24000,
         prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
     )
+    chapter.pre_aigc_content = repaired
+    chapter.aigc_policy_version = AIGC_POLICY_VERSION if settings.AIGC_GATE_ENABLED else None
+    chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
+    chapter.aigc_report = {}
+    db.add(chapter)
+    db.flush()
     repaired = _apply_family_aigc_gate(
         db,
         repaired,
@@ -3698,14 +3930,40 @@ def generate_family_batch(
         try:
             generate_family_chapter(db, project.id, chapter_number, user)
             generated.append(chapter_number)
+        except FamilyAigcManualReview as exc:
+            logger.warning(
+                "family chapter requires AIGC manual review project=%s chapter=%s: %s",
+                project.id,
+                chapter_number,
+                exc,
+            )
+            failed.append(
+                {
+                    "chapter_number": chapter_number,
+                    "status": "manual_review",
+                    "error": str(exc),
+                }
+            )
+            project.status = LongNovelProjectStatus.PAUSED
+            db.add(project)
+            db.commit()
+            break
         except Exception as exc:
             logger.exception("family chapter generation failed project=%s chapter=%s", project.id, chapter_number)
             failed.append({"chapter_number": chapter_number, "error": str(exc)})
-            failed_chapter = existing or LongNovelChapter(
-                project_id=project.id,
-                chapter_number=chapter_number,
-                title=f"第{chapter_number}章",
-                content="",
+            failed_chapter = (
+                db.query(LongNovelChapter)
+                .filter(
+                    LongNovelChapter.project_id == project.id,
+                    LongNovelChapter.chapter_number == chapter_number,
+                )
+                .first()
+                or LongNovelChapter(
+                    project_id=project.id,
+                    chapter_number=chapter_number,
+                    title=f"第{chapter_number}章",
+                    content="",
+                )
             )
             failed_chapter.status = LongNovelChapterStatus.FAILED
             db.add(failed_chapter)
@@ -3745,12 +4003,21 @@ def resume_family_project(db: Session, project_id: UUID, user: User | None = Non
 
 def export_family_novel(db: Session, project_id: UUID, fmt: str, user: User | None = None) -> tuple[str, str, str]:
     project = _get_project(db, project_id, user)
-    chapters = (
+    all_chapters = (
         db.query(LongNovelChapter)
         .filter(LongNovelChapter.project_id == project.id)
         .order_by(LongNovelChapter.chapter_number.asc())
         .all()
     )
+    chapters = [
+        item
+        for item in all_chapters
+        if item.status == LongNovelChapterStatus.COMPLETED
+        and (
+            item.aigc_policy_version != AIGC_POLICY_VERSION
+            or item.aigc_status == "passed"
+        )
+    ]
     if fmt == "json":
         payload = {
             "project": _project_payload(project),

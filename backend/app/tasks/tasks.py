@@ -9,6 +9,7 @@ Gravity Singularity - Celery 流水线任务
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -41,6 +42,7 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
 )
 from app.services.content_engine import generate_full_book, normalize_final_markdown
+from app.services.aigc_quality_gate import AigcManualReviewRequired, AigcTechnicalError
 from app.services.qingdou import (
     QingdouDurationExceededError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
@@ -716,6 +718,8 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
+    if isinstance(exc, AigcTechnicalError):
+        return True
     normalized = f"{type(exc).__name__}: {exc}".lower()
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
@@ -1331,6 +1335,8 @@ def process_video(_self, task_id: str) -> dict:
                 ),
                 input_source=input_source,
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
+                aigc_required=bool((task.config or {}).get("aigc_required")),
+                aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
             )
         )
         _ensure_active_run(db, task, run_id)
@@ -1345,11 +1351,18 @@ def process_video(_self, task_id: str) -> dict:
                     aigc_quality_report=str(aigc_report_path),
                     aigc_max_score=int(aigc_report.get("maxScore") or 0),
                     aigc_passed=bool(aigc_report.get("passed")),
+                    aigc_status=str(aigc_report.get("status") or "unknown"),
+                    aigc_initial_max_score=int(aigc_report.get("initialMaxScore") or 0),
+                    aigc_final_max_score=int(aigc_report.get("finalMaxScore") or 0),
+                    aigc_rewrite_rounds=int(aigc_report.get("rewriteRounds") or 0),
+                    aigc_quality_passed=bool(aigc_report.get("qualityPassed")),
+                    aigc_report_available=True,
                 )
             except (OSError, ValueError, TypeError):
                 logger.warning("读取朱雀终稿报告失败: %s", aigc_report_path)
-        persist_progress = 94 if settings.AIGC_GATE_ENABLED else 92
-        quality_progress = 96 if settings.AIGC_GATE_ENABLED else 94
+        task_aigc_required = bool((task.config or {}).get("aigc_required"))
+        persist_progress = 94 if task_aigc_required else 92
+        quality_progress = 96 if task_aigc_required else 94
         _update_progress(
             db,
             task,
@@ -1441,6 +1454,46 @@ def process_video(_self, task_id: str) -> dict:
             "chapters": len(paused_task.chapters) if paused_task is not None else 0,
         }
 
+    except AigcManualReviewRequired as e:
+        logger.warning("[task %s] AIGC quality/manual-review gate stopped delivery: %s", task_id, e)
+        db.rollback()
+        review_task = db.get(Task, uuid.UUID(task_id))
+        if review_task is not None:
+            output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{review_task.id}"
+            report_path = output_dir / "aigc_quality_report.json"
+            cfg = dict(review_task.config or {})
+            cfg.update(
+                aigc_status="manual_review",
+                aigc_passed=False,
+                aigc_report_available=report_path.exists(),
+                aigc_quality_report=str(report_path) if report_path.exists() else None,
+            )
+            if report_path.exists():
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    cfg.update(
+                        aigc_initial_max_score=int(report.get("initialMaxScore") or 0),
+                        aigc_final_max_score=int(report.get("finalMaxScore") or 0),
+                        aigc_max_score=int(report.get("finalMaxScore") or report.get("maxScore") or 0),
+                        aigc_rewrite_rounds=int(report.get("rewriteRounds") or 0),
+                        aigc_quality_passed=bool(report.get("qualityPassed")),
+                        aigc_manual_review_reason=str(report.get("manualReviewReason") or str(e))[:4000],
+                    )
+                except (OSError, ValueError, TypeError):
+                    logger.exception("[task %s] failed to read AIGC manual-review report", task_id)
+            review_task.config = cfg
+            _clear_task_run(review_task, run_id)
+            review_task.status = TaskStatus.MANUAL_REVIEW
+            review_task.progress = max(93, int(review_task.progress or 0))
+            review_task.current_step = "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
+            review_task.error_message = str(e)[:2000]
+            db.commit()
+        return {
+            "task_id": task_id,
+            "status": TaskStatus.MANUAL_REVIEW,
+            "chapters": len(review_task.chapters) if review_task is not None else 0,
+        }
+
     except Exception as e:
         logger.exception("[task %s] 流水线失败", task_id)
         retry_countdown: int | None = None
@@ -1451,6 +1504,33 @@ def process_video(_self, task_id: str) -> dict:
             if task is not None:
                 message = _user_facing_generation_error(e)
                 _clear_task_run(task, run_id)
+                if isinstance(e, AigcTechnicalError):
+                    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
+                    report_path = output_dir / "aigc_quality_report.json"
+                    report = e.report if isinstance(e.report, dict) else None
+                    if report is None and report_path.exists():
+                        try:
+                            loaded = json.loads(report_path.read_text(encoding="utf-8"))
+                            report = loaded if isinstance(loaded, dict) else None
+                        except (OSError, ValueError, TypeError):
+                            logger.exception("[task %s] failed to read AIGC technical report", task_id)
+                    cfg = dict(task.config or {})
+                    cfg.update(
+                        aigc_status="technical_failed",
+                        aigc_passed=False,
+                        aigc_quality_passed=False,
+                        aigc_report_available=bool(report or report_path.exists()),
+                        aigc_quality_report=str(report_path) if report_path.exists() else None,
+                    )
+                    if report:
+                        cfg.update(
+                            aigc_initial_max_score=int(report.get("initialMaxScore") or 0),
+                            aigc_final_max_score=int(report.get("finalMaxScore") or 0),
+                            aigc_max_score=int(report.get("finalMaxScore") or report.get("maxScore") or 0),
+                            aigc_rewrite_rounds=int(report.get("rewriteRounds") or 0),
+                            aigc_manual_review_reason=str(report.get("technicalError") or message)[:4000],
+                        )
+                    task.config = cfg
                 current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
                 max_retries = max(0, int(settings.GENERATION_TASK_MAX_RETRIES or 0))
                 if _is_retryable_generation_error(e) and current_retries < max_retries:

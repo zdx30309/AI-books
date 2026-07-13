@@ -30,9 +30,9 @@ import {
   normalizeCategoryOptions,
 } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
-import { AIGC_GATE_VISIBLE } from "@/config/featureFlags";
 import { StuckBanner } from "@/components/StuckBanner";
 import type {
+  AigcQualityReport,
   ChapterResponse,
   StageName,
   TaskCategoryOption,
@@ -108,6 +108,8 @@ export function BookDetail() {
   const [activeView, setActiveView] = useState<"final" | StageName>("final");
   const [stageContent, setStageContent] = useState("");
   const [stageLoading, setStageLoading] = useState(false);
+  const [aigcReport, setAigcReport] = useState<AigcQualityReport | null>(null);
+  const [manualOriginal, setManualOriginal] = useState("");
 
   // 章节本地编辑态（已修改但未保存）
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
@@ -186,10 +188,54 @@ export function BookDetail() {
     if (!task) return;
     const coverInFlight =
       task.cover_status === "queued" || task.cover_status === "generating";
-    if ((task.status === "completed" || task.status === "failed" || task.status === "paused") && !coverInFlight) {
+    if (
+      (task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "paused" ||
+        task.status === "manual_review") &&
+      !coverInFlight
+    ) {
       if (pollRef.current) window.clearInterval(pollRef.current);
     }
   }, [task]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!id || !task?.aigc_report_available) {
+      setAigcReport(null);
+      return undefined;
+    }
+    api
+      .getAigcReport(id)
+      .then((report) => {
+        if (!cancelled) setAigcReport(report);
+      })
+      .catch(() => {
+        if (!cancelled) setAigcReport(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, task?.aigc_report_available, task?.aigc_status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!id || task?.status !== "manual_review") {
+      setManualOriginal("");
+      return undefined;
+    }
+    api
+      .getStage(id, "format")
+      .then((stage) => {
+        if (!cancelled) setManualOriginal(stage.content);
+      })
+      .catch(() => {
+        if (!cancelled) setManualOriginal("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, task?.status]);
 
   useEffect(() => {
     if (!task || metaDirty) return;
@@ -430,10 +476,22 @@ export function BookDetail() {
 
   const handleRetry = useCallback(async () => {
     if (!id || !task) return;
-    const ok = window.confirm("要继续生成这本书稿吗？系统会重新投递任务到队列。");
+    const aigcOnly =
+      task.aigc_required &&
+      task.aigc_report_available &&
+      (task.status === "manual_review" || task.aigc_status === "technical_failed");
+    const ok = window.confirm(
+      aigcOnly
+        ? "仅重跑朱雀终稿阶段吗？系统会复用不可变原稿、已有检测缓存和上游结果，不会重新生成整篇。"
+        : "要继续生成这本书稿吗？系统会重新投递任务到队列。",
+    );
     if (!ok) return;
     try {
-      await api.retryTask(id);
+      if (aigcOnly) {
+        await api.retryTaskAigc(id, task.category === "public_domain_rewrite");
+      } else {
+        await api.retryTask(id);
+      }
       setError(null);
       restartPolling();
       setLoading(true);
@@ -545,11 +603,21 @@ export function BookDetail() {
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const isPaused = task.status === "paused";
+  const isManualReview = task.status === "manual_review";
   const isHealingComic = task.category === "healing_comic";
   const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
-  const canRetry = isFailed || isPaused || (task.status === "pending" && task.progress < 100);
+  const canRetry = isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100);
+  const isAigcOnlyRetry =
+    task.aigc_required &&
+    task.aigc_report_available &&
+    (isManualReview || task.aigc_status === "technical_failed");
+  const bestSafeCandidate = aigcReport?.bestSafeCandidate;
+  const bestSafeCandidateText =
+    bestSafeCandidate && typeof bestSafeCandidate.text === "string"
+      ? bestSafeCandidate.text
+      : "";
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
@@ -610,10 +678,17 @@ export function BookDetail() {
               <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
                 来源：{task.source_url}
               </p>
-              {AIGC_GATE_VISIBLE && task.aigc_passed !== null && (
-                <p className="mt-2 text-xs tracking-wide text-emerald-300">
-                  朱雀终稿检测：{task.aigc_passed ? "已通过" : "未通过"}
-                  {task.aigc_max_score !== null ? ` · 最高块分 ${task.aigc_max_score}%` : ""}
+              {task.aigc_required && (
+                <p
+                  className={`mt-2 text-xs tracking-wide ${
+                    task.aigc_status === "passed" ? "text-emerald-300" : "text-gold-200"
+                  }`}
+                >
+                  朱雀 v2：{task.aigc_status === "passed" ? "朱雀与质量双达标" : task.aigc_status}
+                  {task.aigc_initial_max_score !== null
+                    ? ` · ${task.aigc_initial_max_score}% → ${task.aigc_final_max_score ?? "?"}%`
+                    : ""}
+                  {task.aigc_rewrite_rounds ? ` · ${task.aigc_rewrite_rounds} 轮` : ""}
                 </p>
               )}
               {isCompleted && (
@@ -687,6 +762,13 @@ export function BookDetail() {
                   {failureMessage}
                 </div>
               )}
+              {isManualReview && (
+                <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
+                  <span className="font-medium text-gold-100">已转人工复核：</span>
+                  {task.aigc_manual_review_reason || failureMessage || "朱雀分数与文稿质量未能同时达标。"}
+                  <div className="mt-1 text-warm-400">高质量 04_format.md 原稿保持不变，当前稿不可下载、不可标记完成。</div>
+                </div>
+              )}
               {isCompleted && task.cover_status === "failed" && task.cover_error && (
                 <div className="mt-4 rounded-lg border border-gold-500/20 bg-gold-500/8 px-4 py-2.5 text-xs leading-relaxed text-warm-300">
                   <span className="font-medium text-warm-100">封面未生成：</span>
@@ -715,7 +797,7 @@ export function BookDetail() {
             {canRetry ? (
               <button type="button" onClick={handleRetry} className="btn-ghost">
                 <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                继续生成
+                {isAigcOnlyRetry ? "仅重跑朱雀阶段" : "继续生成"}
               </button>
             ) : null}
             <button type="button" onClick={handleDelete} className="btn-ghost">
@@ -790,7 +872,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : isFailed ? "失败" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : isManualReview ? "人工复核" : isFailed ? "失败" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -802,7 +884,7 @@ export function BookDetail() {
         </div>
 
         {/* 分步进度 - 任务进行中或失败时展示 */}
-        {(isActive || isFailed || isPaused) && (
+        {(isActive || isFailed || isPaused || isManualReview) && (
           <div className="mt-6 rounded-xl border border-gold-500/8 bg-base-700/40 p-5">
             <div className="mb-4 text-[11px] tracking-widest text-warm-400">
               工作流状态
@@ -812,6 +894,7 @@ export function BookDetail() {
               currentStep={task.current_step}
               status={task.status}
               category={task.category}
+              aigcRequired={task.aigc_required}
             />
             {isActive && !isPaused && (
               <p className="mt-4 flex items-center gap-2 text-[10px] tracking-widest text-warm-500">
@@ -822,6 +905,39 @@ export function BookDetail() {
           </div>
         )}
       </section>
+
+      {isManualReview && (
+        <section className="card-warm mb-8 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-serif text-xl text-warm-50">人工复核材料</h2>
+              <p className="mt-2 text-xs leading-6 text-warm-400">
+                原稿优先保留；候选只供比较，不会自动交付。朱雀与模型调用均记录在报告中。
+              </p>
+            </div>
+            {aigcReport?.costSummary && (
+              <div className="text-right text-xs leading-6 text-warm-400">
+                <div>腾讯调用 {aigcReport.costSummary.tencentCalls ?? 0} 次 · 模型调用 {aigcReport.costSummary.modelCalls ?? 0} 次</div>
+                <div>估算 ¥{aigcReport.costSummary.estimatedCny ?? 0} / ${aigcReport.costSummary.estimatedUsd ?? 0}</div>
+              </div>
+            )}
+          </div>
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <details className="rounded-lg border border-gold-500/15 bg-base-900/50 p-4" open>
+              <summary className="cursor-pointer text-sm text-gold-100">不可变高质量原稿</summary>
+              <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-warm-200">
+                {manualOriginal || "原稿文件暂不可读，但任务不会交付失败候选。"}
+              </pre>
+            </details>
+            <details className="rounded-lg border border-gold-500/15 bg-base-900/50 p-4" open>
+              <summary className="cursor-pointer text-sm text-gold-100">最佳安全候选（仅供复核）</summary>
+              <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-warm-200">
+                {bestSafeCandidateText || "没有同时通过确定性保护的候选，系统已回滚到原稿。"}
+              </pre>
+            </details>
+          </div>
+        </section>
+      )}
 
       {isCompleted && (
         <>

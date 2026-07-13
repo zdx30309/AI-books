@@ -608,6 +608,7 @@ export function LongNovelWorkspace() {
           onPlan={(num) => run(`plan-${num}`, () => api.generateLongNovelChapterPlan(project.id, num))}
           onCheck={(num) => run(`check-${num}`, () => api.checkLongNovelChapter(project.id, num))}
           onRepair={(num) => run(`repair-${num}`, () => api.repairLongNovelChapter(project.id, num))}
+          onRetryAigc={(num) => run(`aigc-${num}`, () => api.retryLongNovelChapterAigc(project.id, num))}
         />
       )}
 
@@ -627,9 +628,33 @@ export function LongNovelWorkspace() {
               ))}
             </select>
           </div>
-          <article className="whitespace-pre-wrap text-[15px] leading-8 text-warm-200">
-            {selected?.content || "还没有生成正文。"}
-          </article>
+          {selected?.aigc_policy_version === "v2" && selected.aigc_status !== "passed" ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-gold-400/30 bg-gold-500/8 p-4 text-sm leading-6 text-warm-200">
+                本章尚未通过朱雀与质量双闸门，项目已暂停且状态账本没有更新。以下内容仅供人工复核。
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2">
+                <details className="rounded-lg border border-gold-500/15 bg-base-900/45 p-4" open>
+                  <summary className="cursor-pointer text-gold-100">朱雀前高质量原稿</summary>
+                  <pre className="mt-4 max-h-[560px] overflow-auto whitespace-pre-wrap text-sm leading-7 text-warm-200">
+                    {selected.pre_aigc_content || selected.content}
+                  </pre>
+                </details>
+                <details className="rounded-lg border border-gold-500/15 bg-base-900/45 p-4" open>
+                  <summary className="cursor-pointer text-gold-100">最佳安全候选（不自动交付）</summary>
+                  <pre className="mt-4 max-h-[560px] overflow-auto whitespace-pre-wrap text-sm leading-7 text-warm-200">
+                    {typeof selected.aigc_report?.bestSafeCandidate?.text === "string"
+                      ? selected.aigc_report.bestSafeCandidate.text
+                      : "没有通过确定性保护的安全候选，系统已保留原稿。"}
+                  </pre>
+                </details>
+              </div>
+            </div>
+          ) : (
+            <article className="whitespace-pre-wrap text-[15px] leading-8 text-warm-200">
+              {selected?.content || "还没有生成正文。"}
+            </article>
+          )}
         </section>
       )}
 
@@ -681,6 +706,7 @@ export function LongNovelWorkspace() {
                 <th className="px-4 py-3">章节</th>
                 <th className="px-4 py-3">模型</th>
                 <th className="px-4 py-3">状态</th>
+                <th className="px-4 py-3">费用</th>
                 <th className="px-4 py-3">错误</th>
               </tr>
             </thead>
@@ -691,6 +717,7 @@ export function LongNovelWorkspace() {
                   <td className="px-4 py-3">{log.chapter_number ?? "-"}</td>
                   <td className="px-4 py-3">{log.provider}/{log.model}</td>
                   <td className="px-4 py-3">{log.status}</td>
+                  <td className="px-4 py-3">{log.actual_cost ?? log.estimated_cost} {log.cost_currency}</td>
                   <td className="px-4 py-3 text-red-300">{log.error}</td>
                 </tr>
               ))}
@@ -750,6 +777,7 @@ function ChapterTable({
   onPlan,
   onCheck,
   onRepair,
+  onRetryAigc,
 }: {
   plans: LongNovelChapterPlan[];
   chapters: LongNovelChapter[];
@@ -760,6 +788,7 @@ function ChapterTable({
   onPlan: (num: number) => void;
   onCheck: (num: number) => void;
   onRepair: (num: number) => void;
+  onRetryAigc: (num: number) => void;
 }) {
   const chapterMap = new Map(chapters.map((item) => [item.chapter_number, item]));
   const rows = plans.length > 0 ? plans : chapters.map((chapter) => ({
@@ -773,13 +802,14 @@ function ChapterTable({
   } as LongNovelChapterPlan));
   return (
     <section className="card-warm overflow-x-auto">
-      <table className="w-full min-w-[980px] text-left text-sm">
+      <table className="w-full min-w-[1080px] text-left text-sm">
         <thead className="border-b border-gold-500/10 text-xs tracking-widest text-warm-500">
           <tr>
             <th className="px-4 py-3">章</th>
             <th className="px-4 py-3">标题</th>
             <th className="px-4 py-3">字数</th>
             <th className="px-4 py-3">状态</th>
+            <th className="px-4 py-3">朱雀 v2</th>
             <th className="px-4 py-3">矛盾点</th>
             <th className="px-4 py-3">结尾钩子</th>
             <th className="px-4 py-3">操作</th>
@@ -801,6 +831,13 @@ function ChapterTable({
                 </td>
                 <td className="px-4 py-3">{chapter?.word_count ?? plan.target_words}</td>
                 <td className="px-4 py-3">{chapter?.status ?? plan.status}</td>
+                <td className="px-4 py-3">
+                  {chapter?.aigc_policy_version === "v2"
+                    ? chapter.aigc_status === "passed"
+                      ? `通过 · ${chapter.aigc_report?.finalMaxScore ?? "-"}%`
+                      : chapter.aigc_status
+                    : "不适用"}
+                </td>
                 <td className="px-4 py-3">{plan.domestic_conflict}</td>
                 <td className="px-4 py-3">{plan.ending_hook || plan.emotional_hook}</td>
                 <td className="px-4 py-3">
@@ -817,6 +854,11 @@ function ChapterTable({
                     <button type="button" disabled={disabled || !chapter} className="rounded-full border border-gold-500/20 px-3 py-1 text-xs hover:border-gold-400/50 disabled:opacity-40" onClick={() => onRepair(plan.chapter_number)}>
                       修复
                     </button>
+                    {chapter?.aigc_policy_version === "v2" && chapter.aigc_status !== "passed" && (
+                      <button type="button" disabled={disabled || !chapter.pre_aigc_content} className="rounded-full border border-gold-400/40 px-3 py-1 text-xs text-gold-100 hover:border-gold-300 disabled:opacity-40" onClick={() => onRetryAigc(plan.chapter_number)}>
+                        仅重跑朱雀
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

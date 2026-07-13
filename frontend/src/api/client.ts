@@ -9,6 +9,7 @@ import type {
   BatchRegenerateTaskResponse,
   BatchRetryTaskRequest,
   BatchRetryTaskResponse,
+  AigcQualityReport,
   ChapterResponse,
   ChapterUpdateRequest,
   ClassicalReferenceTemplateResponse,
@@ -450,6 +451,15 @@ export const api = {
     request<TaskStatusResponse>(`/tasks/${id}/pause-comic`, { method: "POST" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
+  retryTaskAigc: (id: string, publicDomain = false) =>
+    request<CreateTaskResponse>(
+      publicDomain
+        ? `/public-domain-rewrite/tasks/${id}/retry-aigc`
+        : `/tasks/${id}/retry-aigc`,
+      { method: "POST" },
+    ),
+  getAigcReport: (id: string) =>
+    request<AigcQualityReport>(`/tasks/${id}/aigc-report`),
   retryFailedTasks: (body: BatchRetryTaskRequest = {}) =>
     request<BatchRetryTaskResponse>("/tasks/retry-failed", {
       method: "POST",
@@ -674,6 +684,11 @@ export const api = {
   repairLongNovelChapter: (id: string, chapterNumber: number) =>
     request<LongNovelChapter>(
       `/long-novel/family/projects/${id}/chapters/${chapterNumber}/repair`,
+      { method: "POST" },
+    ),
+  retryLongNovelChapterAigc: (id: string, chapterNumber: number) =>
+    request<LongNovelChapter>(
+      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/retry-aigc`,
       { method: "POST" },
     ),
   listLongNovelConflicts: (id: string) =>

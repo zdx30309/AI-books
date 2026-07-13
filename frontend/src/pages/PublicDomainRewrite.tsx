@@ -232,8 +232,36 @@ export function PublicDomainRewrite() {
               </div>
             </div>
 
+            {result?.aigc_required && (
+              <div
+                className={`mb-4 rounded-lg border p-4 text-sm leading-6 ${
+                  result.status === "ok"
+                    ? "border-emerald-400/25 bg-emerald-500/8 text-emerald-100"
+                    : "border-gold-400/30 bg-gold-500/8 text-warm-100"
+                }`}
+              >
+                <div className="font-medium">
+                  朱雀 v2：{result.status === "ok" ? "朱雀与质量双达标" : "未自动交付"}
+                </div>
+                <div className="mt-1 text-xs text-warm-300">
+                  {result.aigc_initial_max_score !== null
+                    ? `${result.aigc_initial_max_score}% → ${result.aigc_final_max_score ?? "?"}% · ${result.aigc_rewrite_rounds} 轮`
+                    : result.aigc_status}
+                </div>
+                {result.status !== "ok" && (
+                  <div className="mt-2 text-xs text-warm-300">
+                    高质量原稿已保存在任务中且禁止下载。请打开书稿查看原稿、最佳安全候选，并仅重跑朱雀阶段。
+                  </div>
+                )}
+              </div>
+            )}
+
             <pre className="min-h-[560px] whitespace-pre-wrap break-words rounded-lg border border-gold-500/10 bg-base-950/60 p-5 text-sm leading-7 text-warm-100">
-              {loading ? "模型正在处理 1-3 个公版来源并生成成稿..." : result?.manuscript || "这里会直接显示最终成稿。"}
+              {loading
+                ? "模型正在处理 1-3 个公版来源并生成成稿..."
+                : result?.status && result.status !== "ok"
+                  ? "当前稿件未通过朱雀与质量双闸门，因此不在这里交付。原稿已安全保留在人工复核任务中。"
+                  : result?.manuscript || "这里会直接显示最终成稿。"}
             </pre>
           </div>
         </aside>

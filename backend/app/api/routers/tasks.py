@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import zipfile
@@ -29,6 +30,7 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
+from app.services.aigc_quality_gate import AIGC_POLICY_VERSION
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
     image_filename_from_markdown,
@@ -156,6 +158,14 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "aigc_quality_report",
     "aigc_max_score",
     "aigc_passed",
+    "aigc_required",
+    "aigc_policy_version",
+    "aigc_status",
+    "aigc_initial_max_score",
+    "aigc_final_max_score",
+    "aigc_rewrite_rounds",
+    "aigc_quality_passed",
+    "aigc_report_available",
     "cover_disabled",
     "cover_status",
     "cover_error",
@@ -168,6 +178,21 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "cover_style_brief_path",
     "draft_cover_path",
 }
+
+
+def _stamp_aigc_policy(config: dict) -> dict:
+    """Snapshot the gate decision so future flag changes never touch old tasks."""
+    cfg = dict(config or {})
+    category = str(cfg.get("category") or "social_science").strip()
+    eligible = category not in {"comic_series", "healing_comic"}
+    required = bool(settings.AIGC_GATE_ENABLED and eligible)
+    cfg.update(
+        aigc_policy_version=AIGC_POLICY_VERSION,
+        aigc_required=required,
+        aigc_status="pending" if required else "not_required",
+        aigc_report_available=False,
+    )
+    return cfg
 
 
 def _active_generation_count(db: Session) -> int:
@@ -356,7 +381,7 @@ def _create_and_dispatch_task(
     task = Task(
         source_url=source_url,
         owner_id=user.id,
-        config=config,
+        config=_stamp_aigc_policy(config),
         status=TaskStatus.PENDING,
         progress=0,
         current_step="排队中",
@@ -395,7 +420,7 @@ def _create_classical_text_task(
     if not raw_text:
         raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
 
-    cfg = dict(config)
+    cfg = _stamp_aigc_policy(config)
     cfg.pop("raw_text", None)
     cfg["raw_text_chars"] = len(raw_text)
     style_notes_full = str(cfg.get("style_notes") or "").strip()
@@ -664,6 +689,9 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("paused_at", None)
     cfg.pop("paused_run_id", None)
     cfg.pop("last_pause_message", None)
+    if cfg.get("aigc_required"):
+        cfg["aigc_status"] = "pending"
+        cfg["aigc_passed"] = False
     task.config = cfg
     progress, step = _retry_resume_state(task.id)
     task.status = TaskStatus.PENDING
@@ -690,6 +718,7 @@ def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
     cfg = dict(task.config or {})
     for key in _REGENERATE_CONFIG_DROP_KEYS:
         cfg.pop(key, None)
+    cfg = _stamp_aigc_policy(cfg)
     cfg["regenerated_at"] = datetime.now(timezone.utc).isoformat()
     cfg["regenerated_from_bookshelf"] = True
     task.config = cfg
@@ -1142,7 +1171,7 @@ async def create_classical_chinese_from_docx(
             cfg["style_notes_preview_chars"] = len(cfg["style_notes"])
     response = _create_and_dispatch_task(
         source_url=f"manual://{normalized_category}_document/{filename[:120]}",
-        config=cfg,
+        config=_stamp_aigc_policy(cfg),
         db=db,
         user=user,
         dispatch=False,
@@ -1257,7 +1286,7 @@ def create_task_batch(
         task = Task(
             source_url=url,
             owner_id=user.id,
-            config=_config_with_source_platform(cfg, url),
+            config=_stamp_aigc_policy(_config_with_source_platform(cfg, url)),
             status=TaskStatus.PENDING,
             progress=0,
             current_step="排队中",
@@ -1307,7 +1336,10 @@ def retry_failed_tasks(
     skipped: list[BatchRetryTaskItem] = []
     if requested_ids:
         locked = (
-            base_query.filter(Task.id.in_(requested_ids), Task.status == TaskStatus.FAILED)
+            base_query.filter(
+                Task.id.in_(requested_ids),
+                Task.status.in_((TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW)),
+            )
             .with_for_update(skip_locked=True)
             .all()
         )
@@ -1324,7 +1356,7 @@ def retry_failed_tasks(
                 )
     else:
         tasks = (
-            base_query.filter(Task.status == TaskStatus.FAILED)
+            base_query.filter(Task.status.in_((TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW)))
             .with_for_update(skip_locked=True)
             .order_by(Task.created_at.desc())
             .all()
@@ -1333,12 +1365,21 @@ def retry_failed_tasks(
     retried: list[BatchRetryTaskItem] = []
     tasks_to_dispatch: list[Task] = []
     for task in tasks:
-        if task.status != TaskStatus.FAILED:
+        if task.status not in {TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW}:
             skipped.append(
                 BatchRetryTaskItem(
                     task_id=task.id,
                     status="skipped",
                     reason=f"当前状态为 {task.status}，无需继续生成",
+                )
+            )
+            continue
+        if bool((task.config or {}).get("public_domain_rewrite")):
+            skipped.append(
+                BatchRetryTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason="公版融合任务必须仅重跑朱雀阶段，已跳过以避免重复消耗整套生成 API",
                 )
             )
             continue
@@ -1417,7 +1458,7 @@ def regenerate_tasks(
                 )
             )
             continue
-        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW}:
             skipped.append(
                 BatchRegenerateTaskItem(
                     task_id=task.id,
@@ -1577,8 +1618,14 @@ def retry_task(
         if not_before and not_before > datetime.now(timezone.utc):
             return CreateTaskResponse(task_id=task.id, status=task.status)
         return CreateTaskResponse(task_id=task.id, status=task.status)
-    if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED}:
+    if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED, TaskStatus.MANUAL_REVIEW}:
         raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
+
+    if bool((task.config or {}).get("public_domain_rewrite")):
+        raise HTTPException(
+            status_code=409,
+            detail="公版融合任务请使用“仅重跑朱雀阶段”，避免重新消耗整套生成 API。",
+        )
 
     _prepare_task_for_retry(task)
     db.commit()
@@ -1597,6 +1644,114 @@ def retry_task(
         )
 
     return CreateTaskResponse(task_id=task.id, status=task.status)
+
+
+@router.post(
+    "/{task_id}/retry-aigc",
+    response_model=CreateTaskResponse,
+    summary="仅从不可变 04_format.md 原稿重跑朱雀终稿阶段",
+)
+def retry_task_aigc(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CreateTaskResponse:
+    """Resume at the v2 gate without regenerating paid upstream stages."""
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    cfg = dict(task.config or {})
+    if bool(cfg.get("public_domain_rewrite")):
+        raise HTTPException(
+            status_code=409,
+            detail="公版融合任务请在公版接口重跑朱雀阶段。",
+        )
+    if not bool(cfg.get("aigc_required")) or cfg.get("aigc_policy_version") != AIGC_POLICY_VERSION:
+        raise HTTPException(status_code=409, detail="该任务没有绑定朱雀 v2 策略，不能使用 AIGC-only 重试。")
+    if task.status not in {TaskStatus.MANUAL_REVIEW, TaskStatus.FAILED}:
+        raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不能仅重跑朱雀阶段。")
+    original_path = _task_output_dir(task.id) / "04_format.md"
+    if not original_path.exists() or original_path.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail="不可变 04_format.md 原稿不存在，无法安全执行 AIGC-only 重试。")
+    if _has_active_run(task):
+        raise HTTPException(status_code=409, detail="任务已有运行实例，请勿重复投递。")
+
+    _ensure_generation_capacity(db)
+    _prepare_task_for_retry(task)
+    task.progress = max(91, int(task.progress or 0))
+    task.current_step = "仅重跑朱雀终稿阶段（已复用 04_format.md 原稿与可用检测缓存）"
+    db.commit()
+    db.refresh(task)
+    try:
+        _dispatch_task(task)
+    except Exception as exc:
+        logger.exception("[task %s] AIGC-only dispatch failed", task.id)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"AIGC-only dispatch failed: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(status_code=503, detail=f"朱雀阶段重试投递失败: {exc}") from exc
+    return CreateTaskResponse(task_id=task.id, status=task.status)
+
+
+@router.get(
+    "/{task_id}/aigc-report",
+    summary="读取不含密钥的朱雀 v2 报告与人工复核候选",
+)
+def get_task_aigc_report(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    output_dir = _task_output_dir(task.id).resolve()
+    report_path = output_dir / "aigc_quality_report.json"
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="朱雀报告尚未生成")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail=f"朱雀报告读取失败: {exc}") from exc
+    if not isinstance(report, dict):
+        raise HTTPException(status_code=500, detail="朱雀报告格式不正确")
+
+    review_candidates: list[dict[str, object]] = []
+    for item in report.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = {key: value for key, value in item.items() if key != "artifactPath"}
+        artifact = item.get("artifactPath")
+        candidate["artifactFile"] = Path(str(artifact)).name if artifact else None
+        text = ""
+        if artifact:
+            try:
+                artifact_path = Path(str(artifact)).resolve()
+                if artifact_path.is_relative_to(output_dir) and artifact_path.exists():
+                    text = artifact_path.read_text(encoding="utf-8")
+            except (OSError, ValueError):
+                logger.warning("[task %s] invalid AIGC candidate artifact: %s", task.id, artifact)
+        candidate["text"] = text
+        review_candidates.append(candidate)
+
+    safe_candidates = [
+        item
+        for item in review_candidates
+        if item.get("deterministicPassed") is True and isinstance(item.get("detection"), dict)
+    ]
+    safe_candidates.sort(
+        key=lambda item: (
+            int((item.get("detection") or {}).get("score") or 101),
+            0 if item.get("selected") else 1,
+            -int(item.get("round") or 0),
+        )
+    )
+    sanitized = dict(report)
+    sanitized["candidates"] = review_candidates
+    sanitized["selectedCandidates"] = [item for item in review_candidates if item.get("selected")]
+    sanitized["bestSafeCandidate"] = safe_candidates[0] if safe_candidates else None
+    sanitized["originalAvailable"] = (output_dir / "04_format.md").exists()
+    return sanitized
 
 
 def _build_list_item(db: Session, task: Task) -> TaskListItem:
@@ -1704,7 +1859,7 @@ def _cleanup_expired_tasks(db: Session, user: User) -> int:
         .filter(
             Task.owner_id == user.id,
             Task.created_at < cutoff,
-            ~Task.status.in_((*_ACTIVE_TASK_STATUSES, TaskStatus.PAUSED)),
+            ~Task.status.in_((*_ACTIVE_TASK_STATUSES, TaskStatus.PAUSED, TaskStatus.MANUAL_REVIEW)),
         )
         .all()
     )
@@ -2558,7 +2713,7 @@ def _build_batch_download_response(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for task_id in task_ids:
             task = task_map.get(task_id)
-            if task is None:
+            if task is None or task.status != TaskStatus.COMPLETED:
                 continue
             md = _read_task_markdown(db, task)
             if not md:
@@ -2667,6 +2822,11 @@ def _build_single_download_response(
     *,
     comic_preview_images: bool = False,
 ) -> Response:
+    if task.status != TaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail="任务尚未通过全部终稿闸门，人工复核原稿不可作为终稿下载",
+        )
     md = _read_task_markdown(db, task)
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")

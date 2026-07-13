@@ -47,9 +47,10 @@ from app.services.classical_chinese import (
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.services.aigc_quality_gate import (
+    AIGC_POLICY_VERSION,
+    AigcManualReviewRequired,
     AigcQualityGateError,
     enforce_aigc_quality_gate,
-    rewrite_aigc_chunk_with_gemini,
 )
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
@@ -6043,9 +6044,10 @@ async def _apply_final_aigc_gate(
     category: str,
     output_dir: Path | None,
     on_stage: StageCallback | None,
+    required: bool,
 ) -> str:
     """Run the optional global AIGC gate after the existing final QA workflow."""
-    if not settings.AIGC_GATE_ENABLED:
+    if not required:
         return markdown
     if on_stage:
         on_stage("aigc_start", {"chars": len(markdown)})
@@ -6053,19 +6055,33 @@ async def _apply_final_aigc_gate(
     result = await enforce_aigc_quality_gate(
         markdown,
         category=category,
-        rewrite_chunk=rewrite_aigc_chunk_with_gemini,
         output_dir=output_dir,
+        required=True,
     )
-    final_text = normalize_final_markdown(result.text, category=category)
+    final_text = result.text
 
     from app.core.quality_metrics import detect_final_hard_errors
 
     hard_errors = detect_final_hard_errors(final_text, category=category)
     if hard_errors:
-        raise AigcQualityGateError(
-            "降低 AI 率后的终稿命中硬伤，已阻止落盘: " + "; ".join(hard_errors[:8])
+        if output_dir is not None:
+            (output_dir / "05_aigc_final.md").unlink(missing_ok=True)
+            report_path = output_dir / "aigc_quality_report.json"
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+                payload.update(
+                    status="manual_review",
+                    passed=False,
+                    qualityPassed=False,
+                    manualReviewReason="降低 AI 率后的终稿命中硬伤: " + "; ".join(hard_errors[:8]),
+                    finalSha256=None,
+                )
+                report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError, TypeError):
+                logger.exception("AIGC 终稿硬伤状态回写失败")
+        raise AigcManualReviewRequired(
+            "降低 AI 率后的终稿命中硬伤，已保留 04_format.md 原稿: " + "; ".join(hard_errors[:8])
         )
-    _dump_stage(output_dir, "04_format.md", final_text)
     if output_dir is not None:
         try:
             from app.core.quality_metrics import format_report, measure_quality
@@ -6104,6 +6120,8 @@ async def generate_full_book(
     healing_comic_should_pause: Callable[[], bool] | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
+    aigc_required: bool | None = None,
+    aigc_policy_version: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
     direct_writer_only = normalized_category in {
@@ -6161,12 +6179,23 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    effective_aigc_required = (
+        settings.AIGC_GATE_ENABLED if aigc_required is None else bool(aigc_required)
+    )
+    if aigc_policy_version is not None:
+        effective_aigc_required = (
+            effective_aigc_required and aigc_policy_version == AIGC_POLICY_VERSION
+        )
+    if normalized_category in {"healing_comic", "comic_series"}:
+        effective_aigc_required = False
+
     async def finish_with_aigc(markdown: str) -> str:
         return await _apply_final_aigc_gate(
             markdown,
             category=normalized_category,
             output_dir=output_dir,
             on_stage=on_stage,
+            required=effective_aigc_required,
         )
 
     task_prompt_cache_key = _content_prompt_cache_key(

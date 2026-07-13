@@ -18,6 +18,7 @@ const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
   { label: "已完成", value: "completed" },
   { label: "生成中", value: "processing" },
   { label: "失败", value: "failed" },
+  { label: "人工复核", value: "manual_review" },
 ];
 
 const DATE_FILTERS = [

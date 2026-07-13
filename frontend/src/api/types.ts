@@ -10,7 +10,8 @@ export type TaskStatus =
   | "fact_checking"
   | "completed"
   | "failed"
-  | "paused";
+  | "paused"
+  | "manual_review";
 
 export interface CreateTaskRequest {
   url: string;
@@ -189,6 +190,14 @@ export interface TaskStatusResponse {
   category_label: string | null;
   aigc_passed: boolean | null;
   aigc_max_score: number | null;
+  aigc_required: boolean;
+  aigc_status: string;
+  aigc_initial_max_score: number | null;
+  aigc_final_max_score: number | null;
+  aigc_rewrite_rounds: number;
+  aigc_quality_passed: boolean | null;
+  aigc_report_available: boolean;
+  aigc_manual_review_reason: string | null;
   error_message: string | null;
   created_at: string;
 }
@@ -336,6 +345,38 @@ export interface PublicDomainRewriteResponse {
   status: string;
   source_count: number;
   manuscript_chars: number;
+  aigc_required: boolean;
+  aigc_status: string;
+  aigc_initial_max_score: number | null;
+  aigc_final_max_score: number | null;
+  aigc_rewrite_rounds: number;
+  aigc_quality_passed: boolean | null;
+  aigc_report_available: boolean;
+}
+
+export interface AigcQualityReport {
+  policyVersion?: string;
+  promptVersion?: string;
+  status?: string;
+  passed?: boolean;
+  threshold?: number;
+  initialMaxScore?: number;
+  finalMaxScore?: number;
+  rewriteRounds?: number;
+  qualityPassed?: boolean;
+  manualReviewReason?: string;
+  technicalError?: string;
+  costSummary?: {
+    tencentCalls?: number;
+    modelCalls?: number;
+    estimatedCny?: number;
+    estimatedUsd?: number;
+  };
+  candidates?: Array<Record<string, unknown>>;
+  selectedCandidates?: Array<Record<string, unknown>>;
+  bestSafeCandidate?: Record<string, unknown> | null;
+  originalAvailable?: boolean;
+  [key: string]: unknown;
 }
 
 // 鉴权
@@ -647,6 +688,10 @@ export interface LongNovelChapter {
   status: string;
   version: number;
   raw_model_output: string | null;
+  pre_aigc_content: string | null;
+  aigc_policy_version: string | null;
+  aigc_status: string;
+  aigc_report: AigcQualityReport;
   created_at: string;
   updated_at: string;
 }
@@ -677,6 +722,7 @@ export interface LongNovelGenerationLog {
   reasoning_tokens?: number;
   estimated_cost: number;
   actual_cost?: number | null;
+  cost_currency: string;
   status: string;
   error: string | null;
   created_at: string;

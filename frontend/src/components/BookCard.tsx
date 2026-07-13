@@ -28,6 +28,7 @@ function statusLabel(status: string, progress: number): string {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
   if (status === "paused") return "已暂停";
+  if (status === "manual_review") return "人工复核";
   if (progress === 0) return "排队中";
   return `生成中 ${progress}%`;
 }
@@ -214,6 +215,12 @@ export function BookCard({
       {task.status === "failed" && (
         <div className="absolute inset-0 flex items-center justify-center bg-base-900/80 text-xs tracking-widest text-warm-300">
           生成失败
+        </div>
+      )}
+
+      {task.status === "manual_review" && (
+        <div className="absolute inset-x-0 bottom-0 bg-gold-950/90 px-2 py-2 text-center text-[10px] tracking-widest text-gold-100">
+          原稿已保留 · 等待人工复核
         </div>
       )}
 

@@ -180,6 +180,7 @@ def test_family_long_novel_routes_are_registered() -> None:
     assert "/api/v1/long-novel/family/projects/{project_id}/extend-target" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/generate-batch" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/chapters/{chapter_number}/context-pack" in paths
+    assert "/api/v1/long-novel/family/projects/{project_id}/chapters/{chapter_number}/retry-aigc" in paths
     assert "/api/v1/long-novel/family/projects/{project_id}/export" in paths
 
 
@@ -867,6 +868,18 @@ def test_postprocess_failure_preserves_body_but_never_silently_completes() -> No
     assert "LongNovelChapterStatus.NEEDS_REPAIR" in failure_handler
     assert "LongNovelProjectStatus.FAILED" in failure_handler
     assert "fallback state after postprocess error" not in source
+
+
+def test_family_aigc_runs_before_state_and_never_upgrades_historical_chapter_from_flag() -> None:
+    gate_source = inspect.getsource(family_long_novel._apply_family_aigc_gate)
+    postprocess_source = inspect.getsource(family_long_novel._postprocess_family_chapter)
+    retry_source = inspect.getsource(family_long_novel.retry_family_chapter_aigc)
+
+    assert "04_format.md" in gate_source
+    assert "output_dir=output_dir" in gate_source
+    assert postprocess_source.index("_apply_family_aigc_gate") < postprocess_source.index("extract_family_chapter_state")
+    assert "该历史章节没有绑定 AIGC v2 策略" in retry_source
+    assert "chapter.aigc_policy_version = AIGC_POLICY_VERSION" not in retry_source
 
 
 def test_mechanical_qa_nodes_use_bounded_high_reasoning_without_changing_writer() -> None:

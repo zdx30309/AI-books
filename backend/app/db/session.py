@@ -122,6 +122,28 @@ def _ensure_long_novel_schema_columns() -> None:
             conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_cache_key VARCHAR(255)"))
             conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_prefix_hash VARCHAR(64)"))
             conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS response_id VARCHAR(255)"))
+            conn.execute(
+                text(
+                    "ALTER TABLE long_novel_generation_logs "
+                    "ADD COLUMN IF NOT EXISTS cost_currency VARCHAR(8) NOT NULL DEFAULT 'USD'"
+                )
+            )
+
+        if inspector.has_table("long_novel_chapters"):
+            conn.execute(text("ALTER TABLE long_novel_chapters ADD COLUMN IF NOT EXISTS pre_aigc_content TEXT"))
+            conn.execute(text("ALTER TABLE long_novel_chapters ADD COLUMN IF NOT EXISTS aigc_policy_version VARCHAR(32)"))
+            conn.execute(
+                text(
+                    "ALTER TABLE long_novel_chapters "
+                    "ADD COLUMN IF NOT EXISTS aigc_status VARCHAR(32) NOT NULL DEFAULT 'not_required'"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE long_novel_chapters "
+                    "ADD COLUMN IF NOT EXISTS aigc_report JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+            )
 
 
 def _ensure_epic_schema_columns() -> None:

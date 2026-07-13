@@ -148,6 +148,14 @@ class TaskStatusResponse(BaseModel):
     category_label: str | None = None
     aigc_passed: bool | None = None
     aigc_max_score: int | None = None
+    aigc_required: bool = False
+    aigc_status: str = "not_required"
+    aigc_initial_max_score: int | None = None
+    aigc_final_max_score: int | None = None
+    aigc_rewrite_rounds: int = 0
+    aigc_quality_passed: bool | None = None
+    aigc_report_available: bool = False
+    aigc_manual_review_reason: str | None = None
     error_message: str | None = None
     created_at: datetime
 

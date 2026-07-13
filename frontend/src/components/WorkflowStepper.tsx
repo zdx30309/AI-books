@@ -1,5 +1,4 @@
 import { Check, Circle, Loader2, Pause } from "lucide-react";
-import { AIGC_GATE_VISIBLE } from "@/config/featureFlags";
 
 interface Step {
   key: string;
@@ -8,17 +7,14 @@ interface Step {
   start: number;
 }
 
-const STEPS: Step[] = [
+const BASE_STEPS: Step[] = [
   { key: "queue", label: "排队建库", start: 0 },
   { key: "fetch", label: "解析视频文案", start: 8 },
   { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
   { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
   { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
   { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
-  ...(AIGC_GATE_VISIBLE
-    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
-    : []),
-  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
 const COMIC_STEPS: Step[] = [
@@ -26,10 +22,7 @@ const COMIC_STEPS: Step[] = [
   { key: "fetch", label: "接收漫画短语", start: 8 },
   { key: "structure", label: "生成目录与短语结构", start: 25 },
   { key: "images", label: "封面与短语配图生成", start: 86 },
-  ...(AIGC_GATE_VISIBLE
-    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
-    : []),
-  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
 const DIRECT_WRITER_STEPS: Step[] = [
@@ -37,22 +30,30 @@ const DIRECT_WRITER_STEPS: Step[] = [
   { key: "fetch", label: "解析原文", start: 8 },
   { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
   { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
-  ...(AIGC_GATE_VISIBLE
-    ? [{ key: "aigc", label: "朱雀检测 / 高风险段局部改写", start: 91 }]
-    : []),
-  { key: "persist", label: "章节入库 / 写终稿", start: AIGC_GATE_VISIBLE ? 94 : 92 },
+  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
+
+function withAigcStep(steps: Step[], required: boolean): Step[] {
+  if (!required) return steps;
+  return [
+    ...steps.filter((step) => step.key !== "persist"),
+    { key: "aigc", label: "朱雀检测 / 双模型质量审稿", start: 91 },
+    { key: "persist", label: "双达标后入库 / 写终稿", start: 94 },
+  ];
+}
 
 interface Props {
   progress: number;
   currentStep: string;
   status: string;
   category?: string | null;
+  aigcRequired?: boolean;
 }
 
-export function WorkflowStepper({ progress, currentStep, status, category }: Props) {
+export function WorkflowStepper({ progress, currentStep, status, category, aigcRequired = false }: Props) {
   const isFailed = status === "failed";
-  const isPaused = status === "paused";
+  const isManualReview = status === "manual_review";
+  const isPaused = status === "paused" || isManualReview;
   const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
     category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
@@ -62,8 +63,8 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
   const steps = isComicWorkflow
     ? COMIC_STEPS
     : isDirectWriterWorkflow
-      ? DIRECT_WRITER_STEPS
-      : STEPS;
+      ? withAigcStep(DIRECT_WRITER_STEPS, aigcRequired)
+      : withAigcStep(BASE_STEPS, aigcRequired);
 
   return (
     <ol className="space-y-3">
@@ -122,7 +123,7 @@ export function WorkflowStepper({ progress, currentStep, status, category }: Pro
               </div>
               {(active || paused) && currentStep && (
                 <div className="mt-1 text-[11px] tracking-wide text-warm-400">
-                  {failed ? "已停止" : paused ? "已暂停" : currentStep}
+                  {failed ? "已停止" : isManualReview ? "等待人工复核" : paused ? "已暂停" : currentStep}
                 </div>
               )}
             </div>

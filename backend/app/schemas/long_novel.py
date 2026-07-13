@@ -195,6 +195,10 @@ class LongNovelChapterResponse(BaseModel):
     status: str
     version: int
     raw_model_output: str | None = None
+    pre_aigc_content: str | None = None
+    aigc_policy_version: str | None = None
+    aigc_status: str = "not_required"
+    aigc_report: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -228,6 +232,7 @@ class LongNovelGenerationLogResponse(BaseModel):
     completion_tokens: int
     reasoning_tokens: int = 0
     estimated_cost: float
+    cost_currency: str = "USD"
     service_tier: str | None = None
     prompt_cache_key: str | None = None
     prompt_prefix_hash: str | None = None

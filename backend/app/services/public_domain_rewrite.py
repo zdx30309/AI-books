@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Iterable
 
 from app.core.config import settings
 from app.services.aigc_quality_gate import (
+    AigcManualReviewRequired,
+    AigcTechnicalError,
     enforce_aigc_quality_gate,
-    rewrite_aigc_chunk_with_gemini,
 )
 from app.services.deepseek import generate_text as deepseek_generate_text
 
@@ -94,6 +96,14 @@ class PublicDomainFusionResult:
     source_reports: tuple[SourceReport, ...]
     warnings: tuple[str, ...]
     status: str
+    pre_aigc_manuscript: str = ""
+    aigc_required: bool = False
+    aigc_status: str = "not_required"
+    aigc_initial_max_score: int | None = None
+    aigc_final_max_score: int | None = None
+    aigc_rewrite_rounds: int = 0
+    aigc_quality_passed: bool | None = None
+    aigc_report: dict[str, object] | None = None
 
 
 class PublicDomainRewriteError(ValueError):
@@ -108,6 +118,7 @@ def rewrite_public_domain_fusion(
     target_length: int | None = None,
     output_style: str | None = None,
     public_domain_confirmed: bool = False,
+    aigc_output_dir: Path | None = None,
 ) -> PublicDomainFusionResult:
     clean_sources = _validate_sources(
         list(sources),
@@ -182,25 +193,84 @@ def rewrite_public_domain_fusion(
             else:
                 warnings.append("已尝试一次局部修复，但仍命中高风险硬伤，建议人工复核或调整来源。")
 
-    if settings.AIGC_GATE_ENABLED:
-        gate_result = asyncio.run(
-            enforce_aigc_quality_gate(
-                manuscript,
-                category="public_domain_rewrite",
-                rewrite_chunk=rewrite_aigc_chunk_with_gemini,
+    pre_aigc_manuscript = manuscript
+    aigc_required = bool(settings.AIGC_GATE_ENABLED)
+    aigc_status = "not_required"
+    aigc_initial_max_score: int | None = None
+    aigc_final_max_score: int | None = None
+    aigc_rewrite_rounds = 0
+    aigc_quality_passed: bool | None = None
+    aigc_report: dict[str, object] | None = None
+    if aigc_required:
+        try:
+            gate_result = asyncio.run(
+                enforce_aigc_quality_gate(
+                    manuscript,
+                    category="public_domain_rewrite",
+                    output_dir=aigc_output_dir,
+                    required=True,
+                )
             )
-        )
-        manuscript = gate_result.text
-        warnings.append(
-            f"终稿已通过朱雀 AIGC 闸门（最高分 {gate_result.max_score}%，"
-            f"检测轮次 {len(gate_result.rounds)}）。"
-        )
-        quality = _quality_check(manuscript, clean_sources)
-        if quality["status"] == "needs_repair":
-            raise RuntimeError("降低 AI 率后的公版终稿未通过来源重合/残留复检")
+            manuscript = gate_result.text
+            aigc_status = gate_result.status
+            aigc_initial_max_score = gate_result.initial_max_score
+            aigc_final_max_score = gate_result.max_score
+            aigc_rewrite_rounds = gate_result.rewrite_rounds
+            aigc_quality_passed = gate_result.quality_passed
+            aigc_report = gate_result.report
+            warnings.append(
+                f"终稿已通过朱雀 AIGC 闸门（初始最高 {gate_result.initial_max_score}%，"
+                f"最终最高 {gate_result.max_score}%，改写 {gate_result.rewrite_rounds} 轮）。"
+            )
+            quality = _quality_check(manuscript, clean_sources)
+            if quality["status"] == "needs_repair":
+                aigc_status = "manual_review"
+                aigc_quality_passed = False
+                warnings.append("降低 AI 率后的候选未通过公版来源重合/残留复检，已保留原稿并转人工复核。")
+                if aigc_report:
+                    aigc_report = {
+                        **aigc_report,
+                        "status": "manual_review",
+                        "passed": False,
+                        "qualityPassed": False,
+                        "manualReviewReason": "公版来源重合/残留复检未通过",
+                        "finalSha256": None,
+                    }
+                manuscript = ""
+        except AigcManualReviewRequired as exc:
+            result = exc.result
+            aigc_status = "manual_review"
+            aigc_initial_max_score = result.initial_max_score if result else None
+            aigc_final_max_score = result.max_score if result else None
+            aigc_rewrite_rounds = result.rewrite_rounds if result else 0
+            aigc_quality_passed = result.quality_passed if result else False
+            aigc_report = result.report if result else None
+            warnings.append(f"朱雀与文稿质量未能同时达标，已保留原稿并转人工复核：{exc}")
+            manuscript = ""
+        except AigcTechnicalError as exc:
+            aigc_status = "technical_failed"
+            aigc_quality_passed = False
+            aigc_report = exc.report if isinstance(exc.report, dict) else None
+            if aigc_report:
+                aigc_initial_max_score = int(aigc_report.get("initialMaxScore") or 0)
+                aigc_final_max_score = int(aigc_report.get("finalMaxScore") or 0)
+                aigc_rewrite_rounds = int(aigc_report.get("rewriteRounds") or 0)
+            warnings.append(f"朱雀或模型调用发生技术故障，原稿已保留，可仅重试 AIGC 阶段：{exc}")
+            manuscript = ""
 
-    title = _pick_title(target_title, manuscript)
-    report = _format_quality_report(quality, source_reports, len(manuscript))
+    title = _pick_title(target_title, manuscript or pre_aigc_manuscript)
+    report = _format_quality_report(quality, source_reports, len(manuscript or pre_aigc_manuscript))
+    final_status = (
+        "manual_review"
+        if aigc_status == "manual_review"
+        else "failed"
+        if aigc_status == "technical_failed"
+        else str(quality["status"])
+    )
+    if final_status not in {"failed", "manual_review", "ok"}:
+        final_status = "manual_review"
+        warnings.append("公版来源 QA 未达到自动交付标准，已保留原稿并转人工复核。")
+        manuscript = ""
     return PublicDomainFusionResult(
         title=title,
         manuscript=manuscript,
@@ -208,8 +278,24 @@ def rewrite_public_domain_fusion(
         quality_report=report,
         source_reports=source_reports,
         warnings=tuple(dict.fromkeys(warnings)),
-        status=str(quality["status"]),
+        status=final_status,
+        pre_aigc_manuscript=pre_aigc_manuscript,
+        aigc_required=aigc_required,
+        aigc_status=aigc_status,
+        aigc_initial_max_score=aigc_initial_max_score,
+        aigc_final_max_score=aigc_final_max_score,
+        aigc_rewrite_rounds=aigc_rewrite_rounds,
+        aigc_quality_passed=aigc_quality_passed,
+        aigc_report=aigc_report,
     )
+
+
+def check_public_domain_manuscript(
+    manuscript: str,
+    sources: Iterable[PublicDomainSource],
+) -> dict[str, object]:
+    """Re-run the same source-overlap/residue QA after an AIGC-only retry."""
+    return _quality_check(manuscript, list(sources))
 
 
 def _validate_sources(

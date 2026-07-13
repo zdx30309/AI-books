@@ -43,6 +43,7 @@ from app.services.family_long_novel import (
     list_family_projects,
     pause_family_project,
     repair_family_chapter,
+    retry_family_chapter_aigc,
     resume_family_project,
     sync_family_project_progress,
     _get_project,
@@ -211,6 +212,24 @@ def generate_chapter(
 ) -> LongNovelChapterResponse:
     try:
         return generate_family_chapter(db, project_id, chapter_number, user)
+    except FamilyLongNovelError as exc:
+        _raise_http(exc)
+    except Exception as exc:
+        _raise_upstream_http(exc)
+
+
+@router.post(
+    "/projects/{project_id}/chapters/{chapter_number}/retry-aigc",
+    response_model=LongNovelChapterResponse,
+)
+def retry_chapter_aigc(
+    project_id: UUID,
+    chapter_number: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> LongNovelChapterResponse:
+    try:
+        return retry_family_chapter_aigc(db, project_id, chapter_number, user)
     except FamilyLongNovelError as exc:
         _raise_http(exc)
     except Exception as exc:

@@ -248,6 +248,10 @@ class LongNovelChapter(Base):
     status = Column(String(32), nullable=False, default=LongNovelChapterStatus.PLANNED)
     version = Column(Integer, nullable=False, default=1)
     raw_model_output = Column(Text, nullable=True)
+    pre_aigc_content = Column(Text, nullable=True)
+    aigc_policy_version = Column(String(32), nullable=True)
+    aigc_status = Column(String(32), nullable=False, default="not_required")
+    aigc_report = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -364,6 +368,7 @@ class LongNovelGenerationLog(Base):
     completion_tokens = Column(Integer, nullable=False, default=0)
     reasoning_tokens = Column(Integer, nullable=False, default=0)
     estimated_cost = Column(Float, nullable=False, default=0.0)
+    cost_currency = Column(String(8), nullable=False, default="USD")
     service_tier = Column(String(32), nullable=True)
     prompt_cache_key = Column(String(255), nullable=True)
     prompt_prefix_hash = Column(String(64), nullable=True)
