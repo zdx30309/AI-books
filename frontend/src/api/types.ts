@@ -401,6 +401,8 @@ export interface AigcReviewStrategy {
   audit_model: string;
   rewrite_thinking: string;
   candidate_count: number;
+  max_rewrite_attempts_per_segment: number;
+  rewrite_protocol: string;
   audit_scope: string;
   ocr: string;
   human_pass_rule: string;
@@ -455,6 +457,42 @@ export interface AigcReviewQualityAudit {
   reason: string;
 }
 
+export interface AigcReviewDeterministicReview {
+  passed: boolean;
+  length_ratio: number;
+  paragraph_count_preserved: boolean;
+  headings_preserved: boolean;
+  anchors_preserved: boolean;
+  protected_text_preserved: boolean;
+  model_explanation_absent: boolean;
+  missing_anchors: string[];
+  extra_anchors: string[];
+  reasons: string[];
+}
+
+export interface AigcReviewRewriteAttempt {
+  attempt: number;
+  passed: boolean;
+  structured_output: boolean;
+  protocol_issues: string[];
+  deterministic_review: AigcReviewDeterministicReview;
+  input_tokens: number;
+  output_tokens: number;
+  cost_cny: number;
+}
+
+export interface AigcReviewSegmentResult {
+  segment_id: number;
+  status: "ready" | "rejected";
+  original_chars: number;
+  candidate_chars: number;
+  rewrite_attempts: number;
+  attempts: AigcReviewRewriteAttempt[];
+  deterministic_review: AigcReviewDeterministicReview;
+  candidate_preview: string;
+  rejected_candidate_preview: string;
+}
+
 export interface AigcReviewOptimizeResult {
   request_id: string;
   status: "candidate_ready" | "manual_review";
@@ -466,7 +504,7 @@ export interface AigcReviewOptimizeResult {
   candidate_text: string;
   guarded_candidate_preview?: string;
   selected_segment_ids: number[];
-  segment_results: Array<Record<string, unknown>>;
+  segment_results: AigcReviewSegmentResult[];
   quality_audit: AigcReviewQualityAudit | null;
   cost: {
     currency: string;

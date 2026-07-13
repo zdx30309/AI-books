@@ -155,7 +155,7 @@ export function AigcReview() {
           </p>
         </div>
         <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-          本地 OCR：0 元<br />DeepSeek V4 Pro 单候选 + Gemini Flash-Lite 一次整稿终审
+          本地 OCR：0 元<br />DeepSeek V4 Pro 单候选 · 失败块最多一次有界重试<br />Gemini Flash-Lite 一次整稿终审
         </div>
       </section>
 
@@ -284,9 +284,48 @@ export function AigcReview() {
           </div>
 
           {result.status === "manual_review" ? (
-            <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-              <div className="font-medium">质量未过，已回滚并保留原稿</div>
-              <div className="mt-1 text-warm-300">{result.next_action}</div>
+            <div className="mt-5 space-y-4">
+              <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
+                <div className="font-medium">质量未过，已回滚并保留原稿</div>
+                <div className="mt-1 text-warm-300">{result.next_action}</div>
+              </div>
+
+              {result.quality_audit && (
+                <div className="rounded-lg border border-red-400/20 bg-red-500/5 p-5">
+                  <div className="text-sm font-medium text-red-100">独立终审未通过</div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-4">
+                    <AuditCard label="语义忠实" value={result.quality_audit.semantic_fidelity} threshold={95} />
+                    <AuditCard label="信息完整" value={result.quality_audit.information_completeness} threshold={98} />
+                    <AuditCard label="流畅度" value={result.quality_audit.fluency} threshold={90} />
+                    <AuditCard label="声音连续" value={result.quality_audit.voice_continuity} threshold={90} />
+                  </div>
+                  <div className="mt-3 text-sm leading-6 text-warm-300">{result.quality_audit.reason || "终审返回未满足硬门槛。"}</div>
+                </div>
+              )}
+
+              {result.segment_results.filter((item) => item.status === "rejected").map((item) => {
+                const lastAttempt = item.attempts[item.attempts.length - 1];
+                return (
+                  <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium text-warm-50">片段 #{item.segment_id} 机器校验明细</div>
+                      <div className="text-xs text-warm-400">已自动尝试 {item.rewrite_attempts} 次 · 长度比例 {item.deterministic_review.length_ratio.toFixed(3)}</div>
+                    </div>
+                    <div className="mt-3 space-y-1 text-warm-300">
+                      {[...(lastAttempt?.protocol_issues ?? []), ...item.deterministic_review.reasons].filter((value, index, values) => values.indexOf(value) === index).map((reason) => (
+                        <div key={reason}>• {reason}</div>
+                      ))}
+                      {item.deterministic_review.missing_anchors.length > 0 && <div>• 缺失锚点：{item.deterministic_review.missing_anchors.slice(0, 8).join("、")}</div>}
+                      {item.deterministic_review.extra_anchors.length > 0 && <div>• 多余锚点：{item.deterministic_review.extra_anchors.slice(0, 8).join("、")}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+
+              <button type="button" onClick={optimize} disabled={optimizing} className="btn-ghost inline-flex items-center justify-center gap-2 disabled:opacity-45">
+                {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {optimizing ? "重新处理并验收中" : "再次处理（会产生新的 API 费用）"}
+              </button>
             </div>
           ) : (
             <>

@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
     AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
     AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
+    AIGC_REVIEW_MAX_REWRITE_ATTEMPTS: int = 2
     AIGC_REVIEW_HUMAN_TARGET: float = 60.0
     AIGC_REVIEW_MAX_MANUSCRIPT_CHARS: int = 200_000
     AIGC_REVIEW_MAX_PDF_BYTES: int = 30_000_000

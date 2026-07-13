@@ -10,11 +10,15 @@ from app.services.aigc_report_review import (
     map_segments_to_original,
     normalize_manuscript_text,
     optimize_report_segments,
+    parse_rewrite_candidate,
     parse_report_overview,
     parse_report_segment_rows,
     quality_audit_passed,
+    prepare_rewrite_protocol,
     recommend_target_segments,
     report_source_match_confidence,
+    render_audit_prompt,
+    render_rewrite_prompt,
     review_deterministic_constraints,
     sha256_text,
 )
@@ -145,6 +149,77 @@ def test_repeated_anchors_and_paragraphs_are_hard_protected() -> None:
     assert second.paragraph_count_preserved is False
 
 
+def test_structured_protocol_restores_layout_headings_and_repeated_anchors() -> None:
+    original = "井边少年\n\n唐宣宗大中六年，即公元852年，钱镠出生。\n\n铁券写着“恕卿九死”，公元852年仍需保留。"
+    protocol = prepare_rewrite_protocol(original)
+
+    assert "[[P0001]]" in protocol.prompt_segment
+    assert "[[KEEP_" in protocol.prompt_segment
+    rewritten = protocol.prompt_segment.replace("钱镠出生", "钱镠诞生")
+    candidate, issues, structured = parse_rewrite_candidate(rewritten, protocol)
+
+    assert structured is True
+    assert issues == []
+    assert candidate.splitlines()[0] == "井边少年"
+    assert candidate.count("公元852年") == 2
+    deterministic = review_deterministic_constraints(original, candidate)
+    assert deterministic.passed is True
+
+
+def test_structured_protocol_flattens_model_line_wrap_without_merging_paragraphs() -> None:
+    original = "第一段说明事实。\n\n第二段说明结论。"
+    protocol = prepare_rewrite_protocol(original)
+    raw = protocol.prompt_segment.replace("第一段说明事实。", "第一段说明\n事实。")
+
+    candidate, issues, structured = parse_rewrite_candidate(raw, protocol)
+
+    assert structured is True
+    assert issues == []
+    assert candidate == "第一段说明 事实。\n\n第二段说明结论。"
+    assert review_deterministic_constraints(original, candidate).paragraph_count_preserved is True
+
+
+def test_anchor_occurrence_count_rejects_added_duplicate() -> None:
+    original = "合同金额260元。"
+    candidate = "合同金额260元，不是260元。"
+
+    result = review_deterministic_constraints(original, candidate)
+
+    assert result.passed is False
+    assert result.extra_anchors == ("260元",)
+
+
+def test_large_report_segment_protocol_keeps_all_blocks_and_anchors() -> None:
+    paragraphs = [
+        f"第{index}段记载公元852年发生的既有事实，金额260元，详见《旧志》。" + "叙述保持完整。" * 18
+        for index in range(1, 19)
+    ]
+    original = "\n\n".join(paragraphs)
+    protocol = prepare_rewrite_protocol(original)
+
+    candidate, issues, structured = parse_rewrite_candidate(protocol.prompt_segment, protocol)
+
+    assert len(original) >= 2700
+    assert structured is True
+    assert issues == []
+    assert candidate == original
+    assert review_deterministic_constraints(original, candidate).passed is True
+
+
+def test_content_type_rules_are_loaded_from_prompt_assets() -> None:
+    classical = render_rewrite_prompt(
+        segment_id=1,
+        original_segment="[[P0001]]译文[[/P0001]]",
+        previous_context="",
+        next_context="",
+        content_type="classical",
+    )
+    public_domain = render_audit_prompt("原稿", "候选", [1], content_type="public_domain")
+
+    assert "受保护原文必须逐字逐标点保留" in classical
+    assert "作品名、作者、出处" in public_domain
+
+
 def test_classical_original_fragment_is_immutable() -> None:
     original = "（原文）山不在高，有仙则名。\n\n（翻译）山不一定要高，有仙人居住就出名了。"
     changed = "（原文）山不在高，有仙就有名。\n\n（翻译）山不一定要高，有仙人居住就出名了。"
@@ -236,3 +311,64 @@ def test_quality_failure_never_exports_candidate() -> None:
     assert result["candidate_text"] == ""
     assert result["original_text"] == original
     assert quality_audit_passed(result["quality_audit"]) is False
+
+
+def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
+    original = "第一段保留事实260元。\n\n第二段保留结论。"
+    segment = ZhuqueSegment(1, 100, len(original), 0.95, "suspected", 0, len(original), original, 1.0, True)
+    calls: list[str] = []
+
+    def rewrite_fn(_prompt: str, **_kwargs):
+        calls.append("rewrite")
+        if len(calls) == 1:
+            return "第一段遗漏金额。第二段也被合并。", {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.01}
+        return "首段仍保留事实260元。\n\n第二段继续保留结论。", {"input_tokens": 12, "output_tokens": 12, "cost_cny": 0.02}
+
+    def audit_fn(_prompt: str, **_kwargs):
+        calls.append("audit")
+        return json.dumps(
+            {
+                "pass": True,
+                "semantic_fidelity": 99,
+                "information_completeness": 99,
+                "fluency": 95,
+                "voice_continuity": 95,
+                "no_added_facts": True,
+                "no_removed_information": True,
+                "no_stance_change": True,
+                "no_plot_or_event_change": True,
+                "failed_segment_ids": [],
+                "reason": "通过",
+            },
+            ensure_ascii=False,
+        )
+
+    result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
+
+    assert calls == ["rewrite", "rewrite", "audit"]
+    assert result["status"] == "candidate_ready"
+    assert result["segment_results"][0]["rewrite_attempts"] == 2
+    assert result["segment_results"][0]["attempts"][0]["passed"] is False
+    assert result["segment_results"][0]["attempts"][1]["passed"] is True
+    assert result["cost"]["estimated_cny"] >= 0.03
+
+
+def test_two_failed_attempts_stop_before_paid_full_manuscript_audit() -> None:
+    original = "第一段保留事实260元。\n\n第二段保留结论。"
+    segment = ZhuqueSegment(1, 100, len(original), 0.95, "suspected", 0, len(original), original, 1.0, True)
+    rewrite_calls = 0
+
+    def rewrite_fn(_prompt: str, **_kwargs):
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        return "金额丢失，而且自然段被合并。"
+
+    def audit_fn(_prompt: str, **_kwargs):
+        raise AssertionError("deterministic rejection must stop before full audit")
+
+    result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
+
+    assert rewrite_calls == 2
+    assert result["status"] == "manual_review"
+    assert result["segment_results"][0]["rewrite_attempts"] == 2
+    assert result["segment_results"][0]["deterministic_review"]["missing_anchors"] == ["260元"]

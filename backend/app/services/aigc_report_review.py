@@ -31,11 +31,12 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v1"
+PROMPT_VERSION = "zhuque-report-review-v2"
 STRICT_HUMAN_THRESHOLD = 50.0
 _PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
+_CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _OCR_LOCK = threading.Lock()
 
 
@@ -72,14 +73,43 @@ class DeterministicReview:
     headings_preserved: bool
     anchors_preserved: bool
     protected_text_preserved: bool
+    model_explanation_absent: bool
     missing_anchors: tuple[str, ...]
+    extra_anchors: tuple[str, ...]
     reasons: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["missing_anchors"] = list(self.missing_anchors)
+        payload["extra_anchors"] = list(self.extra_anchors)
         payload["reasons"] = list(self.reasons)
         return payload
+
+
+@dataclass(frozen=True)
+class RewriteProtocol:
+    """Machine-checkable paragraph and immutable-anchor protocol for one segment."""
+
+    pieces: tuple[str, ...]
+    block_piece_indexes: tuple[int, ...]
+    block_payloads: tuple[str, ...]
+    protected_values: tuple[tuple[str, str], ...]
+
+    @property
+    def prompt_segment(self) -> str:
+        blocks: list[str] = []
+        for index, value in enumerate(self.block_payloads, start=1):
+            blocks.append(f"[[P{index:04d}]]\n{value}\n[[/P{index:04d}]]")
+        return "\n".join(blocks)
+
+    @property
+    def protected_map(self) -> str:
+        if not self.protected_values:
+            return "（无）"
+        return "\n".join(
+            f"{token} = {json.dumps(value, ensure_ascii=False)}"
+            for token, value in self.protected_values
+        )
 
 
 def parse_zhuque_report(
@@ -480,45 +510,107 @@ def optimize_report_segments(
             if content_type == "classical"
             else ()
         )
-        prompt = render_rewrite_prompt(
-            segment_id=segment_id,
-            original_segment=source,
-            previous_context=original[max(0, segment.start - 600):segment.start],
-            next_context=original[segment.end:min(len(original), segment.end + 600)],
-            protected_originals=protected_originals,
-        )
-        try:
-            raw = rewrite(prompt, segment=segment, request_id=request_id)
-            candidate, usage = _coerce_model_result(raw)
-        except Exception as exc:
-            logger.exception(
-                "LLM action=aigc_report_rewrite request_id=%s segment=%s model=%s status=failed error_type=%s",
-                request_id,
-                segment_id,
-                settings.AIGC_REVIEW_REWRITE_MODEL,
-                type(exc).__name__,
-            )
-            raise AigcReviewModelError(f"片段 {segment_id} 改写模型调用失败: {exc}") from exc
-        candidate = _clean_model_text(candidate)
+        protocol = prepare_rewrite_protocol(source, protected_texts=protected_originals)
+        max_attempts = max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
+        candidate = ""
         deterministic = review_deterministic_constraints(
             source,
             candidate,
             protected_texts=protected_originals,
         )
-        total_input_tokens += int(usage.get("input_tokens") or _estimate_tokens(prompt))
-        total_output_tokens += int(usage.get("output_tokens") or _estimate_tokens(candidate))
-        total_rewrite_cost += float(usage.get("cost_cny") or 0.0)
+        candidate_passed = False
+        attempt_results: list[dict[str, Any]] = []
+        retry_feedback = "首次改写：严格按编号块协议输出。"
+        for attempt in range(1, max_attempts + 1):
+            prompt = render_rewrite_prompt(
+                segment_id=segment_id,
+                original_segment=protocol.prompt_segment,
+                previous_context=original[max(0, segment.start - 600):segment.start],
+                next_context=original[segment.end:min(len(original), segment.end + 600)],
+                protected_originals=protected_originals,
+                protected_map=protocol.protected_map,
+                block_count=len(protocol.block_payloads),
+                retry_feedback=retry_feedback,
+                content_type=content_type,
+            )
+            try:
+                raw = rewrite(
+                    prompt,
+                    segment=segment,
+                    request_id=request_id,
+                    attempt=attempt,
+                )
+                raw_candidate, usage = _coerce_model_result(raw)
+            except Exception as exc:
+                logger.exception(
+                    "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s model=%s status=failed error_type=%s",
+                    request_id,
+                    segment_id,
+                    attempt,
+                    settings.AIGC_REVIEW_REWRITE_MODEL,
+                    type(exc).__name__,
+                )
+                raise AigcReviewModelError(f"片段 {segment_id} 改写模型调用失败: {exc}") from exc
+
+            cleaned_candidate = _clean_model_text(raw_candidate)
+            candidate, protocol_issues, structured = parse_rewrite_candidate(
+                cleaned_candidate,
+                protocol,
+            )
+            deterministic = review_deterministic_constraints(
+                source,
+                candidate,
+                protected_texts=protected_originals,
+            )
+            protocol_passed = not protocol_issues or not structured
+            candidate_passed = deterministic.passed and protocol_passed
+            input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
+            output_tokens = int(usage.get("output_tokens") or _estimate_tokens(cleaned_candidate))
+            attempt_cost = float(usage.get("cost_cny") or 0.0)
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            total_rewrite_cost += attempt_cost
+            attempt_results.append(
+                {
+                    "attempt": attempt,
+                    "passed": candidate_passed,
+                    "structured_output": structured,
+                    "protocol_issues": protocol_issues,
+                    "deterministic_review": deterministic.to_dict(),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_cny": round(attempt_cost, 6),
+                }
+            )
+            if candidate_passed:
+                break
+            retry_feedback = format_rewrite_retry_feedback(
+                deterministic,
+                protocol_issues=protocol_issues,
+            )
+            logger.warning(
+                "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s status=rejected reasons=%s protocol=%s",
+                request_id,
+                segment_id,
+                attempt,
+                ";".join(deterministic.reasons),
+                ";".join(protocol_issues),
+            )
+
         segment_results.append(
             {
                 "segment_id": segment_id,
-                "status": "ready" if deterministic.passed else "rejected",
+                "status": "ready" if candidate_passed else "rejected",
                 "original_chars": len(source),
                 "candidate_chars": len(candidate),
+                "rewrite_attempts": len(attempt_results),
+                "attempts": attempt_results,
                 "deterministic_review": deterministic.to_dict(),
-                "candidate_preview": candidate[:500] if deterministic.passed else "",
+                "candidate_preview": candidate[:500] if candidate_passed else "",
+                "rejected_candidate_preview": candidate[:500] if not candidate_passed else "",
             }
         )
-        if not deterministic.passed:
+        if not candidate_passed:
             return _manual_review_result(
                 request_id=request_id,
                 original=original,
@@ -535,7 +627,12 @@ def optimize_report_segments(
     for start, end, candidate in sorted(replacements, reverse=True):
         assembled = assembled[:start] + candidate + assembled[end:]
 
-    audit_prompt = render_audit_prompt(original, assembled, selected_ids)
+    audit_prompt = render_audit_prompt(
+        original,
+        assembled,
+        selected_ids,
+        content_type=content_type,
+    )
     try:
         raw_audit = audit(audit_prompt, request_id=request_id)
         audit_text, audit_usage = _coerce_model_result(raw_audit)
@@ -620,16 +717,23 @@ def review_deterministic_constraints(
     original_anchors = _anchors(original)
     candidate_anchors = _anchors(candidate)
     missing: list[str] = []
+    extra: list[str] = []
     for anchor, count in original_anchors.items():
         if candidate_anchors[anchor] < count:
             missing.extend([anchor] * (count - candidate_anchors[anchor]))
-    anchors_ok = not missing
+    for anchor, count in candidate_anchors.items():
+        if original_anchors[anchor] < count:
+            extra.extend([anchor] * (count - original_anchors[anchor]))
+    anchors_ok = not missing and not extra
     if not anchors_ok:
-        reasons.append("数字、日期、金额、引语、书名或 URL 锚点缺失")
+        reasons.append("数字、日期、金额、引语、书名或 URL 锚点出现次数发生变化")
     protected_values = tuple(value for value in protected_texts if value)
     protected_ok = all(candidate.count(value) >= original.count(value) for value in protected_values)
     if not protected_ok:
         reasons.append("古文/佛经受保护原文被改动")
+    model_explanation_absent = not _contains_model_explanation(candidate)
+    if not model_explanation_absent:
+        reasons.append("候选包含模型说明、改写提示或非正文包装")
     passed = not reasons and bool(candidate.strip())
     return DeterministicReview(
         passed=passed,
@@ -638,8 +742,120 @@ def review_deterministic_constraints(
         headings_preserved=headings_ok,
         anchors_preserved=anchors_ok,
         protected_text_preserved=protected_ok,
+        model_explanation_absent=model_explanation_absent,
         missing_anchors=tuple(missing[:30]),
+        extra_anchors=tuple(extra[:30]),
         reasons=tuple(reasons),
+    )
+
+
+def prepare_rewrite_protocol(
+    source: str,
+    *,
+    protected_texts: Iterable[str] = (),
+) -> RewriteProtocol:
+    """Protect layout and immutable anchors before text reaches the rewrite model."""
+    pieces = tuple(re.split(r"(\n[\t ]*(?:\n[\t ]*)*)", source))
+    block_piece_indexes: list[int] = []
+    block_payloads: list[str] = []
+    protected_values: list[tuple[str, str]] = []
+    protected_counter = 0
+
+    for piece_index in range(0, len(pieces), 2):
+        value = pieces[piece_index]
+        if not value.strip():
+            continue
+        spans = _protected_spans(value, protected_texts=protected_texts)
+        if _looks_like_heading(value.strip()):
+            spans = [(0, len(value))]
+        payload = value
+        replacements: list[tuple[int, int, str, str]] = []
+        for start, end in spans:
+            protected_counter += 1
+            token = f"[[KEEP_{protected_counter:04d}]]"
+            replacements.append((start, end, token, value[start:end]))
+        for start, end, token, original_value in reversed(replacements):
+            payload = payload[:start] + token + payload[end:]
+            protected_values.append((token, original_value))
+        block_piece_indexes.append(piece_index)
+        block_payloads.append(payload)
+
+    if not block_payloads:
+        block_piece_indexes = [0]
+        block_payloads = [source]
+        pieces = (source,)
+    return RewriteProtocol(
+        pieces=pieces,
+        block_piece_indexes=tuple(block_piece_indexes),
+        block_payloads=tuple(block_payloads),
+        protected_values=tuple(protected_values),
+    )
+
+
+def parse_rewrite_candidate(
+    raw_candidate: str,
+    protocol: RewriteProtocol,
+) -> tuple[str, list[str], bool]:
+    """Restore original separators/anchors when the model follows the block protocol.
+
+    Legacy/plain candidates are still accepted for deterministic review so tests and
+    provider fallbacks remain compatible. They simply do not receive structural repair.
+    """
+    expected_count = len(protocol.block_payloads)
+    marker_pattern = re.compile(
+        r"\[\[P(\d{4})\]\]\s*(.*?)\s*\[\[/P\1\]\]",
+        flags=re.DOTALL,
+    )
+    matches = list(marker_pattern.finditer(raw_candidate))
+    if not matches:
+        return raw_candidate, ["模型未使用编号块协议"], False
+
+    issues: list[str] = []
+    outside = marker_pattern.sub("", raw_candidate).strip()
+    if outside:
+        issues.append("编号块之外出现了额外说明")
+    ids = [int(match.group(1)) for match in matches]
+    expected_ids = list(range(1, expected_count + 1))
+    if ids != expected_ids:
+        issues.append(f"编号块顺序或数量错误：需要 {expected_ids}，实际 {ids}")
+        return raw_candidate, issues, True
+
+    candidate_pieces = list(protocol.pieces)
+    rendered_blocks: list[str] = []
+    for match in matches:
+        # A line wrap inside one numbered block is formatting noise, not a new paragraph.
+        value = re.sub(r"[\t ]*\n+[\t ]*", " ", match.group(2)).strip()
+        if not value:
+            issues.append(f"编号块 P{int(match.group(1)):04d} 为空")
+        rendered_blocks.append(value)
+
+    combined_blocks = "\n".join(rendered_blocks)
+    for token, protected_value in protocol.protected_values:
+        count = combined_blocks.count(token)
+        if count != 1:
+            issues.append(f"受保护占位符 {token} 出现 {count} 次，应为 1 次")
+        combined_blocks = combined_blocks.replace(token, protected_value)
+    restored_blocks = combined_blocks.split("\n")
+    if len(restored_blocks) != expected_count:
+        issues.append("恢复受保护内容后编号块数量异常")
+        return raw_candidate, issues, True
+    for piece_index, value in zip(protocol.block_piece_indexes, restored_blocks, strict=True):
+        candidate_pieces[piece_index] = value
+    return "".join(candidate_pieces), issues, True
+
+
+def format_rewrite_retry_feedback(
+    review: DeterministicReview,
+    *,
+    protocol_issues: Iterable[str] = (),
+) -> str:
+    details = [*protocol_issues, *review.reasons]
+    if review.missing_anchors:
+        details.append("缺失锚点：" + "、".join(review.missing_anchors[:10]))
+    if review.extra_anchors:
+        details.append("多余锚点：" + "、".join(review.extra_anchors[:10]))
+    return "上一次候选被机器拒绝。只修复以下问题，不得改变事实：\n- " + "\n- ".join(
+        dict.fromkeys(details)
     )
 
 
@@ -650,24 +866,52 @@ def render_rewrite_prompt(
     previous_context: str,
     next_context: str,
     protected_originals: Iterable[str] = (),
+    protected_map: str = "（无）",
+    block_count: int = 1,
+    retry_feedback: str = "首次改写：严格按编号块协议输出。",
+    content_type: str = "article",
 ) -> str:
     template = _REWRITE_PROMPT_PATH.read_text(encoding="utf-8")
     return (
         template.replace("{{SEGMENT_ID}}", str(segment_id))
         .replace("{{PROTECTED_ORIGINALS}}", "\n".join(protected_originals))
+        .replace("{{PROTECTED_MAP}}", protected_map)
+        .replace("{{BLOCK_COUNT}}", str(block_count))
+        .replace("{{RETRY_FEEDBACK}}", retry_feedback)
+        .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace("{{PREVIOUS_CONTEXT}}", previous_context)
         .replace("{{ORIGINAL_SEGMENT}}", original_segment)
         .replace("{{NEXT_CONTEXT}}", next_context)
     )
 
 
-def render_audit_prompt(original: str, candidate: str, segment_ids: Iterable[int]) -> str:
+def render_audit_prompt(
+    original: str,
+    candidate: str,
+    segment_ids: Iterable[int],
+    *,
+    content_type: str = "article",
+) -> str:
     template = _AUDIT_PROMPT_PATH.read_text(encoding="utf-8")
     return (
         template.replace("{{SEGMENT_IDS}}", json.dumps(list(segment_ids), ensure_ascii=False))
+        .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace("{{ORIGINAL_MANUSCRIPT}}", original)
         .replace("{{CANDIDATE_MANUSCRIPT}}", candidate)
     )
+
+
+@lru_cache(maxsize=1)
+def _content_type_rule_map() -> dict[str, str]:
+    payload = json.loads(_CONTENT_RULES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or "article" not in payload:
+        raise ValueError("AIGC 报告审稿类型规则模板无效")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _content_type_rules(content_type: str) -> str:
+    rules = _content_type_rule_map()
+    return rules.get(content_type, rules["article"])
 
 
 def parse_quality_audit(text: str) -> dict[str, Any]:
@@ -708,6 +952,8 @@ def model_strategy() -> dict[str, Any]:
         "audit_model": settings.AIGC_REVIEW_AUDIT_MODEL,
         "rewrite_thinking": "disabled",
         "candidate_count": 1,
+        "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
+        "rewrite_protocol": "numbered_paragraphs_with_immutable_anchors",
         "audit_scope": "one_full_manuscript_call",
         "ocr": "local_only_zero_api_cost",
         "human_pass_rule": "> 50%",
@@ -717,14 +963,21 @@ def model_strategy() -> dict[str, Any]:
     }
 
 
-def _deepseek_rewrite(prompt: str, *, segment: ZhuqueSegment, request_id: str) -> tuple[str, dict[str, Any]]:
+def _deepseek_rewrite(
+    prompt: str,
+    *,
+    segment: ZhuqueSegment,
+    request_id: str,
+    attempt: int = 1,
+) -> tuple[str, dict[str, Any]]:
     model = settings.AIGC_REVIEW_REWRITE_MODEL
     max_tokens = min(12000, max(1600, int(len(segment.mapped_text) * 0.9)))
     logger.info(
-        "LLM action=aigc_report_rewrite request_id=%s model=%s segment=%s status=started",
+        "LLM action=aigc_report_rewrite request_id=%s model=%s segment=%s attempt=%s status=started",
         request_id,
         model,
         segment.segment_id,
+        attempt,
     )
     with distributed_semaphore(
         "aigc-report-review",
@@ -745,10 +998,11 @@ def _deepseek_rewrite(prompt: str, *, segment: ZhuqueSegment, request_id: str) -
     output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     cost = (input_tokens * 3.0 + output_tokens * 6.0) / 1_000_000
     logger.info(
-        "LLM action=aigc_report_rewrite request_id=%s model=%s segment=%s status=succeeded input_tokens=%s output_tokens=%s cost_cny=%.6f",
+        "LLM action=aigc_report_rewrite request_id=%s model=%s segment=%s attempt=%s status=succeeded input_tokens=%s output_tokens=%s cost_cny=%.6f",
         request_id,
         model,
         segment.segment_id,
+        attempt,
         input_tokens,
         output_tokens,
         cost,
@@ -844,6 +1098,44 @@ def _anchors(text: str) -> Counter[str]:
     return Counter(values)
 
 
+def _protected_spans(
+    text: str,
+    *,
+    protected_texts: Iterable[str] = (),
+) -> list[tuple[int, int]]:
+    candidates: list[tuple[int, int, int]] = []
+    for protected in protected_texts:
+        if not protected:
+            continue
+        cursor = 0
+        while True:
+            index = text.find(protected, cursor)
+            if index < 0:
+                break
+            candidates.append((index, index + len(protected), 0))
+            cursor = index + len(protected)
+    patterns = (
+        r"https?://[^\s)）\]】>]+",
+        r"《[^《》\n]{1,120}》",
+        r"“[^“”\n]{1,180}”",
+        r"「[^「」\n]{1,180}」",
+        r"『[^『』\n]{1,180}』",
+        r"\d{1,4}年\d{1,2}月(?:\d{1,2}日)?",
+        r"\d+(?:\.\d+)?(?:%|％|元|万元|亿元|美元|岁|人|次|条|章|页|字|公里|千米|米|小时|分钟|秒)?",
+    )
+    for priority, pattern in enumerate(patterns, start=1):
+        candidates.extend(
+            (match.start(), match.end(), priority)
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+        )
+    selected: list[tuple[int, int]] = []
+    for start, end, _priority in sorted(candidates, key=lambda item: (item[0], item[2], -(item[1] - item[0]))):
+        if any(start < kept_end and end > kept_start for kept_start, kept_end in selected):
+            continue
+        selected.append((start, end))
+    return sorted(selected)
+
+
 def _paragraph_count(text: str) -> int:
     return len([part for part in re.split(r"\n\s*\n|\n", text) if part.strip()])
 
@@ -871,9 +1163,35 @@ def _headings(text: str) -> tuple[str, ...]:
     values: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if re.match(r"^#{1,6}\s+", stripped) or re.match(r"^第[一二三四五六七八九十百千万\d]+[章节篇部卷]", stripped):
+        if _looks_like_heading(stripped):
             values.append(stripped)
     return tuple(values)
+
+
+def _looks_like_heading(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if re.match(r"^#{1,6}\s+", stripped) or re.match(
+        r"^第[一二三四五六七八九十百千万\d]+[章节篇部卷]",
+        stripped,
+    ):
+        return True
+    if len(stripped) > 32 or re.search(r"[。！？；，,:：]", stripped):
+        return False
+    # Stand-alone short lines in article manuscripts are usually section titles.
+    return len(re.findall(r"[\u3400-\u9fffA-Za-z]", stripped)) >= 2
+
+
+def _contains_model_explanation(text: str) -> bool:
+    value = (text or "").strip()
+    patterns = (
+        r"^(?:以下(?:是|为)|下面(?:是|为))[^\n]{0,24}(?:改写|润色|修改)(?:后|的|如下)",
+        r"^(?:改写|润色|修改)(?:后|结果|版本)?(?:如下|：|:)",
+        r"^(?:作为|身为)(?:一个)?AI",
+        r"(?:^|\n)(?:修改说明|改写说明|审稿说明)(?:：|:)",
+    )
+    return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _normalize_ocr_text(text: str) -> str:
