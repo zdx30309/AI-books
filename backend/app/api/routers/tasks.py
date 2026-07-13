@@ -30,7 +30,10 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
-from app.services.aigc_quality_gate import AIGC_POLICY_VERSION
+from app.services.aigc_quality_gate import (
+    AIGC_POLICY_VERSION,
+    aigc_category_eligible,
+)
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
     image_filename_from_markdown,
@@ -184,8 +187,7 @@ def _stamp_aigc_policy(config: dict) -> dict:
     """Snapshot the gate decision so future flag changes never touch old tasks."""
     cfg = dict(config or {})
     category = str(cfg.get("category") or "social_science").strip()
-    eligible = category not in {"comic_series", "healing_comic"}
-    required = bool(settings.AIGC_GATE_ENABLED and eligible)
+    required = bool(settings.AIGC_GATE_ENABLED and aigc_category_eligible(category))
     cfg.update(
         aigc_policy_version=AIGC_POLICY_VERSION,
         aigc_required=required,

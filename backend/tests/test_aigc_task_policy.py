@@ -8,21 +8,29 @@ from fastapi import HTTPException
 from app.api.routers import tasks as task_router
 from app.core.config import settings
 from app.models import Task, TaskStatus
-from app.services.aigc_quality_gate import AIGC_POLICY_VERSION
+from app.services.aigc_quality_gate import (
+    AIGC_EXCLUDED_CATEGORY_IDS,
+    AIGC_POLICY_VERSION,
+    aigc_category_eligible,
+)
 
 
-def test_new_tasks_snapshot_v2_but_comics_are_excluded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_tasks_snapshot_v2_but_comics_and_novels_are_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(settings, "AIGC_GATE_ENABLED", True)
 
     normal = task_router._stamp_aigc_policy({"category": "social_science"})  # noqa: SLF001
-    comic = task_router._stamp_aigc_policy({"category": "healing_comic"})  # noqa: SLF001
 
     assert normal["aigc_policy_version"] == AIGC_POLICY_VERSION
     assert normal["aigc_required"] is True
     assert normal["aigc_status"] == "pending"
-    assert comic["aigc_policy_version"] == AIGC_POLICY_VERSION
-    assert comic["aigc_required"] is False
-    assert comic["aigc_status"] == "not_required"
+    for category in AIGC_EXCLUDED_CATEGORY_IDS:
+        excluded = task_router._stamp_aigc_policy({"category": category})  # noqa: SLF001
+        assert excluded["aigc_policy_version"] == AIGC_POLICY_VERSION
+        assert excluded["aigc_required"] is False
+        assert excluded["aigc_status"] == "not_required"
+        assert aigc_category_eligible(category) is False
 
 
 def test_historical_task_retry_is_not_retroactively_stamped(monkeypatch: pytest.MonkeyPatch) -> None:

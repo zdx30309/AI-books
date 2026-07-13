@@ -50,6 +50,7 @@ from app.services.aigc_quality_gate import (
     AIGC_POLICY_VERSION,
     AigcManualReviewRequired,
     AigcQualityGateError,
+    aigc_category_eligible,
     enforce_aigc_quality_gate,
 )
 from app.utils.distributed_limiter import distributed_semaphore
@@ -6186,8 +6187,9 @@ async def generate_full_book(
         effective_aigc_required = (
             effective_aigc_required and aigc_policy_version == AIGC_POLICY_VERSION
         )
-    if normalized_category in {"healing_comic", "comic_series"}:
-        effective_aigc_required = False
+    effective_aigc_required = (
+        effective_aigc_required and aigc_category_eligible(normalized_category)
+    )
 
     async def finish_with_aigc(markdown: str) -> str:
         return await _apply_final_aigc_gate(

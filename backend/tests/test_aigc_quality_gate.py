@@ -141,7 +141,7 @@ def test_gate_blocks_rewrite_that_drops_numeric_or_quoted_anchors(
         asyncio.run(
             enforce_aigc_quality_gate(
                 source,
-                category="family_long_novel",
+                category="social_science",
                 rewrite_chunk=drops_anchors,
                 detector=_FakeDetector(),
             )

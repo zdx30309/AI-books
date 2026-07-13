@@ -60,6 +60,35 @@ class _RuleDetector:
         return AigcDetection(-1, score, suggestion, request_id=data_id)
 
 
+def test_excluded_novel_category_never_calls_detector_or_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_v2(monkeypatch)
+
+    class _ForbiddenDetector:
+        def detect(self, text: str, *, data_id: str) -> AigcDetection:
+            raise AssertionError(f"excluded category called detector: {data_id} {text[:20]}")
+
+    async def forbidden_model(*_args, **_kwargs) -> str:
+        raise AssertionError("excluded category called a paid model")
+
+    result = asyncio.run(
+        enforce_aigc_quality_gate(
+            _source(),
+            category="history_culture",
+            detector=_ForbiddenDetector(),
+            candidate_generators={"gemini": forbidden_model, "openai": forbidden_model},
+            quality_auditors={"gemini": forbidden_model, "openai": forbidden_model},
+            required=True,
+        )
+    )
+
+    assert result.status == "not_required"
+    assert result.passed is True
+    assert result.text == _source()
+    assert result.rounds == ()
+
+
 def test_score_50_is_rejected_even_when_suggestion_is_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_v2(monkeypatch, rounds=1)
     detector = _RuleDetector(lambda _text: (50, "Pass"))

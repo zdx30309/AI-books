@@ -61,6 +61,7 @@ from app.services.aigc_quality_gate import (
     AIGC_POLICY_VERSION,
     AigcManualReviewRequired,
     AigcTechnicalError,
+    aigc_category_eligible,
     enforce_aigc_quality_gate,
 )
 
@@ -2990,7 +2991,11 @@ def generate_family_chapter(
     chapter.content = content
     chapter.raw_model_output = content
     chapter.pre_aigc_content = content
-    chapter.aigc_policy_version = AIGC_POLICY_VERSION if settings.AIGC_GATE_ENABLED else None
+    chapter.aigc_policy_version = (
+        AIGC_POLICY_VERSION
+        if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
+        else None
+    )
     chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
     chapter.aigc_report = {}
     chapter.word_count = _word_count(content)
@@ -3143,6 +3148,8 @@ def _apply_family_aigc_gate(
     project_id: UUID,
     chapter_number: int,
 ) -> str:
+    if not aigc_category_eligible("family_long_novel"):
+        return text
     chapter = (
         db.query(LongNovelChapter)
         .filter(
@@ -3331,6 +3338,8 @@ def retry_family_chapter_aigc(
     user: User | None = None,
 ) -> LongNovelChapter:
     """Resume a preserved chapter at the AIGC gate without regenerating prose."""
+    if not aigc_category_eligible("family_long_novel"):
+        raise FamilyLongNovelError("小说类当前不启用朱雀 v2，不能重跑该阶段")
     project = _get_project(db, project_id, user)
     chapter = (
         db.query(LongNovelChapter)
@@ -3397,7 +3406,8 @@ def extract_family_chapter_state(
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
     if (
-        chapter.aigc_policy_version == AIGC_POLICY_VERSION
+        aigc_category_eligible("family_long_novel")
+        and chapter.aigc_policy_version == AIGC_POLICY_VERSION
         and chapter.aigc_status != "passed"
     ):
         raise FamilyLongNovelError("章节尚未通过 AIGC v2 终稿闸门，禁止抽取或写入状态账本")
@@ -3864,7 +3874,11 @@ def repair_family_chapter(
         prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
     )
     chapter.pre_aigc_content = repaired
-    chapter.aigc_policy_version = AIGC_POLICY_VERSION if settings.AIGC_GATE_ENABLED else None
+    chapter.aigc_policy_version = (
+        AIGC_POLICY_VERSION
+        if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
+        else None
+    )
     chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
     chapter.aigc_report = {}
     db.add(chapter)
@@ -4014,7 +4028,8 @@ def export_family_novel(db: Session, project_id: UUID, fmt: str, user: User | No
         for item in all_chapters
         if item.status == LongNovelChapterStatus.COMPLETED
         and (
-            item.aigc_policy_version != AIGC_POLICY_VERSION
+            not aigc_category_eligible("family_long_novel")
+            or item.aigc_policy_version != AIGC_POLICY_VERSION
             or item.aigc_status == "passed"
         )
     ]

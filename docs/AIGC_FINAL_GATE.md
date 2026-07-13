@@ -3,9 +3,11 @@
 ## 生效边界
 
 - 策略版本：`aigc_policy_version=v2`。
-- 只影响开关启用后新建的任务、明确“重新生成整篇”的任务，以及启用后新生成/明确修复的家长里短章节。
+- 只影响开关启用后新建或明确“重新生成整篇”的非小说任务。
 - 历史任务没有 v2 快照时，即使后来打开总开关，也不会被追溯检测、改写或回填。
-- 覆盖普通文章、古文/佛经、公版融合和家长里短长篇；排除漫画与 Epic Novel Engine。
+- 覆盖普通非小说文章、古文/佛经和公版融合。
+- 暂时排除全部现有小说入口：`history_culture`、`web_short_story`、`suspense_micro_reasoning`、`classical_chinese_novel_style`、家长里短长篇（`family_long_novel` / `family_sisters_in_law_longform`）及 Epic Novel Engine；漫画继续排除。
+- 排除判断在任务策略快照、正文引擎和朱雀服务三层执行；即使调用方误传 `required=true`，小说正文也直接返回 `not_required`，不调用腾讯、OpenAI 或 Gemini。
 - 自动完成的硬条件是所有正文块均为 `Suggestion=Pass` 且 `Score < 50`，并通过确定性保护、交叉质量审稿和现有分类 QA。
 - `Score=50` 不通过；腾讯返回 `Review` 或 `Block` 均不允许自动完成。
 - 无法兼顾质量和分数时，状态进入 `manual_review`，保留不可变原稿，不交付低质量候选。
@@ -46,7 +48,7 @@
 - 不新增事实、不删信息、不改立场、不改情节或事件。
 - 古文参照译写只检测和修改译文，原文段不进入检测块。
 - 公版融合在朱雀通过后重新做来源重合/输出残留 QA。
-- 家长里短章节只有朱雀 v2 通过后才能抽取状态；未通过时项目暂停、章节与计划标记 `needs_repair`，不写 canon/state 账本。
+- 家长里短长篇当前不进入朱雀 v2；其原有串行生成、连续性 QA 和状态账本规则保持不变。
 
 ## 状态与恢复
 
@@ -56,12 +58,13 @@
 | 分数或质量无法兼顾 | `manual_review` | 否 | 查看原稿与最佳安全候选；仅重跑朱雀阶段 |
 | 腾讯或模型技术故障 | `failed` / `technical_failed` | 否 | 自动重试或 AIGC-only 重试 |
 | 未绑定 v2 的历史任务 | 原状态 / `not_required` | 按历史规则 | 不受开关变化影响 |
+| 小说或漫画任务 | 原工作流 / `not_required` | 按原工作流规则 | 不进入朱雀，不产生本链路费用 |
 
 普通任务 AIGC-only 接口：`POST /api/v1/tasks/{task_id}/retry-aigc`。
 
 公版融合 AIGC-only 接口：`POST /api/v1/public-domain-rewrite/tasks/{task_id}/retry-aigc`。该入口复用 `04_format.md`、朱雀缓存和公版来源 QA 快照，不重新调用蓝图/成稿模型。
 
-家长里短 AIGC-only 接口：`POST /api/v1/long-novel/family/projects/{project_id}/chapters/{chapter_number}/retry-aigc`。
+家长里短 AIGC-only 接口暂时保留兼容路由，但在小说排除期间会明确拒绝重跑，不调用任何付费服务。
 
 普通/公版报告接口：`GET /api/v1/tasks/{task_id}/aigc-report`。前端显示不可变原稿、失败原因、最佳确定性安全候选、调用次数和估算成本。
 
@@ -108,7 +111,7 @@ TENCENT_AIGC_REGION=ap-beijing
 1. 部署代码但保持 `AIGC_GATE_ENABLED=False`。
 2. 部署前后分别计算历史已完成任务、章节和阶段文件哈希，确认零变化。
 3. 用户安全配置腾讯 `SecretId`、`SecretKey`、`BizType` 后执行真实连通性测试。
-4. 用全新输入创建 12 个代表性任务，覆盖社科、财经、科普/健康、传记/哲学、古文/佛经、公版融合及一个家长里短章节。
+4. 用全新输入创建 12 个非小说代表性任务，覆盖社科、财经、科普/健康、传记/哲学、古文/佛经和公版融合；小说、漫画与 Epic 不纳入本轮灰度。
 5. 所有自动完成稿必须全块 `Pass + <50`，质量审稿和分类 QA 全过，硬伤为零。
 6. 所有不达标稿必须进入人工复核，原稿 SHA-256 不变且不可下载。
 7. 通过稿由指定审稿人盲审：事实/情节零丢失，语言质量各项 `>=4/5`，之后才允许全量开启。

@@ -27,6 +27,26 @@ logger = logging.getLogger(__name__)
 
 AIGC_POLICY_VERSION = "v2"
 AIGC_PROMPT_VERSION = "v2.1"
+AIGC_EXCLUDED_CATEGORY_IDS = frozenset(
+    {
+        "comic_series",
+        "healing_comic",
+        "history_culture",
+        "web_short_story",
+        "suspense_micro_reasoning",
+        "classical_chinese_novel_style",
+        "family_long_novel",
+        "family_sisters_in_law_longform",
+        "epic_novel",
+        "epic_novel_engine",
+    }
+)
+
+
+def aigc_category_eligible(category: object) -> bool:
+    """Return whether a product category may enter the paid AIGC v2 gate."""
+    category_id = str(category or "").strip().casefold()
+    return category_id not in AIGC_EXCLUDED_CATEGORY_IDS
 
 
 class AigcQualityGateError(RuntimeError):
@@ -1142,6 +1162,14 @@ async def enforce_aigc_quality_gate(
     production path omits it and uses Gemini first, then lazily escalates to
     OpenAI with the opposite provider performing the semantic audit.
     """
+    if not aigc_category_eligible(category):
+        return AigcGateResult(
+            text=text,
+            passed=True,
+            max_score=0,
+            rounds=(),
+            status="not_required",
+        )
     active = settings.AIGC_GATE_ENABLED if required is None else bool(required)
     if not active:
         return AigcGateResult(text=text, passed=True, max_score=0, rounds=(), status="not_required")
@@ -1586,6 +1614,7 @@ async def enforce_aigc_quality_gate(
 
 
 __all__ = [
+    "AIGC_EXCLUDED_CATEGORY_IDS",
     "AIGC_POLICY_VERSION",
     "AIGC_PROMPT_VERSION",
     "AigcDetection",
@@ -1596,6 +1625,7 @@ __all__ = [
     "AigcTechnicalError",
     "AigcTextChunk",
     "TencentAigcDetector",
+    "aigc_category_eligible",
     "aigc_gate_configured",
     "build_aigc_chunks",
     "enforce_aigc_quality_gate",

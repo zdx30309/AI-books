@@ -870,11 +870,22 @@ def test_postprocess_failure_preserves_body_but_never_silently_completes() -> No
     assert "fallback state after postprocess error" not in source
 
 
-def test_family_aigc_runs_before_state_and_never_upgrades_historical_chapter_from_flag() -> None:
+def test_family_novel_is_excluded_from_aigc_without_changing_historical_chapters() -> None:
     gate_source = inspect.getsource(family_long_novel._apply_family_aigc_gate)
     postprocess_source = inspect.getsource(family_long_novel._postprocess_family_chapter)
     retry_source = inspect.getsource(family_long_novel.retry_family_chapter_aigc)
+    generation_source = inspect.getsource(family_long_novel.generate_family_chapter)
+    repair_source = inspect.getsource(family_long_novel.repair_family_chapter)
+    state_source = inspect.getsource(family_long_novel.extract_family_chapter_state)
+    export_source = inspect.getsource(family_long_novel.export_family_novel)
 
+    assert family_long_novel.aigc_category_eligible("family_long_novel") is False
+    assert 'not aigc_category_eligible("family_long_novel")' in gate_source
+    assert 'not aigc_category_eligible("family_long_novel")' in retry_source
+    assert 'aigc_category_eligible("family_long_novel")' in generation_source
+    assert 'aigc_category_eligible("family_long_novel")' in repair_source
+    assert 'aigc_category_eligible("family_long_novel")' in state_source
+    assert 'not aigc_category_eligible("family_long_novel")' in export_source
     assert "04_format.md" in gate_source
     assert "output_dir=output_dir" in gate_source
     assert postprocess_source.index("_apply_family_aigc_gate") < postprocess_source.index("extract_family_chapter_state")
