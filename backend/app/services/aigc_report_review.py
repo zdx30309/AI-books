@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
@@ -88,7 +89,7 @@ def parse_zhuque_report(
     filename: str = "zhuque-report.pdf",
     target_human_percent: float | None = None,
 ) -> dict[str, Any]:
-    original = (original_text or "").strip()
+    original = normalize_manuscript_text(original_text)
     if not original:
         raise ZhuqueReportError("必须同时提供送检时使用的可编辑原稿；仅靠图片型报告无法安全还原全文。")
     if len(original) > int(settings.AIGC_REVIEW_MAX_MANUSCRIPT_CHARS):
@@ -441,7 +442,7 @@ def optimize_report_segments(
 ) -> dict[str, Any]:
     """Create one low-cost candidate and keep it gated behind a quality audit."""
     request_id = str(uuid4())
-    original = (original_text or "").strip()
+    original = normalize_manuscript_text(original_text)
     normalized_segments = [
         item if isinstance(item, ZhuqueSegment) else ZhuqueSegment(**item) for item in segments
     ]
@@ -921,7 +922,13 @@ def _gemini_flash_lite_cost_cny(input_tokens: int, output_tokens: int) -> float:
 
 
 def sha256_text(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+    return hashlib.sha256(normalize_manuscript_text(text).encode("utf-8")).hexdigest()
+
+
+def normalize_manuscript_text(text: str | None) -> str:
+    """Canonicalize browser multipart/JSON line endings before hashing or mapping."""
+    value = unicodedata.normalize("NFC", text or "")
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def _sha256_bytes(value: bytes) -> str:

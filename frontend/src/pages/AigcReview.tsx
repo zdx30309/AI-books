@@ -39,6 +39,10 @@ function downloadText(text: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function normalizeManuscriptText(text: string) {
+  return text.replace(/\r\n?/g, "\n").trim();
+}
+
 export function AigcReview() {
   const [contentType, setContentType] = useState<AigcReviewContentType>("article");
   const [originalText, setOriginalText] = useState("");
@@ -75,7 +79,11 @@ export function AigcReview() {
     setResult(null);
     setRecheck(null);
     try {
-      const parsed = await api.parseAigcReviewReport(reportFile, originalText.trim(), contentType);
+      const parsed = await api.parseAigcReviewReport(
+        reportFile,
+        normalizeManuscriptText(originalText),
+        contentType,
+      );
       setReport(parsed);
       setSelectedIds(new Set(parsed.recommended_segment_ids));
     } catch (err) {
@@ -96,7 +104,7 @@ export function AigcReview() {
     setRecheck(null);
     try {
       const response = await api.optimizeAigcReview({
-        original_text: originalText.trim(),
+        original_text: normalizeManuscriptText(originalText),
         original_sha256: report.original_sha256,
         content_type: contentType,
         segments: report.segments,

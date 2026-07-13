@@ -8,6 +8,7 @@ from app.services import aigc_report_review as review
 from app.services.aigc_report_review import (
     ZhuqueSegment,
     map_segments_to_original,
+    normalize_manuscript_text,
     optimize_report_segments,
     parse_report_overview,
     parse_report_segment_rows,
@@ -15,6 +16,7 @@ from app.services.aigc_report_review import (
     recommend_target_segments,
     report_source_match_confidence,
     review_deterministic_constraints,
+    sha256_text,
 )
 
 
@@ -38,6 +40,14 @@ AI特征 37.83%
 片段13 4.65% 806 0.9947
 片段14 3.18% 552 0.9805
 """
+
+
+def test_multipart_crlf_and_json_lf_share_one_canonical_hash() -> None:
+    multipart_text = "第一段。\r\n\r\n第二段包含260元。\r\n"
+    json_text = "第一段。\n\n第二段包含260元。"
+
+    assert normalize_manuscript_text(multipart_text) == json_text
+    assert sha256_text(multipart_text) == sha256_text(json_text)
 
 
 def test_real_report_summary_and_rows_are_parsed() -> None:

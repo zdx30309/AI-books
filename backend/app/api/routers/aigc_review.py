@@ -14,6 +14,7 @@ from app.services.aigc_report_review import (
     AigcReviewModelError,
     ZhuqueReportError,
     model_strategy,
+    normalize_manuscript_text,
     optimize_report_segments,
     parse_zhuque_report,
     sha256_text,
@@ -82,7 +83,7 @@ async def optimize_aigc_report(
     req: OptimizeAigcReviewRequest,
     _user: User = Depends(get_current_user),
 ) -> dict:
-    original = req.original_text.strip()
+    original = normalize_manuscript_text(req.original_text)
     if sha256_text(original) != req.original_sha256:
         raise HTTPException(
             status_code=409,
