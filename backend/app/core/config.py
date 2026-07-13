@@ -139,6 +139,17 @@ class Settings(BaseSettings):
     TENCENT_AIGC_BIZ_TYPE: str = ""
     TENCENT_AIGC_REGION: str = "ap-beijing"
 
+    # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
+    AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
+    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
+    AIGC_REVIEW_HUMAN_TARGET: float = 60.0
+    AIGC_REVIEW_MAX_MANUSCRIPT_CHARS: int = 200_000
+    AIGC_REVIEW_MAX_PDF_BYTES: int = 30_000_000
+    AIGC_REVIEW_MAX_PDF_PAGES: int = 40
+    AIGC_REVIEW_OCR_SCALE: float = 1.5
+    AIGC_REVIEW_OCR_RETRY_SCALE: float = 2.2
+    AIGC_REVIEW_OCR_MAX_SCAN_PAGES: int = 6
+
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"

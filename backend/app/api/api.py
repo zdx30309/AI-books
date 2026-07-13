@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 
 from app.api.routers import (
+    aigc_review_router,
     auth_router,
     covers_router,
     data_analysis_router,
@@ -19,6 +20,7 @@ from app.api.routers import (
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(aigc_review_router)
 api_router.include_router(long_novel_router)
 api_router.include_router(long_novel_family_router)
 api_router.include_router(auth_router)

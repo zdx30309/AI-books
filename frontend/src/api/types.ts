@@ -379,6 +379,110 @@ export interface AigcQualityReport {
   [key: string]: unknown;
 }
 
+// Report-driven Zhuque review (independent from the automatic task gate)
+
+export type AigcReviewContentType = "article" | "classical" | "public_domain";
+
+export interface AigcReviewSegment {
+  segment_id: number;
+  share_percent: number;
+  char_count: number;
+  aigc_value: number;
+  label: "human" | "suspected" | "ai";
+  start: number;
+  end: number;
+  mapped_text: string;
+  mapping_confidence: number;
+  recommended: boolean;
+}
+
+export interface AigcReviewStrategy {
+  rewrite_model: string;
+  audit_model: string;
+  rewrite_thinking: string;
+  candidate_count: number;
+  audit_scope: string;
+  ocr: string;
+  human_pass_rule: string;
+  safety_target_percent: number;
+  global_gate_changed: boolean;
+  novel_workflows_included: boolean;
+}
+
+export interface AigcReviewReport {
+  policy_version: string;
+  prompt_version: string;
+  filename: string;
+  report_sha256: string;
+  original_sha256: string;
+  extraction_method: string;
+  page_count: number;
+  human_percent: number;
+  suspected_percent: number;
+  ai_percent: number;
+  strict_pass: boolean;
+  source_match_verified: boolean;
+  source_match_confidence: number;
+  source_match_sample_chars: number;
+  strict_threshold: number;
+  target_human_percent: number;
+  projected_human_percent: number;
+  recommended_segment_ids: number[];
+  segments: AigcReviewSegment[];
+  warnings: string[];
+  model_strategy: AigcReviewStrategy;
+}
+
+export interface OptimizeAigcReviewRequest {
+  original_text: string;
+  original_sha256: string;
+  content_type: AigcReviewContentType;
+  segments: AigcReviewSegment[];
+  selected_segment_ids: number[];
+}
+
+export interface AigcReviewQualityAudit {
+  pass: boolean;
+  semantic_fidelity: number;
+  information_completeness: number;
+  fluency: number;
+  voice_continuity: number;
+  no_added_facts: boolean;
+  no_removed_information: boolean;
+  no_stance_change: boolean;
+  no_plot_or_event_change: boolean;
+  failed_segment_ids: number[];
+  reason: string;
+}
+
+export interface AigcReviewOptimizeResult {
+  request_id: string;
+  status: "candidate_ready" | "manual_review";
+  deliverable: boolean;
+  next_action: string;
+  original_sha256: string;
+  candidate_sha256: string | null;
+  original_text: string;
+  candidate_text: string;
+  guarded_candidate_preview?: string;
+  selected_segment_ids: number[];
+  segment_results: Array<Record<string, unknown>>;
+  quality_audit: AigcReviewQualityAudit | null;
+  cost: {
+    currency: string;
+    estimated: boolean;
+    input_tokens: number;
+    output_tokens: number;
+    estimated_cny: number;
+  };
+  models: {
+    rewrite: string;
+    audit: string;
+    rewrite_thinking: string;
+  };
+  prompt_version: string;
+}
+
 // 鉴权
 
 export interface RegisterRequest {

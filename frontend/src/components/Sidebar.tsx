@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   LogOut,
   ScrollText,
+  ShieldCheck,
   User,
 } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
@@ -20,6 +21,7 @@ const navItems = [
   { to: "/epic-novel", label: "史诗长篇", icon: BookOpenCheck, end: false },
   { to: "/covers", label: "封面书架", icon: Images, end: false },
   { to: "/public-domain-rewrite", label: "公版融合改写", icon: ScrollText, end: false },
+  { to: "/aigc-review", label: "AI 审稿降率", icon: ShieldCheck, end: false },
   { to: "/weread", label: "推荐值工具", icon: FileSpreadsheet, end: false },
   { to: "/data-analysis", label: "数据分析", icon: BarChart3, end: false },
   { to: "/profile", label: "个人中心", icon: User, end: false },

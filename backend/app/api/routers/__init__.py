@@ -1,5 +1,6 @@
 """API router package."""
 from app.api.routers.auth import router as auth_router
+from app.api.routers.aigc_review import router as aigc_review_router
 from app.api.routers.covers import router as covers_router
 from app.api.routers.data_analysis import router as data_analysis_router
 from app.api.routers.epic_novel import router as epic_novel_router
@@ -14,6 +15,7 @@ from app.api.routers.weread import router as weread_router
 
 __all__ = [
     "auth_router",
+    "aigc_review_router",
     "covers_router",
     "data_analysis_router",
     "epic_novel_router",

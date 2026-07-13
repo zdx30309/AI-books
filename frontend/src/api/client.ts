@@ -10,6 +10,11 @@ import type {
   BatchRetryTaskRequest,
   BatchRetryTaskResponse,
   AigcQualityReport,
+  AigcReviewContentType,
+  AigcReviewOptimizeResult,
+  AigcReviewReport,
+  AigcReviewStrategy,
+  OptimizeAigcReviewRequest,
   ChapterResponse,
   ChapterUpdateRequest,
   ClassicalReferenceTemplateResponse,
@@ -626,6 +631,23 @@ export const api = {
       sources: Array<Omit<PublicDomainRewriteRequest["sources"][number], "text">>;
     },
   ) => uploadPublicDomainRewriteFiles<PublicDomainRewriteResponse>(files, metadata),
+
+  // 独立朱雀报告审稿台：不修改历史任务，不依赖全局闸门
+  getAigcReviewStrategy: () => request<AigcReviewStrategy>("/aigc-review/strategy"),
+  parseAigcReviewReport: (
+    file: File,
+    originalText: string,
+    contentType: AigcReviewContentType = "article",
+  ) =>
+    uploadFile<AigcReviewReport>("/aigc-review/report", file, {
+      original_text: originalText,
+      content_type: contentType,
+    }),
+  optimizeAigcReview: (body: OptimizeAigcReviewRequest) =>
+    request<AigcReviewOptimizeResult>("/aigc-review/optimize", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // 系统健康（检测 Celery worker 是否在线）
   createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>
