@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
+  BookMarked,
   CheckCircle2,
   Download,
   FileSearch,
@@ -10,6 +11,7 @@ import {
   Sparkles,
   UploadCloud,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api } from "@/api/client";
 import type {
   AigcReviewContentType,
@@ -79,7 +81,7 @@ export function AigcReview() {
   const [recheck, setRecheck] = useState<AigcReviewReport | null>(null);
   const [comparison, setComparison] = useState<AigcReviewComparison | null>(null);
   const [iteration, setIteration] = useState(1);
-  const [rewriteProvider, setRewriteProvider] = useState<AigcReviewRewriteProvider>("grok");
+  const [rewriteProvider, setRewriteProvider] = useState<AigcReviewRewriteProvider>("deepseek");
   const [rewriteReasoning, setRewriteReasoning] = useState<"low" | "medium" | "high">("low");
   const [parsing, setParsing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
@@ -160,6 +162,7 @@ export function AigcReview() {
         preferred_strategy: preferredStrategy,
         rewrite_provider: rewriteProvider,
         rewrite_reasoning_effort: rewriteReasoning,
+        baseline_report: report,
       });
       setResult(response);
       setIteration(targetIteration);
@@ -210,8 +213,13 @@ export function AigcReview() {
             上传朱雀打印 PDF，并粘贴送检时的同一份原稿。系统只改报告指出的风险片段，先守住事实与文稿质量，再等待真实朱雀复检；人工特征严格大于 50% 才算通过。
           </p>
         </div>
-        <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-          本地 OCR：0 元<br />Grok 4.5 · 默认 low 省费，可选 high<br />Gemini Flash-Lite 一次整稿终审
+        <div className="flex flex-col items-stretch gap-3">
+          <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
+            本地 OCR：0 元<br />DeepSeek 默认改写 · Grok 仅手动可选<br />Gemini Flash-Lite 一次整稿终审
+          </div>
+          <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
+            <BookMarked className="h-4 w-4" />进入 AI 审稿书架
+          </Link>
         </div>
       </section>
 
@@ -383,6 +391,15 @@ export function AigcReview() {
             </div>
           </div>
 
+          {result.archive_task_id && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-100">
+              <span>本轮原稿、审稿候选、质量结果和朱雀报告已自动归档。</span>
+              <Link to={`/book/${result.archive_task_id}`} className="inline-flex items-center gap-2 text-gold-100 hover:text-gold-50">
+                <BookMarked className="h-4 w-4" />查看书架稿件
+              </Link>
+            </div>
+          )}
+
           {result.status === "manual_review" ? (
             <div className="mt-5 space-y-4">
               <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
@@ -451,6 +468,11 @@ export function AigcReview() {
                     <div className={item.material_rewrite_advisory_passed ? "text-emerald-200" : "text-amber-200"}>
                       {item.material_rewrite_advisory_passed ? "降率信号达到参考目标" : "降率信号偏弱，但不拦截真实朱雀复检"}
                     </div>
+                    {item.style_diagnosis && (
+                      <div className="mt-2 border-t border-gold-500/10 pt-2 text-warm-400">
+                        局部诊断：{item.style_diagnosis.replace(/\s+/g, " ")}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -476,19 +498,19 @@ export function AigcReview() {
                   {comparison && (
                     <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm leading-6 text-warm-300">
                       <div className="font-medium text-warm-50">真实复检归因</div>
-                      <div className="mt-2">选中区域加权 AIGC 值变化：{comparison.selected_weighted_delta > 0 ? "+" : ""}{comparison.selected_weighted_delta.toFixed(4)}；负数才是改善。</div>
+                      <div className="mt-2">本轮真正转绿：{comparison.selected_humanized_share_percent.toFixed(2)}% 全文占比；加权 AIGC 值变化 {comparison.selected_weighted_delta > 0 ? "+" : ""}{comparison.selected_weighted_delta.toFixed(4)} 只作辅助，不再把红转橙当成功。</div>
                       <div className="mt-3 space-y-2">
                         {comparison.strategy_effectiveness.map((item) => (
                           <div key={item.strategy_id} className="flex items-center justify-between gap-3 border-t border-gold-500/10 pt-2">
                             <span>{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 片段 {item.segment_ids.map((id) => `#${id}`).join("、")}</span>
-                            <span className={item.weighted_delta <= -0.01 ? "text-emerald-200" : item.weighted_delta >= 0.01 ? "text-red-200" : "text-amber-200"}>{item.weighted_delta > 0 ? "+" : ""}{item.weighted_delta.toFixed(4)}</span>
+                            <span className={item.green_conversion_rate > 0 ? "text-emerald-200" : "text-amber-200"}>转绿 {(item.green_conversion_rate * 100).toFixed(1)}% · Δ {item.weighted_delta > 0 ? "+" : ""}{item.weighted_delta.toFixed(4)}</span>
                           </div>
                         ))}
                       </div>
                       <div className="mt-3 text-xs text-warm-400">{comparison.recommendation_reason}</div>
                       {comparison.historical_strategy_summary.length > 0 && (
                         <div className="mt-3 rounded-md border border-gold-500/10 px-3 py-2 text-xs text-warm-400">
-                          累计真实复检：{comparison.historical_strategy_summary.map((item) => `${strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} ${item.experiment_count} 次 / 均值 ${item.average_weighted_delta > 0 ? "+" : ""}${item.average_weighted_delta.toFixed(4)}`).join("；")}
+                          累计真实复检：{comparison.historical_strategy_summary.map((item) => `${strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} ${item.experiment_count} 次 / 平均转绿 ${(item.average_green_conversion_rate * 100).toFixed(1)}% / AIGC Δ ${item.average_weighted_delta > 0 ? "+" : ""}${item.average_weighted_delta.toFixed(4)}`).join("；")}
                         </div>
                       )}
                       {comparison.historical_feature_summary.length > 0 ? (

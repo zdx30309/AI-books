@@ -121,6 +121,7 @@ interface BookshelfProps {
   allCategoryLabel?: string;
   emptyTitle?: string;
   emptyDescription?: string;
+  showCreateButton?: boolean;
 }
 
 export function Bookshelf({
@@ -130,6 +131,7 @@ export function Bookshelf({
   allCategoryLabel = "全部分类",
   emptyTitle = "书架还空着",
   emptyDescription = "点击「开始创作」，把第一段视频思想写成你的第一本书",
+  showCreateButton = true,
 }: BookshelfProps = {}) {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
@@ -545,14 +547,16 @@ export function Bookshelf({
               <span className="tracking-widest">继续失败任务 ({failedTaskIds.length})</span>
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="btn-gold"
-          >
-            <Plus className="h-4 w-4" strokeWidth={2} />
-            <span className="tracking-widest">新建书稿</span>
-          </button>
+          {showCreateButton && (
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              className="btn-gold"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2} />
+              <span className="tracking-widest">新建书稿</span>
+            </button>
+          )}
         </div>
       </div>
 

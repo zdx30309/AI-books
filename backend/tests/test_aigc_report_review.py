@@ -153,7 +153,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     assert captured["model"] == "grok-4.5"
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
-    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.3:")
+    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.4:")
     assert usage["cached_input_tokens"] == 400
     assert usage["reasoning_tokens"] == 80
     assert usage["cost_cny"] > 0
@@ -774,3 +774,161 @@ def test_real_wdx_to_eeee_reports_are_aligned_and_expose_failed_direction(
     assert compared["historical_strategy_summary"][0]["experiment_count"] == 1
     assert compared["historical_feature_summary"] == []
     assert (tmp_path / f"{compared['comparison_id']}.json").exists()
+
+
+def test_flexible_protocol_preserves_new_paragraph_boundaries_and_anchors() -> None:
+    original = "第一段记录260元这一既有事实，并说明原来的条件。\n\n第二段保留结论。"
+    protocol = prepare_rewrite_protocol(original, flexible_paragraphs=True)
+
+    assert len(protocol.block_payloads) == 1
+    raw = protocol.prompt_segment.replace(
+        "这一既有事实，并说明原来的条件。",
+        "这个数字对应原有条件。\n\n条件仍按原稿保留。",
+    )
+    candidate, issues, structured = parse_rewrite_candidate(raw, protocol)
+
+    assert structured is True
+    assert issues == []
+    assert "260元" in candidate
+    assert candidate.count("\n\n") == 2
+    deterministic = review_deterministic_constraints(
+        original,
+        candidate,
+        preserve_paragraph_count=False,
+    )
+    assert deterministic.paragraph_count_preserved is False
+    assert review.deterministic_hard_safety_passed(
+        deterministic,
+        require_paragraph_preservation=False,
+    ) is True
+
+
+def test_flexible_resegmentation_cannot_reorder_dates_or_numbers() -> None:
+    original = "1899年发生第一件事，共260元。\n\n1903年发生第二件事，共300元。"
+    candidate = "1903年发生第二件事，共300元。\n\n1899年发生第一件事，共260元。"
+
+    deterministic = review_deterministic_constraints(
+        original,
+        candidate,
+        preserve_paragraph_count=False,
+    )
+
+    assert deterministic.anchors_preserved is False
+    assert any("锚点顺序" in reason for reason in deterministic.reasons)
+
+
+def test_article_can_resegment_but_classical_keeps_paragraph_boundary_gate() -> None:
+    original = "第一段保留260元事实。\n\n第二段保留原有结论。"
+    candidate = "260元这一事实仍在，原有结论也完整保留。"
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+
+    article = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        content_type="article",
+        rewrite_fn=lambda *_args, **_kwargs: candidate,
+        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+    )
+    classical = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        content_type="classical",
+        rewrite_fn=lambda *_args, **_kwargs: candidate,
+        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+    )
+
+    assert article["status"] == "candidate_ready"
+    assert classical["status"] == "manual_review"
+
+
+def test_segment_mapping_snaps_nearby_estimate_to_existing_paragraph_boundary() -> None:
+    source = "甲" * 90 + "\n\n" + "乙" * 90
+    rows = [
+        {"segment_id": 1, "share_percent": 55.56, "char_count": 100, "aigc_value": 0.99, "label": "ai"},
+        {"segment_id": 2, "share_percent": 44.44, "char_count": 80, "aigc_value": 0.90, "label": "suspected"},
+    ]
+
+    mapped = map_segments_to_original(rows, source)
+
+    assert mapped[0].end == 92
+    assert mapped[1].start == 92
+    assert mapped[0].mapped_text.endswith("\n\n")
+    assert mapped[1].mapped_text.startswith("乙")
+
+
+def test_prompt_receives_real_report_signal_and_local_style_diagnosis() -> None:
+    source = "1899年，他进入学校。\n\n1903年，他完成学业。\n\n随后，他开始任职。"
+    prompt = render_rewrite_prompt(
+        segment_id=7,
+        original_segment=source,
+        previous_context="",
+        next_context="",
+        segment_signal="AIGC 值=0.9972；报告分类=ai",
+        style_diagnosis=review.diagnose_segment_style(source),
+        flexible_paragraphs=True,
+    )
+
+    assert "0.9972" in prompt
+    assert "时间词起段占比" in prompt
+    assert "允许在块内重新分段" in prompt
+    assert "红色区间降到橙色区间不等于成功" in prompt
+
+
+def test_real_feedback_repeats_only_a_strategy_that_created_green_share(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    def segments(scores):
+        return [
+            {
+                "segment_id": index,
+                "share_percent": 50.0,
+                "char_count": 100,
+                "aigc_value": score,
+                "label": review.classify_aigc_value(score),
+                "start": (index - 1) * 100,
+                "end": index * 100,
+                "mapped_text": "甲" * 100,
+                "mapping_confidence": 1.0,
+                "recommended": True,
+            }
+            for index, score in enumerate(scores, start=1)
+        ]
+
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    baseline = {
+        "report_sha256": "before",
+        "original_sha256": "original",
+        "human_percent": 0,
+        "segments": segments([0.995, 0.995]),
+    }
+    recheck = {
+        "report_sha256": "after",
+        "original_sha256": "candidate",
+        "human_percent": 50,
+        "strict_pass": False,
+        "source_match_verified": True,
+        "segments": segments([0.80, 0.40]),
+    }
+    optimized = {
+        "request_id": "green-test",
+        "original_sha256": "original",
+        "candidate_sha256": "candidate",
+        "selected_segment_ids": [1, 2],
+        "segment_results": [
+            {"segment_id": 1, "strategy_id": "syntax_rebuild"},
+            {"segment_id": 2, "strategy_id": "evidence_first"},
+        ],
+    }
+
+    compared = compare_zhuque_reports(baseline, recheck, optimized)
+
+    assert compared["selected_humanized_share_percent"] == 50.0
+    assert compared["recommended_next_strategy"] == "evidence_first"
+    by_strategy = {item["strategy_id"]: item for item in compared["strategy_effectiveness"]}
+    assert by_strategy["syntax_rebuild"]["green_conversion_rate"] == 0
+    assert by_strategy["evidence_first"]["green_conversion_rate"] == 1

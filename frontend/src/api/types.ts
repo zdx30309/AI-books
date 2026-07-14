@@ -443,6 +443,7 @@ export interface AigcReviewReport {
   prompt_version: string;
   filename: string;
   report_sha256: string;
+  report_storage_id?: string;
   original_sha256: string;
   extraction_method: string;
   page_count: number;
@@ -474,6 +475,8 @@ export interface OptimizeAigcReviewRequest {
   preferred_strategy?: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
   rewrite_provider?: AigcReviewRewriteProvider;
   rewrite_reasoning_effort?: "low" | "medium" | "high";
+  title?: string | null;
+  baseline_report?: AigcReviewReport;
 }
 
 export interface AigcReviewQualityAudit {
@@ -538,6 +541,9 @@ export interface AigcReviewSegmentResult {
   status: "ready" | "rejected";
   original_chars: number;
   candidate_chars: number;
+  report_aigc_value?: number;
+  report_label?: "human" | "suspected" | "ai";
+  style_diagnosis?: string;
   rewrite_attempts: number;
   attempts: AigcReviewRewriteAttempt[];
   deterministic_review: AigcReviewDeterministicReview;
@@ -578,6 +584,7 @@ export interface AigcReviewOptimizeResult {
     rewrite_thinking: string;
   };
   prompt_version: string;
+  archive_task_id?: string;
 }
 
 export interface AigcReviewComparison {
@@ -590,6 +597,7 @@ export interface AigcReviewComparison {
   baseline_weighted_aigc: number;
   recheck_weighted_aigc: number;
   selected_weighted_delta: number;
+  selected_humanized_share_percent: number;
   strict_pass: boolean;
   segment_deltas: Array<{
     segment_id: number;
@@ -598,6 +606,9 @@ export interface AigcReviewComparison {
     share_percent: number;
     before_aigc_value: number;
     after_aigc_value: number;
+    before_label: "human" | "suspected" | "ai";
+    after_label: "human" | "suspected" | "ai";
+    became_human: boolean;
     delta: number;
     verdict: "strong_improvement" | "improvement" | "neutral" | "worse";
     style_feature_version: string | null;
@@ -607,6 +618,8 @@ export interface AigcReviewComparison {
     strategy_id: string;
     segment_ids: number[];
     weighted_delta: number;
+    humanized_share_percent: number;
+    green_conversion_rate: number;
     verdict: "strong_improvement" | "improvement" | "neutral" | "worse";
   }>;
   recommended_next_strategy: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
@@ -616,6 +629,8 @@ export interface AigcReviewComparison {
     strategy_id: string;
     experiment_count: number;
     average_weighted_delta: number;
+    average_green_conversion_rate: number;
+    green_experiment_count: number;
     improvement_count: number;
     worse_count: number;
   }>;
@@ -628,6 +643,7 @@ export interface AigcReviewComparison {
     evidence_grade: "exploratory" | "directional" | "local_surrogate_ready";
   }>;
   prompt_version: string;
+  archive_task_id?: string;
 }
 
 // 鉴权

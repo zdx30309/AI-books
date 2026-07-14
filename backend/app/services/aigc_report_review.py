@@ -31,6 +31,7 @@ from openai import OpenAI
 from app.core.config import PROJECT_ROOT, settings
 from app.services.aigc_style_probe import (
     STYLE_FEATURE_VERSION,
+    profile_style,
     style_feature_delta,
     summarize_feature_effects,
 )
@@ -40,7 +41,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v3.3"
+PROMPT_VERSION = "zhuque-report-review-v3.4"
 STRICT_HUMAN_THRESHOLD = 50.0
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
@@ -50,6 +51,7 @@ _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
+_DIAGNOSTIC_RULES_PATH = _PROMPT_DIR / "aigc_report_diagnostic_rules.json"
 _EXPERIMENT_DIR = PROJECT_ROOT / ".local" / "aigc_review_experiments"
 _OCR_LOCK = threading.Lock()
 
@@ -116,6 +118,7 @@ class RewriteProtocol:
     block_payloads: tuple[str, ...]
     protected_values: tuple[tuple[str, str], ...]
     protected_block_indexes: tuple[tuple[str, int], ...] = ()
+    flexible_paragraphs: bool = False
 
     @property
     def prompt_segment(self) -> str:
@@ -431,12 +434,16 @@ def map_segments_to_original(rows: Iterable[dict[str, Any]], original_text: str)
     actual_total = len(positions)
     confidence = max(0.0, 1.0 - abs(actual_total - expected_total) / max(actual_total, expected_total))
     cumulative = 0
-    raw_boundaries = [0]
+    proportional_boundaries = [0]
     for item in ordered[:-1]:
         cumulative += int(item["char_count"])
         unit_index = min(actual_total - 1, max(0, round(cumulative / expected_total * actual_total)))
-        raw_boundaries.append(positions[unit_index])
-    raw_boundaries.append(len(original_text))
+        proportional_boundaries.append(positions[unit_index])
+    proportional_boundaries.append(len(original_text))
+    raw_boundaries = _snap_boundaries_to_paragraphs(
+        original_text,
+        proportional_boundaries,
+    )
 
     mapped: list[ZhuqueSegment] = []
     for index, item in enumerate(ordered):
@@ -458,6 +465,46 @@ def map_segments_to_original(rows: Iterable[dict[str, Any]], original_text: str)
             )
         )
     return mapped
+
+
+def _snap_boundaries_to_paragraphs(text: str, boundaries: list[int]) -> list[int]:
+    """Keep report-position mapping, but avoid cutting editable prose mid-paragraph.
+
+    Zhuque exposes row sizes rather than exact character offsets. Proportional offsets
+    are therefore estimates. Rewriting from a mid-sentence estimate was preserving the
+    detector's larger rhetorical skeleton and occasionally produced awkward seams.
+    Snapping only nearby internal offsets to existing paragraph boundaries gives the
+    rewrite model complete editorial units without pretending to know Tencent's hidden
+    segmentation.
+    """
+    if len(boundaries) <= 2:
+        return boundaries
+    paragraph_starts = sorted(
+        {
+            match.end()
+            for match in re.finditer(r"\n[\t ]*(?:\n[\t ]*)*", text)
+            if 0 < match.end() < len(text)
+        }
+    )
+    if not paragraph_starts:
+        return boundaries
+    snapped = [0]
+    for index, raw in enumerate(boundaries[1:-1], start=1):
+        previous_raw = boundaries[index - 1]
+        next_raw = boundaries[index + 1]
+        local_span = max(1, min(raw - previous_raw, next_raw - raw))
+        tolerance = min(180, max(24, int(local_span * 0.35)))
+        candidates = [
+            value
+            for value in paragraph_starts
+            if snapped[-1] < value < next_raw and abs(value - raw) <= tolerance
+        ]
+        candidate = min(candidates, key=lambda value: abs(value - raw)) if candidates else raw
+        if candidate <= snapped[-1]:
+            candidate = raw
+        snapped.append(candidate)
+    snapped.append(len(text))
+    return snapped
 
 
 def recommend_target_segments(
@@ -587,6 +634,9 @@ def compare_zhuque_reports(
         )
         before_score = float(baseline.get("aigc_value") or 0.0)
         delta = after_score - before_score
+        before_label = classify_aigc_value(before_score)
+        after_label = classify_aigc_value(after_score)
+        became_human = before_label != "human" and after_label == "human"
         rows.append(
             {
                 "segment_id": segment_id,
@@ -595,6 +645,9 @@ def compare_zhuque_reports(
                 "share_percent": round(float(baseline.get("share_percent") or 0.0), 4),
                 "before_aigc_value": round(before_score, 6),
                 "after_aigc_value": round(after_score, 6),
+                "before_label": before_label,
+                "after_label": after_label,
+                "became_human": became_human,
                 "delta": round(delta, 6),
                 "verdict": _delta_verdict(delta),
                 "style_feature_version": result_by_segment.get(segment_id, {}).get(
@@ -618,24 +671,42 @@ def compare_zhuque_reports(
             float(row["delta"]) * (float(row["share_percent"]) or 1.0)
             for row in group
         ) / total_share
+        humanized_share = sum(
+            float(row["share_percent"])
+            for row in group
+            if row.get("became_human")
+        )
         effectiveness.append(
             {
                 "strategy_id": strategy_id,
                 "segment_ids": [int(row["segment_id"]) for row in group],
                 "weighted_delta": round(weighted_delta, 6),
+                "humanized_share_percent": round(humanized_share, 4),
+                "green_conversion_rate": round(humanized_share / total_share, 6),
                 "verdict": _delta_verdict(weighted_delta),
             }
         )
-    effectiveness.sort(key=lambda item: item["weighted_delta"])
+    effectiveness.sort(
+        key=lambda item: (
+            -float(item.get("green_conversion_rate") or 0.0),
+            float(item["weighted_delta"]),
+        )
+    )
     best = effectiveness[0] if effectiveness else None
     strategy_ids = list(rewrite_strategy_map())
     untried = [value for value in strategy_ids if value not in strategy_groups]
-    if best and float(best["weighted_delta"]) <= -0.01:
+    if best and float(best.get("humanized_share_percent") or 0.0) > 0:
         recommended_next_strategy = str(best["strategy_id"])
-        recommendation_reason = "真实复检已显示该结构策略有效，下一轮可扩大到新的风险片段。"
+        recommendation_reason = (
+            "真实复检已证明该结构策略把至少一个风险区域转成绿色人工特征，"
+            "下一轮可以扩大到新的风险片段。"
+        )
     elif untried:
         recommended_next_strategy = untried[0]
-        recommendation_reason = "本轮没有策略产生至少 0.01 的 AIGC 值改善，下一轮应换未试策略。"
+        recommendation_reason = (
+            "本轮即使出现红转橙，也没有风险区域真正转绿；下一轮必须换未试策略，"
+            "不能把疑似 AI 增加误判为成功。"
+        )
     else:
         recommended_next_strategy = None
         recommendation_reason = "已试策略均无实质改善；停止自动追加费用，保留原稿并人工复核。"
@@ -658,6 +729,14 @@ def compare_zhuque_reports(
         "baseline_weighted_aigc": round(_report_weighted_aigc(baseline_segments), 6),
         "recheck_weighted_aigc": round(_report_weighted_aigc(recheck_segments), 6),
         "selected_weighted_delta": round(_weighted_row_delta(selected_rows), 6),
+        "selected_humanized_share_percent": round(
+            sum(
+                float(row["share_percent"])
+                for row in selected_rows
+                if row.get("became_human")
+            ),
+            4,
+        ),
         "strict_pass": bool(recheck_report.get("strict_pass")),
         "segment_deltas": rows,
         "strategy_effectiveness": effectiveness,
@@ -755,6 +834,7 @@ def strategy_learning_summary(
     if not _EXPERIMENT_DIR.exists():
         return []
     grouped: dict[str, list[float]] = {}
+    green_grouped: dict[str, list[float]] = {}
     paths = sorted(
         _EXPERIMENT_DIR.glob("*.json"),
         key=lambda path: path.stat().st_mtime,
@@ -775,6 +855,9 @@ def strategy_learning_summary(
                 continue
             try:
                 grouped.setdefault(strategy_id, []).append(float(item["weighted_delta"]))
+                green_grouped.setdefault(strategy_id, []).append(
+                    float(item.get("green_conversion_rate") or 0.0)
+                )
             except (KeyError, TypeError, ValueError):
                 continue
     summary: list[dict[str, Any]] = []
@@ -783,11 +866,17 @@ def strategy_learning_summary(
         if not values:
             continue
         average = sum(values) / len(values)
+        green_values = green_grouped.get(strategy_id, [])
         summary.append(
             {
                 "strategy_id": strategy_id,
                 "experiment_count": len(values),
                 "average_weighted_delta": round(average, 6),
+                "average_green_conversion_rate": round(
+                    sum(green_values) / len(green_values),
+                    6,
+                ) if green_values else 0.0,
+                "green_experiment_count": sum(value > 0 for value in green_values),
                 "improvement_count": sum(value <= -0.01 for value in values),
                 "worse_count": sum(value >= 0.01 for value in values),
             }
@@ -823,7 +912,9 @@ def feature_learning_summary(
                 continue
             records.append(
                 {
-                    "score_delta": row.get("delta"),
+                    # Negative is "better" in summarize_feature_effects. Only a real
+                    # orange/red -> green transition counts; red -> orange is not success.
+                    "score_delta": -1.0 if row.get("became_human") else 0.0,
                     "style_feature_delta": row.get("style_feature_delta") or {},
                 }
             )
@@ -877,12 +968,14 @@ def optimize_report_segments(
     total_rewrite_cost = 0.0
     audit_original_blocks: list[str] = []
     audit_candidate_blocks: list[str] = []
+    preserve_paragraph_count = content_type == "classical"
 
     if iteration < 1 or iteration > 20:
         raise ZhuqueReportError("迭代轮次必须在 1 到 20 之间。")
     available_strategies = rewrite_strategy_map()
     if preferred_strategy and preferred_strategy not in available_strategies:
         raise ZhuqueReportError(f"未知改写策略: {preferred_strategy}")
+    learned_evidence = learned_evidence_for_prompt(content_type=content_type)
 
     for selected_index, segment_id in enumerate(selected_ids):
         segment = by_id[segment_id]
@@ -902,7 +995,17 @@ def optimize_report_segments(
             if content_type == "classical"
             else ()
         )
-        protocol = prepare_rewrite_protocol(source, protected_texts=protected_originals)
+        protocol = prepare_rewrite_protocol(
+            source,
+            protected_texts=protected_originals,
+            flexible_paragraphs=not preserve_paragraph_count,
+        )
+        segment_signal = (
+            f"片段 #{segment.segment_id}；报告分类={segment.label}；"
+            f"AIGC 值={segment.aigc_value:.4f}；占全文={segment.share_percent:.2f}%；"
+            f"报告字符数={segment.char_count}。目标不是只降到疑似 AI，而是进入人工特征区间。"
+        )
+        style_diagnosis = diagnose_segment_style(source)
         max_attempts = max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
         candidate = ""
         deterministic = review_deterministic_constraints(
@@ -910,6 +1013,7 @@ def optimize_report_segments(
             candidate,
             protected_texts=protected_originals,
             require_material_rewrite=True,
+            preserve_paragraph_count=preserve_paragraph_count,
         )
         candidate_safe = False
         attempt_results: list[dict[str, Any]] = []
@@ -927,6 +1031,10 @@ def optimize_report_segments(
                 content_type=content_type,
                 strategy_id=strategy_id,
                 strategy_rules=strategy_rules,
+                segment_signal=segment_signal,
+                style_diagnosis=style_diagnosis,
+                learned_evidence=learned_evidence,
+                flexible_paragraphs=protocol.flexible_paragraphs,
             )
             try:
                 rewrite_kwargs = {
@@ -960,9 +1068,13 @@ def optimize_report_segments(
                 candidate,
                 protected_texts=protected_originals,
                 require_material_rewrite=True,
+                preserve_paragraph_count=preserve_paragraph_count,
             )
             protocol_passed = not protocol_issues or not structured
-            hard_safety_passed = deterministic_hard_safety_passed(deterministic)
+            hard_safety_passed = deterministic_hard_safety_passed(
+                deterministic,
+                require_paragraph_preservation=preserve_paragraph_count,
+            )
             candidate_safe = hard_safety_passed and protocol_passed
             input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
             cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
@@ -1027,6 +1139,9 @@ def optimize_report_segments(
                 "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
                 "original_chars": len(source),
                 "candidate_chars": len(candidate),
+                "report_aigc_value": segment.aigc_value,
+                "report_label": segment.label,
+                "style_diagnosis": style_diagnosis,
                 "rewrite_attempts": len(attempt_results),
                 "attempts": attempt_results,
                 "deterministic_review": deterministic.to_dict(),
@@ -1150,13 +1265,14 @@ def review_deterministic_constraints(
     *,
     protected_texts: Iterable[str] = (),
     require_material_rewrite: bool = False,
+    preserve_paragraph_count: bool = True,
 ) -> DeterministicReview:
     reasons: list[str] = []
     ratio = len(candidate) / max(1, len(original))
     if not 0.8 <= ratio <= 1.25:
         reasons.append(f"长度比例 {ratio:.3f} 不在 0.80-1.25")
     paragraph_ok = _paragraph_count(original) == _paragraph_count(candidate)
-    if not paragraph_ok:
+    if preserve_paragraph_count and not paragraph_ok:
         reasons.append("自然段数量发生变化")
     headings_ok = _headings(original) == _headings(candidate)
     if not headings_ok:
@@ -1171,9 +1287,13 @@ def review_deterministic_constraints(
     for anchor, count in candidate_anchors.items():
         if original_anchors[anchor] < count:
             extra.extend([anchor] * (count - original_anchors[anchor]))
-    anchors_ok = not missing and not extra
+    anchor_order_ok = _anchor_sequence(original) == _anchor_sequence(candidate)
+    anchors_ok = not missing and not extra and anchor_order_ok
     if not anchors_ok:
-        reasons.append("数字、日期、金额、引语、书名或 URL 锚点出现次数发生变化")
+        if missing or extra:
+            reasons.append("数字、日期、金额、引语、书名或 URL 锚点出现次数发生变化")
+        if not anchor_order_ok:
+            reasons.append("数字、日期、金额、引语、书名或 URL 锚点顺序发生变化")
     protected_values = tuple(value for value in protected_texts if value)
     protected_ok = all(candidate.count(value) >= original.count(value) for value in protected_values)
     if not protected_ok:
@@ -1233,11 +1353,15 @@ def review_deterministic_constraints(
     )
 
 
-def deterministic_hard_safety_passed(review: DeterministicReview) -> bool:
+def deterministic_hard_safety_passed(
+    review: DeterministicReview,
+    *,
+    require_paragraph_preservation: bool = True,
+) -> bool:
     """Protect manuscript integrity without treating detector heuristics as a gate."""
     return (
         0.8 <= review.length_ratio <= 1.25
-        and review.paragraph_count_preserved
+        and (review.paragraph_count_preserved or not require_paragraph_preservation)
         and review.headings_preserved
         and review.anchors_preserved
         and review.protected_text_preserved
@@ -1323,9 +1447,14 @@ def prepare_rewrite_protocol(
     source: str,
     *,
     protected_texts: Iterable[str] = (),
+    flexible_paragraphs: bool = False,
 ) -> RewriteProtocol:
     """Protect layout and immutable anchors before text reaches the rewrite model."""
-    pieces = tuple(re.split(r"(\n[\t ]*(?:\n[\t ]*)*)", source))
+    pieces = (
+        (source,)
+        if flexible_paragraphs
+        else tuple(re.split(r"(\n[\t ]*(?:\n[\t ]*)*)", source))
+    )
     block_piece_indexes: list[int] = []
     block_payloads: list[str] = []
     protected_values: list[tuple[str, str]] = []
@@ -1339,6 +1468,9 @@ def prepare_rewrite_protocol(
         spans = _protected_spans(value, protected_texts=protected_texts)
         if _looks_like_heading(value.strip()):
             spans = [(0, len(value))]
+        elif flexible_paragraphs:
+            spans.extend(_heading_spans(value))
+            spans = _merge_spans(spans)
         payload = value
         replacements: list[tuple[int, int, str, str]] = []
         current_block_index = len(block_payloads)
@@ -1363,6 +1495,7 @@ def prepare_rewrite_protocol(
         block_payloads=tuple(block_payloads),
         protected_values=tuple(protected_values),
         protected_block_indexes=tuple(protected_block_indexes),
+        flexible_paragraphs=flexible_paragraphs,
     )
 
 
@@ -1397,13 +1530,14 @@ def parse_rewrite_candidate(
     candidate_pieces = list(protocol.pieces)
     rendered_blocks: list[str] = []
     for match in matches:
-        # A line wrap inside one numbered block is formatting noise, not a new paragraph.
-        value = re.sub(r"[\t ]*\n+[\t ]*", " ", match.group(2)).strip()
+        value = match.group(2).strip()
+        if not protocol.flexible_paragraphs:
+            # A line wrap inside a fixed paragraph block is formatting noise.
+            value = re.sub(r"[\t ]*\n+[\t ]*", " ", value)
         if not value:
             issues.append(f"编号块 P{int(match.group(1)):04d} 为空")
         rendered_blocks.append(value)
 
-    combined_blocks = "\n".join(rendered_blocks)
     for token, expected_block_index in protocol.protected_block_indexes:
         actual_blocks = [
             index for index, value in enumerate(rendered_blocks) if token in value
@@ -1412,18 +1546,43 @@ def parse_rewrite_candidate(
             issues.append(
                 f"受保护占位符 {token} 被移动到错误编号块"
             )
+    combined_blocks = "\n".join(rendered_blocks)
     for token, protected_value in protocol.protected_values:
         count = combined_blocks.count(token)
         if count != 1:
             issues.append(f"受保护占位符 {token} 出现 {count} 次，应为 1 次")
-        combined_blocks = combined_blocks.replace(token, protected_value)
-    restored_blocks = combined_blocks.split("\n")
-    if len(restored_blocks) != expected_count:
-        issues.append("恢复受保护内容后编号块数量异常")
-        return raw_candidate, issues, True
+    restored_blocks = []
+    for value in rendered_blocks:
+        for token, protected_value in protocol.protected_values:
+            value = value.replace(token, protected_value)
+        restored_blocks.append(value)
     for piece_index, value in zip(protocol.block_piece_indexes, restored_blocks, strict=True):
         candidate_pieces[piece_index] = value
     return "".join(candidate_pieces), issues, True
+
+
+def _heading_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and _looks_like_heading(stripped):
+            start = offset + line.find(stripped)
+            spans.append((start, start + len(stripped)))
+        offset += len(line)
+    return spans
+
+
+def _merge_spans(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def format_rewrite_retry_feedback(
@@ -1464,6 +1623,10 @@ def render_rewrite_prompt(
     content_type: str = "article",
     strategy_id: str = "syntax_rebuild",
     strategy_rules: str | None = None,
+    segment_signal: str = "未提供",
+    style_diagnosis: str = "未命中高置信局部模式，按正文内容做编辑判断。",
+    learned_evidence: str = "真实绿化配对样本不足，当前不注入未经验证的规律。",
+    flexible_paragraphs: bool = False,
 ) -> str:
     template = _REWRITE_PROMPT_PATH.read_text(encoding="utf-8")
     resolved_strategy_rules = strategy_rules or rewrite_strategy_map().get(
@@ -1474,6 +1637,18 @@ def render_rewrite_prompt(
         template.replace("{{SEGMENT_ID}}", str(segment_id))
         .replace("{{STRATEGY_ID}}", strategy_id)
         .replace("{{STRATEGY_RULES}}", resolved_strategy_rules)
+        .replace("{{SEGMENT_SIGNAL}}", segment_signal)
+        .replace("{{STYLE_DIAGNOSIS}}", style_diagnosis)
+        .replace("{{LEARNED_EVIDENCE}}", learned_evidence)
+        .replace(
+            "{{STRUCTURE_PROTOCOL}}",
+            (
+                "本轮只有一个正文块。允许在块内重新分段、合并过碎段落或拆开过长段落，"
+                "但标题、事实顺序、锚点与整体篇幅必须保持；块内换行会被保留。"
+                if flexible_paragraphs
+                else "每个编号块对应原稿一个自然段，不得合并、拆分、调换或遗漏；块内不要换行。"
+            ),
+        )
         .replace("{{SIMILARITY_MIN}}", f"{MATERIAL_SIMILARITY_MIN:.2f}")
         .replace("{{SIMILARITY_MAX}}", f"{MATERIAL_SIMILARITY_MAX:.2f}")
         .replace("{{COVERAGE_MIN}}", f"{MATERIAL_PARAGRAPH_COVERAGE_MIN:.0%}")
@@ -1524,6 +1699,69 @@ def rewrite_strategy_map() -> dict[str, str]:
     if not isinstance(payload, dict) or not required.issubset(payload):
         raise ValueError("AIGC 报告改写策略模板无效")
     return {str(key): str(value) for key, value in payload.items()}
+
+
+@lru_cache(maxsize=1)
+def diagnostic_rule_map() -> dict[str, str]:
+    payload = json.loads(_DIAGNOSTIC_RULES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("AIGC 报告局部诊断规则模板无效")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def diagnose_segment_style(text: str) -> str:
+    """Turn observable prose patterns into prompt evidence, never a fake detector score."""
+    profile = profile_style(text)
+    paragraphs = _natural_paragraphs(text)
+    prose = [value for value in paragraphs if not _looks_like_heading(value)]
+    endings = re.compile(r"(?:这(?:也|就)?(?:说明|意味着)|由此可见|可以看出|这并非|这不是|成为了?|证明了?|体现了?)[^。！？]{0,45}[。！？]?$")
+    time_opening = re.compile(r"^(?:公元前?\d+年|\d{3,4}年|同年|次年|后来|随后|此后|不久|当时|早在)")
+    denominator = max(1, len(prose))
+    summary_ratio = sum(bool(endings.search(item)) for item in prose) / denominator
+    time_opening_ratio = sum(bool(time_opening.search(item)) for item in prose) / denominator
+    opening_counts = Counter(re.sub(r"^[“‘（(\s]+", "", item)[:2] for item in prose if len(item) >= 2)
+    repeated_opening_ratio = (
+        sum(count for count in opening_counts.values() if count >= 2) / denominator
+    )
+    triggered: list[str] = []
+    if len(prose) >= 3 and profile["sentence_length_cv"] < 0.48:
+        triggered.append("uniform_sentence_rhythm")
+    if len(prose) >= 3 and profile["paragraph_length_cv"] < 0.42:
+        triggered.append("uniform_paragraph_rhythm")
+    if summary_ratio >= 0.28:
+        triggered.append("summary_tail_density")
+    if time_opening_ratio >= 0.35:
+        triggered.append("chronology_scaffold")
+    if repeated_opening_ratio >= 0.45:
+        triggered.append("repeated_openings")
+    if profile["discourse_markers_per_1000_chars"] >= 4.0:
+        triggered.append("discourse_scaffold")
+    rules = diagnostic_rule_map()
+    metrics = (
+        f"句长变异系数={profile['sentence_length_cv']:.3f}；"
+        f"段长变异系数={profile['paragraph_length_cv']:.3f}；"
+        f"总结式段尾占比={summary_ratio:.1%}；"
+        f"时间词起段占比={time_opening_ratio:.1%}；"
+        f"重复起笔占比={repeated_opening_ratio:.1%}。"
+    )
+    if not triggered:
+        return metrics + " 未命中高置信机械骨架；不要为了求变化强行制造口语或跳跃。"
+    return metrics + "\n" + "\n".join(f"- {rules[key]}" for key in triggered if key in rules)
+
+
+def learned_evidence_for_prompt(*, content_type: str) -> str:
+    summary = feature_learning_summary(content_type=content_type)
+    if not summary:
+        return "真实绿化配对样本不足，当前不注入未经验证的规律。"
+    lines: list[str] = []
+    for item in summary[:4]:
+        correlation = float(item.get("pearson_correlation") or 0.0)
+        direction = "适度增加" if correlation < 0 else "适度减少"
+        lines.append(
+            f"- {direction} {item['feature']} 与真实转绿同向；"
+            f"样本 {item['sample_count']}，证据级别 {item['evidence_grade']}。"
+        )
+    return "这些只是本项目真实复检的相关方向，必须服从事实与文稿质量：\n" + "\n".join(lines)
 
 
 def strategy_for_index(index: int, *, iteration: int = 1) -> str:
@@ -1577,8 +1815,8 @@ def model_strategy() -> dict[str, Any]:
         "rewrite_reasoning_options": ["low", "medium", "high"],
         "candidate_count": 1,
         "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
-        "rewrite_protocol": "numbered_paragraphs_with_immutable_anchors",
-        "experiment_mode": "three_strategy_calibration",
+        "rewrite_protocol": "flexible_editorial_unit_with_immutable_anchors",
+        "experiment_mode": "green_conversion_calibration",
         "selection_mode": "calibration_recommended_full_run_allowed",
         "recommended_max_calibration_segments": 3,
         "strategies": list(rewrite_strategy_map()),
@@ -1598,7 +1836,7 @@ def model_strategy() -> dict[str, Any]:
 
 
 def _normalize_rewrite_provider(provider: str | None) -> str:
-    selected = (provider or settings.AIGC_REVIEW_REWRITE_PROVIDER or "grok").strip().lower()
+    selected = (provider or settings.AIGC_REVIEW_REWRITE_PROVIDER or "deepseek").strip().lower()
     if selected not in {"grok", "deepseek"}:
         raise ZhuqueReportError(f"不支持的审稿改写模型提供方: {selected}")
     return selected
@@ -1921,6 +2159,10 @@ def _anchors(text: str) -> Counter[str]:
     for pattern in patterns:
         values.extend(re.findall(pattern, text, flags=re.IGNORECASE))
     return Counter(values)
+
+
+def _anchor_sequence(text: str) -> tuple[str, ...]:
+    return tuple(text[start:end] for start, end in _protected_spans(text))
 
 
 def _protected_spans(

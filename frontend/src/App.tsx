@@ -121,6 +121,24 @@ export default function App() {
             }
           />
           <Route
+            path="/aigc-review/bookshelf"
+            element={
+              <ProtectedRoute>
+                <AppShell>
+                  <Bookshelf
+                    title="AI 审稿书架"
+                    subtitle="自动保存原稿、审稿候选、质量闸门与真实朱雀复检状态"
+                    categoryScopeIds={["aigc_review"]}
+                    allCategoryLabel="全部审稿"
+                    emptyTitle="审稿书架还空着"
+                    emptyDescription="在 AI 审稿降率页面完成一次定向审稿后，稿件会自动归档到这里"
+                    showCreateButton={false}
+                  />
+                </AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/public-domain-rewrite"
             element={
               <ProtectedRoute>

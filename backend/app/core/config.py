@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     TENCENT_AIGC_REGION: str = "ap-beijing"
 
     # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
-    AIGC_REVIEW_REWRITE_PROVIDER: str = "grok"
+    AIGC_REVIEW_REWRITE_PROVIDER: str = "deepseek"
     AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
     AIGC_REVIEW_GROK_MODEL: str = "grok-4.5"
     AIGC_REVIEW_GROK_REASONING_EFFORT: str = "low"
