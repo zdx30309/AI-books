@@ -26,6 +26,21 @@ const strategyText: Record<RewriteStrategy, string> = {
   rhythm_recompose: "节奏重组",
 };
 
+const styleFeatureText: Record<string, string> = {
+  mean_sentence_chars: "平均句长",
+  sentence_length_cv: "句长波动",
+  short_sentence_ratio: "短句占比",
+  long_sentence_ratio: "长句占比",
+  paragraph_length_cv: "段长波动",
+  comma_per_sentence_end: "逗号/句末比",
+  semicolon_per_1000_chars: "分号密度",
+  colon_per_1000_chars: "冒号密度",
+  discourse_markers_per_1000_chars: "模板连接词密度",
+  punctuation_entropy: "标点分布熵",
+  repeated_four_gram_ratio: "四字重复率",
+  unique_cjk_ratio: "汉字多样度",
+};
+
 const labelText = {
   human: "人工特征",
   suspected: "疑似 AI",
@@ -331,7 +346,7 @@ export function AigcReview() {
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="font-medium text-warm-50">片段 #{item.segment_id} 机器校验明细</div>
-                      <div className="text-xs text-warm-400">{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 尝试 {item.rewrite_attempts} 次 · 相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}% · 改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%</div>
+                      <div className="text-xs text-warm-400">{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 尝试 {item.rewrite_attempts} 次 · 相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}% · 改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}% / 当前要求 {Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%</div>
                     </div>
                     <div className="mt-3 space-y-1 text-warm-300">
                       {[...(lastAttempt?.protocol_issues ?? []), ...item.deterministic_review.reasons].filter((value, index, values) => values.indexOf(value) === index).map((reason) => (
@@ -362,7 +377,7 @@ export function AigcReview() {
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/10 bg-base-950/40 p-4 text-xs leading-6 text-warm-300">
                     <div className="font-medium text-warm-50">片段 #{item.segment_id} · {strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id}</div>
                     <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（硬范围 25%–82%）</div>
-                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（硬门槛 ≥80%）</div>
+                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（当前离散门槛 ≥{Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%）</div>
                   </div>
                 ))}
               </div>
@@ -402,6 +417,16 @@ export function AigcReview() {
                         <div className="mt-3 rounded-md border border-gold-500/10 px-3 py-2 text-xs text-warm-400">
                           累计真实复检：{comparison.historical_strategy_summary.map((item) => `${strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} ${item.experiment_count} 次 / 均值 ${item.average_weighted_delta > 0 ? "+" : ""}${item.average_weighted_delta.toFixed(4)}`).join("；")}
                         </div>
+                      )}
+                      {comparison.historical_feature_summary.length > 0 ? (
+                        <div className="mt-3 rounded-md border border-emerald-400/15 bg-emerald-500/5 px-3 py-2 text-xs text-warm-300">
+                          <div className="mb-1 text-emerald-100">黑盒特征证据（相关性不冒充因果）</div>
+                          {comparison.historical_feature_summary.slice(0, 4).map((item) => (
+                            <div key={item.feature}>{styleFeatureText[item.feature] || item.feature}：样本 {item.sample_count} · 相关系数 {item.pearson_correlation.toFixed(3)} · {item.evidence_grade}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-xs text-warm-400">真实配对片段不足 5 个，暂不输出所谓“朱雀规律”；继续收集复检后才建立局部替代模型。</div>
                       )}
                       {!comparison.strict_pass && comparison.recommended_next_strategy && (
                         <button type="button" onClick={() => optimize(comparison.recommended_next_strategy, true)} disabled={optimizing} className="btn-ghost mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">

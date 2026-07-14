@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import re
 import threading
 import unicodedata
@@ -26,13 +27,18 @@ from uuid import uuid4
 import pdfplumber
 
 from app.core.config import PROJECT_ROOT, settings
+from app.services.aigc_style_probe import (
+    STYLE_FEATURE_VERSION,
+    style_feature_delta,
+    summarize_feature_effects,
+)
 from app.services.deepseek import get_deepseek_client
 from app.services.gemini import generate_text as generate_gemini_text
 from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v3"
+PROMPT_VERSION = "zhuque-report-review-v3.1"
 STRICT_HUMAN_THRESHOLD = 50.0
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
@@ -84,6 +90,7 @@ class DeterministicReview:
     material_rewrite_passed: bool
     literal_similarity: float
     rewritten_paragraph_ratio: float
+    required_paragraph_coverage: float
     unchanged_editable_paragraphs: int
     editable_paragraphs: int
     missing_anchors: tuple[str, ...]
@@ -559,9 +566,13 @@ def compare_zhuque_reports(
         raise ZhuqueReportError("报告片段坐标无效，无法比较。")
 
     selected = {int(value) for value in optimize_result.get("selected_segment_ids") or []}
-    strategy_by_segment = {
-        int(item.get("segment_id")): str(item.get("strategy_id") or "unknown")
+    result_by_segment = {
+        int(item.get("segment_id")): item
         for item in optimize_result.get("segment_results") or []
+    }
+    strategy_by_segment = {
+        segment_id: str(item.get("strategy_id") or "unknown")
+        for segment_id, item in result_by_segment.items()
     }
     rows: list[dict[str, Any]] = []
     for baseline in baseline_segments:
@@ -584,6 +595,12 @@ def compare_zhuque_reports(
                 "after_aigc_value": round(after_score, 6),
                 "delta": round(delta, 6),
                 "verdict": _delta_verdict(delta),
+                "style_feature_version": result_by_segment.get(segment_id, {}).get(
+                    "style_feature_version"
+                ),
+                "style_feature_delta": result_by_segment.get(segment_id, {}).get(
+                    "style_feature_delta"
+                ) or {},
             }
         )
 
@@ -648,7 +665,13 @@ def compare_zhuque_reports(
         "prompt_version": PROMPT_VERSION,
     }
     _persist_experiment_result(result, optimize_result)
-    result["historical_strategy_summary"] = strategy_learning_summary()
+    content_type = str(optimize_result.get("content_type") or "article")
+    result["historical_strategy_summary"] = strategy_learning_summary(
+        content_type=content_type
+    )
+    result["historical_feature_summary"] = feature_learning_summary(
+        content_type=content_type
+    )
     return result
 
 
@@ -721,7 +744,11 @@ def _persist_experiment_result(result: dict[str, Any], optimize_result: dict[str
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def strategy_learning_summary(*, max_files: int = 200) -> list[dict[str, Any]]:
+def strategy_learning_summary(
+    *,
+    max_files: int = 200,
+    content_type: str | None = None,
+) -> list[dict[str, Any]]:
     """Aggregate only v3 score deltas; corrupt/old files never affect a live request."""
     if not _EXPERIMENT_DIR.exists():
         return []
@@ -737,6 +764,8 @@ def strategy_learning_summary(*, max_files: int = 200) -> list[dict[str, Any]]:
         except (OSError, ValueError, TypeError):
             continue
         if payload.get("prompt_version") != PROMPT_VERSION:
+            continue
+        if content_type and payload.get("content_type") != content_type:
             continue
         for item in payload.get("strategy_effectiveness") or []:
             strategy_id = str(item.get("strategy_id") or "")
@@ -762,6 +791,41 @@ def strategy_learning_summary(*, max_files: int = 200) -> list[dict[str, Any]]:
             }
         )
     return sorted(summary, key=lambda item: item["average_weighted_delta"])
+
+
+def feature_learning_summary(
+    *,
+    max_files: int = 200,
+    content_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Learn directional correlations from real re-checks, never from model guesses."""
+    if not _EXPERIMENT_DIR.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    paths = sorted(
+        _EXPERIMENT_DIR.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:max_files]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if payload.get("prompt_version") != PROMPT_VERSION:
+            continue
+        if content_type and payload.get("content_type") != content_type:
+            continue
+        for row in payload.get("segment_deltas") or []:
+            if not row.get("selected"):
+                continue
+            records.append(
+                {
+                    "score_delta": row.get("delta"),
+                    "style_feature_delta": row.get("style_feature_delta") or {},
+                }
+            )
+    return summarize_feature_effects(records, min_samples=5)
 
 
 def optimize_report_segments(
@@ -927,6 +991,10 @@ def optimize_report_segments(
                 "rewrite_attempts": len(attempt_results),
                 "attempts": attempt_results,
                 "deterministic_review": deterministic.to_dict(),
+                "style_feature_version": STYLE_FEATURE_VERSION,
+                "style_feature_delta": (
+                    style_feature_delta(source, candidate) if candidate else {}
+                ),
                 "candidate_preview": candidate[:500] if candidate_passed else "",
                 "rejected_candidate_preview": candidate[:500] if not candidate_passed else "",
             }
@@ -1076,11 +1144,12 @@ def review_deterministic_constraints(
         candidate,
         protected_texts=protected_values,
     )
+    required_coverage = material_paragraph_coverage_requirement(editable_count)
     material_passed = (
         editable_count == 0
         or (
             MATERIAL_SIMILARITY_MIN <= similarity <= MATERIAL_SIMILARITY_MAX
-            and rewritten_ratio >= MATERIAL_PARAGRAPH_COVERAGE_MIN
+            and rewritten_ratio >= required_coverage
         )
     )
     if require_material_rewrite and not material_passed:
@@ -1092,9 +1161,9 @@ def review_deterministic_constraints(
             reasons.append(
                 f"改写偏离过大：可改正文相似度 {similarity:.3f}，必须不低于 {MATERIAL_SIMILARITY_MIN:.2f}"
             )
-        if rewritten_ratio < MATERIAL_PARAGRAPH_COVERAGE_MIN:
+        if rewritten_ratio < required_coverage:
             reasons.append(
-                f"实质改写覆盖率 {rewritten_ratio:.1%}，必须至少 {MATERIAL_PARAGRAPH_COVERAGE_MIN:.0%}"
+                f"实质改写覆盖率 {rewritten_ratio:.1%}，当前 {editable_count} 个可编辑段落至少需要 {required_coverage:.1%}"
             )
     passed = not reasons and bool(candidate.strip())
     return DeterministicReview(
@@ -1109,6 +1178,7 @@ def review_deterministic_constraints(
         material_rewrite_passed=material_passed,
         literal_similarity=round(similarity, 4),
         rewritten_paragraph_ratio=round(rewritten_ratio, 4),
+        required_paragraph_coverage=round(required_coverage, 4),
         unchanged_editable_paragraphs=unchanged_count,
         editable_paragraphs=editable_count,
         missing_anchors=tuple(missing[:30]),
@@ -1148,6 +1218,23 @@ def material_rewrite_metrics(
     unchanged = sum(1 for value in per_paragraph if value >= 0.96)
     rewritten_ratio = 1.0 - (unchanged / len(editable_pairs))
     return similarity, rewritten_ratio, unchanged, len(editable_pairs)
+
+
+def material_paragraph_coverage_requirement(editable_paragraphs: int) -> float:
+    """Quantize the 80% target to the nearest achievable whole-paragraph count.
+
+    A four-paragraph segment can only reach 0/25/50/75/100 percent.  Requiring
+    a literal 80% accidentally means 100%, causing paid retries with no quality
+    benefit.  Nearest-count quantization makes the target achievable while the
+    independent 0.25-0.82 similarity and quality gates remain unchanged.
+    """
+    if editable_paragraphs <= 0:
+        return 0.0
+    required_changed = max(
+        1,
+        int(math.floor(MATERIAL_PARAGRAPH_COVERAGE_MIN * editable_paragraphs + 0.5)),
+    )
+    return required_changed / editable_paragraphs
 
 
 def _natural_paragraphs(text: str) -> list[str]:
@@ -1411,6 +1498,9 @@ def model_strategy() -> dict[str, Any]:
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],
         "material_paragraph_coverage_min": MATERIAL_PARAGRAPH_COVERAGE_MIN,
+        "material_coverage_quantization": "nearest_achievable_whole_paragraph_count",
+        "style_feature_version": STYLE_FEATURE_VERSION,
+        "feature_learning_min_real_samples": 5,
         "audit_scope": "selected_segments_with_350_char_context_one_call",
         "ocr": "local_only_zero_api_cost",
         "human_pass_rule": "> 50%",

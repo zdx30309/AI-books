@@ -9,6 +9,7 @@ from app.services.aigc_report_review import (
     ZhuqueSegment,
     compare_zhuque_reports,
     map_segments_to_original,
+    material_paragraph_coverage_requirement,
     material_rewrite_metrics,
     normalize_manuscript_text,
     optimize_report_segments,
@@ -215,6 +216,34 @@ def test_material_rewrite_metrics_accept_real_clause_reconstruction() -> None:
     assert coverage == 1
     assert unchanged == 0
     assert editable == 2
+    assert result.material_rewrite_passed is True
+    assert result.passed is True
+
+
+def test_four_paragraph_segment_accepts_achievable_seventy_five_percent_coverage() -> None:
+    original = "\n\n".join(
+        [
+            "行业转冷以后，公司先削减预算，随后暂停项目，团队也停止招聘。",
+            "管理层承认经营压力，但他们认为现金流比短期规模更加重要。",
+            "员工最初关注岗位变化，后来才发现项目节奏已经整体放慢。",
+            "这一决定没有改变公司的长期方向，只调整了眼前的投入顺序。",
+        ]
+    )
+    candidate = "\n\n".join(
+        [
+            "预算收缩是最先出现的变化。行业转冷传导下来，项目暂停，招聘随之停住。",
+            "经营压力并未被管理层否认。在他们看来，短期规模现在必须让位于现金流。",
+            "岗位是否变化，起初最牵动员工；项目整体放慢的事实，反倒是后来才显出来。",
+            "这一决定没有改变公司的长期方向，只调整了眼前的投入顺序。",
+        ]
+    )
+
+    result = review_deterministic_constraints(original, candidate, require_material_rewrite=True)
+
+    assert result.editable_paragraphs == 4
+    assert result.rewritten_paragraph_ratio == 0.75
+    assert result.required_paragraph_coverage == 0.75
+    assert material_paragraph_coverage_requirement(4) == 0.75
     assert result.material_rewrite_passed is True
     assert result.passed is True
 
@@ -540,4 +569,5 @@ def test_real_wdx_to_eeee_reports_are_aligned_and_expose_failed_direction(
     assert compared["strategy_effectiveness"][0]["verdict"] == "neutral"
     assert compared["recommended_next_strategy"] == "evidence_first"
     assert compared["historical_strategy_summary"][0]["experiment_count"] == 1
+    assert compared["historical_feature_summary"] == []
     assert (tmp_path / f"{compared['comparison_id']}.json").exists()

@@ -407,6 +407,9 @@ export interface AigcReviewStrategy {
   strategies: string[];
   material_similarity_range: number[];
   material_paragraph_coverage_min: number;
+  material_coverage_quantization: string;
+  style_feature_version: string;
+  feature_learning_min_real_samples: number;
   audit_scope: string;
   ocr: string;
   human_pass_rule: string;
@@ -477,6 +480,7 @@ export interface AigcReviewDeterministicReview {
   material_rewrite_passed: boolean;
   literal_similarity: number;
   rewritten_paragraph_ratio: number;
+  required_paragraph_coverage: number;
   unchanged_editable_paragraphs: number;
   editable_paragraphs: number;
   missing_anchors: string[];
@@ -507,6 +511,8 @@ export interface AigcReviewSegmentResult {
   deterministic_review: AigcReviewDeterministicReview;
   candidate_preview: string;
   rejected_candidate_preview: string;
+  style_feature_version: string;
+  style_feature_delta: Record<string, number>;
 }
 
 export interface AigcReviewOptimizeResult {
@@ -560,6 +566,8 @@ export interface AigcReviewComparison {
     after_aigc_value: number;
     delta: number;
     verdict: "strong_improvement" | "improvement" | "neutral" | "worse";
+    style_feature_version: string | null;
+    style_feature_delta: Record<string, number>;
   }>;
   strategy_effectiveness: Array<{
     strategy_id: string;
@@ -576,6 +584,14 @@ export interface AigcReviewComparison {
     average_weighted_delta: number;
     improvement_count: number;
     worse_count: number;
+  }>;
+  historical_feature_summary: Array<{
+    feature: string;
+    sample_count: number;
+    pearson_correlation: number;
+    mean_score_delta_when_feature_increased: number;
+    mean_score_delta_when_feature_decreased: number;
+    evidence_grade: "exploratory" | "directional" | "local_surrogate_ready";
   }>;
   prompt_version: string;
 }
