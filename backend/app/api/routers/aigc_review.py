@@ -50,6 +50,7 @@ class OptimizeAigcReviewRequest(BaseModel):
     iteration: int = Field(1, ge=1, le=20)
     preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
     rewrite_provider: SupportedRewriteProvider = "grok"
+    rewrite_reasoning_effort: Literal["low", "medium", "high"] = "low"
 
 
 class CompareAigcReviewRequest(BaseModel):
@@ -110,6 +111,7 @@ async def optimize_aigc_report(
             iteration=req.iteration,
             preferred_strategy=req.preferred_strategy,
             rewrite_provider=req.rewrite_provider,
+            rewrite_reasoning_effort=req.rewrite_reasoning_effort,
         )
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -40,7 +40,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v3.2"
+PROMPT_VERSION = "zhuque-report-review-v3.3"
 STRICT_HUMAN_THRESHOLD = 50.0
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
@@ -839,6 +839,7 @@ def optimize_report_segments(
     iteration: int = 1,
     preferred_strategy: str | None = None,
     rewrite_provider: str | None = None,
+    rewrite_reasoning_effort: str = "low",
     rewrite_fn: Callable[..., Any] | None = None,
     audit_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -860,6 +861,11 @@ def optimize_report_segments(
 
     selected_provider = _normalize_rewrite_provider(rewrite_provider)
     rewrite_model = _rewrite_model_for_provider(selected_provider)
+    selected_reasoning = (
+        _normalize_grok_reasoning(rewrite_reasoning_effort)
+        if selected_provider == "grok"
+        else "disabled"
+    )
     if rewrite_fn is None:
         _ensure_rewrite_provider_configured(selected_provider)
     rewrite = rewrite_fn or _rewrite_callable(selected_provider)
@@ -905,7 +911,7 @@ def optimize_report_segments(
             protected_texts=protected_originals,
             require_material_rewrite=True,
         )
-        candidate_passed = False
+        candidate_safe = False
         attempt_results: list[dict[str, Any]] = []
         retry_feedback = "首次改写：严格按编号块协议输出。"
         for attempt in range(1, max_attempts + 1):
@@ -923,12 +929,14 @@ def optimize_report_segments(
                 strategy_rules=strategy_rules,
             )
             try:
-                raw = rewrite(
-                    prompt,
-                    segment=segment,
-                    request_id=request_id,
-                    attempt=attempt,
-                )
+                rewrite_kwargs = {
+                    "segment": segment,
+                    "request_id": request_id,
+                    "attempt": attempt,
+                }
+                if selected_provider == "grok":
+                    rewrite_kwargs["reasoning_effort"] = selected_reasoning
+                raw = rewrite(prompt, **rewrite_kwargs)
                 raw_candidate, usage = _coerce_model_result(raw)
             except Exception as exc:
                 logger.exception(
@@ -954,7 +962,8 @@ def optimize_report_segments(
                 require_material_rewrite=True,
             )
             protocol_passed = not protocol_issues or not structured
-            candidate_passed = deterministic.passed and protocol_passed
+            hard_safety_passed = deterministic_hard_safety_passed(deterministic)
+            candidate_safe = hard_safety_passed and protocol_passed
             input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
             cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or _estimate_tokens(cleaned_candidate))
@@ -966,7 +975,9 @@ def optimize_report_segments(
             attempt_results.append(
                 {
                     "attempt": attempt,
-                    "passed": candidate_passed,
+                    "passed": candidate_safe,
+                    "hard_safety_passed": hard_safety_passed,
+                    "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
                     "structured_output": structured,
                     "protocol_issues": protocol_issues,
                     "deterministic_review": deterministic.to_dict(),
@@ -980,11 +991,21 @@ def optimize_report_segments(
                     "rewrite_model": rewrite_model,
                 }
             )
-            if candidate_passed:
+            if candidate_safe:
+                if not deterministic.material_rewrite_passed:
+                    logger.warning(
+                        "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s status=accepted_with_material_advisory similarity=%.4f coverage=%.4f",
+                        request_id,
+                        segment_id,
+                        attempt,
+                        deterministic.literal_similarity,
+                        deterministic.rewritten_paragraph_ratio,
+                    )
                 break
             retry_feedback = format_rewrite_retry_feedback(
                 deterministic,
                 protocol_issues=protocol_issues,
+                hard_safety_only=True,
             )
             logger.warning(
                 "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s status=rejected reasons=%s protocol=%s",
@@ -1001,7 +1022,9 @@ def optimize_report_segments(
                 "strategy_id": strategy_id,
                 "rewrite_provider": selected_provider,
                 "rewrite_model": rewrite_model,
-                "status": "ready" if candidate_passed else "rejected",
+                "status": "ready" if candidate_safe else "rejected",
+                "hard_safety_passed": candidate_safe,
+                "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
                 "original_chars": len(source),
                 "candidate_chars": len(candidate),
                 "rewrite_attempts": len(attempt_results),
@@ -1011,22 +1034,25 @@ def optimize_report_segments(
                 "style_feature_delta": (
                     style_feature_delta(source, candidate) if candidate else {}
                 ),
-                "candidate_preview": candidate[:500] if candidate_passed else "",
-                "rejected_candidate_preview": candidate[:500] if not candidate_passed else "",
+                "candidate_preview": candidate[:500] if candidate_safe else "",
+                "rejected_candidate_preview": candidate[:500] if not candidate_safe else "",
             }
         )
-        if not candidate_passed:
+        if not candidate_safe:
+            guarded_partial = _assemble_replacements(original, replacements)
             return _manual_review_result(
                 request_id=request_id,
                 original=original,
                 selected_ids=selected_ids,
                 segment_results=segment_results,
-                reason=f"片段 {segment_id} 未通过确定性保护，已停止后续付费调用并保留原稿。",
+                reason=f"片段 {segment_id} 未通过事实/锚点/格式硬安全保护，已停止后续付费调用并保留此前安全候选。",
                 total_input_tokens=total_input_tokens,
                 total_output_tokens=total_output_tokens,
                 rewrite_cost_cny=total_rewrite_cost,
                 rewrite_provider=selected_provider,
                 rewrite_model=rewrite_model,
+                rewrite_reasoning=selected_reasoning,
+                guarded_candidate_text=(guarded_partial if guarded_partial != original else ""),
             )
         replacements.append((segment.start, segment.end, candidate))
         previous_context = original[max(0, segment.start - 350):segment.start]
@@ -1038,9 +1064,7 @@ def optimize_report_segments(
             f"【片段 {segment_id} 上文】\n{previous_context}\n【候选片段】\n{candidate}\n【下文】\n{next_context}"
         )
 
-    assembled = original
-    for start, end, candidate in sorted(replacements, reverse=True):
-        assembled = assembled[:start] + candidate + assembled[end:]
+    assembled = _assemble_replacements(original, replacements)
 
     audit_prompt = render_audit_prompt(
         "\n\n".join(audit_original_blocks),
@@ -1082,9 +1106,10 @@ def optimize_report_segments(
                 rewrite_cost_cny=total_cost,
                 rewrite_provider=selected_provider,
                 rewrite_model=rewrite_model,
+                rewrite_reasoning=selected_reasoning,
+                guarded_candidate_text=assembled,
             ),
             "quality_audit": quality_audit,
-            "guarded_candidate_preview": assembled[:1200],
         }
 
     return {
@@ -1113,7 +1138,7 @@ def optimize_report_segments(
             "rewrite_provider": selected_provider,
             "rewrite": rewrite_model,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
-            "rewrite_thinking": _rewrite_reasoning_for_provider(selected_provider),
+            "rewrite_thinking": selected_reasoning,
         },
         "prompt_version": PROMPT_VERSION,
     }
@@ -1206,6 +1231,29 @@ def review_deterministic_constraints(
         extra_anchors=tuple(extra[:30]),
         reasons=tuple(reasons),
     )
+
+
+def deterministic_hard_safety_passed(review: DeterministicReview) -> bool:
+    """Protect manuscript integrity without treating detector heuristics as a gate."""
+    return (
+        0.8 <= review.length_ratio <= 1.25
+        and review.paragraph_count_preserved
+        and review.headings_preserved
+        and review.anchors_preserved
+        and review.protected_text_preserved
+        and review.model_explanation_absent
+        and review.hard_error_absent
+    )
+
+
+def _assemble_replacements(
+    original: str,
+    replacements: Iterable[tuple[int, int, str]],
+) -> str:
+    assembled = original
+    for start, end, candidate in sorted(replacements, reverse=True):
+        assembled = assembled[:start] + candidate + assembled[end:]
+    return assembled
 
 
 def material_rewrite_metrics(
@@ -1382,8 +1430,14 @@ def format_rewrite_retry_feedback(
     review: DeterministicReview,
     *,
     protocol_issues: Iterable[str] = (),
+    hard_safety_only: bool = False,
 ) -> str:
-    details = [*protocol_issues, *review.reasons]
+    review_reasons = (
+        [reason for reason in review.reasons if not _is_material_advisory_reason(reason)]
+        if hard_safety_only
+        else list(review.reasons)
+    )
+    details = [*protocol_issues, *review_reasons]
     if review.missing_anchors:
         details.append("缺失锚点：" + "、".join(review.missing_anchors[:10]))
     if review.extra_anchors:
@@ -1391,6 +1445,10 @@ def format_rewrite_retry_feedback(
     return "上一次候选被机器拒绝。只修复以下问题，不得改变事实：\n- " + "\n- ".join(
         dict.fromkeys(details)
     )
+
+
+def _is_material_advisory_reason(reason: str) -> bool:
+    return reason.startswith(("实质改写不足", "改写偏离过大", "实质改写覆盖率"))
 
 
 def render_rewrite_prompt(
@@ -1515,14 +1573,19 @@ def model_strategy() -> dict[str, Any]:
         "rewrite_providers": _rewrite_provider_statuses(),
         "audit_model": settings.AIGC_REVIEW_AUDIT_MODEL,
         "rewrite_thinking": _rewrite_reasoning_for_provider(default_provider),
+        "recommended_rewrite_reasoning": "low",
+        "rewrite_reasoning_options": ["low", "medium", "high"],
         "candidate_count": 1,
         "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
         "rewrite_protocol": "numbered_paragraphs_with_immutable_anchors",
         "experiment_mode": "three_strategy_calibration",
+        "selection_mode": "calibration_recommended_full_run_allowed",
+        "recommended_max_calibration_segments": 3,
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],
         "material_paragraph_coverage_min": MATERIAL_PARAGRAPH_COVERAGE_MIN,
         "material_coverage_quantization": "nearest_achievable_whole_paragraph_count",
+        "material_metrics_are_advisory": True,
         "style_feature_version": STYLE_FEATURE_VERSION,
         "feature_learning_min_real_samples": 5,
         "audit_scope": "selected_segments_with_350_char_context_one_call",
@@ -1549,8 +1612,15 @@ def _rewrite_model_for_provider(provider: str) -> str:
 
 def _rewrite_reasoning_for_provider(provider: str) -> str:
     if provider == "grok":
-        return (settings.AIGC_REVIEW_GROK_REASONING_EFFORT or "high").strip().lower()
+        return (settings.AIGC_REVIEW_GROK_REASONING_EFFORT or "low").strip().lower()
     return "disabled"
+
+
+def _normalize_grok_reasoning(value: str | None) -> str:
+    effort = (value or "low").strip().lower()
+    if effort not in {"low", "medium", "high"}:
+        raise ZhuqueReportError("Grok 推理档位必须是 low、medium 或 high。")
+    return effort
 
 
 def _rewrite_provider_configured(provider: str) -> bool:
@@ -1630,11 +1700,12 @@ def _grok_rewrite(
     segment: ZhuqueSegment,
     request_id: str,
     attempt: int = 1,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     model = _rewrite_model_for_provider("grok")
-    reasoning_effort = _rewrite_reasoning_for_provider("grok")
-    if reasoning_effort not in {"low", "medium", "high"}:
-        raise ValueError("Grok 4.5 reasoning_effort 必须是 low、medium 或 high")
+    reasoning_effort = _normalize_grok_reasoning(
+        reasoning_effort or _rewrite_reasoning_for_provider("grok")
+    )
     max_tokens = min(
         max(2000, int(settings.AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS)),
         max(6000, int(len(segment.mapped_text) * 2.2)),
@@ -1803,6 +1874,8 @@ def _manual_review_result(
     rewrite_cost_cny: float,
     rewrite_provider: str,
     rewrite_model: str,
+    rewrite_reasoning: str,
+    guarded_candidate_text: str = "",
 ) -> dict[str, Any]:
     return {
         "request_id": request_id,
@@ -1813,6 +1886,7 @@ def _manual_review_result(
         "candidate_sha256": None,
         "original_text": original,
         "candidate_text": "",
+        "guarded_candidate_text": guarded_candidate_text,
         "selected_segment_ids": selected_ids,
         "segment_results": segment_results,
         "quality_audit": None,
@@ -1827,7 +1901,7 @@ def _manual_review_result(
             "rewrite_provider": rewrite_provider,
             "rewrite": rewrite_model,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
-            "rewrite_thinking": _rewrite_reasoning_for_provider(rewrite_provider),
+            "rewrite_thinking": rewrite_reasoning,
         },
         "prompt_version": PROMPT_VERSION,
     }

@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     AIGC_REVIEW_REWRITE_PROVIDER: str = "grok"
     AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
     AIGC_REVIEW_GROK_MODEL: str = "grok-4.5"
-    AIGC_REVIEW_GROK_REASONING_EFFORT: str = "high"
+    AIGC_REVIEW_GROK_REASONING_EFFORT: str = "low"
     AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS: int = 12_000
     AIGC_REVIEW_GROK_INPUT_USD_PER_M: float = 2.0
     AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M: float = 0.5

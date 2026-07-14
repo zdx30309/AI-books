@@ -51,6 +51,25 @@ AI特征 37.83%
 """
 
 
+def _passing_audit_json() -> str:
+    return json.dumps(
+        {
+            "pass": True,
+            "semantic_fidelity": 99,
+            "information_completeness": 99,
+            "fluency": 95,
+            "voice_continuity": 95,
+            "no_added_facts": True,
+            "no_removed_information": True,
+            "no_stance_change": True,
+            "no_plot_or_event_change": True,
+            "failed_segment_ids": [],
+            "reason": "通过",
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_multipart_crlf_and_json_lf_share_one_canonical_hash() -> None:
     multipart_text = "第一段。\r\n\r\n第二段包含260元。\r\n"
     json_text = "第一段。\n\n第二段包含260元。"
@@ -71,7 +90,7 @@ def test_model_strategy_exposes_grok_45_without_leaking_key(
     assert strategy["rewrite_model"] == "grok-4.5"
     grok = next(item for item in strategy["rewrite_providers"] if item["id"] == "grok")
     assert grok["configured"] is True
-    assert grok["reasoning"] == "high"
+    assert grok["reasoning"] == "low"
     assert "configured-secret" not in json.dumps(strategy)
 
 
@@ -134,7 +153,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     assert captured["model"] == "grok-4.5"
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
-    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.2:")
+    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.3:")
     assert usage["cached_input_tokens"] == 400
     assert usage["reasoning_tokens"] == 80
     assert usage["cost_cny"] > 0
@@ -497,6 +516,88 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
     assert "真实朱雀复检" in result["next_action"]
 
 
+def test_material_rewrite_metrics_are_advisory_and_do_not_trigger_paid_retry() -> None:
+    paragraphs = [
+        "这是一段完整说明，用来保留原稿中的全部事实和既有判断。",
+        "第二段继续解释原因，同时维持原先的立场与限定条件。",
+        "第三段记录既有过程，不增加案例、数字或新的因果关系。",
+        "最后一段收住原有结论，内容和语气都保持前后一致。",
+    ]
+    original = "\n\n".join(paragraphs)
+    candidate = original.replace("这是一段完整说明", "这一段给出完整说明", 1)
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    calls: list[str] = []
+
+    def rewrite_fn(_prompt: str, **_kwargs):
+        calls.append("rewrite")
+        return candidate
+
+    def audit_fn(_prompt: str, **_kwargs):
+        calls.append("audit")
+        return _passing_audit_json()
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+    )
+
+    assert calls == ["rewrite", "audit"]
+    assert result["status"] == "candidate_ready"
+    assert result["segment_results"][0]["hard_safety_passed"] is True
+    assert result["segment_results"][0]["material_rewrite_advisory_passed"] is False
+    assert result["segment_results"][0]["rewrite_attempts"] == 1
+
+
+def test_full_run_allows_more_than_three_selected_segments() -> None:
+    originals = [
+        "甲段保留既有事实和判断。",
+        "乙段说明原来的原因关系。",
+        "丙段维持已有立场和边界。",
+        "丁段延续既定结论和语气。",
+    ]
+    candidates = [
+        "既有事实和判断由甲段保留。",
+        "原来的原因关系在乙段说明。",
+        "已有立场和边界仍由丙段维持。",
+        "既定结论和语气由丁段延续。",
+    ]
+    original = "\n\n".join(originals)
+    segments = []
+    cursor = 0
+    for segment_id, value in enumerate(originals, start=1):
+        start = original.index(value, cursor)
+        end = start + len(value)
+        cursor = end
+        segments.append(
+            ZhuqueSegment(
+                segment_id, 25, len(value), 0.99, "ai", start, end, value, 1.0, True
+            )
+        )
+    calls: list[int] = []
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        segment = kwargs["segment"]
+        calls.append(segment.segment_id)
+        return candidates[segment.segment_id - 1]
+
+    result = optimize_report_segments(
+        original,
+        segments,
+        [1, 2, 3, 4],
+        rewrite_fn=rewrite_fn,
+        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+    )
+
+    assert calls == [1, 2, 3, 4]
+    assert result["status"] == "candidate_ready"
+    assert len(result["segment_results"]) == 4
+
+
 def test_quality_failure_never_exports_candidate() -> None:
     original = "这份原稿完整记录了既有事实，也明确说明没有添加任何内容。"
     segment = ZhuqueSegment(1, 100, len(original), 0.995, "ai", 0, len(original), original, 1.0, True)
@@ -524,6 +625,7 @@ def test_quality_failure_never_exports_candidate() -> None:
     result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
     assert result["status"] == "manual_review"
     assert result["candidate_text"] == ""
+    assert result["guarded_candidate_text"]
     assert result["original_text"] == original
     assert quality_audit_passed(result["quality_audit"]) is False
 

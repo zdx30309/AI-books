@@ -80,6 +80,7 @@ export function AigcReview() {
   const [comparison, setComparison] = useState<AigcReviewComparison | null>(null);
   const [iteration, setIteration] = useState(1);
   const [rewriteProvider, setRewriteProvider] = useState<AigcReviewRewriteProvider>("grok");
+  const [rewriteReasoning, setRewriteReasoning] = useState<"low" | "medium" | "high">("low");
   const [parsing, setParsing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -98,6 +99,7 @@ export function AigcReview() {
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = Boolean(selectedRewriteProvider?.configured);
+  const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 3;
 
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
@@ -119,6 +121,7 @@ export function AigcReview() {
       setReport(parsed);
       setSelectedIds(new Set(parsed.recommended_segment_ids));
       setRewriteProvider(parsed.model_strategy.default_rewrite_provider);
+      setRewriteReasoning(parsed.model_strategy.recommended_rewrite_reasoning);
       setIteration(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "朱雀报告解析失败");
@@ -130,6 +133,14 @@ export function AigcReview() {
   const optimize = async (preferredStrategy: RewriteStrategy | null = null, advance = false) => {
     if (!report || selectedIds.size === 0) {
       setError("至少选择一个风险片段。");
+      return;
+    }
+    if (
+      selectedIds.size > maxCalibrationSegments
+      && !window.confirm(
+        `你选择了 ${selectedIds.size} 个片段，将按整篇模式逐段调用模型，费用会明显高于 ${maxCalibrationSegments} 段校准。继续处理全部选中片段吗？`,
+      )
+    ) {
       return;
     }
     setError("");
@@ -148,6 +159,7 @@ export function AigcReview() {
         iteration: targetIteration,
         preferred_strategy: preferredStrategy,
         rewrite_provider: rewriteProvider,
+        rewrite_reasoning_effort: rewriteReasoning,
       });
       setResult(response);
       setIteration(targetIteration);
@@ -199,7 +211,7 @@ export function AigcReview() {
           </p>
         </div>
         <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-          本地 OCR：0 元<br />Grok 4.5 · high 最高推理 · 单候选<br />Gemini Flash-Lite 一次整稿终审
+          本地 OCR：0 元<br />Grok 4.5 · 默认 low 省费，可选 high<br />Gemini Flash-Lite 一次整稿终审
         </div>
       </section>
 
@@ -292,6 +304,19 @@ export function AigcReview() {
                     </option>
                   ))}
                 </select>
+                {rewriteProvider === "grok" && (
+                  <select
+                    value={rewriteReasoning}
+                    onChange={(event) => setRewriteReasoning(event.target.value as "low" | "medium" | "high")}
+                    disabled={optimizing}
+                    aria-label="Grok 推理档位"
+                    className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+                  >
+                    <option value="low">low（推荐省费）</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high（高成本）</option>
+                  </select>
+                )}
               </div>
               <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass || !rewriteProviderReady} className="btn-gold inline-flex min-w-[230px] items-center justify-center gap-2 disabled:opacity-45">
                 {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -304,7 +329,7 @@ export function AigcReview() {
               )}
               {selectedRewriteProvider?.id === "grok" && selectedRewriteProvider.configured && (
                 <div className="max-w-[380px] text-right text-xs text-warm-400">
-                  Grok 4.5 {selectedRewriteProvider.reasoning} 推理 · 输入 ${selectedRewriteProvider.input_usd_per_m} / 缓存 ${selectedRewriteProvider.cached_input_usd_per_m} / 输出 ${selectedRewriteProvider.output_usd_per_m}（每百万 token）
+                  Grok 4.5 {rewriteReasoning} 推理 · 输入 ${selectedRewriteProvider.input_usd_per_m} / 缓存 ${selectedRewriteProvider.cached_input_usd_per_m} / 输出 ${selectedRewriteProvider.output_usd_per_m}（每百万 token）
                 </div>
               )}
             </div>
@@ -316,7 +341,10 @@ export function AigcReview() {
             <ScoreCard label="AI 特征" value={report.ai_percent} tone="red" />
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
-            当前是低成本校准轮：选中片段占全文 {selectedShare.toFixed(2)}%，会分别使用不同结构策略。系统不再假设改过就会转绿，必须用下一份真实报告逐策略归因后才决定是否扩大处理。
+            {selectedIds.size <= maxCalibrationSegments
+              ? `当前是低成本校准轮：选中片段占全文 ${selectedShare.toFixed(2)}%，会分别使用不同结构策略。`
+              : `当前是整篇处理模式：已选 ${selectedIds.size} 段、占全文 ${selectedShare.toFixed(2)}%，会逐段产生模型费用。`}
+            相似度与改写覆盖率只作降率风险提示，不再阻止安全候选进入质量终审和真实朱雀复检。
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
 
@@ -375,6 +403,13 @@ export function AigcReview() {
                 </div>
               )}
 
+              {result.guarded_candidate_text && (
+                <div>
+                  <div className="mb-2 text-sm text-warm-300">已付费候选已完整保留（未通过最终质量闸门，仅供人工复核）</div>
+                  <textarea readOnly value={result.guarded_candidate_text} className="min-h-[360px] w-full resize-y rounded-lg border border-amber-400/20 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
+                </div>
+              )}
+
               {result.segment_results.filter((item) => item.status === "rejected").map((item) => {
                 const lastAttempt = item.attempts[item.attempts.length - 1];
                 return (
@@ -411,8 +446,11 @@ export function AigcReview() {
                 {result.segment_results.map((item) => (
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/10 bg-base-950/40 p-4 text-xs leading-6 text-warm-300">
                     <div className="font-medium text-warm-50">片段 #{item.segment_id} · {strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id}</div>
-                    <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（硬范围 25%–82%）</div>
-                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（当前离散门槛 ≥{Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%）</div>
+                    <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（参考范围 25%–82%）</div>
+                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（参考目标 ≥{Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%）</div>
+                    <div className={item.material_rewrite_advisory_passed ? "text-emerald-200" : "text-amber-200"}>
+                      {item.material_rewrite_advisory_passed ? "降率信号达到参考目标" : "降率信号偏弱，但不拦截真实朱雀复检"}
+                    </div>
                   </div>
                 ))}
               </div>

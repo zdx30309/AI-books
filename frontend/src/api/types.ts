@@ -415,14 +415,19 @@ export interface AigcReviewStrategy {
   rewrite_providers: AigcReviewRewriteProviderStatus[];
   audit_model: string;
   rewrite_thinking: string;
+  recommended_rewrite_reasoning: "low" | "medium" | "high";
+  rewrite_reasoning_options: Array<"low" | "medium" | "high">;
   candidate_count: number;
   max_rewrite_attempts_per_segment: number;
   rewrite_protocol: string;
   experiment_mode: string;
+  selection_mode: string;
+  recommended_max_calibration_segments: number;
   strategies: string[];
   material_similarity_range: number[];
   material_paragraph_coverage_min: number;
   material_coverage_quantization: string;
+  material_metrics_are_advisory: boolean;
   style_feature_version: string;
   feature_learning_min_real_samples: number;
   audit_scope: string;
@@ -468,6 +473,7 @@ export interface OptimizeAigcReviewRequest {
   iteration?: number;
   preferred_strategy?: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
   rewrite_provider?: AigcReviewRewriteProvider;
+  rewrite_reasoning_effort?: "low" | "medium" | "high";
 }
 
 export interface AigcReviewQualityAudit {
@@ -518,6 +524,8 @@ export interface AigcReviewRewriteAttempt {
   strategy_id: string;
   rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
+  hard_safety_passed: boolean;
+  material_rewrite_advisory_passed: boolean;
 }
 
 export interface AigcReviewSegmentResult {
@@ -525,6 +533,8 @@ export interface AigcReviewSegmentResult {
   strategy_id: string;
   rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
+  hard_safety_passed: boolean;
+  material_rewrite_advisory_passed: boolean;
   status: "ready" | "rejected";
   original_chars: number;
   candidate_chars: number;
@@ -547,6 +557,7 @@ export interface AigcReviewOptimizeResult {
   original_text: string;
   candidate_text: string;
   guarded_candidate_preview?: string;
+  guarded_candidate_text?: string;
   selected_segment_ids: number[];
   iteration?: number;
   preferred_strategy?: string | null;
