@@ -89,6 +89,17 @@ def test_grok_cost_uses_cached_input_and_output_prices(
     assert actual == pytest.approx(expected)
 
 
+def test_xai_proxy_reuses_existing_official_api_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "XAI_HTTPS_PROXY", "")
+    monkeypatch.setattr(review.settings, "OPENAI_HTTPS_PROXY", "http://proxy.example:7898")
+    assert review._xai_proxy_url() == "http://proxy.example:7898"
+
+    monkeypatch.setattr(review.settings, "XAI_HTTPS_PROXY", "http://xai-proxy.example:3128")
+    assert review._xai_proxy_url() == "http://xai-proxy.example:3128"
+
+
 def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

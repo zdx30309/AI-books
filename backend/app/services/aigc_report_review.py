@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 import pdfplumber
+import httpx
 from openai import OpenAI
 
 from app.core.config import PROJECT_ROOT, settings
@@ -1602,12 +1603,25 @@ def _rewrite_provider_statuses() -> list[dict[str, Any]]:
 @lru_cache(maxsize=1)
 def _get_xai_client() -> OpenAI:
     _ensure_rewrite_provider_configured("grok")
+    timeout = max(30, int(settings.XAI_REQUEST_TIMEOUT))
+    proxy = _xai_proxy_url()
+    http_client = httpx.Client(
+        proxy=proxy or None,
+        timeout=httpx.Timeout(float(timeout)),
+        trust_env=False,
+    )
     return OpenAI(
         api_key=settings.XAI_API_KEY,
         base_url=settings.XAI_BASE_URL.rstrip("/"),
-        timeout=max(30, int(settings.XAI_REQUEST_TIMEOUT)),
+        timeout=timeout,
         max_retries=max(0, int(settings.XAI_MAX_RETRIES)),
+        http_client=http_client,
     )
+
+
+def _xai_proxy_url() -> str:
+    """Use an explicit xAI proxy, then the already-provisioned official API egress."""
+    return (settings.XAI_HTTPS_PROXY or settings.OPENAI_HTTPS_PROXY or "").strip()
 
 
 def _grok_rewrite(

@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     # --- xAI / Grok (only used by the dedicated report-review page) ---
     XAI_API_KEY: str = ""
     XAI_BASE_URL: str = "https://api.x.ai/v1"
+    XAI_HTTPS_PROXY: str = ""
     XAI_REQUEST_TIMEOUT: int = 600
     XAI_MAX_RETRIES: int = 2
 
