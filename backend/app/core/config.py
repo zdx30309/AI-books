@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800
     DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS: int = 16
 
+    # --- xAI / Grok (only used by the dedicated report-review page) ---
+    XAI_API_KEY: str = ""
+    XAI_BASE_URL: str = "https://api.x.ai/v1"
+    XAI_REQUEST_TIMEOUT: int = 600
+    XAI_MAX_RETRIES: int = 2
+
     # --- Gemini / Google Gen AI ---
     GOOGLE_API_KEY: str = ""
     GOOGLE_GENAI_USE_VERTEXAI: bool = True
@@ -140,7 +146,15 @@ class Settings(BaseSettings):
     TENCENT_AIGC_REGION: str = "ap-beijing"
 
     # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
+    AIGC_REVIEW_REWRITE_PROVIDER: str = "grok"
     AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
+    AIGC_REVIEW_GROK_MODEL: str = "grok-4.5"
+    AIGC_REVIEW_GROK_REASONING_EFFORT: str = "high"
+    AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS: int = 12_000
+    AIGC_REVIEW_GROK_INPUT_USD_PER_M: float = 2.0
+    AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M: float = 0.5
+    AIGC_REVIEW_GROK_OUTPUT_USD_PER_M: float = 6.0
+    AIGC_REVIEW_USD_CNY_RATE: float = 7.2
     AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
     AIGC_REVIEW_MAX_REWRITE_ATTEMPTS: int = 2
     AIGC_REVIEW_HUMAN_TARGET: float = 60.0

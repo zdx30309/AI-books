@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/aigc-review", tags=["AIGC Report Review"])
 
 SupportedContentType = Literal["article", "classical", "public_domain"]
+SupportedRewriteProvider = Literal["grok", "deepseek"]
 
 
 class ZhuqueSegmentPayload(BaseModel):
@@ -48,6 +49,7 @@ class OptimizeAigcReviewRequest(BaseModel):
     selected_segment_ids: list[int] = Field(..., min_length=1, max_length=200)
     iteration: int = Field(1, ge=1, le=20)
     preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
+    rewrite_provider: SupportedRewriteProvider = "grok"
 
 
 class CompareAigcReviewRequest(BaseModel):
@@ -107,6 +109,7 @@ async def optimize_aigc_report(
             content_type=req.content_type,
             iteration=req.iteration,
             preferred_strategy=req.preferred_strategy,
+            rewrite_provider=req.rewrite_provider,
         )
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

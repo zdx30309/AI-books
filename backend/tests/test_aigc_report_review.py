@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,6 +57,95 @@ def test_multipart_crlf_and_json_lf_share_one_canonical_hash() -> None:
 
     assert normalize_manuscript_text(multipart_text) == json_text
     assert sha256_text(multipart_text) == sha256_text(json_text)
+
+
+def test_model_strategy_exposes_grok_45_without_leaking_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_REWRITE_PROVIDER", "grok")
+    monkeypatch.setattr(review.settings, "XAI_API_KEY", "configured-secret")
+
+    strategy = review.model_strategy()
+
+    assert strategy["default_rewrite_provider"] == "grok"
+    assert strategy["rewrite_model"] == "grok-4.5"
+    grok = next(item for item in strategy["rewrite_providers"] if item["id"] == "grok")
+    assert grok["configured"] is True
+    assert grok["reasoning"] == "high"
+    assert "configured-secret" not in json.dumps(strategy)
+
+
+def test_grok_cost_uses_cached_input_and_output_prices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_GROK_INPUT_USD_PER_M", 2.0)
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M", 0.5)
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_GROK_OUTPUT_USD_PER_M", 6.0)
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_USD_CNY_RATE", 7.2)
+
+    actual = review._grok_cost_cny(1000, 400, 200)
+    expected = ((600 * 2.0 + 400 * 0.5 + 200 * 6.0) / 1_000_000) * 7.2
+
+    assert actual == pytest.approx(expected)
+
+
+def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output_text="这是严格保留事实后的候选稿。",
+                usage=SimpleNamespace(
+                    input_tokens=1000,
+                    output_tokens=200,
+                    input_tokens_details=SimpleNamespace(cached_tokens=400),
+                    output_tokens_details=SimpleNamespace(reasoning_tokens=80),
+                ),
+            )
+
+    monkeypatch.setattr(review, "_get_xai_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_GROK_REASONING_EFFORT", "high")
+    segment = ZhuqueSegment(1, 100, 20, 0.99, "ai", 0, 20, "甲" * 20, 1.0, True)
+
+    content, usage = review._grok_rewrite(
+        "只输出候选稿",
+        segment=segment,
+        request_id="request-1",
+        attempt=1,
+    )
+
+    assert content == "这是严格保留事实后的候选稿。"
+    assert captured["model"] == "grok-4.5"
+    assert captured["reasoning"] == {"effort": "high"}
+    assert captured["store"] is False
+    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.2:")
+    assert usage["cached_input_tokens"] == 400
+    assert usage["reasoning_tokens"] == 80
+    assert usage["cost_cny"] > 0
+
+
+def test_grok_missing_key_fails_before_any_paid_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "XAI_API_KEY", "")
+    original = "完整事实仍然保留，没有新增信息。"
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+
+    with pytest.raises(review.AigcReviewModelError, match="XAI_API_KEY"):
+        optimize_report_segments(
+            original,
+            [segment],
+            [1],
+            rewrite_provider="grok",
+            audit_fn=lambda *_args, **_kwargs: "never called",
+        )
 
 
 def test_real_report_summary_and_rows_are_parsed() -> None:

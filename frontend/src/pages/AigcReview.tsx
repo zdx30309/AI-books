@@ -16,6 +16,7 @@ import type {
   AigcReviewComparison,
   AigcReviewOptimizeResult,
   AigcReviewReport,
+  AigcReviewRewriteProvider,
 } from "@/api/types";
 
 type RewriteStrategy = "syntax_rebuild" | "evidence_first" | "rhythm_recompose";
@@ -78,6 +79,7 @@ export function AigcReview() {
   const [recheck, setRecheck] = useState<AigcReviewReport | null>(null);
   const [comparison, setComparison] = useState<AigcReviewComparison | null>(null);
   const [iteration, setIteration] = useState(1);
+  const [rewriteProvider, setRewriteProvider] = useState<AigcReviewRewriteProvider>("grok");
   const [parsing, setParsing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -93,6 +95,9 @@ export function AigcReview() {
   const finalPassed = Boolean(
     result?.status === "candidate_ready" && recheck?.strict_pass && recheck?.source_match_verified,
   );
+  const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
+  const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
+  const rewriteProviderReady = Boolean(selectedRewriteProvider?.configured);
 
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
@@ -113,6 +118,7 @@ export function AigcReview() {
       );
       setReport(parsed);
       setSelectedIds(new Set(parsed.recommended_segment_ids));
+      setRewriteProvider(parsed.model_strategy.default_rewrite_provider);
       setIteration(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "朱雀报告解析失败");
@@ -141,6 +147,7 @@ export function AigcReview() {
         selected_segment_ids: [...selectedIds],
         iteration: targetIteration,
         preferred_strategy: preferredStrategy,
+        rewrite_provider: rewriteProvider,
       });
       setResult(response);
       setIteration(targetIteration);
@@ -192,7 +199,7 @@ export function AigcReview() {
           </p>
         </div>
         <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-          本地 OCR：0 元<br />DeepSeek V4 Pro 单候选 · 失败块最多一次有界重试<br />Gemini Flash-Lite 一次整稿终审
+          本地 OCR：0 元<br />Grok 4.5 · high 最高推理 · 单候选<br />Gemini Flash-Lite 一次整稿终审
         </div>
       </section>
 
@@ -269,10 +276,38 @@ export function AigcReview() {
                 {report.page_count} 页 · {report.extraction_method === "local_rapidocr" ? "本地 OCR" : "PDF 文本层"} · 原稿匹配 {Math.round(report.source_match_confidence * 100)}% · 推荐改 {report.recommended_segment_ids.length} 段
               </div>
             </div>
-            <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass} className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:opacity-45">
-              {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {optimizing ? "改写并独立终审中" : `校准选中 ${selectedIds.size} 段`}
-            </button>
+            <div className="flex flex-col items-stretch gap-2 sm:items-end">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
+                <select
+                  id="aigc-rewrite-provider"
+                  value={rewriteProvider}
+                  onChange={(event) => setRewriteProvider(event.target.value as AigcReviewRewriteProvider)}
+                  disabled={optimizing}
+                  className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+                >
+                  {rewriteProviderOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}{provider.configured ? "" : "（未配置）"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass || !rewriteProviderReady} className="btn-gold inline-flex min-w-[230px] items-center justify-center gap-2 disabled:opacity-45">
+                {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                {optimizing ? "改写并独立终审中" : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 校准 ${selectedIds.size} 段`}
+              </button>
+              {!rewriteProviderReady && (
+                <div className="max-w-[360px] text-right text-xs text-amber-200">
+                  所选模型尚未配置服务器密钥；系统不会静默切换或产生费用。
+                </div>
+              )}
+              {selectedRewriteProvider?.id === "grok" && selectedRewriteProvider.configured && (
+                <div className="max-w-[380px] text-right text-xs text-warm-400">
+                  Grok 4.5 {selectedRewriteProvider.reasoning} 推理 · 输入 ${selectedRewriteProvider.input_usd_per_m} / 缓存 ${selectedRewriteProvider.cached_input_usd_per_m} / 输出 ${selectedRewriteProvider.output_usd_per_m}（每百万 token）
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -316,7 +351,7 @@ export function AigcReview() {
               <h2 className="mt-1 font-serif text-2xl text-warm-50">质量闸门与真实复检</h2>
             </div>
             <div className="text-right text-xs leading-6 text-warm-400">
-              本轮估算 ¥{result.cost.estimated_cny.toFixed(4)}<br />{result.models.rewrite} → {result.models.audit}
+              本轮估算 ¥{result.cost.estimated_cny.toFixed(4)}<br />{result.models.rewrite_provider} / {result.models.rewrite}（{result.models.rewrite_thinking}）→ {result.models.audit}
             </div>
           </div>
 

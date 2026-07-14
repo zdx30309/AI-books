@@ -21,21 +21,22 @@
 - 候选通过模型质量终审后仍只是“待复检候选”。用户必须把候选重新送入真实朱雀并上传第二份 PDF；人工特征严格大于 50% 后，前端才解锁终稿下载。
 - 系统会从报告的首个详情卡抽取正文样本，与当前原稿/候选做模糊匹配；复检报告不是同一稿件或匹配证据不足时，即使百分比过线也不解锁下载。
 
-### 最低成本模型路由
+### 可审计模型路由
 
 截至 2026-07-13 的官方价格与能力对比：
 
 | 用途 | 模型 | 官方标准价（每百万 token） | 结论 |
 |---|---|---:|---|
-| 定向改稿 | DeepSeek V4 Pro | 输入 ¥3 / 输出 ¥6 | 默认主改；比 Flash 贵一点，但更适合事实忠实和中文长文质量 |
+| 定向改稿 | Grok 4.5 | 输入 $2 / 缓存输入 $0.50 / 输出 $6 | v3.2 默认主改；使用最高 `high` 推理，单候选且最多一次有界重试 |
+| 对照/回退 | DeepSeek V4 Pro | 输入 ¥3 / 输出 ¥6 | 保留为同一界面的对照组，不静默回退 |
 | 极低价生成 | DeepSeek V4 Flash | 输入 ¥1 / 输出 ¥2 | 最便宜，但不作为质量优先主改默认值 |
 | 独立终审 | Gemini 3.1 Flash-Lite | 输入 $0.25 / 输出 $1.50 | 默认终审；与主改不同供应商且成本极低 |
 | 失败升级 | Gemini 3.5 Flash | 输入 $1.50 / 输出 $9 | 仅在人工选择升级时使用，不做默认调用 |
 | 高价升级参考 | GPT-5.6 Terra | 输入 $2.50 / 输出 $15 | 仅复杂稿件人工升级，不进入最低成本默认链路 |
 
-官方来源：[DeepSeek V4 发布](https://api-docs.deepseek.com/news/news260424/)、[DeepSeek 价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)、[Gemini 模型](https://ai.google.dev/gemini-api/docs/models)、[Gemini 价格](https://ai.google.dev/gemini-api/docs/pricing)、[OpenAI GPT-5.6 模型](https://developers.openai.com/api/docs/models)、[Anthropic 价格](https://platform.claude.com/docs/en/about-claude/pricing)、[阿里云百炼模型价格](https://help.aliyun.com/en/model-studio/model-pricing)。
+官方来源：[Grok 4.5 模型](https://docs.x.ai/developers/grok-4-5)、[xAI 价格](https://docs.x.ai/developers/pricing)、[xAI 推理档位](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[DeepSeek V4 发布](https://api-docs.deepseek.com/news/news260424/)、[DeepSeek 价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)、[Gemini 模型](https://ai.google.dev/gemini-api/docs/models)、[Gemini 价格](https://ai.google.dev/gemini-api/docs/pricing)。
 
-默认链路只做“一份候选 + 一次整稿独立终审”，不再为每块生成双候选，也不逐块调用审稿模型。本地 RapidOCR 读取 PDF，不使用付费视觉模型。按样例约 1.7 万中文字符、推荐改动约 62% 粗估，一轮模型成本通常约 `¥0.1-¥0.2`，实际以 API token 返回和所用通道计费为准。
+默认链路只做“一份候选 + 一次整稿独立终审”，不再为每块生成双候选，也不逐块调用审稿模型。本地 RapidOCR 读取 PDF，不使用付费视觉模型。Grok 4.5 的 `high` 推理 token 按输出价计费，因此不能沿用 DeepSeek 的旧成本估算；页面按 xAI 返回的输入、缓存输入、输出及推理 token 估算人民币费用。
 
 ### 报告片段改写协议（v2）
 
@@ -62,7 +63,13 @@
 报告审稿台专用配置：
 
 ```env
+AIGC_REVIEW_REWRITE_PROVIDER=grok
 AIGC_REVIEW_REWRITE_MODEL=deepseek-v4-pro
+AIGC_REVIEW_GROK_MODEL=grok-4.5
+AIGC_REVIEW_GROK_REASONING_EFFORT=high
+AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS=12000
+XAI_API_KEY=
+XAI_BASE_URL=https://api.x.ai/v1
 AIGC_REVIEW_AUDIT_MODEL=gemini-3.1-flash-lite
 AIGC_REVIEW_MAX_REWRITE_ATTEMPTS=2
 AIGC_REVIEW_HUMAN_TARGET=60
@@ -230,6 +237,12 @@ v3.1 将 80% 目标量化为“最接近的可达整段数量”：4 段至少�
 - 腾讯云 FAQ 明确服务专门覆盖 DeepSeek、Gemini、Claude 等模型，也覆盖参照仿写与 AI 润色；单纯换一个生成模型或做表面转述不是可靠方案。
 - 中文 [LLM-Detector](https://arxiv.org/abs/2402.01158) 同时训练文档级、句子级和 AI 润色混合样本，分析显示人类/AI 文本在词性分布上存在差异。这意味着检测很可能不是只看困惑度或几个连接词。
 - ACL 2025 的[转述反演研究](https://aclanthology.org/2025.findings-acl.227/)表明，改写模型会留下可学习偏差；GenAIDetect 2025 的 [DAMAGE](https://aclanthology.org/2025.genaidetect-1.9/)也显示检测器可以学习多种 humanizer 的共同痕迹。因此不得把某个“反检测 Prompt”当成长期有效资产。
+
+### v3.2：Grok 4.5 实验臂
+
+审稿台新增 `grok` / `deepseek` 显式选择器，默认使用 `grok-4.5`。Grok 4.5 按用户要求固定使用官方最高 `high` 推理档；模型不能关闭推理。调用使用 xAI Responses API、`store=false` 和稳定的 prompt cache key，不启用联网工具。每次尝试记录 provider、model、输入 token、缓存输入 token、输出 token、推理 token 和人民币估算费用。
+
+模型切换只是新的受控实验变量，不预设 Grok 一定比 DeepSeek 更容易通过朱雀。真实复检仍按策略、文体、模型分别积累；只有配对报告能证明某一模型在当前朱雀版本上的效果。Grok 未配置时按钮禁用并明确显示缺少密钥，后端也在任何付费调用前失败；不会静默改用其他模型。
 - ACL 2026 Findings 的 [C-ReD](https://arxiv.org/abs/2604.11796)公开了 128,610 条、多领域、多模型、真实提示词驱动的中文检测基准，可作为未来本地先验研究数据；但它没有朱雀标签，不能冒充朱雀替代模型。只有我们的真实朱雀配对报告才能完成最后校准。
 
 因此，本项目的逆向目标被严格定义为“题材内、版本内、基于真实查询的局部响应面估计”，而不是盗取或宣称还原腾讯模型。任何候选仍必须通过确定性保护和独立质量审查；检测分数改善不能抵消质量失败。

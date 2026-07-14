@@ -382,6 +382,19 @@ export interface AigcQualityReport {
 // Report-driven Zhuque review (independent from the automatic task gate)
 
 export type AigcReviewContentType = "article" | "classical" | "public_domain";
+export type AigcReviewRewriteProvider = "grok" | "deepseek";
+
+export interface AigcReviewRewriteProviderStatus {
+  id: AigcReviewRewriteProvider;
+  label: string;
+  model: string;
+  configured: boolean;
+  default: boolean;
+  reasoning: string;
+  input_usd_per_m?: number;
+  cached_input_usd_per_m?: number;
+  output_usd_per_m?: number;
+}
 
 export interface AigcReviewSegment {
   segment_id: number;
@@ -397,7 +410,9 @@ export interface AigcReviewSegment {
 }
 
 export interface AigcReviewStrategy {
+  default_rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
+  rewrite_providers: AigcReviewRewriteProviderStatus[];
   audit_model: string;
   rewrite_thinking: string;
   candidate_count: number;
@@ -452,6 +467,7 @@ export interface OptimizeAigcReviewRequest {
   selected_segment_ids: number[];
   iteration?: number;
   preferred_strategy?: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
+  rewrite_provider?: AigcReviewRewriteProvider;
 }
 
 export interface AigcReviewQualityAudit {
@@ -495,14 +511,20 @@ export interface AigcReviewRewriteAttempt {
   protocol_issues: string[];
   deterministic_review: AigcReviewDeterministicReview;
   input_tokens: number;
+  cached_input_tokens: number;
   output_tokens: number;
+  reasoning_tokens: number;
   cost_cny: number;
   strategy_id: string;
+  rewrite_provider: AigcReviewRewriteProvider;
+  rewrite_model: string;
 }
 
 export interface AigcReviewSegmentResult {
   segment_id: number;
   strategy_id: string;
+  rewrite_provider: AigcReviewRewriteProvider;
+  rewrite_model: string;
   status: "ready" | "rejected";
   original_chars: number;
   candidate_chars: number;
@@ -539,6 +561,7 @@ export interface AigcReviewOptimizeResult {
     estimated_cny: number;
   };
   models: {
+    rewrite_provider: AigcReviewRewriteProvider;
     rewrite: string;
     audit: string;
     rewrite_thinking: string;

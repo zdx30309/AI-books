@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 import pdfplumber
+from openai import OpenAI
 
 from app.core.config import PROJECT_ROOT, settings
 from app.services.aigc_style_probe import (
@@ -38,7 +39,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v3.1"
+PROMPT_VERSION = "zhuque-report-review-v3.2"
 STRICT_HUMAN_THRESHOLD = 50.0
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
@@ -836,6 +837,7 @@ def optimize_report_segments(
     content_type: str = "article",
     iteration: int = 1,
     preferred_strategy: str | None = None,
+    rewrite_provider: str | None = None,
     rewrite_fn: Callable[..., Any] | None = None,
     audit_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -855,7 +857,11 @@ def optimize_report_segments(
     if not original:
         raise ZhuqueReportError("原稿不能为空。")
 
-    rewrite = rewrite_fn or _deepseek_rewrite
+    selected_provider = _normalize_rewrite_provider(rewrite_provider)
+    rewrite_model = _rewrite_model_for_provider(selected_provider)
+    if rewrite_fn is None:
+        _ensure_rewrite_provider_configured(selected_provider)
+    rewrite = rewrite_fn or _rewrite_callable(selected_provider)
     audit = audit_fn or _gemini_audit
     replacements: list[tuple[int, int, str]] = []
     segment_results: list[dict[str, Any]] = []
@@ -925,11 +931,12 @@ def optimize_report_segments(
                 raw_candidate, usage = _coerce_model_result(raw)
             except Exception as exc:
                 logger.exception(
-                    "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s model=%s status=failed error_type=%s",
+                    "LLM action=aigc_report_rewrite request_id=%s provider=%s segment=%s attempt=%s model=%s status=failed error_type=%s",
                     request_id,
+                    selected_provider,
                     segment_id,
                     attempt,
-                    settings.AIGC_REVIEW_REWRITE_MODEL,
+                    rewrite_model,
                     type(exc).__name__,
                 )
                 raise AigcReviewModelError(f"片段 {segment_id} 改写模型调用失败: {exc}") from exc
@@ -948,7 +955,9 @@ def optimize_report_segments(
             protocol_passed = not protocol_issues or not structured
             candidate_passed = deterministic.passed and protocol_passed
             input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
+            cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or _estimate_tokens(cleaned_candidate))
+            reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
             attempt_cost = float(usage.get("cost_cny") or 0.0)
             total_input_tokens += input_tokens
             total_output_tokens += output_tokens
@@ -961,9 +970,13 @@ def optimize_report_segments(
                     "protocol_issues": protocol_issues,
                     "deterministic_review": deterministic.to_dict(),
                     "input_tokens": input_tokens,
+                    "cached_input_tokens": cached_input_tokens,
                     "output_tokens": output_tokens,
+                    "reasoning_tokens": reasoning_tokens,
                     "cost_cny": round(attempt_cost, 6),
                     "strategy_id": strategy_id,
+                    "rewrite_provider": selected_provider,
+                    "rewrite_model": rewrite_model,
                 }
             )
             if candidate_passed:
@@ -985,6 +998,8 @@ def optimize_report_segments(
             {
                 "segment_id": segment_id,
                 "strategy_id": strategy_id,
+                "rewrite_provider": selected_provider,
+                "rewrite_model": rewrite_model,
                 "status": "ready" if candidate_passed else "rejected",
                 "original_chars": len(source),
                 "candidate_chars": len(candidate),
@@ -1009,6 +1024,8 @@ def optimize_report_segments(
                 total_input_tokens=total_input_tokens,
                 total_output_tokens=total_output_tokens,
                 rewrite_cost_cny=total_rewrite_cost,
+                rewrite_provider=selected_provider,
+                rewrite_model=rewrite_model,
             )
         replacements.append((segment.start, segment.end, candidate))
         previous_context = original[max(0, segment.start - 350):segment.start]
@@ -1062,6 +1079,8 @@ def optimize_report_segments(
                 total_input_tokens=total_input_tokens + audit_input_tokens,
                 total_output_tokens=total_output_tokens + audit_output_tokens,
                 rewrite_cost_cny=total_cost,
+                rewrite_provider=selected_provider,
+                rewrite_model=rewrite_model,
             ),
             "quality_audit": quality_audit,
             "guarded_candidate_preview": assembled[:1200],
@@ -1090,9 +1109,10 @@ def optimize_report_segments(
             "estimated_cny": round(total_cost, 6),
         },
         "models": {
-            "rewrite": settings.AIGC_REVIEW_REWRITE_MODEL,
+            "rewrite_provider": selected_provider,
+            "rewrite": rewrite_model,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
-            "rewrite_thinking": "disabled",
+            "rewrite_thinking": _rewrite_reasoning_for_provider(selected_provider),
         },
         "prompt_version": PROMPT_VERSION,
     }
@@ -1487,10 +1507,13 @@ def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
 
 
 def model_strategy() -> dict[str, Any]:
+    default_provider = _normalize_rewrite_provider(None)
     return {
-        "rewrite_model": settings.AIGC_REVIEW_REWRITE_MODEL,
+        "default_rewrite_provider": default_provider,
+        "rewrite_model": _rewrite_model_for_provider(default_provider),
+        "rewrite_providers": _rewrite_provider_statuses(),
         "audit_model": settings.AIGC_REVIEW_AUDIT_MODEL,
-        "rewrite_thinking": "disabled",
+        "rewrite_thinking": _rewrite_reasoning_for_provider(default_provider),
         "candidate_count": 1,
         "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
         "rewrite_protocol": "numbered_paragraphs_with_immutable_anchors",
@@ -1508,6 +1531,170 @@ def model_strategy() -> dict[str, Any]:
         "global_gate_changed": False,
         "novel_workflows_included": False,
     }
+
+
+def _normalize_rewrite_provider(provider: str | None) -> str:
+    selected = (provider or settings.AIGC_REVIEW_REWRITE_PROVIDER or "grok").strip().lower()
+    if selected not in {"grok", "deepseek"}:
+        raise ZhuqueReportError(f"不支持的审稿改写模型提供方: {selected}")
+    return selected
+
+
+def _rewrite_model_for_provider(provider: str) -> str:
+    if provider == "grok":
+        return (settings.AIGC_REVIEW_GROK_MODEL or "grok-4.5").strip()
+    return (settings.AIGC_REVIEW_REWRITE_MODEL or "deepseek-v4-pro").strip()
+
+
+def _rewrite_reasoning_for_provider(provider: str) -> str:
+    if provider == "grok":
+        return (settings.AIGC_REVIEW_GROK_REASONING_EFFORT or "high").strip().lower()
+    return "disabled"
+
+
+def _rewrite_provider_configured(provider: str) -> bool:
+    if provider == "grok":
+        return bool(settings.XAI_API_KEY.strip())
+    return bool(settings.DEEPSEEK_API_KEY.strip())
+
+
+def _ensure_rewrite_provider_configured(provider: str) -> None:
+    if _rewrite_provider_configured(provider):
+        return
+    if provider == "grok":
+        raise AigcReviewModelError(
+            "Grok 4.5 尚未配置：请在服务器 .env 安全写入 XAI_API_KEY 后重启服务；不要把密钥粘贴到聊天或日志。"
+        )
+    raise AigcReviewModelError("DeepSeek 改写模型尚未配置 DEEPSEEK_API_KEY。")
+
+
+def _rewrite_callable(provider: str) -> Callable[..., Any]:
+    return _grok_rewrite if provider == "grok" else _deepseek_rewrite
+
+
+def _rewrite_provider_statuses() -> list[dict[str, Any]]:
+    default_provider = _normalize_rewrite_provider(None)
+    return [
+        {
+            "id": "grok",
+            "label": "Grok 4.5",
+            "model": _rewrite_model_for_provider("grok"),
+            "configured": _rewrite_provider_configured("grok"),
+            "default": default_provider == "grok",
+            "reasoning": _rewrite_reasoning_for_provider("grok"),
+            "input_usd_per_m": float(settings.AIGC_REVIEW_GROK_INPUT_USD_PER_M),
+            "cached_input_usd_per_m": float(
+                settings.AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M
+            ),
+            "output_usd_per_m": float(settings.AIGC_REVIEW_GROK_OUTPUT_USD_PER_M),
+        },
+        {
+            "id": "deepseek",
+            "label": "DeepSeek V4 Pro",
+            "model": _rewrite_model_for_provider("deepseek"),
+            "configured": _rewrite_provider_configured("deepseek"),
+            "default": default_provider == "deepseek",
+            "reasoning": "disabled",
+        },
+    ]
+
+
+@lru_cache(maxsize=1)
+def _get_xai_client() -> OpenAI:
+    _ensure_rewrite_provider_configured("grok")
+    return OpenAI(
+        api_key=settings.XAI_API_KEY,
+        base_url=settings.XAI_BASE_URL.rstrip("/"),
+        timeout=max(30, int(settings.XAI_REQUEST_TIMEOUT)),
+        max_retries=max(0, int(settings.XAI_MAX_RETRIES)),
+    )
+
+
+def _grok_rewrite(
+    prompt: str,
+    *,
+    segment: ZhuqueSegment,
+    request_id: str,
+    attempt: int = 1,
+) -> tuple[str, dict[str, Any]]:
+    model = _rewrite_model_for_provider("grok")
+    reasoning_effort = _rewrite_reasoning_for_provider("grok")
+    if reasoning_effort not in {"low", "medium", "high"}:
+        raise ValueError("Grok 4.5 reasoning_effort 必须是 low、medium 或 high")
+    max_tokens = min(
+        max(2000, int(settings.AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS)),
+        max(6000, int(len(segment.mapped_text) * 2.2)),
+    )
+    logger.info(
+        "LLM action=aigc_report_rewrite request_id=%s provider=xai model=%s reasoning=%s segment=%s attempt=%s status=started",
+        request_id,
+        model,
+        reasoning_effort,
+        segment.segment_id,
+        attempt,
+    )
+    with distributed_semaphore(
+        "aigc-report-review-grok",
+        limit=max(1, int(settings.AIGC_GATE_REWRITE_CONCURRENCY)),
+    ):
+        response = _get_xai_client().responses.create(
+            model=model,
+            input=[{"role": "user", "content": prompt}],
+            reasoning={"effort": reasoning_effort},
+            max_output_tokens=max_tokens,
+            prompt_cache_key=f"aigc-review:{PROMPT_VERSION}:{request_id}",
+            store=False,
+        )
+    if getattr(response, "status", None) == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", "unknown")
+        raise ValueError(f"Grok 4.5 输出未完成: {reason}")
+    content = (getattr(response, "output_text", "") or "").strip()
+    if not content:
+        raise ValueError("Grok 4.5 返回空候选")
+    usage = getattr(response, "usage", None)
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    input_details = getattr(usage, "input_tokens_details", None)
+    cached_input_tokens = int(getattr(input_details, "cached_tokens", 0) or 0)
+    output_details = getattr(usage, "output_tokens_details", None)
+    reasoning_tokens = int(getattr(output_details, "reasoning_tokens", 0) or 0)
+    cost = _grok_cost_cny(input_tokens, cached_input_tokens, output_tokens)
+    logger.info(
+        "LLM action=aigc_report_rewrite request_id=%s provider=xai model=%s reasoning=%s segment=%s attempt=%s status=succeeded input_tokens=%s cached_input_tokens=%s output_tokens=%s reasoning_tokens=%s cost_cny=%.6f",
+        request_id,
+        model,
+        reasoning_effort,
+        segment.segment_id,
+        attempt,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        cost,
+    )
+    return content, {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "cost_cny": cost,
+    }
+
+
+def _grok_cost_cny(
+    input_tokens: int,
+    cached_input_tokens: int,
+    output_tokens: int,
+) -> float:
+    cached = max(0, min(int(input_tokens), int(cached_input_tokens)))
+    uncached = max(0, int(input_tokens) - cached)
+    usd = (
+        uncached * float(settings.AIGC_REVIEW_GROK_INPUT_USD_PER_M)
+        + cached * float(settings.AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M)
+        + max(0, int(output_tokens)) * float(settings.AIGC_REVIEW_GROK_OUTPUT_USD_PER_M)
+    ) / 1_000_000
+    return usd * float(settings.AIGC_REVIEW_USD_CNY_RATE)
 
 
 def _deepseek_rewrite(
@@ -1600,6 +1787,8 @@ def _manual_review_result(
     total_input_tokens: int,
     total_output_tokens: int,
     rewrite_cost_cny: float,
+    rewrite_provider: str,
+    rewrite_model: str,
 ) -> dict[str, Any]:
     return {
         "request_id": request_id,
@@ -1621,9 +1810,10 @@ def _manual_review_result(
             "estimated_cny": round(rewrite_cost_cny, 6),
         },
         "models": {
-            "rewrite": settings.AIGC_REVIEW_REWRITE_MODEL,
+            "rewrite_provider": rewrite_provider,
+            "rewrite": rewrite_model,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
-            "rewrite_thinking": "disabled",
+            "rewrite_thinking": _rewrite_reasoning_for_provider(rewrite_provider),
         },
         "prompt_version": PROMPT_VERSION,
     }
