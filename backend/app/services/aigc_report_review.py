@@ -22,7 +22,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pdfplumber
 import httpx
@@ -41,18 +41,26 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v3.4"
+PROMPT_VERSION = "zhuque-report-review-v4.0"
 STRICT_HUMAN_THRESHOLD = 50.0
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
 MATERIAL_PARAGRAPH_COVERAGE_MIN = 0.80
+SUBSTANTIVE_SIMILARITY_MAX = 0.90
+SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX = 0.25
 _PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
+_FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
+_REAUTHOR_PROMPT_PATH = _PROMPT_DIR / "aigc_report_reauthor.md"
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
 _DIAGNOSTIC_RULES_PATH = _PROMPT_DIR / "aigc_report_diagnostic_rules.json"
-_EXPERIMENT_DIR = PROJECT_ROOT / ".local" / "aigc_review_experiments"
+_PERSISTENT_REVIEW_ROOT = PROJECT_ROOT / "backend" / "output" / "_aigc_review"
+_EXPERIMENT_DIR = _PERSISTENT_REVIEW_ROOT / "experiments"
+_CALIBRATION_DIR = _PERSISTENT_REVIEW_ROOT / "calibrations"
+_FACT_LEDGER_CACHE_DIR = _PERSISTENT_REVIEW_ROOT / "fact_ledgers"
+_LEGACY_EXPERIMENT_DIR = PROJECT_ROOT / ".local" / "aigc_review_experiments"
 _OCR_LOCK = threading.Lock()
 
 
@@ -135,6 +143,18 @@ class RewriteProtocol:
             f"{token} = {json.dumps(value, ensure_ascii=False)}"
             for token, value in self.protected_values
         )
+
+
+@dataclass(frozen=True)
+class EditorialUnit:
+    unit_index: int
+    start: int
+    end: int
+    text: str
+
+    @property
+    def unit_id(self) -> str:
+        return f"U{self.unit_index:02d}"
 
 
 def parse_zhuque_report(
@@ -692,24 +712,15 @@ def compare_zhuque_reports(
             float(item["weighted_delta"]),
         )
     )
-    best = effectiveness[0] if effectiveness else None
-    strategy_ids = list(rewrite_strategy_map())
-    untried = [value for value in strategy_ids if value not in strategy_groups]
-    if best and float(best.get("humanized_share_percent") or 0.0) > 0:
-        recommended_next_strategy = str(best["strategy_id"])
-        recommendation_reason = (
-            "真实复检已证明该结构策略把至少一个风险区域转成绿色人工特征，"
-            "下一轮可以扩大到新的风险片段。"
-        )
-    elif untried:
-        recommended_next_strategy = untried[0]
-        recommendation_reason = (
-            "本轮即使出现红转橙，也没有风险区域真正转绿；下一轮必须换未试策略，"
-            "不能把疑似 AI 增加误判为成功。"
-        )
-    else:
-        recommended_next_strategy = None
-        recommendation_reason = "已试策略均无实质改善；停止自动追加费用，保留原稿并人工复核。"
+    # A whole-document report is useful for the delivery gate, but proportional
+    # overlap cannot prove which local rewrite caused a score change.  Keep it as
+    # an observation and require isolated exact-hash samples for learning.
+    recommended_next_strategy = None
+    recommendation_reason = (
+        "整稿报告只按归一化位置近似对齐，不能作为局部策略学习证据。"
+        "请把 350–2000 字编辑单元按原文、模型重著、人工修订分别单独送检，"
+        "并用正文精确哈希登记结果；在此之前停止自动扩大费用。"
+    )
 
     selected_rows = [row for row in rows if row["selected"]]
     comparison_id = str(uuid4())
@@ -742,7 +753,9 @@ def compare_zhuque_reports(
         "strategy_effectiveness": effectiveness,
         "recommended_next_strategy": recommended_next_strategy,
         "recommendation_reason": recommendation_reason,
-        "stop_automatic_spend": recommended_next_strategy is None,
+        "stop_automatic_spend": True,
+        "attribution_mode": "proportional_document_overlap",
+        "learning_eligible": False,
         "prompt_version": PROMPT_VERSION,
     }
     _persist_experiment_result(result, optimize_result)
@@ -754,6 +767,188 @@ def compare_zhuque_reports(
         content_type=content_type
     )
     return result
+
+
+def create_calibration_sample(
+    *,
+    user_id: str,
+    text: str,
+    content_type: str,
+    source_group: str,
+    variant_type: str,
+    parent_sha256: str | None = None,
+    strategy_id: str | None = None,
+) -> dict[str, Any]:
+    """Register one isolated Zhuque submission with an exact manuscript hash."""
+    normalized = normalize_manuscript_text(text)
+    if not 350 <= len(normalized) <= 2000:
+        raise ZhuqueReportError("校准样本必须是 350–2000 字的完整编辑单元。")
+    allowed_types = {"article", "classical", "public_domain"}
+    if content_type not in allowed_types:
+        raise ZhuqueReportError("校准样本不支持小说链路。")
+    allowed_variants = {
+        "original",
+        "fact_reauthor",
+        "human_directed",
+        "human_edited",
+        "human_control",
+    }
+    if variant_type not in allowed_variants:
+        raise ZhuqueReportError("未知校准样本类型。")
+    group = re.sub(r"[^A-Za-z0-9_-]", "", source_group)[:80]
+    if not group:
+        group = str(uuid4())
+    digest = sha256_text(normalized)
+    directory = _CALIBRATION_DIR / _safe_cache_namespace(user_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in directory.glob("*.json"):
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if existing.get("text_sha256") == digest:
+            return existing
+    sample_id = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    payload: dict[str, Any] = {
+        "sample_id": sample_id,
+        "source_group": group,
+        "variant_type": variant_type,
+        "content_type": content_type,
+        "strategy_id": strategy_id,
+        "parent_sha256": parent_sha256,
+        "text": normalized,
+        "text_sha256": digest,
+        "char_count": len(normalized),
+        "status": "awaiting_zhuque",
+        "aigc_value": None,
+        "label": None,
+        "green": None,
+        "learning_eligible": False,
+        "prompt_version": PROMPT_VERSION,
+        "created_at": now,
+        "updated_at": now,
+    }
+    (directory / f"{sample_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def list_calibration_samples(*, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    directory = _CALIBRATION_DIR / _safe_cache_namespace(user_id)
+    if not directory.exists():
+        return []
+    results: list[dict[str, Any]] = []
+    paths = sorted(
+        directory.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:max(1, min(500, limit))]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if payload.get("prompt_version") == PROMPT_VERSION:
+            results.append(payload)
+    return results
+
+
+def get_calibration_sample(*, user_id: str, sample_id: str) -> dict[str, Any]:
+    try:
+        normalized_id = str(UUID(sample_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ZhuqueReportError("校准样本编号无效。") from exc
+    path = _CALIBRATION_DIR / _safe_cache_namespace(user_id) / f"{normalized_id}.json"
+    if not path.is_file():
+        raise ZhuqueReportError("校准样本不存在。")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ZhuqueReportError("校准样本损坏，无法读取。") from exc
+
+
+def record_calibration_result(
+    *,
+    user_id: str,
+    sample_id: str,
+    submitted_text_sha256: str,
+    aigc_value: float,
+    report_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Accept learning evidence only when the submitted text hash is exact."""
+    try:
+        normalized_id = str(UUID(sample_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ZhuqueReportError("校准样本编号无效。") from exc
+    path = _CALIBRATION_DIR / _safe_cache_namespace(user_id) / f"{normalized_id}.json"
+    payload = get_calibration_sample(user_id=user_id, sample_id=normalized_id)
+    expected_hash = str(payload.get("text_sha256") or "")
+    if submitted_text_sha256 != expected_hash:
+        raise ZhuqueReportError("送检正文哈希不一致；该结果不能用于学习。")
+    value = float(aigc_value)
+    if not 0.0 <= value <= 1.0:
+        raise ZhuqueReportError("AIGC 值必须在 0 到 1 之间。")
+    label = classify_aigc_value(value)
+    payload.update(
+        {
+            "status": "labeled",
+            "aigc_value": round(value, 6),
+            "label": label,
+            "green": label == "human",
+            "learning_eligible": False,
+            "verification_mode": "manual_value",
+            "report_sha256": report_sha256,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def record_calibration_report_result(
+    *,
+    user_id: str,
+    sample_id: str,
+    parsed_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a report-verified calibration result eligible for local learning."""
+    payload = get_calibration_sample(user_id=user_id, sample_id=sample_id)
+    expected_hash = str(payload.get("text_sha256") or "")
+    if parsed_report.get("original_sha256") != expected_hash:
+        raise ZhuqueReportError("校准报告对应的正文哈希不一致。")
+    if parsed_report.get("source_match_verified") is not True:
+        raise ZhuqueReportError("校准报告未确认与样本同稿，禁止用于学习。")
+    human_percent = float(parsed_report.get("human_percent") or 0.0)
+    suspected_percent = float(parsed_report.get("suspected_percent") or 0.0)
+    ai_percent = float(parsed_report.get("ai_percent") or 0.0)
+    strict_pass = human_percent > STRICT_HUMAN_THRESHOLD
+    label = "human" if strict_pass else ("ai" if ai_percent >= suspected_percent else "suspected")
+    weighted_aigc = _report_weighted_aigc(list(parsed_report.get("segments") or []))
+    payload.update(
+        {
+            "status": "labeled",
+            "aigc_value": round(weighted_aigc, 6),
+            "label": label,
+            "green": strict_pass,
+            "human_percent": round(human_percent, 2),
+            "suspected_percent": round(suspected_percent, 2),
+            "ai_percent": round(ai_percent, 2),
+            "learning_eligible": True,
+            "verification_mode": "pdf_exact_hash",
+            "report_sha256": parsed_report.get("report_sha256"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    path = (
+        _CALIBRATION_DIR
+        / _safe_cache_namespace(user_id)
+        / f"{str(UUID(sample_id))}.json"
+    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
 
 
 def _normalized_overlap_score(
@@ -825,27 +1020,34 @@ def _persist_experiment_result(result: dict[str, Any], optimize_result: dict[str
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _experiment_paths(max_files: int) -> list[Path]:
+    paths: list[Path] = []
+    for directory in (_EXPERIMENT_DIR, _LEGACY_EXPERIMENT_DIR):
+        if directory.exists():
+            paths.extend(directory.glob("*.json"))
+    return sorted(
+        paths,
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:max_files]
+
+
 def strategy_learning_summary(
     *,
     max_files: int = 200,
     content_type: str | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate only v3 score deltas; corrupt/old files never affect a live request."""
-    if not _EXPERIMENT_DIR.exists():
-        return []
     grouped: dict[str, list[float]] = {}
     green_grouped: dict[str, list[float]] = {}
-    paths = sorted(
-        _EXPERIMENT_DIR.glob("*.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )[:max_files]
-    for path in paths:
+    for path in _experiment_paths(max_files):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             continue
         if payload.get("prompt_version") != PROMPT_VERSION:
+            continue
+        if payload.get("learning_eligible") is not True:
             continue
         if content_type and payload.get("content_type") != content_type:
             continue
@@ -890,20 +1092,15 @@ def feature_learning_summary(
     content_type: str | None = None,
 ) -> list[dict[str, Any]]:
     """Learn directional correlations from real re-checks, never from model guesses."""
-    if not _EXPERIMENT_DIR.exists():
-        return []
     records: list[dict[str, Any]] = []
-    paths = sorted(
-        _EXPERIMENT_DIR.glob("*.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )[:max_files]
-    for path in paths:
+    for path in _experiment_paths(max_files):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             continue
         if payload.get("prompt_version") != PROMPT_VERSION:
+            continue
+        if payload.get("learning_eligible") is not True:
             continue
         if content_type and payload.get("content_type") != content_type:
             continue
@@ -933,8 +1130,11 @@ def optimize_report_segments(
     rewrite_reasoning_effort: str = "low",
     rewrite_fn: Callable[..., Any] | None = None,
     audit_fn: Callable[..., Any] | None = None,
+    fact_fn: Callable[..., Any] | None = None,
+    cache_namespace: str | None = None,
+    budget_cny: float | None = None,
 ) -> dict[str, Any]:
-    """Create one low-cost candidate and keep it gated behind a quality audit."""
+    """Re-author bounded units from a fact ledger, then apply hard and semantic gates."""
     request_id = str(uuid4())
     original = normalize_manuscript_text(original_text)
     normalized_segments = [
@@ -961,22 +1161,54 @@ def optimize_report_segments(
         _ensure_rewrite_provider_configured(selected_provider)
     rewrite = rewrite_fn or _rewrite_callable(selected_provider)
     audit = audit_fn or _gemini_audit
+    extract_facts = fact_fn or _gemini_fact_ledger
     replacements: list[tuple[int, int, str]] = []
     segment_results: list[dict[str, Any]] = []
     total_input_tokens = 0
     total_output_tokens = 0
-    total_rewrite_cost = 0.0
-    audit_original_blocks: list[str] = []
-    audit_candidate_blocks: list[str] = []
+    total_model_cost = 0.0
+    audit_items: list[dict[str, Any]] = []
     preserve_paragraph_count = content_type == "classical"
+    effective_budget = float(
+        budget_cny
+        if budget_cny is not None
+        else settings.AIGC_REVIEW_RUN_BUDGET_CNY
+    )
+    if effective_budget <= 0:
+        raise ZhuqueReportError("单次预算必须大于 0 元。")
+
+    def budget_exhausted() -> bool:
+        return total_model_cost >= effective_budget
+
+    def manual_result(reason: str, *, guarded_text: str = "") -> dict[str, Any]:
+        result = _manual_review_result(
+            request_id=request_id,
+            original=original,
+            selected_ids=selected_ids,
+            segment_results=segment_results,
+            reason=reason,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
+            rewrite_cost_cny=total_model_cost,
+            rewrite_provider=selected_provider,
+            rewrite_model=rewrite_model,
+            rewrite_reasoning=selected_reasoning,
+            guarded_candidate_text=guarded_text,
+        )
+        result["budget"] = {
+            "currency": "CNY",
+            "limit_cny": round(effective_budget, 4),
+            "spent_cny": round(total_model_cost, 6),
+            "exhausted": budget_exhausted(),
+        }
+        result["editorial_unit_count"] = len(audit_items)
+        return result
 
     if iteration < 1 or iteration > 20:
         raise ZhuqueReportError("迭代轮次必须在 1 到 20 之间。")
     available_strategies = rewrite_strategy_map()
     if preferred_strategy and preferred_strategy not in available_strategies:
         raise ZhuqueReportError(f"未知改写策略: {preferred_strategy}")
-    learned_evidence = learned_evidence_for_prompt(content_type=content_type)
-
     for selected_index, segment_id in enumerate(selected_ids):
         segment = by_id[segment_id]
         strategy_id = preferred_strategy or strategy_for_index(selected_index, iteration=iteration)
@@ -995,237 +1227,463 @@ def optimize_report_segments(
             if content_type == "classical"
             else ()
         )
-        protocol = prepare_rewrite_protocol(
-            source,
-            protected_texts=protected_originals,
-            flexible_paragraphs=not preserve_paragraph_count,
-        )
-        segment_signal = (
-            f"片段 #{segment.segment_id}；报告分类={segment.label}；"
-            f"AIGC 值={segment.aigc_value:.4f}；占全文={segment.share_percent:.2f}%；"
-            f"报告字符数={segment.char_count}。目标不是只降到疑似 AI，而是进入人工特征区间。"
-        )
         style_diagnosis = diagnose_segment_style(source)
         max_attempts = max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
-        candidate = ""
-        deterministic = review_deterministic_constraints(
+        units = (
+            [EditorialUnit(1, 0, len(source), source)]
+            if content_type == "classical"
+            else split_editorial_units(source)
+        )
+        unit_candidates: list[str] = []
+        unit_results: list[dict[str, Any]] = []
+        segment_candidate_safe = True
+
+        for unit in units:
+            if budget_exhausted():
+                segment_candidate_safe = False
+                break
+            unit_source = unit.text
+            unit_absolute_start = segment.start + unit.start
+            unit_absolute_end = segment.start + unit.end
+            previous_context = original[max(0, unit_absolute_start - 350):unit_absolute_start]
+            next_context = original[unit_absolute_end:min(len(original), unit_absolute_end + 350)]
+            unit_segment = ZhuqueSegment(
+                segment_id=segment.segment_id,
+                share_percent=segment.share_percent,
+                char_count=len(unit_source),
+                aigc_value=segment.aigc_value,
+                label=segment.label,
+                start=unit_absolute_start,
+                end=unit_absolute_end,
+                mapped_text=unit_source,
+                mapping_confidence=segment.mapping_confidence,
+                recommended=segment.recommended,
+            )
+            unit_protected = (
+                _classical_protected_fragments(
+                    original,
+                    unit_absolute_start,
+                    unit_absolute_end,
+                )
+                if content_type == "classical"
+                else ()
+            )
+            protocol = prepare_rewrite_protocol(
+                unit_source,
+                protected_texts=unit_protected,
+                flexible_paragraphs=content_type != "classical",
+            )
+            required_tokens = [token for token, _ in protocol.protected_values]
+            ledger: dict[str, Any] | None = None
+            ledger_mode = "classical_legacy"
+            ledger_usage: dict[str, Any] = {}
+
+            if content_type != "classical":
+                source_with_tokens = "\n".join(protocol.block_payloads)
+                ledger = _load_cached_fact_ledger(
+                    source_with_tokens,
+                    cache_namespace=cache_namespace,
+                    required_tokens=required_tokens,
+                )
+                if ledger is not None:
+                    ledger_mode = "cached"
+                elif rewrite_fn is not None and fact_fn is None:
+                    ledger = deterministic_fact_ledger(source_with_tokens)
+                    ledger_mode = "test_fallback"
+                else:
+                    ledger_prompt = render_fact_ledger_prompt(
+                        source_with_tokens,
+                        protected_map=protocol.protected_map,
+                        content_type=content_type,
+                    )
+                    ledger_usage = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cost_cny": 0.0,
+                    }
+                    ledger_retry_feedback = ""
+                    try:
+                        for ledger_attempt in range(1, 3):
+                            attempt_prompt = ledger_prompt + ledger_retry_feedback
+                            raw_ledger = extract_facts(
+                                attempt_prompt,
+                                segment=unit_segment,
+                                request_id=request_id,
+                            )
+                            ledger_text, one_usage = _coerce_model_result(raw_ledger)
+                            ledger_input = int(
+                                one_usage.get("input_tokens")
+                                or _estimate_tokens(attempt_prompt)
+                            )
+                            ledger_output = int(
+                                one_usage.get("output_tokens")
+                                or _estimate_tokens(ledger_text)
+                            )
+                            ledger_cost = float(one_usage.get("cost_cny") or 0.0)
+                            total_input_tokens += ledger_input
+                            total_output_tokens += ledger_output
+                            total_model_cost += ledger_cost
+                            ledger_usage["input_tokens"] += ledger_input
+                            ledger_usage["output_tokens"] += ledger_output
+                            ledger_usage["cost_cny"] += ledger_cost
+                            try:
+                                ledger = parse_fact_ledger(
+                                    ledger_text,
+                                    required_tokens=required_tokens,
+                                )
+                                copied_claims = fact_ledger_copying_reasons(
+                                    source_with_tokens,
+                                    ledger,
+                                )
+                                if copied_claims:
+                                    raise ValueError("；".join(copied_claims))
+                                break
+                            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                                if ledger_attempt >= 2 or budget_exhausted():
+                                    raise
+                                ledger_retry_feedback = (
+                                    "\n\n上一次事实账本无效："
+                                    + str(exc)
+                                    + "。重新抽取；必须简写为原子事实，禁止复制原句。"
+                                )
+                                logger.warning(
+                                    "LLM action=aigc_report_fact_ledger request_id=%s segment=%s unit=%s attempt=%s status=rejected reason=%s",
+                                    request_id,
+                                    segment_id,
+                                    unit.unit_id,
+                                    ledger_attempt,
+                                    exc,
+                                )
+                    except Exception as exc:
+                        logger.exception(
+                            "LLM action=aigc_report_fact_ledger request_id=%s segment=%s unit=%s status=failed error_type=%s",
+                            request_id,
+                            segment_id,
+                            unit.unit_id,
+                            type(exc).__name__,
+                        )
+                        raise AigcReviewModelError(
+                            f"片段 {segment_id}/{unit.unit_id} 事实账本提取失败: {exc}"
+                        ) from exc
+                    ledger_mode = "model"
+                    _persist_fact_ledger(
+                        source_with_tokens,
+                        ledger,
+                        cache_namespace=cache_namespace,
+                    )
+
+            unit_candidate = ""
+            deterministic = review_deterministic_constraints(
+                unit_source,
+                unit_candidate,
+                protected_texts=unit_protected,
+                require_material_rewrite=True,
+                preserve_paragraph_count=preserve_paragraph_count,
+            )
+            candidate_safe = False
+            attempt_results: list[dict[str, Any]] = []
+            retry_feedback = "首次重著：按事实账本重新组织正文，禁止沿用原句骨架。"
+
+            for attempt in range(1, max_attempts + 1):
+                if budget_exhausted():
+                    break
+                if content_type == "classical":
+                    prompt = render_rewrite_prompt(
+                        segment_id=segment_id,
+                        original_segment=protocol.prompt_segment,
+                        previous_context=previous_context,
+                        next_context=next_context,
+                        protected_originals=unit_protected,
+                        protected_map=protocol.protected_map,
+                        block_count=len(protocol.block_payloads),
+                        retry_feedback=retry_feedback,
+                        content_type=content_type,
+                        strategy_id=strategy_id,
+                        strategy_rules=strategy_rules,
+                        segment_signal="只保护古文原文并重写译文；不得根据检测分数做文字表演。",
+                        style_diagnosis=style_diagnosis,
+                        learned_evidence="不注入检测器猜测。",
+                        flexible_paragraphs=False,
+                    )
+                else:
+                    prompt = render_reauthor_prompt(
+                        ledger or {},
+                        protected_map=protocol.protected_map,
+                        previous_context=previous_context,
+                        next_context=next_context,
+                        content_type=content_type,
+                        strategy_rules=strategy_rules,
+                        source_chars=len(unit_source),
+                        retry_feedback=retry_feedback,
+                    )
+                try:
+                    rewrite_kwargs = {
+                        "segment": unit_segment,
+                        "request_id": request_id,
+                        "attempt": attempt,
+                    }
+                    if selected_provider == "grok":
+                        rewrite_kwargs["reasoning_effort"] = selected_reasoning
+                    raw = rewrite(prompt, **rewrite_kwargs)
+                    raw_candidate, usage = _coerce_model_result(raw)
+                except Exception as exc:
+                    logger.exception(
+                        "LLM action=aigc_report_rewrite request_id=%s provider=%s segment=%s unit=%s attempt=%s model=%s status=failed error_type=%s",
+                        request_id,
+                        selected_provider,
+                        segment_id,
+                        unit.unit_id,
+                        attempt,
+                        rewrite_model,
+                        type(exc).__name__,
+                    )
+                    raise AigcReviewModelError(
+                        f"片段 {segment_id}/{unit.unit_id} 改写模型调用失败: {exc}"
+                    ) from exc
+
+                cleaned_candidate = _clean_model_text(raw_candidate)
+                unit_candidate, protocol_issues, structured = parse_rewrite_candidate(
+                    cleaned_candidate,
+                    protocol,
+                )
+                deterministic = review_deterministic_constraints(
+                    unit_source,
+                    unit_candidate,
+                    protected_texts=unit_protected,
+                    require_material_rewrite=True,
+                    preserve_paragraph_count=preserve_paragraph_count,
+                )
+                protocol_passed = not protocol_issues or not structured
+                hard_safety_passed = deterministic_hard_safety_passed(
+                    deterministic,
+                    require_paragraph_preservation=preserve_paragraph_count,
+                )
+                substantive_passed = substantive_rewrite_passed(deterministic)
+                candidate_safe = hard_safety_passed and protocol_passed and substantive_passed
+                input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
+                cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
+                output_tokens = int(
+                    usage.get("output_tokens") or _estimate_tokens(cleaned_candidate)
+                )
+                reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+                attempt_cost = float(usage.get("cost_cny") or 0.0)
+                total_input_tokens += input_tokens
+                total_output_tokens += output_tokens
+                total_model_cost += attempt_cost
+                attempt_results.append(
+                    {
+                        "attempt": attempt,
+                        "passed": candidate_safe,
+                        "hard_safety_passed": hard_safety_passed,
+                        "substantive_rewrite_passed": substantive_passed,
+                        "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+                        "structured_output": structured,
+                        "protocol_issues": protocol_issues,
+                        "substantive_rewrite_reasons": substantive_rewrite_reasons(deterministic),
+                        "deterministic_review": deterministic.to_dict(),
+                        "input_tokens": input_tokens,
+                        "cached_input_tokens": cached_input_tokens,
+                        "output_tokens": output_tokens,
+                        "reasoning_tokens": reasoning_tokens,
+                        "cost_cny": round(attempt_cost, 6),
+                        "strategy_id": strategy_id,
+                        "rewrite_provider": selected_provider,
+                        "rewrite_model": rewrite_model,
+                    }
+                )
+                if candidate_safe:
+                    break
+                hard_feedback = format_rewrite_retry_feedback(
+                    deterministic,
+                    protocol_issues=protocol_issues,
+                    hard_safety_only=True,
+                )
+                retry_feedback = hard_feedback + "\n- " + "\n- ".join(
+                    substantive_rewrite_reasons(deterministic)
+                    or ["候选没有形成可验证的实质重著"]
+                )
+
+            unit_results.append(
+                {
+                    "unit_id": unit.unit_id,
+                    "original_chars": len(unit_source),
+                    "candidate_chars": len(unit_candidate),
+                    "original_text": unit_source,
+                    "candidate_text": unit_candidate if candidate_safe else "",
+                    "status": "ready" if candidate_safe else "rejected",
+                    "fact_ledger_mode": ledger_mode,
+                    "fact_ledger_claim_count": len((ledger or {}).get("claims") or []),
+                    "fact_ledger_cost_cny": round(float(ledger_usage.get("cost_cny") or 0.0), 6),
+                    "hard_safety_passed": deterministic_hard_safety_passed(
+                        deterministic,
+                        require_paragraph_preservation=preserve_paragraph_count,
+                    ),
+                    "substantive_rewrite_passed": substantive_rewrite_passed(deterministic),
+                    "rewrite_attempts": len(attempt_results),
+                    "attempts": attempt_results,
+                    "deterministic_review": deterministic.to_dict(),
+                    "candidate_preview": unit_candidate[:400] if candidate_safe else "",
+                    "rejected_candidate_preview": unit_candidate[:400] if not candidate_safe else "",
+                }
+            )
+            if not candidate_safe:
+                segment_candidate_safe = False
+                break
+            unit_candidates.append(unit_candidate.strip())
+            audit_items.append(
+                {
+                    "audit_id": f"{segment_id}.{unit.unit_index}",
+                    "segment_id": segment_id,
+                    "unit_id": unit.unit_id,
+                    "original": unit_source,
+                    "candidate": unit_candidate,
+                    "previous_context": previous_context,
+                    "next_context": next_context,
+                }
+            )
+
+        candidate = "\n\n".join(unit_candidates)
+        parent_review = review_deterministic_constraints(
             source,
             candidate,
             protected_texts=protected_originals,
             require_material_rewrite=True,
             preserve_paragraph_count=preserve_paragraph_count,
         )
-        candidate_safe = False
-        attempt_results: list[dict[str, Any]] = []
-        retry_feedback = "首次改写：严格按编号块协议输出。"
-        for attempt in range(1, max_attempts + 1):
-            prompt = render_rewrite_prompt(
-                segment_id=segment_id,
-                original_segment=protocol.prompt_segment,
-                previous_context=original[max(0, segment.start - 600):segment.start],
-                next_context=original[segment.end:min(len(original), segment.end + 600)],
-                protected_originals=protected_originals,
-                protected_map=protocol.protected_map,
-                block_count=len(protocol.block_payloads),
-                retry_feedback=retry_feedback,
-                content_type=content_type,
-                strategy_id=strategy_id,
-                strategy_rules=strategy_rules,
-                segment_signal=segment_signal,
-                style_diagnosis=style_diagnosis,
-                learned_evidence=learned_evidence,
-                flexible_paragraphs=protocol.flexible_paragraphs,
-            )
-            try:
-                rewrite_kwargs = {
-                    "segment": segment,
-                    "request_id": request_id,
-                    "attempt": attempt,
-                }
-                if selected_provider == "grok":
-                    rewrite_kwargs["reasoning_effort"] = selected_reasoning
-                raw = rewrite(prompt, **rewrite_kwargs)
-                raw_candidate, usage = _coerce_model_result(raw)
-            except Exception as exc:
-                logger.exception(
-                    "LLM action=aigc_report_rewrite request_id=%s provider=%s segment=%s attempt=%s model=%s status=failed error_type=%s",
-                    request_id,
-                    selected_provider,
-                    segment_id,
-                    attempt,
-                    rewrite_model,
-                    type(exc).__name__,
-                )
-                raise AigcReviewModelError(f"片段 {segment_id} 改写模型调用失败: {exc}") from exc
-
-            cleaned_candidate = _clean_model_text(raw_candidate)
-            candidate, protocol_issues, structured = parse_rewrite_candidate(
-                cleaned_candidate,
-                protocol,
-            )
-            deterministic = review_deterministic_constraints(
-                source,
-                candidate,
-                protected_texts=protected_originals,
-                require_material_rewrite=True,
-                preserve_paragraph_count=preserve_paragraph_count,
-            )
-            protocol_passed = not protocol_issues or not structured
-            hard_safety_passed = deterministic_hard_safety_passed(
-                deterministic,
-                require_paragraph_preservation=preserve_paragraph_count,
-            )
-            candidate_safe = hard_safety_passed and protocol_passed
-            input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
-            cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
-            output_tokens = int(usage.get("output_tokens") or _estimate_tokens(cleaned_candidate))
-            reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
-            attempt_cost = float(usage.get("cost_cny") or 0.0)
-            total_input_tokens += input_tokens
-            total_output_tokens += output_tokens
-            total_rewrite_cost += attempt_cost
-            attempt_results.append(
-                {
-                    "attempt": attempt,
-                    "passed": candidate_safe,
-                    "hard_safety_passed": hard_safety_passed,
-                    "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
-                    "structured_output": structured,
-                    "protocol_issues": protocol_issues,
-                    "deterministic_review": deterministic.to_dict(),
-                    "input_tokens": input_tokens,
-                    "cached_input_tokens": cached_input_tokens,
-                    "output_tokens": output_tokens,
-                    "reasoning_tokens": reasoning_tokens,
-                    "cost_cny": round(attempt_cost, 6),
-                    "strategy_id": strategy_id,
-                    "rewrite_provider": selected_provider,
-                    "rewrite_model": rewrite_model,
-                }
-            )
-            if candidate_safe:
-                if not deterministic.material_rewrite_passed:
-                    logger.warning(
-                        "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s status=accepted_with_material_advisory similarity=%.4f coverage=%.4f",
-                        request_id,
-                        segment_id,
-                        attempt,
-                        deterministic.literal_similarity,
-                        deterministic.rewritten_paragraph_ratio,
-                    )
-                break
-            retry_feedback = format_rewrite_retry_feedback(
-                deterministic,
-                protocol_issues=protocol_issues,
-                hard_safety_only=True,
-            )
-            logger.warning(
-                "LLM action=aigc_report_rewrite request_id=%s segment=%s attempt=%s status=rejected reasons=%s protocol=%s",
-                request_id,
-                segment_id,
-                attempt,
-                ";".join(deterministic.reasons),
-                ";".join(protocol_issues),
-            )
-
+        parent_hard_passed = deterministic_hard_safety_passed(
+            parent_review,
+            require_paragraph_preservation=preserve_paragraph_count,
+        )
+        parent_substantive_passed = substantive_rewrite_passed(parent_review)
+        segment_candidate_safe = (
+            segment_candidate_safe
+            and len(unit_candidates) == len(units)
+            and parent_hard_passed
+            and parent_substantive_passed
+        )
         segment_results.append(
             {
                 "segment_id": segment_id,
                 "strategy_id": strategy_id,
                 "rewrite_provider": selected_provider,
                 "rewrite_model": rewrite_model,
-                "status": "ready" if candidate_safe else "rejected",
-                "hard_safety_passed": candidate_safe,
-                "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+                "status": "ready" if segment_candidate_safe else "rejected",
+                "hard_safety_passed": parent_hard_passed,
+                "substantive_rewrite_passed": parent_substantive_passed,
+                "material_rewrite_advisory_passed": parent_review.material_rewrite_passed,
                 "original_chars": len(source),
                 "candidate_chars": len(candidate),
                 "report_aigc_value": segment.aigc_value,
                 "report_label": segment.label,
                 "style_diagnosis": style_diagnosis,
-                "rewrite_attempts": len(attempt_results),
-                "attempts": attempt_results,
-                "deterministic_review": deterministic.to_dict(),
+                "editorial_unit_count": len(units),
+                "rewrite_attempts": sum(item["rewrite_attempts"] for item in unit_results),
+                "attempts": [
+                    attempt
+                    for unit_result in unit_results
+                    for attempt in unit_result.get("attempts") or []
+                ],
+                "unit_results": unit_results,
+                "deterministic_review": parent_review.to_dict(),
                 "style_feature_version": STYLE_FEATURE_VERSION,
-                "style_feature_delta": (
-                    style_feature_delta(source, candidate) if candidate else {}
-                ),
-                "candidate_preview": candidate[:500] if candidate_safe else "",
-                "rejected_candidate_preview": candidate[:500] if not candidate_safe else "",
+                "style_feature_delta": style_feature_delta(source, candidate) if candidate else {},
+                "candidate_preview": candidate[:500] if segment_candidate_safe else "",
+                "rejected_candidate_preview": candidate[:500] if not segment_candidate_safe else "",
             }
         )
-        if not candidate_safe:
+        if not segment_candidate_safe:
             guarded_partial = _assemble_replacements(original, replacements)
-            return _manual_review_result(
-                request_id=request_id,
-                original=original,
-                selected_ids=selected_ids,
-                segment_results=segment_results,
-                reason=f"片段 {segment_id} 未通过事实/锚点/格式硬安全保护，已停止后续付费调用并保留此前安全候选。",
-                total_input_tokens=total_input_tokens,
-                total_output_tokens=total_output_tokens,
-                rewrite_cost_cny=total_rewrite_cost,
-                rewrite_provider=selected_provider,
-                rewrite_model=rewrite_model,
-                rewrite_reasoning=selected_reasoning,
-                guarded_candidate_text=(guarded_partial if guarded_partial != original else ""),
+            if budget_exhausted():
+                reason = (
+                    f"已达到本轮 ¥{effective_budget:.2f} 预算上限，停止后续付费调用；"
+                    "原稿未被覆盖，可在人工调整后只重跑未完成单元。"
+                )
+            else:
+                reason = (
+                    f"片段 {segment_id} 未同时通过事实/锚点/格式与实质重著硬门槛，"
+                    "已停止后续付费调用并保留此前安全候选。"
+                )
+            return manual_result(
+                reason,
+                guarded_text=(guarded_partial if guarded_partial != original else ""),
             )
         replacements.append((segment.start, segment.end, candidate))
-        previous_context = original[max(0, segment.start - 350):segment.start]
-        next_context = original[segment.end:min(len(original), segment.end + 350)]
-        audit_original_blocks.append(
-            f"【片段 {segment_id} 上文】\n{previous_context}\n【原片段】\n{source}\n【下文】\n{next_context}"
-        )
-        audit_candidate_blocks.append(
-            f"【片段 {segment_id} 上文】\n{previous_context}\n【候选片段】\n{candidate}\n【下文】\n{next_context}"
-        )
 
     assembled = _assemble_replacements(original, replacements)
-
-    audit_prompt = render_audit_prompt(
-        "\n\n".join(audit_original_blocks),
-        "\n\n".join(audit_candidate_blocks),
-        selected_ids,
-        content_type=content_type,
-    )
-    try:
-        raw_audit = audit(audit_prompt, request_id=request_id)
-        audit_text, audit_usage = _coerce_model_result(raw_audit)
-        quality_audit = parse_quality_audit(audit_text)
-    except Exception as exc:
-        logger.exception(
-            "LLM action=aigc_report_quality_audit request_id=%s model=%s status=failed error_type=%s",
-            request_id,
-            settings.AIGC_REVIEW_AUDIT_MODEL,
-            type(exc).__name__,
+    if budget_exhausted():
+        return manual_result(
+            f"改写阶段已达到本轮 ¥{effective_budget:.2f} 预算上限，未继续产生终审费用。",
+            guarded_text=assembled,
         )
-        raise AigcReviewModelError(f"独立质量审稿失败: {exc}") from exc
 
-    audit_input_tokens = int(audit_usage.get("input_tokens") or _estimate_tokens(audit_prompt))
-    audit_output_tokens = int(audit_usage.get("output_tokens") or _estimate_tokens(audit_text))
-    audit_cost = float(
-        audit_usage.get("cost_cny")
-        or _gemini_flash_lite_cost_cny(audit_input_tokens, audit_output_tokens)
-    )
+    audit_batch_size = max(1, int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS))
+    audit_results: list[dict[str, Any]] = []
+    audit_estimated = False
+    for batch_start in range(0, len(audit_items), audit_batch_size):
+        if budget_exhausted():
+            return manual_result(
+                f"终审阶段已达到本轮 ¥{effective_budget:.2f} 预算上限，停止剩余审稿调用。",
+                guarded_text=assembled,
+            )
+        batch = audit_items[batch_start:batch_start + audit_batch_size]
+        original_blocks = [
+            (
+                f"【编辑单元 {item['audit_id']} 上文】\n{item['previous_context']}\n"
+                f"【原单元】\n{item['original']}\n【下文】\n{item['next_context']}"
+            )
+            for item in batch
+        ]
+        candidate_blocks = [
+            (
+                f"【编辑单元 {item['audit_id']} 上文】\n{item['previous_context']}\n"
+                f"【候选单元】\n{item['candidate']}\n【下文】\n{item['next_context']}"
+            )
+            for item in batch
+        ]
+        audit_prompt = render_audit_prompt(
+            "\n\n".join(original_blocks),
+            "\n\n".join(candidate_blocks),
+            [item["audit_id"] for item in batch],
+            content_type=content_type,
+        )
+        try:
+            raw_audit = audit(audit_prompt, request_id=request_id)
+            audit_text, audit_usage = _coerce_model_result(raw_audit)
+            batch_audit = parse_quality_audit(audit_text)
+        except Exception as exc:
+            logger.exception(
+                "LLM action=aigc_report_quality_audit request_id=%s model=%s batch=%s status=failed error_type=%s",
+                request_id,
+                settings.AIGC_REVIEW_AUDIT_MODEL,
+                batch_start // audit_batch_size + 1,
+                type(exc).__name__,
+            )
+            raise AigcReviewModelError(f"独立质量审稿失败: {exc}") from exc
+        audit_input = int(audit_usage.get("input_tokens") or _estimate_tokens(audit_prompt))
+        audit_output = int(audit_usage.get("output_tokens") or _estimate_tokens(audit_text))
+        audit_cost = float(
+            audit_usage.get("cost_cny")
+            or _gemini_flash_lite_cost_cny(audit_input, audit_output)
+        )
+        total_input_tokens += audit_input
+        total_output_tokens += audit_output
+        total_model_cost += audit_cost
+        audit_estimated = audit_estimated or bool(audit_usage.get("estimated")) or not bool(
+            audit_usage.get("input_tokens")
+        )
+        batch_audit["audit_unit_ids"] = [item["audit_id"] for item in batch]
+        audit_results.append(batch_audit)
+
+    quality_audit = combine_quality_audits(audit_results)
     quality_passed = quality_audit_passed(quality_audit)
-    total_cost = total_rewrite_cost + audit_cost
     if not quality_passed:
-        return {
-            **_manual_review_result(
-                request_id=request_id,
-                original=original,
-                selected_ids=selected_ids,
-                segment_results=segment_results,
-                reason="独立终审未达到质量硬标准；候选不允许导出，原稿保持不变。",
-                total_input_tokens=total_input_tokens + audit_input_tokens,
-                total_output_tokens=total_output_tokens + audit_output_tokens,
-                rewrite_cost_cny=total_cost,
-                rewrite_provider=selected_provider,
-                rewrite_model=rewrite_model,
-                rewrite_reasoning=selected_reasoning,
-                guarded_candidate_text=assembled,
-            ),
-            "quality_audit": quality_audit,
-        }
+        result = manual_result(
+            "分批独立终审未达到质量硬标准；候选只供人工修订，原稿保持不变。",
+            guarded_text=assembled,
+        )
+        result["quality_audit"] = quality_audit
+        result["audit_batch_count"] = len(audit_results)
+        return result
 
     return {
         "request_id": request_id,
@@ -1242,16 +1700,25 @@ def optimize_report_segments(
         "content_type": content_type,
         "segment_results": segment_results,
         "quality_audit": quality_audit,
+        "editorial_unit_count": len(audit_items),
+        "audit_batch_count": len(audit_results),
+        "budget": {
+            "currency": "CNY",
+            "limit_cny": round(effective_budget, 4),
+            "spent_cny": round(total_model_cost, 6),
+            "exhausted": budget_exhausted(),
+        },
         "cost": {
             "currency": "CNY",
-            "estimated": bool(audit_usage.get("estimated")) or not bool(audit_usage.get("input_tokens")),
-            "input_tokens": total_input_tokens + audit_input_tokens,
-            "output_tokens": total_output_tokens + audit_output_tokens,
-            "estimated_cny": round(total_cost, 6),
+            "estimated": audit_estimated,
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "estimated_cny": round(total_model_cost, 6),
         },
         "models": {
             "rewrite_provider": selected_provider,
             "rewrite": rewrite_model,
+            "fact": settings.AIGC_REVIEW_AUDIT_MODEL,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
             "rewrite_thinking": selected_reasoning,
         },
@@ -1390,6 +1857,14 @@ def material_rewrite_metrics(
     original_paragraphs = _natural_paragraphs(original)
     candidate_paragraphs = _natural_paragraphs(candidate)
     protected = tuple(value.strip() for value in protected_texts if value.strip())
+    if not candidate.strip():
+        editable_count = sum(
+            1
+            for source in original_paragraphs
+            if not _looks_like_heading(source.strip())
+            and not any(value == source.strip() or value in source for value in protected)
+        )
+        return 1.0, 0.0, editable_count, editable_count
     editable_pairs: list[tuple[str, str]] = []
     for index, source in enumerate(original_paragraphs):
         if index >= len(candidate_paragraphs):
@@ -1663,6 +2138,139 @@ def render_rewrite_prompt(
     )
 
 
+def render_fact_ledger_prompt(
+    source_with_tokens: str,
+    *,
+    protected_map: str,
+    content_type: str,
+) -> str:
+    template = _FACT_LEDGER_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
+        .replace("{{SOURCE_WITH_TOKENS}}", source_with_tokens)
+        .replace("{{PROTECTED_MAP}}", protected_map)
+    )
+
+
+def parse_fact_ledger(text: str, *, required_tokens: Iterable[str] = ()) -> dict[str, Any]:
+    cleaned = _clean_model_text(text)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("事实账本未返回 JSON")
+    payload = json.loads(cleaned[start:end + 1])
+    claims = payload.get("claims") if isinstance(payload, dict) else None
+    if not isinstance(claims, list) or not claims:
+        raise ValueError("事实账本缺少 claims")
+    claim_ids: list[str] = []
+    token_counts: Counter[str] = Counter()
+    for index, claim in enumerate(claims, start=1):
+        if not isinstance(claim, dict):
+            raise ValueError(f"事实账本第 {index} 条 claim 无效")
+        claim_id = str(claim.get("claim_id") or "").strip()
+        summary = str(claim.get("summary") or "").strip()
+        if not claim_id or not summary:
+            raise ValueError(f"事实账本第 {index} 条缺少 claim_id 或 summary")
+        claim_ids.append(claim_id)
+        for token in claim.get("required_tokens") or []:
+            token_counts[str(token)] += 1
+    if len(set(claim_ids)) != len(claim_ids):
+        raise ValueError("事实账本 claim_id 重复")
+    missing = [token for token in required_tokens if token_counts[str(token)] != 1]
+    if missing:
+        raise ValueError("事实账本未逐一保留受保护占位符: " + "、".join(missing[:12]))
+    chronology = payload.get("chronology") or []
+    if chronology and any(str(value) not in set(claim_ids) for value in chronology):
+        raise ValueError("事实账本 chronology 引用了不存在的 claim_id")
+    return payload
+
+
+def fact_ledger_copying_reasons(
+    source_with_tokens: str,
+    ledger: dict[str, Any],
+) -> list[str]:
+    """Reject a ledger that smuggles full source sentences into the blank-slate prompt."""
+    source_sentences = [
+        re.sub(r"\s+", "", value)
+        for value in re.split(r"(?<=[。！？!?；;])|\n+", source_with_tokens)
+        if value.strip()
+    ]
+    reasons: list[str] = []
+    for claim in ledger.get("claims") or []:
+        claim_id = str(claim.get("claim_id") or "?")
+        summary = re.sub(r"\s+", "", str(claim.get("summary") or ""))
+        if len(summary) < 24:
+            continue
+        for sentence in source_sentences:
+            shorter = min(len(summary), len(sentence))
+            if shorter < 24:
+                continue
+            similarity = SequenceMatcher(None, summary, sentence, autojunk=False).ratio()
+            if summary in sentence or sentence in summary or similarity >= 0.93:
+                reasons.append(f"事实账本 {claim_id} 复制了原句而非抽象事实")
+                break
+    return reasons
+
+
+def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
+    """Test-only/local fallback used when a custom rewrite callable is injected."""
+    sentences = [
+        value.strip()
+        for value in re.split(r"(?<=[。！？!?；;])|\n+", source_with_tokens)
+        if value.strip()
+    ]
+    claims: list[dict[str, Any]] = []
+    for index, sentence in enumerate(sentences or [source_with_tokens.strip()], start=1):
+        tokens = re.findall(r"\[\[KEEP_\d{4}\]\]", sentence)
+        claims.append(
+            {
+                "claim_id": f"C{index:03d}",
+                "summary": sentence,
+                "subject": "",
+                "predicate": "",
+                "object": "",
+                "time": "",
+                "place": "",
+                "cause_or_condition": "",
+                "negated": bool(re.search(r"不|未|无|没有|并非", sentence)),
+                "modality": "fact",
+                "evaluation_owner": "",
+                "required_tokens": tokens,
+            }
+        )
+    return {
+        "claims": claims,
+        "chronology": [item["claim_id"] for item in claims],
+        "causal_links": [],
+        "paragraph_purposes": [],
+    }
+
+
+def render_reauthor_prompt(
+    fact_ledger: dict[str, Any],
+    *,
+    protected_map: str,
+    previous_context: str,
+    next_context: str,
+    content_type: str,
+    strategy_rules: str,
+    source_chars: int,
+    retry_feedback: str,
+) -> str:
+    template = _REAUTHOR_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
+        .replace("{{STRATEGY_RULES}}", strategy_rules)
+        .replace("{{FACT_LEDGER}}", json.dumps(fact_ledger, ensure_ascii=False, indent=2))
+        .replace("{{PROTECTED_MAP}}", protected_map)
+        .replace("{{PREVIOUS_CONTEXT}}", previous_context)
+        .replace("{{NEXT_CONTEXT}}", next_context)
+        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * 0.80))))
+        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * 1.25))))
+        .replace("{{RETRY_FEEDBACK}}", retry_feedback)
+    )
+
+
 def render_audit_prompt(
     original: str,
     candidate: str,
@@ -1764,6 +2372,210 @@ def learned_evidence_for_prompt(*, content_type: str) -> str:
     return "这些只是本项目真实复检的相关方向，必须服从事实与文稿质量：\n" + "\n".join(lines)
 
 
+def split_editorial_units(
+    text: str,
+    *,
+    min_chars: int | None = None,
+    max_chars: int | None = None,
+) -> list[EditorialUnit]:
+    """Split a report region into bounded editorial units without inventing detector labels."""
+    leading_offset = len(text) - len(text.lstrip())
+    source = text.strip()
+    if not source:
+        return []
+    minimum = max(120, int(min_chars or settings.AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS))
+    maximum = max(minimum + 80, int(max_chars or settings.AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS))
+    if len(source) <= maximum:
+        return [
+            EditorialUnit(
+                1,
+                leading_offset,
+                leading_offset + len(source),
+                source,
+            )
+        ]
+
+    paragraph_boundaries = {
+        match.end() for match in re.finditer(r"\n[\t ]*(?:\n[\t ]*)+", source)
+    }
+    sentence_boundaries = {
+        match.end() for match in re.finditer(r"[。！？!?；;](?:[”’\"']?)[\t ]*", source)
+    }
+    boundaries = sorted(paragraph_boundaries | sentence_boundaries)
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while len(source) - start > maximum:
+        lower = start + minimum
+        upper = min(len(source), start + maximum)
+        paragraph_candidates = [
+            value for value in paragraph_boundaries if lower <= value <= upper
+        ]
+        sentence_candidates = [
+            value for value in boundaries if lower <= value <= upper
+        ]
+        cut = max(paragraph_candidates or sentence_candidates or [upper])
+        if cut <= start:
+            cut = upper
+        ranges.append((start, cut))
+        start = cut
+        while start < len(source) and source[start].isspace():
+            start += 1
+    if start < len(source):
+        ranges.append((start, len(source)))
+
+    if len(ranges) >= 2:
+        last_start, last_end = ranges[-1]
+        if last_end - last_start < minimum:
+            previous_start, _ = ranges[-2]
+            combined_length = last_end - previous_start
+            if combined_length <= maximum:
+                ranges[-2:] = [(previous_start, last_end)]
+            else:
+                lower = max(previous_start + minimum, last_end - maximum)
+                upper = min(previous_start + maximum, last_end - minimum)
+                candidates = [value for value in boundaries if lower <= value <= upper]
+                target = previous_start + combined_length // 2
+                cut = min(candidates, key=lambda value: abs(value - target)) if candidates else min(
+                    previous_start + maximum,
+                    max(previous_start + minimum, target),
+                )
+                ranges[-2:] = [(previous_start, cut), (cut, last_end)]
+
+    units: list[EditorialUnit] = []
+    for index, (start, end) in enumerate(ranges, start=1):
+        value = source[start:end].strip()
+        if value:
+            units.append(
+                EditorialUnit(
+                    index,
+                    leading_offset + start,
+                    leading_offset + end,
+                    value,
+                )
+            )
+    return units or [
+        EditorialUnit(1, leading_offset, leading_offset + len(source), source)
+    ]
+
+
+def substantive_rewrite_reasons(review: DeterministicReview) -> list[str]:
+    reasons: list[str] = []
+    if review.length_ratio <= 0:
+        return ["实质重著不足：候选正文为空"]
+    if review.editable_paragraphs <= 0:
+        return reasons
+    if review.literal_similarity > SUBSTANTIVE_SIMILARITY_MAX:
+        reasons.append(
+            f"实质重著不足：字面相似度 {review.literal_similarity:.3f}，不得高于 {SUBSTANTIVE_SIMILARITY_MAX:.2f}"
+        )
+    unchanged_ratio = review.unchanged_editable_paragraphs / max(1, review.editable_paragraphs)
+    if unchanged_ratio > SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX:
+        reasons.append(
+            f"实质重著不足：{review.unchanged_editable_paragraphs}/{review.editable_paragraphs} 个可编辑段落基本未改"
+        )
+    return reasons
+
+
+def substantive_rewrite_passed(review: DeterministicReview) -> bool:
+    return not substantive_rewrite_reasons(review)
+
+
+def combine_quality_audits(audits: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    values = list(audits)
+    if not values:
+        return {}
+    score_keys = (
+        "semantic_fidelity",
+        "information_completeness",
+        "fluency",
+        "voice_continuity",
+    )
+    boolean_keys = (
+        "no_added_facts",
+        "no_removed_information",
+        "no_stance_change",
+        "no_plot_or_event_change",
+    )
+    failed_ids: list[Any] = []
+    issues: list[Any] = []
+    reasons: list[str] = []
+    for item in values:
+        failed_ids.extend(item.get("failed_segment_ids") or [])
+        issues.extend(item.get("issues") or [])
+        reason = str(item.get("reason") or "").strip()
+        if reason:
+            reasons.append(reason)
+    result: dict[str, Any] = {
+        "pass": all(quality_audit_passed(item) for item in values),
+        **{key: min(float(item.get(key, 0)) for item in values) for key in score_keys},
+        **{key: all(item.get(key) is True for item in values) for key in boolean_keys},
+        "failed_segment_ids": list(dict.fromkeys(failed_ids)),
+        "issues": issues,
+        "structural_rewrite_sufficient": all(
+            item.get("structural_rewrite_sufficient") is True for item in values
+        ),
+        "reason": "；".join(dict.fromkeys(reasons)),
+        "batch_count": len(values),
+        "batches": values,
+    }
+    return result
+
+
+def _safe_cache_namespace(value: str | None) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_-]", "", value or "shared")
+    return normalized[:80] or "shared"
+
+
+def _fact_ledger_cache_path(source_with_tokens: str, *, cache_namespace: str | None) -> Path:
+    digest = hashlib.sha256(
+        (PROMPT_VERSION + "\n" + source_with_tokens).encode("utf-8")
+    ).hexdigest()
+    return _FACT_LEDGER_CACHE_DIR / _safe_cache_namespace(cache_namespace) / f"{digest}.json"
+
+
+def _load_cached_fact_ledger(
+    source_with_tokens: str,
+    *,
+    cache_namespace: str | None,
+    required_tokens: Iterable[str],
+) -> dict[str, Any] | None:
+    path = _fact_ledger_cache_path(source_with_tokens, cache_namespace=cache_namespace)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("prompt_version") != PROMPT_VERSION:
+            return None
+        return parse_fact_ledger(
+            json.dumps(payload.get("ledger"), ensure_ascii=False),
+            required_tokens=required_tokens,
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _persist_fact_ledger(
+    source_with_tokens: str,
+    ledger: dict[str, Any],
+    *,
+    cache_namespace: str | None,
+) -> None:
+    path = _fact_ledger_cache_path(source_with_tokens, cache_namespace=cache_namespace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "prompt_version": PROMPT_VERSION,
+                "source_sha256": sha256_text(source_with_tokens),
+                "ledger": ledger,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def strategy_for_index(index: int, *, iteration: int = 1) -> str:
     strategy_ids = tuple(rewrite_strategy_map())
     return strategy_ids[(max(1, iteration) - 1 + index) % len(strategy_ids)]
@@ -1796,10 +2608,26 @@ def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
         "no_stance_change",
         "no_plot_or_event_change",
     )
+    issues = payload.get("issues")
+    reason = str(payload.get("reason") or "")
+    contradictory_reason = any(
+        phrase in reason
+        for phrase in (
+            "保留主题句—解释—总结",
+            "保留原有骨架",
+            "编辑重构不足",
+            "表面变化",
+            "浅层改写",
+        )
+    )
     return (
         bool(payload.get("pass"))
         and all(float(payload.get(key, 0)) >= threshold for key, threshold in score_rules.items())
         and all(payload.get(key) is True for key in boolean_rules)
+        and payload.get("structural_rewrite_sufficient") is True
+        and isinstance(issues, list)
+        and not issues
+        and not contradictory_reason
     )
 
 
@@ -1808,6 +2636,7 @@ def model_strategy() -> dict[str, Any]:
     return {
         "default_rewrite_provider": default_provider,
         "rewrite_model": _rewrite_model_for_provider(default_provider),
+        "fact_model": settings.AIGC_REVIEW_AUDIT_MODEL,
         "rewrite_providers": _rewrite_provider_statuses(),
         "audit_model": settings.AIGC_REVIEW_AUDIT_MODEL,
         "rewrite_thinking": _rewrite_reasoning_for_provider(default_provider),
@@ -1815,18 +2644,30 @@ def model_strategy() -> dict[str, Any]:
         "rewrite_reasoning_options": ["low", "medium", "high"],
         "candidate_count": 1,
         "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
-        "rewrite_protocol": "flexible_editorial_unit_with_immutable_anchors",
-        "experiment_mode": "green_conversion_calibration",
-        "selection_mode": "calibration_recommended_full_run_allowed",
+        "rewrite_protocol": "fact_ledger_blank_slate_v4",
+        "experiment_mode": "exact_hash_human_in_loop",
+        "selection_mode": "isolated_calibration_before_full_run",
         "recommended_max_calibration_segments": 3,
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],
         "material_paragraph_coverage_min": MATERIAL_PARAGRAPH_COVERAGE_MIN,
         "material_coverage_quantization": "nearest_achievable_whole_paragraph_count",
-        "material_metrics_are_advisory": True,
+        "legacy_material_metrics_are_advisory": True,
+        "substantive_similarity_max": SUBSTANTIVE_SIMILARITY_MAX,
+        "substantive_unchanged_paragraph_ratio_max": (
+            SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX
+        ),
+        "editorial_unit_chars": [
+            int(settings.AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS),
+            int(settings.AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS),
+        ],
+        "audit_batch_units": int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS),
+        "default_run_budget_cny": float(settings.AIGC_REVIEW_RUN_BUDGET_CNY),
+        "default_calibration_budget_cny": float(settings.AIGC_REVIEW_CALIBRATION_BUDGET_CNY),
         "style_feature_version": STYLE_FEATURE_VERSION,
         "feature_learning_min_real_samples": 5,
-        "audit_scope": "selected_segments_with_350_char_context_one_call",
+        "audit_scope": "bounded_editorial_units_issue_first",
+        "proportional_report_learning": False,
         "ocr": "local_only_zero_api_cost",
         "human_pass_rule": "> 50%",
         "safety_target_percent": float(settings.AIGC_REVIEW_HUMAN_TARGET),
@@ -2067,6 +2908,46 @@ def _deepseek_rewrite(
     return content, {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_cny": cost}
 
 
+def _gemini_fact_ledger(
+    prompt: str,
+    *,
+    segment: ZhuqueSegment,
+    request_id: str,
+) -> tuple[str, dict[str, Any]]:
+    model = settings.AIGC_REVIEW_AUDIT_MODEL
+    logger.info(
+        "LLM action=aigc_report_fact_ledger request_id=%s model=%s segment=%s status=started",
+        request_id,
+        model,
+        segment.segment_id,
+    )
+    content = generate_gemini_text(
+        prompt,
+        model=model,
+        temperature=0.0,
+        max_output_tokens=2200,
+        retries=1,
+    )
+    input_tokens = _estimate_tokens(prompt)
+    output_tokens = _estimate_tokens(content)
+    cost = _gemini_flash_lite_cost_cny(input_tokens, output_tokens)
+    logger.info(
+        "LLM action=aigc_report_fact_ledger request_id=%s model=%s segment=%s status=succeeded estimated_input_tokens=%s estimated_output_tokens=%s estimated_cost_cny=%.6f",
+        request_id,
+        model,
+        segment.segment_id,
+        input_tokens,
+        output_tokens,
+        cost,
+    )
+    return content, {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_cny": cost,
+        "estimated": True,
+    }
+
+
 def _gemini_audit(prompt: str, *, request_id: str) -> tuple[str, dict[str, Any]]:
     model = settings.AIGC_REVIEW_AUDIT_MODEL
     logger.info(
@@ -2138,6 +3019,7 @@ def _manual_review_result(
         "models": {
             "rewrite_provider": rewrite_provider,
             "rewrite": rewrite_model,
+            "fact": settings.AIGC_REVIEW_AUDIT_MODEL,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
             "rewrite_thinking": rewrite_reasoning,
         },

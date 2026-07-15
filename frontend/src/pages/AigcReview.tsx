@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BookMarked,
@@ -15,6 +15,7 @@ import { Link } from "react-router-dom";
 import { api } from "@/api/client";
 import type {
   AigcReviewContentType,
+  AigcReviewCalibrationSample,
   AigcReviewComparison,
   AigcReviewOptimizeResult,
   AigcReviewReport,
@@ -83,6 +84,12 @@ export function AigcReview() {
   const [iteration, setIteration] = useState(1);
   const [rewriteProvider, setRewriteProvider] = useState<AigcReviewRewriteProvider>("deepseek");
   const [rewriteReasoning, setRewriteReasoning] = useState<"low" | "medium" | "high">("low");
+  const [budgetCny, setBudgetCny] = useState(0.8);
+  const [calibrationSamples, setCalibrationSamples] = useState<AigcReviewCalibrationSample[]>([]);
+  const [humanEditedText, setHumanEditedText] = useState("");
+  const [calibrationValues, setCalibrationValues] = useState<Record<string, string>>({});
+  const [calibrationFiles, setCalibrationFiles] = useState<Record<string, File | null>>({});
+  const [calibrationBusy, setCalibrationBusy] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -102,6 +109,30 @@ export function AigcReview() {
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = Boolean(selectedRewriteProvider?.configured);
   const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 3;
+  const calibrationUnit = useMemo(() => {
+    for (const segment of result?.segment_results ?? []) {
+      for (const unit of segment.unit_results ?? []) {
+        if (
+          unit.status === "ready"
+          && unit.original_chars >= 350
+          && unit.original_chars <= 2000
+          && unit.candidate_chars >= 350
+          && unit.candidate_chars <= 2000
+        ) {
+          return { segment, unit };
+        }
+      }
+    }
+    return null;
+  }, [result]);
+
+  useEffect(() => {
+    api.listAigcReviewCalibrations(50).then(setCalibrationSamples).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    setHumanEditedText(calibrationUnit?.unit.candidate_text ?? "");
+  }, [calibrationUnit]);
 
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
@@ -162,6 +193,7 @@ export function AigcReview() {
         preferred_strategy: preferredStrategy,
         rewrite_provider: rewriteProvider,
         rewrite_reasoning_effort: rewriteReasoning,
+        budget_cny: budgetCny,
         baseline_report: report,
       });
       setResult(response);
@@ -170,6 +202,108 @@ export function AigcReview() {
       setError(err instanceof Error ? err.message : "定向审稿失败");
     } finally {
       setOptimizing(false);
+    }
+  };
+
+  const refreshCalibrations = async () => {
+    setCalibrationSamples(await api.listAigcReviewCalibrations(50));
+  };
+
+  const registerCalibrationPair = async () => {
+    if (!calibrationUnit || !result) return;
+    setCalibrationBusy(true);
+    setError("");
+    try {
+      const sourceGroup = `${result.request_id}-${calibrationUnit.segment.segment_id}-${calibrationUnit.unit.unit_id}`;
+      const originalSample = await api.createAigcReviewCalibration({
+        text: calibrationUnit.unit.original_text,
+        content_type: contentType,
+        source_group: sourceGroup,
+        variant_type: "original",
+        strategy_id: calibrationUnit.segment.strategy_id,
+      });
+      await api.createAigcReviewCalibration({
+        text: calibrationUnit.unit.candidate_text,
+        content_type: contentType,
+        source_group: sourceGroup,
+        variant_type: "fact_reauthor",
+        parent_sha256: originalSample.text_sha256,
+        strategy_id: calibrationUnit.segment.strategy_id,
+      });
+      await refreshCalibrations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登记隔离校准样本失败");
+    } finally {
+      setCalibrationBusy(false);
+    }
+  };
+
+  const registerHumanEdit = async () => {
+    if (!calibrationUnit || !result) return;
+    const normalized = normalizeManuscriptText(humanEditedText);
+    if (normalized.length < 350 || normalized.length > 2000) {
+      setError("人工修订校准样本必须保持在 350–2000 字。 ");
+      return;
+    }
+    setCalibrationBusy(true);
+    setError("");
+    try {
+      const sourceGroup = `${result.request_id}-${calibrationUnit.segment.segment_id}-${calibrationUnit.unit.unit_id}`;
+      const originalSample = calibrationSamples.find(
+        (item) => item.source_group === sourceGroup && item.variant_type === "original",
+      );
+      await api.createAigcReviewCalibration({
+        text: normalized,
+        content_type: contentType,
+        source_group: sourceGroup,
+        variant_type: "human_edited",
+        parent_sha256: originalSample?.text_sha256 ?? null,
+        strategy_id: calibrationUnit.segment.strategy_id,
+      });
+      await refreshCalibrations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登记人工修订样本失败");
+    } finally {
+      setCalibrationBusy(false);
+    }
+  };
+
+  const saveCalibrationValue = async (sample: AigcReviewCalibrationSample) => {
+    const value = Number(calibrationValues[sample.sample_id]);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      setError("请输入朱雀报告中的 AIGC 值，范围 0–1，例如 0.3472。 ");
+      return;
+    }
+    setCalibrationBusy(true);
+    setError("");
+    try {
+      await api.saveAigcReviewCalibrationResult(sample.sample_id, {
+        text_sha256: sample.text_sha256,
+        aigc_value: value,
+      });
+      await refreshCalibrations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登记真实朱雀值失败");
+    } finally {
+      setCalibrationBusy(false);
+    }
+  };
+
+  const uploadCalibrationReport = async (sample: AigcReviewCalibrationSample) => {
+    const file = calibrationFiles[sample.sample_id];
+    if (!file) {
+      setError("请先选择该隔离样本单独送检后打印的朱雀 PDF。 ");
+      return;
+    }
+    setCalibrationBusy(true);
+    setError("");
+    try {
+      await api.uploadAigcReviewCalibrationReport(sample.sample_id, file);
+      await refreshCalibrations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "隔离校准报告解析失败");
+    } finally {
+      setCalibrationBusy(false);
     }
   };
 
@@ -215,7 +349,7 @@ export function AigcReview() {
         </div>
         <div className="flex flex-col items-stretch gap-3">
           <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-            本地 OCR：0 元<br />DeepSeek 默认改写 · Grok 仅手动可选<br />Gemini Flash-Lite 一次整稿终审
+            本地 OCR：0 元<br />DeepSeek 默认重著 · Grok 仅手动可选<br />事实账本缓存 · 350–900 字分批终审
           </div>
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
@@ -325,6 +459,18 @@ export function AigcReview() {
                     <option value="high">high（高成本）</option>
                   </select>
                 )}
+                <label htmlFor="aigc-budget" className="ml-2 text-xs text-warm-400">预算上限 ¥</label>
+                <input
+                  id="aigc-budget"
+                  type="number"
+                  min="0.1"
+                  max="20"
+                  step="0.1"
+                  value={budgetCny}
+                  onChange={(event) => setBudgetCny(Math.max(0.1, Number(event.target.value) || 0.8))}
+                  disabled={optimizing}
+                  className="w-24 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+                />
               </div>
               <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass || !rewriteProviderReady} className="btn-gold inline-flex min-w-[230px] items-center justify-center gap-2 disabled:opacity-45">
                 {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -350,9 +496,9 @@ export function AigcReview() {
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
             {selectedIds.size <= maxCalibrationSegments
-              ? `当前是低成本校准轮：选中片段占全文 ${selectedShare.toFixed(2)}%，会分别使用不同结构策略。`
-              : `当前是整篇处理模式：已选 ${selectedIds.size} 段、占全文 ${selectedShare.toFixed(2)}%，会逐段产生模型费用。`}
-            相似度与改写覆盖率只作降率风险提示，不再阻止安全候选进入质量终审和真实朱雀复检。
+              ? `当前是低成本候选轮：选中片段占全文 ${selectedShare.toFixed(2)}%。`
+              : `当前是整篇处理模式：已选 ${selectedIds.size} 段、占全文 ${selectedShare.toFixed(2)}%。`}
+            系统先抽事实账本，再按 350–900 字从空白重著；字面相似度高于 90% 或超过 25% 可编辑段落基本未改会被硬拦截。本轮最多支出 ¥{budgetCny.toFixed(2)}。
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
 
@@ -387,7 +533,9 @@ export function AigcReview() {
               <h2 className="mt-1 font-serif text-2xl text-warm-50">质量闸门与真实复检</h2>
             </div>
             <div className="text-right text-xs leading-6 text-warm-400">
-              本轮估算 ¥{result.cost.estimated_cny.toFixed(4)}<br />{result.models.rewrite_provider} / {result.models.rewrite}（{result.models.rewrite_thinking}）→ {result.models.audit}
+              本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
+              {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
+              事实 {result.models.fact} → 重著 {result.models.rewrite_provider} / {result.models.rewrite}（{result.models.rewrite_thinking}）→ 终审 {result.models.audit}
             </div>
           </div>
 
@@ -463,10 +611,10 @@ export function AigcReview() {
                 {result.segment_results.map((item) => (
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/10 bg-base-950/40 p-4 text-xs leading-6 text-warm-300">
                     <div className="font-medium text-warm-50">片段 #{item.segment_id} · {strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id}</div>
-                    <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（参考范围 25%–82%）</div>
-                    <div>实质改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}%（参考目标 ≥{Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%）</div>
-                    <div className={item.material_rewrite_advisory_passed ? "text-emerald-200" : "text-amber-200"}>
-                      {item.material_rewrite_advisory_passed ? "降率信号达到参考目标" : "降率信号偏弱，但不拦截真实朱雀复检"}
+                    <div>字面相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}%（硬门槛 ≤90%）</div>
+                    <div>编辑单元 {item.editorial_unit_count} 个 · 共尝试 {item.rewrite_attempts} 次</div>
+                    <div className={item.substantive_rewrite_passed ? "text-emerald-200" : "text-red-200"}>
+                      {item.substantive_rewrite_passed ? "实质重著硬门槛通过" : "实质重著不足，禁止复检"}
                     </div>
                     {item.style_diagnosis && (
                       <div className="mt-2 border-t border-gold-500/10 pt-2 text-warm-400">
@@ -497,8 +645,8 @@ export function AigcReview() {
                   </div>}
                   {comparison && (
                     <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm leading-6 text-warm-300">
-                      <div className="font-medium text-warm-50">真实复检归因</div>
-                      <div className="mt-2">本轮真正转绿：{comparison.selected_humanized_share_percent.toFixed(2)}% 全文占比；加权 AIGC 值变化 {comparison.selected_weighted_delta > 0 ? "+" : ""}{comparison.selected_weighted_delta.toFixed(4)} 只作辅助，不再把红转橙当成功。</div>
+                      <div className="font-medium text-warm-50">整稿复检观察（不用于策略学习）</div>
+                      <div className="mt-2">本轮近似对齐后转绿：{comparison.selected_humanized_share_percent.toFixed(2)}% 全文占比；加权 AIGC 值变化 {comparison.selected_weighted_delta > 0 ? "+" : ""}{comparison.selected_weighted_delta.toFixed(4)} 只用于展示。局部因果必须在下方精确哈希隔离送检台验证。</div>
                       <div className="mt-3 space-y-2">
                         {comparison.strategy_effectiveness.map((item) => (
                           <div key={item.strategy_id} className="flex items-center justify-between gap-3 border-t border-gold-500/10 pt-2">
@@ -529,7 +677,7 @@ export function AigcReview() {
                           按真实反馈采用“{strategyText[comparison.recommended_next_strategy]}”再生成一轮
                         </button>
                       )}
-                      {comparison.stop_automatic_spend && <div className="mt-3 text-amber-200">三种策略均无实质改善，系统已停止建议继续烧 API。</div>}
+                      {comparison.stop_automatic_spend && <div className="mt-3 text-amber-200">整稿近似映射不能指导继续烧 API；系统只接受隔离样本的精确哈希结果。</div>}
                     </div>
                   )}
                   <button type="button" onClick={() => downloadText(result.candidate_text, "朱雀复检通过终稿.txt")} disabled={!finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
@@ -539,6 +687,95 @@ export function AigcReview() {
               </div>
             </>
           )}
+        </section>
+      )}
+
+      {result && (
+        <section className="card-warm p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="text-sm text-gold-200">第四步 · 黑盒校准</div>
+              <h2 className="mt-1 font-serif text-2xl text-warm-50">精确哈希隔离送检台</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-7 text-warm-300">
+                整篇 PDF 的片段边界只能近似对齐，不能证明某条策略有效。这里固定同一个 350–2000 字编辑单元，分别登记原文、事实重著稿和你的人工修订稿；复制哪一版单独送朱雀，就给那一版上传打印 PDF。只有报告正文匹配且哈希完全一致的结果才能学习；手填数值只作观察。
+              </p>
+            </div>
+            <button type="button" onClick={refreshCalibrations} disabled={calibrationBusy} className="btn-ghost inline-flex items-center gap-2 disabled:opacity-45">
+              <RefreshCw className={`h-4 w-4 ${calibrationBusy ? "animate-spin" : ""}`} />刷新样本
+            </button>
+          </div>
+
+          {calibrationUnit ? (
+            <div className="mt-5 grid gap-5 xl:grid-cols-2">
+              <div className="rounded-lg border border-gold-500/15 bg-base-950/40 p-5">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="font-medium text-warm-50">
+                    片段 #{calibrationUnit.segment.segment_id} / {calibrationUnit.unit.unit_id} · {calibrationUnit.unit.original_chars} 字
+                  </span>
+                  <span className="text-warm-400">事实账本：{calibrationUnit.unit.fact_ledger_mode}</span>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <textarea readOnly value={calibrationUnit.unit.original_text} className="min-h-[260px] resize-y rounded-lg border border-red-400/15 bg-base-950/70 p-3 text-xs leading-6 text-warm-200" />
+                  <textarea readOnly value={calibrationUnit.unit.candidate_text} className="min-h-[260px] resize-y rounded-lg border border-amber-400/15 bg-base-950/70 p-3 text-xs leading-6 text-warm-200" />
+                </div>
+                <button type="button" onClick={registerCalibrationPair} disabled={calibrationBusy} className="btn-gold mt-4 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
+                  {calibrationBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                  登记原文 + 模型重著两份精确样本
+                </button>
+              </div>
+
+              <div className="rounded-lg border border-emerald-400/15 bg-emerald-500/5 p-5">
+                <div className="text-sm font-medium text-emerald-100">人工定向修订</div>
+                <p className="mt-2 text-xs leading-6 text-warm-400">
+                  在不增删事实的前提下，改掉你一眼能看出的套话、均匀节奏和总结式收尾。保存后它会成为第三个可归因样本，不会调用任何模型。
+                </p>
+                <textarea value={humanEditedText} onChange={(event) => setHumanEditedText(event.target.value)} className="mt-3 min-h-[310px] w-full resize-y rounded-lg border border-emerald-400/20 bg-base-950/70 p-3 text-xs leading-6 text-warm-100" />
+                <button type="button" onClick={registerHumanEdit} disabled={calibrationBusy} className="btn-ghost mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
+                  <ShieldCheck className="h-4 w-4" />登记人工修订精确样本
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-5 rounded-lg border border-amber-400/20 bg-amber-500/8 px-4 py-4 text-sm leading-6 text-amber-100">
+              本轮还没有同时满足质量保护、实质重著和 350–2000 字范围的编辑单元，因此不生成不可归因的校准数据。
+            </div>
+          )}
+
+          <div className="mt-6 overflow-x-auto rounded-lg border border-gold-500/10">
+            <table className="w-full min-w-[1050px] text-left text-sm">
+              <thead className="bg-base-950/60 text-xs text-warm-400">
+                <tr><th className="px-4 py-3">样本</th><th className="px-4 py-3">类型</th><th className="px-4 py-3">字数 / 哈希</th><th className="px-4 py-3">送检正文</th><th className="px-4 py-3">朱雀 PDF / 备用手填</th><th className="px-4 py-3">状态</th></tr>
+              </thead>
+              <tbody>
+                {calibrationSamples.slice(0, 12).map((sample) => (
+                  <tr key={sample.sample_id} className="border-t border-gold-500/8 text-warm-200">
+                    <td className="px-4 py-3 text-xs">{sample.source_group.slice(0, 20)}…</td>
+                    <td className="px-4 py-3">{{ original: "原文", fact_reauthor: "模型重著", human_directed: "人工指令", human_edited: "人工修订", human_control: "真人对照" }[sample.variant_type]}</td>
+                    <td className="px-4 py-3 text-xs">{sample.char_count} 字<br /><span className="text-warm-500">{sample.text_sha256.slice(0, 12)}…</span></td>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => navigator.clipboard.writeText(sample.text)} className="text-gold-200 hover:text-gold-50">复制精确正文</button>
+                    </td>
+                    <td className="px-4 py-3">
+                      {sample.status === "labeled" ? <span>{sample.aigc_value?.toFixed(4)}{sample.human_percent != null ? ` · 人工 ${sample.human_percent.toFixed(2)}%` : ""}</span> : <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input type="file" accept=".pdf,application/pdf" onChange={(event) => setCalibrationFiles((current) => ({ ...current, [sample.sample_id]: event.target.files?.[0] ?? null }))} className="max-w-[180px] text-[11px] text-warm-400" />
+                          <button type="button" onClick={() => uploadCalibrationReport(sample)} disabled={calibrationBusy || !calibrationFiles[sample.sample_id]} className="text-xs text-emerald-200 hover:text-emerald-50 disabled:opacity-40">验 PDF</button>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-warm-500">
+                          <input type="number" min="0" max="1" step="0.0001" value={calibrationValues[sample.sample_id] ?? ""} onChange={(event) => setCalibrationValues((current) => ({ ...current, [sample.sample_id]: event.target.value }))} placeholder="备用 0.3472" className="w-24 rounded border border-gold-500/15 bg-base-900 px-2 py-1 text-xs" />
+                          <button type="button" onClick={() => saveCalibrationValue(sample)} disabled={calibrationBusy} className="hover:text-gold-50 disabled:opacity-40">仅观察</button>
+                        </div>
+                      </div>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {sample.label ? <span className={`rounded-full border px-2 py-1 text-xs ${labelClass[sample.label]}`}>{labelText[sample.label]} · {sample.learning_eligible ? "PDF 已验，可学习" : "手填，仅观察"}</span> : <span className="text-xs text-warm-400">等待单独送检</span>}
+                    </td>
+                  </tr>
+                ))}
+                {calibrationSamples.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-warm-500">尚未登记校准样本</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
     </div>

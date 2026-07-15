@@ -7,11 +7,31 @@
 前端路由：`/aigc-review`。后端接口：
 
 - `POST /api/v1/aigc-review/report`：上传真实朱雀打印 PDF 和同版本可编辑原稿。
-- `POST /api/v1/aigc-review/optimize`：只处理用户选中的风险片段，生成一个候选并进行独立整稿终审。
-- `POST /api/v1/aigc-review/compare`：上传候选的真实复检报告，按归一化位置归因并只统计真正转绿的区域。
+- `POST /api/v1/aigc-review/optimize`：只处理用户选中的风险片段；先抽取事实账本，再把风险区拆成 350–900 字编辑单元从空白重著并分批终审。
+- `POST /api/v1/aigc-review/compare`：上传候选的真实复检报告；整稿结果只作交付闸门和近似观察，不再冒充局部因果证据。
+- `POST /api/v1/aigc-review/calibrations`：登记 350–2000 字隔离样本及正文精确 SHA-256。
+- `POST /api/v1/aigc-review/calibrations/{id}/report`：上传该隔离样本的真实朱雀 PDF；只有报告同稿校验通过才成为可学习证据。
+- `POST /api/v1/aigc-review/calibrations/{id}/result`：人工录入备用数值，只作观察，永不进入策略学习。
+- `GET /api/v1/aigc-review/calibrations`：读取当前用户的持久化校准样本。
 - `GET /api/v1/aigc-review/strategy`：返回当前最低成本模型路由，不调用模型。
 
 该工具不读取、不改写、不回填任何历史任务，也不改变全局闸门。每次新审稿会在 `/aigc-review/bookshelf` 创建独立归档，保存不可变原稿、候选、前后报告、质量结果和复检状态。小说、家长里短长篇、漫画和 Epic Novel Engine 均不进入该路由；当前只接受普通文章、古文/佛经译写和公版融合稿。
+
+### 当前生产协议：report-driven v4.0
+
+2026-07-15 对真实生产归档的审计证明，v3.4 的主要失败不是模型型号，而是架构错误：部分候选与原稿字面相似度达到 `1.0`，仍被质量模型打出语义 `100`、完整 `100`、流畅 `98`、声音 `98`；审稿理由甚至把“保留主题句—解释—总结骨架”当成优点。另有候选整稿相似度约 `90.4%`，106 个原段中 47 个逐字未动。这样的浅层替换最多把红色推到橙色，无法稳定产生绿色人工特征。
+
+v4.0 因此执行：
+
+1. 普通文章和公版稿先用低价 Gemini Flash-Lite 把原编辑单元中的事实、限定、否定、归属、时间、因果及受保护锚点抽成结构化事实账本；生产改写模型只看到事实账本和相邻上下文，不看到当前单元原句，也不接收朱雀分数或“转绿”措辞。
+2. 报告中的数千字风险区拆成严格不超过 900 字的编辑单元；默认 350–900 字。古文/佛经仍走原文逐字保护协议，只改译文。
+3. 候选必须通过事实/锚点/标题/长度硬保护，并新增实质重著硬门槛：字面相似度不得高于 `0.90`，超过 25% 的可编辑段落基本未改也会拒绝。旧 `0.25–0.82` 与 80% 覆盖指标只保留为诊断，不再误伤边界稿，也不再允许相似度接近 1 的候选通过。
+4. Gemini 每次最多审 3 个编辑单元，必须先列举 `issues` 再评分；任何新增事实、信息丢失、立场/事件变化、语言硬伤或仍保留同构骨架都会使本批失败。多批结果取最低分和全部问题合集，不允许一次巨型审稿橡皮图章。
+5. 默认单轮预算 `¥0.80`，校准预算建议 `¥0.30`。每次付费调用前检查预算，达到上限立即进入 `manual_review`；事实账本按用户、正文哈希和 Prompt 版本持久缓存，重跑不重复购买。
+6. 整稿 PDF 的归一化位置对齐标记为 `learning_eligible=false`。局部学习只接受 350–2000 字隔离样本的真实 PDF、正文精确哈希和同稿验证；人工手填值仅展示，不训练。
+7. 报告、实验、事实账本与校准样本统一持久化到 `backend/output/_aigc_review/`，随 Docker `backend/output` 卷保存，不再因容器重建丢失。
+
+该协议仍不承诺任意文本必然被专有检测器判绿；它保证的是：浅改不能冒充成果、质量问题不能交付、不可归因数据不能指导继续花钱。
 
 ### 真实判定口径
 
@@ -28,16 +48,16 @@
 
 | 用途 | 模型 | 官方标准价（每百万 token） | 结论 |
 |---|---|---:|---|
-| 定向改稿 | DeepSeek V4 Pro | 输入 ¥3 / 输出 ¥6 | v3.4 默认主改；单候选、低成本，不因降率启发式自动重试 |
+| 定向重著 | DeepSeek V4 Pro | 输入 ¥3 / 输出 ¥6 | v4.0 默认主笔；Grok 不自动升级 |
+| 事实账本与独立终审 | Gemini 3.1 Flash-Lite | 输入 $0.25 / 输出 $1.50 | 用低价模型抽事实并缓存；终审与主笔不同供应商 |
 | 人工实验 | Grok 4.5 | 输入 $2 / 缓存输入 $0.50 / 输出 $6 | 仅手动选择；不再作为默认或自动升级模型 |
 | 极低价生成 | DeepSeek V4 Flash | 输入 ¥1 / 输出 ¥2 | 最便宜，但不作为质量优先主改默认值 |
-| 独立终审 | Gemini 3.1 Flash-Lite | 输入 $0.25 / 输出 $1.50 | 默认终审；与主改不同供应商且成本极低 |
 | 失败升级 | Gemini 3.5 Flash | 输入 $1.50 / 输出 $9 | 仅在人工选择升级时使用，不做默认调用 |
 | 高价升级参考 | GPT-5.6 Terra | 输入 $2.50 / 输出 $15 | 仅复杂稿件人工升级，不进入最低成本默认链路 |
 
 官方来源：[Grok 4.5 模型](https://docs.x.ai/developers/grok-4-5)、[xAI 价格](https://docs.x.ai/developers/pricing)、[xAI 推理档位](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[DeepSeek V4 发布](https://api-docs.deepseek.com/news/news260424/)、[DeepSeek 价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)、[Gemini 模型](https://ai.google.dev/gemini-api/docs/models)、[Gemini 价格](https://ai.google.dev/gemini-api/docs/pricing)。
 
-默认链路只做“DeepSeek 一份候选 + Gemini 一次整稿独立终审”，不再为每块生成双候选，也不逐块调用审稿模型。本地 RapidOCR 读取 PDF，不使用付费视觉模型。Grok 仍保留为显式实验选项，但不会自动触发。
+默认链路只做“Gemini Flash-Lite 事实账本 + DeepSeek 一份重著候选 + Gemini 每 3 单元一批终审”，不生成双候选。事实账本命中缓存时不产生抽取费用。本地 RapidOCR 读取 PDF，不使用付费视觉模型。Grok 仍保留为显式实验选项，但不会自动触发。
 
 ### 报告片段改写协议（v2）
 
@@ -75,6 +95,11 @@ XAI_HTTPS_PROXY=
 AIGC_REVIEW_AUDIT_MODEL=gemini-3.1-flash-lite
 AIGC_REVIEW_MAX_REWRITE_ATTEMPTS=2
 AIGC_REVIEW_HUMAN_TARGET=60
+AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS=350
+AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS=900
+AIGC_REVIEW_AUDIT_BATCH_UNITS=3
+AIGC_REVIEW_RUN_BUDGET_CNY=0.80
+AIGC_REVIEW_CALIBRATION_BUDGET_CNY=0.30
 ```
 
 ## 生效边界

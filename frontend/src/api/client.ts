@@ -11,6 +11,8 @@ import type {
   BatchRetryTaskResponse,
   AigcQualityReport,
   AigcReviewContentType,
+  AigcReviewCalibrationSample,
+  AigcReviewCalibrationVariant,
   AigcReviewComparison,
   AigcReviewOptimizeResult,
   AigcReviewReport,
@@ -662,6 +664,33 @@ export const api = {
         optimize_result: optimizeResult,
       }),
     }),
+  createAigcReviewCalibration: (body: {
+    text: string;
+    content_type: AigcReviewContentType;
+    source_group?: string;
+    variant_type: AigcReviewCalibrationVariant;
+    parent_sha256?: string | null;
+    strategy_id?: string | null;
+  }) =>
+    request<AigcReviewCalibrationSample>("/aigc-review/calibrations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listAigcReviewCalibrations: (limit = 100) =>
+    request<AigcReviewCalibrationSample[]>(`/aigc-review/calibrations?limit=${limit}`),
+  saveAigcReviewCalibrationResult: (
+    sampleId: string,
+    body: { text_sha256: string; aigc_value: number; report_sha256?: string | null },
+  ) =>
+    request<AigcReviewCalibrationSample>(`/aigc-review/calibrations/${sampleId}/result`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadAigcReviewCalibrationReport: (sampleId: string, file: File) =>
+    uploadFile<AigcReviewCalibrationSample>(
+      `/aigc-review/calibrations/${sampleId}/report`,
+      file,
+    ),
 
   // 系统健康（检测 Celery worker 是否在线）
   createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>

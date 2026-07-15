@@ -412,6 +412,7 @@ export interface AigcReviewSegment {
 export interface AigcReviewStrategy {
   default_rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
+  fact_model: string;
   rewrite_providers: AigcReviewRewriteProviderStatus[];
   audit_model: string;
   rewrite_thinking: string;
@@ -427,7 +428,14 @@ export interface AigcReviewStrategy {
   material_similarity_range: number[];
   material_paragraph_coverage_min: number;
   material_coverage_quantization: string;
-  material_metrics_are_advisory: boolean;
+  legacy_material_metrics_are_advisory: boolean;
+  substantive_similarity_max: number;
+  substantive_unchanged_paragraph_ratio_max: number;
+  editorial_unit_chars: [number, number];
+  audit_batch_units: number;
+  default_run_budget_cny: number;
+  default_calibration_budget_cny: number;
+  proportional_report_learning: boolean;
   style_feature_version: string;
   feature_learning_min_real_samples: number;
   audit_scope: string;
@@ -475,6 +483,7 @@ export interface OptimizeAigcReviewRequest {
   preferred_strategy?: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
   rewrite_provider?: AigcReviewRewriteProvider;
   rewrite_reasoning_effort?: "low" | "medium" | "high";
+  budget_cny?: number;
   title?: string | null;
   baseline_report?: AigcReviewReport;
 }
@@ -489,7 +498,15 @@ export interface AigcReviewQualityAudit {
   no_removed_information: boolean;
   no_stance_change: boolean;
   no_plot_or_event_change: boolean;
-  failed_segment_ids: number[];
+  structural_rewrite_sufficient: boolean;
+  failed_segment_ids: Array<number | string>;
+  issues: Array<{
+    segment_id: number | string;
+    type: string;
+    original_claim: string;
+    candidate_change: string;
+    severity: "high" | "medium" | "low";
+  }>;
   reason: string;
 }
 
@@ -528,7 +545,28 @@ export interface AigcReviewRewriteAttempt {
   rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
   hard_safety_passed: boolean;
+  substantive_rewrite_passed: boolean;
+  substantive_rewrite_reasons?: string[];
   material_rewrite_advisory_passed: boolean;
+}
+
+export interface AigcReviewEditorialUnitResult {
+  unit_id: string;
+  original_chars: number;
+  candidate_chars: number;
+  original_text: string;
+  candidate_text: string;
+  status: "ready" | "rejected";
+  fact_ledger_mode: "cached" | "model" | "test_fallback" | "classical_legacy";
+  fact_ledger_claim_count: number;
+  fact_ledger_cost_cny: number;
+  hard_safety_passed: boolean;
+  substantive_rewrite_passed: boolean;
+  rewrite_attempts: number;
+  attempts: AigcReviewRewriteAttempt[];
+  deterministic_review: AigcReviewDeterministicReview;
+  candidate_preview: string;
+  rejected_candidate_preview: string;
 }
 
 export interface AigcReviewSegmentResult {
@@ -537,6 +575,7 @@ export interface AigcReviewSegmentResult {
   rewrite_provider: AigcReviewRewriteProvider;
   rewrite_model: string;
   hard_safety_passed: boolean;
+  substantive_rewrite_passed: boolean;
   material_rewrite_advisory_passed: boolean;
   status: "ready" | "rejected";
   original_chars: number;
@@ -546,6 +585,8 @@ export interface AigcReviewSegmentResult {
   style_diagnosis?: string;
   rewrite_attempts: number;
   attempts: AigcReviewRewriteAttempt[];
+  editorial_unit_count: number;
+  unit_results: AigcReviewEditorialUnitResult[];
   deterministic_review: AigcReviewDeterministicReview;
   candidate_preview: string;
   rejected_candidate_preview: string;
@@ -570,6 +611,14 @@ export interface AigcReviewOptimizeResult {
   content_type?: AigcReviewContentType;
   segment_results: AigcReviewSegmentResult[];
   quality_audit: AigcReviewQualityAudit | null;
+  editorial_unit_count?: number;
+  audit_batch_count?: number;
+  budget?: {
+    currency: string;
+    limit_cny: number;
+    spent_cny: number;
+    exhausted: boolean;
+  };
   cost: {
     currency: string;
     estimated: boolean;
@@ -580,6 +629,7 @@ export interface AigcReviewOptimizeResult {
   models: {
     rewrite_provider: AigcReviewRewriteProvider;
     rewrite: string;
+    fact: string;
     audit: string;
     rewrite_thinking: string;
   };
@@ -625,6 +675,8 @@ export interface AigcReviewComparison {
   recommended_next_strategy: "syntax_rebuild" | "evidence_first" | "rhythm_recompose" | null;
   recommendation_reason: string;
   stop_automatic_spend: boolean;
+  attribution_mode: "proportional_document_overlap";
+  learning_eligible: false;
   historical_strategy_summary: Array<{
     strategy_id: string;
     experiment_count: number;
@@ -644,6 +696,36 @@ export interface AigcReviewComparison {
   }>;
   prompt_version: string;
   archive_task_id?: string;
+}
+
+export type AigcReviewCalibrationVariant =
+  | "original"
+  | "fact_reauthor"
+  | "human_directed"
+  | "human_edited"
+  | "human_control";
+
+export interface AigcReviewCalibrationSample {
+  sample_id: string;
+  source_group: string;
+  variant_type: AigcReviewCalibrationVariant;
+  content_type: AigcReviewContentType;
+  strategy_id?: string | null;
+  parent_sha256?: string | null;
+  text: string;
+  text_sha256: string;
+  char_count: number;
+  status: "awaiting_zhuque" | "labeled";
+  aigc_value: number | null;
+  label: "human" | "suspected" | "ai" | null;
+  green: boolean | null;
+  learning_eligible: boolean;
+  verification_mode?: "manual_value" | "pdf_exact_hash";
+  human_percent?: number;
+  suspected_percent?: number;
+  ai_percent?: number;
+  created_at: string;
+  updated_at: string;
 }
 
 // 鉴权

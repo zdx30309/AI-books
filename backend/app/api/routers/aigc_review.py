@@ -22,10 +22,15 @@ from app.services.aigc_report_review import (
     AigcReviewModelError,
     ZhuqueReportError,
     compare_zhuque_reports,
+    create_calibration_sample,
+    get_calibration_sample,
+    list_calibration_samples,
     model_strategy,
     normalize_manuscript_text,
     optimize_report_segments,
     parse_zhuque_report,
+    record_calibration_result,
+    record_calibration_report_result,
     sha256_text,
 )
 
@@ -35,7 +40,10 @@ router = APIRouter(prefix="/api/v1/aigc-review", tags=["AIGC Report Review"])
 SupportedContentType = Literal["article", "classical", "public_domain"]
 SupportedRewriteProvider = Literal["grok", "deepseek"]
 AIGC_REVIEW_BOOKSHELF = "AI审稿书架"
-_REPORT_UPLOAD_DIR = PROJECT_ROOT / "backend" / ".local" / "aigc_review_reports"
+_REPORT_UPLOAD_DIR = PROJECT_ROOT / "backend" / "output" / "_aigc_review" / "reports"
+_CALIBRATION_REPORT_DIR = (
+    PROJECT_ROOT / "backend" / "output" / "_aigc_review" / "calibration_reports"
+)
 
 
 class ZhuqueSegmentPayload(BaseModel):
@@ -61,6 +69,7 @@ class OptimizeAigcReviewRequest(BaseModel):
     preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
     rewrite_provider: SupportedRewriteProvider = "deepseek"
     rewrite_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    budget_cny: float = Field(0.80, gt=0, le=20)
     title: str | None = Field(None, max_length=200)
     baseline_report: dict[str, Any] | None = None
 
@@ -69,6 +78,27 @@ class CompareAigcReviewRequest(BaseModel):
     baseline_report: dict[str, Any]
     recheck_report: dict[str, Any]
     optimize_result: dict[str, Any]
+
+
+class CalibrationSampleRequest(BaseModel):
+    text: str = Field(..., min_length=350, max_length=2000)
+    content_type: SupportedContentType = "article"
+    source_group: str = Field("", max_length=80)
+    variant_type: Literal[
+        "original",
+        "fact_reauthor",
+        "human_directed",
+        "human_edited",
+        "human_control",
+    ]
+    parent_sha256: str | None = Field(None, min_length=64, max_length=64)
+    strategy_id: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
+
+
+class CalibrationResultRequest(BaseModel):
+    text_sha256: str = Field(..., min_length=64, max_length=64)
+    aigc_value: float = Field(..., ge=0, le=1)
+    report_sha256: str | None = Field(None, min_length=64, max_length=64)
 
 
 @router.get("/strategy", summary="查看最低成本的当前模型路由")
@@ -127,6 +157,8 @@ async def optimize_aigc_report(
             preferred_strategy=req.preferred_strategy,
             rewrite_provider=req.rewrite_provider,
             rewrite_reasoning_effort=req.rewrite_reasoning_effort,
+            cache_namespace=str(user.id),
+            budget_cny=req.budget_cny,
         )
         archive = _save_review_archive(
             db,
@@ -178,6 +210,93 @@ async def compare_aigc_reports(
     except Exception as exc:
         logger.exception("朱雀真实复检归因失败")
         raise HTTPException(status_code=500, detail=f"朱雀真实复检归因失败: {exc}") from exc
+
+
+@router.post("/calibrations", summary="登记精确哈希的朱雀隔离校准样本")
+async def create_aigc_calibration(
+    req: CalibrationSampleRequest,
+    user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        return await asyncio.to_thread(
+            create_calibration_sample,
+            user_id=str(user.id),
+            text=req.text,
+            content_type=req.content_type,
+            source_group=req.source_group,
+            variant_type=req.variant_type,
+            parent_sha256=req.parent_sha256,
+            strategy_id=req.strategy_id,
+        )
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/calibrations", summary="查看当前用户的朱雀隔离校准样本")
+async def get_aigc_calibrations(
+    limit: int = 100,
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    return await asyncio.to_thread(
+        list_calibration_samples,
+        user_id=str(user.id),
+        limit=limit,
+    )
+
+
+@router.post("/calibrations/{sample_id}/result", summary="登记精确哈希样本的真实朱雀结果")
+async def save_aigc_calibration_result(
+    sample_id: str,
+    req: CalibrationResultRequest,
+    user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        return await asyncio.to_thread(
+            record_calibration_result,
+            user_id=str(user.id),
+            sample_id=sample_id,
+            submitted_text_sha256=req.text_sha256,
+            aigc_value=req.aigc_value,
+            report_sha256=req.report_sha256,
+        )
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/calibrations/{sample_id}/report", summary="上传隔离样本的真实朱雀 PDF")
+async def upload_aigc_calibration_report(
+    sample_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+) -> dict:
+    filename = file.filename or "zhuque-calibration.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="请上传朱雀打印导出的 PDF 文件。")
+    try:
+        sample = await asyncio.to_thread(
+            get_calibration_sample,
+            user_id=str(user.id),
+            sample_id=sample_id,
+        )
+        pdf_bytes = await file.read()
+        parsed = await asyncio.to_thread(
+            parse_zhuque_report,
+            pdf_bytes,
+            str(sample.get("text") or ""),
+            filename=filename,
+        )
+        result = await asyncio.to_thread(
+            record_calibration_report_result,
+            user_id=str(user.id),
+            sample_id=sample_id,
+            parsed_report=parsed,
+        )
+        target = _CALIBRATION_REPORT_DIR / str(user.id) / f"{UUID(sample_id)}.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(pdf_bytes)
+        return result
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _store_report_pdf(user_id: UUID, pdf_bytes: bytes) -> str:
@@ -248,7 +367,7 @@ def _save_review_archive(
             "aigc_review_archive": True,
             "cover_disabled": True,
             "content_type": content_type,
-            "aigc_policy_version": "report-driven-v3.4",
+            "aigc_policy_version": "report-driven-v4.0",
             "aigc_required": True,
             "aigc_status": "candidate_ready" if quality_passed else "manual_review",
             "aigc_passed": False,
@@ -266,6 +385,9 @@ def _save_review_archive(
             "aigc_prompt_version": result.get("prompt_version"),
             "aigc_models": result.get("models") or {},
             "aigc_cost": result.get("cost") or {},
+            "aigc_budget": result.get("budget") or {},
+            "aigc_editorial_unit_count": result.get("editorial_unit_count") or 0,
+            "aigc_audit_batch_count": result.get("audit_batch_count") or 0,
         },
     )
     chapter = Chapter(

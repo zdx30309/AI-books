@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -63,7 +64,9 @@ def _passing_audit_json() -> str:
             "no_removed_information": True,
             "no_stance_change": True,
             "no_plot_or_event_change": True,
+            "structural_rewrite_sufficient": True,
             "failed_segment_ids": [],
+            "issues": [],
             "reason": "通过",
         },
         ensure_ascii=False,
@@ -153,7 +156,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     assert captured["model"] == "grok-4.5"
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
-    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v3.4:")
+    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v4.0:")
     assert usage["cached_input_tokens"] == 400
     assert usage["reasoning_tokens"] == 80
     assert usage["cost_cny"] > 0
@@ -502,7 +505,9 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
                 "no_removed_information": True,
                 "no_stance_change": True,
                 "no_plot_or_event_change": True,
+                "structural_rewrite_sufficient": True,
                 "failed_segment_ids": [],
+                "issues": [],
                 "reason": "通过",
             },
             ensure_ascii=False,
@@ -516,7 +521,7 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
     assert "真实朱雀复检" in result["next_action"]
 
 
-def test_material_rewrite_metrics_are_advisory_and_do_not_trigger_paid_retry() -> None:
+def test_shallow_synonym_rewrite_is_a_hard_gate_and_stops_before_audit() -> None:
     paragraphs = [
         "这是一段完整说明，用来保留原稿中的全部事实和既有判断。",
         "第二段继续解释原因，同时维持原先的立场与限定条件。",
@@ -546,11 +551,11 @@ def test_material_rewrite_metrics_are_advisory_and_do_not_trigger_paid_retry() -
         audit_fn=audit_fn,
     )
 
-    assert calls == ["rewrite", "audit"]
-    assert result["status"] == "candidate_ready"
-    assert result["segment_results"][0]["hard_safety_passed"] is True
+    assert calls == ["rewrite", "rewrite"]
+    assert result["status"] == "manual_review"
+    assert result["segment_results"][0]["substantive_rewrite_passed"] is False
     assert result["segment_results"][0]["material_rewrite_advisory_passed"] is False
-    assert result["segment_results"][0]["rewrite_attempts"] == 1
+    assert result["segment_results"][0]["rewrite_attempts"] == 2
 
 
 def test_full_run_allows_more_than_three_selected_segments() -> None:
@@ -654,7 +659,9 @@ def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
                 "no_removed_information": True,
                 "no_stance_change": True,
                 "no_plot_or_event_change": True,
+                "structural_rewrite_sufficient": True,
                 "failed_segment_ids": [],
+                "issues": [],
                 "reason": "通过",
             },
             ensure_ascii=False,
@@ -770,8 +777,10 @@ def test_real_wdx_to_eeee_reports_are_aligned_and_expose_failed_direction(
     assert by_id[1]["delta"] > 0
     assert by_id[9]["delta"] == pytest.approx(-0.0133, abs=0.001)
     assert compared["strategy_effectiveness"][0]["verdict"] == "neutral"
-    assert compared["recommended_next_strategy"] == "evidence_first"
-    assert compared["historical_strategy_summary"][0]["experiment_count"] == 1
+    assert compared["recommended_next_strategy"] is None
+    assert compared["stop_automatic_spend"] is True
+    assert compared["learning_eligible"] is False
+    assert compared["historical_strategy_summary"] == []
     assert compared["historical_feature_summary"] == []
     assert (tmp_path / f"{compared['comparison_id']}.json").exists()
 
@@ -928,7 +937,200 @@ def test_real_feedback_repeats_only_a_strategy_that_created_green_share(
     compared = compare_zhuque_reports(baseline, recheck, optimized)
 
     assert compared["selected_humanized_share_percent"] == 50.0
-    assert compared["recommended_next_strategy"] == "evidence_first"
+    assert compared["recommended_next_strategy"] is None
+    assert compared["stop_automatic_spend"] is True
+    assert compared["attribution_mode"] == "proportional_document_overlap"
     by_strategy = {item["strategy_id"]: item for item in compared["strategy_effectiveness"]}
     assert by_strategy["syntax_rebuild"]["green_conversion_rate"] == 0
     assert by_strategy["evidence_first"]["green_conversion_rate"] == 1
+
+
+def test_editorial_units_are_bounded_for_large_report_region() -> None:
+    original = "".join(
+        f"这一句记录第{chr(0x4E00 + index)}项既有判断，并说明它与前文的关系。"
+        for index in range(120)
+    )
+
+    units = review.split_editorial_units(original, min_chars=350, max_chars=900)
+
+    assert len(units) >= 3
+    assert "".join(item.text for item in units) == original
+    assert all(len(item.text) <= 900 for item in units)
+    assert all(len(item.text) >= 350 for item in units)
+
+
+def test_fact_ledger_reauthor_prompt_never_contains_original_prose() -> None:
+    original = "这段原句具有独特而不可复用的表达路径。"
+    ledger = {
+        "claims": [
+            {
+                "claim_id": "C001",
+                "summary": "作者认为表达路径不应复用",
+                "required_tokens": [],
+            }
+        ],
+        "chronology": ["C001"],
+        "causal_links": [],
+        "paragraph_purposes": [],
+    }
+
+    prompt = review.render_reauthor_prompt(
+        ledger,
+        protected_map="（无）",
+        previous_context="",
+        next_context="",
+        content_type="article",
+        strategy_rules="重新组织论证顺序。",
+        source_chars=len(original),
+        retry_feedback="首次重著。",
+    )
+
+    assert original not in prompt
+    assert "作者认为表达路径不应复用" in prompt
+    assert "AIGC 值" not in prompt
+    assert "人工特征" not in prompt
+
+
+def test_fact_ledger_requires_every_keep_token_exactly_once() -> None:
+    valid = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": "C001",
+                    "summary": "金额事实",
+                    "required_tokens": ["[[KEEP_0001]]"],
+                }
+            ],
+            "chronology": ["C001"],
+        },
+        ensure_ascii=False,
+    )
+    assert review.parse_fact_ledger(valid, required_tokens=["[[KEEP_0001]]"])["claims"]
+
+    duplicate = valid.replace(
+        '"required_tokens": ["[[KEEP_0001]]"]',
+        '"required_tokens": ["[[KEEP_0001]]", "[[KEEP_0001]]"]',
+    )
+    with pytest.raises(ValueError, match="逐一保留"):
+        review.parse_fact_ledger(duplicate, required_tokens=["[[KEEP_0001]]"])
+
+
+def test_fact_ledger_rejects_full_source_sentence_copy() -> None:
+    sentence = "这一整句原文包含足够多的独特措辞，因此不能被事实账本原封不动地搬运进去。"
+    copied = {
+        "claims": [
+            {"claim_id": "C001", "summary": sentence, "required_tokens": []},
+        ],
+        "chronology": ["C001"],
+    }
+    abstracted = {
+        "claims": [
+            {"claim_id": "C001", "summary": "禁止照搬原句措辞", "required_tokens": []},
+        ],
+        "chronology": ["C001"],
+    }
+
+    assert review.fact_ledger_copying_reasons(sentence, copied)
+    assert review.fact_ledger_copying_reasons(sentence, abstracted) == []
+
+
+def test_large_region_is_audited_in_bounded_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_AUDIT_BATCH_UNITS", 3)
+    original = "".join("原稿句子保持事实关系并提供必要限定。" for _ in range(180))
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    audit_calls: list[str] = []
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        source = kwargs["segment"].mapped_text
+        return "改" * (len(source) - 1) + "。"
+
+    def audit_fn(prompt: str, **_kwargs):
+        audit_calls.append(prompt)
+        return _passing_audit_json()
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+    )
+
+    assert result["status"] == "candidate_ready"
+    assert result["editorial_unit_count"] > 3
+    assert result["audit_batch_count"] == len(audit_calls)
+    assert result["audit_batch_count"] == math.ceil(result["editorial_unit_count"] / 3)
+
+
+def test_quality_audit_rejects_rubber_stamp_and_contradictory_reason() -> None:
+    payload = json.loads(_passing_audit_json())
+    payload["reason"] = "候选保留原有骨架，但仍然通过。"
+    assert quality_audit_passed(payload) is False
+
+    payload = json.loads(_passing_audit_json())
+    payload["issues"] = [
+        {
+            "segment_id": "1.1",
+            "type": "added_fact",
+            "original_claim": "原文没有该判断",
+            "candidate_change": "候选新增判断",
+            "severity": "high",
+        }
+    ]
+    assert quality_audit_passed(payload) is False
+
+
+def test_calibration_result_requires_exact_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_CALIBRATION_DIR", tmp_path)
+    sample = review.create_calibration_sample(
+        user_id="user-1",
+        text="这是一份用于隔离校准的完整正文。" * 30,
+        content_type="article",
+        source_group="group-1",
+        variant_type="original",
+    )
+
+    with pytest.raises(review.ZhuqueReportError, match="哈希不一致"):
+        review.record_calibration_result(
+            user_id="user-1",
+            sample_id=sample["sample_id"],
+            submitted_text_sha256="0" * 64,
+            aigc_value=0.4,
+        )
+
+    labeled = review.record_calibration_result(
+        user_id="user-1",
+        sample_id=sample["sample_id"],
+        submitted_text_sha256=sample["text_sha256"],
+        aigc_value=0.4,
+    )
+    assert labeled["label"] == "human"
+    assert labeled["learning_eligible"] is False
+    assert labeled["verification_mode"] == "manual_value"
+    assert review.list_calibration_samples(user_id="user-1")[0]["sample_id"] == sample["sample_id"]
+
+    verified = review.record_calibration_report_result(
+        user_id="user-1",
+        sample_id=sample["sample_id"],
+        parsed_report={
+            "original_sha256": sample["text_sha256"],
+            "source_match_verified": True,
+            "human_percent": 60.0,
+            "suspected_percent": 40.0,
+            "ai_percent": 0.0,
+            "report_sha256": "report-hash",
+            "segments": [
+                {"share_percent": 100.0, "aigc_value": 0.4},
+            ],
+        },
+    )
+    assert verified["green"] is True
+    assert verified["learning_eligible"] is True
+    assert verified["verification_mode"] == "pdf_exact_hash"

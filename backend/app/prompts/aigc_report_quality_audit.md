@@ -15,7 +15,7 @@
 - voice_continuity >= 90：体裁、知识密度、叙事距离和作者声音与未改段落连续。
 - 不能为了降低 AI 特征而故意粗糙、降智、散乱或堆砌个人口吻。
 - 普通文章和公版稿允许在不改变事实顺序、标题和逻辑的前提下重新分段；不要仅因自然段数量变化扣分。古文/佛经仍必须遵守专项的一一对应保护。
-- 特别检查候选是否仍然大面积保持“每段主题句—解释—总结”的同构骨架；如果只是换词、红转橙式表面变化，voice_continuity 可以通过，但 reason 必须指出其编辑重构不足，供真实复检归因使用。
+- 特别检查候选是否仍然大面积保持“每段主题句—解释—总结”的同构骨架；如果只是换词或红转橙式表面变化，structural_rewrite_sufficient 必须为 false，pass 必须为 false。不得一边称赞“保留原有骨架”，一边给出通过结论。
 - 把“无生命主语拟人、刻意倒装、名词化堆叠、翻译腔”当作真实流畅度问题。出现“建筑迎来了某人的出生”“意义附着于地点”或连续“构成……的是”这类为了求变化而生造的表达时，fluency 不得达到 90，pass 必须为 false。
 
 稿件类型专项规则：
@@ -25,7 +25,7 @@
 
 评分纪律：
 - 不要因为正常的词序调整、句式变化或同义表达本身扣分；只对真实的信息、逻辑和语言问题扣分。
-- 也不要因为候选读起来顺畅就忽略细小事实丢失。发现问题时，在 reason 中写明原稿信息、候选变化和影响。
+- 必须先逐项列出 issues，再给分。每个问题都要写清原稿主张、候选变化与影响；没有可定位证据时不能凭感觉扣分。
 - failed_segment_ids 只填写本轮改动片段编号；无法定位时填写全部本轮片段。
 - pass 字段必须与所有分数和布尔项一致。
 
@@ -40,7 +40,17 @@
   "no_removed_information": true,
   "no_stance_change": true,
   "no_plot_or_event_change": true,
+  "structural_rewrite_sufficient": true,
   "failed_segment_ids": [],
+  "issues": [
+    {
+      "segment_id": "1.1",
+      "type": "added_fact|removed_information|stance_change|event_change|fluency|voice|shallow_rewrite",
+      "original_claim": "",
+      "candidate_change": "",
+      "severity": "high|medium|low"
+    }
+  ],
   "reason": ""
 }
 
