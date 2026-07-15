@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -52,12 +53,37 @@ AI特征 37.83%
 """
 
 
-def _passing_audit_json() -> str:
+def _passing_audit_json(prompt: str = "") -> str:
+    ledgers: dict = {}
+    match = re.search(r"<fact_ledgers>\s*(\{.*?\})\s*</fact_ledgers>", prompt, re.S)
+    if match:
+        ledgers = json.loads(match.group(1))
+    claim_results = [
+        {
+            "audit_id": str(audit_id),
+            "claim_id": str(claim["claim_id"]),
+            "status": "preserved",
+            "original_evidence": "原稿证据",
+            "candidate_evidence": "候选证据",
+            "reason": "完整保留",
+        }
+        for audit_id, ledger in ledgers.items()
+        for claim in ledger.get("claims", [])
+    ] or [
+        {
+            "audit_id": "1.1",
+            "claim_id": "C001",
+            "status": "preserved",
+            "original_evidence": "原稿证据",
+            "candidate_evidence": "候选证据",
+            "reason": "完整保留",
+        }
+    ]
     return json.dumps(
         {
             "pass": True,
             "semantic_fidelity": 99,
-            "information_completeness": 99,
+            "information_completeness": 100,
             "fluency": 95,
             "voice_continuity": 95,
             "no_added_facts": True,
@@ -65,6 +91,8 @@ def _passing_audit_json() -> str:
             "no_stance_change": True,
             "no_plot_or_event_change": True,
             "structural_rewrite_sufficient": True,
+            "claim_results": claim_results,
+            "added_claims": [],
             "failed_segment_ids": [],
             "issues": [],
             "reason": "通过",
@@ -89,10 +117,12 @@ def test_model_strategy_exposes_grok_45_without_leaking_key(
 
     strategy = review.model_strategy()
 
-    assert strategy["default_rewrite_provider"] == "grok"
-    assert strategy["rewrite_model"] == "grok-4.5"
+    assert strategy["default_rewrite_provider"] == "deepseek"
+    assert strategy["rewrite_model"] == "deepseek-v4-pro"
+    assert strategy["detector_efficacy"]["status"] == "unproven"
     grok = next(item for item in strategy["rewrite_providers"] if item["id"] == "grok")
     assert grok["configured"] is True
+    assert grok["automatic"] is False
     assert grok["reasoning"] == "low"
     assert "configured-secret" not in json.dumps(strategy)
 
@@ -156,7 +186,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     assert captured["model"] == "grok-4.5"
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
-    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v4.0:")
+    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v5.0:")
     assert usage["cached_input_tokens"] == 400
     assert usage["reasoning_tokens"] == 80
     assert usage["cost_cny"] > 0
@@ -192,13 +222,13 @@ def test_real_report_summary_and_rows_are_parsed() -> None:
     assert rows[-1]["aigc_value"] == pytest.approx(0.9805)
 
 
-def test_strict_human_rule_requires_more_than_50(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_strict_human_rule_is_inclusive_at_25(monkeypatch: pytest.MonkeyPatch) -> None:
     threshold_report = """
-    人工特征 50%
-    疑似AI 50%
+    人工特征 25%
+    疑似AI 75%
     AI特征 0%
-    片段1 50% 100 0.4000
-    片段2 50% 100 0.7000
+    片段1 25% 50 0.4000
+    片段2 75% 150 0.7000
     """
     monkeypatch.setattr(
         review,
@@ -207,8 +237,16 @@ def test_strict_human_rule_requires_more_than_50(monkeypatch: pytest.MonkeyPatch
     )
     source = "甲" * 200
     parsed = review.parse_zhuque_report(b"%PDF-test", source)
-    assert parsed["human_percent"] == 50.0
-    assert parsed["strict_pass"] is False
+    assert parsed["human_percent"] == 25.0
+    assert parsed["strict_pass"] is True
+
+    below_report = threshold_report.replace("人工特征 25%", "人工特征 24.99%").replace(
+        "疑似AI 75%", "疑似AI 75.01%"
+    )
+    monkeypatch.setattr(review, "extract_report_text", lambda *_args: (below_report, "test", 2))
+    below = review.parse_zhuque_report(b"%PDF-test", source)
+    assert below["human_percent"] == 24.99
+    assert below["strict_pass"] is False
 
 
 def test_complete_segment_table_overrides_misordered_chart_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,6 +260,62 @@ def test_complete_segment_table_overrides_misordered_chart_ocr(monkeypatch: pyte
     assert parsed["human_percent"] == 0.0
     assert parsed["suspected_percent"] == 62.17
     assert parsed["ai_percent"] == 37.83
+
+
+def test_image_chart_values_are_permuted_by_rows_without_overwriting_official_values() -> None:
+    ocr = """
+    检测结果
+    0%
+    30.28%
+    人工特征
+    疑似AI
+    AI特征
+    69.72%
+    AI分布图
+    """
+    rows = [
+        {"share_percent": 69.72, "label": "suspected"},
+        {"share_percent": 30.28, "label": "ai"},
+    ]
+
+    resolved = review.resolve_report_overview_from_chart(
+        ocr,
+        parse_report_overview(ocr),
+        rows,
+    )
+
+    assert resolved == {
+        "human_percent": 0.0,
+        "suspected_percent": 69.72,
+        "ai_percent": 30.28,
+    }
+
+
+def test_chart_assignment_preserves_official_67_64_when_table_derives_59_45() -> None:
+    ocr = """
+    检测结果
+    67.64%
+    0%
+    人工特征
+    疑似AI
+    AI特征
+    32.36%
+    AI分布图
+    """
+    rows = [
+        {"share_percent": 59.45, "label": "human"},
+        {"share_percent": 40.55, "label": "suspected"},
+    ]
+
+    resolved = review.resolve_report_overview_from_chart(
+        ocr,
+        parse_report_overview(ocr),
+        rows,
+    )
+
+    assert resolved["human_percent"] == 67.64
+    assert resolved["suspected_percent"] == 32.36
+    assert resolved["ai_percent"] == 0.0
 
 
 def test_report_detail_body_is_matched_to_the_same_manuscript() -> None:
@@ -263,16 +357,17 @@ def test_cost_first_plan_uses_suspected_segments_before_red_segments() -> None:
     )
 
 
-def test_calibration_plan_limits_first_paid_round_to_small_batch() -> None:
+def test_calibration_plan_selects_contiguous_30_to_40_percent_window() -> None:
     rows = parse_report_segment_rows(SAMPLE_REPORT_TEXT)
     source = "甲" * sum(item["char_count"] for item in rows)
     segments = map_segments_to_original(rows, source)
 
     selected, projected = recommend_calibration_segments(segments, human_percent=0)
 
-    assert 1 <= len(selected) <= 3
+    assert 1 <= len(selected) <= 12
+    assert selected == list(range(selected[0], selected[-1] + 1))
     selected_share = sum(item.share_percent for item in segments if item.segment_id in selected)
-    assert selected_share <= 20
+    assert 30 <= selected_share <= 40
     assert projected == pytest.approx(selected_share)
 
 def test_repeated_anchors_and_paragraphs_are_hard_protected() -> None:
@@ -494,24 +589,7 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
 
     def audit_fn(_prompt: str, **_kwargs):
         calls.append("audit")
-        return json.dumps(
-            {
-                "pass": True,
-                "semantic_fidelity": 98,
-                "information_completeness": 99,
-                "fluency": 95,
-                "voice_continuity": 94,
-                "no_added_facts": True,
-                "no_removed_information": True,
-                "no_stance_change": True,
-                "no_plot_or_event_change": True,
-                "structural_rewrite_sufficient": True,
-                "failed_segment_ids": [],
-                "issues": [],
-                "reason": "通过",
-            },
-            ensure_ascii=False,
-        )
+        return _passing_audit_json(_prompt)
 
     result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
     assert calls == ["rewrite", "audit"]
@@ -521,7 +599,7 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
     assert "真实朱雀复检" in result["next_action"]
 
 
-def test_shallow_synonym_rewrite_is_a_hard_gate_and_stops_before_audit() -> None:
+def test_similarity_is_diagnostic_and_does_not_force_quality_drift() -> None:
     paragraphs = [
         "这是一段完整说明，用来保留原稿中的全部事实和既有判断。",
         "第二段继续解释原因，同时维持原先的立场与限定条件。",
@@ -541,7 +619,7 @@ def test_shallow_synonym_rewrite_is_a_hard_gate_and_stops_before_audit() -> None
 
     def audit_fn(_prompt: str, **_kwargs):
         calls.append("audit")
-        return _passing_audit_json()
+        return _passing_audit_json(_prompt)
 
     result = optimize_report_segments(
         original,
@@ -551,11 +629,11 @@ def test_shallow_synonym_rewrite_is_a_hard_gate_and_stops_before_audit() -> None
         audit_fn=audit_fn,
     )
 
-    assert calls == ["rewrite", "rewrite"]
-    assert result["status"] == "manual_review"
-    assert result["segment_results"][0]["substantive_rewrite_passed"] is False
+    assert calls == ["rewrite", "audit"]
+    assert result["status"] == "candidate_ready"
+    assert result["segment_results"][0]["substantive_rewrite_passed"] is True
     assert result["segment_results"][0]["material_rewrite_advisory_passed"] is False
-    assert result["segment_results"][0]["rewrite_attempts"] == 2
+    assert result["segment_results"][0]["rewrite_attempts"] == 1
 
 
 def test_full_run_allows_more_than_three_selected_segments() -> None:
@@ -566,10 +644,10 @@ def test_full_run_allows_more_than_three_selected_segments() -> None:
         "丁段延续既定结论和语气。",
     ]
     candidates = [
-        "既有事实和判断由甲段保留。",
-        "原来的原因关系在乙段说明。",
-        "已有立场和边界仍由丙段维持。",
-        "既定结论和语气由丁段延续。",
+        "甲段留住既有事实和判断。",
+        "原来原因关系由乙段说明。",
+        "丙段保持已有立场和边界。",
+        "丁段接续既定结论和语气。",
     ]
     original = "\n\n".join(originals)
     segments = []
@@ -595,7 +673,7 @@ def test_full_run_allows_more_than_three_selected_segments() -> None:
         segments,
         [1, 2, 3, 4],
         rewrite_fn=rewrite_fn,
-        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+        audit_fn=lambda prompt, **_kwargs: _passing_audit_json(prompt),
     )
 
     assert calls == [1, 2, 3, 4]
@@ -603,29 +681,53 @@ def test_full_run_allows_more_than_three_selected_segments() -> None:
     assert len(result["segment_results"]) == 4
 
 
+def test_one_experiment_rejects_disjoint_risk_regions() -> None:
+    original = "甲段事实。\n\n乙段事实。\n\n丙段事实。"
+    segments = []
+    for segment_id, value in enumerate(("甲段事实。", "乙段事实。", "丙段事实。"), start=1):
+        start = original.index(value)
+        segments.append(
+            ZhuqueSegment(
+                segment_id,
+                100 / 3,
+                len(value),
+                0.99,
+                "ai",
+                start,
+                start + len(value),
+                value,
+                1.0,
+                True,
+            )
+        )
+
+    with pytest.raises(review.ZhuqueReportError, match="连续相邻"):
+        optimize_report_segments(
+            original,
+            segments,
+            [1, 3],
+            rewrite_fn=lambda *_args, **_kwargs: "不会调用",
+        )
+
+
 def test_quality_failure_never_exports_candidate() -> None:
     original = "这份原稿完整记录了既有事实，也明确说明没有添加任何内容。"
     segment = ZhuqueSegment(1, 100, len(original), 0.995, "ai", 0, len(original), original, 1.0, True)
 
     def rewrite_fn(_prompt: str, **_kwargs):
-        return "既有事实已被这份稿子完整记下，其中并未加入新的内容。"
+        return "这份稿子完整记下了既有事实，也明确说明没有添加任何内容。"
 
     def audit_fn(_prompt: str, **_kwargs):
-        return json.dumps(
+        payload = json.loads(_passing_audit_json(_prompt))
+        payload.update(
             {
-                "pass": True,
+                "pass": False,
                 "semantic_fidelity": 94,
-                "information_completeness": 99,
-                "fluency": 99,
-                "voice_continuity": 99,
-                "no_added_facts": True,
-                "no_removed_information": True,
-                "no_stance_change": True,
-                "no_plot_or_event_change": True,
                 "failed_segment_ids": [1],
                 "reason": "语义忠实度不足",
             }
         )
+        return json.dumps(payload, ensure_ascii=False)
 
     result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
     assert result["status"] == "manual_review"
@@ -635,7 +737,10 @@ def test_quality_failure_never_exports_candidate() -> None:
     assert quality_audit_passed(result["quality_audit"]) is False
 
 
-def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
+def test_deterministic_failure_gets_one_bounded_retry_before_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_MAX_REWRITE_ATTEMPTS", 2)
     original = "第一段保留事实260元。\n\n第二段保留结论。"
     segment = ZhuqueSegment(1, 100, len(original), 0.95, "suspected", 0, len(original), original, 1.0, True)
     calls: list[str] = []
@@ -644,28 +749,11 @@ def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
         calls.append("rewrite")
         if len(calls) == 1:
             return "第一段遗漏金额。第二段也被合并。", {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.01}
-        return "260元这一事实留在首段。\n\n结论由下一段继续保留。", {"input_tokens": 12, "output_tokens": 12, "cost_cny": 0.02}
+        return "260元事实留在首段。\n\n结论由下一段保留。", {"input_tokens": 12, "output_tokens": 12, "cost_cny": 0.02}
 
     def audit_fn(_prompt: str, **_kwargs):
         calls.append("audit")
-        return json.dumps(
-            {
-                "pass": True,
-                "semantic_fidelity": 99,
-                "information_completeness": 99,
-                "fluency": 95,
-                "voice_continuity": 95,
-                "no_added_facts": True,
-                "no_removed_information": True,
-                "no_stance_change": True,
-                "no_plot_or_event_change": True,
-                "structural_rewrite_sufficient": True,
-                "failed_segment_ids": [],
-                "issues": [],
-                "reason": "通过",
-            },
-            ensure_ascii=False,
-        )
+        return _passing_audit_json(_prompt)
 
     result = optimize_report_segments(original, [segment], [1], rewrite_fn=rewrite_fn, audit_fn=audit_fn)
 
@@ -677,7 +765,10 @@ def test_deterministic_failure_gets_one_bounded_retry_before_audit() -> None:
     assert result["cost"]["estimated_cny"] >= 0.03
 
 
-def test_two_failed_attempts_stop_before_paid_full_manuscript_audit() -> None:
+def test_two_failed_attempts_stop_before_paid_full_manuscript_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_MAX_REWRITE_ATTEMPTS", 2)
     original = "第一段保留事实260元。\n\n第二段保留结论。"
     segment = ZhuqueSegment(1, 100, len(original), 0.95, "suspected", 0, len(original), original, 1.0, True)
     rewrite_calls = 0
@@ -828,7 +919,7 @@ def test_flexible_resegmentation_cannot_reorder_dates_or_numbers() -> None:
 
 def test_article_can_resegment_but_classical_keeps_paragraph_boundary_gate() -> None:
     original = "第一段保留260元事实。\n\n第二段保留原有结论。"
-    candidate = "260元这一事实仍在，原有结论也完整保留。"
+    candidate = "260元事实仍在第一段，第二段也完整保留原有结论。"
     segment = ZhuqueSegment(
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
@@ -839,7 +930,7 @@ def test_article_can_resegment_but_classical_keeps_paragraph_boundary_gate() -> 
         [1],
         content_type="article",
         rewrite_fn=lambda *_args, **_kwargs: candidate,
-        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+        audit_fn=lambda prompt, **_kwargs: _passing_audit_json(prompt),
     )
     classical = optimize_report_segments(
         original,
@@ -847,7 +938,7 @@ def test_article_can_resegment_but_classical_keeps_paragraph_boundary_gate() -> 
         [1],
         content_type="classical",
         rewrite_fn=lambda *_args, **_kwargs: candidate,
-        audit_fn=lambda *_args, **_kwargs: _passing_audit_json(),
+        audit_fn=lambda prompt, **_kwargs: _passing_audit_json(prompt),
     )
 
     assert article["status"] == "candidate_ready"
@@ -959,13 +1050,16 @@ def test_editorial_units_are_bounded_for_large_report_region() -> None:
     assert all(len(item.text) >= 350 for item in units)
 
 
-def test_fact_ledger_reauthor_prompt_never_contains_original_prose() -> None:
+def test_fact_ledger_constrained_prompt_sees_original_and_atomic_ledger() -> None:
     original = "这段原句具有独特而不可复用的表达路径。"
     ledger = {
         "claims": [
             {
                 "claim_id": "C001",
+                "source_sentence_ids": ["S001"],
                 "summary": "作者认为表达路径不应复用",
+                "qualifiers": [],
+                "negations": [],
                 "required_tokens": [],
             }
         ],
@@ -976,6 +1070,7 @@ def test_fact_ledger_reauthor_prompt_never_contains_original_prose() -> None:
 
     prompt = review.render_reauthor_prompt(
         ledger,
+        original_with_tokens=original,
         protected_map="（无）",
         previous_context="",
         next_context="",
@@ -985,7 +1080,7 @@ def test_fact_ledger_reauthor_prompt_never_contains_original_prose() -> None:
         retry_feedback="首次重著。",
     )
 
-    assert original not in prompt
+    assert original in prompt
     assert "作者认为表达路径不应复用" in prompt
     assert "AIGC 值" not in prompt
     assert "人工特征" not in prompt
@@ -997,7 +1092,10 @@ def test_fact_ledger_requires_every_keep_token_exactly_once() -> None:
             "claims": [
                 {
                     "claim_id": "C001",
+                    "source_sentence_ids": ["S001"],
                     "summary": "金额事实",
+                    "qualifiers": [],
+                    "negations": [],
                     "required_tokens": ["[[KEEP_0001]]"],
                 }
             ],
@@ -1050,7 +1148,7 @@ def test_large_region_is_audited_in_bounded_batches(
 
     def audit_fn(prompt: str, **_kwargs):
         audit_calls.append(prompt)
-        return _passing_audit_json()
+        return _passing_audit_json(prompt)
 
     result = optimize_report_segments(
         original,
@@ -1068,7 +1166,7 @@ def test_large_region_is_audited_in_bounded_batches(
 
 def test_quality_audit_rejects_rubber_stamp_and_contradictory_reason() -> None:
     payload = json.loads(_passing_audit_json())
-    payload["reason"] = "候选保留原有骨架，但仍然通过。"
+    payload["claim_results"][0]["status"] = "altered"
     assert quality_audit_passed(payload) is False
 
     payload = json.loads(_passing_audit_json())
@@ -1082,6 +1180,18 @@ def test_quality_audit_rejects_rubber_stamp_and_contradictory_reason() -> None:
         }
     ]
     assert quality_audit_passed(payload) is False
+
+    payload = json.loads(_passing_audit_json())
+    payload["issues"] = [
+        {
+            "segment_id": "1.1",
+            "type": "fluency",
+            "original_claim": "",
+            "candidate_change": "轻微标点建议",
+            "severity": "low",
+        }
+    ]
+    assert quality_audit_passed(payload) is True
 
 
 def test_calibration_result_requires_exact_hash(
@@ -1125,6 +1235,7 @@ def test_calibration_result_requires_exact_hash(
             "human_percent": 60.0,
             "suspected_percent": 40.0,
             "ai_percent": 0.0,
+            "official_overview_verified": True,
             "report_sha256": "report-hash",
             "segments": [
                 {"share_percent": 100.0, "aigc_value": 0.4},
@@ -1134,3 +1245,213 @@ def test_calibration_result_requires_exact_hash(
     assert verified["green"] is True
     assert verified["learning_eligible"] is True
     assert verified["verification_mode"] == "pdf_exact_hash"
+
+
+def test_official_overview_and_derived_table_share_are_kept_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_text = """
+    人工特征 67.64%
+    疑似AI 32.36%
+    AI特征 0%
+    片段1 59.45% 119 0.3000
+    片段2 40.55% 81 0.7000
+    """
+    monkeypatch.setattr(review, "extract_report_text", lambda *_args: (report_text, "test", 1))
+
+    parsed = review.parse_zhuque_report(b"%PDF-test", "甲" * 200)
+
+    assert parsed["official_overview_verified"] is True
+    assert parsed["official_human_percent"] == 67.64
+    assert parsed["derived_human_share_percent"] == 59.45
+    assert parsed["human_percent"] == 67.64
+    assert parsed["pass_metric_source"] == "official_overview"
+    assert parsed["strict_pass"] is True
+
+
+def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
+    original = "第一段保留事实。\n\n第二段继续说明。\n\n第三段保留判断。\n\n第四段收束原意。"
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+
+    result = review.build_layout_only_result(
+        original,
+        [segment],
+        [1],
+        content_type="article",
+    )
+
+    assert result["status"] == "candidate_ready"
+    assert result["experiment_type"] == "layout_only"
+    assert result["candidate_text"] != original
+    assert result["original_non_whitespace_sha256"] == result["candidate_non_whitespace_sha256"]
+    assert result["cost"]["estimated_cny"] == 0
+    assert result["models"]["rewrite_provider"] == "local"
+
+
+def test_paired_analysis_aligns_thirteen_rows_to_ten_by_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    baseline = "".join(f"第{index}句保留既有事实。" for index in range(1, 61))
+    modified = baseline.replace("。", "。\n\n", 12).strip()
+
+    def rows(text: str, count: int) -> list[dict]:
+        output = []
+        for index in range(count):
+            start = round(len(text) * index / count)
+            end = round(len(text) * (index + 1) / count)
+            output.append(
+                {
+                    "segment_id": index + 1,
+                    "start": start,
+                    "end": end,
+                    "mapped_text": text[start:end],
+                    "share_percent": 100 / count,
+                    "aigc_value": 0.9,
+                }
+            )
+        return output
+
+    before_report = {
+        "original_sha256": sha256_text(baseline),
+        "source_match_verified": True,
+        "segments": rows(baseline, 13),
+    }
+    after_report = {
+        "original_sha256": sha256_text(modified),
+        "source_match_verified": True,
+        "segments": rows(modified, 10),
+    }
+
+    result = review.analyze_paired_reports(
+        baseline,
+        modified,
+        before_report,
+        after_report,
+        hashes_confirmed=True,
+    )
+
+    assert result["baseline_metrics"]["segment_count"] == 13
+    assert result["modified_metrics"]["segment_count"] == 10
+    assert result["segment_alignment"]
+    assert {item["baseline_segment_id"] for item in result["segment_alignment"]} == set(range(1, 14))
+    mechanisms = {item["mechanism"] for item in result["mechanism_assessment"]}
+    assert "window_or_boundary_sensitivity" in mechanisms
+    assert {item["id"] for item in result["controlled_experiments"]} == {
+        "layout_only",
+        "syntax_constrained",
+        "external_saas_quality_repair",
+    }
+    assert result["causal_confidence"] == "observational_confounded"
+    assert result["learning_eligible"] is False
+
+
+def test_external_saas_slogan_is_quality_risk_not_learning_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    baseline = "材料只说明这名将领按命令守住城门。"
+    modified = baseline + "他是景帝朝最重要的功臣，国家危难时就要出硬骨头。"
+
+    def one_report(text: str) -> dict:
+        return {
+            "original_sha256": sha256_text(text),
+            "source_match_verified": True,
+            "official_overview_verified": True,
+            "human_percent": 67.64,
+            "segments": [
+                {
+                    "segment_id": 1,
+                    "start": 0,
+                    "end": len(text),
+                    "mapped_text": text,
+                    "share_percent": 100,
+                    "aigc_value": 0.4,
+                }
+            ],
+        }
+
+    result = review.analyze_paired_reports(
+        baseline,
+        modified,
+        one_report(baseline),
+        one_report(modified),
+        hashes_confirmed=True,
+    )
+
+    risk_types = {item["type"] for item in result["quality_risks"]}
+    assert "unsupported_rhetorical_upgrade" in risk_types
+    assert result["quality_status"] == "failed_or_unverified"
+    assert result["learning_eligible"] is False
+    assert result["fallback_workflow"]["available"] is True
+    assert result["fallback_workflow"]["must_recheck_repaired_text"] is True
+    assert result["fallback_workflow"]["reuse_external_report_for_delivery"] is False
+
+
+def test_quality_gate_rejects_added_claim_even_when_scores_are_perfect() -> None:
+    payload = json.loads(_passing_audit_json())
+    payload["added_claims"] = [{"claim": "原稿没有的新结论"}]
+
+    assert quality_audit_passed(payload) is False
+
+
+def test_detector_efficacy_stays_unproven_until_two_consistent_real_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_CALIBRATION_DIR", tmp_path)
+    original = "原稿完整保留事实、限定和立场。" * 25
+    baseline = review.create_calibration_sample(
+        user_id="evidence-user",
+        text=original,
+        content_type="article",
+        source_group="evidence-group",
+        variant_type="original",
+    )
+
+    def verify(sample: dict, human_percent: float) -> None:
+        review.record_calibration_report_result(
+            user_id="evidence-user",
+            sample_id=sample["sample_id"],
+            parsed_report={
+                "original_sha256": sample["text_sha256"],
+                "source_match_verified": True,
+                "official_overview_verified": True,
+                "human_percent": human_percent,
+                "suspected_percent": 100 - human_percent,
+                "ai_percent": 0,
+                "report_sha256": f"report-{sample['sample_id']}",
+                "segments": [{"share_percent": 100, "aigc_value": 0.7}],
+            },
+        )
+
+    verify(baseline, 0)
+    first = review.create_calibration_sample(
+        user_id="evidence-user",
+        text=original.replace("完整", "完整地", 1),
+        content_type="article",
+        source_group="evidence-group",
+        variant_type="syntax_constrained",
+        parent_sha256=baseline["text_sha256"],
+        quality_gate_passed=True,
+    )
+    verify(first, 10)
+    assert review.calibration_evidence_status(user_id="evidence-user")["status"] == "unproven"
+
+    second = review.create_calibration_sample(
+        user_id="evidence-user",
+        text=original.replace("限定", "明确限定", 1),
+        content_type="article",
+        source_group="evidence-group",
+        variant_type="syntax_constrained",
+        parent_sha256=baseline["text_sha256"],
+        quality_gate_passed=True,
+    )
+    verify(second, 12)
+    evidence = review.calibration_evidence_status(user_id="evidence-user")
+    assert evidence["status"] == "directional"
+    assert evidence["verified_pair_count"] == 2

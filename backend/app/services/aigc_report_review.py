@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import re
+import statistics
 import threading
 import unicodedata
 from collections import Counter
@@ -41,13 +42,15 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v4.0"
-STRICT_HUMAN_THRESHOLD = 50.0
+PROMPT_VERSION = "zhuque-report-review-v5.0"
+HUMAN_PASS_THRESHOLD = 25.0
+# Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
+STRICT_HUMAN_THRESHOLD = HUMAN_PASS_THRESHOLD
 MATERIAL_SIMILARITY_MIN = 0.25
 MATERIAL_SIMILARITY_MAX = 0.82
 MATERIAL_PARAGRAPH_COVERAGE_MIN = 0.80
-SUBSTANTIVE_SIMILARITY_MAX = 0.90
-SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX = 0.25
+QUALITY_SAFE_LENGTH_MIN = 0.95
+QUALITY_SAFE_LENGTH_MAX = 1.08
 _PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
@@ -183,34 +186,26 @@ def parse_zhuque_report(
         raise ZhuqueReportError(
             "没有识别到朱雀片段表。请确认 PDF 包含首页片段表，并使用浏览器打印为 PDF。"
         )
+    overview = resolve_report_overview_from_chart(report_text, overview, raw_rows)
 
     target = float(target_human_percent or settings.AIGC_REVIEW_HUMAN_TARGET)
-    target = min(90.0, max(50.01, target))
+    target = min(90.0, max(HUMAN_PASS_THRESHOLD, target))
     mapped = map_segments_to_original(raw_rows, original)
     table_share_total = sum(item.share_percent for item in mapped)
     table_is_complete = table_share_total >= 98.0
     derived_human = _human_share_from_segments(mapped)
     derived_suspected = sum(item.share_percent for item in mapped if item.label == "suspected")
     derived_ai = sum(item.share_percent for item in mapped if item.label == "ai")
-    human_percent = (
-        derived_human
-        if table_is_complete
-        else float(overview.get("human_percent") if overview.get("human_percent") is not None else derived_human)
-    )
-    suspected_percent = (
-        derived_suspected
-        if table_is_complete
-        else float(
-            overview.get("suspected_percent")
-            if overview.get("suspected_percent") is not None
-            else derived_suspected
-        )
-    )
-    ai_percent = (
-        derived_ai
-        if table_is_complete
-        else float(overview.get("ai_percent") if overview.get("ai_percent") is not None else derived_ai)
-    )
+    overview_verified = report_overview_verified(overview)
+    official_human = _optional_float(overview.get("human_percent"))
+    official_suspected = _optional_float(overview.get("suspected_percent"))
+    official_ai = _optional_float(overview.get("ai_percent"))
+    # The overview and row table are different Tencent outputs.  The official
+    # overview controls delivery when it is internally consistent; row-derived
+    # shares remain diagnostics and must never silently overwrite it.
+    human_percent = official_human if overview_verified else derived_human
+    suspected_percent = official_suspected if overview_verified else derived_suspected
+    ai_percent = official_ai if overview_verified else derived_ai
     selected_ids, projected = recommend_calibration_segments(
         mapped,
         human_percent=human_percent,
@@ -222,6 +217,12 @@ def parse_zhuque_report(
     ]
 
     warnings: list[str] = []
+    if not overview_verified:
+        warnings.append("朱雀首页三项比例未完成可靠识别；表格推导值仅供定位，不能解锁终稿。")
+    elif abs(float(official_human) - derived_human) >= 1.0:
+        warnings.append(
+            "朱雀首页人工特征与片段表推导占比不同；系统保留双指标，并以首页官方值验收。"
+        )
     source_match_confidence, source_match_sample_chars = report_source_match_confidence(
         report_text,
         original,
@@ -237,7 +238,7 @@ def parse_zhuque_report(
         warnings.append("片段映射置信度偏低，执行前请逐块核对片段预览。")
 
     return {
-        "policy_version": "report-driven-v3",
+        "policy_version": "report-driven-v5",
         "prompt_version": PROMPT_VERSION,
         "filename": filename,
         "report_sha256": _sha256_bytes(pdf_bytes),
@@ -247,11 +248,19 @@ def parse_zhuque_report(
         "human_percent": round(human_percent, 2),
         "suspected_percent": round(suspected_percent, 2),
         "ai_percent": round(ai_percent, 2),
-        "strict_pass": human_percent > STRICT_HUMAN_THRESHOLD,
+        "official_human_percent": round(official_human, 2) if official_human is not None else None,
+        "official_suspected_percent": round(official_suspected, 2) if official_suspected is not None else None,
+        "official_ai_percent": round(official_ai, 2) if official_ai is not None else None,
+        "official_overview_verified": overview_verified,
+        "derived_human_share_percent": round(derived_human, 2),
+        "derived_suspected_share_percent": round(derived_suspected, 2),
+        "derived_ai_share_percent": round(derived_ai, 2),
+        "pass_metric_source": "official_overview" if overview_verified else "unverified",
+        "strict_pass": bool(overview_verified and human_percent >= HUMAN_PASS_THRESHOLD),
         "source_match_verified": source_match_verified,
         "source_match_confidence": round(source_match_confidence, 4),
         "source_match_sample_chars": source_match_sample_chars,
-        "strict_threshold": STRICT_HUMAN_THRESHOLD,
+        "strict_threshold": HUMAN_PASS_THRESHOLD,
         "target_human_percent": target,
         "projected_human_percent": round(projected, 2),
         "recommendation_mode": "calibration",
@@ -383,6 +392,89 @@ def parse_report_overview(report_text: str) -> dict[str, float | None]:
             (r"疑似\s*AI(?:特征)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", r"疑似AI\s*([0-9.]+)\s*%"),
         ),
         "ai_percent": _first_percent(text, (r"(?<!疑似)AI特征\s*([0-9]+(?:\.[0-9]+)?)\s*%",)),
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def report_overview_verified(overview: dict[str, Any]) -> bool:
+    """Accept the page-one metric only when all three percentages form one chart."""
+    values = [
+        _optional_float(overview.get("human_percent")),
+        _optional_float(overview.get("suspected_percent")),
+        _optional_float(overview.get("ai_percent")),
+    ]
+    if any(value is None or value < 0 or value > 100 for value in values):
+        return False
+    return abs(sum(float(value) for value in values) - 100.0) <= 1.0
+
+
+def resolve_report_overview_from_chart(
+    report_text: str,
+    overview: dict[str, float | None],
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, float | None]:
+    """Map visually separated chart values to labels without replacing official values.
+
+    Image PDFs often OCR the three chart percentages before their labels.  The row
+    table is used only to choose the most plausible permutation of those three
+    official chart numbers; row-derived shares never replace a chart number.
+    """
+    if report_overview_verified(overview):
+        return overview
+    text = _normalize_ocr_text(report_text)
+    chart = re.split(r"(?:AI分布图|片段解析)", text, maxsplit=1)[0]
+    candidates: list[float] = []
+    for raw in re.findall(r"(?<![0-9])([0-9]{1,3}(?:\.[0-9]+)?)\s*%", chart):
+        value = float(raw)
+        if 0.0 <= value <= 100.0 and value not in candidates:
+            candidates.append(value)
+    if len(candidates) < 3:
+        return overview
+    row_values = list(rows)
+    derived = {
+        "human_percent": sum(
+            float(item.get("share_percent") or 0.0)
+            for item in row_values
+            if str(item.get("label") or "") == "human"
+        ),
+        "suspected_percent": sum(
+            float(item.get("share_percent") or 0.0)
+            for item in row_values
+            if str(item.get("label") or "") == "suspected"
+        ),
+        "ai_percent": sum(
+            float(item.get("share_percent") or 0.0)
+            for item in row_values
+            if str(item.get("label") or "") == "ai"
+        ),
+    }
+    keys = ("human_percent", "suspected_percent", "ai_percent")
+    best: tuple[float, tuple[float, float, float]] | None = None
+    from itertools import combinations, permutations
+
+    for trio in combinations(candidates, 3):
+        if abs(sum(trio) - 100.0) > 1.0:
+            continue
+        for assignment in permutations(trio):
+            distance = sum(
+                (float(assignment[index]) - float(derived[key])) ** 2
+                for index, key in enumerate(keys)
+            )
+            if best is None or distance < best[0]:
+                best = (distance, assignment)
+    if best is None:
+        return overview
+    return {
+        key: round(float(best[1][index]), 4)
+        for index, key in enumerate(keys)
     }
 
 
@@ -558,50 +650,48 @@ def recommend_calibration_segments(
     segments: Iterable[ZhuqueSegment],
     *,
     human_percent: float,
-    target_share_percent: float = 12.0,
-    max_share_percent: float = 20.0,
-    max_segments: int = 3,
+    target_share_percent: float = 30.0,
+    max_share_percent: float = 40.0,
+    max_segments: int = 12,
 ) -> tuple[list[int], float]:
-    """Choose a cheap, informative first experiment instead of pretending all rewrites turn green.
+    """Choose one contiguous, high-leverage experiment region.
 
-    Zhuque is a black box.  Rewriting enough orange rows to *project* 60% human in one
-    expensive pass produced no evidence that those rows would actually turn green.  The
-    calibration plan therefore prefers two or three medium-sized rows so different
-    structural strategies can be measured in one real re-check report.
+    The SaaS pair proves that report boundaries shift after editing.  v5 therefore
+    tests an adjacent macro-region covering roughly one third of the document instead
+    of forcing an arbitrary three-row cap or pretending each selected row turns green.
     """
-    if human_percent > STRICT_HUMAN_THRESHOLD:
+    if human_percent >= HUMAN_PASS_THRESHOLD:
         return [], human_percent
-    risks = [item for item in segments if item.label != "human"]
+    risks = sorted(
+        (item for item in segments if item.label != "human"),
+        key=lambda item: item.segment_id,
+    )
     if not risks:
         return [], human_percent
-    medium = [
-        item
-        for item in risks
-        if 350 <= item.char_count <= 1200 and item.share_percent <= 12.0
-    ]
-    pool = medium if len(medium) >= 2 else risks
-    pool.sort(
-        key=lambda item: (
-            0 if item.label == "suspected" else 1,
-            item.aigc_value,
-            abs(item.char_count - 700),
-            item.segment_id,
-        )
-    )
-    selected: list[int] = []
-    selected_share = 0.0
-    for item in pool:
-        if selected and selected_share + item.share_percent > max_share_percent:
-            continue
-        selected.append(item.segment_id)
-        selected_share += item.share_percent
-        if len(selected) >= 2 and selected_share >= target_share_percent:
-            break
-        if len(selected) >= max_segments:
-            break
-    if not selected:
-        selected = [min(risks, key=lambda item: item.char_count).segment_id]
-        selected_share = next(item.share_percent for item in risks if item.segment_id == selected[0])
+    target_mid = (target_share_percent + max_share_percent) / 2.0
+    windows: list[tuple[float, list[ZhuqueSegment]]] = []
+    for start in range(len(risks)):
+        window: list[ZhuqueSegment] = []
+        share = 0.0
+        expected_id = risks[start].segment_id
+        for item in risks[start:start + max_segments]:
+            if window and item.segment_id != expected_id:
+                break
+            window.append(item)
+            share += item.share_percent
+            expected_id = item.segment_id + 1
+            if share >= target_share_percent or (len(window) == 1 and share >= HUMAN_PASS_THRESHOLD):
+                average_risk = sum(value.aigc_value for value in window) / len(window)
+                overflow_penalty = max(0.0, share - max_share_percent) * 3.0
+                score = abs(share - target_mid) + overflow_penalty + (average_risk * 0.25)
+                windows.append((score, list(window)))
+                break
+    if windows:
+        chosen = min(windows, key=lambda item: (item[0], len(item[1]), item[1][0].segment_id))[1]
+    else:
+        chosen = [max(risks, key=lambda item: (item.share_percent, -item.aigc_value))]
+    selected = [item.segment_id for item in chosen]
+    selected_share = sum(item.share_percent for item in chosen)
     return selected, min(100.0, human_percent + selected_share)
 
 
@@ -716,10 +806,16 @@ def compare_zhuque_reports(
     # overlap cannot prove which local rewrite caused a score change.  Keep it as
     # an observation and require isolated exact-hash samples for learning.
     recommended_next_strategy = None
+    quality_pass = quality_audit_passed(optimize_result.get("quality_audit"))
+    detector_pass = bool(recheck_report.get("strict_pass"))
+    strict_pass = detector_pass and quality_pass
     recommendation_reason = (
-        "整稿报告只按归一化位置近似对齐，不能作为局部策略学习证据。"
-        "请把 350–2000 字编辑单元按原文、模型重著、人工修订分别单独送检，"
-        "并用正文精确哈希登记结果；在此之前停止自动扩大费用。"
+        "官方首页人工特征已达到 25%，且质量硬闸门通过。"
+        if strict_pass
+        else (
+            "复检只接受官方首页人工特征达到 25% 且质量硬闸门通过；"
+            "整稿报告的归一化位置对齐只作观察，不自动扩大付费实验。"
+        )
     )
 
     selected_rows = [row for row in rows if row["selected"]]
@@ -732,6 +828,16 @@ def compare_zhuque_reports(
         "recheck_report_sha256": recheck_report.get("report_sha256"),
         "baseline_human_percent": round(float(baseline_report.get("human_percent") or 0.0), 2),
         "recheck_human_percent": round(float(recheck_report.get("human_percent") or 0.0), 2),
+        "baseline_official_human_percent": baseline_report.get("official_human_percent"),
+        "recheck_official_human_percent": recheck_report.get("official_human_percent"),
+        "baseline_derived_human_share_percent": baseline_report.get(
+            "derived_human_share_percent"
+        ),
+        "recheck_derived_human_share_percent": recheck_report.get(
+            "derived_human_share_percent"
+        ),
+        "official_overview_verified": recheck_report.get("official_overview_verified") is True,
+        "human_pass_threshold": HUMAN_PASS_THRESHOLD,
         "human_percent_delta": round(
             float(recheck_report.get("human_percent") or 0.0)
             - float(baseline_report.get("human_percent") or 0.0),
@@ -748,7 +854,9 @@ def compare_zhuque_reports(
             ),
             4,
         ),
-        "strict_pass": bool(recheck_report.get("strict_pass")),
+        "detector_pass": detector_pass,
+        "quality_pass": quality_pass,
+        "strict_pass": strict_pass,
         "segment_deltas": rows,
         "strategy_effectiveness": effectiveness,
         "recommended_next_strategy": recommended_next_strategy,
@@ -769,6 +877,475 @@ def compare_zhuque_reports(
     return result
 
 
+def analyze_paired_reports(
+    baseline_text: str,
+    modified_text: str,
+    baseline_report: dict[str, Any],
+    modified_report: dict[str, Any],
+    *,
+    content_type: str = "article",
+    hashes_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Analyze a before/after SaaS pair without treating correlation as causation."""
+    baseline = normalize_manuscript_text(baseline_text)
+    modified = normalize_manuscript_text(modified_text)
+    if not baseline or not modified:
+        raise ZhuqueReportError("前后正文都不能为空。")
+    if baseline_report.get("original_sha256") != sha256_text(baseline):
+        raise ZhuqueReportError("原始报告与原始正文哈希不一致。")
+    if modified_report.get("original_sha256") != sha256_text(modified):
+        raise ZhuqueReportError("修改报告与修改正文哈希不一致。")
+    if content_type not in {"article", "classical", "public_domain"}:
+        raise ZhuqueReportError("差分学习不支持小说链路。")
+
+    before_features = paired_manuscript_features(baseline)
+    after_features = paired_manuscript_features(modified)
+    feature_delta = {
+        key: round(float(after_features[key]) - float(before_features[key]), 6)
+        for key in before_features
+        if isinstance(before_features[key], (int, float))
+        and isinstance(after_features.get(key), (int, float))
+    }
+    removed_anchors, added_anchors = _anchor_counter_delta(baseline, modified)
+    sentence_diff = _sentence_level_diff(baseline, modified)
+    quality_risks: list[dict[str, Any]] = []
+    if removed_anchors:
+        quality_risks.append(
+            {
+                "type": "removed_anchor",
+                "severity": "high",
+                "evidence": removed_anchors[:20],
+                "reason": "数字、日期、引语、书名或 URL 在修改稿中减少。",
+            }
+        )
+    if added_anchors:
+        quality_risks.append(
+            {
+                "type": "added_anchor",
+                "severity": "high",
+                "evidence": added_anchors[:20],
+                "reason": "修改稿增加了原稿没有的可核验锚点。",
+            }
+        )
+    length_ratio = len(modified) / max(1, len(baseline))
+    if not QUALITY_SAFE_LENGTH_MIN <= length_ratio <= QUALITY_SAFE_LENGTH_MAX:
+        quality_risks.append(
+            {
+                "type": "length_drift",
+                "severity": "high",
+                "evidence": round(length_ratio, 4),
+                "reason": "整稿篇幅变化超过质量安全区间 0.95–1.08。",
+            }
+        )
+    if sentence_diff["inserted"]:
+        quality_risks.append(
+            {
+                "type": "unverified_added_statements",
+                "severity": "medium",
+                "evidence": sentence_diff["inserted"][:12],
+                "reason": "存在无法由纯格式变化解释的新增陈述，必须逐条核验。",
+            }
+        )
+    if sentence_diff["removed"]:
+        quality_risks.append(
+            {
+                "type": "possible_removed_information",
+                "severity": "medium",
+                "evidence": sentence_diff["removed"][:12],
+                "reason": "存在无法由纯格式变化解释的删除陈述，必须逐条核验。",
+            }
+        )
+    slogan_hits = _quality_slogan_hits(modified, baseline)
+    if slogan_hits:
+        quality_risks.append(
+            {
+                "type": "unsupported_rhetorical_upgrade",
+                "severity": "medium",
+                "evidence": slogan_hits,
+                "reason": "修改稿新增了口号化、绝对化或总结性拔高表达。",
+            }
+        )
+
+    hypotheses: list[dict[str, Any]] = []
+    before_segments = list(baseline_report.get("segments") or [])
+    after_segments = list(modified_report.get("segments") or [])
+    if len(after_segments) < len(before_segments):
+        hypotheses.append(
+            {
+                "id": "boundary_regrouping",
+                "direction": "test",
+                "evidence": f"报告片段 {len(before_segments)} → {len(after_segments)}",
+                "causal_status": "unverified",
+            }
+        )
+    if feature_delta.get("sentence_length_cv", 0.0) > 0.02:
+        hypotheses.append(
+            {
+                "id": "sentence_rhythm_variation",
+                "direction": "test",
+                "evidence": round(feature_delta["sentence_length_cv"], 4),
+                "causal_status": "unverified",
+            }
+        )
+    if feature_delta.get("paragraph_length_cv", 0.0) > 0.02:
+        hypotheses.append(
+            {
+                "id": "paragraph_rhythm_variation",
+                "direction": "test",
+                "evidence": round(feature_delta["paragraph_length_cv"], 4),
+                "causal_status": "unverified",
+            }
+        )
+
+    non_whitespace_similarity = round(
+        SequenceMatcher(
+            None,
+            _non_whitespace_text(baseline),
+            _non_whitespace_text(modified),
+            autojunk=False,
+        ).ratio(),
+        6,
+    )
+    baseline_metrics = _paired_report_metrics(baseline_report)
+    modified_metrics = _paired_report_metrics(modified_report)
+    mechanism_assessment = assess_detector_mechanisms(
+        baseline_metrics,
+        modified_metrics,
+        feature_delta=feature_delta,
+        non_whitespace_similarity=non_whitespace_similarity,
+        sentence_diff=sentence_diff,
+    )
+
+    analysis_id = str(uuid4())
+    payload = {
+        "analysis_id": analysis_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "policy_version": "report-driven-v5",
+        "prompt_version": PROMPT_VERSION,
+        "content_type": content_type,
+        "baseline_sha256": sha256_text(baseline),
+        "modified_sha256": sha256_text(modified),
+        "hashes_confirmed": bool(hashes_confirmed),
+        "source_match_verified": bool(
+            baseline_report.get("source_match_verified")
+            and modified_report.get("source_match_verified")
+        ),
+        "baseline_metrics": baseline_metrics,
+        "modified_metrics": modified_metrics,
+        "feature_before": before_features,
+        "feature_after": after_features,
+        "feature_delta": feature_delta,
+        "non_whitespace_similarity": non_whitespace_similarity,
+        "length_ratio": round(length_ratio, 6),
+        "segment_alignment": build_segment_overlap_matrix(
+            before_segments,
+            after_segments,
+        ),
+        "sentence_diff": sentence_diff,
+        "quality_risks": quality_risks,
+        "quality_status": "failed_or_unverified" if quality_risks else "unverified",
+        "strategy_hypotheses": hypotheses,
+        "mechanism_assessment": mechanism_assessment,
+        "controlled_experiments": [
+            {
+                "id": "layout_only",
+                "changes": "只改变空白和自然段边界，非空白正文哈希不变",
+                "tests": "报告切块/窗口边界是否会在正文字符不变时改变首页人工特征",
+                "model_cost_cny": 0.0,
+            },
+            {
+                "id": "syntax_constrained",
+                "changes": "只改变句法、信息次序和节奏，禁止新增或删除 claim",
+                "tests": "句长波动、段长波动和模板连接结构是否是有效方向",
+                "model_cost_cap_cny": float(settings.AIGC_REVIEW_RUN_BUDGET_CNY),
+            },
+            {
+                "id": "external_saas_quality_repair",
+                "changes": "只修外部稿中已定位的事实和语言硬伤",
+                "tests": "外部稿人工特征是否依赖劣质新增，修复后必须以新哈希重新送检",
+                "requires_manual_confirmation": True,
+            },
+        ],
+        "causal_confidence": "observational_confounded",
+        "learning_eligible": False,
+        "next_experiment": "layout_only",
+        "fallback_workflow": {
+            "available": bool(
+                modified_report.get("official_overview_verified") is True
+                and float(modified_report.get("human_percent") or 0.0)
+                >= HUMAN_PASS_THRESHOLD
+                and quality_risks
+            ),
+            "mode": "external_saas_minimal_quality_repair",
+            "repair_scope": [item["type"] for item in quality_risks],
+            "must_recheck_repaired_text": True,
+            "reuse_external_report_for_delivery": False,
+            "reason": "外部 SaaS 报告只能证明 SaaS 版本；任何质量修复都会生成新哈希，必须重新上传修复版的真实朱雀报告。",
+        },
+    }
+    _EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
+    (_EXPERIMENT_DIR / f"paired-{analysis_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def paired_manuscript_features(text: str) -> dict[str, float | int]:
+    sentences = _sentence_units(text)
+    paragraphs = _natural_paragraphs(text)
+    sentence_lengths = [len(_non_whitespace_text(value)) for value in sentences] or [0]
+    paragraph_lengths = [len(_non_whitespace_text(value)) for value in paragraphs] or [0]
+    nonspace_chars = len(_non_whitespace_text(text))
+    connector_pattern = re.compile(
+        r"(?:首先|其次|再次|最后|总之|综上|与此同时|因此|然而|但是|此外|换言之|值得注意的是)"
+    )
+    return {
+        "nonspace_chars": nonspace_chars,
+        "paragraph_count": len(paragraphs),
+        "sentence_count": len(sentences),
+        "mean_sentence_chars": round(statistics.mean(sentence_lengths), 6),
+        "sentence_length_cv": round(_coefficient_of_variation(sentence_lengths), 6),
+        "paragraph_length_cv": round(_coefficient_of_variation(paragraph_lengths), 6),
+        "short_sentence_ratio": round(
+            sum(value <= 18 for value in sentence_lengths) / max(1, len(sentence_lengths)), 6
+        ),
+        "long_sentence_ratio": round(
+            sum(value >= 55 for value in sentence_lengths) / max(1, len(sentence_lengths)), 6
+        ),
+        "connector_per_1000_chars": round(
+            len(connector_pattern.findall(text)) * 1000 / max(1, nonspace_chars), 6
+        ),
+    }
+
+
+def build_segment_overlap_matrix(
+    baseline_segments: list[dict[str, Any]],
+    modified_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Align shifted report rows by normalized position, anchors and text similarity."""
+    if not baseline_segments or not modified_segments:
+        return []
+    baseline_length = max(int(item.get("end") or 0) for item in baseline_segments) or 1
+    modified_length = max(int(item.get("end") or 0) for item in modified_segments) or 1
+    matrix: list[dict[str, Any]] = []
+    for before in baseline_segments:
+        before_start = float(before.get("start") or 0) / baseline_length
+        before_end = float(before.get("end") or 0) / baseline_length
+        before_span = max(1e-9, before_end - before_start)
+        before_text = str(before.get("mapped_text") or "")
+        before_anchors = set(_anchors(before_text))
+        for after in modified_segments:
+            after_start = float(after.get("start") or 0) / modified_length
+            after_end = float(after.get("end") or 0) / modified_length
+            after_span = max(1e-9, after_end - after_start)
+            overlap = max(0.0, min(before_end, after_end) - max(before_start, after_start))
+            position_score = overlap / max(before_span, after_span)
+            after_text = str(after.get("mapped_text") or "")
+            text_score = SequenceMatcher(
+                None,
+                _non_whitespace_text(before_text)[:4000],
+                _non_whitespace_text(after_text)[:4000],
+                autojunk=False,
+            ).ratio()
+            after_anchors = set(_anchors(after_text))
+            anchor_score = (
+                len(before_anchors & after_anchors) / len(before_anchors | after_anchors)
+                if before_anchors or after_anchors
+                else 0.0
+            )
+            confidence = 0.55 * position_score + 0.35 * text_score + 0.10 * anchor_score
+            if confidence < 0.08:
+                continue
+            matrix.append(
+                {
+                    "baseline_segment_id": int(before.get("segment_id") or 0),
+                    "modified_segment_id": int(after.get("segment_id") or 0),
+                    "position_overlap": round(position_score, 6),
+                    "text_similarity": round(text_score, 6),
+                    "anchor_overlap": round(anchor_score, 6),
+                    "confidence": round(confidence, 6),
+                }
+            )
+    matrix.sort(key=lambda item: (-item["confidence"], item["baseline_segment_id"]))
+    return matrix
+
+
+def _paired_report_metrics(report: dict[str, Any]) -> dict[str, Any]:
+    segments = list(report.get("segments") or [])
+    char_counts = [
+        int(item.get("char_count") or max(0, int(item.get("end") or 0) - int(item.get("start") or 0)))
+        for item in segments
+    ]
+    human_segments = [item for item in segments if item.get("label") == "human"]
+    official = _optional_float(report.get("official_human_percent"))
+    derived = _optional_float(report.get("derived_human_share_percent"))
+    return {
+        "official_human_percent": report.get("official_human_percent"),
+        "derived_human_share_percent": report.get("derived_human_share_percent"),
+        "human_percent": report.get("human_percent"),
+        "suspected_percent": report.get("suspected_percent"),
+        "ai_percent": report.get("ai_percent"),
+        "official_overview_verified": report.get("official_overview_verified"),
+        "segment_count": len(segments),
+        "mean_segment_chars": round(statistics.mean(char_counts), 2) if char_counts else 0.0,
+        "max_segment_chars": max(char_counts, default=0),
+        "human_segment_count": len(human_segments),
+        "largest_human_segment_chars": max(
+            (
+                int(item.get("char_count") or max(0, int(item.get("end") or 0) - int(item.get("start") or 0)))
+                for item in human_segments
+            ),
+            default=0,
+        ),
+        "official_derived_human_gap": (
+            round(official - derived, 2)
+            if official is not None and derived is not None
+            else None
+        ),
+    }
+
+
+def assess_detector_mechanisms(
+    baseline_metrics: dict[str, Any],
+    modified_metrics: dict[str, Any],
+    *,
+    feature_delta: dict[str, float],
+    non_whitespace_similarity: float,
+    sentence_diff: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return falsifiable black-box hypotheses, never claims about private internals."""
+    assessments: list[dict[str, Any]] = []
+    before_count = int(baseline_metrics.get("segment_count") or 0)
+    after_count = int(modified_metrics.get("segment_count") or 0)
+    if before_count and after_count and before_count != after_count:
+        assessments.append(
+            {
+                "mechanism": "window_or_boundary_sensitivity",
+                "support": "candidate_supported",
+                "confidence": "medium",
+                "evidence": (
+                    f"报告片段数 {before_count}→{after_count}；最大片段 "
+                    f"{baseline_metrics.get('max_segment_chars', 0)}→"
+                    f"{modified_metrics.get('max_segment_chars', 0)} 字"
+                ),
+                "confounders": ["正文内容同时变化", "报告分段规则不可见"],
+                "falsification_test": "layout_only：保持非空白正文完全一致，仅重排段落后复检",
+            }
+        )
+    rhythm_delta = max(
+        abs(float(feature_delta.get("sentence_length_cv") or 0.0)),
+        abs(float(feature_delta.get("paragraph_length_cv") or 0.0)),
+    )
+    if rhythm_delta >= 0.02:
+        assessments.append(
+            {
+                "mechanism": "rhythm_distribution_sensitivity",
+                "support": "candidate_supported",
+                "confidence": "medium",
+                "evidence": {
+                    "sentence_length_cv_delta": feature_delta.get("sentence_length_cv", 0.0),
+                    "paragraph_length_cv_delta": feature_delta.get("paragraph_length_cv", 0.0),
+                },
+                "confounders": ["词汇和事实也可能同时变化"],
+                "falsification_test": "syntax_constrained：claim 不变，仅调整句法与节奏后复检",
+            }
+        )
+    gap = modified_metrics.get("official_derived_human_gap")
+    if isinstance(gap, (int, float)) and abs(float(gap)) >= 1.0:
+        assessments.append(
+            {
+                "mechanism": "overview_is_not_simple_row_sum",
+                "support": "direct_output_evidence",
+                "confidence": "high",
+                "evidence": f"首页官方人工特征与表格绿色占比相差 {float(gap):.2f} 个百分点",
+                "confounders": ["不能据此推断首页具体聚合公式"],
+                "falsification_test": "继续保存多份报告的官方值与表格推导值，检验差值是否稳定存在",
+            }
+        )
+    if sentence_diff.get("inserted_count") or sentence_diff.get("removed_count"):
+        assessments.append(
+            {
+                "mechanism": "content_addition_is_confounded",
+                "support": "not_identified",
+                "confidence": "low",
+                "evidence": {
+                    "inserted_sentences": sentence_diff.get("inserted_count", 0),
+                    "removed_sentences": sentence_diff.get("removed_count", 0),
+                    "non_whitespace_similarity": non_whitespace_similarity,
+                },
+                "confounders": ["边界、句法、篇幅和事实同时变化"],
+                "falsification_test": "禁止新增 claim 的受限编辑；若仍提升，排除劣质填充是必要条件",
+            }
+        )
+    return assessments
+
+
+def _sentence_units(text: str) -> list[str]:
+    return [
+        value.strip()
+        for value in re.split(r"(?<=[。！？!?；;])|\n+", text)
+        if value.strip()
+    ]
+
+
+def _sentence_level_diff(baseline: str, modified: str) -> dict[str, Any]:
+    before = _sentence_units(baseline)
+    after = _sentence_units(modified)
+    matcher = SequenceMatcher(None, before, after, autojunk=False)
+    inserted: list[str] = []
+    removed: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in {"replace", "delete"}:
+            removed.extend(before[i1:i2])
+        if tag in {"replace", "insert"}:
+            inserted.extend(after[j1:j2])
+    return {
+        "inserted_count": len(inserted),
+        "removed_count": len(removed),
+        "inserted": inserted[:30],
+        "removed": removed[:30],
+    }
+
+
+def _anchor_counter_delta(baseline: str, modified: str) -> tuple[list[str], list[str]]:
+    before = _anchors(baseline)
+    after = _anchors(modified)
+    removed = list((before - after).elements())
+    added = list((after - before).elements())
+    return removed, added
+
+
+def _quality_slogan_hits(modified: str, baseline: str) -> list[str]:
+    patterns = (
+        r"最重要的功臣",
+        r"国家危难时[^。！？]{0,30}硬骨头",
+        r"真正的?将军",
+        r"注定了[^。！？]{0,30}(?:命运|结局)",
+        r"最让人记得的",
+    )
+    hits: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, modified):
+            value = match.group(0)
+            if value not in baseline:
+                hits.append(value)
+    return list(dict.fromkeys(hits))[:20]
+
+
+def _coefficient_of_variation(values: list[int]) -> float:
+    if not values:
+        return 0.0
+    mean = statistics.mean(values)
+    if mean <= 0:
+        return 0.0
+    return statistics.pstdev(values) / mean
+
+
+def _non_whitespace_text(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
 def create_calibration_sample(
     *,
     user_id: str,
@@ -778,11 +1355,12 @@ def create_calibration_sample(
     variant_type: str,
     parent_sha256: str | None = None,
     strategy_id: str | None = None,
+    quality_gate_passed: bool | None = None,
 ) -> dict[str, Any]:
     """Register one isolated Zhuque submission with an exact manuscript hash."""
     normalized = normalize_manuscript_text(text)
-    if not 350 <= len(normalized) <= 2000:
-        raise ZhuqueReportError("校准样本必须是 350–2000 字的完整编辑单元。")
+    if not 350 <= len(normalized) <= 2500:
+        raise ZhuqueReportError("校准样本必须是 350–2500 字的完整编辑单元。")
     allowed_types = {"article", "classical", "public_domain"}
     if content_type not in allowed_types:
         raise ZhuqueReportError("校准样本不支持小说链路。")
@@ -792,6 +1370,10 @@ def create_calibration_sample(
         "human_directed",
         "human_edited",
         "human_control",
+        "external_saas",
+        "layout_only",
+        "syntax_constrained",
+        "combined",
     }
     if variant_type not in allowed_variants:
         raise ZhuqueReportError("未知校准样本类型。")
@@ -825,6 +1407,7 @@ def create_calibration_sample(
         "label": None,
         "green": None,
         "learning_eligible": False,
+        "quality_gate_passed": quality_gate_passed,
         "prompt_version": PROMPT_VERSION,
         "created_at": now,
         "updated_at": now,
@@ -854,6 +1437,99 @@ def list_calibration_samples(*, user_id: str, limit: int = 100) -> list[dict[str
         if payload.get("prompt_version") == PROMPT_VERSION:
             results.append(payload)
     return results
+
+
+def calibration_evidence_status(
+    *,
+    user_id: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    """Report detector efficacy only from quality-safe, exact-hash PDF pairs."""
+    promotion_rule = (
+        "同一策略至少 2 个方向一致的真实对照才为 directional；至少 5 个且胜率不低于 80%、"
+        "中位提升不低于 5 个百分点才为 validated。"
+    )
+    if not user_id:
+        return {
+            "status": "unproven",
+            "verified_pair_count": 0,
+            "claim": "尚无当前用户的精确哈希真实复检对照，不能声称可显著提高人工特征。",
+            "strategies": [],
+            "promotion_rule": promotion_rule,
+        }
+    samples = list_calibration_samples(user_id=user_id, limit=500)
+    originals = {
+        str(item.get("text_sha256") or ""): item
+        for item in samples
+        if item.get("variant_type") in {"original", "human_control"}
+        and item.get("learning_eligible") is True
+        and item.get("verification_mode") == "pdf_exact_hash"
+    }
+    grouped: dict[str, list[float]] = {}
+    pass_grouped: dict[str, int] = {}
+    for item in samples:
+        variant = str(item.get("variant_type") or "")
+        if variant not in {"layout_only", "syntax_constrained", "combined"}:
+            continue
+        if item.get("learning_eligible") is not True:
+            continue
+        if item.get("verification_mode") != "pdf_exact_hash":
+            continue
+        if content_type and item.get("content_type") != content_type:
+            continue
+        baseline = originals.get(str(item.get("parent_sha256") or ""))
+        if baseline is None:
+            continue
+        before = _optional_float(baseline.get("human_percent"))
+        after = _optional_float(item.get("human_percent"))
+        if before is None or after is None:
+            continue
+        grouped.setdefault(variant, []).append(after - before)
+        pass_grouped[variant] = pass_grouped.get(variant, 0) + int(bool(item.get("green")))
+
+    rank = {"unproven": 0, "directional": 1, "validated": 2}
+    best_status = "unproven"
+    summaries: list[dict[str, Any]] = []
+    for variant, deltas in grouped.items():
+        positive_count = sum(value > 0 for value in deltas)
+        win_rate = positive_count / len(deltas)
+        median_delta = statistics.median(deltas)
+        status = "unproven"
+        if len(deltas) >= 2 and positive_count == len(deltas):
+            status = "directional"
+        if len(deltas) >= 5 and win_rate >= 0.8 and median_delta >= 5.0:
+            status = "validated"
+        if rank[status] > rank[best_status]:
+            best_status = status
+        summaries.append(
+            {
+                "experiment_type": variant,
+                "status": status,
+                "verified_pair_count": len(deltas),
+                "positive_count": positive_count,
+                "win_rate": round(win_rate, 4),
+                "median_human_percent_delta": round(median_delta, 2),
+                "final_pass_count": pass_grouped.get(variant, 0),
+            }
+        )
+    claim = {
+        "unproven": "尚无足够真实对照，当前能力是安全实验平台，不是已验证的朱雀降率引擎。",
+        "directional": "已有方向一致的初步真实证据，但样本仍不足以承诺稳定显著增益。",
+        "validated": "已有达到本项目验证门槛的真实对照证据；仍须对每个候选重新上传朱雀报告。",
+    }[best_status]
+    return {
+        "status": best_status,
+        "verified_pair_count": sum(len(values) for values in grouped.values()),
+        "claim": claim,
+        "strategies": sorted(
+            summaries,
+            key=lambda item: (
+                -rank[str(item["status"])],
+                -float(item["median_human_percent_delta"]),
+            ),
+        ),
+        "promotion_rule": promotion_rule,
+    }
 
 
 def get_calibration_sample(*, user_id: str, sample_id: str) -> dict[str, Any]:
@@ -924,9 +1600,20 @@ def record_calibration_report_result(
     human_percent = float(parsed_report.get("human_percent") or 0.0)
     suspected_percent = float(parsed_report.get("suspected_percent") or 0.0)
     ai_percent = float(parsed_report.get("ai_percent") or 0.0)
-    strict_pass = human_percent > STRICT_HUMAN_THRESHOLD
+    official_verified = parsed_report.get("official_overview_verified") is True
+    strict_pass = official_verified and human_percent >= HUMAN_PASS_THRESHOLD
     label = "human" if strict_pass else ("ai" if ai_percent >= suspected_percent else "suspected")
     weighted_aigc = _report_weighted_aigc(list(parsed_report.get("segments") or []))
+    variant_type = str(payload.get("variant_type") or "")
+    quality_gate = payload.get("quality_gate_passed") is True or variant_type in {
+        "original",
+        "human_control",
+    }
+    learning_eligible = bool(
+        official_verified
+        and quality_gate
+        and variant_type != "external_saas"
+    )
     payload.update(
         {
             "status": "labeled",
@@ -936,7 +1623,9 @@ def record_calibration_report_result(
             "human_percent": round(human_percent, 2),
             "suspected_percent": round(suspected_percent, 2),
             "ai_percent": round(ai_percent, 2),
-            "learning_eligible": True,
+            "official_overview_verified": official_verified,
+            "strict_threshold": HUMAN_PASS_THRESHOLD,
+            "learning_eligible": learning_eligible,
             "verification_mode": "pdf_exact_hash",
             "report_sha256": parsed_report.get("report_sha256"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1118,6 +1807,226 @@ def feature_learning_summary(
     return summarize_feature_effects(records, min_samples=5)
 
 
+def build_layout_only_result(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+    *,
+    content_type: str,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a zero-model-cost whitespace-only experiment."""
+    if content_type == "classical":
+        raise ZhuqueReportError("古文/佛经不执行排版边界实验。")
+    normalized_segments = list(segments)
+    by_id = {item.segment_id: item for item in normalized_segments}
+    ids = list(dict.fromkeys(int(value) for value in selected_ids))
+    replacements: list[tuple[int, int, str]] = []
+    segment_results: list[dict[str, Any]] = []
+    for segment_id in ids:
+        segment = by_id.get(segment_id)
+        if segment is None:
+            raise ZhuqueReportError(f"报告中不存在片段: {segment_id}")
+        if segment.label == "human":
+            raise ZhuqueReportError(f"片段 {segment_id} 已是人工特征，不应参与实验。")
+        source = original[segment.start:segment.end]
+        if source != segment.mapped_text:
+            raise ZhuqueReportError(f"片段 {segment_id} 的原稿坐标已经变化。")
+        candidate = reflow_layout_only(source)
+        if _non_whitespace_text(candidate) != _non_whitespace_text(source):
+            raise ZhuqueReportError("排版实验改变了非空白正文，已安全中止。")
+        deterministic = review_deterministic_constraints(
+            source,
+            candidate,
+            preserve_paragraph_count=False,
+            min_length_ratio=0.90,
+            max_length_ratio=1.10,
+        )
+        if not deterministic_hard_safety_passed(
+            deterministic,
+            require_paragraph_preservation=False,
+            min_length_ratio=0.90,
+            max_length_ratio=1.10,
+        ):
+            raise ZhuqueReportError(
+                f"片段 {segment_id} 的排版实验未通过确定性保护："
+                + "；".join(deterministic.reasons)
+            )
+        replacements.append((segment.start, segment.end, candidate))
+        segment_results.append(
+            {
+                "segment_id": segment_id,
+                "strategy_id": "layout_only",
+                "rewrite_provider": "local",
+                "rewrite_model": "deterministic-layout-v1",
+                "status": "ready",
+                "hard_safety_passed": True,
+                "substantive_rewrite_passed": True,
+                "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+                "original_chars": len(source),
+                "candidate_chars": len(candidate),
+                "report_aigc_value": segment.aigc_value,
+                "report_label": segment.label,
+                "style_diagnosis": diagnose_segment_style(source),
+                "editorial_unit_count": 1,
+                "rewrite_attempts": 0,
+                "attempts": [],
+                "unit_results": [
+                    {
+                        "unit_id": "LAYOUT",
+                        "original_chars": len(source),
+                        "candidate_chars": len(candidate),
+                        "original_text": source,
+                        "candidate_text": candidate,
+                        "status": "ready",
+                        "fact_ledger_mode": "not_required_identical_non_whitespace",
+                        "fact_ledger_claim_count": 0,
+                        "fact_ledger_cost_cny": 0.0,
+                        "hard_safety_passed": True,
+                        "substantive_rewrite_passed": True,
+                        "rewrite_attempts": 0,
+                        "attempts": [],
+                        "deterministic_review": deterministic.to_dict(),
+                        "candidate_preview": candidate[:400],
+                        "rejected_candidate_preview": "",
+                    }
+                ],
+                "deterministic_review": deterministic.to_dict(),
+                "style_feature_version": STYLE_FEATURE_VERSION,
+                "style_feature_delta": style_feature_delta(source, candidate),
+                "candidate_preview": candidate[:500],
+                "rejected_candidate_preview": "",
+            }
+        )
+    assembled = _assemble_replacements(original, replacements)
+    if assembled == original:
+        return {
+            **_manual_review_result(
+                request_id=request_id or str(uuid4()),
+                original=original,
+                selected_ids=ids,
+                segment_results=segment_results,
+                reason="原稿排版已经满足安全边界，没有产生可送检的新版本；未调用任何模型。",
+                total_input_tokens=0,
+                total_output_tokens=0,
+                rewrite_cost_cny=0.0,
+                rewrite_provider="local",
+                rewrite_model="deterministic-layout-v1",
+                rewrite_reasoning="disabled",
+            ),
+            "experiment_type": "layout_only",
+        }
+    quality_audit = {
+        "pass": True,
+        "semantic_fidelity": 100,
+        "information_completeness": 100,
+        "fluency": 100,
+        "voice_continuity": 100,
+        "no_added_facts": True,
+        "no_removed_information": True,
+        "no_stance_change": True,
+        "no_plot_or_event_change": True,
+        "structural_rewrite_sufficient": True,
+        "claim_results": [
+            {"claim_id": f"SEG{segment_id}", "status": "preserved", "evidence": "非空白正文完全一致"}
+            for segment_id in ids
+        ],
+        "added_claims": [],
+        "failed_segment_ids": [],
+        "issues": [],
+        "reason": "仅调整空白与自然段边界，非空白正文哈希一致。",
+        "audit_mode": "deterministic_non_whitespace_identity",
+    }
+    return {
+        "request_id": request_id or str(uuid4()),
+        "status": "candidate_ready",
+        "deliverable": False,
+        "next_action": "零费用排版候选已生成；请先上传真实朱雀复检 PDF。",
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(assembled),
+        "original_non_whitespace_sha256": sha256_text(_non_whitespace_text(original)),
+        "candidate_non_whitespace_sha256": sha256_text(_non_whitespace_text(assembled)),
+        "original_text": original,
+        "candidate_text": assembled,
+        "selected_segment_ids": ids,
+        "iteration": 1,
+        "preferred_strategy": "layout_only",
+        "content_type": content_type,
+        "experiment_type": "layout_only",
+        "segment_results": segment_results,
+        "quality_audit": quality_audit,
+        "editorial_unit_count": len(ids),
+        "audit_batch_count": 0,
+        "budget": {"currency": "CNY", "limit_cny": 0.0, "spent_cny": 0.0, "exhausted": False},
+        "cost": {
+            "currency": "CNY",
+            "estimated": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cny": 0.0,
+        },
+        "models": {
+            "rewrite_provider": "local",
+            "rewrite": "deterministic-layout-v1",
+            "fact": "not_required",
+            "audit": "deterministic_hash",
+            "rewrite_thinking": "disabled",
+        },
+        "prompt_version": PROMPT_VERSION,
+    }
+
+
+def reflow_layout_only(source: str) -> str:
+    """Regroup whitespace while preserving every non-whitespace character in order."""
+    paragraphs = [value.strip() for value in re.split(r"\n\s*\n", source) if value.strip()]
+    if len(paragraphs) <= 1:
+        return source.strip()
+    output: list[str] = []
+    buffer: list[str] = []
+    buffer_chars = 0
+
+    def flush() -> None:
+        nonlocal buffer, buffer_chars
+        if buffer:
+            output.append("\n".join(buffer))
+            buffer = []
+            buffer_chars = 0
+
+    for paragraph in paragraphs:
+        paragraph_chars = len(_non_whitespace_text(paragraph))
+        if _looks_like_heading(paragraph):
+            flush()
+            output.append(paragraph)
+            continue
+        if paragraph_chars > 480:
+            flush()
+            sentences = _sentence_units(paragraph)
+            sentence_buffer: list[str] = []
+            sentence_chars = 0
+            for sentence in sentences:
+                value_chars = len(_non_whitespace_text(sentence))
+                if sentence_buffer and sentence_chars + value_chars > 420:
+                    output.append("".join(sentence_buffer))
+                    sentence_buffer = []
+                    sentence_chars = 0
+                sentence_buffer.append(sentence)
+                sentence_chars += value_chars
+            if sentence_buffer:
+                output.append("".join(sentence_buffer))
+            continue
+        if buffer and buffer_chars + paragraph_chars > 420:
+            flush()
+        buffer.append(paragraph)
+        buffer_chars += paragraph_chars
+        if buffer_chars >= 220:
+            flush()
+    flush()
+    candidate = "\n\n".join(output).strip()
+    if _non_whitespace_text(candidate) != _non_whitespace_text(source):
+        raise ZhuqueReportError("排版重组未保持正文字符顺序。")
+    return candidate
+
+
 def optimize_report_segments(
     original_text: str,
     segments: Iterable[ZhuqueSegment | dict[str, Any]],
@@ -1133,22 +2042,38 @@ def optimize_report_segments(
     fact_fn: Callable[..., Any] | None = None,
     cache_namespace: str | None = None,
     budget_cny: float | None = None,
+    experiment_type: str = "syntax_constrained",
 ) -> dict[str, Any]:
-    """Re-author bounded units from a fact ledger, then apply hard and semantic gates."""
+    """Run one quality-safe v5 experiment, then apply hard and semantic gates."""
     request_id = str(uuid4())
     original = normalize_manuscript_text(original_text)
     normalized_segments = [
         item if isinstance(item, ZhuqueSegment) else ZhuqueSegment(**item) for item in segments
     ]
     by_id = {item.segment_id: item for item in normalized_segments}
-    selected_ids = list(dict.fromkeys(int(value) for value in selected_segment_ids))
+    selected_ids = sorted(set(int(value) for value in selected_segment_ids))
     if not selected_ids:
         raise ZhuqueReportError("至少选择一个朱雀风险片段。")
     missing = [value for value in selected_ids if value not in by_id]
     if missing:
         raise ZhuqueReportError(f"报告中不存在片段: {missing}")
+    if len(selected_ids) > 12:
+        raise ZhuqueReportError("单轮最多处理 12 个相邻风险片段。")
+    if any(right != left + 1 for left, right in zip(selected_ids, selected_ids[1:])):
+        raise ZhuqueReportError("单轮必须选择连续相邻的风险片段，不能把分散区域混入同一实验。")
     if not original:
         raise ZhuqueReportError("原稿不能为空。")
+    if experiment_type not in {"layout_only", "syntax_constrained", "combined"}:
+        raise ZhuqueReportError("未知实验类型。")
+
+    if experiment_type == "layout_only":
+        return build_layout_only_result(
+            original,
+            normalized_segments,
+            selected_ids,
+            content_type=content_type,
+            request_id=request_id,
+        )
 
     selected_provider = _normalize_rewrite_provider(rewrite_provider)
     rewrite_model = _rewrite_model_for_provider(selected_provider)
@@ -1202,6 +2127,7 @@ def optimize_report_segments(
             "exhausted": budget_exhausted(),
         }
         result["editorial_unit_count"] = len(audit_items)
+        result["experiment_type"] = experiment_type
         return result
 
     if iteration < 1 or iteration > 20:
@@ -1377,8 +2303,10 @@ def optimize_report_segments(
                 unit_source,
                 unit_candidate,
                 protected_texts=unit_protected,
-                require_material_rewrite=True,
+                require_material_rewrite=False,
                 preserve_paragraph_count=preserve_paragraph_count,
+                min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+                max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
             )
             candidate_safe = False
             attempt_results: list[dict[str, Any]] = []
@@ -1408,6 +2336,7 @@ def optimize_report_segments(
                 else:
                     prompt = render_reauthor_prompt(
                         ledger or {},
+                        original_with_tokens=source_with_tokens,
                         protected_map=protocol.protected_map,
                         previous_context=previous_context,
                         next_context=next_context,
@@ -1450,15 +2379,22 @@ def optimize_report_segments(
                     unit_source,
                     unit_candidate,
                     protected_texts=unit_protected,
-                    require_material_rewrite=True,
+                    require_material_rewrite=False,
                     preserve_paragraph_count=preserve_paragraph_count,
+                    min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+                    max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
                 )
                 protocol_passed = not protocol_issues or not structured
                 hard_safety_passed = deterministic_hard_safety_passed(
                     deterministic,
                     require_paragraph_preservation=preserve_paragraph_count,
+                    min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+                    max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
                 )
-                substantive_passed = substantive_rewrite_passed(deterministic)
+                substantive_passed = substantive_rewrite_passed(
+                    deterministic,
+                    require_text_change=content_type != "classical",
+                )
                 candidate_safe = hard_safety_passed and protocol_passed and substantive_passed
                 input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
                 cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
@@ -1479,7 +2415,10 @@ def optimize_report_segments(
                         "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
                         "structured_output": structured,
                         "protocol_issues": protocol_issues,
-                        "substantive_rewrite_reasons": substantive_rewrite_reasons(deterministic),
+                        "substantive_rewrite_reasons": substantive_rewrite_reasons(
+                            deterministic,
+                            require_text_change=content_type != "classical",
+                        ),
                         "deterministic_review": deterministic.to_dict(),
                         "input_tokens": input_tokens,
                         "cached_input_tokens": cached_input_tokens,
@@ -1499,7 +2438,10 @@ def optimize_report_segments(
                     hard_safety_only=True,
                 )
                 retry_feedback = hard_feedback + "\n- " + "\n- ".join(
-                    substantive_rewrite_reasons(deterministic)
+                    substantive_rewrite_reasons(
+                        deterministic,
+                        require_text_change=content_type != "classical",
+                    )
                     or ["候选没有形成可验证的实质重著"]
                 )
 
@@ -1514,11 +2456,17 @@ def optimize_report_segments(
                     "fact_ledger_mode": ledger_mode,
                     "fact_ledger_claim_count": len((ledger or {}).get("claims") or []),
                     "fact_ledger_cost_cny": round(float(ledger_usage.get("cost_cny") or 0.0), 6),
+                    "fact_ledger": ledger or {},
                     "hard_safety_passed": deterministic_hard_safety_passed(
                         deterministic,
                         require_paragraph_preservation=preserve_paragraph_count,
+                        min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+                        max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
                     ),
-                    "substantive_rewrite_passed": substantive_rewrite_passed(deterministic),
+                    "substantive_rewrite_passed": substantive_rewrite_passed(
+                        deterministic,
+                        require_text_change=content_type != "classical",
+                    ),
                     "rewrite_attempts": len(attempt_results),
                     "attempts": attempt_results,
                     "deterministic_review": deterministic.to_dict(),
@@ -1539,22 +2487,32 @@ def optimize_report_segments(
                     "candidate": unit_candidate,
                     "previous_context": previous_context,
                     "next_context": next_context,
+                    "fact_ledger": ledger or {},
                 }
             )
 
         candidate = "\n\n".join(unit_candidates)
+        if experiment_type == "combined" and content_type != "classical":
+            candidate = reflow_layout_only(candidate)
         parent_review = review_deterministic_constraints(
             source,
             candidate,
             protected_texts=protected_originals,
-            require_material_rewrite=True,
+            require_material_rewrite=False,
             preserve_paragraph_count=preserve_paragraph_count,
+            min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+            max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
         )
         parent_hard_passed = deterministic_hard_safety_passed(
             parent_review,
             require_paragraph_preservation=preserve_paragraph_count,
+            min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
+            max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
         )
-        parent_substantive_passed = substantive_rewrite_passed(parent_review)
+        parent_substantive_passed = substantive_rewrite_passed(
+            parent_review,
+            require_text_change=content_type != "classical",
+        )
         segment_candidate_safe = (
             segment_candidate_safe
             and len(unit_candidates) == len(units)
@@ -1645,11 +2603,33 @@ def optimize_report_segments(
             "\n\n".join(candidate_blocks),
             [item["audit_id"] for item in batch],
             content_type=content_type,
+            fact_ledgers={
+                str(item["audit_id"]): item.get("fact_ledger") or {}
+                for item in batch
+            },
         )
         try:
             raw_audit = audit(audit_prompt, request_id=request_id)
             audit_text, audit_usage = _coerce_model_result(raw_audit)
             batch_audit = parse_quality_audit(audit_text)
+            claim_coverage_reasons = quality_audit_claim_coverage_reasons(
+                batch_audit,
+                {
+                    str(item["audit_id"]): item.get("fact_ledger") or {}
+                    for item in batch
+                },
+            )
+            if claim_coverage_reasons:
+                batch_audit["pass"] = False
+                batch_audit.setdefault("issues", []).append(
+                    {
+                        "segment_id": "batch",
+                        "type": "claim_coverage",
+                        "original_claim": "；".join(claim_coverage_reasons),
+                        "candidate_change": "终审未逐条覆盖事实账本",
+                        "severity": "high",
+                    }
+                )
         except Exception as exc:
             logger.exception(
                 "LLM action=aigc_report_quality_audit request_id=%s model=%s batch=%s status=failed error_type=%s",
@@ -1689,7 +2669,7 @@ def optimize_report_segments(
         "request_id": request_id,
         "status": "candidate_ready",
         "deliverable": False,
-        "next_action": "上传候选稿的真实朱雀复检 PDF；人工特征严格大于 50% 后才可标记通过。",
+        "next_action": "上传候选稿的真实朱雀复检 PDF；官方首页人工特征达到 25% 且质量硬闸门仍通过后才可标记通过。",
         "original_sha256": sha256_text(original),
         "candidate_sha256": sha256_text(assembled),
         "original_text": original,
@@ -1698,6 +2678,7 @@ def optimize_report_segments(
         "iteration": iteration,
         "preferred_strategy": preferred_strategy,
         "content_type": content_type,
+        "experiment_type": experiment_type,
         "segment_results": segment_results,
         "quality_audit": quality_audit,
         "editorial_unit_count": len(audit_items),
@@ -1733,11 +2714,15 @@ def review_deterministic_constraints(
     protected_texts: Iterable[str] = (),
     require_material_rewrite: bool = False,
     preserve_paragraph_count: bool = True,
+    min_length_ratio: float = 0.8,
+    max_length_ratio: float = 1.25,
 ) -> DeterministicReview:
     reasons: list[str] = []
     ratio = len(candidate) / max(1, len(original))
-    if not 0.8 <= ratio <= 1.25:
-        reasons.append(f"长度比例 {ratio:.3f} 不在 0.80-1.25")
+    if not min_length_ratio <= ratio <= max_length_ratio:
+        reasons.append(
+            f"长度比例 {ratio:.3f} 不在 {min_length_ratio:.2f}-{max_length_ratio:.2f}"
+        )
     paragraph_ok = _paragraph_count(original) == _paragraph_count(candidate)
     if preserve_paragraph_count and not paragraph_ok:
         reasons.append("自然段数量发生变化")
@@ -1824,10 +2809,12 @@ def deterministic_hard_safety_passed(
     review: DeterministicReview,
     *,
     require_paragraph_preservation: bool = True,
+    min_length_ratio: float = 0.8,
+    max_length_ratio: float = 1.25,
 ) -> bool:
     """Protect manuscript integrity without treating detector heuristics as a gate."""
     return (
-        0.8 <= review.length_ratio <= 1.25
+        min_length_ratio <= review.length_ratio <= max_length_ratio
         and (review.paragraph_count_preserved or not require_paragraph_preservation)
         and review.headings_preserved
         and review.anchors_preserved
@@ -2171,6 +3158,17 @@ def parse_fact_ledger(text: str, *, required_tokens: Iterable[str] = ()) -> dict
         summary = str(claim.get("summary") or "").strip()
         if not claim_id or not summary:
             raise ValueError(f"事实账本第 {index} 条缺少 claim_id 或 summary")
+        source_sentence_ids = claim.get("source_sentence_ids")
+        if (
+            not isinstance(source_sentence_ids, list)
+            or not source_sentence_ids
+            or any(not str(value).strip() for value in source_sentence_ids)
+        ):
+            raise ValueError(f"事实账本第 {index} 条缺少 source_sentence_ids")
+        if not isinstance(claim.get("qualifiers", []), list):
+            raise ValueError(f"事实账本第 {index} 条 qualifiers 无效")
+        if not isinstance(claim.get("negations", []), list):
+            raise ValueError(f"事实账本第 {index} 条 negations 无效")
         claim_ids.append(claim_id)
         for token in claim.get("required_tokens") or []:
             token_counts[str(token)] += 1
@@ -2189,7 +3187,7 @@ def fact_ledger_copying_reasons(
     source_with_tokens: str,
     ledger: dict[str, Any],
 ) -> list[str]:
-    """Reject a ledger that smuggles full source sentences into the blank-slate prompt."""
+    """Reject a ledger that copies source prose instead of abstracting atomic claims."""
     source_sentences = [
         re.sub(r"\s+", "", value)
         for value in re.split(r"(?<=[。！？!?；;])|\n+", source_with_tokens)
@@ -2225,6 +3223,7 @@ def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
         claims.append(
             {
                 "claim_id": f"C{index:03d}",
+                "source_sentence_ids": [f"S{index:03d}"],
                 "summary": sentence,
                 "subject": "",
                 "predicate": "",
@@ -2232,6 +3231,14 @@ def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
                 "time": "",
                 "place": "",
                 "cause_or_condition": "",
+                "qualifiers": re.findall(
+                    r"(?:仅|只|可能|或许|通常|一般|至少|至多|大约|几乎|并未|直到)",
+                    sentence,
+                ),
+                "negations": re.findall(
+                    r"(?:不|未|没有|并非|不能|不会|无)[^，。！？；]{0,18}",
+                    sentence,
+                ),
                 "negated": bool(re.search(r"不|未|无|没有|并非", sentence)),
                 "modality": "fact",
                 "evaluation_owner": "",
@@ -2249,6 +3256,7 @@ def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
 def render_reauthor_prompt(
     fact_ledger: dict[str, Any],
     *,
+    original_with_tokens: str,
     protected_map: str,
     previous_context: str,
     next_context: str,
@@ -2262,11 +3270,12 @@ def render_reauthor_prompt(
         template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace("{{STRATEGY_RULES}}", strategy_rules)
         .replace("{{FACT_LEDGER}}", json.dumps(fact_ledger, ensure_ascii=False, indent=2))
+        .replace("{{ORIGINAL_WITH_TOKENS}}", original_with_tokens)
         .replace("{{PROTECTED_MAP}}", protected_map)
         .replace("{{PREVIOUS_CONTEXT}}", previous_context)
         .replace("{{NEXT_CONTEXT}}", next_context)
-        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * 0.80))))
-        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * 1.25))))
+        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * QUALITY_SAFE_LENGTH_MIN))))
+        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * QUALITY_SAFE_LENGTH_MAX))))
         .replace("{{RETRY_FEEDBACK}}", retry_feedback)
     )
 
@@ -2277,11 +3286,16 @@ def render_audit_prompt(
     segment_ids: Iterable[int],
     *,
     content_type: str = "article",
+    fact_ledgers: dict[str, Any] | None = None,
 ) -> str:
     template = _AUDIT_PROMPT_PATH.read_text(encoding="utf-8")
     return (
         template.replace("{{SEGMENT_IDS}}", json.dumps(list(segment_ids), ensure_ascii=False))
         .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
+        .replace(
+            "{{FACT_LEDGERS}}",
+            json.dumps(fact_ledgers or {}, ensure_ascii=False, indent=2),
+        )
         .replace("{{ORIGINAL_MANUSCRIPT}}", original)
         .replace("{{CANDIDATE_MANUSCRIPT}}", candidate)
     )
@@ -2458,26 +3472,36 @@ def split_editorial_units(
     ]
 
 
-def substantive_rewrite_reasons(review: DeterministicReview) -> list[str]:
+def substantive_rewrite_reasons(
+    review: DeterministicReview,
+    *,
+    require_text_change: bool = True,
+) -> list[str]:
     reasons: list[str] = []
     if review.length_ratio <= 0:
-        return ["实质重著不足：候选正文为空"]
-    if review.editable_paragraphs <= 0:
-        return reasons
-    if review.literal_similarity > SUBSTANTIVE_SIMILARITY_MAX:
-        reasons.append(
-            f"实质重著不足：字面相似度 {review.literal_similarity:.3f}，不得高于 {SUBSTANTIVE_SIMILARITY_MAX:.2f}"
-        )
-    unchanged_ratio = review.unchanged_editable_paragraphs / max(1, review.editable_paragraphs)
-    if unchanged_ratio > SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX:
-        reasons.append(
-            f"实质重著不足：{review.unchanged_editable_paragraphs}/{review.editable_paragraphs} 个可编辑段落基本未改"
-        )
+        return ["候选正文为空"]
+    # v5 deliberately removes detector-driven similarity targets.  They forced
+    # unnecessary lexical drift and damaged voice.  Syntax experiments only need
+    # a real text change; the claim audit, not a similarity quota, protects quality.
+    if (
+        require_text_change
+        and review.editable_paragraphs > 0
+        and review.literal_similarity >= 0.995
+        and review.rewritten_paragraph_ratio <= 0.0
+    ):
+        reasons.append("候选非空白正文没有发生可送检的句法变化")
     return reasons
 
 
-def substantive_rewrite_passed(review: DeterministicReview) -> bool:
-    return not substantive_rewrite_reasons(review)
+def substantive_rewrite_passed(
+    review: DeterministicReview,
+    *,
+    require_text_change: bool = True,
+) -> bool:
+    return not substantive_rewrite_reasons(
+        review,
+        require_text_change=require_text_change,
+    )
 
 
 def combine_quality_audits(audits: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -2498,10 +3522,14 @@ def combine_quality_audits(audits: Iterable[dict[str, Any]]) -> dict[str, Any]:
     )
     failed_ids: list[Any] = []
     issues: list[Any] = []
+    claim_results: list[Any] = []
+    added_claims: list[Any] = []
     reasons: list[str] = []
     for item in values:
         failed_ids.extend(item.get("failed_segment_ids") or [])
         issues.extend(item.get("issues") or [])
+        claim_results.extend(item.get("claim_results") or [])
+        added_claims.extend(item.get("added_claims") or [])
         reason = str(item.get("reason") or "").strip()
         if reason:
             reasons.append(reason)
@@ -2511,6 +3539,8 @@ def combine_quality_audits(audits: Iterable[dict[str, Any]]) -> dict[str, Any]:
         **{key: all(item.get(key) is True for item in values) for key in boolean_keys},
         "failed_segment_ids": list(dict.fromkeys(failed_ids)),
         "issues": issues,
+        "claim_results": claim_results,
+        "added_claims": added_claims,
         "structural_rewrite_sufficient": all(
             item.get("structural_rewrite_sufficient") is True for item in values
         ),
@@ -2590,17 +3620,59 @@ def parse_quality_audit(text: str) -> dict[str, Any]:
     payload = json.loads(cleaned[start:end + 1])
     if not isinstance(payload, dict):
         raise ValueError("质量审稿 JSON 不是对象")
+    claim_results = payload.get("claim_results")
+    added_claims = payload.get("added_claims")
+    if not isinstance(claim_results, list) or not claim_results:
+        raise ValueError("质量审稿缺少逐 claim 的 claim_results")
+    if not isinstance(added_claims, list):
+        raise ValueError("质量审稿缺少 added_claims")
+    for index, item in enumerate(claim_results, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"质量审稿第 {index} 条 claim_result 无效")
+        if str(item.get("status") or "") not in {"preserved", "altered", "missing"}:
+            raise ValueError(f"质量审稿第 {index} 条 claim_result 状态无效")
     return payload
+
+
+def quality_audit_claim_coverage_reasons(
+    payload: dict[str, Any],
+    fact_ledgers: dict[str, Any],
+) -> list[str]:
+    expected = {
+        (str(audit_id), str(claim.get("claim_id") or ""))
+        for audit_id, ledger in fact_ledgers.items()
+        for claim in (ledger.get("claims") or [])
+        if str(claim.get("claim_id") or "").strip()
+    }
+    actual = {
+        (str(item.get("audit_id") or ""), str(item.get("claim_id") or ""))
+        for item in (payload.get("claim_results") or [])
+        if isinstance(item, dict)
+    }
+    reasons: list[str] = []
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    if missing:
+        reasons.append(
+            "缺少 claim 验收："
+            + "、".join(f"{audit_id}:{claim_id}" for audit_id, claim_id in missing[:20])
+        )
+    if extra:
+        reasons.append(
+            "存在账本外 claim 验收："
+            + "、".join(f"{audit_id}:{claim_id}" for audit_id, claim_id in extra[:20])
+        )
+    return reasons
 
 
 def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
     if not payload:
         return False
     score_rules = {
-        "semantic_fidelity": 95,
-        "information_completeness": 98,
-        "fluency": 90,
-        "voice_continuity": 90,
+        "semantic_fidelity": 98,
+        "information_completeness": 100,
+        "fluency": 92,
+        "voice_continuity": 92,
     }
     boolean_rules = (
         "no_added_facts",
@@ -2609,16 +3681,22 @@ def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
         "no_plot_or_event_change",
     )
     issues = payload.get("issues")
-    reason = str(payload.get("reason") or "")
-    contradictory_reason = any(
-        phrase in reason
-        for phrase in (
-            "保留主题句—解释—总结",
-            "保留原有骨架",
-            "编辑重构不足",
-            "表面变化",
-            "浅层改写",
+    claim_results = payload.get("claim_results")
+    added_claims = payload.get("added_claims")
+    claims_preserved = (
+        isinstance(claim_results, list)
+        and bool(claim_results)
+        and all(
+            isinstance(item, dict) and item.get("status") == "preserved"
+            for item in claim_results
         )
+    )
+    blocking_issue = isinstance(issues, list) and any(
+        not isinstance(item, dict)
+        or str(item.get("severity") or "").lower() in {"medium", "high"}
+        or str(item.get("type") or "")
+        in {"added_fact", "removed_information", "stance_change", "event_change"}
+        for item in issues
     )
     return (
         bool(payload.get("pass"))
@@ -2626,13 +3704,15 @@ def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
         and all(payload.get(key) is True for key in boolean_rules)
         and payload.get("structural_rewrite_sufficient") is True
         and isinstance(issues, list)
-        and not issues
-        and not contradictory_reason
+        and not blocking_issue
+        and claims_preserved
+        and isinstance(added_claims, list)
+        and not added_claims
     )
 
 
-def model_strategy() -> dict[str, Any]:
-    default_provider = _normalize_rewrite_provider(None)
+def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
+    default_provider = "deepseek"
     return {
         "default_rewrite_provider": default_provider,
         "rewrite_model": _rewrite_model_for_provider(default_provider),
@@ -2644,32 +3724,35 @@ def model_strategy() -> dict[str, Any]:
         "rewrite_reasoning_options": ["low", "medium", "high"],
         "candidate_count": 1,
         "max_rewrite_attempts_per_segment": int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS),
-        "rewrite_protocol": "fact_ledger_blank_slate_v4",
-        "experiment_mode": "exact_hash_human_in_loop",
-        "selection_mode": "isolated_calibration_before_full_run",
-        "recommended_max_calibration_segments": 3,
+        "rewrite_protocol": "fact_ledger_constrained_edit_v5",
+        "experiment_mode": "paired_black_box_human_in_loop",
+        "selection_mode": "contiguous_30_to_35_percent_then_stop",
+        "experiment_order": ["layout_only", "syntax_constrained", "combined"],
+        "recommended_max_calibration_segments": 12,
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],
         "material_paragraph_coverage_min": MATERIAL_PARAGRAPH_COVERAGE_MIN,
         "material_coverage_quantization": "nearest_achievable_whole_paragraph_count",
         "legacy_material_metrics_are_advisory": True,
-        "substantive_similarity_max": SUBSTANTIVE_SIMILARITY_MAX,
-        "substantive_unchanged_paragraph_ratio_max": (
-            SUBSTANTIVE_UNCHANGED_PARAGRAPH_RATIO_MAX
-        ),
+        "similarity_is_diagnostic_only": True,
         "editorial_unit_chars": [
             int(settings.AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS),
             int(settings.AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS),
+        ],
+        "macro_block_chars": [
+            int(settings.AIGC_REVIEW_MACRO_BLOCK_MIN_CHARS),
+            int(settings.AIGC_REVIEW_MACRO_BLOCK_MAX_CHARS),
         ],
         "audit_batch_units": int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS),
         "default_run_budget_cny": float(settings.AIGC_REVIEW_RUN_BUDGET_CNY),
         "default_calibration_budget_cny": float(settings.AIGC_REVIEW_CALIBRATION_BUDGET_CNY),
         "style_feature_version": STYLE_FEATURE_VERSION,
         "feature_learning_min_real_samples": 5,
+        "detector_efficacy": calibration_evidence_status(user_id=user_id),
         "audit_scope": "bounded_editorial_units_issue_first",
         "proportional_report_learning": False,
         "ocr": "local_only_zero_api_cost",
-        "human_pass_rule": "> 50%",
+        "human_pass_rule": ">= 25% official overview",
         "safety_target_percent": float(settings.AIGC_REVIEW_HUMAN_TARGET),
         "global_gate_changed": False,
         "novel_workflows_included": False,
@@ -2723,7 +3806,7 @@ def _rewrite_callable(provider: str) -> Callable[..., Any]:
 
 
 def _rewrite_provider_statuses() -> list[dict[str, Any]]:
-    default_provider = _normalize_rewrite_provider(None)
+    default_provider = "deepseek"
     return [
         {
             "id": "grok",
@@ -2731,6 +3814,7 @@ def _rewrite_provider_statuses() -> list[dict[str, Any]]:
             "model": _rewrite_model_for_provider("grok"),
             "configured": _rewrite_provider_configured("grok"),
             "default": default_provider == "grok",
+            "automatic": False,
             "reasoning": _rewrite_reasoning_for_provider("grok"),
             "input_usd_per_m": float(settings.AIGC_REVIEW_GROK_INPUT_USD_PER_M),
             "cached_input_usd_per_m": float(
@@ -2744,6 +3828,7 @@ def _rewrite_provider_statuses() -> list[dict[str, Any]]:
             "model": _rewrite_model_for_provider("deepseek"),
             "configured": _rewrite_provider_configured("deepseek"),
             "default": default_provider == "deepseek",
+            "automatic": True,
             "reasoning": "disabled",
         },
     ]

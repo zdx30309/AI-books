@@ -21,6 +21,7 @@ from app.models import Chapter, Task, TaskStatus, User
 from app.services.aigc_report_review import (
     AigcReviewModelError,
     ZhuqueReportError,
+    analyze_paired_reports,
     compare_zhuque_reports,
     create_calibration_sample,
     get_calibration_sample,
@@ -69,7 +70,8 @@ class OptimizeAigcReviewRequest(BaseModel):
     preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
     rewrite_provider: SupportedRewriteProvider = "deepseek"
     rewrite_reasoning_effort: Literal["low", "medium", "high"] = "low"
-    budget_cny: float = Field(0.80, gt=0, le=20)
+    experiment_type: Literal["layout_only", "syntax_constrained", "combined"] = "syntax_constrained"
+    budget_cny: float = Field(0.30, ge=0, le=20)
     title: str | None = Field(None, max_length=200)
     baseline_report: dict[str, Any] | None = None
 
@@ -81,7 +83,7 @@ class CompareAigcReviewRequest(BaseModel):
 
 
 class CalibrationSampleRequest(BaseModel):
-    text: str = Field(..., min_length=350, max_length=2000)
+    text: str = Field(..., min_length=350, max_length=2500)
     content_type: SupportedContentType = "article"
     source_group: str = Field("", max_length=80)
     variant_type: Literal[
@@ -90,9 +92,14 @@ class CalibrationSampleRequest(BaseModel):
         "human_directed",
         "human_edited",
         "human_control",
+        "external_saas",
+        "layout_only",
+        "syntax_constrained",
+        "combined",
     ]
     parent_sha256: str | None = Field(None, min_length=64, max_length=64)
     strategy_id: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
+    quality_gate_passed: bool | None = None
 
 
 class CalibrationResultRequest(BaseModel):
@@ -102,8 +109,8 @@ class CalibrationResultRequest(BaseModel):
 
 
 @router.get("/strategy", summary="查看最低成本的当前模型路由")
-def get_aigc_review_strategy(_user: User = Depends(get_current_user)) -> dict:
-    return model_strategy()
+def get_aigc_review_strategy(user: User = Depends(get_current_user)) -> dict:
+    return model_strategy(user_id=str(user.id))
 
 
 @router.post("/report", summary="本地 OCR 解析真实朱雀 PDF 并映射原稿片段")
@@ -125,6 +132,7 @@ async def parse_aigc_report(
             original_text,
             filename=filename,
         )
+        parsed["model_strategy"] = model_strategy(user_id=str(user.id))
         parsed["report_storage_id"] = _store_report_pdf(user.id, pdf_bytes)
         return parsed
     except ZhuqueReportError as exc:
@@ -157,6 +165,7 @@ async def optimize_aigc_report(
             preferred_strategy=req.preferred_strategy,
             rewrite_provider=req.rewrite_provider,
             rewrite_reasoning_effort=req.rewrite_reasoning_effort,
+            experiment_type=req.experiment_type,
             cache_namespace=str(user.id),
             budget_cny=req.budget_cny,
         )
@@ -227,6 +236,7 @@ async def create_aigc_calibration(
             variant_type=req.variant_type,
             parent_sha256=req.parent_sha256,
             strategy_id=req.strategy_id,
+            quality_gate_passed=req.quality_gate_passed,
         )
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -299,6 +309,60 @@ async def upload_aigc_calibration_report(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/paired-analysis", summary="对照前后正文与两份真实朱雀报告")
+async def paired_aigc_analysis(
+    baseline_file: UploadFile = File(...),
+    modified_file: UploadFile = File(...),
+    baseline_text: str = Form(...),
+    modified_text: str = Form(...),
+    content_type: SupportedContentType = Form("article"),
+    hashes_confirmed: bool = Form(False),
+    user: User = Depends(get_current_user),
+) -> dict:
+    for upload in (baseline_file, modified_file):
+        if not (upload.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="前后报告都必须是朱雀打印导出的 PDF。")
+    baseline_pdf, modified_pdf = await asyncio.gather(
+        baseline_file.read(),
+        modified_file.read(),
+    )
+    try:
+        baseline_report = await asyncio.to_thread(
+            parse_zhuque_report,
+            baseline_pdf,
+            baseline_text,
+            filename=baseline_file.filename or "baseline.pdf",
+        )
+        modified_report = await asyncio.to_thread(
+            parse_zhuque_report,
+            modified_pdf,
+            modified_text,
+            filename=modified_file.filename or "modified.pdf",
+        )
+        baseline_report["report_storage_id"] = _store_report_pdf(user.id, baseline_pdf)
+        modified_report["report_storage_id"] = _store_report_pdf(user.id, modified_pdf)
+        result = await asyncio.to_thread(
+            analyze_paired_reports,
+            baseline_text,
+            modified_text,
+            baseline_report,
+            modified_report,
+            content_type=content_type,
+            hashes_confirmed=hashes_confirmed,
+        )
+        result["baseline_report"] = baseline_report
+        result["modified_report"] = modified_report
+        result["detector_efficacy"] = model_strategy(user_id=str(user.id)).get(
+            "detector_efficacy"
+        )
+        return result
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("朱雀前后报告差分分析失败")
+        raise HTTPException(status_code=500, detail=f"朱雀前后报告差分分析失败: {exc}") from exc
+
+
 def _store_report_pdf(user_id: UUID, pdf_bytes: bytes) -> str:
     storage_id = str(uuid4())
     directory = _REPORT_UPLOAD_DIR / str(user_id)
@@ -367,13 +431,19 @@ def _save_review_archive(
             "aigc_review_archive": True,
             "cover_disabled": True,
             "content_type": content_type,
-            "aigc_policy_version": "report-driven-v4.0",
+            "aigc_policy_version": "report-driven-v5",
             "aigc_required": True,
             "aigc_status": "candidate_ready" if quality_passed else "manual_review",
             "aigc_passed": False,
             "aigc_quality_passed": quality_passed,
             "aigc_report_available": bool(baseline_report),
             "aigc_initial_human_percent": baseline_report.get("human_percent"),
+            "aigc_initial_official_human_percent": baseline_report.get(
+                "official_human_percent"
+            ),
+            "aigc_initial_derived_human_share_percent": baseline_report.get(
+                "derived_human_share_percent"
+            ),
             "aigc_final_human_percent": None,
             "aigc_rewrite_rounds": int(result.get("iteration") or 1),
             "aigc_manual_review_reason": (
@@ -383,6 +453,7 @@ def _save_review_archive(
             "aigc_original_sha256": result.get("original_sha256"),
             "aigc_candidate_sha256": result.get("candidate_sha256") or sha256_text(reviewed),
             "aigc_prompt_version": result.get("prompt_version"),
+            "aigc_experiment_type": result.get("experiment_type"),
             "aigc_models": result.get("models") or {},
             "aigc_cost": result.get("cost") or {},
             "aigc_budget": result.get("budget") or {},
@@ -459,6 +530,12 @@ def _update_review_archive(
             "aigc_status": "passed" if passed else "manual_review",
             "aigc_passed": passed,
             "aigc_final_human_percent": comparison.get("recheck_human_percent"),
+            "aigc_final_official_human_percent": comparison.get(
+                "recheck_official_human_percent"
+            ),
+            "aigc_final_derived_human_share_percent": comparison.get(
+                "recheck_derived_human_share_percent"
+            ),
             "aigc_human_percent_delta": comparison.get("human_percent_delta"),
             "aigc_selected_humanized_share_percent": comparison.get(
                 "selected_humanized_share_percent"

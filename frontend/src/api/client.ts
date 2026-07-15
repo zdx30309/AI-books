@@ -14,6 +14,7 @@ import type {
   AigcReviewCalibrationSample,
   AigcReviewCalibrationVariant,
   AigcReviewComparison,
+  AigcReviewPairedAnalysis,
   AigcReviewOptimizeResult,
   AigcReviewReport,
   AigcReviewStrategy,
@@ -224,6 +225,42 @@ async function uploadFile<T>(
     throw new ApiError(res.status, detail);
   }
   return (await res.json()) as T;
+}
+
+async function uploadAigcPairedFiles(
+  baselineFile: File,
+  modifiedFile: File,
+  baselineText: string,
+  modifiedText: string,
+  contentType: AigcReviewContentType,
+  hashesConfirmed: boolean,
+): Promise<AigcReviewPairedAnalysis> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const form = new FormData();
+  form.append("baseline_file", baselineFile);
+  form.append("modified_file", modifiedFile);
+  form.append("baseline_text", baselineText);
+  form.append("modified_text", modifiedText);
+  form.append("content_type", contentType);
+  form.append("hashes_confirmed", String(hashesConfirmed));
+  const res = await fetch(`${BASE}/aigc-review/paired-analysis`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = errorMessageFromBody(await res.json(), detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as AigcReviewPairedAnalysis;
 }
 
 async function downloadWithBody(
@@ -664,6 +701,7 @@ export const api = {
         optimize_result: optimizeResult,
       }),
     }),
+  analyzeAigcReviewPair: uploadAigcPairedFiles,
   createAigcReviewCalibration: (body: {
     text: string;
     content_type: AigcReviewContentType;
@@ -671,6 +709,7 @@ export const api = {
     variant_type: AigcReviewCalibrationVariant;
     parent_sha256?: string | null;
     strategy_id?: string | null;
+    quality_gate_passed?: boolean | null;
   }) =>
     request<AigcReviewCalibrationSample>("/aigc-review/calibrations", {
       method: "POST",
