@@ -76,6 +76,16 @@ function friendlyTaskError(message: string | null | undefined) {
   return message;
 }
 
+function downloadPlainText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 interface PolishTrigger {
   chapterId: string;
   textareaEl: HTMLTextAreaElement;
@@ -618,6 +628,15 @@ export function BookDetail() {
     bestSafeCandidate && typeof bestSafeCandidate.text === "string"
       ? bestSafeCandidate.text
       : "";
+  const reportDrivenCandidateText =
+    typeof aigcReport?.reportDrivenCandidateText === "string"
+      ? aigcReport.reportDrivenCandidateText
+      : "";
+  const manualCandidateText = reportDrivenCandidateText || bestSafeCandidateText;
+  const detectorProbeArchive =
+    task.aigc_status === "detector_probe_ready"
+    || task.aigc_status === "detector_probe_hit"
+    || task.aigc_status === "detector_probe_no_hit";
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
@@ -766,7 +785,11 @@ export function BookDetail() {
                 <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
                   <span className="font-medium text-gold-100">已转人工复核：</span>
                   {task.aigc_manual_review_reason || failureMessage || "朱雀分数与文稿质量未能同时达标。"}
-                  <div className="mt-1 text-warm-400">高质量 04_format.md 原稿保持不变，当前稿不可下载、不可标记完成。</div>
+                  <div className="mt-1 text-warm-400">
+                    {detectorProbeArchive
+                      ? "高质量 04_format.md 原稿保持不变；探索稿可下载送检，但不可标记为终稿。"
+                      : "高质量 04_format.md 原稿保持不变，当前稿不可下载、不可标记完成。"}
+                  </div>
                 </div>
               )}
               {isCompleted && task.cover_status === "failed" && task.cover_error && (
@@ -930,10 +953,20 @@ export function BookDetail() {
               </pre>
             </details>
             <details className="rounded-lg border border-gold-500/15 bg-base-900/50 p-4" open>
-              <summary className="cursor-pointer text-sm text-gold-100">最佳安全候选（仅供复核）</summary>
+              <summary className="cursor-pointer text-sm text-gold-100">{detectorProbeArchive ? "朱雀探索实验稿（非终稿）" : "最佳安全候选（仅供复核）"}</summary>
               <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-warm-200">
-                {bestSafeCandidateText || "没有同时通过确定性保护的候选，系统已回滚到原稿。"}
+                {manualCandidateText || "没有同时通过确定性保护的候选，系统已回滚到原稿。"}
               </pre>
+              {detectorProbeArchive && manualCandidateText && (
+                <button
+                  type="button"
+                  onClick={() => downloadPlainText(manualCandidateText, "朱雀探索实验稿-非终稿.txt")}
+                  className="btn-ghost mt-4 inline-flex items-center gap-2"
+                >
+                  <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  下载探索稿送检
+                </button>
+              )}
             </details>
           </div>
         </section>

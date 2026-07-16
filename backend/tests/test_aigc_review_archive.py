@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.api.routers import aigc_review as router
+from app.api.routers import tasks as task_router
 from app.models import Chapter, Task, TaskStatus
 from app.services.aigc_report_review import sha256_text
 
@@ -47,6 +48,14 @@ class _FakeDb:
 
     def query(self, model):
         return _FakeQuery(self, model)
+
+
+class _GetOnlyDb:
+    def __init__(self, task):
+        self.task = task
+
+    def get(self, _model, _task_id):
+        return self.task
 
 
 def test_review_candidate_is_archived_with_original_candidate_and_report(
@@ -156,6 +165,44 @@ def test_detector_probe_archive_never_becomes_completed(
     assert task.config["aigc_passed"] is False
     assert "markdown" not in task.config
     assert not (tmp_path / "backend" / "output" / f"task_{task.id}" / "05_aigc_final.md").exists()
+
+
+def test_report_driven_probe_candidate_is_visible_to_its_owner(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    task_id = uuid4()
+    owner_id = uuid4()
+    task = Task(
+        id=task_id,
+        owner_id=owner_id,
+        source_url="manual://aigc-review",
+        status=TaskStatus.MANUAL_REVIEW,
+        progress=94,
+        current_step="等待真实复检",
+        config={
+            "aigc_review_archive": True,
+            "aigc_experiment_type": "detector_probe",
+            "aigc_experimental_quality_bypassed": True,
+        },
+    )
+    output = tmp_path / f"task_{task_id}"
+    output.mkdir(parents=True)
+    (output / "aigc_quality_report.json").write_text(
+        '{"status":"probe_ready"}', encoding="utf-8"
+    )
+    (output / "05_aigc_candidate.md").write_text("可送检探索稿", encoding="utf-8")
+    monkeypatch.setattr(task_router, "_task_output_dir", lambda _task_id: output)
+
+    payload = task_router.get_task_aigc_report(
+        task_id,
+        db=_GetOnlyDb(task),
+        user=SimpleNamespace(id=owner_id),
+    )
+
+    assert payload["reportDrivenCandidateText"] == "可送检探索稿"
+    assert payload["reportDrivenExperimentType"] == "detector_probe"
+    assert payload["reportDrivenQualityBypassed"] is True
 
 
 def test_strict_recheck_promotes_archived_candidate_to_completed(

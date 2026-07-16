@@ -1753,6 +1753,24 @@ def get_task_aigc_report(
     sanitized["selectedCandidates"] = [item for item in review_candidates if item.get("selected")]
     sanitized["bestSafeCandidate"] = safe_candidates[0] if safe_candidates else None
     sanitized["originalAvailable"] = (output_dir / "04_format.md").exists()
+    if bool((task.config or {}).get("aigc_review_archive")):
+        candidate_path = output_dir / "05_aigc_candidate.md"
+        try:
+            report_candidate = (
+                candidate_path.read_text(encoding="utf-8")
+                if candidate_path.exists()
+                else ""
+            )
+        except OSError:
+            logger.warning("[task %s] failed to read report-driven candidate", task.id)
+            report_candidate = ""
+        sanitized["reportDrivenCandidateText"] = report_candidate
+        sanitized["reportDrivenExperimentType"] = (task.config or {}).get(
+            "aigc_experiment_type"
+        )
+        sanitized["reportDrivenQualityBypassed"] = bool(
+            (task.config or {}).get("aigc_experimental_quality_bypassed")
+        )
     return sanitized
 
 

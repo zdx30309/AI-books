@@ -376,6 +376,9 @@ export interface AigcQualityReport {
   selectedCandidates?: Array<Record<string, unknown>>;
   bestSafeCandidate?: Record<string, unknown> | null;
   originalAvailable?: boolean;
+  reportDrivenCandidateText?: string;
+  reportDrivenExperimentType?: AigcReviewExperimentType;
+  reportDrivenQualityBypassed?: boolean;
   [key: string]: unknown;
 }
 
