@@ -136,7 +136,7 @@ export function AigcReview() {
     ) return;
     if (
       experimentType === "detector_probe"
-      && !window.confirm("本轮只在一个宏块中移动等量逗号和句号，模型费用为 0。实验稿不能当终稿，确认继续吗？")
+      && !window.confirm("本轮只在一个宏块中替换高频机器化连接标记，模型费用为 0。实验稿不能当终稿，确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -359,7 +359,7 @@ export function AigcReview() {
                   : experimentType === "layout_only"
                     ? `零费用重组 ${selectedIds.size} 段`
                     : probeMode
-                      ? "生成受控句界实验稿"
+                      ? "生成连接标记实验稿"
                       : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
               </button>
               {!rewriteProviderReady && (
@@ -385,7 +385,7 @@ export function AigcReview() {
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : probeMode
-                ? " 本轮只在一个 1200–2500 字宏块中交换等量逗号和句号的位置；词语、段落和标点总量不变，模型费用 0 元。"
+                ? " 本轮只在一个 1200–2500 字宏块中替换反复出现的连接标记；事实、段落、数字和引语不变，模型费用 0 元。"
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
@@ -424,7 +424,7 @@ export function AigcReview() {
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
               {resultIsProbe
-                ? "受控单变量：句界分布 · 0 次模型调用 · 质量终审已跳过"
+                ? "受控单变量：连接标记分布 · 0 次模型调用 · 质量终审已跳过"
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>

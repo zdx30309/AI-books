@@ -44,7 +44,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "zhuque-report-review-v5.1"
-PROBE_PROMPT_VERSION = "zhuque-detector-controlled-v2"
+PROBE_PROMPT_VERSION = "zhuque-detector-controlled-v3"
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -2529,6 +2529,119 @@ def sentence_boundary_distribution_probe(text: str) -> tuple[str, list[dict[str,
     return candidate, sorted(changes, key=lambda item: int(item["position"]))
 
 
+_DISCOURSE_MARKER_REPLACEMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Longer, context-bound phrases come first.  They prevent a generic
+    # connector swap from producing broken combinations such as ``也所以``
+    # or changing temporal ``同时`` into additive ``另外``.
+    ("值得注意的是", ("需要注意的是",)),
+    ("从这个角度", ("就这个角度看",)),
+    ("这两者同时存在", ("这两者并存",)),
+    ("进一步削弱", ("继续削弱",)),
+    ("进一步推进", ("继续推进",)),
+    ("进一步加强", ("继续加强",)),
+    ("进一步完善", ("继续完善",)),
+    ("同时也是", ("也是",)),
+    ("同时也", ("也",)),
+    ("也因此", ("也由此",)),
+    ("不可否认", ("不能否认",)),
+    ("综上所述", ("总的来看",)),
+    ("总而言之", ("总的说来",)),
+    ("也就是说", ("换句话说",)),
+    ("问题在于", ("麻烦在于",)),
+    ("值得注意", ("需要留意",)),
+    ("事实上", ("实际上",)),
+    ("然而", ("不过", "可是")),
+    ("因此", ("所以", "因而")),
+    ("此外", ("另外", "除此之外")),
+    ("不仅", ("不只",)),
+    ("恰恰", ("偏偏",)),
+    ("正是", ("就是", "恰是")),
+)
+
+
+def discourse_marker_distribution_probe(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Replace only recurrent discourse markers outside quotes and headings.
+
+    This is a deliberately narrow black-box variable.  It does not reorder
+    claims, sentences, paragraphs, numbers, names or quotations, and it never
+    calls a model.  The previous sentence-boundary experiment remains above
+    only so historical reports can be reproduced; it is no longer selected.
+    """
+    quote_mask = _probe_quote_mask(text)
+    heading_mask = _probe_heading_mask(text)
+    replacements: list[tuple[int, int, str, str]] = []
+    occupied: list[tuple[int, int]] = []
+    replacement_counts: dict[str, int] = {}
+    for marker, alternatives in sorted(
+        _DISCOURSE_MARKER_REPLACEMENTS,
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        for match in re.finditer(re.escape(marker), text):
+            start, end = match.span()
+            if any(quote_mask[start:end]) or any(heading_mask[start:end]):
+                continue
+            if any(start < used_end and end > used_start for used_start, used_end in occupied):
+                continue
+            index = replacement_counts.get(marker, 0)
+            replacement = alternatives[index % len(alternatives)]
+            replacement_counts[marker] = index + 1
+            if replacement == marker:
+                continue
+            replacements.append((start, end, marker, replacement))
+            occupied.append((start, end))
+    if not replacements:
+        return text, []
+
+    candidate = text
+    changes: list[dict[str, Any]] = []
+    for start, end, marker, replacement in sorted(replacements, reverse=True):
+        candidate = candidate[:start] + replacement + candidate[end:]
+        changes.append(
+            {
+                "position": start,
+                "from": marker,
+                "to": replacement,
+                "marker": marker,
+            }
+        )
+    return candidate, sorted(changes, key=lambda item: int(item["position"]))
+
+
+def _detector_probe_units(
+    text: str,
+    *,
+    min_chars: int = 1200,
+    max_chars: int = 2500,
+) -> list[EditorialUnit]:
+    """Build probe units without ever crossing a detected section heading."""
+    heading_starts = sorted({start for start, _end in _heading_spans(text)})
+    if not heading_starts:
+        return split_editorial_units(text, min_chars=min_chars, max_chars=max_chars)
+
+    boundaries = [0, *heading_starts, len(text)]
+    boundaries = sorted(set(boundaries))
+    units: list[EditorialUnit] = []
+    for range_start, range_end in zip(boundaries, boundaries[1:]):
+        if range_end <= range_start:
+            continue
+        section = text[range_start:range_end]
+        for local_unit in split_editorial_units(
+            section,
+            min_chars=min_chars,
+            max_chars=max_chars,
+        ):
+            units.append(
+                EditorialUnit(
+                    unit_index=len(units) + 1,
+                    start=range_start + local_unit.start,
+                    end=range_start + local_unit.end,
+                    text=local_unit.text,
+                )
+            )
+    return units
+
+
 def _controlled_probe_scope(
     original: str,
     segments: list[ZhuqueSegment],
@@ -2544,18 +2657,18 @@ def _controlled_probe_scope(
         source = original[segment.start:segment.end]
         if source != segment.mapped_text:
             raise ZhuqueReportError(f"片段 {segment.segment_id} 的映射正文已被修改，请重新解析报告。")
-        for unit in split_editorial_units(source, min_chars=1200, max_chars=2500):
+        for unit in _detector_probe_units(source, min_chars=1200, max_chars=2500):
             raw_unit_source = source[unit.start:unit.end]
             if len(raw_unit_source) < 1200:
                 continue
-            candidate, changes = sentence_boundary_distribution_probe(raw_unit_source)
+            candidate, changes = discourse_marker_distribution_probe(raw_unit_source)
             if not changes:
                 continue
             risk = segment.share_percent * (1.1 if segment.label == "ai" else 1.0)
             candidates.append((len(changes), risk, segment, unit, candidate, changes))
     if not candidates:
         raise ZhuqueReportError(
-            "选中区域没有可形成 1200–2500 字句界对照块；请多选相邻风险片段或选择较长片段。"
+            "选中区域没有可形成 1200–2500 字高频连接标记对照块；请多选相邻风险片段或选择较长片段。"
         )
     _change_count, _risk, segment, unit, candidate, changes = max(
         candidates,
@@ -2600,13 +2713,20 @@ def build_detector_probe_result(
         source,
         unit_candidate,
         preserve_paragraph_count=True,
-        min_length_ratio=1.0,
-        max_length_ratio=1.0,
+        min_length_ratio=0.98,
+        max_length_ratio=1.02,
     )
+    hard_safety_passed = deterministic_hard_safety_passed(
+        deterministic,
+        min_length_ratio=0.98,
+        max_length_ratio=1.02,
+    )
+    if not hard_safety_passed:
+        raise AigcReviewModelError("高频连接标记单变量实验未通过事实、锚点或格式保护。")
     attempt = {
         "attempt": 1,
         "passed": True,
-        "hard_safety_passed": True,
+        "hard_safety_passed": hard_safety_passed,
         "substantive_rewrite_passed": unit_candidate != source,
         "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
         "structured_output": True,
@@ -2618,9 +2738,9 @@ def build_detector_probe_result(
         "output_tokens": 0,
         "reasoning_tokens": 0,
         "cost_cny": 0.0,
-        "strategy_id": "controlled_probe:sentence_boundary_distribution_only",
+        "strategy_id": "controlled_probe:discourse_marker_distribution_only",
         "rewrite_provider": "local",
-        "rewrite_model": "local-boundary-swap-v1",
+        "rewrite_model": "local-marker-rewrite-v1",
     }
     unit_result = {
         "unit_id": unit.unit_id,
@@ -2632,22 +2752,22 @@ def build_detector_probe_result(
         "fact_ledger_mode": "not_used_detector_probe",
         "fact_ledger_claim_count": 0,
         "fact_ledger_cost_cny": 0.0,
-        "hard_safety_passed": True,
+        "hard_safety_passed": hard_safety_passed,
         "substantive_rewrite_passed": True,
         "rewrite_attempts": 1,
         "attempts": [attempt],
         "deterministic_review": deterministic.to_dict(),
         "candidate_preview": unit_candidate[:400],
         "rejected_candidate_preview": "",
-        "probe_profile": "sentence_boundary_distribution_only",
+        "probe_profile": "discourse_marker_distribution_only",
     }
     segment_result = {
         "segment_id": segment.segment_id,
-        "strategy_id": "controlled_probe:sentence_boundary_distribution_only",
+        "strategy_id": "controlled_probe:discourse_marker_distribution_only",
         "rewrite_provider": "local",
-        "rewrite_model": "local-boundary-swap-v1",
+        "rewrite_model": "local-marker-rewrite-v1",
         "status": "ready",
-        "hard_safety_passed": True,
+        "hard_safety_passed": hard_safety_passed,
         "substantive_rewrite_passed": True,
         "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
         "original_chars": len(source),
@@ -2670,7 +2790,7 @@ def build_detector_probe_result(
         "status": "probe_ready",
         "deliverable": False,
         "next_action": (
-            "受控句界实验稿已生成：仅一个宏块交换等量逗号和句号，模型费用 0 元。"
+            "高频连接标记单变量实验稿已生成：仅在一个宏块中替换反复出现的机器化连接标记，模型费用 0 元。"
             "请上传这一版的真实朱雀报告；未取得结果前不会追加其他变量。"
         ),
         "original_sha256": sha256_text(original),
@@ -2679,7 +2799,7 @@ def build_detector_probe_result(
         "candidate_text": assembled,
         "selected_segment_ids": [segment.segment_id],
         "iteration": iteration,
-        "preferred_strategy": "controlled_probe:sentence_boundary_distribution_only",
+        "preferred_strategy": "controlled_probe:discourse_marker_distribution_only",
         "content_type": content_type,
         "experiment_type": "detector_probe",
         "segment_results": [segment_result],
@@ -2702,7 +2822,7 @@ def build_detector_probe_result(
         },
         "models": {
             "rewrite_provider": "local",
-            "rewrite": "local-boundary-swap-v1",
+            "rewrite": "local-marker-rewrite-v1",
             "fact": "not_used_detector_probe",
             "audit": "skipped_detector_probe",
             "rewrite_thinking": "disabled",
@@ -2715,29 +2835,34 @@ def build_detector_probe_result(
             "processed_units": 1,
             "processed_segment_ids": [segment.segment_id],
             "budget_stopped": False,
-            "variable": "sentence_boundary_distribution_only",
+            "variable": "discourse_marker_distribution_only",
             "scope_start": global_start,
             "scope_end": global_end,
             "scope_chars": len(source),
-            "changed_punctuation_count": len(changes),
+            "changed_marker_count": len(changes),
             "invariants": {
-                "same_length": len(source) == len(unit_candidate),
-                "same_paragraph_breaks": [
-                    index for index, char in enumerate(source) if char == "\n"
-                ]
-                == [index for index, char in enumerate(unit_candidate) if char == "\n"],
+                "same_paragraph_count": source.count("\n") == unit_candidate.count("\n"),
+                "same_sentence_order": True,
                 "same_comma_count": source.count("，") == unit_candidate.count("，"),
                 "same_full_stop_count": source.count("。") == unit_candidate.count("。"),
-                "same_non_punctuation_text": re.sub(r"[，。]", "", source)
-                == re.sub(r"[，。]", "", unit_candidate),
-                "quotes_untouched": all(not _probe_quote_mask(source)[int(item["position"])] for item in changes),
+                "same_digits": re.findall(r"\d+(?:\.\d+)?", source)
+                == re.findall(r"\d+(?:\.\d+)?", unit_candidate),
+                "quotes_untouched": all(
+                    not any(
+                        _probe_quote_mask(source)[
+                            int(item["position"]):int(item["position"]) + len(str(item["from"]))
+                        ]
+                    )
+                    for item in changes
+                ),
             },
             "changes": changes,
-            "hypotheses": ["sentence_boundary_distribution_sensitivity"],
+            "hypotheses": ["discourse_marker_distribution_sensitivity"],
             "legacy_failed_hypotheses": [
                 "multi_profile_rotation",
                 "uniform_shortening",
                 "templated_first_person_reaction",
+                "sentence_boundary_distribution_sensitivity",
             ],
         },
     }
@@ -2799,7 +2924,7 @@ def optimize_report_segments(
             content_type=content_type,
             rewrite=lambda *_args, **_kwargs: ("", {}),
             rewrite_provider="local",
-            rewrite_model="local-boundary-swap-v1",
+            rewrite_model="local-marker-rewrite-v1",
             request_id=request_id,
             iteration=iteration,
             budget_cny=0.0,

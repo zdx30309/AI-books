@@ -660,11 +660,11 @@ export interface AigcReviewOptimizeResult {
     processed_units: number;
     processed_segment_ids: number[];
     budget_stopped: boolean;
-    variable?: "sentence_boundary_distribution_only";
+    variable?: "discourse_marker_distribution_only";
     scope_start?: number;
     scope_end?: number;
     scope_chars?: number;
-    changed_punctuation_count?: number;
+    changed_marker_count?: number;
     invariants?: Record<string, boolean>;
     changes?: Array<{ position: number; from: string; to: string }>;
     hypotheses: string[];

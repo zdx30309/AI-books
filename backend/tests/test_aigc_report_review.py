@@ -1388,18 +1388,19 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
-def test_detector_probe_is_one_zero_cost_sentence_boundary_variable() -> None:
+def test_detector_probe_is_one_zero_cost_discourse_marker_variable() -> None:
     original = normalize_manuscript_text((
-        "甲先核对旧档案中的时间和地点，随后把已经确认的数字抄入记录。"
-        "这一步并不复杂。乙检查人物姓名和引语，确认材料没有遗漏。"
-        "记录写得很长，因为同一事件还涉及三处地点、两份命令和一条补充说明。"
-        "最后一名校对者读完短句。他没有添加判断，只把既有结论留在原处。\n\n"
-    ) * 16)
+        "然而，校对者仍先核对旧档案中的地点。因此，已经确认的材料被留在原处。"
+        "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
+        "问题在于，记录中的因果关系不能被改动。值得注意的是，数字和书名也必须保留。"
+        "这项工作不仅要复核事实，而且要守住原有立场。"
+        "史料写道：“然而，因此，同时，这些词在引语里必须保留。”\n\n"
+    ) * 18)
     segment = ZhuqueSegment(
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("受控句界实验不应调用任何模型")
+        raise AssertionError("连接标记单变量实验不应调用任何模型")
 
     result = optimize_report_segments(
         original,
@@ -1421,31 +1422,70 @@ def test_detector_probe_is_one_zero_cost_sentence_boundary_variable() -> None:
     assert result["models"]["fact"] == "not_used_detector_probe"
     assert result["models"]["audit"] == "skipped_detector_probe"
     assert result["models"]["rewrite_provider"] == "local"
-    assert result["models"]["rewrite"] == "local-boundary-swap-v1"
+    assert result["models"]["rewrite"] == "local-marker-rewrite-v1"
     assert result["cost"]["estimated_cny"] == 0
     assert result["candidate_text"] != original
     assert result["editorial_unit_count"] == 1
     probe = result["detector_probe"]
     assert probe["mode"] == "controlled_single_variable"
-    assert probe["variable"] == "sentence_boundary_distribution_only"
+    assert probe["variable"] == "discourse_marker_distribution_only"
     assert 1200 <= probe["scope_chars"] <= 2500
-    assert probe["changed_punctuation_count"] >= 6
+    assert probe["changed_marker_count"] >= 6
     assert probe["invariants"] == {
-        "same_length": True,
-        "same_paragraph_breaks": True,
+        "same_paragraph_count": True,
+        "same_sentence_order": True,
         "same_comma_count": True,
         "same_full_stop_count": True,
-        "same_non_punctuation_text": True,
+        "same_digits": True,
         "quotes_untouched": True,
     }
     start, end = probe["scope_start"], probe["scope_end"]
     assert result["candidate_text"][:start] == original[:start]
-    assert result["candidate_text"][end:] == original[end:]
+    length_delta = (
+        result["segment_results"][0]["candidate_chars"]
+        - result["segment_results"][0]["original_chars"]
+    )
+    assert result["candidate_text"][end + length_delta:] == original[end:]
     source = original[start:end]
-    candidate = result["candidate_text"][start:end]
-    assert re.sub(r"[，。]", "", source) == re.sub(r"[，。]", "", candidate)
+    candidate = result["candidate_text"][start:end + length_delta]
+    assert source != candidate
     assert source.count("，") == candidate.count("，")
     assert source.count("。") == candidate.count("。")
+    assert "“然而，因此，同时，这些词在引语里必须保留。”" in candidate
+
+
+def test_discourse_marker_probe_uses_context_safe_phrase_replacements() -> None:
+    source = (
+        "这两者同时存在，无法互相抵消。战后，朝廷进一步削弱王国权力，"
+        "汉武帝后来又进一步推进中央集权。周亚夫也因此成为重要功臣，"
+        "七国之乱同时也把他推入朝堂漩涡。然而景帝并未采纳建议。"
+    )
+
+    candidate, changes = review.discourse_marker_distribution_probe(source)
+
+    assert len(changes) == 6
+    assert "这两者并存" in candidate
+    assert "继续削弱" in candidate
+    assert "继续推进" in candidate
+    assert "也由此成为" in candidate
+    assert "七国之乱也把他" in candidate
+    assert "不过景帝" in candidate
+    assert "另外存在" not in candidate
+    assert "接着再削弱" not in candidate
+    assert "也所以" not in candidate
+    assert "一并也把" not in candidate
+
+
+def test_detector_probe_units_never_cross_section_headings() -> None:
+    first = "然而，第一节仍需核对。因此，材料必须保留。" * 90
+    second = "同时也是第二节的判断。此外，数字必须保留。" * 90
+    source = f"第一节\n{first}\n\n第二节\n{second}"
+
+    units = review._detector_probe_units(source)
+
+    assert len(units) >= 2
+    assert all(not ("第一节" in unit.text and "第二节" in unit.text) for unit in units)
+    assert all(0 <= unit.start < unit.end <= len(source) for unit in units)
 
 
 def test_detector_probe_recheck_reports_detector_hit_without_quality_pass(
