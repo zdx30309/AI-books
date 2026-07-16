@@ -84,6 +84,8 @@ export function AigcReview() {
     [report, selectedIds],
   );
   const finalPassed = Boolean(result?.status === "candidate_ready" && comparison?.strict_pass);
+  const probeMode = experimentType === "detector_probe";
+  const resultIsProbe = result?.status === "probe_ready";
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
@@ -131,6 +133,10 @@ export function AigcReview() {
     if (
       experimentType === "combined"
       && !window.confirm("组合实验会调用 DeepSeek 并同时重组段落边界。确认在前两次受控实验后继续吗？")
+    ) return;
+    if (
+      experimentType === "detector_probe"
+      && !window.confirm("朱雀探索实验会跳过事实账本和质量终审，只验证网传方法能否提升人工特征。实验稿不能当终稿，确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -291,20 +297,27 @@ export function AigcReview() {
                 <select
                   id="aigc-experiment"
                   value={experimentType}
-                  onChange={(event) => setExperimentType(event.target.value as AigcReviewExperimentType)}
+                  onChange={(event) => {
+                    const value = event.target.value as AigcReviewExperimentType;
+                    setExperimentType(value);
+                    if (value === "detector_probe") {
+                      setRewriteProvider("deepseek");
+                    }
+                  }}
                   disabled={optimizing}
                   className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
                 >
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
+                  <option value="detector_probe">朱雀探索实验（跳过质量终审）</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
                   id="aigc-rewrite-provider"
                   value={rewriteProvider}
                   onChange={(event) => setRewriteProvider(event.target.value as AigcReviewRewriteProvider)}
-                  disabled={optimizing || experimentType === "layout_only"}
+                  disabled={optimizing || experimentType === "layout_only" || probeMode}
                   className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
                 >
                   {rewriteProviderOptions.map((provider) => (
@@ -341,7 +354,13 @@ export function AigcReview() {
               </div>
               <button type="button" onClick={() => optimize()} disabled={optimizing || selectedIds.size === 0 || report.strict_pass || !rewriteProviderReady} className="btn-gold inline-flex min-w-[230px] items-center justify-center gap-2 disabled:opacity-45">
                 {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                {optimizing ? "生成并验收中" : experimentType === "layout_only" ? `零费用重组 ${selectedIds.size} 段` : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
+                {optimizing
+                  ? (probeMode ? "生成探索稿中" : "生成并验收中")
+                  : experimentType === "layout_only"
+                    ? `零费用重组 ${selectedIds.size} 段`
+                    : probeMode
+                      ? `用 DeepSeek 探索 ${selectedIds.size} 段`
+                      : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
               </button>
               {!rewriteProviderReady && (
                 <div className="max-w-[360px] text-right text-xs text-amber-200">
@@ -365,7 +384,9 @@ export function AigcReview() {
             当前选中相邻风险区占全文 {selectedShare.toFixed(2)}%，建议单轮 30%–35%，最多 12 段。
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
-              : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
+              : probeMode
+                ? ` 本轮按 900–1600 字分段、五种语气轮换、温度 0.85；跳过事实账本与 Gemini 终审，只用于测朱雀变化。本轮最多支出 ¥${budgetCny.toFixed(2)}。`
+                : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
 
@@ -397,18 +418,20 @@ export function AigcReview() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-sm text-gold-200">第三步</div>
-              <h2 className="mt-1 font-serif text-2xl text-warm-50">质量闸门与真实复检</h2>
+              <h2 className="mt-1 font-serif text-2xl text-warm-50">{resultIsProbe ? "朱雀探索稿与真实复检" : "质量闸门与真实复检"}</h2>
             </div>
             <div className="text-right text-xs leading-6 text-warm-400">
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
-              事实 {result.models.fact} → 重著 {result.models.rewrite_provider} / {result.models.rewrite}（{result.models.rewrite_thinking}）→ 终审 {result.models.audit}
+              {resultIsProbe
+                ? `探索 ${result.models.rewrite_provider} / ${result.models.rewrite}（温度 ${result.detector_probe?.temperature ?? 0.85}）· 质量终审已跳过`
+                : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>
 
           {result.archive_task_id && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-100">
-              <span>本轮原稿、审稿候选、质量结果和朱雀报告已自动归档。</span>
+              <span>{resultIsProbe ? "本轮原稿、探索候选和朱雀基线报告已自动归档。" : "本轮原稿、审稿候选、质量结果和朱雀报告已自动归档。"}</span>
               <Link to={`/book/${result.archive_task_id}`} className="inline-flex items-center gap-2 text-gold-100 hover:text-gold-50">
                 <BookMarked className="h-4 w-4" />查看书架稿件
               </Link>
@@ -468,15 +491,22 @@ export function AigcReview() {
             </div>
           ) : (
             <>
-              <div className="mt-5 grid gap-3 md:grid-cols-4">
-                <AuditCard label="语义忠实" value={result.quality_audit?.semantic_fidelity ?? 0} threshold={98} />
-                <AuditCard label="信息完整" value={result.quality_audit?.information_completeness ?? 0} threshold={100} />
-                <AuditCard label="流畅度" value={result.quality_audit?.fluency ?? 0} threshold={92} />
-                <AuditCard label="声音连续" value={result.quality_audit?.voice_continuity ?? 0} threshold={92} />
-              </div>
+              {resultIsProbe ? (
+                <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
+                  <div className="font-medium">实验稿已生成，质量终审故意跳过</div>
+                  <div className="mt-1 text-warm-300">只用于上传朱雀验证人工特征是否显著变化。即使达到 25%，也只能说明这组操作命中，不能直接交付。</div>
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-3 md:grid-cols-4">
+                  <AuditCard label="语义忠实" value={result.quality_audit?.semantic_fidelity ?? 0} threshold={98} />
+                  <AuditCard label="信息完整" value={result.quality_audit?.information_completeness ?? 0} threshold={100} />
+                  <AuditCard label="流畅度" value={result.quality_audit?.fluency ?? 0} threshold={92} />
+                  <AuditCard label="声音连续" value={result.quality_audit?.voice_continuity ?? 0} threshold={92} />
+                </div>
+              )}
               <div className="mt-5 grid gap-5 xl:grid-cols-2">
                 <div>
-                  <div className="mb-2 text-sm text-warm-300">待复检候选（尚不是终稿）</div>
+                  <div className="mb-2 text-sm text-warm-300">{resultIsProbe ? "朱雀探索实验稿（非终稿）" : "待复检候选（尚不是终稿）"}</div>
                   <textarea readOnly value={result.candidate_text} className="min-h-[420px] w-full resize-y rounded-lg border border-gold-500/15 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
                 </div>
                 <div>
@@ -488,19 +518,20 @@ export function AigcReview() {
                   <button type="button" onClick={parseRecheck} disabled={!recheckFile || rechecking} className="btn-gold mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
                     {rechecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />}{rechecking ? "识别复检报告" : "确认真实朱雀结果"}
                   </button>
-                  {recheck && <div className={`mt-4 rounded-lg border p-5 ${comparison?.strict_pass ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"}`}>
-                    <div className="flex items-center gap-2 text-lg text-warm-50">{comparison?.strict_pass ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-amber-300" />}{comparison?.strict_pass ? "朱雀与质量双闸门通过" : "尚未双达标"}</div>
+                  {recheck && <div className={`mt-4 rounded-lg border p-5 ${(resultIsProbe ? comparison?.detector_pass : comparison?.strict_pass) ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"}`}>
+                    <div className="flex items-center gap-2 text-lg text-warm-50">{(resultIsProbe ? comparison?.detector_pass : comparison?.strict_pass) ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-amber-300" />}{resultIsProbe ? (comparison?.detector_pass ? "探索实验命中 25%" : "探索实验未命中") : (comparison?.strict_pass ? "朱雀与质量双闸门通过" : "尚未双达标")}</div>
                     <div className="mt-2 text-sm text-warm-300">首页官方人工特征 {recheck.official_human_percent == null ? "未可靠识别" : `${recheck.official_human_percent.toFixed(2)}%`} · 要求 ≥25%</div>
+                    {resultIsProbe && comparison && <div className="mt-1 text-xs text-warm-400">相比基线 {comparison.human_percent_delta >= 0 ? "+" : ""}{comparison.human_percent_delta.toFixed(2)} 个百分点 · 未运行质量验收</div>}
                     <div className="mt-1 text-xs text-warm-400">报告正文与候选匹配 {Math.round(recheck.source_match_confidence * 100)}% · {recheck.source_match_verified ? "已确认同稿" : "未确认同稿，禁止下载"}</div>
                   </div>}
-                  {comparison && !comparison.strict_pass && comparison.recommended_next_strategy && (
+                  {comparison && !resultIsProbe && !comparison.strict_pass && comparison.recommended_next_strategy && (
                     <button type="button" onClick={() => optimize(comparison.recommended_next_strategy, true)} disabled={optimizing} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
                       {optimizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                       再优化一轮
                     </button>
                   )}
-                  <button type="button" onClick={() => downloadText(result.candidate_text, "朱雀复检通过终稿.txt")} disabled={!finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
-                    <Download className="h-4 w-4" />{finalPassed ? "下载双达标终稿" : "复检通过后才能下载终稿"}
+                  <button type="button" onClick={() => downloadText(result.candidate_text, resultIsProbe ? "朱雀探索实验稿-非终稿.txt" : "朱雀复检通过终稿.txt")} disabled={!resultIsProbe && !finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
+                    <Download className="h-4 w-4" />{resultIsProbe ? "下载探索实验稿（非终稿）" : (finalPassed ? "下载双达标终稿" : "复检通过后才能下载终稿")}
                   </button>
                 </div>
               </div>

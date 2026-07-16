@@ -1388,6 +1388,121 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
+def test_detector_probe_skips_fact_audit_and_placeholder_protocol() -> None:
+    original = normalize_manuscript_text((
+        "值得注意的是，甲在既有材料中完成了这项工作。不可否认，这段说明写得很整齐。"
+        "与此同时，材料继续交代人物的动作与判断。综上所述，原文在这里给出了结论。\n\n"
+    ) * 22)
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    prompts: list[str] = []
+
+    def rewrite_probe(prompt: str, **_kwargs):
+        prompts.append(prompt)
+        source = re.search(r"<source>\s*(.*?)\s*</source>", prompt, re.S).group(1)
+        candidate = (
+            source.replace("值得注意的是，", "")
+            .replace("不可否认，", "说实话，")
+            .replace("与此同时，", "话到这里。\n\n")
+            .replace("综上所述，", "我读到这里时，")
+        )
+        return f"<rewritten>{candidate}</rewritten>", {
+            "input_tokens": 100,
+            "output_tokens": 100,
+            "cost_cny": 0.002,
+        }
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("探索实验不应调用事实账本或 Gemini 终审")
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        content_type="article",
+        experiment_type="detector_probe",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_probe,
+        fact_fn=forbidden,
+        audit_fn=forbidden,
+        budget_cny=0.3,
+    )
+
+    assert result["status"] == "probe_ready"
+    assert result["deliverable"] is False
+    assert result["quality_audit"] is None
+    assert result["experimental_quality_bypassed"] is True
+    assert result["models"]["fact"] == "not_used_detector_probe"
+    assert result["models"]["audit"] == "skipped_detector_probe"
+    assert result["candidate_text"] != original
+    assert result["editorial_unit_count"] >= 2
+    assert len(prompts) == result["editorial_unit_count"]
+    assert all("[[KEEP_" not in prompt for prompt in prompts)
+    assert "以具体事实开场" in prompts[0]
+    assert any("自然口语节奏" in prompt for prompt in prompts[1:])
+
+
+def test_detector_probe_recheck_reports_detector_hit_without_quality_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    original = "原稿中的事实保持在这里。" * 40
+    candidate = "事实还在。话说回来，原稿里的判断也在这里。" * 25
+    baseline_segment = {
+        "segment_id": 1,
+        "share_percent": 100.0,
+        "aigc_value": 0.99,
+        "start": 0,
+        "end": len(original),
+    }
+    recheck_segment = {
+        "segment_id": 1,
+        "share_percent": 100.0,
+        "aigc_value": 0.20,
+        "start": 0,
+        "end": len(candidate),
+    }
+    baseline = {
+        "original_sha256": sha256_text(original),
+        "report_sha256": "baseline",
+        "human_percent": 0.0,
+        "official_human_percent": 0.0,
+        "derived_human_share_percent": 0.0,
+        "segments": [baseline_segment],
+    }
+    recheck = {
+        "original_sha256": sha256_text(candidate),
+        "report_sha256": "recheck",
+        "human_percent": 30.0,
+        "official_human_percent": 30.0,
+        "derived_human_share_percent": 100.0,
+        "official_overview_verified": True,
+        "strict_pass": True,
+        "source_match_verified": True,
+        "segments": [recheck_segment],
+    }
+    optimized = {
+        "request_id": "probe-compare",
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(candidate),
+        "selected_segment_ids": [1],
+        "segment_results": [{"segment_id": 1, "strategy_id": "detector_probe_mixed"}],
+        "experiment_type": "detector_probe",
+        "content_type": "article",
+        "quality_audit": None,
+    }
+
+    compared = compare_zhuque_reports(baseline, recheck, optimized)
+
+    assert compared["detector_pass"] is True
+    assert compared["probe_success"] is True
+    assert compared["quality_pass"] is False
+    assert compared["strict_pass"] is False
+    assert "探索实验命中" in compared["recommendation_reason"]
+
+
 def test_paired_analysis_aligns_thirteen_rows_to_ten_by_overlap(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

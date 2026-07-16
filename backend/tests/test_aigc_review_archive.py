@@ -94,6 +94,70 @@ def test_review_candidate_is_archived_with_original_candidate_and_report(
     assert (output / "aigc_baseline_report.json").exists()
 
 
+def test_detector_probe_archive_never_becomes_completed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(router, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(router, "_copy_stored_report", lambda *_args, **_kwargs: False)
+    db = _FakeDb()
+    user = SimpleNamespace(id=uuid4())
+    original = "不可变原稿。"
+    candidate = "探索候选稿。话说回来，原意暂未终审。"
+    result = {
+        "request_id": "probe-archive",
+        "status": "probe_ready",
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(candidate),
+        "candidate_text": candidate,
+        "quality_audit": None,
+        "iteration": 1,
+        "experiment_type": "detector_probe",
+        "prompt_version": "zhuque-detector-probe-v1",
+        "models": {"rewrite_provider": "deepseek", "rewrite": "deepseek-v4-pro"},
+        "cost": {"estimated_cny": 0.02},
+    }
+    task = router._save_review_archive(
+        db,
+        user,
+        original=original,
+        result=result,
+        baseline_report={"human_percent": 0.0},
+        title="探索实验",
+        content_type="article",
+    )
+
+    assert task.status == TaskStatus.MANUAL_REVIEW
+    assert task.config["aigc_status"] == "detector_probe_ready"
+    assert task.config["aigc_quality_passed"] is False
+    assert task.config["aigc_experimental_quality_bypassed"] is True
+
+    router._update_review_archive(
+        db,
+        user,
+        archive_task_id=str(task.id),
+        optimize_result={**result, "archive_task_id": str(task.id)},
+        recheck_report={"human_percent": 31.0},
+        comparison={
+            "comparison_id": "probe-hit",
+            "strict_pass": False,
+            "detector_pass": True,
+            "recheck_human_percent": 31.0,
+            "recheck_official_human_percent": 31.0,
+            "recheck_derived_human_share_percent": 30.0,
+            "human_percent_delta": 31.0,
+            "selected_humanized_share_percent": 30.0,
+            "recommendation_reason": "探索实验命中但未运行质量终审。",
+        },
+    )
+
+    assert task.status == TaskStatus.MANUAL_REVIEW
+    assert task.config["aigc_status"] == "detector_probe_hit"
+    assert task.config["aigc_passed"] is False
+    assert "markdown" not in task.config
+    assert not (tmp_path / "backend" / "output" / f"task_{task.id}" / "05_aigc_final.md").exists()
+
+
 def test_strict_recheck_promotes_archived_candidate_to_completed(
     monkeypatch,
     tmp_path,

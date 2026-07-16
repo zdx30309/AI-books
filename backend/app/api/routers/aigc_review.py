@@ -70,7 +70,7 @@ class OptimizeAigcReviewRequest(BaseModel):
     preferred_strategy: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
     rewrite_provider: SupportedRewriteProvider = "deepseek"
     rewrite_reasoning_effort: Literal["low", "medium", "high"] = "low"
-    experiment_type: Literal["layout_only", "syntax_constrained", "combined"] = "syntax_constrained"
+    experiment_type: Literal["layout_only", "syntax_constrained", "combined", "detector_probe"] = "syntax_constrained"
     budget_cny: float = Field(0.30, ge=0, le=20)
     title: str | None = Field(None, max_length=200)
     baseline_report: dict[str, Any] | None = None
@@ -96,6 +96,7 @@ class CalibrationSampleRequest(BaseModel):
         "layout_only",
         "syntax_constrained",
         "combined",
+        "detector_probe",
     ]
     parent_sha256: str | None = Field(None, min_length=64, max_length=64)
     strategy_id: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
@@ -412,17 +413,26 @@ def _save_review_archive(
         or original
     ).strip()
     quality_passed = result.get("status") == "candidate_ready"
+    probe_ready = result.get("status") == "probe_ready"
     task = Task(
         source_url="manual://aigc-review",
         owner_id=user.id,
         status=TaskStatus.MANUAL_REVIEW,
-        progress=96 if quality_passed else 92,
+        progress=96 if quality_passed else (94 if probe_ready else 92),
         current_step=(
             "质量已过，等待真实朱雀复检"
             if quality_passed
-            else "已保留审稿候选，等待人工复核"
+            else (
+                "朱雀探索稿已生成，等待真实复检"
+                if probe_ready
+                else "已保留审稿候选，等待人工复核"
+            )
         ),
-        error_message=None if quality_passed else str(result.get("next_action") or "")[:2000],
+        error_message=(
+            None
+            if quality_passed or probe_ready
+            else str(result.get("next_action") or "")[:2000]
+        ),
         config={
             "title": _archive_title(title, original),
             "bookshelf": AIGC_REVIEW_BOOKSHELF,
@@ -433,7 +443,11 @@ def _save_review_archive(
             "content_type": content_type,
             "aigc_policy_version": "report-driven-v5",
             "aigc_required": True,
-            "aigc_status": "candidate_ready" if quality_passed else "manual_review",
+            "aigc_status": (
+                "candidate_ready"
+                if quality_passed
+                else ("detector_probe_ready" if probe_ready else "manual_review")
+            ),
             "aigc_passed": False,
             "aigc_quality_passed": quality_passed,
             "aigc_report_available": bool(baseline_report),
@@ -449,6 +463,7 @@ def _save_review_archive(
             "aigc_manual_review_reason": (
                 None if quality_passed else str(result.get("next_action") or "")[:4000]
             ),
+            "aigc_experimental_quality_bypassed": probe_ready,
             "aigc_review_request_id": result.get("request_id"),
             "aigc_original_sha256": result.get("original_sha256"),
             "aigc_candidate_sha256": result.get("candidate_sha256") or sha256_text(reviewed),
@@ -524,10 +539,20 @@ def _update_review_archive(
     candidate = normalize_manuscript_text(str(optimize_result.get("candidate_text") or ""))
     if not candidate or sha256_text(candidate) != stored_candidate_hash:
         raise ZhuqueReportError("复检候选正文哈希校验失败。")
-    passed = bool(comparison.get("strict_pass"))
+    probe_mode = optimize_result.get("experiment_type") == "detector_probe"
+    probe_hit = probe_mode and bool(comparison.get("detector_pass"))
+    passed = bool(comparison.get("strict_pass")) and not probe_mode
     cfg.update(
         {
-            "aigc_status": "passed" if passed else "manual_review",
+            "aigc_status": (
+                "passed"
+                if passed
+                else (
+                    "detector_probe_hit"
+                    if probe_hit
+                    else ("detector_probe_no_hit" if probe_mode else "manual_review")
+                )
+            ),
             "aigc_passed": passed,
             "aigc_final_human_percent": comparison.get("recheck_human_percent"),
             "aigc_final_official_human_percent": comparison.get(
@@ -552,9 +577,25 @@ def _update_review_archive(
         cfg.pop("markdown_chars", None)
     task.config = cfg
     task.status = TaskStatus.COMPLETED if passed else TaskStatus.MANUAL_REVIEW
-    task.progress = 100 if passed else 97
-    task.current_step = "朱雀与质量双达标" if passed else "真实复检未过，原稿与候选均已保留"
-    task.error_message = None if passed else str(comparison.get("recommendation_reason") or "")[:2000]
+    task.progress = 100 if passed else (98 if probe_mode else 97)
+    task.current_step = (
+        "朱雀与质量双达标"
+        if passed
+        else (
+            "探索实验命中 25%，仍需质量重建"
+            if probe_hit
+            else (
+                "探索实验未命中，已停止追加费用"
+                if probe_mode
+                else "真实复检未过，原稿与候选均已保留"
+            )
+        )
+    )
+    task.error_message = (
+        None
+        if passed
+        else str(comparison.get("recommendation_reason") or "")[:2000]
+    )
     chapter = db.query(Chapter).filter(Chapter.task_id == task.id).order_by(Chapter.chapter_num).first()
     if chapter is not None:
         chapter.content = candidate

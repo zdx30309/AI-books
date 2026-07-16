@@ -44,6 +44,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "zhuque-report-review-v5.1"
+PROBE_PROMPT_VERSION = "zhuque-detector-probe-v1"
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -61,6 +62,8 @@ _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
 _DIAGNOSTIC_RULES_PATH = _PROMPT_DIR / "aigc_report_diagnostic_rules.json"
+_DETECTOR_PROBE_PROMPT_PATH = _PROMPT_DIR / "aigc_detector_probe.md"
+_DETECTOR_PROBE_PROFILES_PATH = _PROMPT_DIR / "aigc_detector_probe_profiles.json"
 _PERSISTENT_REVIEW_ROOT = PROJECT_ROOT / "backend" / "output" / "_aigc_review"
 _EXPERIMENT_DIR = _PERSISTENT_REVIEW_ROOT / "experiments"
 _CALIBRATION_DIR = _PERSISTENT_REVIEW_ROOT / "calibrations"
@@ -808,17 +811,25 @@ def compare_zhuque_reports(
     # overlap cannot prove which local rewrite caused a score change.  Keep it as
     # an observation and require isolated exact-hash samples for learning.
     recommended_next_strategy = None
+    probe_mode = optimize_result.get("experiment_type") == "detector_probe"
     quality_pass = quality_audit_passed(optimize_result.get("quality_audit"))
     detector_pass = bool(recheck_report.get("strict_pass"))
     strict_pass = detector_pass and quality_pass
-    recommendation_reason = (
-        "官方首页人工特征已达到 25%，且质量硬闸门通过。"
-        if strict_pass
-        else (
-            "复检只接受官方首页人工特征达到 25% 且质量硬闸门通过；"
-            "整稿报告的归一化位置对齐只作观察，不自动扩大付费实验。"
+    if probe_mode:
+        recommendation_reason = (
+            "探索实验命中：官方首页人工特征已达到 25%；该结果只证明本组操作值得继续隔离验证，因未运行质量终审仍不能作为终稿。"
+            if detector_pass
+            else "探索实验未命中：官方首页人工特征仍低于 25%；停止自动追加费用，不把这组网传方法当成已证实规律。"
         )
-    )
+    else:
+        recommendation_reason = (
+            "官方首页人工特征已达到 25%，且质量硬闸门通过。"
+            if strict_pass
+            else (
+                "复检只接受官方首页人工特征达到 25% 且质量硬闸门通过；"
+                "整稿报告的归一化位置对齐只作观察，不自动扩大付费实验。"
+            )
+        )
 
     selected_rows = [row for row in rows if row["selected"]]
     comparison_id = str(uuid4())
@@ -857,6 +868,7 @@ def compare_zhuque_reports(
             4,
         ),
         "detector_pass": detector_pass,
+        "probe_success": detector_pass if probe_mode else None,
         "quality_pass": quality_pass,
         "strict_pass": strict_pass,
         "segment_deltas": rows,
@@ -1376,6 +1388,7 @@ def create_calibration_sample(
         "layout_only",
         "syntax_constrained",
         "combined",
+        "detector_probe",
     }
     if variant_type not in allowed_variants:
         raise ZhuqueReportError("未知校准样本类型。")
@@ -2029,6 +2042,343 @@ def reflow_layout_only(source: str) -> str:
     return candidate
 
 
+@lru_cache(maxsize=1)
+def detector_probe_profiles() -> dict[str, str]:
+    payload = json.loads(_DETECTOR_PROBE_PROFILES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ZhuqueReportError("朱雀探索实验的语气配置为空。")
+    profiles = {
+        str(key).strip(): str(value).strip()
+        for key, value in payload.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not profiles:
+        raise ZhuqueReportError("朱雀探索实验没有可用语气配置。")
+    return profiles
+
+
+@lru_cache(maxsize=1)
+def detector_probe_prompt_template() -> str:
+    template = _DETECTOR_PROBE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    if not template:
+        raise ZhuqueReportError("朱雀探索实验 Prompt 为空。")
+    return template
+
+
+def render_detector_probe_prompt(
+    source: str,
+    *,
+    previous_context: str,
+    next_context: str,
+    profile_rules: str,
+    is_first_unit: bool,
+) -> str:
+    anchors = list(_anchors(source).elements())
+    replacements = {
+        "{{PROFILE_RULES}}": profile_rules,
+        "{{IS_FIRST_UNIT}}": "是" if is_first_unit else "否",
+        "{{PREVIOUS_CONTEXT}}": previous_context[-300:].strip() or "（无）",
+        "{{SOURCE_TEXT}}": source.strip(),
+        "{{NEXT_CONTEXT}}": next_context[:300].strip() or "（无）",
+        "{{ANCHORS}}": json.dumps(anchors, ensure_ascii=False) if anchors else "（无）",
+    }
+    rendered = detector_probe_prompt_template()
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
+def parse_detector_probe_candidate(raw: str) -> tuple[str, bool]:
+    cleaned = _clean_model_text(raw)
+    match = re.search(r"<rewritten>\s*(.*?)\s*</rewritten>", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip(), True
+    cleaned = re.sub(r"^<rewritten>\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*</rewritten>$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(), False
+
+
+def build_detector_probe_result(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+    *,
+    content_type: str,
+    rewrite: Callable[..., Any],
+    rewrite_provider: str,
+    rewrite_model: str,
+    request_id: str,
+    iteration: int,
+    budget_cny: float,
+) -> dict[str, Any]:
+    """Generate a detector-only black-box probe without claiming editorial safety.
+
+    This path intentionally skips the fact ledger, placeholder protocol and Gemini
+    audit.  It exists only to test the supplied detector hypotheses against a real
+    Zhuque re-check and can never become a deliverable manuscript by itself.
+    """
+    if content_type == "classical":
+        raise ZhuqueReportError("古文/佛经不参与跳过质量终审的朱雀探索实验。")
+    if rewrite_provider != "deepseek":
+        raise ZhuqueReportError("朱雀探索实验固定使用低成本 DeepSeek，避免模型变化污染对照结果。")
+    if budget_cny <= 0:
+        raise ZhuqueReportError("朱雀探索实验预算必须大于 0 元。")
+
+    normalized_segments = list(segments)
+    by_id = {item.segment_id: item for item in normalized_segments}
+    ids = list(dict.fromkeys(int(value) for value in selected_ids))
+    profiles = detector_probe_profiles()
+    profile_items = list(profiles.items())
+    replacements: list[tuple[int, int, str]] = []
+    segment_results: list[dict[str, Any]] = []
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cost = 0.0
+    processed_units = 0
+    processed_segment_ids: list[int] = []
+    budget_stopped = False
+
+    for segment_id in ids:
+        segment = by_id.get(segment_id)
+        if segment is None:
+            raise ZhuqueReportError(f"报告中不存在片段: {segment_id}")
+        if segment.label == "human":
+            raise ZhuqueReportError(f"片段 {segment_id} 已是人工特征，不应参与探索实验。")
+        if segment.mapping_confidence < 0.65:
+            raise ZhuqueReportError(f"片段 {segment_id} 映射置信度过低，禁止自动实验。")
+        if segment.start < 0 or segment.end > len(original) or segment.start >= segment.end:
+            raise ZhuqueReportError(f"片段 {segment_id} 的原稿坐标无效。")
+        source = original[segment.start:segment.end]
+        if source != segment.mapped_text:
+            raise ZhuqueReportError(f"片段 {segment_id} 的映射正文已被修改，请重新解析报告。")
+
+        units = split_editorial_units(source, min_chars=900, max_chars=1600)
+        local_replacements: list[tuple[int, int, str]] = []
+        unit_results: list[dict[str, Any]] = []
+        for unit in units:
+            if total_cost >= budget_cny:
+                budget_stopped = True
+                break
+            unit_source = source[unit.start:unit.end]
+            profile_id, profile_rules = profile_items[processed_units % len(profile_items)]
+            global_start = segment.start + unit.start
+            global_end = segment.start + unit.end
+            prompt = render_detector_probe_prompt(
+                unit_source,
+                previous_context=original[max(0, global_start - 300):global_start],
+                next_context=original[global_end:min(len(original), global_end + 300)],
+                profile_rules=profile_rules,
+                is_first_unit=processed_units == 0,
+            )
+            unit_segment = ZhuqueSegment(
+                segment_id=segment.segment_id,
+                share_percent=segment.share_percent,
+                char_count=len(unit_source),
+                aigc_value=segment.aigc_value,
+                label=segment.label,
+                start=global_start,
+                end=global_end,
+                mapped_text=unit_source,
+                mapping_confidence=segment.mapping_confidence,
+                recommended=segment.recommended,
+            )
+            try:
+                raw_result = rewrite(
+                    prompt,
+                    segment=unit_segment,
+                    request_id=request_id,
+                    attempt=1,
+                )
+                raw_text, usage = _coerce_model_result(raw_result)
+                candidate, structured = parse_detector_probe_candidate(raw_text)
+            except Exception as exc:
+                logger.exception(
+                    "LLM action=aigc_detector_probe request_id=%s model=%s segment=%s unit=%s status=failed error_type=%s",
+                    request_id,
+                    rewrite_model,
+                    segment_id,
+                    unit.unit_id,
+                    type(exc).__name__,
+                )
+                raise AigcReviewModelError(
+                    f"朱雀探索实验在片段 {segment_id}/{unit.unit_id} 调用 DeepSeek 失败: {exc}"
+                ) from exc
+            if not candidate:
+                raise AigcReviewModelError(
+                    f"朱雀探索实验在片段 {segment_id}/{unit.unit_id} 收到空候选。"
+                )
+
+            input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
+            output_tokens = int(usage.get("output_tokens") or _estimate_tokens(candidate))
+            attempt_cost = float(
+                usage.get("cost_cny")
+                or ((input_tokens * 3.0 + output_tokens * 6.0) / 1_000_000)
+            )
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            total_cost += attempt_cost
+            deterministic = review_deterministic_constraints(
+                unit_source,
+                candidate,
+                preserve_paragraph_count=False,
+                min_length_ratio=0.70,
+                max_length_ratio=1.35,
+            )
+            attempt_payload = {
+                "attempt": 1,
+                "passed": True,
+                "hard_safety_passed": deterministic_hard_safety_passed(
+                    deterministic,
+                    require_paragraph_preservation=False,
+                    min_length_ratio=0.70,
+                    max_length_ratio=1.35,
+                ),
+                "substantive_rewrite_passed": candidate.strip() != unit_source.strip(),
+                "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+                "structured_output": structured,
+                "protocol_issues": [] if structured else ["模型未使用 rewritten 包装；探索模式接受纯正文"],
+                "substantive_rewrite_reasons": [],
+                "deterministic_review": deterministic.to_dict(),
+                "input_tokens": input_tokens,
+                "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
+                "output_tokens": output_tokens,
+                "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+                "cost_cny": round(attempt_cost, 6),
+                "strategy_id": f"detector_probe:{profile_id}",
+                "rewrite_provider": rewrite_provider,
+                "rewrite_model": rewrite_model,
+            }
+            unit_results.append(
+                {
+                    "unit_id": unit.unit_id,
+                    "original_chars": len(unit_source),
+                    "candidate_chars": len(candidate),
+                    "original_text": unit_source,
+                    "candidate_text": candidate,
+                    "status": "ready",
+                    "fact_ledger_mode": "not_used_detector_probe",
+                    "fact_ledger_claim_count": 0,
+                    "fact_ledger_cost_cny": 0.0,
+                    "hard_safety_passed": attempt_payload["hard_safety_passed"],
+                    "substantive_rewrite_passed": attempt_payload["substantive_rewrite_passed"],
+                    "rewrite_attempts": 1,
+                    "attempts": [attempt_payload],
+                    "deterministic_review": deterministic.to_dict(),
+                    "candidate_preview": candidate[:400],
+                    "rejected_candidate_preview": "",
+                    "probe_profile": profile_id,
+                }
+            )
+            local_replacements.append((unit.start, unit.end, candidate))
+            processed_units += 1
+
+        segment_candidate = _assemble_replacements(source, local_replacements)
+        if local_replacements:
+            replacements.append((segment.start, segment.end, segment_candidate))
+            processed_segment_ids.append(segment_id)
+        parent_review = review_deterministic_constraints(
+            source,
+            segment_candidate,
+            preserve_paragraph_count=False,
+            min_length_ratio=0.70,
+            max_length_ratio=1.35,
+        )
+        segment_results.append(
+            {
+                "segment_id": segment_id,
+                "strategy_id": "detector_probe_mixed",
+                "rewrite_provider": rewrite_provider,
+                "rewrite_model": rewrite_model,
+                "status": "ready" if local_replacements else "rejected",
+                "hard_safety_passed": deterministic_hard_safety_passed(
+                    parent_review,
+                    require_paragraph_preservation=False,
+                    min_length_ratio=0.70,
+                    max_length_ratio=1.35,
+                ),
+                "substantive_rewrite_passed": segment_candidate.strip() != source.strip(),
+                "material_rewrite_advisory_passed": parent_review.material_rewrite_passed,
+                "original_chars": len(source),
+                "candidate_chars": len(segment_candidate),
+                "report_aigc_value": segment.aigc_value,
+                "report_label": segment.label,
+                "style_diagnosis": diagnose_segment_style(source),
+                "editorial_unit_count": len(unit_results),
+                "rewrite_attempts": len(unit_results),
+                "attempts": [attempt for row in unit_results for attempt in row["attempts"]],
+                "unit_results": unit_results,
+                "deterministic_review": parent_review.to_dict(),
+                "style_feature_version": STYLE_FEATURE_VERSION,
+                "style_feature_delta": style_feature_delta(source, segment_candidate),
+                "candidate_preview": segment_candidate[:500],
+                "rejected_candidate_preview": "",
+            }
+        )
+        if budget_stopped:
+            break
+
+    assembled = _assemble_replacements(original, replacements)
+    if assembled == original:
+        raise AigcReviewModelError("朱雀探索实验没有生成任何可复检变化。")
+    return {
+        "request_id": request_id,
+        "status": "probe_ready",
+        "deliverable": False,
+        "next_action": (
+            "朱雀探索实验稿已生成；本轮故意跳过事实账本与质量终审，只能用于上传朱雀验证人工特征变化，不能作为终稿。"
+        ),
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(assembled),
+        "original_text": original,
+        "candidate_text": assembled,
+        "selected_segment_ids": ids,
+        "iteration": iteration,
+        "preferred_strategy": "detector_probe_mixed",
+        "content_type": content_type,
+        "experiment_type": "detector_probe",
+        "segment_results": segment_results,
+        "quality_audit": None,
+        "experimental_quality_bypassed": True,
+        "editorial_unit_count": processed_units,
+        "audit_batch_count": 0,
+        "budget": {
+            "currency": "CNY",
+            "limit_cny": round(budget_cny, 4),
+            "spent_cny": round(total_cost, 6),
+            "exhausted": budget_stopped or total_cost >= budget_cny,
+        },
+        "cost": {
+            "currency": "CNY",
+            "estimated": False,
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "estimated_cny": round(total_cost, 6),
+        },
+        "models": {
+            "rewrite_provider": rewrite_provider,
+            "rewrite": rewrite_model,
+            "fact": "not_used_detector_probe",
+            "audit": "skipped_detector_probe",
+            "rewrite_thinking": "disabled",
+        },
+        "prompt_version": PROBE_PROMPT_VERSION,
+        "detector_probe": {
+            "temperature": 0.85,
+            "profile_order": list(profiles),
+            "processed_units": processed_units,
+            "processed_segment_ids": processed_segment_ids,
+            "budget_stopped": budget_stopped,
+            "hypotheses": [
+                "remove_template_phrases",
+                "irregular_sentence_and_paragraph_rhythm",
+                "rotate_unit_voice",
+                "limited_first_person_reading_reaction",
+                "segment_by_segment_generation",
+            ],
+        },
+    }
+
+
 def optimize_report_segments(
     original_text: str,
     segments: Iterable[ZhuqueSegment | dict[str, Any]],
@@ -2065,7 +2415,7 @@ def optimize_report_segments(
         raise ZhuqueReportError("单轮必须选择连续相邻的风险片段，不能把分散区域混入同一实验。")
     if not original:
         raise ZhuqueReportError("原稿不能为空。")
-    if experiment_type not in {"layout_only", "syntax_constrained", "combined"}:
+    if experiment_type not in {"layout_only", "syntax_constrained", "combined", "detector_probe"}:
         raise ZhuqueReportError("未知实验类型。")
 
     if experiment_type == "layout_only":
@@ -2087,6 +2437,26 @@ def optimize_report_segments(
     if rewrite_fn is None:
         _ensure_rewrite_provider_configured(selected_provider)
     rewrite = rewrite_fn or _rewrite_callable(selected_provider)
+    effective_budget = float(
+        budget_cny
+        if budget_cny is not None
+        else settings.AIGC_REVIEW_RUN_BUDGET_CNY
+    )
+    if effective_budget <= 0:
+        raise ZhuqueReportError("单次预算必须大于 0 元。")
+    if experiment_type == "detector_probe":
+        return build_detector_probe_result(
+            original,
+            normalized_segments,
+            selected_ids,
+            content_type=content_type,
+            rewrite=rewrite,
+            rewrite_provider=selected_provider,
+            rewrite_model=rewrite_model,
+            request_id=request_id,
+            iteration=iteration,
+            budget_cny=effective_budget,
+        )
     audit = audit_fn or _gemini_audit
     # Production defaults to a local sentence ledger.  It is complete by
     # construction, costs nothing, and cannot fail because a model truncates
@@ -2101,14 +2471,6 @@ def optimize_report_segments(
     total_model_cost = 0.0
     audit_items: list[dict[str, Any]] = []
     preserve_paragraph_count = content_type == "classical"
-    effective_budget = float(
-        budget_cny
-        if budget_cny is not None
-        else settings.AIGC_REVIEW_RUN_BUDGET_CNY
-    )
-    if effective_budget <= 0:
-        raise ZhuqueReportError("单次预算必须大于 0 元。")
-
     def budget_exhausted() -> bool:
         return total_model_cost >= effective_budget
 
@@ -3762,7 +4124,7 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
         "rewrite_protocol": "fact_ledger_constrained_edit_v5",
         "experiment_mode": "paired_black_box_human_in_loop",
         "selection_mode": "contiguous_30_to_35_percent_then_stop",
-        "experiment_order": ["layout_only", "syntax_constrained", "combined"],
+        "experiment_order": ["layout_only", "syntax_constrained", "combined", "detector_probe"],
         "recommended_max_calibration_segments": 12,
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],

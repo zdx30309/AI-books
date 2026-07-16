@@ -383,7 +383,7 @@ export interface AigcQualityReport {
 
 export type AigcReviewContentType = "article" | "classical" | "public_domain";
 export type AigcReviewRewriteProvider = "grok" | "deepseek";
-export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined";
+export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "detector_probe";
 
 export interface AigcReviewRewriteProviderStatus {
   id: AigcReviewRewriteProvider;
@@ -594,7 +594,7 @@ export interface AigcReviewEditorialUnitResult {
   original_text: string;
   candidate_text: string;
   status: "ready" | "rejected";
-  fact_ledger_mode: "cached" | "model" | "local_deterministic" | "local_fallback" | "test_fallback" | "classical_legacy" | "not_required_identical_non_whitespace";
+  fact_ledger_mode: "cached" | "model" | "local_deterministic" | "local_fallback" | "test_fallback" | "classical_legacy" | "not_required_identical_non_whitespace" | "not_used_detector_probe";
   fact_ledger_claim_count: number;
   fact_ledger_cost_cny: number;
   hard_safety_passed: boolean;
@@ -633,7 +633,7 @@ export interface AigcReviewSegmentResult {
 
 export interface AigcReviewOptimizeResult {
   request_id: string;
-  status: "candidate_ready" | "manual_review";
+  status: "candidate_ready" | "probe_ready" | "manual_review";
   deliverable: boolean;
   next_action: string;
   original_sha256: string;
@@ -649,6 +649,15 @@ export interface AigcReviewOptimizeResult {
   experiment_type: AigcReviewExperimentType;
   segment_results: AigcReviewSegmentResult[];
   quality_audit: AigcReviewQualityAudit | null;
+  experimental_quality_bypassed?: boolean;
+  detector_probe?: {
+    temperature: number;
+    profile_order: string[];
+    processed_units: number;
+    processed_segment_ids: number[];
+    budget_stopped: boolean;
+    hypotheses: string[];
+  };
   editorial_unit_count?: number;
   audit_batch_count?: number;
   budget?: {
@@ -694,6 +703,7 @@ export interface AigcReviewComparison {
   selected_humanized_share_percent: number;
   strict_pass: boolean;
   detector_pass: boolean;
+  probe_success?: boolean | null;
   quality_pass: boolean;
   segment_deltas: Array<{
     segment_id: number;
@@ -753,7 +763,8 @@ export type AigcReviewCalibrationVariant =
   | "external_saas"
   | "layout_only"
   | "syntax_constrained"
-  | "combined";
+  | "combined"
+  | "detector_probe";
 
 export interface AigcReviewCalibrationSample {
   sample_id: string;
