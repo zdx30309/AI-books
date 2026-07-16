@@ -186,7 +186,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
     assert captured["model"] == "grok-4.5"
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
-    assert captured["prompt_cache_key"].startswith("aigc-review:zhuque-report-review-v5.0:")
+    assert captured["prompt_cache_key"].startswith(f"aigc-review:{review.PROMPT_VERSION}:")
     assert usage["cached_input_tokens"] == 400
     assert usage["reasoning_tokens"] == 80
     assert usage["cost_cny"] > 0
@@ -567,7 +567,11 @@ def test_classical_original_fragment_is_immutable() -> None:
     assert "古文/佛经受保护原文被改动" in result.reasons
 
 
-def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
+def test_one_candidate_plus_one_full_audit_produces_guarded_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_FACT_LEDGER_CACHE_DIR", tmp_path)
     original = "第一段保留事实260元，并说明原因。\n\n第二段延续结论，不新增案例。"
     segment = ZhuqueSegment(
         segment_id=1,
@@ -597,6 +601,100 @@ def test_one_candidate_plus_one_full_audit_produces_guarded_candidate() -> None:
     assert result["deliverable"] is False
     assert result["candidate_text"] != original
     assert "真实朱雀复检" in result["next_action"]
+    unit = result["segment_results"][0]["unit_results"][0]
+    assert unit["fact_ledger_mode"] == "local_deterministic"
+    assert unit["fact_ledger_cost_cny"] == 0
+    assert unit["fact_ledger_claim_count"] == 2
+    assert result["models"]["fact"] == review.LOCAL_FACT_LEDGER_MODEL
+
+
+def test_fact_ledger_model_max_tokens_falls_back_locally_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_FACT_LEDGER_CACHE_DIR", tmp_path)
+    original = "第一段保留事实260元，并说明原因。\n\n第二段延续结论，不新增案例。"
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    fact_calls = 0
+
+    def fact_fn(_prompt: str, **_kwargs):
+        nonlocal fact_calls
+        fact_calls += 1
+        raise review.GeminiMaxTokensError("finish_reason=MAX_TOKENS")
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        fact_fn=fact_fn,
+        rewrite_fn=lambda _prompt, **_kwargs: (
+            "事实仍是260元，原因也完整保留。\n\n结论接着展开，没有加入新案例。"
+        ),
+        audit_fn=lambda prompt, **_kwargs: _passing_audit_json(prompt),
+    )
+
+    assert fact_calls == 1
+    assert result["status"] == "candidate_ready"
+    unit = result["segment_results"][0]["unit_results"][0]
+    assert unit["fact_ledger_mode"] == "local_fallback"
+    assert unit["fact_ledger_cost_cny"] == 0
+    assert result["models"]["fact"] == review.LOCAL_FACT_LEDGER_MODEL
+
+
+def test_audit_max_tokens_returns_retryable_manual_review_with_guarded_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_FACT_LEDGER_CACHE_DIR", tmp_path)
+    original = "第一段保留事实260元，并说明原因。\n\n第二段延续结论，不新增案例。"
+    candidate = "事实仍是260元，原因也完整保留。\n\n结论接着展开，没有加入新案例。"
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+
+    def audit_fn(_prompt: str, **_kwargs):
+        raise review.GeminiMaxTokensError("finish_reason=MAX_TOKENS")
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_fn=lambda _prompt, **_kwargs: candidate,
+        audit_fn=audit_fn,
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["deliverable"] is False
+    assert result["candidate_text"] == ""
+    assert result["guarded_candidate_text"] == candidate
+    assert result["technical_failure"] == {
+        "stage": "quality_audit",
+        "type": "GeminiMaxTokensError",
+        "retryable": True,
+        "completed_audit_batches": 0,
+        "failed_batch": 1,
+    }
+    assert "额度上限" in result["next_action"]
+
+
+def test_gemini_audit_uses_claim_aware_dynamic_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, int] = {}
+
+    def fake_generate(_prompt: str, **kwargs):
+        captured["max_output_tokens"] = kwargs["max_output_tokens"]
+        return "{}"
+
+    monkeypatch.setattr(review, "generate_gemini_text", fake_generate)
+    monkeypatch.setattr(review.settings, "AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS", 6000)
+    prompt = "\n".join(f'{{"claim_id":"C{index:03d}"}}' for index in range(35))
+
+    review._gemini_audit(prompt, request_id="dynamic-budget")
+
+    assert 2400 < captured["max_output_tokens"] <= 6000
 
 
 def test_similarity_is_diagnostic_and_does_not_force_quality_drift() -> None:

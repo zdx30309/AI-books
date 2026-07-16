@@ -37,12 +37,14 @@ from app.services.aigc_style_probe import (
     summarize_feature_effects,
 )
 from app.services.deepseek import get_deepseek_client
+from app.services.gemini import GeminiMaxTokensError
 from app.services.gemini import generate_text as generate_gemini_text
 from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v5.0"
+PROMPT_VERSION = "zhuque-report-review-v5.1"
+LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
 STRICT_HUMAN_THRESHOLD = HUMAN_PASS_THRESHOLD
@@ -2086,7 +2088,12 @@ def optimize_report_segments(
         _ensure_rewrite_provider_configured(selected_provider)
     rewrite = rewrite_fn or _rewrite_callable(selected_provider)
     audit = audit_fn or _gemini_audit
-    extract_facts = fact_fn or _gemini_fact_ledger
+    # Production defaults to a local sentence ledger.  It is complete by
+    # construction, costs nothing, and cannot fail because a model truncates
+    # JSON.  ``fact_fn`` remains an injectable comparison hook; any failure in
+    # that optional path falls back locally before the paid rewrite starts.
+    extract_facts = fact_fn
+    fact_backends_used: set[str] = set()
     replacements: list[tuple[int, int, str]] = []
     segment_results: list[dict[str, Any]] = []
     total_input_tokens = 0
@@ -2106,6 +2113,7 @@ def optimize_report_segments(
         return total_model_cost >= effective_budget
 
     def manual_result(reason: str, *, guarded_text: str = "") -> dict[str, Any]:
+        fact_model = _fact_model_label(fact_backends_used, content_type=content_type)
         result = _manual_review_result(
             request_id=request_id,
             original=original,
@@ -2118,6 +2126,7 @@ def optimize_report_segments(
             rewrite_provider=selected_provider,
             rewrite_model=rewrite_model,
             rewrite_reasoning=selected_reasoning,
+            fact_model=fact_model,
             guarded_candidate_text=guarded_text,
         )
         result["budget"] = {
@@ -2206,6 +2215,11 @@ def optimize_report_segments(
 
             if content_type != "classical":
                 source_with_tokens = "\n".join(protocol.block_payloads)
+                ledger_usage = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_cny": 0.0,
+                }
                 ledger = _load_cached_fact_ledger(
                     source_with_tokens,
                     cache_namespace=cache_namespace,
@@ -2213,85 +2227,81 @@ def optimize_report_segments(
                 )
                 if ledger is not None:
                     ledger_mode = "cached"
-                elif rewrite_fn is not None and fact_fn is None:
+                    fact_backends_used.add("cached")
+                elif extract_facts is None:
                     ledger = deterministic_fact_ledger(source_with_tokens)
-                    ledger_mode = "test_fallback"
+                    ledger = parse_fact_ledger(
+                        json.dumps(ledger, ensure_ascii=False),
+                        required_tokens=required_tokens,
+                    )
+                    ledger_mode = "local_deterministic"
+                    fact_backends_used.add("local")
+                    _persist_fact_ledger(
+                        source_with_tokens,
+                        ledger,
+                        cache_namespace=cache_namespace,
+                    )
                 else:
                     ledger_prompt = render_fact_ledger_prompt(
                         source_with_tokens,
                         protected_map=protocol.protected_map,
                         content_type=content_type,
                     )
-                    ledger_usage = {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cost_cny": 0.0,
-                    }
-                    ledger_retry_feedback = ""
                     try:
-                        for ledger_attempt in range(1, 3):
-                            attempt_prompt = ledger_prompt + ledger_retry_feedback
-                            raw_ledger = extract_facts(
-                                attempt_prompt,
-                                segment=unit_segment,
-                                request_id=request_id,
-                            )
-                            ledger_text, one_usage = _coerce_model_result(raw_ledger)
-                            ledger_input = int(
-                                one_usage.get("input_tokens")
-                                or _estimate_tokens(attempt_prompt)
-                            )
-                            ledger_output = int(
-                                one_usage.get("output_tokens")
-                                or _estimate_tokens(ledger_text)
-                            )
-                            ledger_cost = float(one_usage.get("cost_cny") or 0.0)
-                            total_input_tokens += ledger_input
-                            total_output_tokens += ledger_output
-                            total_model_cost += ledger_cost
-                            ledger_usage["input_tokens"] += ledger_input
-                            ledger_usage["output_tokens"] += ledger_output
-                            ledger_usage["cost_cny"] += ledger_cost
-                            try:
-                                ledger = parse_fact_ledger(
-                                    ledger_text,
-                                    required_tokens=required_tokens,
-                                )
-                                copied_claims = fact_ledger_copying_reasons(
-                                    source_with_tokens,
-                                    ledger,
-                                )
-                                if copied_claims:
-                                    raise ValueError("；".join(copied_claims))
-                                break
-                            except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                                if ledger_attempt >= 2 or budget_exhausted():
-                                    raise
-                                ledger_retry_feedback = (
-                                    "\n\n上一次事实账本无效："
-                                    + str(exc)
-                                    + "。重新抽取；必须简写为原子事实，禁止复制原句。"
-                                )
-                                logger.warning(
-                                    "LLM action=aigc_report_fact_ledger request_id=%s segment=%s unit=%s attempt=%s status=rejected reason=%s",
-                                    request_id,
-                                    segment_id,
-                                    unit.unit_id,
-                                    ledger_attempt,
-                                    exc,
-                                )
+                        raw_ledger = extract_facts(
+                            ledger_prompt,
+                            segment=unit_segment,
+                            request_id=request_id,
+                        )
+                        ledger_text, one_usage = _coerce_model_result(raw_ledger)
+                        ledger_input = int(
+                            one_usage.get("input_tokens")
+                            or _estimate_tokens(ledger_prompt)
+                        )
+                        ledger_output = int(
+                            one_usage.get("output_tokens")
+                            or _estimate_tokens(ledger_text)
+                        )
+                        ledger_cost = float(one_usage.get("cost_cny") or 0.0)
+                        total_input_tokens += ledger_input
+                        total_output_tokens += ledger_output
+                        total_model_cost += ledger_cost
+                        ledger_usage["input_tokens"] = ledger_input
+                        ledger_usage["output_tokens"] = ledger_output
+                        ledger_usage["cost_cny"] = ledger_cost
+                        ledger = parse_fact_ledger(
+                            ledger_text,
+                            required_tokens=required_tokens,
+                        )
+                        copied_claims = fact_ledger_copying_reasons(
+                            source_with_tokens,
+                            ledger,
+                        )
+                        if copied_claims:
+                            raise ValueError("；".join(copied_claims))
+                        ledger_mode = "model"
+                        fact_backends_used.add("model")
                     except Exception as exc:
-                        logger.exception(
-                            "LLM action=aigc_report_fact_ledger request_id=%s segment=%s unit=%s status=failed error_type=%s",
+                        # A fact ledger is a deterministic representation of the
+                        # supplied source, so a truncated/invalid optional model
+                        # response must not abort the paid editing run.  Fall back
+                        # immediately instead of paying for another verbose JSON
+                        # attempt.
+                        logger.warning(
+                            "LLM action=aigc_report_fact_ledger request_id=%s segment=%s unit=%s status=local_fallback error_type=%s error=%s",
                             request_id,
                             segment_id,
                             unit.unit_id,
                             type(exc).__name__,
+                            exc,
                         )
-                        raise AigcReviewModelError(
-                            f"片段 {segment_id}/{unit.unit_id} 事实账本提取失败: {exc}"
-                        ) from exc
-                    ledger_mode = "model"
+                        ledger = deterministic_fact_ledger(source_with_tokens)
+                        ledger = parse_fact_ledger(
+                            json.dumps(ledger, ensure_ascii=False),
+                            required_tokens=required_tokens,
+                        )
+                        ledger_mode = "local_fallback"
+                        fact_backends_used.add("local_fallback")
                     _persist_fact_ledger(
                         source_with_tokens,
                         ledger,
@@ -2638,7 +2648,23 @@ def optimize_report_segments(
                 batch_start // audit_batch_size + 1,
                 type(exc).__name__,
             )
-            raise AigcReviewModelError(f"独立质量审稿失败: {exc}") from exc
+            reason = (
+                "独立终审输出达到模型额度上限；已保留完成确定性保护的候选稿，"
+                "但在终审完整通过前不会交付，请稍后重试或人工复核。"
+                if isinstance(exc, GeminiMaxTokensError)
+                else "独立终审暂时不可用；已保留完成确定性保护的候选稿，"
+                "但在终审完整通过前不会交付，请稍后重试或人工复核。"
+            )
+            result = manual_result(reason, guarded_text=assembled)
+            result["audit_batch_count"] = len(audit_results)
+            result["technical_failure"] = {
+                "stage": "quality_audit",
+                "type": type(exc).__name__,
+                "retryable": True,
+                "completed_audit_batches": len(audit_results),
+                "failed_batch": batch_start // audit_batch_size + 1,
+            }
+            return result
         audit_input = int(audit_usage.get("input_tokens") or _estimate_tokens(audit_prompt))
         audit_output = int(audit_usage.get("output_tokens") or _estimate_tokens(audit_text))
         audit_cost = float(
@@ -2699,7 +2725,7 @@ def optimize_report_segments(
         "models": {
             "rewrite_provider": selected_provider,
             "rewrite": rewrite_model,
-            "fact": settings.AIGC_REVIEW_AUDIT_MODEL,
+            "fact": _fact_model_label(fact_backends_used, content_type=content_type),
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
             "rewrite_thinking": selected_reasoning,
         },
@@ -3211,7 +3237,13 @@ def fact_ledger_copying_reasons(
 
 
 def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
-    """Test-only/local fallback used when a custom rewrite callable is injected."""
+    """Build a complete local sentence ledger without an API call.
+
+    The source sentence is deliberately retained as the claim summary.  This
+    ledger is evidence for the independent audit, not prose supplied as the
+    candidate, so completeness and exact polarity are more important here than
+    model-generated abstraction.
+    """
     sentences = [
         value.strip()
         for value in re.split(r"(?<=[。！？!?；;])|\n+", source_with_tokens)
@@ -3232,14 +3264,14 @@ def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
                 "place": "",
                 "cause_or_condition": "",
                 "qualifiers": re.findall(
-                    r"(?:仅|只|可能|或许|通常|一般|至少|至多|大约|几乎|并未|直到)",
+                    r"(?:仅|只|可能|或许|通常|一般|至少|至多|大约|几乎|并未|并不|未必|直到|不一定|往往)",
                     sentence,
                 ),
                 "negations": re.findall(
                     r"(?:不|未|没有|并非|不能|不会|无)[^，。！？；]{0,18}",
                     sentence,
                 ),
-                "negated": bool(re.search(r"不|未|无|没有|并非", sentence)),
+                "negated": bool(re.search(r"不|未|无|没有|并非|不能|不会|未必", sentence)),
                 "modality": "fact",
                 "evaluation_owner": "",
                 "required_tokens": tokens,
@@ -3269,7 +3301,10 @@ def render_reauthor_prompt(
     return (
         template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace("{{STRATEGY_RULES}}", strategy_rules)
-        .replace("{{FACT_LEDGER}}", json.dumps(fact_ledger, ensure_ascii=False, indent=2))
+        .replace(
+            "{{FACT_LEDGER}}",
+            json.dumps(fact_ledger, ensure_ascii=False, separators=(",", ":")),
+        )
         .replace("{{ORIGINAL_WITH_TOKENS}}", original_with_tokens)
         .replace("{{PROTECTED_MAP}}", protected_map)
         .replace("{{PREVIOUS_CONTEXT}}", previous_context)
@@ -3294,7 +3329,7 @@ def render_audit_prompt(
         .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace(
             "{{FACT_LEDGERS}}",
-            json.dumps(fact_ledgers or {}, ensure_ascii=False, indent=2),
+            json.dumps(fact_ledgers or {}, ensure_ascii=False, separators=(",", ":")),
         )
         .replace("{{ORIGINAL_MANUSCRIPT}}", original)
         .replace("{{CANDIDATE_MANUSCRIPT}}", candidate)
@@ -3716,7 +3751,7 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
     return {
         "default_rewrite_provider": default_provider,
         "rewrite_model": _rewrite_model_for_provider(default_provider),
-        "fact_model": settings.AIGC_REVIEW_AUDIT_MODEL,
+        "fact_model": LOCAL_FACT_LEDGER_MODEL,
         "rewrite_providers": _rewrite_provider_statuses(),
         "audit_model": settings.AIGC_REVIEW_AUDIT_MODEL,
         "rewrite_thinking": _rewrite_reasoning_for_provider(default_provider),
@@ -3744,6 +3779,7 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
             int(settings.AIGC_REVIEW_MACRO_BLOCK_MAX_CHARS),
         ],
         "audit_batch_units": int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS),
+        "audit_max_output_tokens": int(settings.AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS),
         "default_run_budget_cny": float(settings.AIGC_REVIEW_RUN_BUDGET_CNY),
         "default_calibration_budget_cny": float(settings.AIGC_REVIEW_CALIBRATION_BUDGET_CNY),
         "style_feature_version": STYLE_FEATURE_VERSION,
@@ -3757,6 +3793,21 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
         "global_gate_changed": False,
         "novel_workflows_included": False,
     }
+
+
+def _fact_model_label(
+    backends: Iterable[str],
+    *,
+    content_type: str = "article",
+) -> str:
+    if content_type == "classical":
+        return "not_required"
+    modes = set(backends)
+    if "model" in modes and ("local" in modes or "local_fallback" in modes):
+        return f"{settings.AIGC_REVIEW_AUDIT_MODEL}+{LOCAL_FACT_LEDGER_MODEL}"
+    if "model" in modes:
+        return settings.AIGC_REVIEW_AUDIT_MODEL
+    return LOCAL_FACT_LEDGER_MODEL
 
 
 def _normalize_rewrite_provider(provider: str | None) -> str:
@@ -4035,16 +4086,24 @@ def _gemini_fact_ledger(
 
 def _gemini_audit(prompt: str, *, request_id: str) -> tuple[str, dict[str, Any]]:
     model = settings.AIGC_REVIEW_AUDIT_MODEL
+    # One editorial unit normally has a small ledger, but claim counts vary
+    # widely.  Allocate enough response room for one compact result per claim
+    # while retaining a firm deployment cap.
+    claim_count = max(1, prompt.count('"claim_id"') - 1)
+    configured_cap = max(2_400, int(settings.AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS))
+    max_output_tokens = min(configured_cap, max(2_400, 700 + claim_count * 110))
     logger.info(
-        "LLM action=aigc_report_quality_audit request_id=%s model=%s status=started",
+        "LLM action=aigc_report_quality_audit request_id=%s model=%s status=started claim_count=%s max_output_tokens=%s",
         request_id,
         model,
+        claim_count,
+        max_output_tokens,
     )
     content = generate_gemini_text(
         prompt,
         model=model,
         temperature=0.0,
-        max_output_tokens=1800,
+        max_output_tokens=max_output_tokens,
         retries=1,
     )
     input_tokens = _estimate_tokens(prompt)
@@ -4079,6 +4138,7 @@ def _manual_review_result(
     rewrite_provider: str,
     rewrite_model: str,
     rewrite_reasoning: str,
+    fact_model: str = LOCAL_FACT_LEDGER_MODEL,
     guarded_candidate_text: str = "",
 ) -> dict[str, Any]:
     return {
@@ -4104,7 +4164,7 @@ def _manual_review_result(
         "models": {
             "rewrite_provider": rewrite_provider,
             "rewrite": rewrite_model,
-            "fact": settings.AIGC_REVIEW_AUDIT_MODEL,
+            "fact": fact_model,
             "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
             "rewrite_thinking": rewrite_reasoning,
         },

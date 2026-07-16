@@ -56,17 +56,19 @@
 4. 达到 25% 立即停止，不修改其余正文。
 5. 默认单轮模型预算上限 `¥0.30`。达到上限、质量不确定或调用故障时停止，不自动烧钱重试。
 6. Grok 只保留手动实验能力，不参与默认自动流程。
-7. 事实账本按用户、正文哈希、策略版本和 Prompt 版本缓存复用；Flash-Lite 只审本轮改动单元。
+7. 事实账本由本地确定性代码生成并缓存，模型费用 0 元；Flash-Lite 只审本轮改动单元。
 
 编辑单元默认 600–900 字，最终按主题形成 1200–2500 字宏块。不得跨标题拼接。推荐单轮处理约占全文 30%–35% 的连续高收益区域；报告边界导致单块过大时保留人工选择。
 
 ## 事实账本与质量审查
 
-事实账本 Prompt 位于：
+事实账本默认由本地 `local-deterministic-v2` 按句建立，逐条保存原句位置、否定、限定与保护锚点；它完整且无需模型调用，不会因 JSON 截断或 `MAX_TOKENS` 中断。模型事实提取仅保留为研发对照注入点，任何无效或截断响应都会立即回退本地账本，不进行第二次付费重试。
+
+旧事实账本 Prompt 仅用于研发对照：
 
 - `backend/app/prompts/aigc_report_fact_ledger.md`
 
-每条 claim 必须包含原句位置、主体、动作、对象、时间、地点、条件、限定、否定、模态、评价归属和保护锚点。模型不得把原句全文复制成账本摘要。
+每条 claim 必须包含原句位置、限定、否定、模态、评价归属和保护锚点。原句作为终审证据保留，不作为候选稿直接输出。
 
 受限编辑 Prompt 位于：
 
@@ -79,6 +81,8 @@
 - `backend/app/prompts/aigc_report_quality_audit.md`
 
 审查模型必须返回每个 `audit_id + claim_id` 的结果。业务代码再次核对返回集合和事实账本是否完全一致；缺少、重复或账本外 claim 都是高严重度失败，不能靠模型自报 `pass=true` 绕过。
+
+终审默认每次只审 1 个 600–900 字单元，并按 claim 数动态分配最多 6000 个输出 token。若终审仍发生 `MAX_TOKENS` 或服务故障，接口返回可重试的 `manual_review`，保留已经生成且通过确定性保护的候选，但绝不把未完整终审的候选交付为通过。
 
 ## 前后报告差分
 
@@ -135,6 +139,8 @@ AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS=900
 AIGC_REVIEW_MACRO_BLOCK_MIN_CHARS=1200
 AIGC_REVIEW_MACRO_BLOCK_MAX_CHARS=2500
 AIGC_REVIEW_MAX_REWRITE_ATTEMPTS=1
+AIGC_REVIEW_AUDIT_BATCH_UNITS=1
+AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS=6000
 AIGC_REVIEW_RUN_BUDGET_CNY=0.30
 ```
 

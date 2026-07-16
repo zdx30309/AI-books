@@ -436,6 +436,7 @@ export interface AigcReviewStrategy {
   macro_block_chars: [number, number];
   experiment_order: AigcReviewExperimentType[];
   audit_batch_units: number;
+  audit_max_output_tokens: number;
   default_run_budget_cny: number;
   default_calibration_budget_cny: number;
   proportional_report_learning: boolean;
@@ -593,7 +594,7 @@ export interface AigcReviewEditorialUnitResult {
   original_text: string;
   candidate_text: string;
   status: "ready" | "rejected";
-  fact_ledger_mode: "cached" | "model" | "test_fallback" | "classical_legacy" | "not_required_identical_non_whitespace";
+  fact_ledger_mode: "cached" | "model" | "local_deterministic" | "local_fallback" | "test_fallback" | "classical_legacy" | "not_required_identical_non_whitespace";
   fact_ledger_claim_count: number;
   fact_ledger_cost_cny: number;
   hard_safety_passed: boolean;

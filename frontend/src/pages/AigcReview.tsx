@@ -204,7 +204,7 @@ export function AigcReview() {
         </div>
         <div className="flex flex-col items-stretch gap-3">
           <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-            本地 OCR：0 元<br />先排版实验，DeepSeek 按需编辑<br />事实账本缓存 · 600–900 字分批终审
+            本地 OCR：0 元<br />先排版实验，DeepSeek 按需编辑<br />本地事实账本 · 600–900 字逐单元终审
           </div>
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
