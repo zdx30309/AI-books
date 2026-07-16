@@ -1184,6 +1184,78 @@ def test_fact_ledger_constrained_prompt_sees_original_and_atomic_ledger() -> Non
     assert "人工特征" not in prompt
 
 
+def test_controlled_topology_prompt_does_not_mix_other_experimental_variables() -> None:
+    original = "第一段保留事实与限定。\n\n第二段保留结论归属。"
+    ledger = review.deterministic_fact_ledger(original)
+
+    prompt = review.render_reauthor_prompt(
+        ledger,
+        original_with_tokens=original,
+        protected_map="（无）",
+        previous_context="",
+        next_context="",
+        content_type="article",
+        strategy_rules="只进行受控句子拓扑实验。",
+        source_chars=len(original),
+        retry_feedback="首次实验。",
+        controlled_topology=True,
+        preserve_paragraph_structure=True,
+    )
+
+    assert "只允许改变‘句子拓扑’" in prompt
+    assert "段落数量、段落顺序和段落边界必须完全不变" in prompt
+    assert "信息落点和作者语体必须保持不变" in prompt
+    assert "不得主动口语化" in prompt
+    assert "不叠加节奏、段落重组、高频词清理或风格轮换" in prompt
+    assert "可以在同一主题内自然拆分或合并段落" not in prompt
+    assert "调整主从句关系、拆合句子、改变信息落点" not in prompt
+
+
+def test_maximal_recast_prompt_combines_style_variables_but_keeps_fact_boundaries() -> None:
+    original = "第一段保留事实与限定。\n\n第二段保留结论归属。"
+    prompt = review.render_reauthor_prompt(
+        review.deterministic_fact_ledger(original),
+        original_with_tokens=original,
+        protected_map="（无）",
+        previous_context="",
+        next_context="",
+        content_type="article",
+        strategy_rules="执行最大幅度组合重构。",
+        source_chars=len(original),
+        retry_feedback="首次实验。",
+        maximal_recast=True,
+        preserve_paragraph_structure=False,
+    )
+
+    assert "最大幅度组合实验，不做单变量归因" in prompt
+    for variable in (
+        "主从句层级",
+        "主语落点",
+        "句子边界",
+        "段落边界",
+        "长短句分布",
+        "连接词密度",
+    ):
+        assert variable in prompt
+    assert "真实时间、因果、条件、否定、评价归属和事件先后不得改变" in prompt
+    assert "不得加入错别字、残句、网络腔、伪造个人经历" in prompt
+    assert "可以在同一主题内自然拆分或合并段落" in prompt
+
+
+def test_writer_fact_ledger_removes_duplicate_source_prose_without_mutating_audit_ledger() -> None:
+    original = "这一事实必须完整保留。"
+    ledger = review.deterministic_fact_ledger(original)
+    source_summary = ledger["claims"][0]["summary"]
+
+    writer_view = review.fact_ledger_writer_view(ledger, source_with_tokens=original)
+
+    assert source_summary == original
+    assert ledger["claims"][0]["summary"] == original
+    assert writer_view["claims"][0]["summary"] != original
+    assert writer_view["claims"][0]["summary"] == "见S001"
+    assert writer_view["writer_view"] == "constraint_only_no_duplicate_source_prose"
+
+
 def test_fact_ledger_requires_every_keep_token_exactly_once() -> None:
     valid = json.dumps(
         {
@@ -1388,19 +1460,41 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
-def test_detector_probe_is_one_zero_cost_discourse_marker_variable() -> None:
+def test_detector_probe_recasts_eighty_percent_with_quality_audit() -> None:
     original = normalize_manuscript_text((
         "然而，校对者仍先核对旧档案中的地点。因此，已经确认的材料被留在原处。"
         "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
         "问题在于，记录中的因果关系不能被改动。值得注意的是，数字和书名也必须保留。"
         "这项工作不仅要复核事实，而且要守住原有立场。"
-        "史料写道：“然而，因此，同时，这些词在引语里必须保留。”\n\n"
+        "完成复核以后，编辑把材料交给下一位同事继续检查。\n\n"
     ) * 18)
     segment = ZhuqueSegment(
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("连接标记单变量实验不应调用任何模型")
+    rewrite_calls: list[str] = []
+    audit_calls: list[str] = []
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        source = kwargs["segment"].mapped_text
+        rewrite_calls.append(source)
+        candidate = (
+            source
+            .replace("然而", "不过")
+            .replace("因此", "所以")
+            .replace("同时", "同期")
+            .replace("此外", "另外")
+            .replace("不仅", "不只")
+            .replace("而且", "并且")
+        )
+        return candidate, {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.01}
+
+    def audit_fn(prompt: str, **_kwargs):
+        audit_calls.append(prompt)
+        return _passing_audit_json(prompt), {
+            "input_tokens": 100,
+            "output_tokens": 100,
+            "cost_cny": 0.01,
+        }
 
     result = optimize_report_segments(
         original,
@@ -1409,36 +1503,40 @@ def test_detector_probe_is_one_zero_cost_discourse_marker_variable() -> None:
         content_type="article",
         experiment_type="detector_probe",
         rewrite_provider="deepseek",
-        rewrite_fn=forbidden,
-        fact_fn=forbidden,
-        audit_fn=forbidden,
-        budget_cny=0,
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+        budget_cny=0.3,
     )
 
-    assert result["status"] == "probe_ready"
+    assert result["status"] == "probe_ready", [
+        (
+            item["status"],
+            item["deterministic_review"]["reasons"],
+            [unit["deterministic_review"]["reasons"] for unit in item.get("unit_results") or []],
+        )
+        for item in result["segment_results"]
+    ]
     assert result["deliverable"] is False
-    assert result["quality_audit"] is None
-    assert result["experimental_quality_bypassed"] is True
-    assert result["models"]["fact"] == "not_used_detector_probe"
-    assert result["models"]["audit"] == "skipped_detector_probe"
-    assert result["models"]["rewrite_provider"] == "local"
-    assert result["models"]["rewrite"] == "local-marker-rewrite-v1"
-    assert result["cost"]["estimated_cny"] == 0
+    assert result["quality_audit"]["pass"] is True
+    assert result["experimental_quality_bypassed"] is False
+    assert result["models"]["fact"] == "local-deterministic-v2"
+    assert result["models"]["rewrite_provider"] == "deepseek"
+    assert result["cost"]["estimated_cny"] > 0
     assert result["candidate_text"] != original
-    assert result["editorial_unit_count"] == 1
+    assert result["editorial_unit_count"] == len(rewrite_calls)
+    assert result["audit_batch_count"] == len(audit_calls)
+    assert result["audit_batch_count"] == math.ceil(len(rewrite_calls) / 2)
     probe = result["detector_probe"]
-    assert probe["mode"] == "controlled_single_variable"
-    assert probe["variable"] == "discourse_marker_distribution_only"
-    assert 1200 <= probe["scope_chars"] <= 2500
-    assert probe["changed_marker_count"] >= 6
-    assert probe["invariants"] == {
-        "same_paragraph_count": True,
-        "same_sentence_order": True,
-        "same_comma_count": True,
-        "same_full_stop_count": True,
-        "same_digits": True,
-        "quotes_untouched": True,
+    assert probe["mode"] == "maximal_multi_variable_recast"
+    assert probe["variable"] == "multi_variable_maximal_recast"
+    assert 75 <= probe["scope_percent"] <= 85
+    assert set(probe["variables"]) >= {
+        "clause_topology",
+        "paragraph_boundaries",
+        "sentence_length_distribution",
+        "discourse_marker_density",
     }
+    assert probe["quality_audit_required"] is True
     start, end = probe["scope_start"], probe["scope_end"]
     assert result["candidate_text"][:start] == original[:start]
     length_delta = (
@@ -1446,12 +1544,6 @@ def test_detector_probe_is_one_zero_cost_discourse_marker_variable() -> None:
         - result["segment_results"][0]["original_chars"]
     )
     assert result["candidate_text"][end + length_delta:] == original[end:]
-    source = original[start:end]
-    candidate = result["candidate_text"][start:end + length_delta]
-    assert source != candidate
-    assert source.count("，") == candidate.count("，")
-    assert source.count("。") == candidate.count("。")
-    assert "“然而，因此，同时，这些词在引语里必须保留。”" in candidate
 
 
 def test_discourse_marker_probe_uses_context_safe_phrase_replacements() -> None:
@@ -1486,6 +1578,7 @@ def test_detector_probe_units_never_cross_section_headings() -> None:
     assert len(units) >= 2
     assert all(not ("第一节" in unit.text and "第二节" in unit.text) for unit in units)
     assert all(0 <= unit.start < unit.end <= len(source) for unit in units)
+    assert all(len(unit.text) <= review.DEEP_RECAST_UNIT_MAX_CHARS for unit in units)
 
 
 def test_detector_probe_recheck_reports_detector_hit_without_quality_pass(
@@ -1545,7 +1638,7 @@ def test_detector_probe_recheck_reports_detector_hit_without_quality_pass(
     assert compared["probe_success"] is True
     assert compared["quality_pass"] is False
     assert compared["strict_pass"] is False
-    assert "探索实验命中" in compared["recommendation_reason"]
+    assert "检测指标命中" in compared["recommendation_reason"]
 
 
 def test_paired_analysis_aligns_thirteen_rows_to_ten_by_overlap(

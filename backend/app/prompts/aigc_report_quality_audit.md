@@ -4,7 +4,8 @@
 
 一、逐 claim 验收
 - 对事实账本中的每个 claim 返回 preserved、altered 或 missing，并同时原样返回所属 audit_id，给出原稿与候选中的定位证据。
-- 对 preserved claim，original_evidence 与 candidate_evidence 各摘录 4–16 个汉字即可，reason 留空；不得复述整句或事实账本。
+- 对 preserved claim，只返回 audit_id、claim_id、status 三个字段，不要返回 evidence 或 reason；业务代码会逐一核对 claim 集合。
+- 只有 altered、missing 才返回 original_evidence、candidate_evidence 和简短 reason；证据各摘录 4–16 个汉字，不得复述整句或事实账本。
 - 只有 altered、missing 才写简短 reason。所有字段保持紧凑，禁止在 JSON 前后输出解释。
 - 候选中任何无法映射到事实账本的事实、解释、评价、背景、心理、例子或结论，都写入 added_claims。
 - altered、missing 或 added_claims 任一非空，pass 必须为 false。
@@ -46,10 +47,7 @@
     {
       "audit_id": "1.1",
       "claim_id": "C001",
-      "status": "preserved|altered|missing",
-      "original_evidence": "",
-      "candidate_evidence": "",
-      "reason": ""
+      "status": "preserved|altered|missing"
     }
   ],
   "added_claims": [],

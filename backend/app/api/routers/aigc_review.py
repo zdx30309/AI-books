@@ -412,8 +412,17 @@ def _save_review_archive(
         or result.get("guarded_candidate_text")
         or original
     ).strip()
-    quality_passed = result.get("status") == "candidate_ready"
     probe_ready = result.get("status") == "probe_ready"
+    experimental_quality_bypassed = bool(
+        result.get("experimental_quality_bypassed")
+        if "experimental_quality_bypassed" in result
+        else (probe_ready and not result.get("quality_audit"))
+    )
+    quality_passed = result.get("status") == "candidate_ready" or (
+        probe_ready
+        and bool(result.get("quality_audit"))
+        and not experimental_quality_bypassed
+    )
     task = Task(
         source_url="manual://aigc-review",
         owner_id=user.id,
@@ -444,9 +453,9 @@ def _save_review_archive(
             "aigc_policy_version": "report-driven-v5",
             "aigc_required": True,
             "aigc_status": (
-                "candidate_ready"
-                if quality_passed
-                else ("detector_probe_ready" if probe_ready else "manual_review")
+                "detector_probe_ready"
+                if probe_ready
+                else ("candidate_ready" if quality_passed else "manual_review")
             ),
             "aigc_passed": False,
             "aigc_quality_passed": quality_passed,
@@ -463,7 +472,7 @@ def _save_review_archive(
             "aigc_manual_review_reason": (
                 None if quality_passed else str(result.get("next_action") or "")[:4000]
             ),
-            "aigc_experimental_quality_bypassed": probe_ready,
+            "aigc_experimental_quality_bypassed": experimental_quality_bypassed,
             "aigc_review_request_id": result.get("request_id"),
             "aigc_original_sha256": result.get("original_sha256"),
             "aigc_candidate_sha256": result.get("candidate_sha256") or sha256_text(reviewed),

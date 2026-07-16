@@ -16,6 +16,7 @@ import re
 import statistics
 import threading
 import unicodedata
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -43,8 +44,8 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v5.1"
-PROBE_PROMPT_VERSION = "zhuque-detector-controlled-v3"
+PROMPT_VERSION = "zhuque-report-review-v5.3"
+PROBE_PROMPT_VERSION = "zhuque-detector-maximal-v4"
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -54,6 +55,11 @@ MATERIAL_SIMILARITY_MAX = 0.82
 MATERIAL_PARAGRAPH_COVERAGE_MIN = 0.80
 QUALITY_SAFE_LENGTH_MIN = 0.95
 QUALITY_SAFE_LENGTH_MAX = 1.08
+DEEP_RECAST_SCOPE_MIN = 0.75
+DEEP_RECAST_SCOPE_TARGET = 0.80
+DEEP_RECAST_SCOPE_MAX = 0.85
+DEEP_RECAST_UNIT_MIN_CHARS = 600
+DEEP_RECAST_UNIT_MAX_CHARS = 900
 _PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
@@ -830,6 +836,20 @@ def compare_zhuque_reports(
                 "整稿报告的归一化位置对齐只作观察，不自动扩大付费实验。"
             )
         )
+
+    if probe_mode:
+        if detector_pass and quality_pass:
+            recommendation_reason = (
+                "强力组合实验命中：官方首页人工特征达到 25%，且事实与文稿质量终审通过。"
+                "该结果只能证明整组操作在本篇有效，无法归因某一个变量；保留人工确认，不自动晋升为通用终稿策略。"
+            )
+        elif detector_pass:
+            recommendation_reason = "检测指标命中，但质量终审没有通过；继续保留原稿，不交付这份候选。"
+        else:
+            recommendation_reason = (
+                "强力组合实验未命中：官方首页人工特征仍低于 25%。"
+                "停止自动追加费用，不把本轮结果冒充已证实规律。"
+            )
 
     selected_rows = [row for row in rows if row["selected"]]
     comparison_id = str(uuid4())
@@ -2611,8 +2631,8 @@ def discourse_marker_distribution_probe(text: str) -> tuple[str, list[dict[str, 
 def _detector_probe_units(
     text: str,
     *,
-    min_chars: int = 1200,
-    max_chars: int = 2500,
+    min_chars: int = DEEP_RECAST_UNIT_MIN_CHARS,
+    max_chars: int = DEEP_RECAST_UNIT_MAX_CHARS,
 ) -> list[EditorialUnit]:
     """Build probe units without ever crossing a detected section heading."""
     heading_starts = sorted({start for start, _end in _heading_spans(text)})
@@ -2677,7 +2697,7 @@ def _controlled_probe_scope(
     return segment, unit, candidate, changes
 
 
-def build_detector_probe_result(
+def _build_v3_detector_probe_result(
     original: str,
     segments: Iterable[ZhuqueSegment],
     selected_ids: Iterable[int],
@@ -2868,6 +2888,270 @@ def build_detector_probe_result(
     }
 
 
+def _deep_recast_scope_boundaries(text: str) -> tuple[list[int], set[int]]:
+    """Return safe sentence/paragraph boundaries for one continuous recast scope."""
+    paragraph_boundaries = {0, len(text)}
+    for match in re.finditer(r"\n[\t ]*(?:\n[\t ]*)+", text):
+        paragraph_boundaries.update((match.start(), match.end()))
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and _looks_like_heading(stripped):
+            start = offset + line.find(stripped)
+            paragraph_boundaries.update((start, start + len(stripped)))
+        offset += len(line)
+    sentence_boundaries = set(paragraph_boundaries)
+    sentence_boundaries.update(
+        match.end()
+        for match in re.finditer(r"[。！？!?；;](?:[”’\"']?)[\t ]*", text)
+    )
+    return sorted(sentence_boundaries), paragraph_boundaries
+
+
+def _deep_recast_probe_scope(
+    original: str,
+    segments: list[ZhuqueSegment],
+    selected_ids: Iterable[int],
+) -> tuple[ZhuqueSegment, dict[str, Any]]:
+    """Select one continuous 75%-85% high-risk span without trusting row numbers as boundaries."""
+    selected = {int(value) for value in selected_ids}
+    eligible: list[ZhuqueSegment] = []
+    for segment in sorted(segments, key=lambda item: item.start):
+        if segment.segment_id not in selected or segment.label == "human":
+            continue
+        if segment.mapping_confidence < 0.65:
+            continue
+        if segment.start < 0 or segment.end > len(original) or segment.start >= segment.end:
+            raise ZhuqueReportError(f"片段 {segment.segment_id} 的原稿坐标无效。")
+        if original[segment.start:segment.end] != segment.mapped_text:
+            raise ZhuqueReportError(
+                f"片段 {segment.segment_id} 的映射正文已经变化，请重新解析报告。"
+            )
+        eligible.append(segment)
+    if not eligible:
+        raise ZhuqueReportError("选中区域没有可用于强力组合实验的非人工特征正文。")
+
+    scope_min = max(350, math.ceil(len(original) * DEEP_RECAST_SCOPE_MIN))
+    scope_target = max(scope_min, round(len(original) * DEEP_RECAST_SCOPE_TARGET))
+    scope_max = max(scope_min, math.floor(len(original) * DEEP_RECAST_SCOPE_MAX))
+    selected_chars = sum(item.end - item.start for item in eligible)
+    if selected_chars < scope_min:
+        raise ZhuqueReportError(
+            f"选中高风险正文只有 {selected_chars} 字；强力组合实验至少需要覆盖全稿约 75%（当前需 {scope_min} 字）。"
+        )
+
+    regions: list[tuple[int, int]] = [(item.start, item.end) for item in eligible]
+    if len(eligible) > 1:
+        union_start = min(item.start for item in eligible)
+        union_end = max(item.end for item in eligible)
+        covered = sum(
+            max(0, min(union_end, item.end) - max(union_start, item.start))
+            for item in eligible
+        )
+        if covered >= (union_end - union_start) * 0.96:
+            regions.append((union_start, union_end))
+
+    candidates: list[tuple[tuple[float, int, int, int], int, int, list[int], float, float]] = []
+    seen_regions: set[tuple[int, int]] = set()
+    for region_start, region_end in regions:
+        if (region_start, region_end) in seen_regions or region_end - region_start < scope_min:
+            continue
+        seen_regions.add((region_start, region_end))
+        region = original[region_start:region_end]
+        boundaries, paragraph_boundaries = _deep_recast_scope_boundaries(region)
+        for local_start in boundaries:
+            minimum_end = local_start + scope_min
+            maximum_end = min(len(region), local_start + scope_max)
+            if minimum_end > maximum_end:
+                continue
+            lo = bisect_left(boundaries, minimum_end)
+            hi = bisect_right(boundaries, maximum_end)
+            if lo >= hi:
+                continue
+            target_index = bisect_left(boundaries, local_start + scope_target, lo, hi)
+            end_indexes = {
+                lo,
+                hi - 1,
+                max(lo, min(hi - 1, target_index)),
+                max(lo, min(hi - 1, target_index - 1)),
+            }
+            for end_index in end_indexes:
+                local_end = boundaries[end_index]
+                span_start = region_start + local_start
+                span_end = region_start + local_end
+                span_chars = span_end - span_start
+                if not scope_min <= span_chars <= scope_max:
+                    continue
+                overlaps: list[tuple[ZhuqueSegment, int]] = []
+                for segment in eligible:
+                    overlap = max(0, min(span_end, segment.end) - max(span_start, segment.start))
+                    if overlap:
+                        overlaps.append((segment, overlap))
+                covered = sum(overlap for _segment, overlap in overlaps)
+                if covered < span_chars * 0.96:
+                    continue
+                raw_risk = sum(
+                    overlap * segment.aigc_value
+                    for segment, overlap in overlaps
+                ) / max(1, covered)
+                priority = raw_risk + sum(
+                    overlap * (0.015 if segment.label == "ai" else 0.0)
+                    for segment, overlap in overlaps
+                ) / max(1, covered)
+                contributing_ids = [segment.segment_id for segment, _overlap in overlaps]
+                confidence = min(segment.mapping_confidence for segment, _overlap in overlaps)
+                paragraph_bonus = int(
+                    local_start in paragraph_boundaries and local_end in paragraph_boundaries
+                )
+                score = (
+                    priority,
+                    paragraph_bonus,
+                    -abs(span_chars - scope_target),
+                    -len(_headings(original[span_start:span_end])),
+                )
+                candidates.append(
+                    (score, span_start, span_end, contributing_ids, confidence, raw_risk)
+                )
+    if not candidates:
+        raise ZhuqueReportError(
+            "选中区域无法在自然句段边界上形成占全文 75%–85% 的连续实验范围；请多选相邻风险片段。"
+        )
+
+    _score, start, end, contributing_ids, confidence, risk = max(
+        candidates,
+        key=lambda item: item[0],
+    )
+    overlaps = [
+        (segment, max(0, min(end, segment.end) - max(start, segment.start)))
+        for segment in eligible
+    ]
+    overlaps = [(segment, overlap) for segment, overlap in overlaps if overlap]
+    dominant = max(overlaps, key=lambda item: item[1])[0]
+    share_percent = sum(
+        segment.share_percent * overlap / max(1, segment.end - segment.start)
+        for segment, overlap in overlaps
+    )
+    label = classify_aigc_value(min(1.0, risk))
+    if label == "human":
+        label = "suspected"
+    synthetic = ZhuqueSegment(
+        segment_id=dominant.segment_id,
+        share_percent=round(share_percent, 4),
+        char_count=end - start,
+        aigc_value=min(1.0, risk),
+        label=label,
+        start=start,
+        end=end,
+        mapped_text=original[start:end],
+        mapping_confidence=confidence,
+        recommended=True,
+    )
+    return synthetic, {
+        "scope_start": start,
+        "scope_end": end,
+        "scope_chars": end - start,
+        "scope_percent": round((end - start) * 100 / max(1, len(original)), 4),
+        "source_segment_ids": contributing_ids,
+        "weighted_aigc_risk": round(risk, 6),
+        "target_scope_percent": DEEP_RECAST_SCOPE_TARGET * 100,
+    }
+
+
+def build_detector_probe_result(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+    *,
+    content_type: str,
+    rewrite: Callable[..., Any],
+    audit: Callable[..., Any],
+    fact: Callable[..., Any] | None,
+    request_id: str,
+    iteration: int,
+    budget_cny: float,
+    cache_namespace: str | None,
+) -> dict[str, Any]:
+    """Build the v4 quality-audited maximal DeepSeek recast over one continuous scope."""
+    _ = request_id
+    if content_type == "classical":
+        raise ZhuqueReportError("古文/佛经不参加朱雀黑盒强力组合实验。")
+    if iteration != 1:
+        raise ZhuqueReportError("请先上传本轮真实朱雀复检报告，再决定下一轮实验。")
+    if budget_cny <= 0:
+        raise ZhuqueReportError("强力组合实验会调用 DeepSeek 和独立终审，预算必须大于 0 元。")
+
+    normalized_segments = list(segments)
+    synthetic, scope = _deep_recast_probe_scope(
+        original,
+        normalized_segments,
+        selected_ids,
+    )
+    result = optimize_report_segments(
+        original,
+        [synthetic],
+        [synthetic.segment_id],
+        content_type=content_type,
+        iteration=1,
+        preferred_strategy="maximal_variance",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite,
+        audit_fn=audit,
+        fact_fn=fact,
+        cache_namespace=cache_namespace,
+        budget_cny=budget_cny,
+        experiment_type="syntax_constrained",
+        respect_headings=True,
+        preserve_paragraph_structure=False,
+        audit_batch_units=2,
+    )
+    result["experiment_type"] = "detector_probe"
+    result["deliverable"] = False
+    result["experimental_quality_bypassed"] = False
+    result["prompt_version"] = PROBE_PROMPT_VERSION
+    result["selected_segment_ids"] = scope["source_segment_ids"]
+    if result.get("status") == "candidate_ready":
+        result["status"] = "probe_ready"
+        result["next_action"] = (
+            "约 75%–85% 连续高风险正文已完成最大幅度组合重构，并通过事实与文稿质量终审。"
+            "请仅上传这一候选的真实朱雀 PDF；达到官方人工特征 25% 后仍需人工确认，不自动作为终稿交付。"
+        )
+    else:
+        result["next_action"] = (
+            str(result.get("next_action") or "")
+            + " 本轮没有绕过质量门槛，也不会自动追加新的付费实验。"
+        ).strip()
+    result["detector_probe"] = {
+        "mode": "maximal_multi_variable_recast",
+        "variable": "multi_variable_maximal_recast",
+        "variables": [
+            "clause_topology",
+            "subject_landing",
+            "sentence_boundaries",
+            "information_landing",
+            "paragraph_boundaries",
+            "sentence_length_distribution",
+            "punctuation_pauses",
+            "discourse_marker_density",
+            "paragraph_function",
+        ],
+        **scope,
+        "quality_audit_required": True,
+        "fact_ledger_required": True,
+        "rewrite_provider": "deepseek",
+        "max_budget_cny": round(budget_cny, 4),
+        "hypotheses": [
+            "maximal_multi_variable_recast",
+        ],
+        "retired_failed_hypotheses": [
+            "discourse_marker_distribution_sensitivity",
+            "sentence_boundary_distribution_sensitivity",
+            "multi_profile_rotation",
+            "templated_first_person_reaction",
+        ],
+    }
+    return result
+
+
 def optimize_report_segments(
     original_text: str,
     segments: Iterable[ZhuqueSegment | dict[str, Any]],
@@ -2884,6 +3168,9 @@ def optimize_report_segments(
     cache_namespace: str | None = None,
     budget_cny: float | None = None,
     experiment_type: str = "syntax_constrained",
+    respect_headings: bool = False,
+    preserve_paragraph_structure: bool = False,
+    audit_batch_units: int | None = None,
 ) -> dict[str, Any]:
     """Run one quality-safe v5 experiment, then apply hard and semantic gates."""
     request_id = str(uuid4())
@@ -2917,17 +3204,28 @@ def optimize_report_segments(
         )
 
     if experiment_type == "detector_probe":
+        selected_provider = _normalize_rewrite_provider(rewrite_provider)
+        if selected_provider != "deepseek":
+            raise ZhuqueReportError("强力组合实验固定使用低成本 DeepSeek，避免无意义增加模型费用。")
+        if rewrite_fn is None:
+            _ensure_rewrite_provider_configured("deepseek")
+        effective_budget = float(
+            budget_cny
+            if budget_cny is not None
+            else settings.AIGC_REVIEW_RUN_BUDGET_CNY
+        )
         return build_detector_probe_result(
             original,
             normalized_segments,
             selected_ids,
             content_type=content_type,
-            rewrite=lambda *_args, **_kwargs: ("", {}),
-            rewrite_provider="local",
-            rewrite_model="local-marker-rewrite-v1",
+            rewrite=rewrite_fn or _rewrite_callable("deepseek"),
+            audit=audit_fn or _gemini_audit,
+            fact=fact_fn,
             request_id=request_id,
             iteration=iteration,
-            budget_cny=0.0,
+            budget_cny=effective_budget,
+            cache_namespace=cache_namespace,
         )
 
     selected_provider = _normalize_rewrite_provider(rewrite_provider)
@@ -2960,7 +3258,7 @@ def optimize_report_segments(
     total_output_tokens = 0
     total_model_cost = 0.0
     audit_items: list[dict[str, Any]] = []
-    preserve_paragraph_count = content_type == "classical"
+    preserve_paragraph_count = content_type == "classical" or preserve_paragraph_structure
     def budget_exhausted() -> bool:
         return total_model_cost >= effective_budget
 
@@ -3016,12 +3314,18 @@ def optimize_report_segments(
         )
         style_diagnosis = diagnose_segment_style(source)
         max_attempts = max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
-        units = (
-            [EditorialUnit(1, 0, len(source), source)]
-            if content_type == "classical"
-            else split_editorial_units(source)
-        )
+        if content_type == "classical":
+            units = [EditorialUnit(1, 0, len(source), source)]
+        elif respect_headings:
+            units = _detector_probe_units(
+                source,
+                min_chars=DEEP_RECAST_UNIT_MIN_CHARS,
+                max_chars=DEEP_RECAST_UNIT_MAX_CHARS,
+            )
+        else:
+            units = split_editorial_units(source)
         unit_candidates: list[str] = []
+        unit_replacements: list[tuple[int, int, str]] = []
         unit_results: list[dict[str, Any]] = []
         segment_candidate_safe = True
 
@@ -3058,7 +3362,9 @@ def optimize_report_segments(
             protocol = prepare_rewrite_protocol(
                 unit_source,
                 protected_texts=unit_protected,
-                flexible_paragraphs=content_type != "classical",
+                flexible_paragraphs=(
+                    content_type != "classical" and not preserve_paragraph_structure
+                ),
             )
             required_tokens = [token for token, _ in protocol.protected_values]
             ledger: dict[str, Any] | None = None
@@ -3206,6 +3512,9 @@ def optimize_report_segments(
                         strategy_rules=strategy_rules,
                         source_chars=len(unit_source),
                         retry_feedback=retry_feedback,
+                        controlled_topology=(strategy_id == "controlled_topology"),
+                        maximal_recast=(strategy_id == "maximal_variance"),
+                        preserve_paragraph_structure=preserve_paragraph_structure,
                     )
                 try:
                     rewrite_kwargs = {
@@ -3340,6 +3649,7 @@ def optimize_report_segments(
                 segment_candidate_safe = False
                 break
             unit_candidates.append(unit_candidate.strip())
+            unit_replacements.append((unit.start, unit.end, unit_candidate.strip()))
             audit_items.append(
                 {
                     "audit_id": f"{segment_id}.{unit.unit_index}",
@@ -3353,7 +3663,11 @@ def optimize_report_segments(
                 }
             )
 
-        candidate = "\n\n".join(unit_candidates)
+        candidate = (
+            _assemble_replacements(source, unit_replacements)
+            if unit_replacements
+            else ""
+        )
         if experiment_type == "combined" and content_type != "classical":
             candidate = reflow_layout_only(candidate)
         parent_review = review_deterministic_constraints(
@@ -3436,7 +3750,14 @@ def optimize_report_segments(
             guarded_text=assembled,
         )
 
-    audit_batch_size = max(1, int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS))
+    audit_batch_size = max(
+        1,
+        int(
+            audit_batch_units
+            if audit_batch_units is not None
+            else settings.AIGC_REVIEW_AUDIT_BATCH_UNITS
+        ),
+    )
     audit_results: list[dict[str, Any]] = []
     audit_estimated = False
     for batch_start in range(0, len(audit_items), audit_batch_size):
@@ -4137,6 +4458,65 @@ def deterministic_fact_ledger(source_with_tokens: str) -> dict[str, Any]:
     }
 
 
+def fact_ledger_writer_view(
+    fact_ledger: dict[str, Any],
+    *,
+    source_with_tokens: str,
+) -> dict[str, Any]:
+    """Remove duplicate source prose from the writer view while retaining every constraint.
+
+    The full ledger remains unchanged for the independent auditor.  Repeating every
+    source sentence verbatim in both ``original`` and ``fact_ledger`` anchored the
+    rewrite model to the old syntax and produced synonym-only edits.
+    """
+    compact_claims: list[dict[str, Any]] = []
+    normalized_source = re.sub(r"\s+", "", source_with_tokens)
+    for claim in fact_ledger.get("claims") or []:
+        value = {
+            str(key): item
+            for key, item in dict(claim).items()
+            if item not in (None, "", [], {})
+        }
+        summary = str(value.get("summary") or "").strip()
+        normalized_summary = re.sub(r"\s+", "", summary)
+        if normalized_summary and normalized_summary in normalized_source:
+            source_ids = ",".join(str(item) for item in value.get("source_sentence_ids") or [])
+            value["summary"] = f"见{source_ids or '对应句'}"
+        compact_claims.append(value)
+    payload = {
+        "claims": compact_claims,
+        "chronology": list(fact_ledger.get("chronology") or []),
+        "writer_view": "constraint_only_no_duplicate_source_prose",
+    }
+    if fact_ledger.get("causal_links"):
+        payload["causal_links"] = list(fact_ledger["causal_links"])
+    if fact_ledger.get("paragraph_purposes"):
+        payload["paragraph_purposes"] = list(fact_ledger["paragraph_purposes"])
+    return payload
+
+
+def fact_ledger_audit_view(fact_ledger: dict[str, Any]) -> dict[str, Any]:
+    """Compact empty ledger fields for the auditor without dropping any claim."""
+    claims = [
+        {
+            str(key): item
+            for key, item in dict(claim).items()
+            if item not in (None, "", [], {})
+        }
+        for claim in (fact_ledger.get("claims") or [])
+    ]
+    payload: dict[str, Any] = {
+        "claims": claims,
+        "chronology": list(fact_ledger.get("chronology") or []),
+        "audit_view": "all_claims_without_empty_fields",
+    }
+    if fact_ledger.get("causal_links"):
+        payload["causal_links"] = list(fact_ledger["causal_links"])
+    if fact_ledger.get("paragraph_purposes"):
+        payload["paragraph_purposes"] = list(fact_ledger["paragraph_purposes"])
+    return payload
+
+
 def render_reauthor_prompt(
     fact_ledger: dict[str, Any],
     *,
@@ -4148,14 +4528,63 @@ def render_reauthor_prompt(
     strategy_rules: str,
     source_chars: int,
     retry_feedback: str,
+    controlled_topology: bool = False,
+    maximal_recast: bool = False,
+    preserve_paragraph_structure: bool = False,
 ) -> str:
     template = _REAUTHOR_PROMPT_PATH.read_text(encoding="utf-8")
+    writer_ledger = fact_ledger_writer_view(
+        fact_ledger,
+        source_with_tokens=original_with_tokens,
+    )
+    if maximal_recast:
+        primary_edit_rule = (
+            "4. 本轮必须进行深层组合重构：同时改变主从句层级、主语落点、句子边界、同主题信息落点、"
+            "自然段边界、长短句分布、标点停顿、连接词密度与段落功能；不得沿原句骨架做近义词替换。"
+        )
+        scope_execution_rules = (
+            "本轮是最大幅度组合实验，不做单变量归因：\n"
+            "1. 在不跨标题的前提下，重建当前编辑单元的叙述路径；相邻 claim 可以调整落点，但真实时间、因果、条件、否定、评价归属和事件先后不得改变。\n"
+            "2. 同时改变主从句层级、主语落点、句子边界、段落边界、长短句分布、标点停顿、连接词密度和段落功能。不要让连续段落保持相同起笔、相同长度、相同推进方式或相同收束。\n"
+            "3. 必须形成实质重构，而不是只替换连接词或近义词；准确的专名、术语、数字、日期、金额、引语和书名仍须原样保留。\n"
+            "4. 允许正式书稿内部出现自然的疏密、急缓和句式变化，但不得加入错别字、残句、网络腔、伪造个人经历、心理、背景、解释、结论或口号。\n"
+            "5. 若扩大变化会损害 claim，立即收回该处变化；事实完整和可读性仍由独立终审逐条验收。"
+        )
+    elif controlled_topology:
+        primary_edit_rule = (
+            "4. 本轮只重建每个自然段内部的主从句层级、修饰关系和句子边界；"
+            "事实顺序、信息落点和作者语体必须保持不变。已经准确自然的专名、术语和关键判断原样保留。"
+        )
+        scope_execution_rules = (
+            "本轮是逐步验证中的单变量实验，只允许改变‘句子拓扑’：\n"
+            "1. 段落数量、段落顺序、段落边界、事实顺序、信息落点和作者语体必须保持不变；不得跨段移动任何 claim。\n"
+            "2. 在每个自然段内部，先还原 claim 的事实、限定、否定、因果和评价归属，再重建主从句层级、修饰关系和句子边界。至少发生一处真正的句法层级变化，禁止沿原句骨架只换近义词。\n"
+            "3. 词汇变化仅限新句法成立所必需的调整。不得主动口语化，不得改变段长分布，不得添加短促感叹、个人经历、解释、细节、心理、结论或拔高。\n"
+            "4. 受保护锚点、引语、专名和术语原样保留。若句法重构与事实完整冲突，优先保住事实并让终审拒绝，不得擅自补写。\n"
+            "5. 本轮真实复检回来之前，不叠加节奏、段落重组、高频词清理或风格轮换等其他变量。"
+        )
+    else:
+        primary_edit_rule = (
+            "4. 优先做最小必要编辑：调整主从句关系、拆合句子、改变信息落点、消除连续同构句；"
+            "已经准确自然的专名、术语和关键判断可以原样保留。"
+        )
+        scope_execution_rules = (
+            "按编辑策略对当前单元做质量安全编辑；不得为追求字面差异而损害事实、限定、作者声音或阅读体验。"
+        )
+    paragraph_rule = (
+        "8. 本轮段落数量、段落顺序和段落边界必须完全不变；不得跨段移动任何 claim。"
+        if preserve_paragraph_structure
+        else "8. 可以在同一主题内自然拆分或合并段落，但不得跨标题、跨主题或改变事实顺序；不制造超过 500 字的难读自然段。"
+    )
     return (
         template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace("{{STRATEGY_RULES}}", strategy_rules)
+        .replace("{{PRIMARY_EDIT_RULE}}", primary_edit_rule)
+        .replace("{{PARAGRAPH_RULE}}", paragraph_rule)
+        .replace("{{SCOPE_EXECUTION_RULES}}", scope_execution_rules)
         .replace(
             "{{FACT_LEDGER}}",
-            json.dumps(fact_ledger, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(writer_ledger, ensure_ascii=False, separators=(",", ":")),
         )
         .replace("{{ORIGINAL_WITH_TOKENS}}", original_with_tokens)
         .replace("{{PROTECTED_MAP}}", protected_map)
@@ -4176,12 +4605,16 @@ def render_audit_prompt(
     fact_ledgers: dict[str, Any] | None = None,
 ) -> str:
     template = _AUDIT_PROMPT_PATH.read_text(encoding="utf-8")
+    compact_ledgers = {
+        str(audit_id): fact_ledger_audit_view(ledger)
+        for audit_id, ledger in (fact_ledgers or {}).items()
+    }
     return (
         template.replace("{{SEGMENT_IDS}}", json.dumps(list(segment_ids), ensure_ascii=False))
         .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
         .replace(
             "{{FACT_LEDGERS}}",
-            json.dumps(fact_ledgers or {}, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(compact_ledgers, ensure_ascii=False, separators=(",", ":")),
         )
         .replace("{{ORIGINAL_MANUSCRIPT}}", original)
         .replace("{{CANDIDATE_MANUSCRIPT}}", candidate)
@@ -4204,7 +4637,13 @@ def _content_type_rules(content_type: str) -> str:
 @lru_cache(maxsize=1)
 def rewrite_strategy_map() -> dict[str, str]:
     payload = json.loads(_STRATEGY_RULES_PATH.read_text(encoding="utf-8"))
-    required = {"syntax_rebuild", "evidence_first", "rhythm_recompose"}
+    required = {
+        "syntax_rebuild",
+        "evidence_first",
+        "rhythm_recompose",
+        "controlled_topology",
+        "maximal_variance",
+    }
     if not isinstance(payload, dict) or not required.issubset(payload):
         raise ValueError("AIGC 报告改写策略模板无效")
     return {str(key): str(value) for key, value in payload.items()}

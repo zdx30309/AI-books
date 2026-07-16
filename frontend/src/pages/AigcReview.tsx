@@ -88,7 +88,7 @@ export function AigcReview() {
   const resultIsProbe = result?.status === "probe_ready";
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
-  const rewriteProviderReady = experimentType === "layout_only" || probeMode || Boolean(selectedRewriteProvider?.configured);
+  const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
   const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 12;
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
@@ -127,7 +127,7 @@ export function AigcReview() {
       return;
     }
     if (selectedIds.size > maxCalibrationSegments) {
-      setError(`单轮最多处理 ${maxCalibrationSegments} 个相邻风险片段；请缩小到约 30%–35% 全文占比。`);
+      setError(`单轮最多处理 ${maxCalibrationSegments} 个相邻风险片段。`);
       return;
     }
     if (
@@ -136,7 +136,7 @@ export function AigcReview() {
     ) return;
     if (
       experimentType === "detector_probe"
-      && !window.confirm("本轮只在一个宏块中替换高频机器化连接标记，模型费用为 0。实验稿不能当终稿，确认继续吗？")
+      && !window.confirm("本轮将用 DeepSeek 对约 75%–85% 的连续高风险正文做最大幅度组合重构，并由 Gemini 分批终审；这是组合策略测试，无法单独归因某一个变量，最高费用受当前预算限制。确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -302,6 +302,12 @@ export function AigcReview() {
                     setExperimentType(value);
                     if (value === "detector_probe") {
                       setRewriteProvider("deepseek");
+                      setSelectedIds(new Set(
+                        report.segments
+                          .filter((item) => item.label !== "human")
+                          .slice(0, maxCalibrationSegments)
+                          .map((item) => item.segment_id),
+                      ));
                     }
                   }}
                   disabled={optimizing}
@@ -310,7 +316,7 @@ export function AigcReview() {
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
-                  <option value="detector_probe">受控单变量实验（0 元）</option>
+                  <option value="detector_probe">强力组合实验（DeepSeek）</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
@@ -348,7 +354,7 @@ export function AigcReview() {
                   step="0.1"
                   value={budgetCny}
                   onChange={(event) => setBudgetCny(Math.max(0, Number(event.target.value) || 0.3))}
-                  disabled={optimizing || experimentType === "layout_only" || probeMode}
+                  disabled={optimizing || experimentType === "layout_only"}
                   className="w-24 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
                 />
               </div>
@@ -359,7 +365,7 @@ export function AigcReview() {
                   : experimentType === "layout_only"
                     ? `零费用重组 ${selectedIds.size} 段`
                     : probeMode
-                      ? "生成连接标记实验稿"
+                      ? "生成强力组合实验稿"
                       : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
               </button>
               {!rewriteProviderReady && (
@@ -381,11 +387,11 @@ export function AigcReview() {
             <ScoreCard label="AI 特征" value={report.ai_percent} tone="red" />
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
-            当前选中相邻风险区占全文 {selectedShare.toFixed(2)}%，建议单轮 30%–35%，最多 12 段。
+            当前选中相邻风险区占全文 {selectedShare.toFixed(2)}%，最多 12 段。
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : probeMode
-                ? " 本轮只在一个 1200–2500 字宏块中替换反复出现的连接标记；事实、段落、数字和引语不变，模型费用 0 元。"
+                ? ` 本轮自动从选中区域截取占全稿 75%–85% 的连续高风险正文，按 600–900 字单元同时重构句法、信息落点、段落边界、长短句、标点停顿、连接词密度和节奏；事实与质量终审不跳过，最多支出 ¥${budgetCny.toFixed(2)}。`
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
@@ -424,7 +430,7 @@ export function AigcReview() {
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
               {resultIsProbe
-                ? "受控单变量：连接标记分布 · 0 次模型调用 · 质量终审已跳过"
+                ? `大范围组合重构 · ${result.models.rewrite_provider} / ${result.models.rewrite} → 终审 ${result.models.audit}`
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>
@@ -491,12 +497,13 @@ export function AigcReview() {
             </div>
           ) : (
             <>
-              {resultIsProbe ? (
+              {resultIsProbe && (
                 <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                  <div className="font-medium">实验稿已生成，质量终审故意跳过</div>
-                  <div className="mt-1 text-warm-300">只用于上传朱雀验证人工特征是否显著变化。即使达到 25%，也只能说明这组操作命中，不能直接交付。</div>
+                  <div className="font-medium">强力组合实验稿已通过质量硬闸门</div>
+                  <div className="mt-1 text-warm-300">事实、锚点、完整度、流畅度与原稿声音均已终审；现在只等待真实朱雀复检。即使达到 25%，仍保留人工确认，不直接作为通用终稿策略。</div>
                 </div>
-              ) : (
+              )}
+              {result.quality_audit && (
                 <div className="mt-5 grid gap-3 md:grid-cols-4">
                   <AuditCard label="语义忠实" value={result.quality_audit?.semantic_fidelity ?? 0} threshold={98} />
                   <AuditCard label="信息完整" value={result.quality_audit?.information_completeness ?? 0} threshold={100} />
@@ -521,7 +528,7 @@ export function AigcReview() {
                   {recheck && <div className={`mt-4 rounded-lg border p-5 ${(resultIsProbe ? comparison?.detector_pass : comparison?.strict_pass) ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"}`}>
                     <div className="flex items-center gap-2 text-lg text-warm-50">{(resultIsProbe ? comparison?.detector_pass : comparison?.strict_pass) ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-amber-300" />}{resultIsProbe ? (comparison?.detector_pass ? "探索实验命中 25%" : "探索实验未命中") : (comparison?.strict_pass ? "朱雀与质量双闸门通过" : "尚未双达标")}</div>
                     <div className="mt-2 text-sm text-warm-300">首页官方人工特征 {recheck.official_human_percent == null ? "未可靠识别" : `${recheck.official_human_percent.toFixed(2)}%`} · 要求 ≥25%</div>
-                    {resultIsProbe && comparison && <div className="mt-1 text-xs text-warm-400">相比基线 {comparison.human_percent_delta >= 0 ? "+" : ""}{comparison.human_percent_delta.toFixed(2)} 个百分点 · 未运行质量验收</div>}
+                    {resultIsProbe && comparison && <div className="mt-1 text-xs text-warm-400">相比基线 {comparison.human_percent_delta >= 0 ? "+" : ""}{comparison.human_percent_delta.toFixed(2)} 个百分点 · 质量验收 {comparison.quality_pass ? "已通过" : "未通过"}</div>}
                     <div className="mt-1 text-xs text-warm-400">报告正文与候选匹配 {Math.round(recheck.source_match_confidence * 100)}% · {recheck.source_match_verified ? "已确认同稿" : "未确认同稿，禁止下载"}</div>
                   </div>}
                   {comparison && !resultIsProbe && !comparison.strict_pass && comparison.recommended_next_strategy && (
