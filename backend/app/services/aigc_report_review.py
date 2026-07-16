@@ -44,7 +44,7 @@ from app.utils.distributed_limiter import distributed_semaphore
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "zhuque-report-review-v5.1"
-PROBE_PROMPT_VERSION = "zhuque-detector-probe-v1"
+PROBE_PROMPT_VERSION = "zhuque-detector-controlled-v2"
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -2098,7 +2098,7 @@ def parse_detector_probe_candidate(raw: str) -> tuple[str, bool]:
     return cleaned.strip(), False
 
 
-def build_detector_probe_result(
+def _build_legacy_detector_probe_result(
     original: str,
     segments: Iterable[ZhuqueSegment],
     selected_ids: Iterable[int],
@@ -2379,6 +2379,370 @@ def build_detector_probe_result(
     }
 
 
+def _probe_quote_mask(text: str) -> list[bool]:
+    """Mark quoted spans so a punctuation-only probe never edits quotations."""
+    pairs = {"“": "”", "‘": "’", "「": "」", "『": "』"}
+    closing = set(pairs.values())
+    stack: list[str] = []
+    mask = [False] * len(text)
+    ascii_quote_open = False
+    for index, char in enumerate(text):
+        if char in pairs:
+            stack.append(pairs[char])
+            mask[index] = True
+            continue
+        if char == '"':
+            ascii_quote_open = not ascii_quote_open
+            mask[index] = True
+            continue
+        if stack or ascii_quote_open:
+            mask[index] = True
+        if char in closing and stack and char == stack[-1]:
+            stack.pop()
+    return mask
+
+
+def _probe_heading_mask(text: str) -> list[bool]:
+    mask = [False] * len(text)
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and _looks_like_heading(stripped):
+            start = offset + line.find(stripped)
+            for index in range(start, start + len(stripped)):
+                mask[index] = True
+        offset += len(line)
+    return mask
+
+
+def _probe_visible_chars(value: str) -> int:
+    return len(re.sub(r"[\s，。！？!?；;：:、,.]", "", value))
+
+
+def _spaced_probe_positions(
+    rows: Iterable[tuple[float, int]],
+    *,
+    limit: int,
+    minimum_distance: int = 48,
+) -> list[int]:
+    selected: list[int] = []
+    for _score, position in sorted(rows, reverse=True):
+        if all(abs(position - existing) >= minimum_distance for existing in selected):
+            selected.append(position)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def sentence_boundary_distribution_probe(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Move sentence boundaries while preserving every non-punctuation character.
+
+    The experiment swaps the same number of Chinese commas and full stops, so
+    punctuation totals, paragraphs, words, anchors and quotations remain fixed.
+    It tests boundary placement only; the result is never a deliverable draft.
+    """
+    quote_mask = _probe_quote_mask(text)
+    heading_mask = _probe_heading_mask(text)
+    split_candidates: list[tuple[float, int]] = []
+    merge_candidates: list[tuple[float, int]] = []
+    paragraph_offset = 0
+    for paragraph_match in re.finditer(r"[^\n]+", text):
+        paragraph = paragraph_match.group(0)
+        paragraph_offset = paragraph_match.start()
+        if _looks_like_heading(paragraph.strip()):
+            continue
+        sentence_matches = list(re.finditer(r"[^。！？!?]+[。！？!?]?", paragraph))
+        for sentence in sentence_matches:
+            value = sentence.group(0)
+            sentence_start = paragraph_offset + sentence.start()
+            sentence_end = paragraph_offset + sentence.end()
+            total_chars = _probe_visible_chars(value)
+            if total_chars < 30:
+                continue
+            for comma in re.finditer("，", value):
+                position = sentence_start + comma.start()
+                if quote_mask[position] or heading_mask[position]:
+                    continue
+                left = _probe_visible_chars(text[sentence_start:position])
+                right = _probe_visible_chars(text[position + 1:sentence_end])
+                if min(left, right) < 6:
+                    continue
+                left_text = text[sentence_start:position].strip()
+                right_text = text[position + 1:sentence_end].lstrip()
+                if re.search(
+                    r"(?:在于|不在于|看来|认为|由于|因为|如果|虽然|尽管|无论|一旦|随着|通过|对于|关于|前后)$",
+                    left_text,
+                ):
+                    continue
+                if re.match(
+                    r"(?:而|但|并|也|就|才|且|的|着|了|在|于|以此|借此|用以|从而|进而|转向|构成|导致|意味着|说明|体现|成为|使|让|表明|证明|反映)",
+                    right_text,
+                ):
+                    continue
+                # Prefer deliberately unequal but still readable splits.
+                score = abs(left - right) + min(total_chars, 90) / 10
+                split_candidates.append((score, position))
+        for index in range(len(sentence_matches) - 1):
+            current = sentence_matches[index]
+            following = sentence_matches[index + 1]
+            if not current.group(0).endswith("。"):
+                continue
+            position = paragraph_offset + current.end() - 1
+            if quote_mask[position] or heading_mask[position]:
+                continue
+            left = _probe_visible_chars(current.group(0))
+            right = _probe_visible_chars(following.group(0))
+            if not (8 <= left <= 34 and 8 <= right <= 34 and left + right <= 58):
+                continue
+            # Merging two compact sentences offsets one long-sentence split.
+            merge_candidates.append((left + right - abs(left - right) / 4, position))
+
+    target_pairs = min(
+        8,
+        len(split_candidates),
+        len(merge_candidates),
+        max(3, len(text) // 320),
+    )
+    if target_pairs <= 0:
+        return text, []
+    split_positions = _spaced_probe_positions(split_candidates, limit=target_pairs)
+    merge_positions = _spaced_probe_positions(merge_candidates, limit=len(split_positions))
+    pair_count = min(len(split_positions), len(merge_positions))
+    split_positions = split_positions[:pair_count]
+    merge_positions = merge_positions[:pair_count]
+    if pair_count <= 0:
+        return text, []
+
+    chars = list(text)
+    changes: list[dict[str, Any]] = []
+    for position in split_positions:
+        chars[position] = "。"
+        changes.append({"position": position, "from": "，", "to": "。"})
+    for position in merge_positions:
+        chars[position] = "，"
+        changes.append({"position": position, "from": "。", "to": "，"})
+    candidate = "".join(chars)
+    if candidate.count("，") != text.count("，") or candidate.count("。") != text.count("。"):
+        raise AigcReviewModelError("受控句界实验没有保持逗号与句号总量。")
+    if re.sub(r"[，。]", "", candidate) != re.sub(r"[，。]", "", text):
+        raise AigcReviewModelError("受控句界实验改动了标点以外的正文。")
+    return candidate, sorted(changes, key=lambda item: int(item["position"]))
+
+
+def _controlled_probe_scope(
+    original: str,
+    segments: list[ZhuqueSegment],
+    selected_ids: Iterable[int],
+) -> tuple[ZhuqueSegment, EditorialUnit, str, list[dict[str, Any]]]:
+    selected = {int(value) for value in selected_ids}
+    candidates: list[tuple[int, float, ZhuqueSegment, EditorialUnit, str, list[dict[str, Any]]]] = []
+    for segment in segments:
+        if segment.segment_id not in selected or segment.label == "human":
+            continue
+        if segment.mapping_confidence < 0.65:
+            continue
+        source = original[segment.start:segment.end]
+        if source != segment.mapped_text:
+            raise ZhuqueReportError(f"片段 {segment.segment_id} 的映射正文已被修改，请重新解析报告。")
+        for unit in split_editorial_units(source, min_chars=1200, max_chars=2500):
+            raw_unit_source = source[unit.start:unit.end]
+            if len(raw_unit_source) < 1200:
+                continue
+            candidate, changes = sentence_boundary_distribution_probe(raw_unit_source)
+            if not changes:
+                continue
+            risk = segment.share_percent * (1.1 if segment.label == "ai" else 1.0)
+            candidates.append((len(changes), risk, segment, unit, candidate, changes))
+    if not candidates:
+        raise ZhuqueReportError(
+            "选中区域没有可形成 1200–2500 字句界对照块；请多选相邻风险片段或选择较长片段。"
+        )
+    _change_count, _risk, segment, unit, candidate, changes = max(
+        candidates,
+        key=lambda item: (item[0], item[1], len(item[3].text)),
+    )
+    return segment, unit, candidate, changes
+
+
+def build_detector_probe_result(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+    *,
+    content_type: str,
+    rewrite: Callable[..., Any],
+    rewrite_provider: str,
+    rewrite_model: str,
+    request_id: str,
+    iteration: int,
+    budget_cny: float,
+) -> dict[str, Any]:
+    """Run one falsifiable variable at a time; v1 multi-variable probing is retired."""
+    _ = (rewrite, rewrite_provider, rewrite_model, budget_cny)
+    if content_type == "classical":
+        raise ZhuqueReportError("古文/佛经不参与跳过质量终审的朱雀探索实验。")
+    if iteration != 1:
+        raise ZhuqueReportError("请先上传本轮真实朱雀复检报告，再决定下一项单变量实验。")
+    normalized_segments = list(segments)
+    segment, unit, unit_candidate, changes = _controlled_probe_scope(
+        original,
+        normalized_segments,
+        selected_ids,
+    )
+    global_start = segment.start + unit.start
+    global_end = segment.start + unit.end
+    assembled = _assemble_replacements(
+        original,
+        [(global_start, global_end, unit_candidate)],
+    )
+    source = original[global_start:global_end]
+    deterministic = review_deterministic_constraints(
+        source,
+        unit_candidate,
+        preserve_paragraph_count=True,
+        min_length_ratio=1.0,
+        max_length_ratio=1.0,
+    )
+    attempt = {
+        "attempt": 1,
+        "passed": True,
+        "hard_safety_passed": True,
+        "substantive_rewrite_passed": unit_candidate != source,
+        "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+        "structured_output": True,
+        "protocol_issues": [],
+        "substantive_rewrite_reasons": [],
+        "deterministic_review": deterministic.to_dict(),
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_cny": 0.0,
+        "strategy_id": "controlled_probe:sentence_boundary_distribution_only",
+        "rewrite_provider": "local",
+        "rewrite_model": "local-boundary-swap-v1",
+    }
+    unit_result = {
+        "unit_id": unit.unit_id,
+        "original_chars": len(source),
+        "candidate_chars": len(unit_candidate),
+        "original_text": source,
+        "candidate_text": unit_candidate,
+        "status": "ready",
+        "fact_ledger_mode": "not_used_detector_probe",
+        "fact_ledger_claim_count": 0,
+        "fact_ledger_cost_cny": 0.0,
+        "hard_safety_passed": True,
+        "substantive_rewrite_passed": True,
+        "rewrite_attempts": 1,
+        "attempts": [attempt],
+        "deterministic_review": deterministic.to_dict(),
+        "candidate_preview": unit_candidate[:400],
+        "rejected_candidate_preview": "",
+        "probe_profile": "sentence_boundary_distribution_only",
+    }
+    segment_result = {
+        "segment_id": segment.segment_id,
+        "strategy_id": "controlled_probe:sentence_boundary_distribution_only",
+        "rewrite_provider": "local",
+        "rewrite_model": "local-boundary-swap-v1",
+        "status": "ready",
+        "hard_safety_passed": True,
+        "substantive_rewrite_passed": True,
+        "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
+        "original_chars": len(source),
+        "candidate_chars": len(unit_candidate),
+        "report_aigc_value": segment.aigc_value,
+        "report_label": segment.label,
+        "style_diagnosis": diagnose_segment_style(source),
+        "editorial_unit_count": 1,
+        "rewrite_attempts": 1,
+        "attempts": [attempt],
+        "unit_results": [unit_result],
+        "deterministic_review": deterministic.to_dict(),
+        "style_feature_version": STYLE_FEATURE_VERSION,
+        "style_feature_delta": style_feature_delta(source, unit_candidate),
+        "candidate_preview": unit_candidate[:500],
+        "rejected_candidate_preview": "",
+    }
+    return {
+        "request_id": request_id,
+        "status": "probe_ready",
+        "deliverable": False,
+        "next_action": (
+            "受控句界实验稿已生成：仅一个宏块交换等量逗号和句号，模型费用 0 元。"
+            "请上传这一版的真实朱雀报告；未取得结果前不会追加其他变量。"
+        ),
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(assembled),
+        "original_text": original,
+        "candidate_text": assembled,
+        "selected_segment_ids": [segment.segment_id],
+        "iteration": iteration,
+        "preferred_strategy": "controlled_probe:sentence_boundary_distribution_only",
+        "content_type": content_type,
+        "experiment_type": "detector_probe",
+        "segment_results": [segment_result],
+        "quality_audit": None,
+        "experimental_quality_bypassed": True,
+        "editorial_unit_count": 1,
+        "audit_batch_count": 0,
+        "budget": {
+            "currency": "CNY",
+            "limit_cny": 0.0,
+            "spent_cny": 0.0,
+            "exhausted": False,
+        },
+        "cost": {
+            "currency": "CNY",
+            "estimated": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cny": 0.0,
+        },
+        "models": {
+            "rewrite_provider": "local",
+            "rewrite": "local-boundary-swap-v1",
+            "fact": "not_used_detector_probe",
+            "audit": "skipped_detector_probe",
+            "rewrite_thinking": "disabled",
+        },
+        "prompt_version": PROBE_PROMPT_VERSION,
+        "detector_probe": {
+            "mode": "controlled_single_variable",
+            "temperature": 0.0,
+            "profile_order": [],
+            "processed_units": 1,
+            "processed_segment_ids": [segment.segment_id],
+            "budget_stopped": False,
+            "variable": "sentence_boundary_distribution_only",
+            "scope_start": global_start,
+            "scope_end": global_end,
+            "scope_chars": len(source),
+            "changed_punctuation_count": len(changes),
+            "invariants": {
+                "same_length": len(source) == len(unit_candidate),
+                "same_paragraph_breaks": [
+                    index for index, char in enumerate(source) if char == "\n"
+                ]
+                == [index for index, char in enumerate(unit_candidate) if char == "\n"],
+                "same_comma_count": source.count("，") == unit_candidate.count("，"),
+                "same_full_stop_count": source.count("。") == unit_candidate.count("。"),
+                "same_non_punctuation_text": re.sub(r"[，。]", "", source)
+                == re.sub(r"[，。]", "", unit_candidate),
+                "quotes_untouched": all(not _probe_quote_mask(source)[int(item["position"])] for item in changes),
+            },
+            "changes": changes,
+            "hypotheses": ["sentence_boundary_distribution_sensitivity"],
+            "legacy_failed_hypotheses": [
+                "multi_profile_rotation",
+                "uniform_shortening",
+                "templated_first_person_reaction",
+            ],
+        },
+    }
+
+
 def optimize_report_segments(
     original_text: str,
     segments: Iterable[ZhuqueSegment | dict[str, Any]],
@@ -2427,6 +2791,20 @@ def optimize_report_segments(
             request_id=request_id,
         )
 
+    if experiment_type == "detector_probe":
+        return build_detector_probe_result(
+            original,
+            normalized_segments,
+            selected_ids,
+            content_type=content_type,
+            rewrite=lambda *_args, **_kwargs: ("", {}),
+            rewrite_provider="local",
+            rewrite_model="local-boundary-swap-v1",
+            request_id=request_id,
+            iteration=iteration,
+            budget_cny=0.0,
+        )
+
     selected_provider = _normalize_rewrite_provider(rewrite_provider)
     rewrite_model = _rewrite_model_for_provider(selected_provider)
     selected_reasoning = (
@@ -2444,19 +2822,6 @@ def optimize_report_segments(
     )
     if effective_budget <= 0:
         raise ZhuqueReportError("单次预算必须大于 0 元。")
-    if experiment_type == "detector_probe":
-        return build_detector_probe_result(
-            original,
-            normalized_segments,
-            selected_ids,
-            content_type=content_type,
-            rewrite=rewrite,
-            rewrite_provider=selected_provider,
-            rewrite_model=rewrite_model,
-            request_id=request_id,
-            iteration=iteration,
-            budget_cny=effective_budget,
-        )
     audit = audit_fn or _gemini_audit
     # Production defaults to a local sentence ledger.  It is complete by
     # construction, costs nothing, and cannot fail because a model truncates

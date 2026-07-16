@@ -1388,33 +1388,18 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
-def test_detector_probe_skips_fact_audit_and_placeholder_protocol() -> None:
+def test_detector_probe_is_one_zero_cost_sentence_boundary_variable() -> None:
     original = normalize_manuscript_text((
-        "值得注意的是，甲在既有材料中完成了这项工作。不可否认，这段说明写得很整齐。"
-        "与此同时，材料继续交代人物的动作与判断。综上所述，原文在这里给出了结论。\n\n"
-    ) * 22)
+        "甲先核对旧档案中的时间和地点，随后把已经确认的数字抄入记录。"
+        "这一步并不复杂。乙检查人物姓名和引语，确认材料没有遗漏。"
+        "记录写得很长，因为同一事件还涉及三处地点、两份命令和一条补充说明。"
+        "最后一名校对者读完短句。他没有添加判断，只把既有结论留在原处。\n\n"
+    ) * 16)
     segment = ZhuqueSegment(
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
-    prompts: list[str] = []
-
-    def rewrite_probe(prompt: str, **_kwargs):
-        prompts.append(prompt)
-        source = re.search(r"<source>\s*(.*?)\s*</source>", prompt, re.S).group(1)
-        candidate = (
-            source.replace("值得注意的是，", "")
-            .replace("不可否认，", "说实话，")
-            .replace("与此同时，", "话到这里。\n\n")
-            .replace("综上所述，", "我读到这里时，")
-        )
-        return f"<rewritten>{candidate}</rewritten>", {
-            "input_tokens": 100,
-            "output_tokens": 100,
-            "cost_cny": 0.002,
-        }
-
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("探索实验不应调用事实账本或 Gemini 终审")
+        raise AssertionError("受控句界实验不应调用任何模型")
 
     result = optimize_report_segments(
         original,
@@ -1423,10 +1408,10 @@ def test_detector_probe_skips_fact_audit_and_placeholder_protocol() -> None:
         content_type="article",
         experiment_type="detector_probe",
         rewrite_provider="deepseek",
-        rewrite_fn=rewrite_probe,
+        rewrite_fn=forbidden,
         fact_fn=forbidden,
         audit_fn=forbidden,
-        budget_cny=0.3,
+        budget_cny=0,
     )
 
     assert result["status"] == "probe_ready"
@@ -1435,12 +1420,32 @@ def test_detector_probe_skips_fact_audit_and_placeholder_protocol() -> None:
     assert result["experimental_quality_bypassed"] is True
     assert result["models"]["fact"] == "not_used_detector_probe"
     assert result["models"]["audit"] == "skipped_detector_probe"
+    assert result["models"]["rewrite_provider"] == "local"
+    assert result["models"]["rewrite"] == "local-boundary-swap-v1"
+    assert result["cost"]["estimated_cny"] == 0
     assert result["candidate_text"] != original
-    assert result["editorial_unit_count"] >= 2
-    assert len(prompts) == result["editorial_unit_count"]
-    assert all("[[KEEP_" not in prompt for prompt in prompts)
-    assert "以具体事实开场" in prompts[0]
-    assert any("自然口语节奏" in prompt for prompt in prompts[1:])
+    assert result["editorial_unit_count"] == 1
+    probe = result["detector_probe"]
+    assert probe["mode"] == "controlled_single_variable"
+    assert probe["variable"] == "sentence_boundary_distribution_only"
+    assert 1200 <= probe["scope_chars"] <= 2500
+    assert probe["changed_punctuation_count"] >= 6
+    assert probe["invariants"] == {
+        "same_length": True,
+        "same_paragraph_breaks": True,
+        "same_comma_count": True,
+        "same_full_stop_count": True,
+        "same_non_punctuation_text": True,
+        "quotes_untouched": True,
+    }
+    start, end = probe["scope_start"], probe["scope_end"]
+    assert result["candidate_text"][:start] == original[:start]
+    assert result["candidate_text"][end:] == original[end:]
+    source = original[start:end]
+    candidate = result["candidate_text"][start:end]
+    assert re.sub(r"[，。]", "", source) == re.sub(r"[，。]", "", candidate)
+    assert source.count("，") == candidate.count("，")
+    assert source.count("。") == candidate.count("。")
 
 
 def test_detector_probe_recheck_reports_detector_hit_without_quality_pass(

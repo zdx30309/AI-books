@@ -88,7 +88,7 @@ export function AigcReview() {
   const resultIsProbe = result?.status === "probe_ready";
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
-  const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
+  const rewriteProviderReady = experimentType === "layout_only" || probeMode || Boolean(selectedRewriteProvider?.configured);
   const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 12;
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
@@ -136,7 +136,7 @@ export function AigcReview() {
     ) return;
     if (
       experimentType === "detector_probe"
-      && !window.confirm("朱雀探索实验会跳过事实账本和质量终审，只验证网传方法能否提升人工特征。实验稿不能当终稿，确认继续吗？")
+      && !window.confirm("本轮只在一个宏块中移动等量逗号和句号，模型费用为 0。实验稿不能当终稿，确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -310,7 +310,7 @@ export function AigcReview() {
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
-                  <option value="detector_probe">朱雀探索实验（跳过质量终审）</option>
+                  <option value="detector_probe">受控单变量实验（0 元）</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
@@ -348,7 +348,7 @@ export function AigcReview() {
                   step="0.1"
                   value={budgetCny}
                   onChange={(event) => setBudgetCny(Math.max(0, Number(event.target.value) || 0.3))}
-                  disabled={optimizing || experimentType === "layout_only"}
+                  disabled={optimizing || experimentType === "layout_only" || probeMode}
                   className="w-24 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
                 />
               </div>
@@ -359,7 +359,7 @@ export function AigcReview() {
                   : experimentType === "layout_only"
                     ? `零费用重组 ${selectedIds.size} 段`
                     : probeMode
-                      ? `用 DeepSeek 探索 ${selectedIds.size} 段`
+                      ? "生成受控句界实验稿"
                       : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
               </button>
               {!rewriteProviderReady && (
@@ -385,7 +385,7 @@ export function AigcReview() {
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : probeMode
-                ? ` 本轮按 900–1600 字分段、五种语气轮换、温度 0.85；跳过事实账本与 Gemini 终审，只用于测朱雀变化。本轮最多支出 ¥${budgetCny.toFixed(2)}。`
+                ? " 本轮只在一个 1200–2500 字宏块中交换等量逗号和句号的位置；词语、段落和标点总量不变，模型费用 0 元。"
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
@@ -424,7 +424,7 @@ export function AigcReview() {
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
               {resultIsProbe
-                ? `探索 ${result.models.rewrite_provider} / ${result.models.rewrite}（温度 ${result.detector_probe?.temperature ?? 0.85}）· 质量终审已跳过`
+                ? "受控单变量：句界分布 · 0 次模型调用 · 质量终审已跳过"
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>

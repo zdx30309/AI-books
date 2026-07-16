@@ -654,12 +654,21 @@ export interface AigcReviewOptimizeResult {
   quality_audit: AigcReviewQualityAudit | null;
   experimental_quality_bypassed?: boolean;
   detector_probe?: {
+    mode?: "controlled_single_variable";
     temperature: number;
     profile_order: string[];
     processed_units: number;
     processed_segment_ids: number[];
     budget_stopped: boolean;
+    variable?: "sentence_boundary_distribution_only";
+    scope_start?: number;
+    scope_end?: number;
+    scope_chars?: number;
+    changed_punctuation_count?: number;
+    invariants?: Record<string, boolean>;
+    changes?: Array<{ position: number; from: string; to: string }>;
     hypotheses: string[];
+    legacy_failed_hypotheses?: string[];
   };
   editorial_unit_count?: number;
   audit_batch_count?: number;
