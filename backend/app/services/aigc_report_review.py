@@ -140,6 +140,7 @@ class RewriteProtocol:
     block_payloads: tuple[str, ...]
     protected_values: tuple[tuple[str, str], ...]
     protected_block_indexes: tuple[tuple[str, int], ...] = ()
+    protected_heading_tokens: tuple[str, ...] = ()
     flexible_paragraphs: bool = False
 
     @property
@@ -4120,6 +4121,7 @@ def prepare_rewrite_protocol(
     block_payloads: list[str] = []
     protected_values: list[tuple[str, str]] = []
     protected_block_indexes: list[tuple[str, int]] = []
+    protected_heading_tokens: list[str] = []
     protected_counter = 0
 
     for piece_index in range(0, len(pieces), 2):
@@ -4127,10 +4129,13 @@ def prepare_rewrite_protocol(
         if not value.strip():
             continue
         spans = _protected_spans(value, protected_texts=protected_texts)
+        heading_spans: list[tuple[int, int]] = []
         if _looks_like_heading(value.strip()):
-            spans = [(0, len(value))]
+            heading_spans = [(0, len(value))]
+            spans = list(heading_spans)
         elif flexible_paragraphs:
-            spans.extend(_heading_spans(value))
+            heading_spans = _heading_spans(value)
+            spans.extend(heading_spans)
             spans = _merge_spans(spans)
         payload = value
         replacements: list[tuple[int, int, str, str]] = []
@@ -4140,6 +4145,8 @@ def prepare_rewrite_protocol(
             token = f"[[KEEP_{protected_counter:04d}]]"
             replacements.append((start, end, token, value[start:end]))
             protected_block_indexes.append((token, current_block_index))
+            if any(start <= heading_start and end >= heading_end for heading_start, heading_end in heading_spans):
+                protected_heading_tokens.append(token)
         for start, end, token, original_value in reversed(replacements):
             payload = payload[:start] + token + payload[end:]
             protected_values.append((token, original_value))
@@ -4156,6 +4163,7 @@ def prepare_rewrite_protocol(
         block_payloads=tuple(block_payloads),
         protected_values=tuple(protected_values),
         protected_block_indexes=tuple(protected_block_indexes),
+        protected_heading_tokens=tuple(protected_heading_tokens),
         flexible_paragraphs=flexible_paragraphs,
     )
 
@@ -4198,6 +4206,35 @@ def parse_rewrite_candidate(
         if not value:
             issues.append(f"编号块 P{int(match.group(1)):04d} 为空")
         rendered_blocks.append(value)
+
+    # Models sometimes return the exact protected value instead of its KEEP token.
+    # Recover that representation only inside the expected block. Missing or changed
+    # values remain hard failures, and the deterministic anchor/order checks still run.
+    protected_value_by_token = dict(protocol.protected_values)
+    expected_block_by_token = dict(protocol.protected_block_indexes)
+    for token, expected_block_index in protocol.protected_block_indexes:
+        if any(token in value for value in rendered_blocks):
+            continue
+        protected_value = protected_value_by_token.get(token, "")
+        if not protected_value or expected_block_index >= len(rendered_blocks):
+            continue
+        block = rendered_blocks[expected_block_index]
+        if protected_value in block:
+            rendered_blocks[expected_block_index] = block.replace(protected_value, token, 1)
+
+    # The maximal strategy may merge paragraphs, but section titles are immutable
+    # layout anchors. Restore their stand-alone line without changing their text.
+    for token in protocol.protected_heading_tokens:
+        expected_block_index = expected_block_by_token.get(token)
+        if expected_block_index is None or expected_block_index >= len(rendered_blocks):
+            continue
+        block = rendered_blocks[expected_block_index]
+        if token not in block:
+            continue
+        without_heading = block.replace(token, "", 1).strip()
+        rendered_blocks[expected_block_index] = (
+            f"{token}\n{without_heading}" if without_heading else token
+        )
 
     for token, expected_block_index in protocol.protected_block_indexes:
         actual_blocks = [

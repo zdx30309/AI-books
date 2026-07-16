@@ -1001,6 +1001,22 @@ def test_flexible_protocol_preserves_new_paragraph_boundaries_and_anchors() -> N
     ) is True
 
 
+def test_flexible_protocol_accepts_exact_anchor_values_and_restores_heading_line() -> None:
+    original = "细柳军门\n公元前158年，材料见《史记》和《汉书》。"
+    protocol = prepare_rewrite_protocol(original, flexible_paragraphs=True)
+    raw = "[[P0001]]\n细柳军门 公元前158年，改写材料仍见《史记》和《汉书》。\n[[/P0001]]"
+
+    candidate, issues, structured = parse_rewrite_candidate(raw, protocol)
+
+    assert structured is True
+    assert issues == []
+    assert candidate.startswith("细柳军门\n")
+    assert "158" in candidate
+    assert candidate.count("《史记》") == 1
+    assert candidate.count("《汉书》") == 1
+    assert protocol.protected_heading_tokens == ("[[KEEP_0001]]",)
+
+
 def test_flexible_resegmentation_cannot_reorder_dates_or_numbers() -> None:
     original = "1899年发生第一件事，共260元。\n\n1903年发生第二件事，共300元。"
     candidate = "1903年发生第二件事，共300元。\n\n1899年发生第一件事，共260元。"
