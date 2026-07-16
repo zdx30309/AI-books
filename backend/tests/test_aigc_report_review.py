@@ -1562,6 +1562,64 @@ def test_detector_probe_recasts_eighty_percent_with_quality_audit() -> None:
     assert result["candidate_text"][end + length_delta:] == original[end:]
 
 
+def test_maximal_probe_rolls_back_one_failed_unit_and_continues() -> None:
+    original = normalize_manuscript_text((
+        "然而，编辑先核对旧档案中的地点。因此，已经确认的材料仍留在原处。"
+        "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
+        "问题在于，记录中的因果关系不能被改动。值得注意的是，数字和书名也必须保留。\n\n"
+        "这项工作不仅要复核事实，而且要守住原有立场。"
+        "完成复核以后，编辑把材料交给下一位同事继续检查。\n\n"
+    ) * 18)
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    rewrite_calls = 0
+    failed_unit_start: int | None = None
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        nonlocal failed_unit_start, rewrite_calls
+        rewrite_calls += 1
+        unit_segment = kwargs["segment"]
+        source = unit_segment.mapped_text
+        if failed_unit_start is None and unit_segment.start > 0:
+            failed_unit_start = unit_segment.start
+        if unit_segment.start == failed_unit_start:
+            return source, {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.001}
+        candidate = (
+            source
+            .replace("然而", "不过")
+            .replace("因此", "所以")
+            .replace("同时", "同期")
+            .replace("此外", "另外")
+            .replace("不仅", "不只")
+            .replace("而且", "并且")
+        )
+        return candidate, {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.001}
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        content_type="article",
+        experiment_type="detector_probe",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        audit_fn=lambda prompt, **_kwargs: (
+            _passing_audit_json(prompt),
+            {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.001},
+        ),
+        budget_cny=0.3,
+    )
+
+    unit_results = result["segment_results"][0]["unit_results"]
+    assert result["status"] == "probe_ready"
+    assert rewrite_calls > 2
+    assert sum(item["status"] == "rolled_back" for item in unit_results) == 1
+    assert result["segment_results"][0]["rolled_back_unit_count"] == 1
+    assert result["candidate_text"] != original
+    assert result["editorial_unit_count"] == rewrite_calls - 1
+
+
 def test_discourse_marker_probe_uses_context_safe_phrase_replacements() -> None:
     source = (
         "这两者同时存在，无法互相抵消。战后，朝廷进一步削弱王国权力，"

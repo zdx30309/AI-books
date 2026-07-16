@@ -44,8 +44,8 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v5.3"
-PROBE_PROMPT_VERSION = "zhuque-detector-maximal-v4"
+PROMPT_VERSION = "zhuque-report-review-v5.4"
+PROBE_PROMPT_VERSION = "zhuque-detector-maximal-v4.1"
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -3104,6 +3104,7 @@ def build_detector_probe_result(
         respect_headings=True,
         preserve_paragraph_structure=False,
         audit_batch_units=2,
+        allow_unit_rollback=True,
     )
     result["experiment_type"] = "detector_probe"
     result["deliverable"] = False
@@ -3172,6 +3173,7 @@ def optimize_report_segments(
     respect_headings: bool = False,
     preserve_paragraph_structure: bool = False,
     audit_batch_units: int | None = None,
+    allow_unit_rollback: bool = False,
 ) -> dict[str, Any]:
     """Run one quality-safe v5 experiment, then apply hard and semantic gates."""
     request_id = str(uuid4())
@@ -3647,6 +3649,9 @@ def optimize_report_segments(
                 }
             )
             if not candidate_safe:
+                if allow_unit_rollback and not budget_exhausted():
+                    unit_results[-1]["status"] = "rolled_back"
+                    continue
                 segment_candidate_safe = False
                 break
             unit_candidates.append(unit_candidate.strip())
@@ -3690,9 +3695,14 @@ def optimize_report_segments(
             parent_review,
             require_text_change=content_type != "classical",
         )
+        completed_unit_requirement = (
+            bool(unit_candidates)
+            if allow_unit_rollback
+            else len(unit_candidates) == len(units)
+        )
         segment_candidate_safe = (
             segment_candidate_safe
-            and len(unit_candidates) == len(units)
+            and completed_unit_requirement
             and parent_hard_passed
             and parent_substantive_passed
         )
@@ -3712,6 +3722,9 @@ def optimize_report_segments(
                 "report_label": segment.label,
                 "style_diagnosis": style_diagnosis,
                 "editorial_unit_count": len(units),
+                "rolled_back_unit_count": sum(
+                    item.get("status") == "rolled_back" for item in unit_results
+                ),
                 "rewrite_attempts": sum(item["rewrite_attempts"] for item in unit_results),
                 "attempts": [
                     attempt
@@ -3727,7 +3740,12 @@ def optimize_report_segments(
             }
         )
         if not segment_candidate_safe:
-            guarded_partial = _assemble_replacements(original, replacements)
+            partial_replacements = list(replacements)
+            if unit_replacements:
+                partial_replacements.append(
+                    (segment.start, segment.end, _assemble_replacements(source, unit_replacements))
+                )
+            guarded_partial = _assemble_replacements(original, partial_replacements)
             if budget_exhausted():
                 reason = (
                     f"已达到本轮 ¥{effective_budget:.2f} 预算上限，停止后续付费调用；"
