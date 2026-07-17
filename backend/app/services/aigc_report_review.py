@@ -44,8 +44,9 @@ from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "zhuque-report-review-v5.4"
+PROMPT_VERSION = "zhuque-report-review-v5.5"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
+POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v1.0"
 DETECTOR_PROBE_RETIRED = True
 DETECTOR_PROBE_RETIREMENT_REASON = (
     "完整方法实验已被真实朱雀对照证伪并冻结：体育博彩样本人工特征 0%→0%，"
@@ -61,6 +62,11 @@ MATERIAL_SIMILARITY_MAX = 0.82
 MATERIAL_PARAGRAPH_COVERAGE_MIN = 0.80
 QUALITY_SAFE_LENGTH_MIN = 0.95
 QUALITY_SAFE_LENGTH_MAX = 1.08
+POSITIVE_TRANSFER_LENGTH_MIN = 0.88
+POSITIVE_TRANSFER_LENGTH_MAX = 0.97
+POSITIVE_TRANSFER_UNIT_MIN_CHARS = 1200
+POSITIVE_TRANSFER_UNIT_MAX_CHARS = 1800
+POSITIVE_TRANSFER_DEFAULT_BUDGET_CNY = 20.0
 DEEP_RECAST_SCOPE_MIN = 0.75
 DEEP_RECAST_SCOPE_TARGET = 0.80
 DEEP_RECAST_SCOPE_MAX = 0.85
@@ -71,6 +77,7 @@ _PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
 _REAUTHOR_PROMPT_PATH = _PROMPT_DIR / "aigc_report_reauthor.md"
+_POSITIVE_TRANSFER_PROMPT_PATH = _PROMPT_DIR / "aigc_positive_transfer.md"
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
@@ -825,14 +832,22 @@ def compare_zhuque_reports(
     # overlap cannot prove which local rewrite caused a score change.  Keep it as
     # an observation and require isolated exact-hash samples for learning.
     recommended_next_strategy = None
-    probe_mode = optimize_result.get("experiment_type") == "detector_probe"
+    experiment_type = str(optimize_result.get("experiment_type") or "")
+    probe_mode = experiment_type in {"detector_probe", "positive_transfer"}
+    positive_transfer_mode = experiment_type == "positive_transfer"
     experimental_quality_bypassed = bool(
         optimize_result.get("experimental_quality_bypassed")
     )
     quality_pass = quality_audit_passed(optimize_result.get("quality_audit"))
     detector_pass = bool(recheck_report.get("strict_pass"))
     strict_pass = detector_pass and quality_pass
-    if probe_mode:
+    if positive_transfer_mode:
+        recommendation_reason = (
+            "正样本迁移命中：官方首页人工特征已达到 25%；接下来只对质量问题做最小修复，修复后必须重新复检。"
+            if detector_pass
+            else "正样本迁移未命中：官方首页人工特征仍低于 25%；停止自动追加费用，不把单组正样本规律冒充通用解法。"
+        )
+    elif probe_mode:
         recommendation_reason = (
             "探索实验命中：官方首页人工特征已达到 25%；该结果只证明本组操作值得继续隔离验证，因未运行质量终审仍不能作为终稿。"
             if detector_pass
@@ -848,7 +863,7 @@ def compare_zhuque_reports(
             )
         )
 
-    if probe_mode:
+    if probe_mode and not positive_transfer_mode:
         if detector_pass and experimental_quality_bypassed:
             recommendation_reason = (
                 "检测指标命中：完整方法实验使官方首页人工特征达到 25%。"
@@ -1169,6 +1184,79 @@ def paired_manuscript_features(text: str) -> dict[str, float | int]:
     }
 
 
+def positive_transfer_candidate_metrics(
+    original: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """Score only the observable traits from the first verified positive pair.
+
+    This is a retry selector, not a local Zhuque surrogate.  It deliberately avoids
+    claiming that any one surface feature causes Tencent's private score.
+    """
+    before = paired_manuscript_features(original)
+    after = paired_manuscript_features(candidate)
+    length_ratio = len(_non_whitespace_text(candidate)) / max(
+        1,
+        len(_non_whitespace_text(original)),
+    )
+    sentence_count_ratio = float(after["sentence_count"]) / max(
+        1.0,
+        float(before["sentence_count"]),
+    )
+    before_cv = float(before["sentence_length_cv"])
+    after_cv = float(after["sentence_length_cv"])
+    cv_target_reached = (
+        after_cv >= 0.48 if before_cv < 0.48 else after_cv >= before_cv - 0.015
+    )
+    template_patterns = (
+        r"我读到这里",
+        r"我看到这里",
+        r"说实话",
+        r"你品品",
+        r"我当时就",
+        r"我之前也这么认为",
+    )
+    new_template_hits = [
+        match.group(0)
+        for pattern in template_patterns
+        for match in re.finditer(pattern, candidate)
+        if match.group(0) not in original
+    ]
+    literal_similarity = SequenceMatcher(
+        None,
+        _non_whitespace_text(original),
+        _non_whitespace_text(candidate),
+        autojunk=False,
+    ).ratio()
+    target_reached = (
+        POSITIVE_TRANSFER_LENGTH_MIN <= length_ratio <= POSITIVE_TRANSFER_LENGTH_MAX
+        and 0.90 <= sentence_count_ratio <= 1.10
+        and cv_target_reached
+        and not new_template_hits
+    )
+    score = (
+        1.0
+        - min(1.0, abs(length_ratio - 0.92) * 5.0)
+        + 1.0
+        - min(1.0, abs(sentence_count_ratio - 1.0) * 4.0)
+        + 1.0
+        - min(1.0, abs(literal_similarity - 0.68) * 3.0)
+        + min(1.0, max(0.0, (after_cv - 0.40) / 0.18))
+        - min(1.0, len(new_template_hits) * 0.25)
+    )
+    return {
+        "target_reached": target_reached,
+        "selection_score": round(score, 6),
+        "length_ratio": round(length_ratio, 6),
+        "sentence_count_ratio": round(sentence_count_ratio, 6),
+        "sentence_length_cv_before": round(before_cv, 6),
+        "sentence_length_cv_after": round(after_cv, 6),
+        "sentence_length_cv_delta": round(after_cv - before_cv, 6),
+        "literal_similarity": round(literal_similarity, 6),
+        "new_template_hits": list(dict.fromkeys(new_template_hits)),
+    }
+
+
 def build_segment_overlap_matrix(
     baseline_segments: list[dict[str, Any]],
     modified_segments: list[dict[str, Any]],
@@ -1424,6 +1512,7 @@ def create_calibration_sample(
         "layout_only",
         "syntax_constrained",
         "combined",
+        "positive_transfer",
         "detector_probe",
     }
     if variant_type not in allowed_variants:
@@ -1520,7 +1609,12 @@ def calibration_evidence_status(
     pass_grouped: dict[str, int] = {}
     for item in samples:
         variant = str(item.get("variant_type") or "")
-        if variant not in {"layout_only", "syntax_constrained", "combined"}:
+        if variant not in {
+            "layout_only",
+            "syntax_constrained",
+            "combined",
+            "positive_transfer",
+        }:
             continue
         if item.get("learning_eligible") is not True:
             continue
@@ -2733,6 +2827,89 @@ def _detector_probe_units(
     return units
 
 
+def _positive_transfer_regions(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+) -> list[tuple[ZhuqueSegment, list[int]]]:
+    """Merge adjacent selected report rows before building 1200-1800 char units.
+
+    Zhuque's table rows are detector output windows, not suitable editorial
+    boundaries.  Rewriting every short row independently produced a visible
+    periodic model style in earlier failed experiments.  This experimental
+    path therefore merges consecutive selected non-human rows into continuous
+    manuscript regions.  An unselected or already-human row always breaks a
+    region, so the mode never silently crosses protected report content.
+    """
+    selected = {int(value) for value in selected_ids}
+    ordered = sorted(segments, key=lambda item: (item.start, item.end, item.segment_id))
+    groups: list[list[ZhuqueSegment]] = []
+    current: list[ZhuqueSegment] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            groups.append(current)
+            current = []
+
+    for segment in ordered:
+        if segment.segment_id not in selected:
+            flush()
+            continue
+        if segment.label == "human":
+            raise ZhuqueReportError(
+                f"片段 {segment.segment_id} 已是人工特征，不应产生改写费用。"
+            )
+        if segment.mapping_confidence < 0.65:
+            raise ZhuqueReportError(
+                f"片段 {segment.segment_id} 映射置信度过低，禁止自动改写。"
+            )
+        if segment.start < 0 or segment.end > len(original) or segment.start >= segment.end:
+            raise ZhuqueReportError(f"片段 {segment.segment_id} 的原稿坐标无效。")
+        if original[segment.start:segment.end] != segment.mapped_text:
+            raise ZhuqueReportError(
+                f"片段 {segment.segment_id} 的映射正文已经变化，请重新解析报告。"
+            )
+        if current and segment.start < current[-1].start:
+            flush()
+        current.append(segment)
+    flush()
+
+    regions: list[tuple[ZhuqueSegment, list[int]]] = []
+    for group in groups:
+        start = min(item.start for item in group)
+        end = max(item.end for item in group)
+        source_ids = [item.segment_id for item in group]
+        weighted_chars = sum(max(1, item.end - item.start) for item in group)
+        weighted_risk = sum(
+            item.aigc_value * max(1, item.end - item.start) for item in group
+        ) / max(1, weighted_chars)
+        anchor = group[0]
+        label = classify_aigc_value(min(1.0, weighted_risk))
+        if label == "human":
+            label = "suspected"
+        regions.append(
+            (
+                ZhuqueSegment(
+                    segment_id=anchor.segment_id,
+                    share_percent=round(sum(item.share_percent for item in group), 4),
+                    char_count=end - start,
+                    aigc_value=min(1.0, weighted_risk),
+                    label=label,
+                    start=start,
+                    end=end,
+                    mapped_text=original[start:end],
+                    mapping_confidence=min(item.mapping_confidence for item in group),
+                    recommended=any(item.recommended for item in group),
+                ),
+                source_ids,
+            )
+        )
+    if not regions:
+        raise ZhuqueReportError("选中区域没有可用于正样本迁移实验的非人工特征正文。")
+    return regions
+
+
 def _controlled_probe_scope(
     original: str,
     segments: list[ZhuqueSegment],
@@ -3201,16 +3378,26 @@ def optimize_report_segments(
     missing = [value for value in selected_ids if value not in by_id]
     if missing:
         raise ZhuqueReportError(f"报告中不存在片段: {missing}")
-    if experiment_type != "detector_probe" and len(selected_ids) > 12:
+    detector_experiment = experiment_type in {"detector_probe", "positive_transfer"}
+    positive_transfer_mode = experiment_type == "positive_transfer"
+    if positive_transfer_mode and content_type == "classical":
+        raise ZhuqueReportError("正样本迁移证据只来自现代非虚构文章，古文/佛经暂不参与。")
+    if not detector_experiment and len(selected_ids) > 12:
         raise ZhuqueReportError("单轮最多处理 12 个相邻风险片段。")
     if (
-        experiment_type != "detector_probe"
+        not detector_experiment
         and any(right != left + 1 for left, right in zip(selected_ids, selected_ids[1:]))
     ):
         raise ZhuqueReportError("单轮必须选择连续相邻的风险片段，不能把分散区域混入同一实验。")
     if not original:
         raise ZhuqueReportError("原稿不能为空。")
-    if experiment_type not in {"layout_only", "syntax_constrained", "combined", "detector_probe"}:
+    if experiment_type not in {
+        "layout_only",
+        "syntax_constrained",
+        "combined",
+        "positive_transfer",
+        "detector_probe",
+    }:
         raise ZhuqueReportError("未知实验类型。")
 
     if experiment_type == "layout_only":
@@ -3250,6 +3437,8 @@ def optimize_report_segments(
         )
 
     selected_provider = _normalize_rewrite_provider(rewrite_provider)
+    if positive_transfer_mode and selected_provider != "deepseek":
+        raise ZhuqueReportError("正样本迁移实验固定使用低成本 DeepSeek，避免模型变化污染对照。")
     rewrite_model = _rewrite_model_for_provider(selected_provider)
     selected_reasoning = (
         _normalize_grok_reasoning(rewrite_reasoning_effort)
@@ -3262,7 +3451,11 @@ def optimize_report_segments(
     effective_budget = float(
         budget_cny
         if budget_cny is not None
-        else settings.AIGC_REVIEW_RUN_BUDGET_CNY
+        else (
+            POSITIVE_TRANSFER_DEFAULT_BUDGET_CNY
+            if positive_transfer_mode
+            else settings.AIGC_REVIEW_RUN_BUDGET_CNY
+        )
     )
     if effective_budget <= 0:
         raise ZhuqueReportError("单次预算必须大于 0 元。")
@@ -3280,6 +3473,16 @@ def optimize_report_segments(
     total_model_cost = 0.0
     audit_items: list[dict[str, Any]] = []
     preserve_paragraph_count = content_type == "classical" or preserve_paragraph_structure
+    length_ratio_min = (
+        POSITIVE_TRANSFER_LENGTH_MIN
+        if positive_transfer_mode
+        else (0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN)
+    )
+    length_ratio_max = (
+        POSITIVE_TRANSFER_LENGTH_MAX
+        if positive_transfer_mode
+        else (1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX)
+    )
     def budget_exhausted() -> bool:
         return total_model_cost >= effective_budget
 
@@ -3315,9 +3518,18 @@ def optimize_report_segments(
     available_strategies = rewrite_strategy_map()
     if preferred_strategy and preferred_strategy not in available_strategies:
         raise ZhuqueReportError(f"未知改写策略: {preferred_strategy}")
-    for selected_index, segment_id in enumerate(selected_ids):
-        segment = by_id[segment_id]
-        strategy_id = preferred_strategy or strategy_for_index(selected_index, iteration=iteration)
+    processing_regions = (
+        _positive_transfer_regions(original, normalized_segments, selected_ids)
+        if positive_transfer_mode
+        else [(by_id[segment_id], [segment_id]) for segment_id in selected_ids]
+    )
+    for segment, source_segment_ids in processing_regions:
+        segment_id = segment.segment_id
+        strategy_id = preferred_strategy or (
+            "positive_pair_transfer"
+            if positive_transfer_mode
+            else ("maximal_variance" if experiment_type == "combined" else "syntax_rebuild")
+        )
         strategy_rules = available_strategies[strategy_id]
         if segment.mapping_confidence < 0.65:
             raise ZhuqueReportError(f"片段 {segment_id} 映射置信度过低，禁止自动改写。")
@@ -3334,9 +3546,19 @@ def optimize_report_segments(
             else ()
         )
         style_diagnosis = diagnose_segment_style(source)
-        max_attempts = max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
+        max_attempts = (
+            2
+            if positive_transfer_mode
+            else max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
+        )
         if content_type == "classical":
             units = [EditorialUnit(1, 0, len(source), source)]
+        elif positive_transfer_mode:
+            units = _detector_probe_units(
+                source,
+                min_chars=POSITIVE_TRANSFER_UNIT_MIN_CHARS,
+                max_chars=POSITIVE_TRANSFER_UNIT_MAX_CHARS,
+            )
         elif respect_headings:
             units = _detector_probe_units(
                 source,
@@ -3494,11 +3716,16 @@ def optimize_report_segments(
                 protected_texts=unit_protected,
                 require_material_rewrite=False,
                 preserve_paragraph_count=preserve_paragraph_count,
-                min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-                max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+                min_length_ratio=length_ratio_min,
+                max_length_ratio=length_ratio_max,
             )
             candidate_safe = False
             attempt_results: list[dict[str, Any]] = []
+            best_positive_candidate: tuple[
+                float,
+                str,
+                DeterministicReview,
+            ] | None = None
             retry_feedback = "首次重著：按事实账本重新组织正文，禁止沿用原句骨架。"
 
             for attempt in range(1, max_attempts + 1):
@@ -3522,6 +3749,20 @@ def optimize_report_segments(
                         learned_evidence="不注入检测器猜测。",
                         flexible_paragraphs=False,
                     )
+                elif positive_transfer_mode:
+                    prompt = render_positive_transfer_prompt(
+                        ledger or {},
+                        original_with_tokens=source_with_tokens,
+                        protected_map=protocol.protected_map,
+                        previous_context=previous_context,
+                        next_context=next_context,
+                        content_type=content_type,
+                        strategy_rules=strategy_rules,
+                        source_chars=len(unit_source),
+                        retry_feedback=retry_feedback,
+                        min_length_ratio=length_ratio_min,
+                        max_length_ratio=length_ratio_max,
+                    )
                 else:
                     prompt = render_reauthor_prompt(
                         ledger or {},
@@ -3534,8 +3775,12 @@ def optimize_report_segments(
                         source_chars=len(unit_source),
                         retry_feedback=retry_feedback,
                         controlled_topology=(strategy_id == "controlled_topology"),
-                        maximal_recast=(strategy_id == "maximal_variance"),
+                        maximal_recast=(
+                            strategy_id in {"maximal_variance", "positive_pair_transfer"}
+                        ),
                         preserve_paragraph_structure=preserve_paragraph_structure,
+                        min_length_ratio=length_ratio_min,
+                        max_length_ratio=length_ratio_max,
                     )
                 try:
                     rewrite_kwargs = {
@@ -3573,21 +3818,36 @@ def optimize_report_segments(
                     protected_texts=unit_protected,
                     require_material_rewrite=False,
                     preserve_paragraph_count=preserve_paragraph_count,
-                    min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-                    max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+                    min_length_ratio=length_ratio_min,
+                    max_length_ratio=length_ratio_max,
                 )
                 protocol_passed = not protocol_issues or not structured
                 hard_safety_passed = deterministic_hard_safety_passed(
                     deterministic,
                     require_paragraph_preservation=preserve_paragraph_count,
-                    min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-                    max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+                    min_length_ratio=length_ratio_min,
+                    max_length_ratio=length_ratio_max,
                 )
                 substantive_passed = substantive_rewrite_passed(
                     deterministic,
                     require_text_change=content_type != "classical",
                 )
                 candidate_safe = hard_safety_passed and protocol_passed and substantive_passed
+                positive_metrics = (
+                    positive_transfer_candidate_metrics(unit_source, unit_candidate)
+                    if positive_transfer_mode and candidate_safe
+                    else None
+                )
+                if positive_metrics is not None and (
+                    best_positive_candidate is None
+                    or float(positive_metrics["selection_score"])
+                    > best_positive_candidate[0]
+                ):
+                    best_positive_candidate = (
+                        float(positive_metrics["selection_score"]),
+                        unit_candidate,
+                        deterministic,
+                    )
                 input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
                 cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
                 output_tokens = int(
@@ -3620,9 +3880,26 @@ def optimize_report_segments(
                         "strategy_id": strategy_id,
                         "rewrite_provider": selected_provider,
                         "rewrite_model": rewrite_model,
+                        "positive_transfer_metrics": positive_metrics,
                     }
                 )
                 if candidate_safe:
+                    if (
+                        positive_transfer_mode
+                        and positive_metrics is not None
+                        and not positive_metrics["target_reached"]
+                        and attempt < max_attempts
+                    ):
+                        retry_feedback = (
+                            "第一版通过事实与锚点保护，但没有充分接近正样本的可观察分布。"
+                            f"当前篇幅比={positive_metrics['length_ratio']:.3f}，"
+                            f"句数比={positive_metrics['sentence_count_ratio']:.3f}，"
+                            f"句长变异系数={positive_metrics['sentence_length_cv_after']:.3f}。"
+                            "请完整重做本单元：仍须保留全部 claim，篇幅向 0.91–0.94 靠拢，"
+                            "句数接近原文，并通过内容驱动的拆合句自然增加节奏起伏；"
+                            "禁止添加第一人称、阅读反应、固定口语或半文半白表达。"
+                        )
+                        continue
                     break
                 hard_feedback = format_rewrite_retry_feedback(
                     deterministic,
@@ -3636,6 +3913,10 @@ def optimize_report_segments(
                     )
                     or ["候选没有形成可验证的实质重著"]
                 )
+
+            if positive_transfer_mode and best_positive_candidate is not None:
+                _score, unit_candidate, deterministic = best_positive_candidate
+                candidate_safe = True
 
             unit_results.append(
                 {
@@ -3652,8 +3933,8 @@ def optimize_report_segments(
                     "hard_safety_passed": deterministic_hard_safety_passed(
                         deterministic,
                         require_paragraph_preservation=preserve_paragraph_count,
-                        min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-                        max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+                        min_length_ratio=length_ratio_min,
+                        max_length_ratio=length_ratio_max,
                     ),
                     "substantive_rewrite_passed": substantive_rewrite_passed(
                         deterministic,
@@ -3700,14 +3981,14 @@ def optimize_report_segments(
             protected_texts=protected_originals,
             require_material_rewrite=False,
             preserve_paragraph_count=preserve_paragraph_count,
-            min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-            max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+            min_length_ratio=length_ratio_min,
+            max_length_ratio=length_ratio_max,
         )
         parent_hard_passed = deterministic_hard_safety_passed(
             parent_review,
             require_paragraph_preservation=preserve_paragraph_count,
-            min_length_ratio=(0.8 if content_type == "classical" else QUALITY_SAFE_LENGTH_MIN),
-            max_length_ratio=(1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX),
+            min_length_ratio=length_ratio_min,
+            max_length_ratio=length_ratio_max,
         )
         parent_substantive_passed = substantive_rewrite_passed(
             parent_review,
@@ -3727,6 +4008,7 @@ def optimize_report_segments(
         segment_results.append(
             {
                 "segment_id": segment_id,
+                "source_segment_ids": source_segment_ids,
                 "strategy_id": strategy_id,
                 "rewrite_provider": selected_provider,
                 "rewrite_model": rewrite_model,
@@ -3781,6 +4063,83 @@ def optimize_report_segments(
         replacements.append((segment.start, segment.end, candidate))
 
     assembled = _assemble_replacements(original, replacements)
+    if positive_transfer_mode:
+        before_features = paired_manuscript_features(original)
+        after_features = paired_manuscript_features(assembled)
+        return {
+            "request_id": request_id,
+            "status": "probe_ready",
+            "deliverable": False,
+            "next_action": (
+                "正样本迁移实验稿已生成。该模式只复现真实正样本中可观测的受控压缩与句长波动，"
+                "未调用 Gemini 终审；请直接上传与本候选哈希一致的朱雀报告验证，不能作为终稿。"
+            ),
+            "original_sha256": sha256_text(original),
+            "candidate_sha256": sha256_text(assembled),
+            "original_text": original,
+            "candidate_text": assembled,
+            "selected_segment_ids": selected_ids,
+            "iteration": iteration,
+            "preferred_strategy": "positive_pair_transfer",
+            "content_type": content_type,
+            "experiment_type": "positive_transfer",
+            "segment_results": segment_results,
+            "quality_audit": None,
+            "experimental_quality_bypassed": True,
+            "editorial_unit_count": len(audit_items),
+            "audit_batch_count": 0,
+            "budget": {
+                "currency": "CNY",
+                "limit_cny": round(effective_budget, 4),
+                "spent_cny": round(total_model_cost, 6),
+                "exhausted": total_model_cost >= effective_budget,
+            },
+            "cost": {
+                "currency": "CNY",
+                "estimated": False,
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "estimated_cny": round(total_model_cost, 6),
+            },
+            "models": {
+                "rewrite_provider": selected_provider,
+                "rewrite": rewrite_model,
+                "fact": _fact_model_label(fact_backends_used, content_type=content_type),
+                "audit": "skipped_positive_transfer",
+                "rewrite_thinking": selected_reasoning,
+            },
+            "prompt_version": POSITIVE_TRANSFER_PROMPT_VERSION,
+            "positive_transfer": {
+                "evidence_source": "paired-report:0.00-to-67.64-human",
+                "evidence_status": "single_positive_pair_observational",
+                "unit_chars": [
+                    POSITIVE_TRANSFER_UNIT_MIN_CHARS,
+                    POSITIVE_TRANSFER_UNIT_MAX_CHARS,
+                ],
+                "macro_region_count": len(processing_regions),
+                "processed_source_segment_ids": selected_ids,
+                "length_ratio_bounds": [
+                    POSITIVE_TRANSFER_LENGTH_MIN,
+                    POSITIVE_TRANSFER_LENGTH_MAX,
+                ],
+                "observed_length_ratio": round(
+                    len(_non_whitespace_text(assembled))
+                    / max(1, len(_non_whitespace_text(original))),
+                    6,
+                ),
+                "sentence_count_ratio": round(
+                    float(after_features["sentence_count"])
+                    / max(1.0, float(before_features["sentence_count"])),
+                    6,
+                ),
+                "sentence_length_cv_delta": round(
+                    float(after_features["sentence_length_cv"])
+                    - float(before_features["sentence_length_cv"]),
+                    6,
+                ),
+                "quality_audit_required_after_detector_hit": True,
+            },
+        }
     if budget_exhausted():
         return manual_result(
             f"改写阶段已达到本轮 ¥{effective_budget:.2f} 预算上限，未继续产生终审费用。",
@@ -4604,6 +4963,8 @@ def render_reauthor_prompt(
     controlled_topology: bool = False,
     maximal_recast: bool = False,
     preserve_paragraph_structure: bool = False,
+    min_length_ratio: float = QUALITY_SAFE_LENGTH_MIN,
+    max_length_ratio: float = QUALITY_SAFE_LENGTH_MAX,
 ) -> str:
     template = _REAUTHOR_PROMPT_PATH.read_text(encoding="utf-8")
     writer_ledger = fact_ledger_writer_view(
@@ -4663,8 +5024,45 @@ def render_reauthor_prompt(
         .replace("{{PROTECTED_MAP}}", protected_map)
         .replace("{{PREVIOUS_CONTEXT}}", previous_context)
         .replace("{{NEXT_CONTEXT}}", next_context)
-        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * QUALITY_SAFE_LENGTH_MIN))))
-        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * QUALITY_SAFE_LENGTH_MAX))))
+        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * min_length_ratio))))
+        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * max_length_ratio))))
+        .replace("{{RETRY_FEEDBACK}}", retry_feedback)
+    )
+
+
+def render_positive_transfer_prompt(
+    fact_ledger: dict[str, Any],
+    *,
+    original_with_tokens: str,
+    protected_map: str,
+    previous_context: str,
+    next_context: str,
+    content_type: str,
+    strategy_rules: str,
+    source_chars: int,
+    retry_feedback: str,
+    min_length_ratio: float = POSITIVE_TRANSFER_LENGTH_MIN,
+    max_length_ratio: float = POSITIVE_TRANSFER_LENGTH_MAX,
+) -> str:
+    """Render the evidence-transfer prompt without conservative edit language."""
+    template = _POSITIVE_TRANSFER_PROMPT_PATH.read_text(encoding="utf-8")
+    writer_ledger = fact_ledger_writer_view(
+        fact_ledger,
+        source_with_tokens=original_with_tokens,
+    )
+    return (
+        template.replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
+        .replace("{{STRATEGY_RULES}}", strategy_rules)
+        .replace(
+            "{{FACT_LEDGER}}",
+            json.dumps(writer_ledger, ensure_ascii=False, separators=(",", ":")),
+        )
+        .replace("{{ORIGINAL_WITH_TOKENS}}", original_with_tokens)
+        .replace("{{PROTECTED_MAP}}", protected_map)
+        .replace("{{PREVIOUS_CONTEXT}}", previous_context)
+        .replace("{{NEXT_CONTEXT}}", next_context)
+        .replace("{{MIN_CHARS}}", str(max(1, int(source_chars * min_length_ratio))))
+        .replace("{{MAX_CHARS}}", str(max(1, int(source_chars * max_length_ratio))))
         .replace("{{RETRY_FEEDBACK}}", retry_feedback)
     )
 
@@ -4716,6 +5114,7 @@ def rewrite_strategy_map() -> dict[str, str]:
         "rhythm_recompose",
         "controlled_topology",
         "maximal_variance",
+        "positive_pair_transfer",
     }
     if not isinstance(payload, dict) or not required.issubset(payload):
         raise ValueError("AIGC 报告改写策略模板无效")
@@ -5126,7 +5525,13 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
         "rewrite_protocol": "fact_ledger_constrained_edit_v5",
         "experiment_mode": "paired_black_box_human_in_loop",
         "selection_mode": "contiguous_30_to_35_percent_then_stop",
-        "experiment_order": ["layout_only", "syntax_constrained", "combined", "detector_probe"],
+        "experiment_order": [
+            "layout_only",
+            "syntax_constrained",
+            "combined",
+            "positive_transfer",
+            "detector_probe",
+        ],
         "recommended_max_calibration_segments": 12,
         "strategies": list(rewrite_strategy_map()),
         "material_similarity_range": [MATERIAL_SIMILARITY_MIN, MATERIAL_SIMILARITY_MAX],

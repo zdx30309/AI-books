@@ -1901,6 +1901,152 @@ def test_paired_analysis_aligns_thirteen_rows_to_ten_by_overlap(
     assert result["learning_eligible"] is False
 
 
+def test_positive_transfer_uses_single_evidence_strategy_and_skips_gemini() -> None:
+    sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    original = sentence * 60
+    segment = ZhuqueSegment(
+        1,
+        100.0,
+        len(original),
+        0.99,
+        "ai",
+        0,
+        len(original),
+        original,
+        1.0,
+        True,
+    )
+    prompts: list[str] = []
+
+    def rewrite_fn(prompt: str, **_kwargs):
+        prompts.append(prompt)
+        match = re.search(
+            r"<original>\s*(.*?)\s*</original>",
+            prompt,
+            re.DOTALL,
+        )
+        assert match
+        source = match.group(1).strip()
+        candidate = source.replace("材料说明", "材料称").replace("都保持不变", "仍然不变")
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
+        )
+
+    def audit_fn(*_args, **_kwargs):
+        raise AssertionError("正样本迁移实验不得调用 Gemini")
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+        experiment_type="positive_transfer",
+    )
+
+    assert result["status"] == "probe_ready"
+    assert result["experiment_type"] == "positive_transfer"
+    assert result["experimental_quality_bypassed"] is True
+    assert result["quality_audit"] is None
+    assert result["preferred_strategy"] == "positive_pair_transfer"
+    assert result["models"]["audit"] == "skipped_positive_transfer"
+    assert result["budget"]["limit_cny"] == 20.0
+    assert result["positive_transfer"]["length_ratio_bounds"] == [0.88, 0.97]
+    assert 0.88 <= result["positive_transfer"]["observed_length_ratio"] <= 0.97
+    assert prompts
+    assert all("真实正样本迁移实验" in prompt for prompt in prompts)
+    assert all("第一人称" in prompt for prompt in prompts)
+    assert all("最小必要编辑" not in prompt for prompt in prompts)
+    assert all("不得为了追求变化而远离原稿" not in prompt for prompt in prompts)
+    assert all("从头写出完整新稿" in prompt for prompt in prompts)
+
+
+def test_positive_transfer_merges_adjacent_report_rows_into_macro_region() -> None:
+    sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    chunk = sentence * 20
+    original = chunk * 3
+    segments = [
+        ZhuqueSegment(
+            index,
+            33.33,
+            len(chunk),
+            0.97,
+            "ai",
+            (index - 1) * len(chunk),
+            index * len(chunk),
+            chunk,
+            1.0,
+            True,
+        )
+        for index in range(1, 4)
+    ]
+    prompts: list[str] = []
+
+    def rewrite_fn(prompt: str, **_kwargs):
+        prompts.append(prompt)
+        match = re.search(r"<original>\s*(.*?)\s*</original>", prompt, re.DOTALL)
+        assert match
+        source = match.group(1).strip()
+        candidate = source.replace("材料说明", "材料称").replace("都保持不变", "仍然不变")
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
+        )
+
+    result = optimize_report_segments(
+        original,
+        segments,
+        [1, 2, 3],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        experiment_type="positive_transfer",
+        budget_cny=5.0,
+    )
+
+    assert result["status"] == "probe_ready"
+    assert len(result["segment_results"]) == 1
+    assert result["segment_results"][0]["source_segment_ids"] == [1, 2, 3]
+    assert result["editorial_unit_count"] == 1
+    assert result["positive_transfer"]["macro_region_count"] == 1
+    assert result["positive_transfer"]["processed_source_segment_ids"] == [1, 2, 3]
+    assert 1 <= len(prompts) <= 2
+
+
+def test_positive_transfer_rejects_grok_before_paid_call() -> None:
+    original = "材料中的事实和限定条件保持不变。" * 40
+    segment = ZhuqueSegment(
+        1,
+        100.0,
+        len(original),
+        0.95,
+        "suspected",
+        0,
+        len(original),
+        original,
+        1.0,
+        True,
+    )
+    rewrite_calls = 0
+
+    def rewrite_fn(*_args, **_kwargs):
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        return "不会调用"
+
+    with pytest.raises(review.ZhuqueReportError, match="固定使用低成本 DeepSeek"):
+        optimize_report_segments(
+            original,
+            [segment],
+            [1],
+            rewrite_provider="grok",
+            rewrite_fn=rewrite_fn,
+            experiment_type="positive_transfer",
+        )
+    assert rewrite_calls == 0
+
+
 def test_external_saas_slogan_is_quality_risk_not_learning_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

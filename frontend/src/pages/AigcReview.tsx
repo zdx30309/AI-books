@@ -24,10 +24,12 @@ import type {
 
 type RewriteStrategy = "syntax_rebuild" | "evidence_first" | "rhythm_recompose";
 
-const strategyText: Record<RewriteStrategy, string> = {
+const strategyText: Record<string, string> = {
   syntax_rebuild: "句法重建",
   evidence_first: "证据先行",
   rhythm_recompose: "节奏重组",
+  maximal_variance: "组合重构",
+  positive_pair_transfer: "正样本迁移",
 };
 
 const labelText = {
@@ -84,8 +86,10 @@ export function AigcReview() {
     [report, selectedIds],
   );
   const finalPassed = Boolean(result?.status === "candidate_ready" && comparison?.strict_pass);
-  const probeMode = experimentType === "detector_probe";
+  const probeMode = experimentType === "detector_probe" || experimentType === "positive_transfer";
+  const positiveTransferMode = experimentType === "positive_transfer";
   const resultIsProbe = result?.status === "probe_ready";
+  const resultIsPositiveTransfer = result?.experiment_type === "positive_transfer";
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
@@ -137,6 +141,10 @@ export function AigcReview() {
     if (
       experimentType === "detector_probe"
       && !window.confirm("本轮将把所有选中的非绿色片段按 600–900 字切分，用 5 种语气轮换并以温度 0.8 完整执行高频词清理、节奏打乱、首段重写和有限阅读反应。为避免质量模板抹平变化，本轮不调用 Gemini、不做质量回滚，输出只能用于朱雀复检。确认继续吗？")
+    ) return;
+    if (
+      positiveTransferMode
+      && !window.confirm("本轮只复现真实正样本中已观察到的约 9% 受控压缩和句长波动，固定使用 DeepSeek，不调用 Gemini。候选仅用于朱雀复检，原稿不会被覆盖。确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -300,8 +308,11 @@ export function AigcReview() {
                   onChange={(event) => {
                     const value = event.target.value as AigcReviewExperimentType;
                     setExperimentType(value);
-                    if (value === "detector_probe") {
+                    if (value === "detector_probe" || value === "positive_transfer") {
                       setRewriteProvider("deepseek");
+                      if (value === "positive_transfer") {
+                        setBudgetCny(20);
+                      }
                       setSelectedIds(new Set(
                         report.segments
                           .filter((item) => item.label !== "human")
@@ -315,6 +326,7 @@ export function AigcReview() {
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
+                  <option value="positive_transfer">正样本迁移实验</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
@@ -362,6 +374,8 @@ export function AigcReview() {
                   ? (probeMode ? "生成探索稿中" : "生成并验收中")
                   : experimentType === "layout_only"
                     ? `零费用重组 ${selectedIds.size} 段`
+                    : positiveTransferMode
+                      ? "生成正样本迁移实验稿"
                     : probeMode
                       ? "生成强力组合实验稿"
                       : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
@@ -385,9 +399,11 @@ export function AigcReview() {
             <ScoreCard label="AI 特征" value={report.ai_percent} tone="red" />
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
-            当前选中风险区占全文 {selectedShare.toFixed(2)}%{probeMode ? "；完整方法实验处理全部选中非绿色片段。" : "，最多 12 个相邻片段。"}
+            当前选中风险区占全文 {selectedShare.toFixed(2)}%{probeMode ? "；实验处理全部选中非绿色片段。" : "，最多 12 个相邻片段。"}
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
+              : positiveTransferMode
+                ? ` 本轮按 1200–1800 字宏单元使用同一编辑原则，目标篇幅为原文 88%–97%，不加第一人称或轮换话术；只调用 DeepSeek，不调用 Gemini，最多支出 ¥${budgetCny.toFixed(2)}。`
               : probeMode
                 ? ` 本轮按 600–900 字单元轮换 5 种语气，完整执行高频词清理、长短句与段长打乱、独立短句、去编号结构、首段重写和基于原文的阅读反应；不调用 Gemini、不做质量回滚，最多支出 ¥${budgetCny.toFixed(2)}。`
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
@@ -428,7 +444,9 @@ export function AigcReview() {
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {resultIsProbe ? "实验模式不终审" : `${result.audit_batch_count ?? 0} 批终审`}<br />
               {resultIsProbe
-                ? `完整方法轮换 · ${result.models.rewrite_provider} / ${result.models.rewrite} · 温度 0.8`
+                ? (resultIsPositiveTransfer
+                  ? `正样本迁移 · ${result.models.rewrite_provider} / ${result.models.rewrite} · ${result.positive_transfer?.macro_region_count ?? 0} 个连续区域`
+                  : `历史探索模式 · ${result.models.rewrite_provider} / ${result.models.rewrite}`)
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>
@@ -475,7 +493,7 @@ export function AigcReview() {
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="font-medium text-warm-50">片段 #{item.segment_id} 机器校验明细</div>
-                      <div className="text-xs text-warm-400">{strategyText[item.strategy_id as RewriteStrategy] || item.strategy_id} · 尝试 {item.rewrite_attempts} 次 · 相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}% · 改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}% / 当前要求 {Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%</div>
+                      <div className="text-xs text-warm-400">{strategyText[item.strategy_id] || item.strategy_id} · 尝试 {item.rewrite_attempts} 次 · 相似度 {Math.round(item.deterministic_review.literal_similarity * 100)}% · 改写覆盖 {Math.round(item.deterministic_review.rewritten_paragraph_ratio * 100)}% / 当前要求 {Math.round(item.deterministic_review.required_paragraph_coverage * 100)}%</div>
                     </div>
                     <div className="mt-3 space-y-1 text-warm-300">
                       {[...(lastAttempt?.protocol_issues ?? []), ...item.deterministic_review.reasons].filter((value, index, values) => values.indexOf(value) === index).map((reason) => (
@@ -497,8 +515,8 @@ export function AigcReview() {
             <>
               {resultIsProbe && (
                 <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                  <div className="font-medium">完整方法实验稿已生成（未做质量终审）</div>
-                  <div className="mt-1 text-warm-300">本轮没有用事实账本、Gemini 或质量回滚把变化重新抹平。请只拿它做真实朱雀复检；即使达到 25%，也必须进入后续质量修复，不能直接交付。</div>
+                  <div className="font-medium">{resultIsPositiveTransfer ? "正样本迁移实验稿已生成" : "历史探索实验稿已生成"}（未做质量终审）</div>
+                  <div className="mt-1 text-warm-300">{resultIsPositiveTransfer ? "本轮按连续宏单元使用同一改写策略，并保留事实与锚点硬保护；未调用 Gemini。" : "本轮未调用 Gemini 终审。"}请只拿它做真实朱雀复检；即使达到 25%，也必须进入后续质量修复，不能直接交付。</div>
                 </div>
               )}
               {result.quality_audit && (

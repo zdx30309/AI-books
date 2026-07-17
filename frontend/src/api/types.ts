@@ -386,7 +386,7 @@ export interface AigcQualityReport {
 
 export type AigcReviewContentType = "article" | "classical" | "public_domain";
 export type AigcReviewRewriteProvider = "grok" | "deepseek";
-export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "detector_probe";
+export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "positive_transfer" | "detector_probe";
 
 export interface AigcReviewRewriteProviderStatus {
   id: AigcReviewRewriteProvider;
@@ -611,6 +611,7 @@ export interface AigcReviewEditorialUnitResult {
 
 export interface AigcReviewSegmentResult {
   segment_id: number;
+  source_segment_ids?: number[];
   strategy_id: string;
   rewrite_provider: AigcReviewRewriteProvider | "local";
   rewrite_model: string;
@@ -683,6 +684,18 @@ export interface AigcReviewOptimizeResult {
     hypotheses: string[];
     legacy_failed_hypotheses?: string[];
     retired_failed_hypotheses?: string[];
+  };
+  positive_transfer?: {
+    evidence_source: string;
+    evidence_status: "single_positive_pair_observational";
+    unit_chars: [number, number];
+    macro_region_count: number;
+    processed_source_segment_ids: number[];
+    length_ratio_bounds: [number, number];
+    observed_length_ratio: number;
+    sentence_count_ratio: number;
+    sentence_length_cv_delta: number;
+    quality_audit_required_after_detector_hit: boolean;
   };
   editorial_unit_count?: number;
   audit_batch_count?: number;
@@ -790,6 +803,7 @@ export type AigcReviewCalibrationVariant =
   | "layout_only"
   | "syntax_constrained"
   | "combined"
+  | "positive_transfer"
   | "detector_probe";
 
 export interface AigcReviewCalibrationSample {

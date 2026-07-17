@@ -636,7 +636,10 @@ export function BookDetail() {
   const detectorProbeArchive =
     task.aigc_status === "detector_probe_ready"
     || task.aigc_status === "detector_probe_hit"
-    || task.aigc_status === "detector_probe_no_hit";
+    || task.aigc_status === "detector_probe_no_hit"
+    || task.aigc_status === "positive_transfer_ready"
+    || task.aigc_status === "positive_transfer_hit"
+    || task.aigc_status === "positive_transfer_no_hit";
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
