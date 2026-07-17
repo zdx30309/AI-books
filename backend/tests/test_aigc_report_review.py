@@ -2525,6 +2525,74 @@ def test_external_green_patch_location_failure_returns_safe_manual_review() -> N
     assert "不存在的句子编号" in result["next_action"]
 
 
+def test_external_green_patch_parser_keeps_valid_items_and_drops_bad_third() -> None:
+    block = "第一句话。第二句话。第三句话。"
+    payload = {
+        "patches": [
+            {
+                "sentence_id": "G001",
+                "old": "第一句话。",
+                "new": "第一句。",
+                "issue_type": "language_error",
+                "reason": "精简病句。",
+            },
+            {
+                "sentence_id": "G002",
+                "old": "第二句话。",
+                "new": "第二句。",
+                "issue_type": "language_error",
+                "reason": "精简病句。",
+            },
+            {"sentence_id": "G003", "old": "第三句话。"},
+        ]
+    }
+
+    patches = review.parse_external_green_patches(
+        json.dumps(payload, ensure_ascii=False),
+        green_block=block,
+    )
+
+    assert [item["sentence_id"] for item in patches] == ["G001", "G002"]
+
+
+def test_external_green_patch_parser_infers_missing_sentence_id_when_unique() -> None:
+    block = "重复句。唯一目标句。重复句。"
+    payload = {
+        "patches": [
+            {
+                "old": "唯一目标句。",
+                "new": "目标句。",
+                "issue_type": "language_error",
+                "reason": "删除赘词。",
+            }
+        ]
+    }
+
+    patches = review.parse_external_green_patches(
+        json.dumps(payload, ensure_ascii=False),
+        green_block=block,
+    )
+
+    assert patches[0]["sentence_id"] == "G002"
+
+
+def test_external_green_malformed_patch_json_returns_manual_not_model_error() -> None:
+    original = ("原稿内容。\n\n" * 40).strip()
+    green = original + "\n\n无依据结论。"
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_fn=lambda *_args, **_kwargs: ("这不是 JSON", {"cost_cny": 0.01}),
+        audit_fn=lambda *_args, **_kwargs: (_passing_green_patch_audit(), {"cost_cny": 0.0}),
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["candidate_text"] == ""
+    assert "不会被误报为服务故障" in result["next_action"]
+
+
 def test_external_green_repair_rejects_unverified_or_sub_25_base() -> None:
     text = ("正文内容。" * 100)
     report = _verified_green_report(text, human_percent=24.99)

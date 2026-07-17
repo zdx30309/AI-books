@@ -1250,13 +1250,28 @@ def repair_external_green_manuscript(
                 temperature=0.2,
             )
         )
-        patches = parse_external_green_patches(raw_patch_text)
     except AigcReviewModelError:
         raise
     except Exception as exc:
         raise AigcReviewModelError(f"DeepSeek 绿色稿微修失败: {exc}") from exc
 
     rewrite_cost = float(rewrite_usage.get("cost_cny") or 0.0)
+    try:
+        patches = parse_external_green_patches(
+            raw_patch_text,
+            green_block=region["green_block"],
+        )
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return _external_green_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            region=region,
+            reason=f"模型补丁 JSON 无法安全解析：{exc} 已保留上一版绿色稿；本次不会被误报为服务故障。",
+            cost_cny=rewrite_cost,
+            patches=[],
+        )
     if not patches:
         return _external_green_manual_result(
             request_id=request_id,
@@ -1460,7 +1475,11 @@ def render_external_green_repair_prompt(
     )
 
 
-def parse_external_green_patches(text: str) -> list[dict[str, str]]:
+def parse_external_green_patches(
+    text: str,
+    *,
+    green_block: str = "",
+) -> list[dict[str, str]]:
     cleaned = _clean_model_text(text)
     start, end = cleaned.find("{"), cleaned.rfind("}")
     if start < 0 or end <= start:
@@ -1470,15 +1489,25 @@ def parse_external_green_patches(text: str) -> list[dict[str, str]]:
     if not isinstance(patches, list):
         raise ValueError("绿色稿微修 JSON 缺少 patches")
     normalized: list[dict[str, str]] = []
+    sentence_map = external_green_sentence_map(green_block) if green_block else []
     allowed_types = {"missing_information", "altered_fact", "unsupported_claim", "language_error"}
     for index, patch in enumerate(patches[:3], start=1):
         if not isinstance(patch, dict):
-            raise ValueError(f"第 {index} 个补丁无效")
+            logger.warning("忽略无效绿色稿补丁 index=%s reason=not_object", index)
+            continue
         old = str(patch.get("old") or "")
         new = str(patch.get("new") or "")
         sentence_id = str(patch.get("sentence_id") or "").strip().upper()
         issue_type = str(patch.get("issue_type") or "")
         reason = str(patch.get("reason") or "").strip()
+        if not sentence_id and old and sentence_map:
+            matches = [
+                item
+                for item in sentence_map
+                if str(item["text"]).count(old) == 1
+            ]
+            if len(matches) == 1:
+                sentence_id = str(matches[0]["sentence_id"])
         if (
             not re.fullmatch(r"G\d{3,4}", sentence_id)
             or not old
@@ -1486,7 +1515,15 @@ def parse_external_green_patches(text: str) -> list[dict[str, str]]:
             or issue_type not in allowed_types
             or not reason
         ):
-            raise ValueError(f"第 {index} 个补丁字段不完整")
+            logger.warning(
+                "忽略字段不完整的绿色稿补丁 index=%s sentence_id=%s has_old=%s issue_type=%s has_reason=%s",
+                index,
+                sentence_id or "missing",
+                bool(old),
+                issue_type or "missing",
+                bool(reason),
+            )
+            continue
         normalized.append(
             {
                 "sentence_id": sentence_id,
