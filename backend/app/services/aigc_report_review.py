@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = "zhuque-report-review-v5.5"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
 POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v2.0"
-EXTERNAL_GREEN_REPAIR_PROMPT_VERSION = "zhuque-external-green-repair-v1.0"
+EXTERNAL_GREEN_REPAIR_PROMPT_VERSION = "zhuque-external-green-global-repair-v3.0"
 DETECTOR_PROBE_RETIRED = True
 DETECTOR_PROBE_RETIREMENT_REASON = (
     "完整方法实验已被真实朱雀对照证伪并冻结：体育博彩样本人工特征 0%→0%，"
@@ -91,6 +91,12 @@ _REAUTHOR_PROMPT_PATH = _PROMPT_DIR / "aigc_report_reauthor.md"
 _POSITIVE_TRANSFER_PROMPT_PATH = _PROMPT_DIR / "aigc_positive_transfer.md"
 _EXTERNAL_GREEN_REPAIR_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_repair.md"
 _EXTERNAL_GREEN_AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_patch_audit.md"
+_EXTERNAL_GREEN_GLOBAL_REPAIR_PROMPT_PATH = (
+    _PROMPT_DIR / "aigc_external_green_global_repair.md"
+)
+_EXTERNAL_GREEN_GLOBAL_AUDIT_PROMPT_PATH = (
+    _PROMPT_DIR / "aigc_external_green_global_audit.md"
+)
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
@@ -1169,7 +1175,7 @@ def analyze_paired_reports(
     return payload
 
 
-def repair_external_green_manuscript(
+def _repair_external_green_manuscript_with_patches(
     original_text: str,
     green_text: str,
     green_report: dict[str, Any],
@@ -1180,7 +1186,7 @@ def repair_external_green_manuscript(
     rewrite_fn: Callable[..., Any] | None = None,
     audit_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Repair one small quality-risk region while preserving a verified green base.
+    """Repair quality-risk regions until the requested edit dose is reached.
 
     This workflow deliberately starts from a real Zhuque-positive manuscript.  It
     does not predict the detector.  Every accepted patch creates a new hash and is
@@ -1212,149 +1218,282 @@ def repair_external_green_manuscript(
     ).ratio()
     if pair_similarity < 0.25:
         raise ZhuqueReportError("原稿与绿色稿不是可确认的同一篇文章。")
-    change_percent = min(5.0, max(0.25, float(max_change_percent)))
+    target_change_percent = min(5.0, max(0.25, float(max_change_percent)))
     budget = min(20.0, max(0.05, float(budget_cny)))
-    max_patch_chars = max(
+    green_nonspace_chars = len(_non_whitespace_text(green))
+    target_patch_chars = max(
         40,
-        int(len(_non_whitespace_text(green)) * change_percent / 100.0),
+        int(green_nonspace_chars * target_change_percent / 100.0),
+    )
+    target_floor_chars = max(1, math.ceil(target_patch_chars * 0.90))
+    target_floor_percent = round(
+        target_floor_chars * 100 / max(1, green_nonspace_chars),
+        6,
     )
     request_id = str(uuid4())
-    region = select_external_green_repair_region(original, green)
-    prompt = render_external_green_repair_prompt(
-        original_evidence=region["original_evidence"],
-        green_block=region["green_block"],
-        previous_context=region["previous_context"],
-        next_context=region["next_context"],
-        max_patch_chars=max_patch_chars,
-        max_patches=3,
-    )
+    regions = rank_external_green_repair_regions(original, green)
+    first_region = regions[0]
     rewrite = rewrite_fn or _rewrite_callable("deepseek")
-    segment = ZhuqueSegment(
-        segment_id=int(region["unit_index"]),
-        share_percent=0.0,
-        char_count=len(region["green_block"]),
-        aigc_value=0.0,
-        label="human",
-        start=int(region["start"]),
-        end=int(region["end"]),
-        mapped_text=region["green_block"],
-        mapping_confidence=1.0,
-    )
-    try:
-        raw_patch_text, rewrite_usage = _coerce_model_result(
-            rewrite(
-                prompt,
-                segment=segment,
-                request_id=request_id,
-                attempt=1,
-                temperature=0.2,
-            )
-        )
-    except AigcReviewModelError:
-        raise
-    except Exception as exc:
-        raise AigcReviewModelError(f"DeepSeek 绿色稿微修失败: {exc}") from exc
-
-    rewrite_cost = float(rewrite_usage.get("cost_cny") or 0.0)
-    try:
-        patches = parse_external_green_patches(
-            raw_patch_text,
-            green_block=region["green_block"],
-        )
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        return _external_green_manual_result(
-            request_id=request_id,
-            original=original,
-            green=green,
-            green_report=green_report,
-            region=region,
-            reason=f"模型补丁 JSON 无法安全解析：{exc} 已保留上一版绿色稿；本次不会被误报为服务故障。",
-            cost_cny=rewrite_cost,
-            patches=[],
-        )
-    if not patches:
-        return _external_green_manual_result(
-            request_id=request_id,
-            original=original,
-            green=green,
-            green_report=green_report,
-            region=region,
-            reason="模型没有找到可由原稿证明且适合本轮微修的问题；未产生候选，也不应继续自动烧费。",
-            cost_cny=rewrite_cost,
-            patches=[],
-        )
-    if rewrite_cost >= budget:
-        return _external_green_manual_result(
-            request_id=request_id,
-            original=original,
-            green=green,
-            green_report=green_report,
-            region=region,
-            reason="生成补丁后已达到本轮预算，未调用独立审稿模型，绿色基底保持不变。",
-            cost_cny=rewrite_cost,
-            patches=patches,
-        )
-
-    try:
-        patched_block, patch_char_count = apply_external_green_patches(
-            region["green_block"],
-            patches,
-            max_patch_chars=max_patch_chars,
-        )
-        candidate = normalize_manuscript_text(
-            green[: int(region["start"])] + patched_block + green[int(region["end"]):]
-        )
-        _validate_external_green_candidate(
-            original,
-            green,
-            candidate,
-            patch_char_count=patch_char_count,
-            max_patch_chars=max_patch_chars,
-        )
-    except ZhuqueReportError as exc:
-        return _external_green_manual_result(
-            request_id=request_id,
-            original=original,
-            green=green,
-            green_report=green_report,
-            region=region,
-            reason=f"模型补丁未通过精确定位保护：{exc} 已保留上一版绿色稿；重新处理不会复用本次错误补丁。",
-            cost_cny=rewrite_cost,
-            patches=patches,
-        )
-    audit_prompt = render_external_green_patch_audit_prompt(
-        original_evidence=region["original_evidence"],
-        green_before=region["green_block"],
-        green_after=patched_block,
-        patches=patches,
-    )
     audit = audit_fn or _gemini_external_green_patch_audit
-    try:
-        audit_text, audit_usage = _coerce_model_result(
-            audit(audit_prompt, request_id=request_id)
+    total_cost = 0.0
+    patch_char_count = 0
+    accepted_replacements: list[dict[str, Any]] = []
+    accepted_patches: list[dict[str, Any]] = []
+    patch_audits: list[dict[str, Any]] = []
+    processed_regions: list[dict[str, Any]] = []
+    stop_reason = "regions_exhausted"
+
+    desired_region_count = min(
+        len(regions),
+        max(1, math.ceil(target_patch_chars / 120)),
+    )
+    base_region_target = max(
+        40,
+        math.ceil(target_patch_chars / max(1, desired_region_count)),
+    )
+
+    for attempt, region in enumerate(regions, start=1):
+        if patch_char_count >= target_floor_chars:
+            stop_reason = "target_reached"
+            break
+        if total_cost >= budget:
+            stop_reason = "budget_exhausted"
+            break
+
+        remaining_chars = target_patch_chars - patch_char_count
+        region_max_chars = min(
+            remaining_chars,
+            max(40, math.ceil(base_region_target * 1.25)),
         )
-        audit_payload = parse_external_green_patch_audit(audit_text)
-    except Exception as exc:
-        raise AigcReviewModelError(f"Gemini 绿色稿补丁审查失败: {exc}") from exc
-    total_cost = rewrite_cost + float(audit_usage.get("cost_cny") or 0.0)
-    if total_cost > budget or not external_green_patch_audit_passed(audit_payload):
-        reason = (
-            "补丁独立审查未通过，已回退到上一版绿色稿。"
-            if total_cost <= budget
-            else "独立审查完成后超过本轮预算，候选不进入送检队列。"
+        region_min_chars = min(
+            remaining_chars,
+            max(20, math.floor(region_max_chars * 0.70)),
         )
+        region_status: dict[str, Any] = {
+            **_external_green_region_summary(region),
+            "target_min_chars": region_min_chars,
+            "target_max_chars": region_max_chars,
+            "status": "processing",
+            "reason": "",
+        }
+        prompt = render_external_green_repair_prompt(
+            original_evidence=region["original_evidence"],
+            green_block=region["green_block"],
+            previous_context=region["previous_context"],
+            next_context=region["next_context"],
+            min_patch_chars=region_min_chars,
+            max_patch_chars=region_max_chars,
+            max_patches=6,
+        )
+        segment = ZhuqueSegment(
+            segment_id=int(region["unit_index"]),
+            share_percent=0.0,
+            char_count=len(region["green_block"]),
+            aigc_value=0.0,
+            label="human",
+            start=int(region["start"]),
+            end=int(region["end"]),
+            mapped_text=region["green_block"],
+            mapping_confidence=1.0,
+        )
+        try:
+            raw_patch_text, rewrite_usage = _coerce_model_result(
+                rewrite(
+                    prompt,
+                    segment=segment,
+                    request_id=request_id,
+                    attempt=attempt,
+                    temperature=0.2,
+                )
+            )
+        except Exception as exc:
+            region_status["status"] = "model_error"
+            region_status["reason"] = f"DeepSeek 生成失败：{exc}"
+            processed_regions.append(region_status)
+            stop_reason = "model_error"
+            break
+
+        total_cost += float(rewrite_usage.get("cost_cny") or 0.0)
+        if total_cost >= budget:
+            region_status["status"] = "budget_exhausted"
+            region_status["reason"] = "生成补丁后达到预算，未继续调用独立审稿模型。"
+            processed_regions.append(region_status)
+            stop_reason = "budget_exhausted"
+            break
+
+        try:
+            patches = parse_external_green_patches(
+                raw_patch_text,
+                green_block=region["green_block"],
+                max_patches=6,
+            )
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            region_status["status"] = "invalid_patch_json"
+            region_status["reason"] = f"{exc}；已安全忽略，不会被误报为服务故障。"
+            processed_regions.append(region_status)
+            continue
+        if not patches:
+            region_status["status"] = "no_safe_patch"
+            region_status["reason"] = "该单元没有返回可安全定位的质量补丁。"
+            processed_regions.append(region_status)
+            continue
+
+        try:
+            patched_block, region_patch_chars = apply_external_green_patches(
+                region["green_block"],
+                patches,
+                max_patch_chars=region_max_chars,
+            )
+            single_region_candidate = normalize_manuscript_text(
+                green[: int(region["start"])]
+                + patched_block
+                + green[int(region["end"]):]
+            )
+            _validate_external_green_candidate(
+                original,
+                green,
+                single_region_candidate,
+                patch_char_count=region_patch_chars,
+                max_patch_chars=region_max_chars,
+            )
+        except ZhuqueReportError as exc:
+            region_status["status"] = "deterministic_gate_failed"
+            region_status["reason"] = str(exc)
+            processed_regions.append(region_status)
+            continue
+
+        audit_prompt = render_external_green_patch_audit_prompt(
+            original_evidence=region["original_evidence"],
+            green_before=region["green_block"],
+            green_after=patched_block,
+            patches=patches,
+        )
+        try:
+            audit_text, audit_usage = _coerce_model_result(
+                audit(audit_prompt, request_id=request_id)
+            )
+            audit_payload = parse_external_green_patch_audit(audit_text)
+        except Exception as exc:
+            region_status["status"] = "audit_error"
+            region_status["reason"] = f"Gemini 审查失败：{exc}"
+            processed_regions.append(region_status)
+            stop_reason = "model_error"
+            break
+
+        total_cost += float(audit_usage.get("cost_cny") or 0.0)
+        if total_cost > budget:
+            region_status["status"] = "budget_exhausted"
+            region_status["reason"] = "独立审查完成后超过本轮预算，本单元未被接受。"
+            processed_regions.append(region_status)
+            stop_reason = "budget_exhausted"
+            break
+        if not external_green_patch_audit_passed(audit_payload):
+            region_status["status"] = "audit_failed"
+            region_status["reason"] = str(audit_payload.get("reason") or "独立质量审查未通过。")
+            processed_regions.append(region_status)
+            patch_audits.append(
+                {
+                    "unit_id": region["unit_id"],
+                    "unit_index": region["unit_index"],
+                    "accepted": False,
+                    "audit": audit_payload,
+                }
+            )
+            continue
+
+        region_status["status"] = "accepted"
+        region_status["patch_char_count"] = region_patch_chars
+        region_status["patch_count"] = len(patches)
+        processed_regions.append(region_status)
+        accepted_replacements.append(
+            {
+                "start": int(region["start"]),
+                "end": int(region["end"]),
+                "patched_block": patched_block,
+                "region": region,
+            }
+        )
+        patch_char_count += region_patch_chars
+        for patch in patches:
+            accepted_patches.append(
+                {
+                    **patch,
+                    "region_unit_id": region["unit_id"],
+                    "region_unit_index": region["unit_index"],
+                }
+            )
+        patch_audits.append(
+            {
+                "unit_id": region["unit_id"],
+                "unit_index": region["unit_index"],
+                "accepted": True,
+                "audit": audit_payload,
+            }
+        )
+
+    if not accepted_replacements:
+        base_reason = _external_green_stop_message(
+            stop_reason,
+            target_change_percent=target_change_percent,
+            actual_patch_percent=0.0,
+        )
+        explicit_failures = [
+            str(item.get("reason") or "")
+            for item in processed_regions
+            if item.get("reason")
+        ]
+        if explicit_failures:
+            base_reason += f" 最后一个明确失败原因：{explicit_failures[-1]}"
         return _external_green_manual_result(
             request_id=request_id,
             original=original,
             green=green,
             green_report=green_report,
-            region=region,
-            reason=reason,
+            region=first_region,
+            reason=base_reason,
             cost_cny=total_cost,
-            patches=patches,
-            patch_audit=audit_payload,
+            patches=[],
+            target_change_percent=target_change_percent,
+            target_floor_percent=target_floor_percent,
+            target_patch_chars=target_patch_chars,
+            target_floor_chars=target_floor_chars,
+            processed_regions=processed_regions,
+            stop_reason=stop_reason,
         )
 
+    candidate = green
+    for replacement in sorted(
+        accepted_replacements,
+        key=lambda item: int(item["start"]),
+        reverse=True,
+    ):
+        candidate = (
+            candidate[: int(replacement["start"])]
+            + str(replacement["patched_block"])
+            + candidate[int(replacement["end"]):]
+        )
+    candidate = normalize_manuscript_text(candidate)
+    _validate_external_green_candidate(
+        original,
+        green,
+        candidate,
+        patch_char_count=patch_char_count,
+        max_patch_chars=target_patch_chars,
+    )
+    actual_patch_percent = round(
+        patch_char_count * 100 / max(1, green_nonspace_chars),
+        6,
+    )
+    target_reached = patch_char_count >= target_floor_chars
+    if target_reached:
+        stop_reason = "target_reached"
+    accepted_regions = [
+        _external_green_region_summary(item["region"])
+        for item in accepted_replacements
+    ]
+    repair_issue_counts = dict(
+        Counter(str(item.get("issue_type") or "unknown") for item in accepted_patches)
+    )
     result = {
         "request_id": request_id,
         "status": "green_repair_candidate_ready",
@@ -1368,18 +1507,32 @@ def repair_external_green_manuscript(
         "candidate_text": candidate,
         "green_base_text": green,
         "official_human_percent_before_repair": float(official_human),
-        "max_change_percent": change_percent,
-        "max_patch_chars": max_patch_chars,
+        "target_change_percent": target_change_percent,
+        "target_floor_percent": target_floor_percent,
+        "target_patch_chars": target_patch_chars,
+        "target_floor_chars": target_floor_chars,
+        "target_reached": target_reached,
+        "stop_reason": stop_reason,
+        "max_change_percent": target_change_percent,
+        "max_patch_chars": target_patch_chars,
         "patch_char_count": patch_char_count,
-        "actual_patch_percent": round(
-            patch_char_count * 100 / max(1, len(_non_whitespace_text(green))), 6
-        ),
-        "patches": patches,
-        "repair_region": {
-            key: region[key]
-            for key in ("unit_id", "unit_index", "start", "end", "alignment_similarity", "risk_score")
-        },
-        "patch_audit": audit_payload,
+        "actual_patch_percent": actual_patch_percent,
+        "patches": accepted_patches,
+        "repair_issue_counts": repair_issue_counts,
+        "repair_issue_scope": [
+            "mechanical_synonym",
+            "punctuation_damage",
+            "typo_or_homophone",
+            "address_form_shift",
+        ],
+        "repair_region": accepted_regions[0],
+        "repair_regions": accepted_regions,
+        "processed_regions": processed_regions,
+        "processed_region_count": len(processed_regions),
+        "accepted_region_count": len(accepted_regions),
+        "skipped_region_count": len(processed_regions) - len(accepted_regions),
+        "patch_audit": patch_audits[-1]["audit"] if patch_audits else None,
+        "patch_audits": patch_audits,
         "cost": {
             "currency": "CNY",
             "estimated": True,
@@ -1387,7 +1540,11 @@ def repair_external_green_manuscript(
         },
         "must_recheck": True,
         "reuse_green_report_for_candidate": False,
-        "next_action": "下载候选并重新送朱雀；只有新报告首页人工特征仍 ≥25%，才能以该候选继续修下一批。",
+        "next_action": _external_green_stop_message(
+            stop_reason,
+            target_change_percent=target_change_percent,
+            actual_patch_percent=actual_patch_percent,
+        ),
     }
     _EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
     (_EXPERIMENT_DIR / f"green-repair-{request_id}.json").write_text(
@@ -1397,9 +1554,591 @@ def repair_external_green_manuscript(
     return result
 
 
+def repair_external_green_manuscript(
+    original_text: str,
+    green_text: str,
+    green_report: dict[str, Any],
+    *,
+    content_type: str = "article",
+    max_change_percent: float = 1.0,
+    budget_cny: float = 1.0,
+    rewrite_fn: Callable[..., Any] | None = None,
+    audit_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Globally repair four verified SaaS defect classes with one dedicated prompt.
+
+    ``max_change_percent`` is retained only for API backwards compatibility.  It
+    is deliberately not used as a generation boundary: model-estimated edit
+    percentages proved too inaccurate to be a meaningful control.  The service
+    scans every aligned block, records actual changes after the fact, and keeps
+    only blocks that pass an independent quality audit.
+    """
+    original = normalize_manuscript_text(original_text)
+    green = normalize_manuscript_text(green_text)
+    if not original or not green:
+        raise ZhuqueReportError("原稿和已变绿稿都不能为空。")
+    if content_type not in {"article", "classical", "public_domain"}:
+        raise ZhuqueReportError("绿色稿质量修复不支持小说链路。")
+    if green_report.get("original_sha256") != sha256_text(green):
+        raise ZhuqueReportError("绿色朱雀报告与当前绿色稿哈希不一致，请重新上传同一份正文。")
+    if green_report.get("official_overview_verified") is not True:
+        raise ZhuqueReportError("绿色报告首页官方人工特征未被可靠识别，不能作为修复基底。")
+    if green_report.get("source_match_verified") is not True:
+        raise ZhuqueReportError("绿色报告正文与粘贴稿未精确匹配，不能开始付费修复。")
+    official_human = green_report.get("official_human_percent")
+    if official_human is None:
+        official_human = green_report.get("human_percent")
+    if float(official_human or 0.0) < HUMAN_PASS_THRESHOLD:
+        raise ZhuqueReportError("当前稿尚未达到朱雀首页人工特征 25%，不能冒充绿色基底。")
+    pair_similarity = SequenceMatcher(
+        None,
+        _non_whitespace_text(original),
+        _non_whitespace_text(green),
+        autojunk=False,
+    ).ratio()
+    if pair_similarity < 0.25:
+        raise ZhuqueReportError("原稿与绿色稿不是可确认的同一篇文章。")
+
+    request_id = str(uuid4())
+    budget = min(20.0, max(0.05, float(budget_cny)))
+    requested_change_percent = min(5.0, max(0.25, float(max_change_percent)))
+    units = build_external_green_global_units(original, green)
+    rewrite = rewrite_fn or _rewrite_callable("deepseek")
+    audit = audit_fn or _gemini_external_green_global_audit
+    total_cost = 0.0
+    replacements: list[dict[str, Any]] = []
+    processed_regions: list[dict[str, Any]] = []
+    audits: list[dict[str, Any]] = []
+    confirmed_issue_counts: Counter[str] = Counter()
+    stop_reason = "global_scan_completed"
+
+    for attempt, unit in enumerate(units, start=1):
+        region_status = {
+            **_external_green_region_summary(unit),
+            "status": "processing",
+            "reason": "",
+        }
+        if total_cost >= budget:
+            region_status["status"] = "budget_exhausted"
+            region_status["reason"] = "到达用户设置的费用上限，后续单元未调用模型。"
+            processed_regions.append(region_status)
+            stop_reason = "budget_exhausted"
+            break
+
+        prompt = render_external_green_global_repair_prompt(
+            original_evidence=unit["original_evidence"],
+            green_block=unit["green_block"],
+            previous_context=unit["previous_context"],
+            next_context=unit["next_context"],
+        )
+        segment = ZhuqueSegment(
+            segment_id=int(unit["unit_index"]),
+            share_percent=0.0,
+            char_count=len(unit["green_block"]),
+            aigc_value=0.0,
+            label="human",
+            start=int(unit["start"]),
+            end=int(unit["end"]),
+            mapped_text=unit["green_block"],
+            mapping_confidence=1.0,
+        )
+        try:
+            raw_text, rewrite_usage = _coerce_model_result(
+                rewrite(
+                    prompt,
+                    segment=segment,
+                    request_id=request_id,
+                    attempt=attempt,
+                    temperature=0.2,
+                )
+            )
+            repaired_block, model_counts = parse_external_green_global_repair(raw_text)
+        except Exception as exc:
+            region_status["status"] = "rewrite_failed"
+            region_status["reason"] = f"专属质量修复输出无效：{exc}"
+            processed_regions.append(region_status)
+            stop_reason = "model_error"
+            break
+
+        total_cost += float(rewrite_usage.get("cost_cny") or 0.0)
+        before_chars = len(_non_whitespace_text(unit["green_block"]))
+        after_chars = len(_non_whitespace_text(repaired_block))
+        length_ratio = after_chars / max(1, before_chars)
+        if not 0.70 <= length_ratio <= 1.30:
+            region_status["status"] = "incomplete_output"
+            region_status["reason"] = (
+                f"模型返回块长度比例 {length_ratio:.3f}，疑似截断或混入额外内容。"
+            )
+            processed_regions.append(region_status)
+            continue
+        if total_cost >= budget:
+            region_status["status"] = "budget_exhausted"
+            region_status["reason"] = "完成修复后达到费用上限，未调用独立审稿模型。"
+            processed_regions.append(region_status)
+            stop_reason = "budget_exhausted"
+            break
+
+        audit_prompt = render_external_green_global_audit_prompt(
+            original_evidence=unit["original_evidence"],
+            green_before=unit["green_block"],
+            green_after=repaired_block,
+            model_reported_counts=model_counts,
+        )
+        try:
+            audit_text, audit_usage = _coerce_model_result(
+                audit(audit_prompt, request_id=request_id)
+            )
+            audit_payload = parse_external_green_global_audit(audit_text)
+        except Exception as exc:
+            region_status["status"] = "audit_error"
+            region_status["reason"] = f"独立审稿失败：{exc}"
+            processed_regions.append(region_status)
+            stop_reason = "model_error"
+            break
+
+        total_cost += float(audit_usage.get("cost_cny") or 0.0)
+        audit_entry = {
+            "unit_id": unit["unit_id"],
+            "unit_index": unit["unit_index"],
+            "accepted": external_green_global_audit_passed(audit_payload),
+            "audit": audit_payload,
+        }
+        audits.append(audit_entry)
+        if total_cost > budget:
+            region_status["status"] = "budget_exhausted"
+            region_status["reason"] = "独立审稿完成后超过费用上限，本单元未接受。"
+            processed_regions.append(region_status)
+            stop_reason = "budget_exhausted"
+            break
+        if not audit_entry["accepted"]:
+            region_status["status"] = "audit_failed"
+            region_status["reason"] = str(
+                audit_payload.get("reason") or "独立审稿未通过。"
+            )
+            processed_regions.append(region_status)
+            continue
+
+        changed_chars = external_green_changed_span_chars(
+            unit["green_block"],
+            repaired_block,
+        )
+        region_status["status"] = "accepted"
+        region_status["changed_chars"] = changed_chars
+        region_status["changed_percent"] = round(
+            changed_chars * 100 / max(1, before_chars),
+            6,
+        )
+        region_status["model_reported_issue_counts"] = model_counts
+        region_status["confirmed_issue_counts"] = audit_payload.get(
+            "confirmed_issue_counts",
+            {},
+        )
+        processed_regions.append(region_status)
+        replacements.append(
+            {
+                "start": int(unit["start"]),
+                "end": int(unit["end"]),
+                "repaired_block": repaired_block,
+                "region": unit,
+                "changed_chars": changed_chars,
+            }
+        )
+        confirmed_issue_counts.update(
+            {
+                str(key): int(value)
+                for key, value in (
+                    audit_payload.get("confirmed_issue_counts") or {}
+                ).items()
+                if int(value or 0) > 0
+            }
+        )
+
+    if not replacements:
+        return _external_green_global_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            requested_change_percent=requested_change_percent,
+            budget_cny=total_cost,
+            processed_regions=processed_regions,
+            audits=audits,
+            stop_reason=stop_reason,
+        )
+
+    candidate = green
+    for replacement in sorted(
+        replacements,
+        key=lambda item: int(item["start"]),
+        reverse=True,
+    ):
+        candidate = (
+            candidate[: int(replacement["start"])]
+            + str(replacement["repaired_block"])
+            + candidate[int(replacement["end"]):]
+        )
+    candidate = normalize_manuscript_text(candidate)
+    total_changed_chars = external_green_changed_span_chars(green, candidate)
+    actual_patch_percent = round(
+        total_changed_chars * 100
+        / max(1, len(_non_whitespace_text(green))),
+        6,
+    )
+    accepted_regions = [
+        _external_green_region_summary(item["region"]) for item in replacements
+    ]
+    accepted_source_chars = sum(
+        len(_non_whitespace_text(str(item["region"]["green_block"])))
+        for item in replacements
+    )
+    global_coverage_percent = round(
+        accepted_source_chars * 100
+        / max(1, len(_non_whitespace_text(green))),
+        6,
+    )
+    global_coverage_complete = len(replacements) == len(units)
+    if not global_coverage_complete and stop_reason == "global_scan_completed":
+        stop_reason = "some_blocks_rejected"
+
+    result = {
+        "request_id": request_id,
+        "status": "green_repair_candidate_ready",
+        "deliverable": False,
+        "experiment_type": "external_green_repair",
+        "processing_mode": "global_dedicated_prompt",
+        "policy_version": "report-driven-v5",
+        "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "original_sha256": sha256_text(original),
+        "green_base_sha256": sha256_text(green),
+        "candidate_sha256": sha256_text(candidate),
+        "candidate_text": candidate,
+        "green_base_text": green,
+        "official_human_percent_before_repair": float(official_human),
+        "requested_change_percent": requested_change_percent,
+        "generation_boundary_applied": False,
+        "max_change_percent": None,
+        "max_patch_chars": None,
+        "target_change_percent": None,
+        "target_floor_percent": None,
+        "target_patch_chars": None,
+        "target_floor_chars": None,
+        "target_reached": None,
+        "patch_char_count": total_changed_chars,
+        "actual_patch_percent": actual_patch_percent,
+        "global_unit_count": len(units),
+        "global_coverage_percent": global_coverage_percent,
+        "global_coverage_complete": global_coverage_complete,
+        "stop_reason": stop_reason,
+        "patches": [],
+        "repair_issue_scope": [
+            "mechanical_synonym",
+            "punctuation_damage",
+            "typo_or_homophone",
+            "address_form_shift",
+        ],
+        "repair_issue_counts": dict(confirmed_issue_counts),
+        "repair_region": accepted_regions[0],
+        "repair_regions": accepted_regions,
+        "processed_regions": processed_regions,
+        "processed_region_count": len(processed_regions),
+        "accepted_region_count": len(accepted_regions),
+        "skipped_region_count": len(processed_regions) - len(accepted_regions),
+        "patch_audit": audits[-1]["audit"] if audits else None,
+        "patch_audits": audits,
+        "cost": {
+            "currency": "CNY",
+            "estimated": True,
+            "estimated_cny": round(total_cost, 6),
+        },
+        "must_recheck": True,
+        "reuse_green_report_for_candidate": False,
+        "next_action": (
+            f"专属 Prompt 已扫描 {len(processed_regions)}/{len(units)} 个全文单元，"
+            f"独立审稿接受 {len(accepted_regions)} 个，事后统计实际改动 "
+            f"{actual_patch_percent:.3f}%。请下载候选并重新送朱雀；"
+            "只有新报告首页人工特征仍 ≥25%，该修复稿才可继续使用。"
+        ),
+    }
+    _EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
+    (_EXPERIMENT_DIR / f"green-global-repair-{request_id}.json").write_text(
+        json.dumps({**result, "candidate_text": ""}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def build_external_green_global_units(
+    original: str,
+    green: str,
+) -> list[dict[str, Any]]:
+    original_units = split_editorial_units(original, min_chars=1800, max_chars=3000)
+    green_units = split_editorial_units(green, min_chars=1800, max_chars=3000)
+    if not original_units or not green_units:
+        raise ZhuqueReportError("无法切分原稿与绿色稿的全局质量修复单元。")
+    results: list[dict[str, Any]] = []
+    for index, green_unit in enumerate(green_units):
+        projected = round(
+            index * (len(original_units) - 1) / max(1, len(green_units) - 1)
+        )
+        candidates = original_units[
+            max(0, projected - 1): min(len(original_units), projected + 2)
+        ]
+        original_unit = max(
+            candidates,
+            key=lambda item: SequenceMatcher(
+                None,
+                _non_whitespace_text(item.text),
+                _non_whitespace_text(green_unit.text),
+                autojunk=False,
+            ).ratio(),
+        )
+        similarity = SequenceMatcher(
+            None,
+            _non_whitespace_text(original_unit.text),
+            _non_whitespace_text(green_unit.text),
+            autojunk=False,
+        ).ratio()
+        results.append(
+            {
+                "unit_id": green_unit.unit_id,
+                "unit_index": green_unit.unit_index,
+                "start": green_unit.start,
+                "end": green_unit.end,
+                "green_block": green_unit.text,
+                "original_evidence": original_unit.text,
+                "previous_context": (
+                    green_units[index - 1].text[-400:] if index > 0 else "（无）"
+                ),
+                "next_context": (
+                    green_units[index + 1].text[:400]
+                    if index + 1 < len(green_units)
+                    else "（无）"
+                ),
+                "alignment_similarity": round(similarity, 6),
+                "risk_score": round(1.0 - similarity, 6),
+            }
+        )
+    return results
+
+
+def render_external_green_global_repair_prompt(
+    *,
+    original_evidence: str,
+    green_block: str,
+    previous_context: str,
+    next_context: str,
+) -> str:
+    template = _EXTERNAL_GREEN_GLOBAL_REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
+        .replace("{{GREEN_BLOCK}}", green_block)
+        .replace("{{PREVIOUS_CONTEXT}}", previous_context)
+        .replace("{{NEXT_CONTEXT}}", next_context)
+    )
+
+
+def parse_external_green_global_repair(
+    text: str,
+) -> tuple[str, dict[str, int]]:
+    cleaned = _clean_model_text(text)
+    text_match = re.search(
+        r"<REPAIRED_BLOCK>\s*(.*?)\s*</REPAIRED_BLOCK>",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    if text_match is None:
+        raise ValueError("缺少完整的 <REPAIRED_BLOCK> 输出")
+    repaired = normalize_manuscript_text(text_match.group(1))
+    if not repaired:
+        raise ValueError("修复后的正文块为空")
+    counts: dict[str, int] = {}
+    counts_match = re.search(
+        r"<REPAIR_COUNTS>\s*(\{.*?\})\s*</REPAIR_COUNTS>",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    if counts_match:
+        try:
+            payload = json.loads(counts_match.group(1))
+            if isinstance(payload, dict):
+                counts = {
+                    str(key): max(0, int(value or 0))
+                    for key, value in payload.items()
+                }
+        except (ValueError, TypeError, json.JSONDecodeError):
+            counts = {}
+    return repaired, counts
+
+
+def render_external_green_global_audit_prompt(
+    *,
+    original_evidence: str,
+    green_before: str,
+    green_after: str,
+    model_reported_counts: dict[str, int],
+) -> str:
+    template = _EXTERNAL_GREEN_GLOBAL_AUDIT_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
+        .replace("{{GREEN_BLOCK_BEFORE}}", green_before)
+        .replace("{{GREEN_BLOCK_AFTER}}", green_after)
+        .replace(
+            "{{MODEL_REPORTED_COUNTS}}",
+            json.dumps(model_reported_counts, ensure_ascii=False),
+        )
+    )
+
+
+def parse_external_green_global_audit(text: str) -> dict[str, Any]:
+    cleaned = _clean_model_text(text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("全局质量审稿未返回 JSON")
+    payload = json.loads(cleaned[start:end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("全局质量审稿 JSON 不是对象")
+    counts = payload.get("confirmed_issue_counts")
+    payload["confirmed_issue_counts"] = (
+        {
+            str(key): max(0, int(value or 0))
+            for key, value in counts.items()
+        }
+        if isinstance(counts, dict)
+        else {}
+    )
+    return payload
+
+
+def external_green_global_audit_passed(payload: dict[str, Any]) -> bool:
+    required = (
+        "pass",
+        "only_repairs_four_issue_types",
+        "no_new_facts",
+        "no_removed_supported_information",
+        "no_stance_or_causality_change",
+        "grammar_and_logic_correct",
+        "punctuation_correct",
+        "address_forms_consistent",
+        "no_new_typos",
+    )
+    return all(payload.get(key) is True for key in required)
+
+
+def external_green_changed_span_chars(before: str, after: str) -> int:
+    before_text = _non_whitespace_text(before)
+    after_text = _non_whitespace_text(after)
+    return sum(
+        max(i2 - i1, j2 - j1)
+        for tag, i1, i2, j1, j2 in SequenceMatcher(
+            None,
+            before_text,
+            after_text,
+            autojunk=False,
+        ).get_opcodes()
+        if tag != "equal"
+    )
+
+
+def _external_green_global_manual_result(
+    *,
+    request_id: str,
+    original: str,
+    green: str,
+    green_report: dict[str, Any],
+    requested_change_percent: float,
+    budget_cny: float,
+    processed_regions: list[dict[str, Any]],
+    audits: list[dict[str, Any]],
+    stop_reason: str,
+) -> dict[str, Any]:
+    first_region = (
+        {
+            key: processed_regions[0][key]
+            for key in (
+                "unit_id",
+                "unit_index",
+                "start",
+                "end",
+                "alignment_similarity",
+                "risk_score",
+            )
+        }
+        if processed_regions
+        else {
+            "unit_id": "",
+            "unit_index": 0,
+            "start": 0,
+            "end": 0,
+            "alignment_similarity": 0.0,
+            "risk_score": 0.0,
+        }
+    )
+    return {
+        "request_id": request_id,
+        "status": "manual_review",
+        "deliverable": False,
+        "experiment_type": "external_green_repair",
+        "processing_mode": "global_dedicated_prompt",
+        "policy_version": "report-driven-v5",
+        "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "original_sha256": sha256_text(original),
+        "green_base_sha256": sha256_text(green),
+        "candidate_sha256": None,
+        "candidate_text": "",
+        "green_base_text": green,
+        "official_human_percent_before_repair": float(
+            green_report.get("official_human_percent")
+            if green_report.get("official_human_percent") is not None
+            else green_report.get("human_percent") or 0.0
+        ),
+        "requested_change_percent": requested_change_percent,
+        "generation_boundary_applied": False,
+        "target_reached": None,
+        "patch_char_count": 0,
+        "actual_patch_percent": 0.0,
+        "global_coverage_percent": 0.0,
+        "global_coverage_complete": False,
+        "stop_reason": stop_reason,
+        "patches": [],
+        "repair_issue_scope": [
+            "mechanical_synonym",
+            "punctuation_damage",
+            "typo_or_homophone",
+            "address_form_shift",
+        ],
+        "repair_issue_counts": {},
+        "repair_region": first_region,
+        "repair_regions": [],
+        "processed_regions": processed_regions,
+        "processed_region_count": len(processed_regions),
+        "accepted_region_count": 0,
+        "skipped_region_count": len(processed_regions),
+        "patch_audit": audits[-1]["audit"] if audits else None,
+        "patch_audits": audits,
+        "cost": {
+            "currency": "CNY",
+            "estimated": True,
+            "estimated_cny": round(budget_cny, 6),
+        },
+        "must_recheck": False,
+        "reuse_green_report_for_candidate": False,
+        "next_action": (
+            "专属全稿质量修复没有形成通过独立审稿的候选，已保留上一版绿色稿。"
+            f"停止原因：{stop_reason}。"
+        ),
+    }
+
+
 def select_external_green_repair_region(original: str, green: str) -> dict[str, Any]:
-    original_units = split_editorial_units(original, min_chars=500, max_chars=1000)
-    green_units = split_editorial_units(green, min_chars=500, max_chars=1000)
+    return rank_external_green_repair_regions(original, green)[0]
+
+
+def rank_external_green_repair_regions(
+    original: str,
+    green: str,
+) -> list[dict[str, Any]]:
+    original_units = split_editorial_units(original, min_chars=350, max_chars=700)
+    green_units = split_editorial_units(green, min_chars=350, max_chars=700)
     if not original_units or not green_units:
         raise ZhuqueReportError("无法切分原稿与绿色稿的质量修复单元。")
     ranked: list[tuple[float, EditorialUnit, EditorialUnit, float]] = []
@@ -1426,29 +2165,46 @@ def select_external_green_repair_region(original: str, green: str) -> dict[str, 
             green_unit.text,
         )
         slogan_count = len(_quality_slogan_hits(green_unit.text, best_original.text))
+        punctuation_delta = sum(
+            abs(best_original.text.count(mark) - green_unit.text.count(mark))
+            for mark in "，。！？；：、“”‘’"
+        )
+        address_delta = abs(
+            best_original.text.count("你") - green_unit.text.count("你")
+        ) + abs(best_original.text.count("您") - green_unit.text.count("您"))
         risk_score = (
             (1.0 - similarity)
             + min(0.5, len(removed_anchors) * 0.08)
             + min(0.5, len(added_anchors) * 0.12)
             + slogan_count * 0.2
+            + min(0.6, punctuation_delta * 0.04)
+            + min(0.4, address_delta * 0.1)
         )
         ranked.append((risk_score, green_unit, best_original, similarity))
-    risk_score, green_unit, original_unit, similarity = max(ranked, key=lambda item: item[0])
-    index = green_units.index(green_unit)
-    previous = green_units[index - 1].text[-300:] if index > 0 else "（无）"
-    following = green_units[index + 1].text[:300] if index + 1 < len(green_units) else "（无）"
-    return {
-        "unit_id": green_unit.unit_id,
-        "unit_index": green_unit.unit_index,
-        "start": green_unit.start,
-        "end": green_unit.end,
-        "green_block": green_unit.text,
-        "original_evidence": original_unit.text,
-        "previous_context": previous,
-        "next_context": following,
-        "alignment_similarity": round(similarity, 6),
-        "risk_score": round(risk_score, 6),
-    }
+    results: list[dict[str, Any]] = []
+    for risk_score, green_unit, original_unit, similarity in sorted(
+        ranked,
+        key=lambda item: (item[0], -item[1].unit_index),
+        reverse=True,
+    ):
+        index = green_units.index(green_unit)
+        previous = green_units[index - 1].text[-300:] if index > 0 else "（无）"
+        following = green_units[index + 1].text[:300] if index + 1 < len(green_units) else "（无）"
+        results.append(
+            {
+                "unit_id": green_unit.unit_id,
+                "unit_index": green_unit.unit_index,
+                "start": green_unit.start,
+                "end": green_unit.end,
+                "green_block": green_unit.text,
+                "original_evidence": original_unit.text,
+                "previous_context": previous,
+                "next_context": following,
+                "alignment_similarity": round(similarity, 6),
+                "risk_score": round(risk_score, 6),
+            }
+        )
+    return results
 
 
 def render_external_green_repair_prompt(
@@ -1457,6 +2213,7 @@ def render_external_green_repair_prompt(
     green_block: str,
     previous_context: str,
     next_context: str,
+    min_patch_chars: int,
     max_patch_chars: int,
     max_patches: int,
 ) -> str:
@@ -1467,6 +2224,7 @@ def render_external_green_repair_prompt(
     )
     return (
         template.replace("{{MAX_PATCHES}}", str(max_patches))
+        .replace("{{MIN_PATCH_CHARS}}", str(min_patch_chars))
         .replace("{{MAX_PATCH_CHARS}}", str(max_patch_chars))
         .replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
         .replace("{{GREEN_BLOCK}}", numbered_green_block)
@@ -1479,6 +2237,7 @@ def parse_external_green_patches(
     text: str,
     *,
     green_block: str = "",
+    max_patches: int = 3,
 ) -> list[dict[str, str]]:
     cleaned = _clean_model_text(text)
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -1490,8 +2249,18 @@ def parse_external_green_patches(
         raise ValueError("绿色稿微修 JSON 缺少 patches")
     normalized: list[dict[str, str]] = []
     sentence_map = external_green_sentence_map(green_block) if green_block else []
-    allowed_types = {"missing_information", "altered_fact", "unsupported_claim", "language_error"}
-    for index, patch in enumerate(patches[:3], start=1):
+    allowed_types = {
+        "mechanical_synonym",
+        "punctuation_damage",
+        "typo_or_homophone",
+        "address_form_shift",
+        # Backwards compatibility for stored/tested v1 patches.
+        "missing_information",
+        "altered_fact",
+        "unsupported_claim",
+        "language_error",
+    }
+    for index, patch in enumerate(patches[:max(1, int(max_patches))], start=1):
         if not isinstance(patch, dict):
             logger.warning("忽略无效绿色稿补丁 index=%s reason=not_object", index)
             continue
@@ -1698,6 +2467,29 @@ def _gemini_external_green_patch_audit(
     }
 
 
+def _gemini_external_green_global_audit(
+    prompt: str,
+    *,
+    request_id: str,
+) -> tuple[str, dict[str, Any]]:
+    model = settings.AIGC_REVIEW_AUDIT_MODEL
+    content = generate_gemini_text(
+        prompt,
+        model=model,
+        temperature=0.0,
+        max_output_tokens=1600,
+        retries=1,
+    )
+    input_tokens = _estimate_tokens(prompt)
+    output_tokens = _estimate_tokens(content)
+    return content, {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_cny": _gemini_flash_lite_cost_cny(input_tokens, output_tokens),
+        "estimated": True,
+    }
+
+
 def _external_green_manual_result(
     *,
     request_id: str,
@@ -1709,7 +2501,14 @@ def _external_green_manual_result(
     cost_cny: float,
     patches: list[dict[str, str]],
     patch_audit: dict[str, Any] | None = None,
+    target_change_percent: float | None = None,
+    target_floor_percent: float | None = None,
+    target_patch_chars: int | None = None,
+    target_floor_chars: int | None = None,
+    processed_regions: list[dict[str, Any]] | None = None,
+    stop_reason: str = "no_safe_patch",
 ) -> dict[str, Any]:
+    processed = processed_regions or []
     return {
         "request_id": request_id,
         "status": "manual_review",
@@ -1727,16 +2526,76 @@ def _external_green_manual_result(
             if green_report.get("official_human_percent") is not None
             else green_report.get("human_percent") or 0.0
         ),
+        "target_change_percent": target_change_percent,
+        "target_floor_percent": target_floor_percent,
+        "target_patch_chars": target_patch_chars,
+        "target_floor_chars": target_floor_chars,
+        "target_reached": False,
+        "stop_reason": stop_reason,
+        "max_change_percent": target_change_percent,
+        "max_patch_chars": target_patch_chars,
+        "patch_char_count": 0,
+        "actual_patch_percent": 0.0,
         "patches": patches,
+        "repair_issue_counts": {},
+        "repair_issue_scope": [
+            "mechanical_synonym",
+            "punctuation_damage",
+            "typo_or_homophone",
+            "address_form_shift",
+        ],
         "patch_audit": patch_audit,
-        "repair_region": {
-            key: region[key]
-            for key in ("unit_id", "unit_index", "start", "end", "alignment_similarity", "risk_score")
-        },
+        "patch_audits": [],
+        "repair_region": _external_green_region_summary(region),
+        "repair_regions": [],
+        "processed_regions": processed,
+        "processed_region_count": len(processed),
+        "accepted_region_count": 0,
+        "skipped_region_count": len(processed),
         "cost": {"currency": "CNY", "estimated": True, "estimated_cny": round(cost_cny, 6)},
         "must_recheck": False,
         "next_action": reason,
     }
+
+
+def _external_green_region_summary(region: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: region[key]
+        for key in (
+            "unit_id",
+            "unit_index",
+            "start",
+            "end",
+            "alignment_similarity",
+            "risk_score",
+        )
+    }
+
+
+def _external_green_stop_message(
+    stop_reason: str,
+    *,
+    target_change_percent: float,
+    actual_patch_percent: float,
+) -> str:
+    if stop_reason == "target_reached":
+        return (
+            f"本轮已达到目标剂量区间：目标 {target_change_percent:.2f}%，"
+            f"实际 {actual_patch_percent:.3f}%。请下载候选并重新送朱雀；"
+            "只有新报告首页人工特征仍 ≥25%，才能继续下一批。"
+        )
+    reason_map = {
+        "budget_exhausted": "本轮预算已耗尽",
+        "model_error": "模型调用发生故障",
+        "regions_exhausted": "所有可对齐质量单元均已处理",
+        "no_safe_patch": "未找到可安全接受的质量补丁",
+    }
+    reason = reason_map.get(stop_reason, "本轮已停止")
+    return (
+        f"{reason}；目标 {target_change_percent:.2f}%，实际 {actual_patch_percent:.3f}%，"
+        "未达到目标剂量。已接受的候选仍经过逐块质量审查，但必须重新送朱雀，"
+        "不能沿用上一份绿色报告。"
+    )
 
 
 def paired_manuscript_features(text: str) -> dict[str, float | int]:

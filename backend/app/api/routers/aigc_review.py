@@ -94,7 +94,12 @@ class ExternalGreenRepairRequest(BaseModel):
     green_text: str = Field(..., min_length=1, max_length=200_000)
     green_report: dict[str, Any]
     content_type: SupportedContentType = "article"
-    max_change_percent: float = Field(1.0, ge=0.25, le=5.0)
+    max_change_percent: float = Field(
+        1.0,
+        ge=0.25,
+        le=5.0,
+        description="兼容旧客户端；全稿专属 Prompt 不再用该值限制模型改动量。",
+    )
     budget_cny: float = Field(1.0, ge=0.05, le=20.0)
 
 
@@ -381,7 +386,10 @@ async def paired_aigc_analysis(
         raise HTTPException(status_code=500, detail=f"朱雀前后报告差分分析失败: {exc}") from exc
 
 
-@router.post("/external-green-repair", summary="以真实朱雀绿色稿为基底做一批质量微修")
+@router.post(
+    "/external-green-repair",
+    summary="以真实朱雀绿色稿为基底全稿修复四类 SaaS 质量后遗症",
+)
 async def external_green_repair(
     req: ExternalGreenRepairRequest,
     user: User = Depends(get_current_user),

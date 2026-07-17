@@ -959,16 +959,48 @@ export interface ExternalGreenRepairResult {
   candidate_text: string;
   green_base_text: string;
   official_human_percent_before_repair: number;
-  max_change_percent?: number;
-  max_patch_chars?: number;
+  processing_mode?: "global_dedicated_prompt";
+  requested_change_percent?: number;
+  generation_boundary_applied?: boolean;
+  target_change_percent?: number | null;
+  target_floor_percent?: number | null;
+  target_patch_chars?: number | null;
+  target_floor_chars?: number | null;
+  target_reached?: boolean | null;
+  max_change_percent?: number | null;
+  max_patch_chars?: number | null;
   patch_char_count?: number;
   actual_patch_percent?: number;
+  global_unit_count?: number;
+  global_coverage_percent?: number;
+  global_coverage_complete?: boolean;
+  stop_reason?: string;
+  processed_region_count?: number;
+  accepted_region_count?: number;
+  skipped_region_count?: number;
+  repair_issue_counts?: Partial<Record<
+    "mechanical_synonym" | "punctuation_damage" | "typo_or_homophone" | "address_form_shift",
+    number
+  >>;
+  repair_issue_scope?: Array<
+    "mechanical_synonym" | "punctuation_damage" | "typo_or_homophone" | "address_form_shift"
+  >;
   patches: Array<{
     sentence_id: string;
     old: string;
     new: string;
-    issue_type: "missing_information" | "altered_fact" | "unsupported_claim" | "language_error";
+    issue_type:
+      | "mechanical_synonym"
+      | "punctuation_damage"
+      | "typo_or_homophone"
+      | "address_form_shift"
+      | "missing_information"
+      | "altered_fact"
+      | "unsupported_claim"
+      | "language_error";
     reason: string;
+    region_unit_id?: string;
+    region_unit_index?: number;
   }>;
   patch_audit?: {
     pass: boolean;
@@ -988,6 +1020,32 @@ export interface ExternalGreenRepairResult {
     alignment_similarity: number;
     risk_score: number;
   };
+  repair_regions?: Array<{
+    unit_id: string;
+    unit_index: number;
+    start: number;
+    end: number;
+    alignment_similarity: number;
+    risk_score: number;
+  }>;
+  processed_regions?: Array<{
+    unit_id: string;
+    unit_index: number;
+    start: number;
+    end: number;
+    alignment_similarity: number;
+    risk_score: number;
+    status: string;
+    reason?: string;
+    changed_chars?: number;
+    changed_percent?: number;
+  }>;
+  patch_audits?: Array<{
+    unit_id: string;
+    unit_index: number;
+    accepted: boolean;
+    audit: Record<string, unknown>;
+  }>;
   cost: { currency: "CNY"; estimated: true; estimated_cny: number };
   must_recheck: boolean;
   reuse_green_report_for_candidate?: false;

@@ -2374,6 +2374,36 @@ def _passing_green_patch_audit() -> str:
     )
 
 
+def _passing_green_global_audit(
+    *,
+    mechanical_synonym: int = 0,
+    punctuation_damage: int = 0,
+    typo_or_homophone: int = 0,
+    address_form_shift: int = 0,
+) -> str:
+    return json.dumps(
+        {
+            "pass": True,
+            "only_repairs_four_issue_types": True,
+            "no_new_facts": True,
+            "no_removed_supported_information": True,
+            "no_stance_or_causality_change": True,
+            "grammar_and_logic_correct": True,
+            "punctuation_correct": True,
+            "address_forms_consistent": True,
+            "no_new_typos": True,
+            "confirmed_issue_counts": {
+                "mechanical_synonym": mechanical_synonym,
+                "punctuation_damage": punctuation_damage,
+                "typo_or_homophone": typo_or_homophone,
+                "address_form_shift": address_form_shift,
+            },
+            "reason": "只修复了四类已确认的 SaaS 后遗症。",
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_external_green_repair_outputs_only_audited_micro_patch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -2407,7 +2437,7 @@ def test_external_green_repair_outputs_only_audited_micro_patch(
         assert "最重要的功臣" in prompt
         return _passing_green_patch_audit(), {"cost_cny": 0.01}
 
-    result = review.repair_external_green_manuscript(
+    result = review._repair_external_green_manuscript_with_patches(
         original,
         green,
         _verified_green_report(green),
@@ -2423,6 +2453,89 @@ def test_external_green_repair_outputs_only_audited_micro_patch(
     assert result["must_recheck"] is True
     assert result["reuse_green_report_for_candidate"] is False
     assert result["candidate_sha256"] != result["green_base_sha256"]
+
+
+def test_external_green_global_prompt_scans_all_units_without_percent_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    original_paragraphs = []
+    green_paragraphs = []
+    for index in range(1, 25):
+        original_sentence = (
+            f"第{index}段材料只记录当事人完成了既定工作，"
+            "不能据此推导额外的历史评价或绝对结论。"
+        )
+        original_paragraphs.append(
+            original_sentence
+            + "后续说明仍围绕同一份材料展开，并保留原有的条件、范围和评价归属。"
+            + "这些句子用于形成足够长且可稳定分块的测试正文。"
+        )
+        green_paragraphs.append(
+            original_sentence.replace("既定工作", "既订工作")
+            + "后续说明仍围绕同一份材料展开并保留原有的条件范围和评价归属。"
+            + "这些句子用于形成足够长且可稳定分块的测试正文。"
+        )
+    original = "\n\n".join(original_paragraphs)
+    green = "\n\n".join(green_paragraphs)
+    rewrite_calls = 0
+
+    def rewrite_fn(prompt: str, **_: object) -> tuple[str, dict]:
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        block_match = re.search(
+            r"绿色稿待修块：\n(.*?)\n\n绿色稿相邻下文（只读）：",
+            prompt,
+            flags=re.DOTALL,
+        )
+        assert block_match is not None
+        repaired = (
+            block_match.group(1)
+            .replace("既订工作", "既定工作")
+            .replace(
+                "同一份材料展开并保留原有的条件范围和评价归属",
+                "同一份材料展开，并保留原有的条件、范围和评价归属",
+            )
+        )
+        return (
+            "<REPAIRED_BLOCK>\n"
+            + repaired
+            + "\n</REPAIRED_BLOCK>\n"
+            + '<REPAIR_COUNTS>{"mechanical_synonym":0,"punctuation_damage":1,'
+            + '"typo_or_homophone":1,"address_form_shift":0}</REPAIR_COUNTS>',
+            {"cost_cny": 0.01},
+        )
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_fn=rewrite_fn,
+        audit_fn=lambda *_args, **_kwargs: (
+            _passing_green_global_audit(
+                punctuation_damage=1,
+                typo_or_homophone=1,
+            ),
+            {"cost_cny": 0.005},
+        ),
+        max_change_percent=5.0,
+        budget_cny=2.0,
+    )
+
+    assert result["status"] == "green_repair_candidate_ready"
+    assert result["processing_mode"] == "global_dedicated_prompt"
+    assert result["generation_boundary_applied"] is False
+    assert result["target_reached"] is None
+    assert result["global_coverage_complete"] is True
+    assert result["global_coverage_percent"] == 100.0
+    assert result["accepted_region_count"] == result["global_unit_count"]
+    assert rewrite_calls == result["processed_region_count"]
+    assert len(result["repair_regions"]) == result["accepted_region_count"]
+    assert "既订工作" not in result["candidate_text"]
+    assert "展开并保留原有的条件范围" not in result["candidate_text"]
+    assert result["actual_patch_percent"] > 0
+    assert result["repair_issue_counts"]["typo_or_homophone"] >= 1
 
 
 def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
@@ -2455,7 +2568,7 @@ def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
         payload["failed_patch_indexes"] = [1]
         return json.dumps(payload, ensure_ascii=False), {"cost_cny": 0.01}
 
-    result = review.repair_external_green_manuscript(
+    result = review._repair_external_green_manuscript_with_patches(
         original,
         green,
         _verified_green_report(green),
@@ -2512,7 +2625,7 @@ def test_external_green_patch_location_failure_returns_safe_manual_review() -> N
             {"cost_cny": 0.01},
         )
 
-    result = review.repair_external_green_manuscript(
+    result = review._repair_external_green_manuscript_with_patches(
         original,
         green,
         _verified_green_report(green),
@@ -2580,7 +2693,7 @@ def test_external_green_malformed_patch_json_returns_manual_not_model_error() ->
     original = ("原稿内容。\n\n" * 40).strip()
     green = original + "\n\n无依据结论。"
 
-    result = review.repair_external_green_manuscript(
+    result = review._repair_external_green_manuscript_with_patches(
         original,
         green,
         _verified_green_report(green),

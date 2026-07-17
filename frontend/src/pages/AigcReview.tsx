@@ -70,8 +70,7 @@ export function AigcReview() {
   const [pairConfirmed, setPairConfirmed] = useState(false);
   const [pairAnalysis, setPairAnalysis] = useState<AigcReviewPairedAnalysis | null>(null);
   const [greenRepair, setGreenRepair] = useState<ExternalGreenRepairResult | null>(null);
-  const [greenRepairPercent, setGreenRepairPercent] = useState(1);
-  const [greenRepairBudget, setGreenRepairBudget] = useState(1);
+  const [greenRepairBudget, setGreenRepairBudget] = useState(2);
   const [greenRecheckFile, setGreenRecheckFile] = useState<File | null>(null);
   const [greenRecheck, setGreenRecheck] = useState<AigcReviewReport | null>(null);
   const [pairing, setPairing] = useState(false);
@@ -171,11 +170,10 @@ export function AigcReview() {
         green_text: normalizeManuscriptText(greenText),
         green_report: pairAnalysis.modified_report,
         content_type: contentType,
-        max_change_percent: greenRepairPercent,
         budget_cny: greenRepairBudget,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "绿色稿质量微修失败");
+      setError(err instanceof Error ? err.message : "绿色稿全稿质量修复失败");
     } finally {
       setRepairingGreen(false);
     }
@@ -330,7 +328,7 @@ export function AigcReview() {
         </div>
         <div className="flex flex-col items-stretch gap-3">
           <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-            本地 OCR：0 元<br />每轮最多 3 个质量补丁<br />掉绿自动回退上一版
+            本地 OCR：0 元<br />专属 Prompt 全稿扫描<br />掉绿自动回退上一版
           </div>
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
@@ -426,7 +424,7 @@ export function AigcReview() {
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="text-sm text-gold-200">第二步</div>
-                  <h2 className="mt-1 font-serif text-2xl text-warm-50">每次只修一小批质量问题</h2>
+                  <h2 className="mt-1 font-serif text-2xl text-warm-50">专属 Prompt 全稿质量修复</h2>
                 </div>
                 <div className={`rounded-lg border px-4 py-3 text-sm ${greenBaseVerified ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"}`}>
                   {greenBaseVerified
@@ -435,19 +433,16 @@ export function AigcReview() {
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap items-end gap-4">
-                <label className="text-xs text-warm-400">本轮最多修改正文 %
-                  <input type="number" min="0.25" max="5" step="0.25" value={greenRepairPercent} onChange={(event) => setGreenRepairPercent(Math.min(5, Math.max(0.25, Number(event.target.value) || 1)))} className="mt-1 block w-28 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100" />
-                </label>
                 <label className="text-xs text-warm-400">本轮预算上限 ¥
                   <input type="number" min="0.05" max="20" step="0.1" value={greenRepairBudget} onChange={(event) => setGreenRepairBudget(Math.min(20, Math.max(0.05, Number(event.target.value) || 1)))} className="mt-1 block w-28 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100" />
                 </label>
                 <button type="button" onClick={repairGreenBatch} disabled={!greenBaseVerified || repairingGreen} className="btn-gold inline-flex items-center justify-center gap-2 disabled:opacity-45">
                   {repairingGreen ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  {repairingGreen ? "生成并审查补丁中" : "修复下一批质量问题"}
+                  {repairingGreen ? "全稿修复并逐块审查中" : "全稿修复四类质量问题"}
                 </button>
               </div>
               <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm leading-6 text-warm-300">
-                系统只输出最多 3 个精确补丁，不做全文润色；补丁必须由原稿证明并通过独立审查。任何候选都会生成新哈希，原绿色报告不能复用。
+                专属 Prompt 会扫描全文，只修复四类 SaaS 后遗症：机械同义词造成的病句、标点破坏、错别字/同音字/错误引号、无意义的“你/您”互换。系统不再要求模型凑修改百分比，实际改动量只在完成后统计；每个全文单元仍须通过独立质量审查。
               </div>
             </section>
           )}
@@ -457,10 +452,11 @@ export function AigcReview() {
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="text-sm text-gold-200">第三步</div>
-                  <h2 className="mt-1 font-serif text-2xl text-warm-50">微修候选与真实复检</h2>
+                  <h2 className="mt-1 font-serif text-2xl text-warm-50">全稿质量修复候选与真实复检</h2>
                 </div>
                 <div className="text-right text-xs leading-6 text-warm-400">
-                  {greenRepair.patches.length} 个补丁 · 修改 {greenRepair.actual_patch_percent?.toFixed(3) ?? "0.000"}%<br />
+                  全文审查覆盖 {greenRepair.global_coverage_percent?.toFixed(1) ?? "0.0"}% · 实际文字变更 {greenRepair.actual_patch_percent?.toFixed(3) ?? "0.000"}%<br />
+                  接受 {greenRepair.accepted_region_count ?? 0}/{greenRepair.global_unit_count ?? greenRepair.processed_region_count ?? 0} 个单元<br />
                   本轮估算 ¥{greenRepair.cost.estimated_cny.toFixed(4)}
                 </div>
               </div>
@@ -470,11 +466,23 @@ export function AigcReview() {
                   <div className="mt-1 text-warm-300">{greenRepair.next_action}</div>
                 </div>
               ) : (
-                <div className="mt-5 grid gap-5 xl:grid-cols-2">
+                <div className="mt-5">
+                  {!greenRepair.global_coverage_complete && (
+                    <div className="mb-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
+                      全稿扫描未全部通过：当前仅接受 {greenRepair.accepted_region_count ?? 0}/{greenRepair.global_unit_count ?? 0} 个单元。候选可供人工查看，但不能视为已经完成全部质量修复。
+                    </div>
+                  )}
+                  <div className="grid gap-5 xl:grid-cols-2">
                   <div>
-                    <div className="mb-2 text-sm text-warm-300">质量微修候选（必须重新送朱雀）</div>
+                    <div className="mb-2 text-sm text-warm-300">全稿质量修复候选（必须重新送朱雀）</div>
+                    <div className="mb-3 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-xs leading-6 text-warm-300">
+                      机械同义词 {greenRepair.repair_issue_counts?.mechanical_synonym ?? 0} 处 ·
+                      标点破坏 {greenRepair.repair_issue_counts?.punctuation_damage ?? 0} 处 ·
+                      错别字/同音字 {greenRepair.repair_issue_counts?.typo_or_homophone ?? 0} 处 ·
+                      你/您误换 {greenRepair.repair_issue_counts?.address_form_shift ?? 0} 处
+                    </div>
                     <textarea readOnly value={greenRepair.candidate_text} className="min-h-[420px] w-full resize-y rounded-lg border border-gold-500/15 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
-                    <button type="button" onClick={() => downloadText(greenRepair.candidate_text, "绿色稿质量微修候选-待朱雀复检.txt")} className="btn-ghost mt-3 inline-flex items-center justify-center gap-2">
+                    <button type="button" onClick={() => downloadText(greenRepair.candidate_text, "绿色稿全稿质量修复候选-待朱雀复检.txt")} className="btn-ghost mt-3 inline-flex items-center justify-center gap-2">
                       <Download className="h-4 w-4" />下载待复检候选
                     </button>
                   </div>
@@ -482,7 +490,7 @@ export function AigcReview() {
                     <div className="mb-2 text-sm text-warm-300">上传这份候选的新朱雀 PDF</div>
                     <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-gold-500/25 px-4 py-4 text-sm text-warm-300">
                       <input type="file" accept=".pdf,application/pdf" className="hidden" onChange={(event) => setGreenRecheckFile(event.target.files?.[0] ?? null)} />
-                      <RefreshCw className="h-5 w-5 text-gold-200" />{greenRecheckFile?.name || "选择微修候选复检 PDF"}
+                      <RefreshCw className="h-5 w-5 text-gold-200" />{greenRecheckFile?.name || "选择全稿修复候选复检 PDF"}
                     </label>
                     <button type="button" onClick={parseGreenRecheck} disabled={!greenRecheckFile || recheckingGreen} className="btn-gold mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
                       {recheckingGreen ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />}
@@ -492,16 +500,17 @@ export function AigcReview() {
                       <div className={`mt-4 rounded-lg border p-5 ${repairedGreenStillPasses ? "border-emerald-400/30 bg-emerald-500/10" : "border-red-400/30 bg-red-500/10"}`}>
                         <div className="flex items-center gap-2 text-lg text-warm-50">
                           {repairedGreenStillPasses ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-red-300" />}
-                          {repairedGreenStillPasses ? "绿色保住，可以继续下一批" : "绿色丢失，必须回退上一版"}
+                          {repairedGreenStillPasses ? "绿色保住，可作为新的质量稿" : "绿色丢失，必须回退上一版"}
                         </div>
                         <div className="mt-2 text-sm text-warm-300">首页官方人工特征 {greenRecheck.official_human_percent?.toFixed(2) ?? "未可靠识别"}% · 要求 ≥25%</div>
                         {repairedGreenStillPasses && (
                           <button type="button" onClick={continueFromRecheckedGreen} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2">
-                            <RefreshCw className="h-4 w-4" />以此版本继续修下一批
+                            <RefreshCw className="h-4 w-4" />以此版本作为新的绿色质量稿
                           </button>
                         )}
                       </div>
                     )}
+                  </div>
                   </div>
                 </div>
               )}
