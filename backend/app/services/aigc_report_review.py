@@ -1562,6 +1562,8 @@ def repair_external_green_manuscript(
     content_type: str = "article",
     max_change_percent: float = 1.0,
     budget_cny: float = 1.0,
+    rewrite_provider: str = "deepseek",
+    rewrite_reasoning_effort: str = "low",
     rewrite_fn: Callable[..., Any] | None = None,
     audit_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -1603,7 +1605,16 @@ def repair_external_green_manuscript(
     budget = min(20.0, max(0.05, float(budget_cny)))
     requested_change_percent = min(5.0, max(0.25, float(max_change_percent)))
     units = build_external_green_global_units(original, green)
-    rewrite = rewrite_fn or _rewrite_callable("deepseek")
+    selected_provider = _normalize_rewrite_provider(rewrite_provider)
+    selected_reasoning = (
+        _normalize_grok_reasoning(rewrite_reasoning_effort)
+        if selected_provider == "grok"
+        else "disabled"
+    )
+    rewrite_model = _rewrite_model_for_provider(selected_provider)
+    if rewrite_fn is None:
+        _ensure_rewrite_provider_configured(selected_provider)
+    rewrite = rewrite_fn or _rewrite_callable(selected_provider)
     audit = audit_fn or _gemini_external_green_global_audit
     total_cost = 0.0
     replacements: list[dict[str, Any]] = []
@@ -1643,14 +1654,17 @@ def repair_external_green_manuscript(
             mapping_confidence=1.0,
         )
         try:
+            rewrite_kwargs: dict[str, Any] = {
+                "segment": segment,
+                "request_id": request_id,
+                "attempt": attempt,
+            }
+            if selected_provider == "grok":
+                rewrite_kwargs["reasoning_effort"] = selected_reasoning
+            else:
+                rewrite_kwargs["temperature"] = 0.2
             raw_text, rewrite_usage = _coerce_model_result(
-                rewrite(
-                    prompt,
-                    segment=segment,
-                    request_id=request_id,
-                    attempt=attempt,
-                    temperature=0.2,
-                )
+                rewrite(prompt, **rewrite_kwargs)
             )
             repaired_block, model_counts = parse_external_green_global_repair(raw_text)
         except Exception as exc:
@@ -1760,6 +1774,9 @@ def repair_external_green_manuscript(
             green=green,
             green_report=green_report,
             requested_change_percent=requested_change_percent,
+            rewrite_provider=selected_provider,
+            rewrite_model=rewrite_model,
+            rewrite_reasoning=selected_reasoning,
             budget_cny=total_cost,
             processed_regions=processed_regions,
             audits=audits,
@@ -1808,6 +1825,12 @@ def repair_external_green_manuscript(
         "processing_mode": "global_dedicated_prompt",
         "policy_version": "report-driven-v5",
         "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "models": {
+            "rewrite_provider": selected_provider,
+            "rewrite": rewrite_model,
+            "rewrite_reasoning": selected_reasoning,
+            "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
+        },
         "original_sha256": sha256_text(original),
         "green_base_sha256": sha256_text(green),
         "candidate_sha256": sha256_text(candidate),
@@ -2046,6 +2069,9 @@ def _external_green_global_manual_result(
     green: str,
     green_report: dict[str, Any],
     requested_change_percent: float,
+    rewrite_provider: str,
+    rewrite_model: str,
+    rewrite_reasoning: str,
     budget_cny: float,
     processed_regions: list[dict[str, Any]],
     audits: list[dict[str, Any]],
@@ -2081,6 +2107,12 @@ def _external_green_global_manual_result(
         "processing_mode": "global_dedicated_prompt",
         "policy_version": "report-driven-v5",
         "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "models": {
+            "rewrite_provider": rewrite_provider,
+            "rewrite": rewrite_model,
+            "rewrite_reasoning": rewrite_reasoning,
+            "audit": settings.AIGC_REVIEW_AUDIT_MODEL,
+        },
         "original_sha256": sha256_text(original),
         "green_base_sha256": sha256_text(green),
         "candidate_sha256": None,

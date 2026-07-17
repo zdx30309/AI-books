@@ -94,6 +94,8 @@ class ExternalGreenRepairRequest(BaseModel):
     green_text: str = Field(..., min_length=1, max_length=200_000)
     green_report: dict[str, Any]
     content_type: SupportedContentType = "article"
+    rewrite_provider: SupportedRewriteProvider = "deepseek"
+    rewrite_reasoning_effort: Literal["low", "medium", "high"] = "low"
     max_change_percent: float = Field(
         1.0,
         ge=0.25,
@@ -403,6 +405,8 @@ async def external_green_repair(
             content_type=req.content_type,
             max_change_percent=req.max_change_percent,
             budget_cny=req.budget_cny,
+            rewrite_provider=req.rewrite_provider,
+            rewrite_reasoning_effort=req.rewrite_reasoning_effort,
         )
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

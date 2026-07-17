@@ -942,6 +942,8 @@ export interface ExternalGreenRepairRequest {
   green_text: string;
   green_report: AigcReviewReport;
   content_type: AigcReviewContentType;
+  rewrite_provider?: AigcReviewRewriteProvider;
+  rewrite_reasoning_effort?: "low" | "medium" | "high";
   max_change_percent?: number;
   budget_cny?: number;
 }
@@ -960,6 +962,12 @@ export interface ExternalGreenRepairResult {
   green_base_text: string;
   official_human_percent_before_repair: number;
   processing_mode?: "global_dedicated_prompt";
+  models?: {
+    rewrite_provider: AigcReviewRewriteProvider;
+    rewrite: string;
+    rewrite_reasoning: string;
+    audit: string;
+  };
   requested_change_percent?: number;
   generation_boundary_applied?: boolean;
   target_change_percent?: number | null;

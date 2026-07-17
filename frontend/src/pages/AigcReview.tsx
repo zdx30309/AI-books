@@ -108,6 +108,9 @@ export function AigcReview() {
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
+  const greenRewriteProviderOptions = pairAnalysis?.modified_report.model_strategy.rewrite_providers ?? [];
+  const selectedGreenRewriteProvider = greenRewriteProviderOptions.find((item) => item.id === rewriteProvider);
+  const greenRewriteProviderReady = Boolean(selectedGreenRewriteProvider?.configured);
   const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 12;
   const greenBaseVerified = Boolean(
     pairAnalysis?.modified_report.official_overview_verified
@@ -144,6 +147,8 @@ export function AigcReview() {
         true,
       );
       setPairAnalysis(analysis);
+      setRewriteProvider(analysis.modified_report.model_strategy.default_rewrite_provider);
+      setRewriteReasoning(analysis.modified_report.model_strategy.recommended_rewrite_reasoning);
       if (
         !analysis.modified_report.official_overview_verified
         || !analysis.modified_report.source_match_verified
@@ -170,6 +175,8 @@ export function AigcReview() {
         green_text: normalizeManuscriptText(greenText),
         green_report: pairAnalysis.modified_report,
         content_type: contentType,
+        rewrite_provider: rewriteProvider,
+        rewrite_reasoning_effort: rewriteReasoning,
         budget_cny: greenRepairBudget,
       }));
     } catch (err) {
@@ -433,14 +440,52 @@ export function AigcReview() {
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap items-end gap-4">
+                <label className="text-xs text-warm-400">改稿模型
+                  <select
+                    value={rewriteProvider}
+                    onChange={(event) => setRewriteProvider(event.target.value as AigcReviewRewriteProvider)}
+                    disabled={repairingGreen}
+                    className="mt-1 block min-w-48 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+                  >
+                    {greenRewriteProviderOptions.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.label}{provider.configured ? "" : "（未配置）"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {rewriteProvider === "grok" && (
+                  <label className="text-xs text-warm-400">Grok 推理强度
+                    <select
+                      value={rewriteReasoning}
+                      onChange={(event) => setRewriteReasoning(event.target.value as "low" | "medium" | "high")}
+                      disabled={repairingGreen}
+                      className="mt-1 block rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+                    >
+                      <option value="low">low（较省费用）</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high（高成本）</option>
+                    </select>
+                  </label>
+                )}
                 <label className="text-xs text-warm-400">本轮预算上限 ¥
                   <input type="number" min="0.05" max="20" step="0.1" value={greenRepairBudget} onChange={(event) => setGreenRepairBudget(Math.min(20, Math.max(0.05, Number(event.target.value) || 1)))} className="mt-1 block w-28 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100" />
                 </label>
-                <button type="button" onClick={repairGreenBatch} disabled={!greenBaseVerified || repairingGreen} className="btn-gold inline-flex items-center justify-center gap-2 disabled:opacity-45">
+                <button type="button" onClick={repairGreenBatch} disabled={!greenBaseVerified || !greenRewriteProviderReady || repairingGreen} className="btn-gold inline-flex items-center justify-center gap-2 disabled:opacity-45">
                   {repairingGreen ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  {repairingGreen ? "全稿修复并逐块审查中" : "全稿修复四类质量问题"}
+                  {repairingGreen ? "全稿修复并逐块审查中…" : `用 ${selectedGreenRewriteProvider?.label ?? "所选模型"} 全稿修复四类质量问题`}
                 </button>
               </div>
+              {!greenRewriteProviderReady && (
+                <div className="mt-3 text-xs text-amber-200">
+                  所选模型尚未配置服务器密钥；系统不会静默切换模型或产生费用。
+                </div>
+              )}
+              {selectedGreenRewriteProvider?.id === "grok" && selectedGreenRewriteProvider.configured && (
+                <div className="mt-3 text-xs leading-6 text-warm-400">
+                  Grok 4.5 仅在你手动选择后调用，本轮使用 {rewriteReasoning} 推理；价格明显高于 DeepSeek。输入 ${selectedGreenRewriteProvider.input_usd_per_m} / 缓存 ${selectedGreenRewriteProvider.cached_input_usd_per_m} / 输出 ${selectedGreenRewriteProvider.output_usd_per_m}（每百万 token）。
+                </div>
+              )}
               <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm leading-6 text-warm-300">
                 专属 Prompt 会扫描全文，只修复四类 SaaS 后遗症：机械同义词造成的病句、标点破坏、错别字/同音字/错误引号、无意义的“你/您”互换。系统不再要求模型凑修改百分比，实际改动量只在完成后统计；每个全文单元仍须通过独立质量审查。
               </div>
@@ -455,6 +500,7 @@ export function AigcReview() {
                   <h2 className="mt-1 font-serif text-2xl text-warm-50">全稿质量修复候选与真实复检</h2>
                 </div>
                 <div className="text-right text-xs leading-6 text-warm-400">
+                  改稿 {greenRepair.models?.rewrite_provider ?? rewriteProvider} / {greenRepair.models?.rewrite ?? "未记录"}{greenRepair.models?.rewrite_reasoning && greenRepair.models.rewrite_reasoning !== "disabled" ? `（${greenRepair.models.rewrite_reasoning}）` : ""}<br />
                   全文审查覆盖 {greenRepair.global_coverage_percent?.toFixed(1) ?? "0.0"}% · 实际文字变更 {greenRepair.actual_patch_percent?.toFixed(3) ?? "0.000"}%<br />
                   接受 {greenRepair.accepted_region_count ?? 0}/{greenRepair.global_unit_count ?? greenRepair.processed_region_count ?? 0} 个单元<br />
                   本轮估算 ¥{greenRepair.cost.estimated_cny.toFixed(4)}

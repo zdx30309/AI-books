@@ -2536,6 +2536,64 @@ def test_external_green_global_prompt_scans_all_units_without_percent_boundary(
     assert "展开并保留原有的条件范围" not in result["candidate_text"]
     assert result["actual_patch_percent"] > 0
     assert result["repair_issue_counts"]["typo_or_homophone"] >= 1
+    assert result["models"]["rewrite_provider"] == "deepseek"
+    assert result["models"]["rewrite_reasoning"] == "disabled"
+
+
+def test_external_green_global_prompt_can_use_grok_without_parallel_deepseek(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    original = "\n\n".join(
+        (
+            f"第{index}段材料记录了一项既定事实，并保留原有条件、范围和评价归属。"
+            "这一段只用于验证不同改稿模型走同一份专属质量修复提示词。"
+        )
+        for index in range(1, 18)
+    )
+    green = original.replace("既定事实", "既订事实")
+    rewrite_kwargs_seen: list[dict[str, object]] = []
+
+    def rewrite_fn(prompt: str, **kwargs: object) -> tuple[str, dict]:
+        rewrite_kwargs_seen.append(kwargs)
+        block_match = re.search(
+            r"绿色稿待修块：\n(.*?)\n\n绿色稿相邻下文（只读）：",
+            prompt,
+            flags=re.DOTALL,
+        )
+        assert block_match is not None
+        repaired = block_match.group(1).replace("既订事实", "既定事实")
+        return (
+            "<REPAIRED_BLOCK>\n"
+            + repaired
+            + "\n</REPAIRED_BLOCK>\n"
+            + '<REPAIR_COUNTS>{"mechanical_synonym":0,"punctuation_damage":0,'
+            + '"typo_or_homophone":1,"address_form_shift":0}</REPAIR_COUNTS>',
+            {"cost_cny": 0.01},
+        )
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_provider="grok",
+        rewrite_reasoning_effort="high",
+        rewrite_fn=rewrite_fn,
+        audit_fn=lambda *_args, **_kwargs: (
+            _passing_green_global_audit(typo_or_homophone=1),
+            {"cost_cny": 0.005},
+        ),
+        budget_cny=2.0,
+    )
+
+    assert result["status"] == "green_repair_candidate_ready"
+    assert result["models"]["rewrite_provider"] == "grok"
+    assert result["models"]["rewrite"] == review._rewrite_model_for_provider("grok")
+    assert result["models"]["rewrite_reasoning"] == "high"
+    assert rewrite_kwargs_seen
+    assert all(item["reasoning_effort"] == "high" for item in rewrite_kwargs_seen)
+    assert all("temperature" not in item for item in rewrite_kwargs_seen)
 
 
 def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
