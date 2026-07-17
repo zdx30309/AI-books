@@ -143,7 +143,7 @@ async def parse_aigc_report(
         raise HTTPException(status_code=500, detail=f"朱雀报告解析失败: {exc}") from exc
 
 
-@router.post("/optimize", summary="按选中风险片段生成一个候选并独立终审")
+@router.post("/optimize", summary="按选中风险片段生成质量候选或隔离实验稿")
 async def optimize_aigc_report(
     req: OptimizeAigcReviewRequest,
     user: User = Depends(get_current_user),

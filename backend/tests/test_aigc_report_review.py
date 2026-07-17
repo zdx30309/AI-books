@@ -1476,7 +1476,7 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
-def test_detector_probe_recasts_eighty_percent_with_quality_audit() -> None:
+def test_detector_probe_uses_dedicated_full_method_prompt_without_quality_audit() -> None:
     original = normalize_manuscript_text((
         "然而，校对者仍先核对旧档案中的地点。因此，已经确认的材料被留在原处。"
         "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
@@ -1488,11 +1488,15 @@ def test_detector_probe_recasts_eighty_percent_with_quality_audit() -> None:
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
     rewrite_calls: list[str] = []
+    prompts: list[str] = []
+    temperatures: list[float] = []
     audit_calls: list[str] = []
 
-    def rewrite_fn(_prompt: str, **kwargs):
+    def rewrite_fn(prompt: str, **kwargs):
         source = kwargs["segment"].mapped_text
         rewrite_calls.append(source)
+        prompts.append(prompt)
+        temperatures.append(kwargs["temperature"])
         candidate = (
             source
             .replace("然而", "不过")
@@ -1533,36 +1537,43 @@ def test_detector_probe_recasts_eighty_percent_with_quality_audit() -> None:
         for item in result["segment_results"]
     ]
     assert result["deliverable"] is False
-    assert result["quality_audit"]["pass"] is True
-    assert result["experimental_quality_bypassed"] is False
-    assert result["models"]["fact"] == "local-deterministic-v2"
+    assert result["quality_audit"] is None
+    assert result["experimental_quality_bypassed"] is True
+    assert result["models"]["fact"] == "not_used_detector_probe"
+    assert result["models"]["audit"] == "skipped_detector_probe"
     assert result["models"]["rewrite_provider"] == "deepseek"
     assert result["cost"]["estimated_cny"] > 0
     assert result["candidate_text"] != original
     assert result["editorial_unit_count"] == len(rewrite_calls)
-    assert result["audit_batch_count"] == len(audit_calls)
-    assert result["audit_batch_count"] == math.ceil(len(rewrite_calls) / 2)
+    assert result["audit_batch_count"] == 0
+    assert audit_calls == []
+    assert all(len(source) <= review.DEEP_RECAST_UNIT_MAX_CHARS for source in rewrite_calls)
+    assert temperatures == [0.8] * len(rewrite_calls)
+    assert all("杀掉模板化高频词和总结套语" in prompt for prompt in prompts)
+    assert all("按本单元指定语气重写" in prompt for prompt in prompts)
+    assert "是否为本轮首个单元：是" in prompts[0]
+    assert any("是否为本轮首个单元：否" in prompt for prompt in prompts[1:])
     probe = result["detector_probe"]
-    assert probe["mode"] == "maximal_multi_variable_recast"
-    assert probe["variable"] == "multi_variable_maximal_recast"
-    assert 75 <= probe["scope_percent"] <= 85
+    assert probe["mode"] == "full_method_profile_rotation"
+    assert probe["variable"] == "full_method_multi_variable"
+    assert probe["temperature"] == 0.8
+    assert probe["processed_scope_percent"] > 90
+    assert probe["quality_audit_required"] is False
+    assert probe["fact_ledger_required"] is False
+    assert len(probe["profile_counts"]) >= 3
     assert set(probe["variables"]) >= {
-        "clause_topology",
-        "paragraph_boundaries",
-        "sentence_length_distribution",
-        "discourse_marker_density",
+        "remove_template_phrases",
+        "irregular_sentence_length",
+        "irregular_paragraph_length",
+        "standalone_short_sentence",
+        "rotate_unit_voice",
+        "source_grounded_reading_reaction",
+        "rewrite_opening_paragraph",
+        "temperature_0_8",
     }
-    assert probe["quality_audit_required"] is True
-    start, end = probe["scope_start"], probe["scope_end"]
-    assert result["candidate_text"][:start] == original[:start]
-    length_delta = (
-        result["segment_results"][0]["candidate_chars"]
-        - result["segment_results"][0]["original_chars"]
-    )
-    assert result["candidate_text"][end + length_delta:] == original[end:]
 
 
-def test_maximal_probe_rolls_back_one_failed_unit_and_continues() -> None:
+def test_full_method_probe_never_quality_rolls_back_paid_candidate() -> None:
     original = normalize_manuscript_text((
         "然而，编辑先核对旧档案中的地点。因此，已经确认的材料仍留在原处。"
         "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
@@ -1574,27 +1585,15 @@ def test_maximal_probe_rolls_back_one_failed_unit_and_continues() -> None:
         1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
     )
     rewrite_calls = 0
-    failed_unit_start: int | None = None
 
     def rewrite_fn(_prompt: str, **kwargs):
-        nonlocal failed_unit_start, rewrite_calls
+        nonlocal rewrite_calls
         rewrite_calls += 1
-        unit_segment = kwargs["segment"]
-        source = unit_segment.mapped_text
-        if failed_unit_start is None and unit_segment.start > 0:
-            failed_unit_start = unit_segment.start
-        if unit_segment.start == failed_unit_start:
-            return source, {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.001}
-        candidate = (
-            source
-            .replace("然而", "不过")
-            .replace("因此", "所以")
-            .replace("同时", "同期")
-            .replace("此外", "另外")
-            .replace("不仅", "不只")
-            .replace("而且", "并且")
-        )
-        return candidate, {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.001}
+        return "我读到这里。\n\n停。", {
+            "input_tokens": 10,
+            "output_tokens": 10,
+            "cost_cny": 0.001,
+        }
 
     result = optimize_report_segments(
         original,
@@ -1614,10 +1613,103 @@ def test_maximal_probe_rolls_back_one_failed_unit_and_continues() -> None:
     unit_results = result["segment_results"][0]["unit_results"]
     assert result["status"] == "probe_ready"
     assert rewrite_calls > 2
-    assert sum(item["status"] == "rolled_back" for item in unit_results) == 1
-    assert result["segment_results"][0]["rolled_back_unit_count"] == 1
+    assert all(item["status"] == "ready" for item in unit_results)
+    assert any(item["hard_safety_passed"] is False for item in unit_results)
+    assert result["experimental_quality_bypassed"] is True
+    assert result["quality_audit"] is None
     assert result["candidate_text"] != original
-    assert result["editorial_unit_count"] == rewrite_calls - 1
+    assert result["editorial_unit_count"] == rewrite_calls
+
+
+def test_full_method_probe_stops_before_next_call_can_exceed_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = normalize_manuscript_text((
+        "The source keeps every named fact and quoted statement in place. "
+        "It also keeps the direction of each claim and the original conclusion.\n\n"
+    ) * 30)
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    rewrite_calls = 0
+
+    monkeypatch.setattr(review, "_detector_probe_call_cost_ceiling", lambda *_args: 0.04)
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        source = kwargs["segment"].mapped_text
+        return f"Changed rhythm. {source}", {
+            "input_tokens": 100,
+            "output_tokens": 100,
+            "cost_cny": 0.02,
+        }
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        content_type="article",
+        experiment_type="detector_probe",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        budget_cny=0.05,
+    )
+
+    assert rewrite_calls == 1
+    assert result["budget"]["spent_cny"] == 0.02
+    assert result["budget"]["spent_cny"] <= result["budget"]["limit_cny"]
+    assert result["budget"]["exhausted"] is True
+    assert result["detector_probe"]["budget_stopped"] is True
+    assert result["detector_probe"]["budget_stop_reason"]
+
+
+def test_full_method_probe_accepts_more_than_twelve_selected_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pieces = [
+        (f"Segment {index} preserves its own facts and conclusion. " * 8).strip()
+        for index in range(1, 14)
+    ]
+    original = "\n\n".join(pieces)
+    segments: list[ZhuqueSegment] = []
+    cursor = 0
+    for index, piece in enumerate(pieces, start=1):
+        start = original.index(piece, cursor)
+        end = start + len(piece)
+        segments.append(
+            ZhuqueSegment(index, 100 / 13, len(piece), 0.99, "ai", start, end, piece, 1.0, True)
+        )
+        cursor = end
+
+    rewrite_calls = 0
+    monkeypatch.setattr(review, "_detector_probe_call_cost_ceiling", lambda *_args: 0.001)
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        source = kwargs["segment"].mapped_text
+        return f"Brief pause. {source}", {
+            "input_tokens": 10,
+            "output_tokens": 10,
+            "cost_cny": 0.001,
+        }
+
+    result = optimize_report_segments(
+        original,
+        segments,
+        list(range(1, 14)),
+        content_type="article",
+        experiment_type="detector_probe",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        budget_cny=0.3,
+    )
+
+    assert result["selected_segment_ids"] == list(range(1, 14))
+    assert result["detector_probe"]["processed_segment_ids"] == list(range(1, 14))
+    assert rewrite_calls == 13
+    assert len(result["segment_results"]) == 13
 
 
 def test_discourse_marker_probe_uses_context_safe_phrase_replacements() -> None:

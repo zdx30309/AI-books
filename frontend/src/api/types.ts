@@ -654,13 +654,17 @@ export interface AigcReviewOptimizeResult {
   quality_audit: AigcReviewQualityAudit | null;
   experimental_quality_bypassed?: boolean;
   detector_probe?: {
-    mode?: "controlled_single_variable" | "quality_safe_continuous_recast" | "maximal_multi_variable_recast";
+    mode?: "controlled_single_variable" | "quality_safe_continuous_recast" | "maximal_multi_variable_recast" | "full_method_profile_rotation";
     temperature?: number;
     profile_order?: string[];
     processed_units?: number;
+    processed_chars?: number;
+    processed_scope_percent?: number;
     processed_segment_ids?: number[];
+    profile_counts?: Record<string, number>;
     budget_stopped?: boolean;
-    variable?: "discourse_marker_distribution_only" | "sentence_topology_only" | "multi_variable_maximal_recast";
+    budget_stop_reason?: string;
+    variable?: "discourse_marker_distribution_only" | "sentence_topology_only" | "multi_variable_maximal_recast" | "full_method_multi_variable";
     variables?: string[];
     scope_start?: number;
     scope_end?: number;

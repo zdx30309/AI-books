@@ -126,7 +126,7 @@ export function AigcReview() {
       setError("至少选择一个风险片段。");
       return;
     }
-    if (selectedIds.size > maxCalibrationSegments) {
+    if (!probeMode && selectedIds.size > maxCalibrationSegments) {
       setError(`单轮最多处理 ${maxCalibrationSegments} 个相邻风险片段。`);
       return;
     }
@@ -136,7 +136,7 @@ export function AigcReview() {
     ) return;
     if (
       experimentType === "detector_probe"
-      && !window.confirm("本轮将用 DeepSeek 对约 75%–85% 的连续高风险正文做最大幅度组合重构，并由 Gemini 分批终审；这是组合策略测试，无法单独归因某一个变量，最高费用受当前预算限制。确认继续吗？")
+      && !window.confirm("本轮将把所有选中的非绿色片段按 600–900 字切分，用 5 种语气轮换并以温度 0.8 完整执行高频词清理、节奏打乱、首段重写和有限阅读反应。为避免质量模板抹平变化，本轮不调用 Gemini、不做质量回滚，输出只能用于朱雀复检。确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -201,16 +201,16 @@ export function AigcReview() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-gold-500/20 px-4 py-2 text-xs text-gold-200">
             <ShieldCheck className="h-4 w-4" />
-            真实朱雀报告驱动 · 质量优先 · 小说暂不处理
+            真实朱雀报告驱动 · 黑盒实验与终稿分离 · 小说暂不处理
           </div>
           <h1 className="font-serif text-4xl text-warm-50">AI 审稿降率</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
-            上传朱雀打印 PDF，并粘贴送检时的同一份原稿。先做零费用结构实验，再按需做质量安全句法编辑；只有官方首页人工特征达到 25% 且逐 claim 质量闸门全过才算通过。
+            上传朱雀打印 PDF，并粘贴送检时的同一份原稿。实验稿先验证人工特征能否达到 25%，命中后再单独修复质量；未经质量终审的实验稿永远不是终稿。
           </p>
         </div>
         <div className="flex flex-col items-stretch gap-3">
           <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-            本地 OCR：0 元<br />先排版实验，DeepSeek 按需编辑<br />本地事实账本 · 600–900 字逐单元终审
+            本地 OCR：0 元<br />DeepSeek 600–900 字分段实验<br />实验稿与质量终稿严格分开
           </div>
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
@@ -305,7 +305,6 @@ export function AigcReview() {
                       setSelectedIds(new Set(
                         report.segments
                           .filter((item) => item.label !== "human")
-                          .slice(0, maxCalibrationSegments)
                           .map((item) => item.segment_id),
                       ));
                     }
@@ -387,11 +386,11 @@ export function AigcReview() {
             <ScoreCard label="AI 特征" value={report.ai_percent} tone="red" />
           </div>
           <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm text-warm-300">
-            当前选中相邻风险区占全文 {selectedShare.toFixed(2)}%，最多 12 段。
+            当前选中风险区占全文 {selectedShare.toFixed(2)}%{probeMode ? "；完整方法实验处理全部选中非绿色片段。" : "，最多 12 个相邻片段。"}
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : probeMode
-                ? ` 本轮自动从选中区域截取占全稿 75%–85% 的连续高风险正文，按 600–900 字单元同时重构句法、信息落点、段落边界、长短句、标点停顿、连接词密度和节奏；事实与质量终审不跳过，最多支出 ¥${budgetCny.toFixed(2)}。`
+                ? ` 本轮按 600–900 字单元轮换 5 种语气，完整执行高频词清理、长短句与段长打乱、独立短句、去编号结构、首段重写和基于原文的阅读反应；不调用 Gemini、不做质量回滚，最多支出 ¥${budgetCny.toFixed(2)}。`
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
           </div>
           {report.warnings.map((warning) => <div key={warning} className="mt-3 text-sm text-amber-200">⚠ {warning}</div>)}
@@ -428,9 +427,9 @@ export function AigcReview() {
             </div>
             <div className="text-right text-xs leading-6 text-warm-400">
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
-              {result.editorial_unit_count ?? 0} 个编辑单元 · {result.audit_batch_count ?? 0} 批终审<br />
+              {result.editorial_unit_count ?? 0} 个编辑单元 · {resultIsProbe ? "实验模式不终审" : `${result.audit_batch_count ?? 0} 批终审`}<br />
               {resultIsProbe
-                ? `大范围组合重构 · ${result.models.rewrite_provider} / ${result.models.rewrite} → 终审 ${result.models.audit}`
+                ? `完整方法轮换 · ${result.models.rewrite_provider} / ${result.models.rewrite} · 温度 0.8`
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
             </div>
           </div>
@@ -499,8 +498,8 @@ export function AigcReview() {
             <>
               {resultIsProbe && (
                 <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                  <div className="font-medium">强力组合实验稿已通过质量硬闸门</div>
-                  <div className="mt-1 text-warm-300">事实、锚点、完整度、流畅度与原稿声音均已终审；现在只等待真实朱雀复检。即使达到 25%，仍保留人工确认，不直接作为通用终稿策略。</div>
+                  <div className="font-medium">完整方法实验稿已生成（未做质量终审）</div>
+                  <div className="mt-1 text-warm-300">本轮没有用事实账本、Gemini 或质量回滚把变化重新抹平。请只拿它做真实朱雀复检；即使达到 25%，也必须进入后续质量修复，不能直接交付。</div>
                 </div>
               )}
               {result.quality_audit && (
