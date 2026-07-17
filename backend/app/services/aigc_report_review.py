@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "zhuque-report-review-v5.5"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
-POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v1.0"
+POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v2.0"
 DETECTOR_PROBE_RETIRED = True
 DETECTOR_PROBE_RETIREMENT_REASON = (
     "完整方法实验已被真实朱雀对照证伪并冻结：体育博彩样本人工特征 0%→0%，"
@@ -62,14 +62,16 @@ MATERIAL_SIMILARITY_MAX = 0.82
 MATERIAL_PARAGRAPH_COVERAGE_MIN = 0.80
 QUALITY_SAFE_LENGTH_MIN = 0.95
 QUALITY_SAFE_LENGTH_MAX = 1.08
-POSITIVE_TRANSFER_LENGTH_MIN = 0.88
-POSITIVE_TRANSFER_LENGTH_MAX = 0.97
+POSITIVE_TRANSFER_LENGTH_MIN = 0.95
+POSITIVE_TRANSFER_LENGTH_MAX = 1.05
 POSITIVE_TRANSFER_UNIT_MIN_CHARS = 1200
 POSITIVE_TRANSFER_UNIT_MAX_CHARS = 1800
 POSITIVE_TRANSFER_DEFAULT_BUDGET_CNY = 20.0
 POSITIVE_TRANSFER_MAX_ATTEMPTS = 4
-POSITIVE_TRANSFER_SAFETY_LENGTH_MIN = 0.80
-POSITIVE_TRANSFER_SAFETY_LENGTH_MAX = 1.08
+POSITIVE_TRANSFER_SAFETY_LENGTH_MIN = 0.95
+POSITIVE_TRANSFER_SAFETY_LENGTH_MAX = 1.05
+POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX = 0.55
+POSITIVE_TRANSFER_CV_DELTA_MIN = 0.015
 DEEP_RECAST_SCOPE_MIN = 0.75
 DEEP_RECAST_SCOPE_TARGET = 0.80
 DEEP_RECAST_SCOPE_MAX = 0.85
@@ -1208,9 +1210,12 @@ def positive_transfer_candidate_metrics(
     )
     before_cv = float(before["sentence_length_cv"])
     after_cv = float(after["sentence_length_cv"])
-    cv_target_reached = (
-        after_cv >= 0.48 if before_cv < 0.48 else after_cv >= before_cv - 0.015
+    cv_floor = (
+        max(0.48, before_cv + POSITIVE_TRANSFER_CV_DELTA_MIN)
+        if before_cv < 0.55
+        else before_cv - 0.015
     )
+    cv_target_reached = after_cv >= cv_floor
     template_patterns = (
         r"我读到这里",
         r"我看到这里",
@@ -1231,32 +1236,117 @@ def positive_transfer_candidate_metrics(
         _non_whitespace_text(candidate),
         autojunk=False,
     ).ratio()
-    target_reached = (
+    ngram_similarity = _character_ngram_cosine(original, candidate, n=4)
+    length_target_reached = (
         POSITIVE_TRANSFER_LENGTH_MIN <= length_ratio <= POSITIVE_TRANSFER_LENGTH_MAX
-        and 0.90 <= sentence_count_ratio <= 1.10
+    )
+    sentence_target_reached = 0.90 <= sentence_count_ratio <= 1.10
+    rewrite_depth_target_reached = (
+        ngram_similarity <= POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX
+    )
+    target_reached = (
+        length_target_reached
+        and sentence_target_reached
         and cv_target_reached
+        and rewrite_depth_target_reached
         and not new_template_hits
     )
-    score = (
-        1.0
-        - min(1.0, abs(length_ratio - 0.92) * 5.0)
-        + 1.0
-        - min(1.0, abs(sentence_count_ratio - 1.0) * 4.0)
-        + 1.0
-        - min(1.0, abs(literal_similarity - 0.68) * 3.0)
-        + min(1.0, max(0.0, (after_cv - 0.40) / 0.18))
-        - min(1.0, len(new_template_hits) * 0.25)
+    target_dimensions_reached = sum(
+        bool(value)
+        for value in (
+            length_target_reached,
+            sentence_target_reached,
+            cv_target_reached,
+            rewrite_depth_target_reached,
+        )
     )
+    target_distance = (
+        abs(length_ratio - 1.0) / 0.05
+        + abs(sentence_count_ratio - 1.0) / 0.10
+        + max(0.0, cv_floor - after_cv) / 0.08
+        + max(0.0, ngram_similarity - POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX) / 0.20
+        + len(new_template_hits)
+    )
+    score = target_dimensions_reached * 10.0 - target_distance
     return {
         "target_reached": target_reached,
         "selection_score": round(score, 6),
+        "target_distance": round(target_distance, 6),
+        "target_dimensions_reached": target_dimensions_reached,
+        "length_target_reached": length_target_reached,
+        "sentence_target_reached": sentence_target_reached,
+        "cv_target_reached": cv_target_reached,
+        "rewrite_depth_target_reached": rewrite_depth_target_reached,
         "length_ratio": round(length_ratio, 6),
         "sentence_count_ratio": round(sentence_count_ratio, 6),
         "sentence_length_cv_before": round(before_cv, 6),
         "sentence_length_cv_after": round(after_cv, 6),
         "sentence_length_cv_delta": round(after_cv - before_cv, 6),
         "literal_similarity": round(literal_similarity, 6),
+        "ngram_similarity": round(ngram_similarity, 6),
+        "ngram_similarity_max": POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX,
         "new_template_hits": list(dict.fromkeys(new_template_hits)),
+    }
+
+
+def _character_ngram_cosine(original: str, candidate: str, *, n: int = 4) -> float:
+    """Measure retained local phrasing without pretending to predict Zhuque."""
+
+    def grams(text: str) -> Counter[str]:
+        compact = _non_whitespace_text(text)
+        return Counter(
+            compact[index : index + n]
+            for index in range(max(0, len(compact) - n + 1))
+        )
+
+    before = grams(original)
+    after = grams(candidate)
+    if not before or not after:
+        return 0.0
+    dot = sum(value * after.get(key, 0) for key, value in before.items())
+    denominator = math.sqrt(
+        sum(value * value for value in before.values())
+        * sum(value * value for value in after.values())
+    )
+    return dot / denominator if denominator else 0.0
+
+
+def positive_transfer_candidate_rank(metrics: dict[str, Any]) -> tuple[int, int, int, int, float]:
+    """Choose deep, rhythmic, fact-safe alternatives before shallow lookalikes."""
+
+    return (
+        int(bool(metrics.get("rewrite_depth_target_reached"))),
+        int(bool(metrics.get("cv_target_reached"))),
+        int(bool(metrics.get("sentence_target_reached"))),
+        int(bool(metrics.get("length_target_reached"))),
+        -float(metrics.get("target_distance") or 0.0),
+    )
+
+
+def positive_transfer_observability(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Expose measured calibration evidence without presenting it as a detector."""
+
+    return {
+        "literal_similarity": metrics.get("literal_similarity"),
+        "ngram_similarity": metrics.get("ngram_similarity"),
+        "ngram_similarity_max": POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX,
+        "sentence_length_cv_before": metrics.get("sentence_length_cv_before"),
+        "sentence_length_cv_after": metrics.get("sentence_length_cv_after"),
+        "target_dimensions_reached": metrics.get("target_dimensions_reached"),
+        "target_distance": metrics.get("target_distance"),
+        "calibration_recheck": {
+            "baseline_official_human_percent": 0.0,
+            "baseline_suspected_percent": 69.72,
+            "baseline_ai_percent": 30.28,
+            "previous_candidate_official_human_percent": 0.0,
+            "previous_candidate_suspected_percent": 96.32,
+            "previous_candidate_ai_percent": 3.68,
+            "previous_candidate_weighted_aigc": 0.912859,
+            "previous_candidate_length_ratio": 0.973027,
+            "previous_candidate_ngram_similarity": 0.591689,
+            "previous_candidate_cv_delta": -0.004414,
+            "interpretation": "red_to_orange_only_no_human_feature",
+        },
     }
 
 
@@ -3567,6 +3657,7 @@ def optimize_report_segments(
                     - float(result_features["sentence_length_cv_before"]),
                     6,
                 ),
+                **positive_transfer_observability(result_features),
                 "quality_audit_required_after_detector_hit": True,
             }
             result["next_action"] = (
@@ -3784,9 +3875,11 @@ def optimize_report_segments(
             candidate_safe = False
             attempt_results: list[dict[str, Any]] = []
             best_positive_candidate: tuple[
-                float,
+                tuple[int, int, int, int, float],
                 str,
                 DeterministicReview,
+                dict[str, Any],
+                int,
             ] | None = None
             retry_feedback = "首次重著：按事实账本重新组织正文，禁止沿用原句骨架。"
 
@@ -3902,13 +3995,15 @@ def optimize_report_segments(
                 )
                 if positive_metrics is not None and (
                     best_positive_candidate is None
-                    or float(positive_metrics["selection_score"])
+                    or positive_transfer_candidate_rank(positive_metrics)
                     > best_positive_candidate[0]
                 ):
                     best_positive_candidate = (
-                        float(positive_metrics["selection_score"]),
+                        positive_transfer_candidate_rank(positive_metrics),
                         unit_candidate,
                         deterministic,
+                        positive_metrics,
+                        attempt,
                     )
                 input_tokens = int(usage.get("input_tokens") or _estimate_tokens(prompt))
                 cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
@@ -3949,20 +4044,29 @@ def optimize_report_segments(
                     }
                 )
                 if candidate_safe:
-                    if (
-                        positive_transfer_mode
-                        and positive_metrics is not None
-                        and not positive_metrics["target_reached"]
-                        and attempt < max_attempts
-                    ):
+                    if positive_transfer_mode and attempt < max_attempts:
+                        missed_dimensions = [
+                            label
+                            for key, label in (
+                                ("length_target_reached", "篇幅"),
+                                ("sentence_target_reached", "句数"),
+                                ("cv_target_reached", "句长波动"),
+                                ("rewrite_depth_target_reached", "局部措辞骨架"),
+                            )
+                            if positive_metrics is not None
+                            and not positive_metrics.get(key)
+                        ]
+                        missed_text = "、".join(missed_dimensions) or "无"
                         retry_feedback = (
-                            "第一版通过事实与锚点保护，但没有充分接近正样本的可观察分布。"
+                            "上一候选已通过事实与锚点保护；继续生成独立备选，不要沿用上一候选。"
                             f"当前篇幅比={positive_metrics['length_ratio']:.3f}，"
                             f"句数比={positive_metrics['sentence_count_ratio']:.3f}，"
-                            f"句长变异系数={positive_metrics['sentence_length_cv_after']:.3f}。"
-                            "请完整重做本单元：仍须保留全部 claim，篇幅向 0.91–0.94 靠拢，"
-                            "句数接近原文，并通过内容驱动的拆合句自然增加节奏起伏；"
-                            "禁止添加第一人称、阅读反应、固定口语或半文半白表达。"
+                            f"句长变异系数={positive_metrics['sentence_length_cv_after']:.3f}，"
+                            f"四字组相似度={positive_metrics['ngram_similarity']:.3f}；"
+                            f"未命中维度={missed_text}。"
+                            "仍须逐条保留全部 claim，以相同信息量重新设计表达路径；"
+                            "不要做同义词替换式浅改，不要强制压缩，不要添加第一人称、虚构细节、"
+                            "阅读反应、固定口语或半文半白表达。"
                         )
                         continue
                     break
@@ -3979,8 +4083,16 @@ def optimize_report_segments(
                     or ["候选没有形成可验证的实质重著"]
                 )
 
+            selected_positive_metrics: dict[str, Any] | None = None
+            selected_positive_attempt: int | None = None
             if positive_transfer_mode and best_positive_candidate is not None:
-                _score, unit_candidate, deterministic = best_positive_candidate
+                (
+                    _rank,
+                    unit_candidate,
+                    deterministic,
+                    selected_positive_metrics,
+                    selected_positive_attempt,
+                ) = best_positive_candidate
                 candidate_safe = True
 
             unit_results.append(
@@ -4003,11 +4115,11 @@ def optimize_report_segments(
                     ),
                     "positive_target_reached": bool(
                         positive_transfer_mode
-                        and positive_transfer_candidate_metrics(
-                            unit_source,
-                            unit_candidate,
-                        ).get("target_reached")
+                        and selected_positive_metrics
+                        and selected_positive_metrics.get("target_reached")
                     ) if candidate_safe else False,
+                    "selected_attempt": selected_positive_attempt,
+                    "positive_transfer_metrics": selected_positive_metrics,
                     "substantive_rewrite_passed": substantive_rewrite_passed(
                         deterministic,
                         require_text_change=content_type != "classical",
@@ -4237,6 +4349,7 @@ def optimize_report_segments(
                     - float(before_features["sentence_length_cv"]),
                     6,
                 ),
+                **positive_transfer_observability(whole_transfer_metrics),
                 "quality_audit_required_after_detector_hit": True,
             },
         }

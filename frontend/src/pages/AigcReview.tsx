@@ -403,7 +403,7 @@ export function AigcReview() {
             {experimentType === "layout_only"
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : positiveTransferMode
-                ? ` 本轮按 1200–1800 字宏单元使用同一编辑原则，目标篇幅为原文 88%–97%，不加第一人称或轮换话术；只调用 DeepSeek，不调用 Gemini，最多支出 ¥${budgetCny.toFixed(2)}。`
+                ? ` 本轮按 1200–1800 字宏单元从事实账本重新成文，保持原信息量；每单元最多生成 4 个独立候选后择优，只调用 DeepSeek，最多支出 ¥${budgetCny.toFixed(2)}。`
               : probeMode
                 ? ` 本轮按 600–900 字单元轮换 5 种语气，完整执行高频词清理、长短句与段长打乱、独立短句、去编号结构、首段重写和基于原文的阅读反应；不调用 Gemini、不做质量回滚，最多支出 ¥${budgetCny.toFixed(2)}。`
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}

@@ -1927,7 +1927,7 @@ def test_positive_transfer_uses_single_evidence_strategy_and_skips_gemini() -> N
         )
         assert match
         source = match.group(1).strip()
-        candidate = source.replace("材料说明", "材料称").replace("都保持不变", "仍然不变")
+        candidate = source.replace("材料说明", "资料表明").replace("都保持不变", "仍维持原样")
         return (
             f"[[P0001]]\n{candidate}\n[[/P0001]]",
             {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
@@ -1953,14 +1953,91 @@ def test_positive_transfer_uses_single_evidence_strategy_and_skips_gemini() -> N
     assert result["preferred_strategy"] == "positive_pair_transfer"
     assert result["models"]["audit"] == "skipped_positive_transfer"
     assert result["budget"]["limit_cny"] == 20.0
-    assert result["positive_transfer"]["length_ratio_bounds"] == [0.88, 0.97]
-    assert 0.88 <= result["positive_transfer"]["observed_length_ratio"] <= 0.97
+    assert result["positive_transfer"]["length_ratio_bounds"] == [0.95, 1.05]
+    assert 0.95 <= result["positive_transfer"]["observed_length_ratio"] <= 1.05
+    assert result["positive_transfer"]["calibration_recheck"][
+        "interpretation"
+    ] == "red_to_orange_only_no_human_feature"
+    assert len(prompts) == 4
     assert prompts
     assert all("真实正样本迁移实验" in prompt for prompt in prompts)
     assert all("第一人称" in prompt for prompt in prompts)
     assert all("最小必要编辑" not in prompt for prompt in prompts)
     assert all("不得为了追求变化而远离原稿" not in prompt for prompt in prompts)
     assert all("从头写出完整新稿" in prompt for prompt in prompts)
+    assert all("不要求压缩" in prompt for prompt in prompts)
+    assert all("91%–94%" not in prompt for prompt in prompts)
+    assert all("人工特征仍为 0%" in prompt for prompt in prompts)
+
+
+def test_positive_transfer_rank_prefers_rebuilt_local_phrasing_over_shallow_recast() -> None:
+    original_sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    original = original_sentence * 40
+    shallow = original.replace("材料说明", "材料表明")
+    rebuilt = "既有事实材料已写明，因果关系与限定条件都没有变。" * 40
+
+    shallow_metrics = review.positive_transfer_candidate_metrics(original, shallow)
+    rebuilt_metrics = review.positive_transfer_candidate_metrics(original, rebuilt)
+
+    assert 0.95 <= rebuilt_metrics["length_ratio"] <= 1.05
+    assert rebuilt_metrics["ngram_similarity"] < shallow_metrics["ngram_similarity"]
+    assert rebuilt_metrics["rewrite_depth_target_reached"] is True
+    assert shallow_metrics["rewrite_depth_target_reached"] is False
+    assert review.positive_transfer_candidate_rank(
+        rebuilt_metrics
+    ) > review.positive_transfer_candidate_rank(shallow_metrics)
+
+
+def test_positive_transfer_generates_all_candidates_then_selects_deepest_safe_attempt() -> None:
+    original_sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    original = original_sentence * 40
+    rebuilt_sentence = "既有事实材料已写明，因果关系与限定条件都没有变。"
+    segment = ZhuqueSegment(
+        1,
+        100.0,
+        len(original),
+        0.99,
+        "ai",
+        0,
+        len(original),
+        original,
+        1.0,
+        True,
+    )
+    prompts: list[str] = []
+
+    def rewrite_fn(prompt: str, **kwargs):
+        prompts.append(prompt)
+        match = re.search(r"<original>\s*(.*?)\s*</original>", prompt, re.DOTALL)
+        assert match
+        source = match.group(1).strip()
+        attempt = int(kwargs["attempt"])
+        candidate = {
+            1: source.replace("材料说明", "材料表明"),
+            2: rebuilt_sentence * 40,
+            3: source.replace("既有事实", "已有事实"),
+            4: source.replace("限定条件", "约束条件"),
+        }[attempt]
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
+        )
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        experiment_type="positive_transfer",
+    )
+
+    unit = result["segment_results"][0]["unit_results"][0]
+    assert result["status"] == "probe_ready"
+    assert len(prompts) == 4
+    assert unit["selected_attempt"] == 2
+    assert unit["positive_transfer_metrics"]["rewrite_depth_target_reached"] is True
+    assert result["candidate_text"] == rebuilt_sentence * 40
 
 
 def test_positive_transfer_merges_adjacent_report_rows_into_macro_region() -> None:
@@ -1989,7 +2066,7 @@ def test_positive_transfer_merges_adjacent_report_rows_into_macro_region() -> No
         match = re.search(r"<original>\s*(.*?)\s*</original>", prompt, re.DOTALL)
         assert match
         source = match.group(1).strip()
-        candidate = source.replace("材料说明", "材料称").replace("都保持不变", "仍然不变")
+        candidate = source.replace("材料说明", "资料表明").replace("都保持不变", "仍维持原样")
         return (
             f"[[P0001]]\n{candidate}\n[[/P0001]]",
             {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
@@ -2012,7 +2089,7 @@ def test_positive_transfer_merges_adjacent_report_rows_into_macro_region() -> No
     assert result["positive_transfer"]["macro_region_count"] == 1
     assert result["positive_transfer"]["processed_source_segment_ids"] == [1, 2, 3]
     assert result["positive_transfer"]["max_attempts_per_unit"] == 4
-    assert 1 <= len(prompts) <= result["positive_transfer"]["max_attempts_per_unit"]
+    assert len(prompts) == result["positive_transfer"]["max_attempts_per_unit"]
 
 
 def test_positive_transfer_continues_after_safe_unit_misses_distribution_target(
@@ -2066,7 +2143,7 @@ def test_positive_transfer_continues_after_safe_unit_misses_distribution_target(
     assert all(item["positive_target_reached"] is False for item in unit_results)
     assert len(prompts) == result["editorial_unit_count"] * 4
     assert result["positive_transfer"]["distribution_target_reached"] is False
-    assert result["positive_transfer"]["safety_length_ratio_bounds"] == [0.8, 1.08]
+    assert result["positive_transfer"]["safety_length_ratio_bounds"] == [0.95, 1.05]
     assert result["models"]["audit"] == "skipped_positive_transfer"
 
 

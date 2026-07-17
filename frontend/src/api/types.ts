@@ -570,6 +570,26 @@ export interface AigcReviewDeterministicReview {
   reasons: string[];
 }
 
+export interface AigcPositiveTransferMetrics {
+  target_reached: boolean;
+  selection_score: number;
+  target_distance: number;
+  target_dimensions_reached: number;
+  length_target_reached: boolean;
+  sentence_target_reached: boolean;
+  cv_target_reached: boolean;
+  rewrite_depth_target_reached: boolean;
+  length_ratio: number;
+  sentence_count_ratio: number;
+  sentence_length_cv_before: number;
+  sentence_length_cv_after: number;
+  sentence_length_cv_delta: number;
+  literal_similarity: number;
+  ngram_similarity: number;
+  ngram_similarity_max: number;
+  new_template_hits: string[];
+}
+
 export interface AigcReviewRewriteAttempt {
   attempt: number;
   passed: boolean;
@@ -589,6 +609,7 @@ export interface AigcReviewRewriteAttempt {
   substantive_rewrite_passed: boolean;
   substantive_rewrite_reasons?: string[];
   material_rewrite_advisory_passed: boolean;
+  positive_transfer_metrics?: AigcPositiveTransferMetrics | null;
 }
 
 export interface AigcReviewEditorialUnitResult {
@@ -603,6 +624,8 @@ export interface AigcReviewEditorialUnitResult {
   fact_ledger_cost_cny: number;
   hard_safety_passed: boolean;
   positive_target_reached?: boolean;
+  selected_attempt?: number | null;
+  positive_transfer_metrics?: AigcPositiveTransferMetrics | null;
   substantive_rewrite_passed: boolean;
   rewrite_attempts: number;
   attempts: AigcReviewRewriteAttempt[];
@@ -700,6 +723,26 @@ export interface AigcReviewOptimizeResult {
     observed_length_ratio: number;
     sentence_count_ratio: number;
     sentence_length_cv_delta: number;
+    literal_similarity?: number;
+    ngram_similarity?: number;
+    ngram_similarity_max?: number;
+    sentence_length_cv_before?: number;
+    sentence_length_cv_after?: number;
+    target_dimensions_reached?: number;
+    target_distance?: number;
+    calibration_recheck?: {
+      baseline_official_human_percent: number;
+      baseline_suspected_percent: number;
+      baseline_ai_percent: number;
+      previous_candidate_official_human_percent: number;
+      previous_candidate_suspected_percent: number;
+      previous_candidate_ai_percent: number;
+      previous_candidate_weighted_aigc: number;
+      previous_candidate_length_ratio: number;
+      previous_candidate_ngram_similarity: number;
+      previous_candidate_cv_delta: number;
+      interpretation: string;
+    };
     quality_audit_required_after_detector_hit: boolean;
   };
   editorial_unit_count?: number;
