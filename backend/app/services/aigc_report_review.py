@@ -1280,21 +1280,33 @@ def repair_external_green_manuscript(
             patches=patches,
         )
 
-    patched_block, patch_char_count = apply_external_green_patches(
-        region["green_block"],
-        patches,
-        max_patch_chars=max_patch_chars,
-    )
-    candidate = normalize_manuscript_text(
-        green[: int(region["start"])] + patched_block + green[int(region["end"]):]
-    )
-    _validate_external_green_candidate(
-        original,
-        green,
-        candidate,
-        patch_char_count=patch_char_count,
-        max_patch_chars=max_patch_chars,
-    )
+    try:
+        patched_block, patch_char_count = apply_external_green_patches(
+            region["green_block"],
+            patches,
+            max_patch_chars=max_patch_chars,
+        )
+        candidate = normalize_manuscript_text(
+            green[: int(region["start"])] + patched_block + green[int(region["end"]):]
+        )
+        _validate_external_green_candidate(
+            original,
+            green,
+            candidate,
+            patch_char_count=patch_char_count,
+            max_patch_chars=max_patch_chars,
+        )
+    except ZhuqueReportError as exc:
+        return _external_green_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            region=region,
+            reason=f"模型补丁未通过精确定位保护：{exc} 已保留上一版绿色稿；重新处理不会复用本次错误补丁。",
+            cost_cny=rewrite_cost,
+            patches=patches,
+        )
     audit_prompt = render_external_green_patch_audit_prompt(
         original_evidence=region["original_evidence"],
         green_before=region["green_block"],
@@ -1434,11 +1446,15 @@ def render_external_green_repair_prompt(
     max_patches: int,
 ) -> str:
     template = _EXTERNAL_GREEN_REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
+    numbered_green_block = "\n".join(
+        f"[{item['sentence_id']}] {item['text']}"
+        for item in external_green_sentence_map(green_block)
+    )
     return (
         template.replace("{{MAX_PATCHES}}", str(max_patches))
         .replace("{{MAX_PATCH_CHARS}}", str(max_patch_chars))
         .replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
-        .replace("{{GREEN_BLOCK}}", green_block)
+        .replace("{{GREEN_BLOCK}}", numbered_green_block)
         .replace("{{PREVIOUS_CONTEXT}}", previous_context)
         .replace("{{NEXT_CONTEXT}}", next_context)
     )
@@ -1460,12 +1476,61 @@ def parse_external_green_patches(text: str) -> list[dict[str, str]]:
             raise ValueError(f"第 {index} 个补丁无效")
         old = str(patch.get("old") or "")
         new = str(patch.get("new") or "")
+        sentence_id = str(patch.get("sentence_id") or "").strip().upper()
         issue_type = str(patch.get("issue_type") or "")
         reason = str(patch.get("reason") or "").strip()
-        if not old or old == new or issue_type not in allowed_types or not reason:
+        if (
+            not re.fullmatch(r"G\d{3,4}", sentence_id)
+            or not old
+            or old == new
+            or issue_type not in allowed_types
+            or not reason
+        ):
             raise ValueError(f"第 {index} 个补丁字段不完整")
-        normalized.append({"old": old, "new": new, "issue_type": issue_type, "reason": reason})
+        normalized.append(
+            {
+                "sentence_id": sentence_id,
+                "old": old,
+                "new": new,
+                "issue_type": issue_type,
+                "reason": reason,
+            }
+        )
     return normalized
+
+
+def external_green_sentence_map(green_block: str) -> list[dict[str, Any]]:
+    """Assign stable sentence IDs while retaining exact offsets in the green block."""
+    values: list[dict[str, Any]] = []
+    pattern = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+[”’\"']?)?")
+    for match in pattern.finditer(green_block):
+        raw = match.group(0)
+        leading = len(raw) - len(raw.lstrip())
+        trailing = len(raw) - len(raw.rstrip())
+        start = match.start() + leading
+        end = match.end() - trailing
+        if end <= start:
+            continue
+        values.append(
+            {
+                "sentence_id": f"G{len(values) + 1:03d}",
+                "start": start,
+                "end": end,
+                "text": green_block[start:end],
+            }
+        )
+    if not values and green_block.strip():
+        start = len(green_block) - len(green_block.lstrip())
+        end = len(green_block.rstrip())
+        values.append(
+            {
+                "sentence_id": "G001",
+                "start": start,
+                "end": end,
+                "text": green_block[start:end],
+            }
+        )
+    return values
 
 
 def apply_external_green_patches(
@@ -1474,13 +1539,25 @@ def apply_external_green_patches(
     *,
     max_patch_chars: int,
 ) -> tuple[str, int]:
+    sentence_lookup = {
+        str(item["sentence_id"]): item
+        for item in external_green_sentence_map(green_block)
+    }
     located: list[tuple[int, dict[str, str]]] = []
     patch_chars = 0
     for patch in patches:
         old, new = patch["old"], patch["new"]
-        if green_block.count(old) != 1:
-            raise ZhuqueReportError("补丁 old 不是绿色稿块中的唯一精确文本，已拒绝候选。")
-        located.append((green_block.index(old), patch))
+        sentence_id = str(patch.get("sentence_id") or "")
+        sentence = sentence_lookup.get(sentence_id)
+        if sentence is None:
+            raise ZhuqueReportError(f"补丁引用了不存在的句子编号 {sentence_id}。")
+        sentence_text = str(sentence["text"])
+        if sentence_text.count(old) != 1:
+            raise ZhuqueReportError(
+                f"补丁 old 不是 {sentence_id} 句内的唯一精确文本，已拒绝候选。"
+            )
+        absolute_start = int(sentence["start"]) + sentence_text.index(old)
+        located.append((absolute_start, patch))
         patch_chars += max(len(_non_whitespace_text(old)), len(_non_whitespace_text(new)))
     if patch_chars > max_patch_chars:
         raise ZhuqueReportError(

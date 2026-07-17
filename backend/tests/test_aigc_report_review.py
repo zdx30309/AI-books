@@ -2384,11 +2384,13 @@ def test_external_green_repair_outputs_only_audited_micro_patch(
 
     def rewrite_fn(prompt: str, **_: object) -> tuple[str, dict]:
         assert "最重要的功臣" in prompt
+        sentence_id = re.search(r"\[(G\d{3})\]\s*他是这个时代", prompt).group(1)
         return (
             json.dumps(
                 {
                     "patches": [
                         {
+                            "sentence_id": sentence_id,
                             "old": "他是这个时代最重要的功臣。",
                             "new": "",
                             "issue_type": "unsupported_claim",
@@ -2433,6 +2435,7 @@ def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
                 {
                     "patches": [
                         {
+                            "sentence_id": "G026",
                             "old": "这件事注定改变了所有人的命运。",
                             "new": "这件事产生了影响。",
                             "issue_type": "unsupported_claim",
@@ -2464,6 +2467,62 @@ def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
     assert result["candidate_text"] == ""
     assert result["green_base_text"] == normalize_manuscript_text(green)
     assert result["must_recheck"] is False
+
+
+def test_external_green_patch_uses_sentence_id_when_old_text_repeats() -> None:
+    block = "同一句话。\n\n同一句话。\n\n结尾。"
+    patched, changed = review.apply_external_green_patches(
+        block,
+        [
+            {
+                "sentence_id": "G002",
+                "old": "同一句话。",
+                "new": "第二句话。",
+                "issue_type": "language_error",
+                "reason": "只修第二个重复句。",
+            }
+        ],
+        max_patch_chars=20,
+    )
+
+    assert patched == "同一句话。\n\n第二句话。\n\n结尾。"
+    assert changed == 5
+
+
+def test_external_green_patch_location_failure_returns_safe_manual_review() -> None:
+    original = ("原稿内容保持不变。\n\n" * 30).strip()
+    green = original + "\n\n需要删除的句子。"
+
+    def rewrite_fn(*_: object, **__: object) -> tuple[str, dict]:
+        return (
+            json.dumps(
+                {
+                    "patches": [
+                        {
+                            "sentence_id": "G999",
+                            "old": "需要删除的句子。",
+                            "new": "",
+                            "issue_type": "unsupported_claim",
+                            "reason": "原稿不支持。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            {"cost_cny": 0.01},
+        )
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_fn=rewrite_fn,
+        audit_fn=lambda *_args, **_kwargs: (_passing_green_patch_audit(), {"cost_cny": 0.0}),
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["candidate_text"] == ""
+    assert "不存在的句子编号" in result["next_action"]
 
 
 def test_external_green_repair_rejects_unverified_or_sub_25_base() -> None:

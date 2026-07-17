@@ -964,6 +964,7 @@ export interface ExternalGreenRepairResult {
   patch_char_count?: number;
   actual_patch_percent?: number;
   patches: Array<{
+    sentence_id: string;
     old: string;
     new: string;
     issue_type: "missing_information" | "altered_fact" | "unsupported_claim" | "language_error";
