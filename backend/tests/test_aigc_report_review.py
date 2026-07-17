@@ -1476,7 +1476,37 @@ def test_layout_only_changes_only_whitespace_and_costs_zero() -> None:
     assert result["models"]["rewrite_provider"] == "local"
 
 
-def test_detector_probe_uses_dedicated_full_method_prompt_without_quality_audit() -> None:
+def test_retired_detector_probe_blocks_before_any_paid_call() -> None:
+    original = "原稿事实保持不变。" * 100
+    segment = ZhuqueSegment(
+        1, 100, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    rewrite_calls = 0
+
+    def rewrite_fn(_prompt: str, **_kwargs):
+        nonlocal rewrite_calls
+        rewrite_calls += 1
+        return "不应生成", {"cost_cny": 1.0}
+
+    with pytest.raises(review.ZhuqueReportError, match="人工特征 0%→0%"):
+        optimize_report_segments(
+            original,
+            [segment],
+            [1],
+            content_type="article",
+            experiment_type="detector_probe",
+            rewrite_provider="deepseek",
+            rewrite_fn=rewrite_fn,
+            budget_cny=0.3,
+        )
+
+    assert rewrite_calls == 0
+
+
+def test_detector_probe_uses_dedicated_full_method_prompt_without_quality_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review, "DETECTOR_PROBE_RETIRED", False)
     original = normalize_manuscript_text((
         "然而，校对者仍先核对旧档案中的地点。因此，已经确认的材料被留在原处。"
         "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
@@ -1573,7 +1603,10 @@ def test_detector_probe_uses_dedicated_full_method_prompt_without_quality_audit(
     }
 
 
-def test_full_method_probe_never_quality_rolls_back_paid_candidate() -> None:
+def test_full_method_probe_never_quality_rolls_back_paid_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review, "DETECTOR_PROBE_RETIRED", False)
     original = normalize_manuscript_text((
         "然而，编辑先核对旧档案中的地点。因此，已经确认的材料仍留在原处。"
         "同时，另一名编辑检查人物姓名和引语。此外，他没有补充新的判断。"
@@ -1624,6 +1657,7 @@ def test_full_method_probe_never_quality_rolls_back_paid_candidate() -> None:
 def test_full_method_probe_stops_before_next_call_can_exceed_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(review, "DETECTOR_PROBE_RETIRED", False)
     original = normalize_manuscript_text((
         "The source keeps every named fact and quoted statement in place. "
         "It also keeps the direction of each claim and the original conclusion.\n\n"
@@ -1667,6 +1701,7 @@ def test_full_method_probe_stops_before_next_call_can_exceed_budget(
 def test_full_method_probe_accepts_more_than_twelve_selected_segments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(review, "DETECTOR_PROBE_RETIRED", False)
     pieces = [
         (f"Segment {index} preserves its own facts and conclusion. " * 8).strip()
         for index in range(1, 14)

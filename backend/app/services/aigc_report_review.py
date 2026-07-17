@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "zhuque-report-review-v5.4"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
+DETECTOR_PROBE_RETIRED = True
+DETECTOR_PROBE_RETIREMENT_REASON = (
+    "完整方法实验已被真实朱雀对照证伪并冻结：体育博彩样本人工特征 0%→0%，"
+    "AI 特征 9.27%→14.8%。系统不会再次调用 DeepSeek 烧费；"
+    "请先提供同一原稿经有效外部方案处理后的正文与朱雀报告，进入三方差分学习。"
+)
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
 # Backwards-compatible export name used by older callers/tests.  v5 is inclusive.
@@ -3138,6 +3144,8 @@ def build_detector_probe_result(
 ) -> dict[str, Any]:
     """Build the v5 full-method detector probe through the dedicated prompt path."""
     _ = (audit, fact, cache_namespace)
+    if DETECTOR_PROBE_RETIRED:
+        raise ZhuqueReportError(DETECTOR_PROBE_RETIREMENT_REASON)
     if content_type == "classical":
         raise ZhuqueReportError("古文/佛经不参加跳过质量终审的朱雀完整方法实验。")
     if iteration != 1:
@@ -3215,6 +3223,8 @@ def optimize_report_segments(
         )
 
     if experiment_type == "detector_probe":
+        if DETECTOR_PROBE_RETIRED:
+            raise ZhuqueReportError(DETECTOR_PROBE_RETIREMENT_REASON)
         selected_provider = _normalize_rewrite_provider(rewrite_provider)
         if selected_provider != "deepseek":
             raise ZhuqueReportError("强力组合实验固定使用低成本 DeepSeek，避免无意义增加模型费用。")
