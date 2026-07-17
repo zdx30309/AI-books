@@ -32,6 +32,7 @@ from app.services.aigc_report_review import (
     parse_zhuque_report,
     record_calibration_result,
     record_calibration_report_result,
+    repair_external_green_manuscript,
     sha256_text,
 )
 
@@ -86,6 +87,15 @@ class CompareAigcReviewRequest(BaseModel):
     baseline_report: dict[str, Any]
     recheck_report: dict[str, Any]
     optimize_result: dict[str, Any]
+
+
+class ExternalGreenRepairRequest(BaseModel):
+    original_text: str = Field(..., min_length=1, max_length=200_000)
+    green_text: str = Field(..., min_length=1, max_length=200_000)
+    green_report: dict[str, Any]
+    content_type: SupportedContentType = "article"
+    max_change_percent: float = Field(1.0, ge=0.25, le=5.0)
+    budget_cny: float = Field(1.0, ge=0.05, le=20.0)
 
 
 class CalibrationSampleRequest(BaseModel):
@@ -369,6 +379,30 @@ async def paired_aigc_analysis(
     except Exception as exc:
         logger.exception("朱雀前后报告差分分析失败")
         raise HTTPException(status_code=500, detail=f"朱雀前后报告差分分析失败: {exc}") from exc
+
+
+@router.post("/external-green-repair", summary="以真实朱雀绿色稿为基底做一批质量微修")
+async def external_green_repair(
+    req: ExternalGreenRepairRequest,
+    user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        return await asyncio.to_thread(
+            repair_external_green_manuscript,
+            req.original_text,
+            req.green_text,
+            req.green_report,
+            content_type=req.content_type,
+            max_change_percent=req.max_change_percent,
+            budget_cny=req.budget_cny,
+        )
+    except ZhuqueReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AigcReviewModelError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("绿色稿质量微修失败 user_id=%s", user.id)
+        raise HTTPException(status_code=500, detail=f"绿色稿质量微修失败: {exc}") from exc
 
 
 def _store_report_pdf(user_id: UUID, pdf_bytes: bytes) -> str:

@@ -2345,3 +2345,154 @@ def test_detector_efficacy_stays_unproven_until_two_consistent_real_pairs(
     evidence = review.calibration_evidence_status(user_id="evidence-user")
     assert evidence["status"] == "directional"
     assert evidence["verified_pair_count"] == 2
+
+
+def _verified_green_report(text: str, human_percent: float = 67.64) -> dict:
+    return {
+        "original_sha256": sha256_text(normalize_manuscript_text(text)),
+        "source_match_verified": True,
+        "official_overview_verified": True,
+        "official_human_percent": human_percent,
+        "human_percent": human_percent,
+        "segments": [],
+    }
+
+
+def _passing_green_patch_audit() -> str:
+    return json.dumps(
+        {
+            "pass": True,
+            "no_new_facts": True,
+            "no_removed_supported_information": True,
+            "no_stance_or_causality_change": True,
+            "language_improved": True,
+            "minimal_scope": True,
+            "failed_patch_indexes": [],
+            "reason": "补丁删除原稿不支持的拔高，且未改变其余内容。",
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_external_green_repair_outputs_only_audited_micro_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_EXPERIMENT_DIR", tmp_path)
+    original = ("材料只说明这名将领奉命守住城门，没有评价他的历史地位。\n\n" * 30).strip()
+    green = original + "\n\n他是这个时代最重要的功臣。"
+
+    def rewrite_fn(prompt: str, **_: object) -> tuple[str, dict]:
+        assert "最重要的功臣" in prompt
+        return (
+            json.dumps(
+                {
+                    "patches": [
+                        {
+                            "old": "他是这个时代最重要的功臣。",
+                            "new": "",
+                            "issue_type": "unsupported_claim",
+                            "reason": "原稿明确没有评价历史地位。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            {"cost_cny": 0.01},
+        )
+
+    def audit_fn(prompt: str, **_: object) -> tuple[str, dict]:
+        assert "最重要的功臣" in prompt
+        return _passing_green_patch_audit(), {"cost_cny": 0.01}
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+        max_change_percent=1.0,
+        budget_cny=1.0,
+    )
+
+    assert result["status"] == "green_repair_candidate_ready"
+    assert result["candidate_text"].endswith("没有评价他的历史地位。")
+    assert result["patch_char_count"] <= result["max_patch_chars"]
+    assert result["must_recheck"] is True
+    assert result["reuse_green_report_for_candidate"] is False
+    assert result["candidate_sha256"] != result["green_base_sha256"]
+
+
+def test_external_green_repair_rolls_back_when_patch_audit_fails() -> None:
+    original = ("原稿只记录已经发生的事件。\n\n" * 25).strip()
+    green = original + "\n\n这件事注定改变了所有人的命运。"
+
+    def rewrite_fn(*_: object, **__: object) -> tuple[str, dict]:
+        return (
+            json.dumps(
+                {
+                    "patches": [
+                        {
+                            "old": "这件事注定改变了所有人的命运。",
+                            "new": "这件事产生了影响。",
+                            "issue_type": "unsupported_claim",
+                            "reason": "删除绝对化拔高。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            {"cost_cny": 0.01},
+        )
+
+    def audit_fn(*_: object, **__: object) -> tuple[str, dict]:
+        payload = json.loads(_passing_green_patch_audit())
+        payload["pass"] = False
+        payload["language_improved"] = False
+        payload["failed_patch_indexes"] = [1]
+        return json.dumps(payload, ensure_ascii=False), {"cost_cny": 0.01}
+
+    result = review.repair_external_green_manuscript(
+        original,
+        green,
+        _verified_green_report(green),
+        rewrite_fn=rewrite_fn,
+        audit_fn=audit_fn,
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["candidate_text"] == ""
+    assert result["green_base_text"] == normalize_manuscript_text(green)
+    assert result["must_recheck"] is False
+
+
+def test_external_green_repair_rejects_unverified_or_sub_25_base() -> None:
+    text = ("正文内容。" * 100)
+    report = _verified_green_report(text, human_percent=24.99)
+
+    with pytest.raises(review.ZhuqueReportError, match="25%"):
+        review.repair_external_green_manuscript(text, text, report)
+
+
+def test_positive_transfer_production_entry_is_frozen_before_paid_call() -> None:
+    original = "材料只记录事实。" * 100
+    segment = {
+        "segment_id": 1,
+        "share_percent": 100,
+        "char_count": len(original),
+        "aigc_value": 0.99,
+        "label": "ai",
+        "start": 0,
+        "end": len(original),
+        "mapped_text": original,
+        "mapping_confidence": 1.0,
+        "recommended": True,
+    }
+
+    with pytest.raises(review.ZhuqueReportError, match="v1/v2"):
+        optimize_report_segments(
+            original,
+            [segment],
+            [1],
+            experiment_type="positive_transfer",
+        )

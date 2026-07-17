@@ -47,11 +47,17 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = "zhuque-report-review-v5.5"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
 POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v2.0"
+EXTERNAL_GREEN_REPAIR_PROMPT_VERSION = "zhuque-external-green-repair-v1.0"
 DETECTOR_PROBE_RETIRED = True
 DETECTOR_PROBE_RETIREMENT_REASON = (
     "完整方法实验已被真实朱雀对照证伪并冻结：体育博彩样本人工特征 0%→0%，"
     "AI 特征 9.27%→14.8%。系统不会再次调用 DeepSeek 烧费；"
     "请先提供同一原稿经有效外部方案处理后的正文与朱雀报告，进入三方差分学习。"
+)
+POSITIVE_TRANSFER_RETIRED = True
+POSITIVE_TRANSFER_RETIREMENT_REASON = (
+    "原稿直改正样本迁移 v1/v2 已被真实复检证伪：两版人工特征均为 0%。"
+    "该入口已冻结，不再自动调用付费模型；请使用真实已变绿稿的分批质量修复流程。"
 )
 LOCAL_FACT_LEDGER_MODEL = "local-deterministic-v2"
 HUMAN_PASS_THRESHOLD = 25.0
@@ -83,6 +89,8 @@ _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
 _REAUTHOR_PROMPT_PATH = _PROMPT_DIR / "aigc_report_reauthor.md"
 _POSITIVE_TRANSFER_PROMPT_PATH = _PROMPT_DIR / "aigc_positive_transfer.md"
+_EXTERNAL_GREEN_REPAIR_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_repair.md"
+_EXTERNAL_GREEN_AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_patch_audit.md"
 _AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_report_quality_audit.md"
 _CONTENT_RULES_PATH = _PROMPT_DIR / "aigc_report_content_rules.json"
 _STRATEGY_RULES_PATH = _PROMPT_DIR / "aigc_report_rewrite_strategies.json"
@@ -1159,6 +1167,462 @@ def analyze_paired_reports(
         encoding="utf-8",
     )
     return payload
+
+
+def repair_external_green_manuscript(
+    original_text: str,
+    green_text: str,
+    green_report: dict[str, Any],
+    *,
+    content_type: str = "article",
+    max_change_percent: float = 1.0,
+    budget_cny: float = 1.0,
+    rewrite_fn: Callable[..., Any] | None = None,
+    audit_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Repair one small quality-risk region while preserving a verified green base.
+
+    This workflow deliberately starts from a real Zhuque-positive manuscript.  It
+    does not predict the detector.  Every accepted patch creates a new hash and is
+    therefore only a candidate for another real Zhuque recheck.
+    """
+    original = normalize_manuscript_text(original_text)
+    green = normalize_manuscript_text(green_text)
+    if not original or not green:
+        raise ZhuqueReportError("原稿和已变绿稿都不能为空。")
+    if content_type not in {"article", "classical", "public_domain"}:
+        raise ZhuqueReportError("绿色稿质量修复不支持小说链路。")
+    if green_report.get("original_sha256") != sha256_text(green):
+        raise ZhuqueReportError("绿色朱雀报告与当前绿色稿哈希不一致，请重新上传同一份正文。")
+    if green_report.get("official_overview_verified") is not True:
+        raise ZhuqueReportError("绿色报告首页官方人工特征未被可靠识别，不能作为修复基底。")
+    if green_report.get("source_match_verified") is not True:
+        raise ZhuqueReportError("绿色报告正文与粘贴稿未精确匹配，不能开始付费修复。")
+    official_human = green_report.get("official_human_percent")
+    if official_human is None:
+        official_human = green_report.get("human_percent")
+    if float(official_human or 0.0) < HUMAN_PASS_THRESHOLD:
+        raise ZhuqueReportError("当前稿尚未达到朱雀首页人工特征 25%，不能冒充绿色基底。")
+
+    pair_similarity = SequenceMatcher(
+        None,
+        _non_whitespace_text(original),
+        _non_whitespace_text(green),
+        autojunk=False,
+    ).ratio()
+    if pair_similarity < 0.25:
+        raise ZhuqueReportError("原稿与绿色稿不是可确认的同一篇文章。")
+    change_percent = min(5.0, max(0.25, float(max_change_percent)))
+    budget = min(20.0, max(0.05, float(budget_cny)))
+    max_patch_chars = max(
+        40,
+        int(len(_non_whitespace_text(green)) * change_percent / 100.0),
+    )
+    request_id = str(uuid4())
+    region = select_external_green_repair_region(original, green)
+    prompt = render_external_green_repair_prompt(
+        original_evidence=region["original_evidence"],
+        green_block=region["green_block"],
+        previous_context=region["previous_context"],
+        next_context=region["next_context"],
+        max_patch_chars=max_patch_chars,
+        max_patches=3,
+    )
+    rewrite = rewrite_fn or _rewrite_callable("deepseek")
+    segment = ZhuqueSegment(
+        segment_id=int(region["unit_index"]),
+        share_percent=0.0,
+        char_count=len(region["green_block"]),
+        aigc_value=0.0,
+        label="human",
+        start=int(region["start"]),
+        end=int(region["end"]),
+        mapped_text=region["green_block"],
+        mapping_confidence=1.0,
+    )
+    try:
+        raw_patch_text, rewrite_usage = _coerce_model_result(
+            rewrite(
+                prompt,
+                segment=segment,
+                request_id=request_id,
+                attempt=1,
+                temperature=0.2,
+            )
+        )
+        patches = parse_external_green_patches(raw_patch_text)
+    except AigcReviewModelError:
+        raise
+    except Exception as exc:
+        raise AigcReviewModelError(f"DeepSeek 绿色稿微修失败: {exc}") from exc
+
+    rewrite_cost = float(rewrite_usage.get("cost_cny") or 0.0)
+    if not patches:
+        return _external_green_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            region=region,
+            reason="模型没有找到可由原稿证明且适合本轮微修的问题；未产生候选，也不应继续自动烧费。",
+            cost_cny=rewrite_cost,
+            patches=[],
+        )
+    if rewrite_cost >= budget:
+        return _external_green_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            region=region,
+            reason="生成补丁后已达到本轮预算，未调用独立审稿模型，绿色基底保持不变。",
+            cost_cny=rewrite_cost,
+            patches=patches,
+        )
+
+    patched_block, patch_char_count = apply_external_green_patches(
+        region["green_block"],
+        patches,
+        max_patch_chars=max_patch_chars,
+    )
+    candidate = normalize_manuscript_text(
+        green[: int(region["start"])] + patched_block + green[int(region["end"]):]
+    )
+    _validate_external_green_candidate(
+        original,
+        green,
+        candidate,
+        patch_char_count=patch_char_count,
+        max_patch_chars=max_patch_chars,
+    )
+    audit_prompt = render_external_green_patch_audit_prompt(
+        original_evidence=region["original_evidence"],
+        green_before=region["green_block"],
+        green_after=patched_block,
+        patches=patches,
+    )
+    audit = audit_fn or _gemini_external_green_patch_audit
+    try:
+        audit_text, audit_usage = _coerce_model_result(
+            audit(audit_prompt, request_id=request_id)
+        )
+        audit_payload = parse_external_green_patch_audit(audit_text)
+    except Exception as exc:
+        raise AigcReviewModelError(f"Gemini 绿色稿补丁审查失败: {exc}") from exc
+    total_cost = rewrite_cost + float(audit_usage.get("cost_cny") or 0.0)
+    if total_cost > budget or not external_green_patch_audit_passed(audit_payload):
+        reason = (
+            "补丁独立审查未通过，已回退到上一版绿色稿。"
+            if total_cost <= budget
+            else "独立审查完成后超过本轮预算，候选不进入送检队列。"
+        )
+        return _external_green_manual_result(
+            request_id=request_id,
+            original=original,
+            green=green,
+            green_report=green_report,
+            region=region,
+            reason=reason,
+            cost_cny=total_cost,
+            patches=patches,
+            patch_audit=audit_payload,
+        )
+
+    result = {
+        "request_id": request_id,
+        "status": "green_repair_candidate_ready",
+        "deliverable": False,
+        "experiment_type": "external_green_repair",
+        "policy_version": "report-driven-v5",
+        "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "original_sha256": sha256_text(original),
+        "green_base_sha256": sha256_text(green),
+        "candidate_sha256": sha256_text(candidate),
+        "candidate_text": candidate,
+        "green_base_text": green,
+        "official_human_percent_before_repair": float(official_human),
+        "max_change_percent": change_percent,
+        "max_patch_chars": max_patch_chars,
+        "patch_char_count": patch_char_count,
+        "actual_patch_percent": round(
+            patch_char_count * 100 / max(1, len(_non_whitespace_text(green))), 6
+        ),
+        "patches": patches,
+        "repair_region": {
+            key: region[key]
+            for key in ("unit_id", "unit_index", "start", "end", "alignment_similarity", "risk_score")
+        },
+        "patch_audit": audit_payload,
+        "cost": {
+            "currency": "CNY",
+            "estimated": True,
+            "estimated_cny": round(total_cost, 6),
+        },
+        "must_recheck": True,
+        "reuse_green_report_for_candidate": False,
+        "next_action": "下载候选并重新送朱雀；只有新报告首页人工特征仍 ≥25%，才能以该候选继续修下一批。",
+    }
+    _EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
+    (_EXPERIMENT_DIR / f"green-repair-{request_id}.json").write_text(
+        json.dumps({**result, "candidate_text": ""}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def select_external_green_repair_region(original: str, green: str) -> dict[str, Any]:
+    original_units = split_editorial_units(original, min_chars=500, max_chars=1000)
+    green_units = split_editorial_units(green, min_chars=500, max_chars=1000)
+    if not original_units or not green_units:
+        raise ZhuqueReportError("无法切分原稿与绿色稿的质量修复单元。")
+    ranked: list[tuple[float, EditorialUnit, EditorialUnit, float]] = []
+    for green_index, green_unit in enumerate(green_units):
+        projected = round(green_index * (len(original_units) - 1) / max(1, len(green_units) - 1))
+        candidates = original_units[max(0, projected - 2): min(len(original_units), projected + 3)]
+        best_original = max(
+            candidates,
+            key=lambda item: SequenceMatcher(
+                None,
+                _non_whitespace_text(item.text),
+                _non_whitespace_text(green_unit.text),
+                autojunk=False,
+            ).ratio(),
+        )
+        similarity = SequenceMatcher(
+            None,
+            _non_whitespace_text(best_original.text),
+            _non_whitespace_text(green_unit.text),
+            autojunk=False,
+        ).ratio()
+        removed_anchors, added_anchors = _anchor_counter_delta(
+            best_original.text,
+            green_unit.text,
+        )
+        slogan_count = len(_quality_slogan_hits(green_unit.text, best_original.text))
+        risk_score = (
+            (1.0 - similarity)
+            + min(0.5, len(removed_anchors) * 0.08)
+            + min(0.5, len(added_anchors) * 0.12)
+            + slogan_count * 0.2
+        )
+        ranked.append((risk_score, green_unit, best_original, similarity))
+    risk_score, green_unit, original_unit, similarity = max(ranked, key=lambda item: item[0])
+    index = green_units.index(green_unit)
+    previous = green_units[index - 1].text[-300:] if index > 0 else "（无）"
+    following = green_units[index + 1].text[:300] if index + 1 < len(green_units) else "（无）"
+    return {
+        "unit_id": green_unit.unit_id,
+        "unit_index": green_unit.unit_index,
+        "start": green_unit.start,
+        "end": green_unit.end,
+        "green_block": green_unit.text,
+        "original_evidence": original_unit.text,
+        "previous_context": previous,
+        "next_context": following,
+        "alignment_similarity": round(similarity, 6),
+        "risk_score": round(risk_score, 6),
+    }
+
+
+def render_external_green_repair_prompt(
+    *,
+    original_evidence: str,
+    green_block: str,
+    previous_context: str,
+    next_context: str,
+    max_patch_chars: int,
+    max_patches: int,
+) -> str:
+    template = _EXTERNAL_GREEN_REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{MAX_PATCHES}}", str(max_patches))
+        .replace("{{MAX_PATCH_CHARS}}", str(max_patch_chars))
+        .replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
+        .replace("{{GREEN_BLOCK}}", green_block)
+        .replace("{{PREVIOUS_CONTEXT}}", previous_context)
+        .replace("{{NEXT_CONTEXT}}", next_context)
+    )
+
+
+def parse_external_green_patches(text: str) -> list[dict[str, str]]:
+    cleaned = _clean_model_text(text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("绿色稿微修未返回 JSON")
+    payload = json.loads(cleaned[start:end + 1])
+    patches = payload.get("patches") if isinstance(payload, dict) else None
+    if not isinstance(patches, list):
+        raise ValueError("绿色稿微修 JSON 缺少 patches")
+    normalized: list[dict[str, str]] = []
+    allowed_types = {"missing_information", "altered_fact", "unsupported_claim", "language_error"}
+    for index, patch in enumerate(patches[:3], start=1):
+        if not isinstance(patch, dict):
+            raise ValueError(f"第 {index} 个补丁无效")
+        old = str(patch.get("old") or "")
+        new = str(patch.get("new") or "")
+        issue_type = str(patch.get("issue_type") or "")
+        reason = str(patch.get("reason") or "").strip()
+        if not old or old == new or issue_type not in allowed_types or not reason:
+            raise ValueError(f"第 {index} 个补丁字段不完整")
+        normalized.append({"old": old, "new": new, "issue_type": issue_type, "reason": reason})
+    return normalized
+
+
+def apply_external_green_patches(
+    green_block: str,
+    patches: list[dict[str, str]],
+    *,
+    max_patch_chars: int,
+) -> tuple[str, int]:
+    located: list[tuple[int, dict[str, str]]] = []
+    patch_chars = 0
+    for patch in patches:
+        old, new = patch["old"], patch["new"]
+        if green_block.count(old) != 1:
+            raise ZhuqueReportError("补丁 old 不是绿色稿块中的唯一精确文本，已拒绝候选。")
+        located.append((green_block.index(old), patch))
+        patch_chars += max(len(_non_whitespace_text(old)), len(_non_whitespace_text(new)))
+    if patch_chars > max_patch_chars:
+        raise ZhuqueReportError(
+            f"补丁影响 {patch_chars} 字，超过本轮 {max_patch_chars} 字上限，已保留绿色基底。"
+        )
+    patched = green_block
+    last_start = len(green_block) + 1
+    for start, patch in sorted(located, key=lambda item: item[0], reverse=True):
+        old, new = patch["old"], patch["new"]
+        if start + len(old) > last_start:
+            raise ZhuqueReportError("补丁范围相互重叠，已拒绝候选。")
+        patched = patched[:start] + new + patched[start + len(old):]
+        last_start = start
+    return patched, patch_chars
+
+
+def _validate_external_green_candidate(
+    original: str,
+    green: str,
+    candidate: str,
+    *,
+    patch_char_count: int,
+    max_patch_chars: int,
+) -> None:
+    if not candidate or candidate == green or patch_char_count > max_patch_chars:
+        raise ZhuqueReportError("绿色稿微修没有形成安全候选。")
+    original_anchors = _anchors(original)
+    candidate_anchors = _anchors(candidate)
+    newly_introduced = candidate_anchors - _anchors(green)
+    unsupported = newly_introduced - original_anchors
+    if unsupported:
+        raise ZhuqueReportError(
+            "微修补丁新增了原稿不存在的锚点：" + "、".join(list(unsupported.elements())[:8])
+        )
+    length_ratio = len(_non_whitespace_text(candidate)) / max(1, len(_non_whitespace_text(green)))
+    allowed_drift = max_patch_chars / max(1, len(_non_whitespace_text(green)))
+    if not 1.0 - allowed_drift <= length_ratio <= 1.0 + allowed_drift:
+        raise ZhuqueReportError("微修候选篇幅变化超过本轮字符预算。")
+
+
+def render_external_green_patch_audit_prompt(
+    *,
+    original_evidence: str,
+    green_before: str,
+    green_after: str,
+    patches: list[dict[str, str]],
+) -> str:
+    template = _EXTERNAL_GREEN_AUDIT_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{ORIGINAL_EVIDENCE}}", original_evidence)
+        .replace("{{GREEN_BLOCK_BEFORE}}", green_before)
+        .replace("{{GREEN_BLOCK_AFTER}}", green_after)
+        .replace("{{PATCHES_JSON}}", json.dumps(patches, ensure_ascii=False))
+    )
+
+
+def parse_external_green_patch_audit(text: str) -> dict[str, Any]:
+    cleaned = _clean_model_text(text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("绿色稿补丁审查未返回 JSON")
+    payload = json.loads(cleaned[start:end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("绿色稿补丁审查 JSON 无效")
+    return payload
+
+
+def external_green_patch_audit_passed(payload: dict[str, Any]) -> bool:
+    return payload.get("pass") is True and all(
+        payload.get(key) is True
+        for key in (
+            "no_new_facts",
+            "no_removed_supported_information",
+            "no_stance_or_causality_change",
+            "language_improved",
+            "minimal_scope",
+        )
+    ) and not (payload.get("failed_patch_indexes") or [])
+
+
+def _gemini_external_green_patch_audit(
+    prompt: str,
+    *,
+    request_id: str,
+) -> tuple[str, dict[str, Any]]:
+    model = settings.AIGC_REVIEW_AUDIT_MODEL
+    content = generate_gemini_text(
+        prompt,
+        model=model,
+        temperature=0.0,
+        max_output_tokens=1200,
+        retries=1,
+    )
+    input_tokens = _estimate_tokens(prompt)
+    output_tokens = _estimate_tokens(content)
+    return content, {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_cny": _gemini_flash_lite_cost_cny(input_tokens, output_tokens),
+        "estimated": True,
+    }
+
+
+def _external_green_manual_result(
+    *,
+    request_id: str,
+    original: str,
+    green: str,
+    green_report: dict[str, Any],
+    region: dict[str, Any],
+    reason: str,
+    cost_cny: float,
+    patches: list[dict[str, str]],
+    patch_audit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "status": "manual_review",
+        "deliverable": False,
+        "experiment_type": "external_green_repair",
+        "policy_version": "report-driven-v5",
+        "prompt_version": EXTERNAL_GREEN_REPAIR_PROMPT_VERSION,
+        "original_sha256": sha256_text(original),
+        "green_base_sha256": sha256_text(green),
+        "candidate_sha256": None,
+        "candidate_text": "",
+        "green_base_text": green,
+        "official_human_percent_before_repair": float(
+            green_report.get("official_human_percent")
+            if green_report.get("official_human_percent") is not None
+            else green_report.get("human_percent") or 0.0
+        ),
+        "patches": patches,
+        "patch_audit": patch_audit,
+        "repair_region": {
+            key: region[key]
+            for key in ("unit_id", "unit_index", "start", "end", "alignment_similarity", "risk_score")
+        },
+        "cost": {"currency": "CNY", "estimated": True, "estimated_cny": round(cost_cny, 6)},
+        "must_recheck": False,
+        "next_action": reason,
+    }
 
 
 def paired_manuscript_features(text: str) -> dict[str, float | int]:
@@ -3473,6 +3937,8 @@ def optimize_report_segments(
         raise ZhuqueReportError(f"报告中不存在片段: {missing}")
     detector_experiment = experiment_type in {"detector_probe", "positive_transfer"}
     positive_transfer_mode = experiment_type == "positive_transfer"
+    if positive_transfer_mode and POSITIVE_TRANSFER_RETIRED and rewrite_fn is None:
+        raise ZhuqueReportError(POSITIVE_TRANSFER_RETIREMENT_REASON)
     if positive_transfer_mode and content_type == "classical":
         raise ZhuqueReportError("正样本迁移证据只来自现代非虚构文章，古文/佛经暂不参与。")
     if not detector_experiment and len(selected_ids) > 12:

@@ -18,8 +18,10 @@ import type {
   AigcReviewComparison,
   AigcReviewExperimentType,
   AigcReviewOptimizeResult,
+  AigcReviewPairedAnalysis,
   AigcReviewReport,
   AigcReviewRewriteProvider,
+  ExternalGreenRepairResult,
 } from "@/api/types";
 
 type RewriteStrategy = "syntax_rebuild" | "evidence_first" | "rhythm_recompose";
@@ -59,8 +61,22 @@ function normalizeManuscriptText(text: string) {
 }
 
 export function AigcReview() {
+  const [workflowMode, setWorkflowMode] = useState<"green_repair" | "legacy_review">("green_repair");
   const [contentType, setContentType] = useState<AigcReviewContentType>("article");
   const [originalText, setOriginalText] = useState("");
+  const [greenText, setGreenText] = useState("");
+  const [originalPairFile, setOriginalPairFile] = useState<File | null>(null);
+  const [greenPairFile, setGreenPairFile] = useState<File | null>(null);
+  const [pairConfirmed, setPairConfirmed] = useState(false);
+  const [pairAnalysis, setPairAnalysis] = useState<AigcReviewPairedAnalysis | null>(null);
+  const [greenRepair, setGreenRepair] = useState<ExternalGreenRepairResult | null>(null);
+  const [greenRepairPercent, setGreenRepairPercent] = useState(1);
+  const [greenRepairBudget, setGreenRepairBudget] = useState(1);
+  const [greenRecheckFile, setGreenRecheckFile] = useState<File | null>(null);
+  const [greenRecheck, setGreenRecheck] = useState<AigcReviewReport | null>(null);
+  const [pairing, setPairing] = useState(false);
+  const [repairingGreen, setRepairingGreen] = useState(false);
+  const [recheckingGreen, setRecheckingGreen] = useState(false);
   const [reportFile, setReportFile] = useState<File | null>(null);
   const [report, setReport] = useState<AigcReviewReport | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -94,6 +110,102 @@ export function AigcReview() {
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
   const maxCalibrationSegments = report?.model_strategy.recommended_max_calibration_segments ?? 12;
+  const greenBaseVerified = Boolean(
+    pairAnalysis?.modified_report.official_overview_verified
+    && pairAnalysis.modified_report.source_match_verified
+    && (pairAnalysis.modified_report.official_human_percent ?? 0) >= 25,
+  );
+  const repairedGreenStillPasses = Boolean(
+    greenRecheck?.official_overview_verified
+    && greenRecheck.source_match_verified
+    && (greenRecheck.official_human_percent ?? 0) >= 25,
+  );
+
+  const analyzeGreenPair = async () => {
+    if (!originalPairFile || !greenPairFile || !originalText.trim() || !greenText.trim()) {
+      setError("请粘贴原稿和外部已变绿稿，并分别上传与两份正文精确对应的朱雀 PDF。");
+      return;
+    }
+    if (!pairConfirmed) {
+      setError("请先确认两份正文就是各自送检时的精确版本。");
+      return;
+    }
+    setError("");
+    setPairing(true);
+    setPairAnalysis(null);
+    setGreenRepair(null);
+    setGreenRecheck(null);
+    try {
+      const analysis = await api.analyzeAigcReviewPair(
+        originalPairFile,
+        greenPairFile,
+        normalizeManuscriptText(originalText),
+        normalizeManuscriptText(greenText),
+        contentType,
+        true,
+      );
+      setPairAnalysis(analysis);
+      if (
+        !analysis.modified_report.official_overview_verified
+        || !analysis.modified_report.source_match_verified
+        || (analysis.modified_report.official_human_percent ?? 0) < 25
+      ) {
+        setError("第二份报告没有可靠证明当前外部稿首页人工特征 ≥25%，系统不会开始付费修复。");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "绿色基底验证失败");
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const repairGreenBatch = async () => {
+    if (!pairAnalysis || !greenBaseVerified) return;
+    setError("");
+    setRepairingGreen(true);
+    setGreenRepair(null);
+    setGreenRecheck(null);
+    try {
+      setGreenRepair(await api.repairExternalGreenManuscript({
+        original_text: normalizeManuscriptText(originalText),
+        green_text: normalizeManuscriptText(greenText),
+        green_report: pairAnalysis.modified_report,
+        content_type: contentType,
+        max_change_percent: greenRepairPercent,
+        budget_cny: greenRepairBudget,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "绿色稿质量微修失败");
+    } finally {
+      setRepairingGreen(false);
+    }
+  };
+
+  const parseGreenRecheck = async () => {
+    if (!greenRecheckFile || !greenRepair?.candidate_text) return;
+    setError("");
+    setRecheckingGreen(true);
+    try {
+      setGreenRecheck(await api.parseAigcReviewReport(
+        greenRecheckFile,
+        greenRepair.candidate_text,
+        contentType,
+      ));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "修复候选复检报告解析失败");
+    } finally {
+      setRecheckingGreen(false);
+    }
+  };
+
+  const continueFromRecheckedGreen = () => {
+    if (!greenRepair?.candidate_text || !greenRecheck || !repairedGreenStillPasses) return;
+    setGreenText(greenRepair.candidate_text);
+    setPairAnalysis((current) => current ? { ...current, modified_report: greenRecheck } : current);
+    setGreenRepair(null);
+    setGreenRecheck(null);
+    setGreenRecheckFile(null);
+  };
   const parseReport = async () => {
     if (!reportFile || !originalText.trim()) {
       setError("请同时粘贴送检原稿并上传朱雀 PDF。报告本身不能安全还原可编辑全文。");
@@ -213,12 +325,12 @@ export function AigcReview() {
           </div>
           <h1 className="font-serif text-4xl text-warm-50">AI 审稿降率</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
-            上传朱雀打印 PDF，并粘贴送检时的同一份原稿。实验稿先验证人工特征能否达到 25%，命中后再单独修复质量；未经质量终审的实验稿永远不是终稿。
+            直改实验尚未证明能让朱雀变绿，已停止自动烧费。当前主流程从真实已变绿稿出发，小批修复质量并逐批复检；未经新报告确认的候选永远不是终稿。
           </p>
         </div>
         <div className="flex flex-col items-stretch gap-3">
           <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-xs leading-6 text-emerald-100">
-            本地 OCR：0 元<br />DeepSeek 600–900 字分段实验<br />实验稿与质量终稿严格分开
+            本地 OCR：0 元<br />每轮最多 3 个质量补丁<br />掉绿自动回退上一版
           </div>
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
@@ -226,12 +338,178 @@ export function AigcReview() {
         </div>
       </section>
 
+      <div className="flex w-fit gap-1 rounded-xl border border-gold-500/15 bg-base-950/50 p-1">
+        <button
+          type="button"
+          onClick={() => setWorkflowMode("green_repair")}
+          className={`rounded-lg px-4 py-2 text-sm ${workflowMode === "green_repair" ? "bg-gold-500/20 text-gold-50" : "text-warm-400"}`}
+        >
+          已变绿稿质量修复
+        </button>
+        <button
+          type="button"
+          onClick={() => setWorkflowMode("legacy_review")}
+          className={`rounded-lg px-4 py-2 text-sm ${workflowMode === "legacy_review" ? "bg-gold-500/20 text-gold-50" : "text-warm-400"}`}
+        >
+          原稿质量审稿
+        </button>
+      </div>
+
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-500/10 p-4 text-sm leading-6 text-red-100">
           <div className="mb-1 flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" />处理失败</div>
           {error}
         </div>
       )}
+
+      {workflowMode === "green_repair" ? (
+        <div className="space-y-6">
+          <section className="card-warm p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-sm text-gold-200">第一步</div>
+                <h2 className="mt-1 font-serif text-2xl text-warm-50">验证同一篇原稿与已变绿稿</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-warm-400">
+                  这一流程不再猜朱雀。第二份报告必须真实证明当前外部稿首页人工特征 ≥25%，且两份报告必须分别匹配粘贴的精确正文。
+                </p>
+              </div>
+              <select
+                value={contentType}
+                onChange={(event) => setContentType(event.target.value as AigcReviewContentType)}
+                className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
+              >
+                <option value="article">普通文章</option>
+                <option value="classical">古文 / 佛经译写</option>
+                <option value="public_domain">公版融合</option>
+              </select>
+            </div>
+            <div className="mt-5 grid gap-5 xl:grid-cols-2">
+              <div>
+                <div className="mb-2 text-sm text-warm-300">原稿与原稿朱雀报告</div>
+                <textarea
+                  value={originalText}
+                  onChange={(event) => { setOriginalText(event.target.value); setPairAnalysis(null); }}
+                  placeholder="粘贴外部处理前的完整原稿……"
+                  className="min-h-[300px] w-full resize-y rounded-lg border border-gold-500/15 bg-base-950/60 p-4 text-sm leading-7 text-warm-100"
+                />
+                <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-gold-500/25 px-4 py-3 text-sm text-warm-300">
+                  <input type="file" accept=".pdf,application/pdf" className="hidden" onChange={(event) => { setOriginalPairFile(event.target.files?.[0] ?? null); setPairAnalysis(null); }} />
+                  <UploadCloud className="h-5 w-5 text-gold-200" />{originalPairFile?.name || "选择原稿朱雀 PDF"}
+                </label>
+              </div>
+              <div>
+                <div className="mb-2 text-sm text-warm-300">外部已变绿稿与对应朱雀报告</div>
+                <textarea
+                  value={greenText}
+                  onChange={(event) => { setGreenText(event.target.value); setPairAnalysis(null); setGreenRepair(null); }}
+                  placeholder="粘贴外部 SaaS 实际送检并变绿的完整正文……"
+                  className="min-h-[300px] w-full resize-y rounded-lg border border-emerald-400/20 bg-base-950/60 p-4 text-sm leading-7 text-warm-100"
+                />
+                <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-emerald-400/25 px-4 py-3 text-sm text-warm-300">
+                  <input type="file" accept=".pdf,application/pdf" className="hidden" onChange={(event) => { setGreenPairFile(event.target.files?.[0] ?? null); setPairAnalysis(null); }} />
+                  <UploadCloud className="h-5 w-5 text-emerald-200" />{greenPairFile?.name || "选择变绿稿朱雀 PDF"}
+                </label>
+              </div>
+            </div>
+            <label className="mt-4 flex items-start gap-3 text-sm leading-6 text-warm-300">
+              <input type="checkbox" checked={pairConfirmed} onChange={(event) => setPairConfirmed(event.target.checked)} className="mt-1 h-4 w-4 accent-emerald-400" />
+              我确认两段正文就是两份报告各自送检时的精确版本；不是从 PDF OCR 反推的近似文本。
+            </label>
+            <button type="button" onClick={analyzeGreenPair} disabled={pairing} className="btn-gold mt-4 inline-flex items-center justify-center gap-2 disabled:opacity-45">
+              {pairing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              {pairing ? "验证中" : "验证绿色基底"}
+            </button>
+          </section>
+
+          {pairAnalysis && (
+            <section className="card-warm p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm text-gold-200">第二步</div>
+                  <h2 className="mt-1 font-serif text-2xl text-warm-50">每次只修一小批质量问题</h2>
+                </div>
+                <div className={`rounded-lg border px-4 py-3 text-sm ${greenBaseVerified ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"}`}>
+                  {greenBaseVerified
+                    ? `绿色基底已验证：官方人工特征 ${pairAnalysis.modified_report.official_human_percent?.toFixed(2)}%`
+                    : "绿色基底未通过精确哈希与 25% 硬验证"}
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap items-end gap-4">
+                <label className="text-xs text-warm-400">本轮最多修改正文 %
+                  <input type="number" min="0.25" max="5" step="0.25" value={greenRepairPercent} onChange={(event) => setGreenRepairPercent(Math.min(5, Math.max(0.25, Number(event.target.value) || 1)))} className="mt-1 block w-28 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100" />
+                </label>
+                <label className="text-xs text-warm-400">本轮预算上限 ¥
+                  <input type="number" min="0.05" max="20" step="0.1" value={greenRepairBudget} onChange={(event) => setGreenRepairBudget(Math.min(20, Math.max(0.05, Number(event.target.value) || 1)))} className="mt-1 block w-28 rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100" />
+                </label>
+                <button type="button" onClick={repairGreenBatch} disabled={!greenBaseVerified || repairingGreen} className="btn-gold inline-flex items-center justify-center gap-2 disabled:opacity-45">
+                  {repairingGreen ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  {repairingGreen ? "生成并审查补丁中" : "修复下一批质量问题"}
+                </button>
+              </div>
+              <div className="mt-4 rounded-lg border border-gold-500/15 bg-base-950/40 px-4 py-3 text-sm leading-6 text-warm-300">
+                系统只输出最多 3 个精确补丁，不做全文润色；补丁必须由原稿证明并通过独立审查。任何候选都会生成新哈希，原绿色报告不能复用。
+              </div>
+            </section>
+          )}
+
+          {greenRepair && (
+            <section className="card-warm p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm text-gold-200">第三步</div>
+                  <h2 className="mt-1 font-serif text-2xl text-warm-50">微修候选与真实复检</h2>
+                </div>
+                <div className="text-right text-xs leading-6 text-warm-400">
+                  {greenRepair.patches.length} 个补丁 · 修改 {greenRepair.actual_patch_percent?.toFixed(3) ?? "0.000"}%<br />
+                  本轮估算 ¥{greenRepair.cost.estimated_cny.toFixed(4)}
+                </div>
+              </div>
+              {greenRepair.status === "manual_review" ? (
+                <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
+                  <div className="font-medium">本轮未形成安全候选，上一版绿色稿保持不变</div>
+                  <div className="mt-1 text-warm-300">{greenRepair.next_action}</div>
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-5 xl:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-sm text-warm-300">质量微修候选（必须重新送朱雀）</div>
+                    <textarea readOnly value={greenRepair.candidate_text} className="min-h-[420px] w-full resize-y rounded-lg border border-gold-500/15 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
+                    <button type="button" onClick={() => downloadText(greenRepair.candidate_text, "绿色稿质量微修候选-待朱雀复检.txt")} className="btn-ghost mt-3 inline-flex items-center justify-center gap-2">
+                      <Download className="h-4 w-4" />下载待复检候选
+                    </button>
+                  </div>
+                  <div>
+                    <div className="mb-2 text-sm text-warm-300">上传这份候选的新朱雀 PDF</div>
+                    <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-gold-500/25 px-4 py-4 text-sm text-warm-300">
+                      <input type="file" accept=".pdf,application/pdf" className="hidden" onChange={(event) => setGreenRecheckFile(event.target.files?.[0] ?? null)} />
+                      <RefreshCw className="h-5 w-5 text-gold-200" />{greenRecheckFile?.name || "选择微修候选复检 PDF"}
+                    </label>
+                    <button type="button" onClick={parseGreenRecheck} disabled={!greenRecheckFile || recheckingGreen} className="btn-gold mt-3 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">
+                      {recheckingGreen ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />}
+                      {recheckingGreen ? "识别复检中" : "确认绿色是否保住"}
+                    </button>
+                    {greenRecheck && (
+                      <div className={`mt-4 rounded-lg border p-5 ${repairedGreenStillPasses ? "border-emerald-400/30 bg-emerald-500/10" : "border-red-400/30 bg-red-500/10"}`}>
+                        <div className="flex items-center gap-2 text-lg text-warm-50">
+                          {repairedGreenStillPasses ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-red-300" />}
+                          {repairedGreenStillPasses ? "绿色保住，可以继续下一批" : "绿色丢失，必须回退上一版"}
+                        </div>
+                        <div className="mt-2 text-sm text-warm-300">首页官方人工特征 {greenRecheck.official_human_percent?.toFixed(2) ?? "未可靠识别"}% · 要求 ≥25%</div>
+                        {repairedGreenStillPasses && (
+                          <button type="button" onClick={continueFromRecheckedGreen} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2">
+                            <RefreshCw className="h-4 w-4" />以此版本继续修下一批
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+      ) : (
+        <>
 
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="card-warm p-6">
@@ -326,7 +604,6 @@ export function AigcReview() {
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
-                  <option value="positive_transfer">正样本迁移实验</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
@@ -566,6 +843,9 @@ export function AigcReview() {
             </>
           )}
         </section>
+      )}
+
+        </>
       )}
 
     </div>

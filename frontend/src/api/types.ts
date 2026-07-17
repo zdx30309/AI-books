@@ -937,6 +937,62 @@ export interface AigcReviewPairedAnalysis {
   modified_report: AigcReviewReport;
 }
 
+export interface ExternalGreenRepairRequest {
+  original_text: string;
+  green_text: string;
+  green_report: AigcReviewReport;
+  content_type: AigcReviewContentType;
+  max_change_percent?: number;
+  budget_cny?: number;
+}
+
+export interface ExternalGreenRepairResult {
+  request_id: string;
+  status: "green_repair_candidate_ready" | "manual_review";
+  deliverable: false;
+  experiment_type: "external_green_repair";
+  policy_version: "report-driven-v5";
+  prompt_version: string;
+  original_sha256: string;
+  green_base_sha256: string;
+  candidate_sha256: string | null;
+  candidate_text: string;
+  green_base_text: string;
+  official_human_percent_before_repair: number;
+  max_change_percent?: number;
+  max_patch_chars?: number;
+  patch_char_count?: number;
+  actual_patch_percent?: number;
+  patches: Array<{
+    old: string;
+    new: string;
+    issue_type: "missing_information" | "altered_fact" | "unsupported_claim" | "language_error";
+    reason: string;
+  }>;
+  patch_audit?: {
+    pass: boolean;
+    no_new_facts: boolean;
+    no_removed_supported_information: boolean;
+    no_stance_or_causality_change: boolean;
+    language_improved: boolean;
+    minimal_scope: boolean;
+    failed_patch_indexes: number[];
+    reason: string;
+  } | null;
+  repair_region: {
+    unit_id: string;
+    unit_index: number;
+    start: number;
+    end: number;
+    alignment_similarity: number;
+    risk_score: number;
+  };
+  cost: { currency: "CNY"; estimated: true; estimated_cny: number };
+  must_recheck: boolean;
+  reuse_green_report_for_candidate?: false;
+  next_action: string;
+}
+
 // 鉴权
 
 export interface RegisterRequest {

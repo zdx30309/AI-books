@@ -18,6 +18,8 @@ import type {
   AigcReviewOptimizeResult,
   AigcReviewReport,
   AigcReviewStrategy,
+  ExternalGreenRepairRequest,
+  ExternalGreenRepairResult,
   OptimizeAigcReviewRequest,
   ChapterResponse,
   ChapterUpdateRequest,
@@ -702,6 +704,11 @@ export const api = {
       }),
     }),
   analyzeAigcReviewPair: uploadAigcPairedFiles,
+  repairExternalGreenManuscript: (body: ExternalGreenRepairRequest) =>
+    request<ExternalGreenRepairResult>("/aigc-review/external-green-repair", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createAigcReviewCalibration: (body: {
     text: string;
     content_type: AigcReviewContentType;
