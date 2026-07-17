@@ -88,8 +88,8 @@ export function AigcReview() {
   const finalPassed = Boolean(result?.status === "candidate_ready" && comparison?.strict_pass);
   const probeMode = experimentType === "detector_probe" || experimentType === "positive_transfer";
   const positiveTransferMode = experimentType === "positive_transfer";
-  const resultIsProbe = result?.status === "probe_ready";
   const resultIsPositiveTransfer = result?.experiment_type === "positive_transfer";
+  const resultIsProbe = result?.status === "probe_ready" || resultIsPositiveTransfer;
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
@@ -463,7 +463,7 @@ export function AigcReview() {
           {result.status === "manual_review" ? (
             <div className="mt-5 space-y-4">
               <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                <div className="font-medium">质量未过，已回滚并保留原稿</div>
+                <div className="font-medium">{resultIsPositiveTransfer ? "正样本迁移实验未完整生成，已保留安全候选" : "质量未过，已回滚并保留原稿"}</div>
                 <div className="mt-1 text-warm-300">{result.next_action}</div>
               </div>
 
@@ -482,12 +482,17 @@ export function AigcReview() {
 
               {result.guarded_candidate_text && (
                 <div>
-                  <div className="mb-2 text-sm text-warm-300">已付费候选已完整保留（未通过最终质量闸门，仅供人工复核）</div>
+                  <div className="mb-2 text-sm text-warm-300">{resultIsPositiveTransfer ? "所选范围均已尝试；安全改写已保留，未通过单元沿用原文（实验稿）" : "已付费候选已完整保留（未通过最终质量闸门，仅供人工复核）"}</div>
                   <textarea readOnly value={result.guarded_candidate_text} className="min-h-[360px] w-full resize-y rounded-lg border border-amber-400/20 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
+                  {resultIsPositiveTransfer && (
+                    <button type="button" onClick={() => downloadText(result.guarded_candidate_text ?? "", "朱雀正样本迁移实验稿-含原文回退单元.txt")} className="btn-ghost mt-3 inline-flex items-center justify-center gap-2">
+                      <Download className="h-4 w-4" />下载已完成的实验稿（非终稿）
+                    </button>
+                  )}
                 </div>
               )}
 
-              {result.segment_results.filter((item) => item.status === "rejected").map((item) => {
+              {result.segment_results.filter((item) => item.status === "rejected" || item.status === "partial").map((item) => {
                 const lastAttempt = item.attempts[item.attempts.length - 1];
                 return (
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">

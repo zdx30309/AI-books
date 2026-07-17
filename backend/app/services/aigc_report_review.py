@@ -67,6 +67,9 @@ POSITIVE_TRANSFER_LENGTH_MAX = 0.97
 POSITIVE_TRANSFER_UNIT_MIN_CHARS = 1200
 POSITIVE_TRANSFER_UNIT_MAX_CHARS = 1800
 POSITIVE_TRANSFER_DEFAULT_BUDGET_CNY = 20.0
+POSITIVE_TRANSFER_MAX_ATTEMPTS = 4
+POSITIVE_TRANSFER_SAFETY_LENGTH_MIN = 0.80
+POSITIVE_TRANSFER_SAFETY_LENGTH_MAX = 1.08
 DEEP_RECAST_SCOPE_MIN = 0.75
 DEEP_RECAST_SCOPE_TARGET = 0.80
 DEEP_RECAST_SCOPE_MAX = 0.85
@@ -3468,6 +3471,7 @@ def optimize_report_segments(
     fact_backends_used: set[str] = set()
     replacements: list[tuple[int, int, str]] = []
     segment_results: list[dict[str, Any]] = []
+    positive_transfer_incomplete = False
     total_input_tokens = 0
     total_output_tokens = 0
     total_model_cost = 0.0
@@ -3482,6 +3486,16 @@ def optimize_report_segments(
         POSITIVE_TRANSFER_LENGTH_MAX
         if positive_transfer_mode
         else (1.25 if content_type == "classical" else QUALITY_SAFE_LENGTH_MAX)
+    )
+    safety_length_ratio_min = (
+        POSITIVE_TRANSFER_SAFETY_LENGTH_MIN
+        if positive_transfer_mode
+        else length_ratio_min
+    )
+    safety_length_ratio_max = (
+        POSITIVE_TRANSFER_SAFETY_LENGTH_MAX
+        if positive_transfer_mode
+        else length_ratio_max
     )
     def budget_exhausted() -> bool:
         return total_model_cost >= effective_budget
@@ -3509,8 +3523,56 @@ def optimize_report_segments(
             "spent_cny": round(total_model_cost, 6),
             "exhausted": budget_exhausted(),
         }
-        result["editorial_unit_count"] = len(audit_items)
+        result["editorial_unit_count"] = (
+            sum(int(item.get("editorial_unit_count") or 0) for item in segment_results)
+            if positive_transfer_mode
+            else len(audit_items)
+        )
         result["experiment_type"] = experiment_type
+        if positive_transfer_mode:
+            result_text = guarded_text or original
+            result_features = positive_transfer_candidate_metrics(original, result_text)
+            processed_source_ids = [
+                int(source_id)
+                for item in segment_results
+                for source_id in (item.get("source_segment_ids") or [])
+            ]
+            result["experimental_quality_bypassed"] = True
+            result["audit_batch_count"] = 0
+            result["models"]["audit"] = "skipped_positive_transfer"
+            result["prompt_version"] = POSITIVE_TRANSFER_PROMPT_VERSION
+            result["positive_transfer"] = {
+                "evidence_source": "paired-report:0.00-to-67.64-human",
+                "evidence_status": "single_positive_pair_observational",
+                "unit_chars": [
+                    POSITIVE_TRANSFER_UNIT_MIN_CHARS,
+                    POSITIVE_TRANSFER_UNIT_MAX_CHARS,
+                ],
+                "macro_region_count": len(segment_results),
+                "processed_source_segment_ids": processed_source_ids,
+                "length_ratio_bounds": [
+                    POSITIVE_TRANSFER_LENGTH_MIN,
+                    POSITIVE_TRANSFER_LENGTH_MAX,
+                ],
+                "safety_length_ratio_bounds": [
+                    POSITIVE_TRANSFER_SAFETY_LENGTH_MIN,
+                    POSITIVE_TRANSFER_SAFETY_LENGTH_MAX,
+                ],
+                "max_attempts_per_unit": POSITIVE_TRANSFER_MAX_ATTEMPTS,
+                "distribution_target_reached": bool(result_features["target_reached"]),
+                "observed_length_ratio": result_features["length_ratio"],
+                "sentence_count_ratio": result_features["sentence_count_ratio"],
+                "sentence_length_cv_delta": round(
+                    float(result_features["sentence_length_cv_after"])
+                    - float(result_features["sentence_length_cv_before"]),
+                    6,
+                ),
+                "quality_audit_required_after_detector_hit": True,
+            }
+            result["next_action"] = (
+                "所选范围已逐单元处理；未通过事实、锚点或格式安全检查的单元保留原文，"
+                "其余安全候选已完整保留。该实验稿仍不可作为终稿。"
+            )
         return result
 
     if iteration < 1 or iteration > 20:
@@ -3547,7 +3609,7 @@ def optimize_report_segments(
         )
         style_diagnosis = diagnose_segment_style(source)
         max_attempts = (
-            2
+            POSITIVE_TRANSFER_MAX_ATTEMPTS
             if positive_transfer_mode
             else max(1, min(2, int(settings.AIGC_REVIEW_MAX_REWRITE_ATTEMPTS)))
         )
@@ -3716,8 +3778,8 @@ def optimize_report_segments(
                 protected_texts=unit_protected,
                 require_material_rewrite=False,
                 preserve_paragraph_count=preserve_paragraph_count,
-                min_length_ratio=length_ratio_min,
-                max_length_ratio=length_ratio_max,
+                min_length_ratio=safety_length_ratio_min,
+                max_length_ratio=safety_length_ratio_max,
             )
             candidate_safe = False
             attempt_results: list[dict[str, Any]] = []
@@ -3825,8 +3887,8 @@ def optimize_report_segments(
                 hard_safety_passed = deterministic_hard_safety_passed(
                     deterministic,
                     require_paragraph_preservation=preserve_paragraph_count,
-                    min_length_ratio=length_ratio_min,
-                    max_length_ratio=length_ratio_max,
+                    min_length_ratio=safety_length_ratio_min,
+                    max_length_ratio=safety_length_ratio_max,
                 )
                 substantive_passed = substantive_rewrite_passed(
                     deterministic,
@@ -3863,6 +3925,9 @@ def optimize_report_segments(
                         "attempt": attempt,
                         "passed": candidate_safe,
                         "hard_safety_passed": hard_safety_passed,
+                        "positive_target_reached": bool(
+                            positive_metrics and positive_metrics.get("target_reached")
+                        ),
                         "substantive_rewrite_passed": substantive_passed,
                         "material_rewrite_advisory_passed": deterministic.material_rewrite_passed,
                         "structured_output": structured,
@@ -3933,9 +3998,16 @@ def optimize_report_segments(
                     "hard_safety_passed": deterministic_hard_safety_passed(
                         deterministic,
                         require_paragraph_preservation=preserve_paragraph_count,
-                        min_length_ratio=length_ratio_min,
-                        max_length_ratio=length_ratio_max,
+                        min_length_ratio=safety_length_ratio_min,
+                        max_length_ratio=safety_length_ratio_max,
                     ),
+                    "positive_target_reached": bool(
+                        positive_transfer_mode
+                        and positive_transfer_candidate_metrics(
+                            unit_source,
+                            unit_candidate,
+                        ).get("target_reached")
+                    ) if candidate_safe else False,
                     "substantive_rewrite_passed": substantive_rewrite_passed(
                         deterministic,
                         require_text_change=content_type != "classical",
@@ -3948,10 +4020,14 @@ def optimize_report_segments(
                 }
             )
             if not candidate_safe:
-                if allow_unit_rollback and not budget_exhausted():
+                if (allow_unit_rollback or positive_transfer_mode) and not budget_exhausted():
                     unit_results[-1]["status"] = "rolled_back"
+                    if positive_transfer_mode:
+                        positive_transfer_incomplete = True
                     continue
                 segment_candidate_safe = False
+                if positive_transfer_mode:
+                    positive_transfer_incomplete = True
                 break
             unit_candidates.append(unit_candidate.strip())
             unit_replacements.append((unit.start, unit.end, unit_candidate.strip()))
@@ -3970,7 +4046,7 @@ def optimize_report_segments(
 
         candidate = (
             _assemble_replacements(source, unit_replacements)
-            if unit_replacements
+            if unit_replacements or positive_transfer_mode
             else ""
         )
         if experiment_type == "combined" and content_type != "classical":
@@ -3981,23 +4057,23 @@ def optimize_report_segments(
             protected_texts=protected_originals,
             require_material_rewrite=False,
             preserve_paragraph_count=preserve_paragraph_count,
-            min_length_ratio=length_ratio_min,
-            max_length_ratio=length_ratio_max,
+            min_length_ratio=safety_length_ratio_min,
+            max_length_ratio=safety_length_ratio_max,
         )
         parent_hard_passed = deterministic_hard_safety_passed(
             parent_review,
             require_paragraph_preservation=preserve_paragraph_count,
-            min_length_ratio=length_ratio_min,
-            max_length_ratio=length_ratio_max,
+            min_length_ratio=safety_length_ratio_min,
+            max_length_ratio=safety_length_ratio_max,
         )
         parent_substantive_passed = substantive_rewrite_passed(
             parent_review,
             require_text_change=content_type != "classical",
         )
         completed_unit_requirement = (
-            bool(unit_candidates)
-            if allow_unit_rollback
-            else len(unit_candidates) == len(units)
+            len(unit_candidates) == len(units)
+            if positive_transfer_mode
+            else (bool(unit_candidates) if allow_unit_rollback else len(unit_candidates) == len(units))
         )
         segment_candidate_safe = (
             segment_candidate_safe
@@ -4012,7 +4088,11 @@ def optimize_report_segments(
                 "strategy_id": strategy_id,
                 "rewrite_provider": selected_provider,
                 "rewrite_model": rewrite_model,
-                "status": "ready" if segment_candidate_safe else "rejected",
+                "status": (
+                    "ready"
+                    if segment_candidate_safe
+                    else ("partial" if positive_transfer_mode else "rejected")
+                ),
                 "hard_safety_passed": parent_hard_passed,
                 "substantive_rewrite_passed": parent_substantive_passed,
                 "material_rewrite_advisory_passed": parent_review.material_rewrite_passed,
@@ -4040,6 +4120,11 @@ def optimize_report_segments(
             }
         )
         if not segment_candidate_safe:
+            if positive_transfer_mode:
+                positive_transfer_incomplete = True
+                safe_partial = candidate if parent_hard_passed else source
+                replacements.append((segment.start, segment.end, safe_partial))
+                continue
             partial_replacements = list(replacements)
             if unit_replacements:
                 partial_replacements.append(
@@ -4064,8 +4149,15 @@ def optimize_report_segments(
 
     assembled = _assemble_replacements(original, replacements)
     if positive_transfer_mode:
+        if positive_transfer_incomplete:
+            return manual_result(
+                "所选范围已全部尝试，但仍有单元没有产生通过事实、锚点和格式安全检查的改写；"
+                "系统没有中途停工，未通过单元保留原文。",
+                guarded_text=(assembled if assembled != original else ""),
+            )
         before_features = paired_manuscript_features(original)
         after_features = paired_manuscript_features(assembled)
+        whole_transfer_metrics = positive_transfer_candidate_metrics(original, assembled)
         return {
             "request_id": request_id,
             "status": "probe_ready",
@@ -4122,6 +4214,14 @@ def optimize_report_segments(
                     POSITIVE_TRANSFER_LENGTH_MIN,
                     POSITIVE_TRANSFER_LENGTH_MAX,
                 ],
+                "safety_length_ratio_bounds": [
+                    POSITIVE_TRANSFER_SAFETY_LENGTH_MIN,
+                    POSITIVE_TRANSFER_SAFETY_LENGTH_MAX,
+                ],
+                "max_attempts_per_unit": POSITIVE_TRANSFER_MAX_ATTEMPTS,
+                "distribution_target_reached": bool(
+                    whole_transfer_metrics["target_reached"]
+                ),
                 "observed_length_ratio": round(
                     len(_non_whitespace_text(assembled))
                     / max(1, len(_non_whitespace_text(original))),

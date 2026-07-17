@@ -585,6 +585,7 @@ export interface AigcReviewRewriteAttempt {
   rewrite_provider: AigcReviewRewriteProvider | "local";
   rewrite_model: string;
   hard_safety_passed: boolean;
+  positive_target_reached?: boolean;
   substantive_rewrite_passed: boolean;
   substantive_rewrite_reasons?: string[];
   material_rewrite_advisory_passed: boolean;
@@ -596,11 +597,12 @@ export interface AigcReviewEditorialUnitResult {
   candidate_chars: number;
   original_text: string;
   candidate_text: string;
-  status: "ready" | "rejected";
+  status: "ready" | "rejected" | "rolled_back";
   fact_ledger_mode: "cached" | "model" | "local_deterministic" | "local_fallback" | "test_fallback" | "classical_legacy" | "not_required_identical_non_whitespace" | "not_used_detector_probe";
   fact_ledger_claim_count: number;
   fact_ledger_cost_cny: number;
   hard_safety_passed: boolean;
+  positive_target_reached?: boolean;
   substantive_rewrite_passed: boolean;
   rewrite_attempts: number;
   attempts: AigcReviewRewriteAttempt[];
@@ -618,7 +620,7 @@ export interface AigcReviewSegmentResult {
   hard_safety_passed: boolean;
   substantive_rewrite_passed: boolean;
   material_rewrite_advisory_passed: boolean;
-  status: "ready" | "rejected";
+  status: "ready" | "rejected" | "partial";
   original_chars: number;
   candidate_chars: number;
   report_aigc_value?: number;
@@ -692,6 +694,9 @@ export interface AigcReviewOptimizeResult {
     macro_region_count: number;
     processed_source_segment_ids: number[];
     length_ratio_bounds: [number, number];
+    safety_length_ratio_bounds: [number, number];
+    max_attempts_per_unit: number;
+    distribution_target_reached: boolean;
     observed_length_ratio: number;
     sentence_count_ratio: number;
     sentence_length_cv_delta: number;

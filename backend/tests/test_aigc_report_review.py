@@ -2011,7 +2011,122 @@ def test_positive_transfer_merges_adjacent_report_rows_into_macro_region() -> No
     assert result["editorial_unit_count"] == 1
     assert result["positive_transfer"]["macro_region_count"] == 1
     assert result["positive_transfer"]["processed_source_segment_ids"] == [1, 2, 3]
-    assert 1 <= len(prompts) <= 2
+    assert result["positive_transfer"]["max_attempts_per_unit"] == 4
+    assert 1 <= len(prompts) <= result["positive_transfer"]["max_attempts_per_unit"]
+
+
+def test_positive_transfer_continues_after_safe_unit_misses_distribution_target(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(review, "POSITIVE_TRANSFER_UNIT_MIN_CHARS", 180)
+    monkeypatch.setattr(review, "POSITIVE_TRANSFER_UNIT_MAX_CHARS", 260)
+    sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    original = sentence * 30
+    segment = ZhuqueSegment(
+        1,
+        100.0,
+        len(original),
+        0.99,
+        "ai",
+        0,
+        len(original),
+        original,
+        1.0,
+        True,
+    )
+    prompts: list[str] = []
+
+    def rewrite_fn(prompt: str, **_kwargs):
+        prompts.append(prompt)
+        match = re.search(r"<original>\s*(.*?)\s*</original>", prompt, re.DOTALL)
+        assert match
+        source = match.group(1).strip()
+        candidate = source.replace("材料说明", "资料表明").replace("保持不变", "维持原样")
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
+        )
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        experiment_type="positive_transfer",
+        budget_cny=5.0,
+    )
+
+    unit_results = result["segment_results"][0]["unit_results"]
+    assert result["status"] == "probe_ready"
+    assert result["editorial_unit_count"] >= 2
+    assert len(unit_results) == result["editorial_unit_count"]
+    assert all(item["status"] == "ready" for item in unit_results)
+    assert all(item["hard_safety_passed"] is True for item in unit_results)
+    assert all(item["positive_target_reached"] is False for item in unit_results)
+    assert len(prompts) == result["editorial_unit_count"] * 4
+    assert result["positive_transfer"]["distribution_target_reached"] is False
+    assert result["positive_transfer"]["safety_length_ratio_bounds"] == [0.8, 1.08]
+    assert result["models"]["audit"] == "skipped_positive_transfer"
+
+
+def test_positive_transfer_attempts_later_units_after_one_unit_is_rejected(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(review, "POSITIVE_TRANSFER_UNIT_MIN_CHARS", 180)
+    monkeypatch.setattr(review, "POSITIVE_TRANSFER_UNIT_MAX_CHARS", 260)
+    monkeypatch.setattr(review, "POSITIVE_TRANSFER_MAX_ATTEMPTS", 2)
+    sentence = "材料说明既有事实，限定条件和因果关系都保持不变。"
+    original = sentence * 30
+    segment = ZhuqueSegment(
+        1,
+        100.0,
+        len(original),
+        0.99,
+        "ai",
+        0,
+        len(original),
+        original,
+        1.0,
+        True,
+    )
+    prompts: list[str] = []
+
+    def rewrite_fn(prompt: str, **_kwargs):
+        prompts.append(prompt)
+        match = re.search(r"<original>\s*(.*?)\s*</original>", prompt, re.DOTALL)
+        assert match
+        source = match.group(1).strip()
+        candidate = (
+            source
+            if len(prompts) <= 2
+            else source.replace("材料说明", "资料表明").replace("保持不变", "维持原样")
+        )
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 100, "cost_cny": 0.001},
+        )
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        experiment_type="positive_transfer",
+        budget_cny=5.0,
+    )
+
+    unit_results = result["segment_results"][0]["unit_results"]
+    assert result["status"] == "manual_review"
+    assert result["editorial_unit_count"] >= 2
+    assert len(unit_results) == result["editorial_unit_count"]
+    assert unit_results[0]["status"] == "rolled_back"
+    assert any(item["status"] == "ready" for item in unit_results[1:])
+    assert len(prompts) >= 4
+    assert result["guarded_candidate_text"] != original
+    assert result["positive_transfer"]["processed_source_segment_ids"] == [1]
+    assert result["models"]["audit"] == "skipped_positive_transfer"
 
 
 def test_positive_transfer_rejects_grok_before_paid_call() -> None:
