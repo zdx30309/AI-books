@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 TESTING_CONFIG_KEY = "testing_endpoint"
 ANALYSIS_COMPLETE_MESSAGE = "Analysis Complete"
-ORGANIZATION_POLICY_VERSION = "information-organization-v1"
+ORGANIZATION_POLICY_VERSION = "information-organization-v2-single-candidate"
 
 
 class TestingEndpointError(RuntimeError):
@@ -269,7 +269,7 @@ def rewrite_completed_article(
 
     task.status = TaskStatus.PROCESSING
     task.progress = 20
-    task.current_step = "Auditing completed article against the abstract human reference profile"
+    task.current_step = "Generating one source-order-preserving candidate"
     task.error_message = None
     db.commit()
 
@@ -278,34 +278,15 @@ def rewrite_completed_article(
         "testing_endpoint_source_organization_rules.md"
     ).strip()
     try:
-        audit_notes, audit_usage = _call_openai_testing(
-            _render_prompt(
-                "testing_endpoint_completed_article_audit.md",
-                TRANSFER_STRENGTH=transfer_strength,
-                SOURCE_ORGANIZATION_RULES=source_organization_rules,
-                STYLE_PROFILE=style_profile,
-                STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
-                REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
-                ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
-                ORIGINAL_ARTICLE=source,
-            ),
-            action="testing_completed_article_audit",
-            max_output_tokens=_style_profile_max_tokens(),
+        audit_notes = (
+            "单候选保序模式：不生成全稿重构计划，不执行二轮数值校正，"
+            "不按本地参考距离自动择优。参考书抽象画像只作为不冲突时的软提示。"
         )
-        new_calls.append(audit_usage)
-
-        task.progress = 55
-        task.current_step = "Rewriting the complete article from abstract human-writing features"
-        db.commit()
         candidate_text, rewrite_usage = _call_openai_testing(
             _render_prompt(
                 "testing_endpoint_completed_article_rewrite.md",
-                TRANSFER_STRENGTH=transfer_strength,
                 SOURCE_ORGANIZATION_RULES=source_organization_rules,
                 STYLE_PROFILE=style_profile,
-                REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
-                ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
-                AUDIT_NOTES=audit_notes,
                 ORIGINAL_ARTICLE=source,
             ),
             action="testing_completed_article_rewrite",
@@ -334,73 +315,7 @@ def rewrite_completed_article(
                 surface_change_percent=surface_change_percent,
             )
         ]
-
-        # Maximum transfer always gets one measured correction pass.  Strong
-        # transfer gets it only when the first pass did not move closer.
-        should_refine = transfer_strength == "maximum" or candidate_distance_value >= original_distance_value
-        if should_refine:
-            try:
-                refined_text, refine_usage = _call_openai_testing(
-                    _render_prompt(
-                        "testing_endpoint_completed_article_refine.md",
-                        TRANSFER_STRENGTH=transfer_strength,
-                        SOURCE_ORGANIZATION_RULES=source_organization_rules,
-                        STYLE_PROFILE=style_profile,
-                        REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
-                        ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
-                        CANDIDATE_STATISTICS=_json_for_prompt(candidate_statistics),
-                        LARGEST_GAPS=_json_for_prompt(
-                            {"largest_gaps": candidate_distance.get("largest_gaps") or []}
-                        ),
-                        ORIGINAL_ARTICLE=source,
-                        CURRENT_CANDIDATE=candidate_text,
-                    ),
-                    action="testing_completed_article_measured_refinement",
-                    max_output_tokens=_max_output_tokens(),
-                )
-                refined_text = _strip_model_wrappers(refined_text)
-                if len(refined_text) >= 400:
-                    refine_usage["source_chars"] = len(source)
-                    refine_usage["candidate_chars"] = len(refined_text)
-                    new_calls.append(refine_usage)
-                    refined_statistics, refined_distance, refined_surface_change = _evaluate_rewrite_candidate(
-                        reference_statistics,
-                        source,
-                        refined_text,
-                    )
-                    refined_distance_value = float(refined_distance.get("overall_distance") or 0.0)
-                    rewrite_attempts.append(
-                        _rewrite_attempt_summary(
-                            attempt=2,
-                            distance=refined_distance_value,
-                            original_distance=original_distance_value,
-                            surface_change_percent=refined_surface_change,
-                        )
-                    )
-                    if refined_distance_value < candidate_distance_value:
-                        candidate_text = refined_text
-                        candidate_statistics = refined_statistics
-                        candidate_distance = refined_distance
-                        candidate_distance_value = refined_distance_value
-                        surface_change_percent = refined_surface_change
-                        selected_attempt = 2
-            except Exception as refine_exc:
-                # The paid first candidate remains usable when the optional
-                # measured correction fails.
-                new_calls.append(
-                    {
-                        "provider": "openai",
-                        "model": _testing_model(),
-                        "action": "testing_completed_article_measured_refinement",
-                        "status": "failed",
-                        "cost_cny": None,
-                        "cost_status": "pricing_not_configured",
-                        "error": f"{type(refine_exc).__name__}: {refine_exc}",
-                    }
-                )
-
-        for attempt in rewrite_attempts:
-            attempt["selected"] = int(attempt["attempt"]) == selected_attempt
+        rewrite_attempts[0]["selected"] = True
         distance_improvement_percent = (
             (original_distance_value - candidate_distance_value) / original_distance_value * 100
             if original_distance_value > 0
@@ -1033,7 +948,6 @@ def _reasoning_effort_for_action(action: str) -> str:
         "testing_style_analysis",
         "testing_style_synthesis",
         "testing_video_digest",
-        "testing_completed_article_audit",
     } and configured in {"high", "xhigh"}:
         return "medium"
     return configured
@@ -1048,7 +962,6 @@ def _output_budget_for_action(action: str, requested: int | None) -> int | None:
     minimums = {
         "testing_style_analysis": 6000,
         "testing_style_synthesis": 8000,
-        "testing_completed_article_audit": 6000,
     }
     minimum = minimums.get(action, 0)
     parsed = max(0, int(requested or 0))
@@ -1060,7 +973,6 @@ def _empty_response_retry_budget(action: str, current: int | None) -> int | None
     minimums = {
         "testing_style_analysis": 8000,
         "testing_style_synthesis": 10000,
-        "testing_completed_article_audit": 8000,
     }
     minimum = minimums.get(action, 0)
     parsed = max(0, int(current or 0))

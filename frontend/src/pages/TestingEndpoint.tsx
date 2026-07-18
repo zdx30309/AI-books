@@ -72,7 +72,6 @@ export function TestingEndpoint() {
   const [rawVideoText, setRawVideoText] = useState("");
   const [articles, setArticles] = useState<TestingGeneratedArticle[]>([]);
   const [completedArticle, setCompletedArticle] = useState("");
-  const [transferStrength, setTransferStrength] = useState<"strong" | "maximum">("maximum");
   const [rewriteResult, setRewriteResult] = useState<TestingRewriteCompletedArticleResponse | null>(null);
   const [rewriting, setRewriting] = useState(false);
   const [baselineFile, setBaselineFile] = useState<File | null>(null);
@@ -186,7 +185,9 @@ export function TestingEndpoint() {
     try {
       setRewriteResult(await api.rewriteTestingCompletedArticle(taskId, {
         original_text: completedArticle.trim(),
-        transfer_strength: transferStrength,
+        // Retained only for backward-compatible API validation. The v2
+        // single-candidate policy no longer branches on transfer strength.
+        transfer_strength: "maximum",
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "全稿实验重写失败");
@@ -346,7 +347,7 @@ export function TestingEndpoint() {
           </div>
           <div className="rounded-lg border border-warm-100/10 bg-base-900/50 px-4 py-3 text-xs leading-5 text-warm-400">
             本地统计：0 元<br />
-            OpenAI：审查 + 全稿重写
+            OpenAI：单次保序改写
           </div>
         </div>
 
@@ -368,17 +369,6 @@ export function TestingEndpoint() {
         </label>
 
         <div className="mt-4 flex flex-wrap items-end gap-4">
-          <label>
-            <span className="mb-2 block text-xs text-warm-400">迁移强度</span>
-            <select
-              value={transferStrength}
-              onChange={(event) => setTransferStrength(event.target.value as "strong" | "maximum")}
-              className="rounded-lg border border-warm-100/10 bg-base-900 px-3 py-2 text-sm text-warm-100"
-            >
-              <option value="maximum">最大幅度（首轮建议）</option>
-              <option value="strong">强迁移</option>
-            </select>
-          </label>
           <div className="text-xs text-warm-500">{completedArticle.trim().length.toLocaleString()} 字符</div>
           <button
             type="button"
@@ -398,14 +388,13 @@ export function TestingEndpoint() {
             <div>
               <h2 className="text-lg font-semibold text-warm-50">全稿实验候选</h2>
               <p className="mt-1 text-sm text-warm-400">
-                {rewriteResult.model} · {rewriteResult.style_feature_version} ·
-                选中第 {rewriteResult.selected_attempt} 轮 / 共 {rewriteResult.rewrite_attempts.length} 轮 ·
-                仅供朱雀黑盒复检
+                {rewriteResult.model} · {rewriteResult.organization_policy_version} ·
+                单候选保序模式 · 仅供朱雀黑盒复检
               </p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-center text-xs">
               <div className="rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3">
-                <div className="text-warm-500">统计距离变化</div>
+                <div className="text-warm-500">统计距离变化（仅诊断）</div>
                 <div className="mt-1 text-lg text-emerald-200">
                   {rewriteResult.distance_improvement_percent > 0 ? "↓" : "↑"}
                   {Math.abs(rewriteResult.distance_improvement_percent).toFixed(1)}%
@@ -419,7 +408,7 @@ export function TestingEndpoint() {
           </div>
 
           <details className="rounded-lg border border-warm-100/10 bg-base-900/50 p-4">
-            <summary className="cursor-pointer text-sm font-medium text-warm-100">查看全稿诊断与重写计划</summary>
+            <summary className="cursor-pointer text-sm font-medium text-warm-100">查看当前单候选策略说明</summary>
             <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-warm-300">{rewriteResult.audit_notes}</div>
           </details>
 
@@ -446,7 +435,7 @@ export function TestingEndpoint() {
             </table>
           </div>
           <p className="text-xs leading-5 text-warm-500">
-            “三元字符经验困惑度”是本地统计代理，不是朱雀内部困惑度；统计距离下降也不等于朱雀必然变绿。
+            “三元字符经验困惑度”和参考距离仅作诊断，不参与候选择优，也不能代表朱雀结果。
           </p>
 
           <div className="rounded-lg border border-warm-100/10 bg-base-900/60 p-5">

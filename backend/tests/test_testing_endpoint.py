@@ -232,7 +232,7 @@ def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
 
     persisted = task.config["testing_endpoint"]
     assert persisted["style_feature_version"] == "style-probe-v2"
-    assert persisted["organization_policy_version"] == "information-organization-v1"
+    assert persisted["organization_policy_version"] == "information-organization-v2-single-candidate"
     assert persisted["reference_statistics"]["char_count"] > 0
     assert persisted["style_profile"] == "abstract profile"
     assert raw_text not in str(task.config)
@@ -248,8 +248,6 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
 
     def fake_call(prompt: str, *, action: str, max_output_tokens: int | None):
         prompts.append((action, prompt))
-        if action == "testing_completed_article_audit":
-            return "## 审查\n需要全稿调整节奏。", {"action": action, "model": "gpt-test"}
         return candidate, {"action": action, "model": "gpt-test"}
 
     monkeypatch.setattr(testing_endpoint, "_require_openai_credentials", lambda: "test-key")
@@ -281,18 +279,15 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
 
     assert result["candidate_text"] == candidate
     assert result["style_feature_version"] == "style-probe-v2"
-    assert result["organization_policy_version"] == "information-organization-v1"
+    assert result["organization_policy_version"] == "information-organization-v2-single-candidate"
     assert result["surface_change_percent"] > 0
     assert result["selected_attempt"] == 1
-    assert len(result["rewrite_attempts"]) == 2
+    assert len(result["rewrite_attempts"]) == 1
+    assert result["rewrite_attempts"][0]["selected"] is True
     assert result["original_sha256"] != result["candidate_sha256"]
     assert result["original_distance"]["feature_count"] > 10
     assert result["candidate_distance"]["feature_count"] > 10
-    assert [item[0] for item in prompts] == [
-        "testing_completed_article_audit",
-        "testing_completed_article_rewrite",
-        "testing_completed_article_measured_refinement",
-    ]
+    assert [item[0] for item in prompts] == ["testing_completed_article_rewrite"]
     for _, rendered_prompt in prompts:
         assert "信息组织规则（最高优先级）" in rendered_prompt
         assert "不要为了逻辑更顺而调整段落顺序" in rendered_prompt
@@ -301,8 +296,15 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
         assert "保持原作者的“思考轨迹”" in rendered_prompt
         assert "你的任务是让文章更像作者本人重新写了一遍" in rendered_prompt
         assert "{{SOURCE_ORGANIZATION_RULES}}" not in rendered_prompt
-    assert "只包含抽象节奏画像" in prompts[1][1]
-    assert "参考书原文" not in prompts[1][1]
+        assert "Preserve the exact number and order of non-empty paragraphs" in rendered_prompt
+        assert "genuine full-document recomposition" not in rendered_prompt
+        assert "change the full article's statistical shape" not in rendered_prompt
+        assert "Reconsider the full document" not in rendered_prompt
+        assert "REFERENCE_STATISTICS" not in rendered_prompt
+        assert "ORIGINAL_STATISTICS" not in rendered_prompt
+    assert "只包含抽象节奏画像" in prompts[0][1]
+    assert "参考书原文" not in prompts[0][1]
+    assert "单候选保序模式" in result["audit_notes"]
     persisted = task.config["testing_endpoint"]["last_rewrite_experiment"]
     assert persisted["original_text"] == source
     assert persisted["candidate_text"] == candidate
@@ -362,7 +364,10 @@ def test_from_scratch_generation_uses_reversed_organization_rules_and_reference_
     assert '"sentence_length_cv": 0.61' in writer_prompt
     assert "{{GENERATED_ORGANIZATION_RULES}}" not in writer_prompt
     assert "{{REFERENCE_STATISTICS}}" not in writer_prompt
-    assert task.config["testing_endpoint"]["generation_policy_version"] == "information-organization-v1"
+    assert (
+        task.config["testing_endpoint"]["generation_policy_version"]
+        == "information-organization-v2-single-candidate"
+    )
 
 
 def test_verified_zhuque_feedback_is_hash_bound_and_idempotent() -> None:
