@@ -167,6 +167,41 @@ export interface TaskCategoryListResponse {
   items: TaskCategoryOption[];
 }
 
+export interface TestingAnalysisResponse {
+  task_id: string;
+  status: "analysis_complete";
+  message: "Analysis Complete";
+}
+
+export interface TestingGenerateArticleRequest {
+  video_url?: string | null;
+  video_urls?: string[] | null;
+  raw_video_text?: string | null;
+}
+
+export interface TestingGeneratedArticle {
+  video_url: string;
+  article: string;
+  status: string;
+}
+
+export interface TestingArticleResponse {
+  task_id: string;
+  status: TaskStatus;
+  article: string | null;
+  articles: TestingGeneratedArticle[];
+}
+
+export interface TestingTaskResponse {
+  task_id: string;
+  status: string;
+  current_step: string;
+  message: string | null;
+  article: string | null;
+  articles: TestingGeneratedArticle[];
+  error_message: string | null;
+}
+
 export interface ClassicalReferenceTemplateResponse {
   enabled: boolean;
   name: string;

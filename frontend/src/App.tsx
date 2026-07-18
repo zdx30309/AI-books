@@ -18,6 +18,7 @@ import { PublicDomainRewrite } from "./pages/PublicDomainRewrite";
 import { EpicNovelWorkspace } from "./pages/EpicNovelWorkspace";
 import { LongNovelWorkspace } from "./pages/LongNovelWorkspace";
 import { AigcReview } from "./pages/AigcReview";
+import { TestingEndpoint } from "./pages/TestingEndpoint";
 import { LONGFORM_VARIANT_CATEGORY_IDS } from "./constants/categories";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -116,6 +117,16 @@ export default function App() {
               <ProtectedRoute>
                 <AppShell>
                   <AigcReview />
+                </AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/testing-endpoint"
+            element={
+              <ProtectedRoute>
+                <AppShell>
+                  <TestingEndpoint />
                 </AppShell>
               </ProtectedRoute>
             }

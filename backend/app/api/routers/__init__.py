@@ -11,6 +11,7 @@ from app.api.routers.public_domain_rewrite import router as public_domain_rewrit
 from app.api.routers.stats import router as stats_router
 from app.api.routers.system import router as system_router
 from app.api.routers.tasks import router as tasks_router
+from app.api.routers.testing_endpoint import router as testing_endpoint_router
 from app.api.routers.weread import router as weread_router
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "stats_router",
     "system_router",
     "tasks_router",
+    "testing_endpoint_router",
     "weread_router",
 ]

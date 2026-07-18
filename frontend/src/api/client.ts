@@ -86,6 +86,10 @@ import type {
   TaskCategoryListResponse,
   TaskListResponse,
   TaskStatusResponse,
+  TestingAnalysisResponse,
+  TestingArticleResponse,
+  TestingGenerateArticleRequest,
+  TestingTaskResponse,
   TokenResponse,
   UserPublic,
   WeReadAnalyzeRequest,
@@ -354,6 +358,31 @@ async function uploadFiles<T>(
   return (await res.json()) as T;
 }
 
+async function uploadTestingReferenceBooks(books: File[]): Promise<TestingAnalysisResponse> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body = new FormData();
+  books.forEach((book) => body.append("books", book));
+  const res = await fetch(`${BASE}/testing/analyze-reference-books`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = errorMessageFromBody(await res.json(), detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) tokenStore.clear();
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as TestingAnalysisResponse;
+}
+
 async function uploadFilesForDownload(
   path: string,
   files: File[],
@@ -452,6 +481,15 @@ export const api = {
   getTaskCategories: () => request<TaskCategoryListResponse>("/tasks/categories"),
   getClassicalReferenceTemplate: () =>
     request<ClassicalReferenceTemplateResponse>("/tasks/classical-reference-rewrite/default-reference"),
+  analyzeTestingReferenceBooks: (books: File[]) =>
+    uploadTestingReferenceBooks(books),
+  generateTestingArticle: (taskId: string, body: TestingGenerateArticleRequest) =>
+    request<TestingArticleResponse>(`/testing/tasks/${taskId}/generate-article`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getTestingTask: (taskId: string) =>
+    request<TestingTaskResponse>(`/testing/tasks/${taskId}`),
   getCoverCategories: () => request<TaskCategoryListResponse>("/covers/categories"),
   getTask: (id: string) => request<TaskStatusResponse>(`/tasks/${id}`),
   createTask: (body: CreateTaskRequest) =>

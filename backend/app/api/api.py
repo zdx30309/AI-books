@@ -15,6 +15,7 @@ from app.api.routers import (
     stats_router,
     system_router,
     tasks_router,
+    testing_endpoint_router,
     weread_router,
 )
 
@@ -28,6 +29,7 @@ api_router.include_router(covers_router)
 api_router.include_router(data_analysis_router)
 api_router.include_router(epic_novel_router)
 api_router.include_router(tasks_router)
+api_router.include_router(testing_endpoint_router)
 api_router.include_router(stats_router)
 api_router.include_router(polish_router)
 api_router.include_router(public_domain_rewrite_router)
