@@ -89,7 +89,10 @@ import type {
   TestingAnalysisResponse,
   TestingArticleResponse,
   TestingGenerateArticleRequest,
+  TestingRewriteCompletedArticleRequest,
+  TestingRewriteCompletedArticleResponse,
   TestingTaskResponse,
+  TestingZhuqueFeedbackResponse,
   TokenResponse,
   UserPublic,
   WeReadAnalyzeRequest,
@@ -488,6 +491,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  rewriteTestingCompletedArticle: (
+    taskId: string,
+    body: TestingRewriteCompletedArticleRequest,
+  ) =>
+    request<TestingRewriteCompletedArticleResponse>(
+      `/testing/tasks/${taskId}/rewrite-completed-article`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
+  recordTestingZhuqueFeedback: (
+    taskId: string,
+    baselineReport: AigcReviewReport,
+    candidateReport: AigcReviewReport,
+  ) =>
+    request<TestingZhuqueFeedbackResponse>(
+      `/testing/tasks/${taskId}/zhuque-feedback`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          baseline_report: baselineReport,
+          candidate_report: candidateReport,
+        }),
+      },
+    ),
   getTestingTask: (taskId: string) =>
     request<TestingTaskResponse>(`/testing/tasks/${taskId}`),
   getCoverCategories: () => request<TaskCategoryListResponse>("/covers/categories"),

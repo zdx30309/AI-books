@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
+from collections import Counter
 import hashlib
+import json
 import logging
 import os
 import re
@@ -18,6 +20,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import PROJECT_ROOT, settings
 from app.models import Task, TaskStatus, User
+from app.services.aigc_style_probe import (
+    STYLE_FEATURE_VERSION,
+    compare_style_profiles,
+    profile_style,
+)
+from app.services.aigc_report_review import normalize_manuscript_text
 from app.services.content_engine import _extract_openai_response_text
 from app.tasks.tasks import _fetch_video_text
 from app.utils.docx_text import DocxTextError, extract_docx_text, extract_pdf_text
@@ -77,7 +85,8 @@ def analyze_reference_books(
     db.refresh(task)
 
     try:
-        profile, calls = _build_style_profile(books)
+        reference_statistics = profile_style("\n\n".join(book.text for book in books))
+        profile, calls = _build_style_profile(books, reference_statistics=reference_statistics)
         config = dict(task.config or {})
         testing = dict(config.get(TESTING_CONFIG_KEY) or {})
         testing.update(
@@ -85,6 +94,8 @@ def analyze_reference_books(
                 "status": "analysis_complete",
                 "analysis_message": ANALYSIS_COMPLETE_MESSAGE,
                 "style_profile": profile,
+                "style_feature_version": STYLE_FEATURE_VERSION,
+                "reference_statistics": reference_statistics,
                 "openai_calls": [*list(testing.get("openai_calls") or []), *calls],
             }
         )
@@ -213,6 +224,326 @@ def generate_testing_article(
         raise TestingEndpointError(message, status_code=status_code) from exc
 
 
+def rewrite_completed_article(
+    db: Session,
+    *,
+    task: Task,
+    original_text: str,
+    transfer_strength: str = "maximum",
+) -> dict[str, Any]:
+    """Rewrite one completed article from abstract reference features only."""
+    _require_openai_credentials()
+    source = normalize_manuscript_text(original_text)
+    if len(source) < 500:
+        raise TestingEndpointError("已完成文章正文至少需要 500 字。", status_code=400)
+    if transfer_strength not in {"strong", "maximum"}:
+        raise TestingEndpointError("迁移强度只能是 strong 或 maximum。", status_code=400)
+
+    config = dict(task.config or {})
+    testing = dict(config.get(TESTING_CONFIG_KEY) or {})
+    style_profile = str(testing.get("style_profile") or "").strip()
+    reference_statistics = dict(testing.get("reference_statistics") or {})
+    if not style_profile or not reference_statistics:
+        raise TestingEndpointError(
+            "当前参考书尚未生成 v2 人类写作画像，请重新执行一次参考书分析。",
+            status_code=409,
+        )
+
+    original_statistics = profile_style(source)
+    original_distance = compare_style_profiles(reference_statistics, original_statistics)
+    original_sha256 = _text_sha256(source)
+
+    task.status = TaskStatus.PROCESSING
+    task.progress = 20
+    task.current_step = "Auditing completed article against the abstract human reference profile"
+    task.error_message = None
+    db.commit()
+
+    new_calls: list[dict[str, Any]] = []
+    try:
+        audit_notes, audit_usage = _call_openai_testing(
+            _render_prompt(
+                "testing_endpoint_completed_article_audit.md",
+                TRANSFER_STRENGTH=transfer_strength,
+                STYLE_PROFILE=style_profile,
+                STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
+                REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
+                ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
+                ORIGINAL_ARTICLE=source,
+            ),
+            action="testing_completed_article_audit",
+            max_output_tokens=_style_profile_max_tokens(),
+        )
+        new_calls.append(audit_usage)
+
+        task.progress = 55
+        task.current_step = "Rewriting the complete article from abstract human-writing features"
+        db.commit()
+        candidate_text, rewrite_usage = _call_openai_testing(
+            _render_prompt(
+                "testing_endpoint_completed_article_rewrite.md",
+                TRANSFER_STRENGTH=transfer_strength,
+                STYLE_PROFILE=style_profile,
+                REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
+                ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
+                AUDIT_NOTES=audit_notes,
+                ORIGINAL_ARTICLE=source,
+            ),
+            action="testing_completed_article_rewrite",
+            max_output_tokens=_max_output_tokens(),
+        )
+        candidate_text = _strip_model_wrappers(candidate_text)
+        if len(candidate_text) < 400:
+            raise TestingEndpointError("OpenAI 返回的全稿候选过短，已拒绝保存。", status_code=502)
+        rewrite_usage["source_chars"] = len(source)
+        rewrite_usage["candidate_chars"] = len(candidate_text)
+        new_calls.append(rewrite_usage)
+
+        original_distance_value = float(original_distance.get("overall_distance") or 0.0)
+        candidate_statistics, candidate_distance, surface_change_percent = _evaluate_rewrite_candidate(
+            reference_statistics,
+            source,
+            candidate_text,
+        )
+        candidate_distance_value = float(candidate_distance.get("overall_distance") or 0.0)
+        selected_attempt = 1
+        rewrite_attempts: list[dict[str, Any]] = [
+            _rewrite_attempt_summary(
+                attempt=1,
+                distance=candidate_distance_value,
+                original_distance=original_distance_value,
+                surface_change_percent=surface_change_percent,
+            )
+        ]
+
+        # Maximum transfer always gets one measured correction pass.  Strong
+        # transfer gets it only when the first pass did not move closer.
+        should_refine = transfer_strength == "maximum" or candidate_distance_value >= original_distance_value
+        if should_refine:
+            try:
+                refined_text, refine_usage = _call_openai_testing(
+                    _render_prompt(
+                        "testing_endpoint_completed_article_refine.md",
+                        TRANSFER_STRENGTH=transfer_strength,
+                        STYLE_PROFILE=style_profile,
+                        REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
+                        ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
+                        CANDIDATE_STATISTICS=_json_for_prompt(candidate_statistics),
+                        LARGEST_GAPS=_json_for_prompt(
+                            {"largest_gaps": candidate_distance.get("largest_gaps") or []}
+                        ),
+                        ORIGINAL_ARTICLE=source,
+                        CURRENT_CANDIDATE=candidate_text,
+                    ),
+                    action="testing_completed_article_measured_refinement",
+                    max_output_tokens=_max_output_tokens(),
+                )
+                refined_text = _strip_model_wrappers(refined_text)
+                if len(refined_text) >= 400:
+                    refine_usage["source_chars"] = len(source)
+                    refine_usage["candidate_chars"] = len(refined_text)
+                    new_calls.append(refine_usage)
+                    refined_statistics, refined_distance, refined_surface_change = _evaluate_rewrite_candidate(
+                        reference_statistics,
+                        source,
+                        refined_text,
+                    )
+                    refined_distance_value = float(refined_distance.get("overall_distance") or 0.0)
+                    rewrite_attempts.append(
+                        _rewrite_attempt_summary(
+                            attempt=2,
+                            distance=refined_distance_value,
+                            original_distance=original_distance_value,
+                            surface_change_percent=refined_surface_change,
+                        )
+                    )
+                    if refined_distance_value < candidate_distance_value:
+                        candidate_text = refined_text
+                        candidate_statistics = refined_statistics
+                        candidate_distance = refined_distance
+                        candidate_distance_value = refined_distance_value
+                        surface_change_percent = refined_surface_change
+                        selected_attempt = 2
+            except Exception as refine_exc:
+                # The paid first candidate remains usable when the optional
+                # measured correction fails.
+                new_calls.append(
+                    {
+                        "provider": "openai",
+                        "model": _testing_model(),
+                        "action": "testing_completed_article_measured_refinement",
+                        "status": "failed",
+                        "cost_cny": None,
+                        "cost_status": "pricing_not_configured",
+                        "error": f"{type(refine_exc).__name__}: {refine_exc}",
+                    }
+                )
+
+        for attempt in rewrite_attempts:
+            attempt["selected"] = int(attempt["attempt"]) == selected_attempt
+        distance_improvement_percent = (
+            (original_distance_value - candidate_distance_value) / original_distance_value * 100
+            if original_distance_value > 0
+            else 0.0
+        )
+        candidate_sha256 = _text_sha256(candidate_text)
+        result: dict[str, Any] = {
+            "task_id": str(task.id),
+            "status": "rewrite_complete",
+            "audit_notes": audit_notes,
+            "candidate_text": candidate_text,
+            "original_sha256": original_sha256,
+            "candidate_sha256": candidate_sha256,
+            "style_feature_version": STYLE_FEATURE_VERSION,
+            "reference_statistics": reference_statistics,
+            "original_statistics": original_statistics,
+            "candidate_statistics": candidate_statistics,
+            "original_distance": original_distance,
+            "candidate_distance": candidate_distance,
+            "distance_improvement_percent": round(distance_improvement_percent, 3),
+            "surface_change_percent": round(surface_change_percent, 3),
+            "surface_change_method": "CJK four-gram multiset distance",
+            "selected_attempt": selected_attempt,
+            "rewrite_attempts": rewrite_attempts,
+            "model": _testing_model(),
+            "openai_calls": new_calls,
+        }
+
+        previous_experiments = list(testing.get("rewrite_experiments") or [])
+        previous_experiments.append(
+            {
+                **result,
+                "transfer_strength": transfer_strength,
+                "original_text": source,
+            }
+        )
+        testing.update(
+            {
+                "status": "rewrite_complete",
+                "last_rewrite_experiment": previous_experiments[-1],
+                # Bound JSON growth while still retaining controlled A/B history.
+                "rewrite_experiments": previous_experiments[-3:],
+                "openai_calls": [
+                    *list(testing.get("openai_calls") or []),
+                    *new_calls,
+                ],
+            }
+        )
+        config[TESTING_CONFIG_KEY] = testing
+        task.config = config
+        task.status = TaskStatus.COMPLETED
+        task.progress = 100
+        task.current_step = "Completed article experiment ready for real Zhuque A/B re-check"
+        task.error_message = None
+        db.commit()
+        return result
+    except Exception as exc:
+        message, status_code = _testing_issue_message(exc)
+        testing["status"] = "rewrite_failed"
+        config[TESTING_CONFIG_KEY] = testing
+        task.config = config
+        task.status = TaskStatus.FAILED
+        task.progress = 100
+        task.current_step = "Completed article experiment stopped"
+        task.error_message = message
+        db.commit()
+        raise TestingEndpointError(message, status_code=status_code) from exc
+
+
+def record_zhuque_feedback(
+    db: Session,
+    *,
+    task: Task,
+    baseline_report: dict[str, Any],
+    candidate_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one verified real-Zhuque observation for later local learning."""
+    config = dict(task.config or {})
+    testing = dict(config.get(TESTING_CONFIG_KEY) or {})
+    experiment = dict(testing.get("last_rewrite_experiment") or {})
+    if not experiment:
+        raise TestingEndpointError("当前任务还没有可复检的全稿实验候选。", status_code=409)
+
+    expected_original_hash = str(experiment.get("original_sha256") or "")
+    expected_candidate_hash = str(experiment.get("candidate_sha256") or "")
+    if str(baseline_report.get("original_sha256") or "") != expected_original_hash:
+        raise TestingEndpointError("原稿朱雀报告与本次实验原稿哈希不匹配。", status_code=409)
+    if str(candidate_report.get("original_sha256") or "") != expected_candidate_hash:
+        raise TestingEndpointError("候选稿朱雀报告与本次实验候选哈希不匹配。", status_code=409)
+    if not bool(baseline_report.get("source_match_verified")):
+        raise TestingEndpointError("原稿朱雀报告未通过正文匹配校验。", status_code=409)
+    if not bool(candidate_report.get("source_match_verified")):
+        raise TestingEndpointError("候选稿朱雀报告未通过正文匹配校验。", status_code=409)
+    if not bool(baseline_report.get("official_overview_verified")):
+        raise TestingEndpointError("原稿报告首页官方三项比例未可靠识别，不能作为学习证据。", status_code=409)
+    if not bool(candidate_report.get("official_overview_verified")):
+        raise TestingEndpointError("候选报告首页官方三项比例未可靠识别，不能作为学习证据。", status_code=409)
+    try:
+        baseline_human = float(baseline_report["official_human_percent"])
+        candidate_human = float(candidate_report["official_human_percent"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TestingEndpointError("报告缺少官方人工特征比例。", status_code=409) from exc
+
+    original_statistics = dict(experiment.get("original_statistics") or {})
+    candidate_statistics = dict(experiment.get("candidate_statistics") or {})
+    feature_delta = {
+        key: round(float(candidate_statistics.get(key, 0.0)) - float(value), 6)
+        for key, value in original_statistics.items()
+        if key in candidate_statistics
+    }
+    observation = {
+        "evidence_type": "real_zhuque_verified_pair",
+        "style_feature_version": str(experiment.get("style_feature_version") or STYLE_FEATURE_VERSION),
+        "original_sha256": expected_original_hash,
+        "candidate_sha256": expected_candidate_hash,
+        "baseline_report_sha256": baseline_report.get("report_sha256"),
+        "candidate_report_sha256": candidate_report.get("report_sha256"),
+        "baseline_report_storage_id": baseline_report.get("report_storage_id"),
+        "candidate_report_storage_id": candidate_report.get("report_storage_id"),
+        "baseline_human_percent": round(baseline_human, 6),
+        "candidate_human_percent": round(candidate_human, 6),
+        "human_delta_percent_points": round(candidate_human - baseline_human, 6),
+        "style_feature_delta": feature_delta,
+        "original_reference_distance": (experiment.get("original_distance") or {}).get("overall_distance"),
+        "candidate_reference_distance": (experiment.get("candidate_distance") or {}).get("overall_distance"),
+        "surface_change_percent": experiment.get("surface_change_percent"),
+        "model": experiment.get("model"),
+        "transfer_strength": experiment.get("transfer_strength"),
+    }
+    observations = list(testing.get("verified_zhuque_observations") or [])
+    # The report hash pair is idempotent.
+    report_pair = (
+        str(observation.get("baseline_report_sha256") or ""),
+        str(observation.get("candidate_report_sha256") or ""),
+    )
+    if not any(
+        (
+            str(item.get("baseline_report_sha256") or ""),
+            str(item.get("candidate_report_sha256") or ""),
+        )
+        == report_pair
+        for item in observations
+    ):
+        observations.append(observation)
+    testing["verified_zhuque_observations"] = observations
+    testing["status"] = "verified_feedback_recorded"
+    config[TESTING_CONFIG_KEY] = testing
+    task.config = config
+    task.status = TaskStatus.COMPLETED
+    task.current_step = "Verified Zhuque A/B feedback recorded"
+    task.error_message = None
+    db.commit()
+    return {
+        "task_id": str(task.id),
+        "status": "verified_feedback_recorded",
+        "baseline_human_percent": round(baseline_human, 6),
+        "candidate_human_percent": round(candidate_human, 6),
+        "human_delta_percent_points": round(candidate_human - baseline_human, 6),
+        "experiment_candidate_sha256": expected_candidate_hash,
+        "verified_observation_count": len(observations),
+    }
+
+
 def uploaded_reference_book_from_bytes(filename: str, content: bytes) -> UploadedReferenceBook:
     text = _extract_uploaded_text(filename, content)
     if len(text) < 500:
@@ -233,7 +564,11 @@ def testing_payload(task: Task) -> dict[str, Any]:
     }
 
 
-def _build_style_profile(books: list[UploadedReferenceBook]) -> tuple[str, list[dict[str, Any]]]:
+def _build_style_profile(
+    books: list[UploadedReferenceBook],
+    *,
+    reference_statistics: dict[str, float],
+) -> tuple[str, list[dict[str, Any]]]:
     notes: list[str] = []
     calls: list[dict[str, Any]] = []
     for book in books:
@@ -248,7 +583,12 @@ def _build_style_profile(books: list[UploadedReferenceBook]) -> tuple[str, list[
             notes.append(f"[{book.filename} chunk {index}]\n{note}")
 
     profile, usage = _call_openai_testing(
-        _render_prompt("testing_endpoint_style_synthesis.md", STYLE_NOTES="\n\n".join(notes)),
+        _render_prompt(
+            "testing_endpoint_style_synthesis.md",
+            STYLE_NOTES="\n\n".join(notes),
+            REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
+            STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
+        ),
         action="testing_style_synthesis",
         max_output_tokens=_style_profile_max_tokens(),
     )
@@ -278,6 +618,8 @@ def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | N
         "model": model,
         "action": action,
         "status": "completed",
+        "cost_cny": None,
+        "cost_status": "pricing_not_configured",
         "response_id": str(getattr(response, "id", "") or ""),
         "usage": usage_payload,
     }
@@ -492,6 +834,68 @@ def _render_prompt(filename: str, **values: str) -> str:
     for key, value in values.items():
         rendered = rendered.replace("{{" + key + "}}", value)
     return rendered
+
+
+def _json_for_prompt(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _strip_model_wrappers(text: str) -> str:
+    value = (text or "").strip()
+    fenced = re.fullmatch(r"```(?:markdown|text)?\s*(.*?)\s*```", value, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+    return value
+
+
+def _surface_change_ratio(original: str, candidate: str) -> float:
+    """Fast multiset distance suited to long Chinese manuscripts."""
+    before = "".join(re.findall(r"[\u3400-\u9fff]", original))
+    after = "".join(re.findall(r"[\u3400-\u9fff]", candidate))
+    size = 4
+    if len(before) < size or len(after) < size:
+        return 1.0 if before != after else 0.0
+    before_counts = Counter(before[index:index + size] for index in range(len(before) - size + 1))
+    after_counts = Counter(after[index:index + size] for index in range(len(after) - size + 1))
+    overlap = sum((before_counts & after_counts).values())
+    denominator = max(sum(before_counts.values()), sum(after_counts.values()), 1)
+    return round(1.0 - overlap / denominator, 6)
+
+
+def _evaluate_rewrite_candidate(
+    reference_statistics: dict[str, Any],
+    original: str,
+    candidate: str,
+) -> tuple[dict[str, float], dict[str, Any], float]:
+    statistics = profile_style(candidate)
+    distance = compare_style_profiles(reference_statistics, statistics)
+    surface_change_percent = round(_surface_change_ratio(original, candidate) * 100, 3)
+    return statistics, distance, surface_change_percent
+
+
+def _rewrite_attempt_summary(
+    *,
+    attempt: int,
+    distance: float,
+    original_distance: float,
+    surface_change_percent: float,
+) -> dict[str, Any]:
+    improvement = (
+        (original_distance - distance) / original_distance * 100
+        if original_distance > 0
+        else 0.0
+    )
+    return {
+        "attempt": attempt,
+        "reference_distance": round(distance, 6),
+        "distance_improvement_percent": round(improvement, 3),
+        "surface_change_percent": round(surface_change_percent, 3),
+        "selected": False,
+    }
 
 
 def _split_text(text: str, max_chars: int) -> list[str]:

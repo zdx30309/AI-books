@@ -10,7 +10,31 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { api } from "@/api/client";
-import type { TestingGeneratedArticle } from "@/api/types";
+import type {
+  AigcReviewReport,
+  TestingGeneratedArticle,
+  TestingRewriteCompletedArticleResponse,
+  TestingZhuqueFeedbackResponse,
+} from "@/api/types";
+
+const STYLE_METRICS = [
+  ["mean_sentence_chars", "平均句长"],
+  ["sentence_length_cv", "句长变异系数"],
+  ["sentence_length_volatility", "相邻句长波动"],
+  ["short_sentence_ratio", "短句占比"],
+  ["long_sentence_ratio", "长句占比"],
+  ["mean_paragraph_chars", "平均段长"],
+  ["paragraph_length_cv", "段长变异系数"],
+  ["discourse_markers_per_1000_chars", "连接词/千字"],
+  ["punctuation_entropy", "标点熵"],
+  ["trigram_perplexity_proxy", "三元字符经验困惑度"],
+  ["compression_ratio", "压缩率"],
+  ["repeated_four_gram_ratio", "重复四元组占比"],
+] as const;
+
+function formatMetric(value: number | undefined) {
+  return Number.isFinite(value) ? Number(value).toFixed(3) : "—";
+}
 
 function parseVideoLinks(input: string) {
   const seen = new Set<string>();
@@ -47,11 +71,22 @@ export function TestingEndpoint() {
   const [videoLinks, setVideoLinks] = useState("");
   const [rawVideoText, setRawVideoText] = useState("");
   const [articles, setArticles] = useState<TestingGeneratedArticle[]>([]);
+  const [completedArticle, setCompletedArticle] = useState("");
+  const [transferStrength, setTransferStrength] = useState<"strong" | "maximum">("maximum");
+  const [rewriteResult, setRewriteResult] = useState<TestingRewriteCompletedArticleResponse | null>(null);
+  const [rewriting, setRewriting] = useState(false);
+  const [baselineFile, setBaselineFile] = useState<File | null>(null);
+  const [candidateFile, setCandidateFile] = useState<File | null>(null);
+  const [baselineReport, setBaselineReport] = useState<AigcReviewReport | null>(null);
+  const [candidateReport, setCandidateReport] = useState<AigcReviewReport | null>(null);
+  const [zhuqueFeedback, setZhuqueFeedback] = useState<TestingZhuqueFeedbackResponse | null>(null);
+  const [parsingReports, setParsingReports] = useState(false);
   const [error, setError] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const resultsRef = useRef<HTMLDivElement | null>(null);
+  const rewriteResultsRef = useRef<HTMLDivElement | null>(null);
   const videoCount = parseVideoLinks(videoLinks).length;
   const currentPhase = generating
     ? "generating"
@@ -69,6 +104,12 @@ export function TestingEndpoint() {
     }
   }, [articles]);
 
+  useEffect(() => {
+    if (rewriteResult) {
+      rewriteResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [rewriteResult]);
+
   const analyzeBooks = async () => {
     if (!books.length) {
       setError("请至少上传 1 本参考书。");
@@ -77,6 +118,10 @@ export function TestingEndpoint() {
     setError("");
     setAnalysisMessage("");
     setArticles([]);
+    setRewriteResult(null);
+    setBaselineReport(null);
+    setCandidateReport(null);
+    setZhuqueFeedback(null);
     setAnalyzing(true);
     try {
       const result = await api.analyzeTestingReferenceBooks(books);
@@ -120,6 +165,55 @@ export function TestingEndpoint() {
       setError(err instanceof Error ? err.message : "文章生成失败");
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const rewriteCompletedArticle = async () => {
+    if (!taskId || !analysisMessage) {
+      setError("请先上传并分析人类参考书。");
+      return;
+    }
+    if (completedArticle.trim().length < 500) {
+      setError("已完成文章至少需要 500 字。");
+      return;
+    }
+    setError("");
+    setRewriteResult(null);
+    setBaselineReport(null);
+    setCandidateReport(null);
+    setZhuqueFeedback(null);
+    setRewriting(true);
+    try {
+      setRewriteResult(await api.rewriteTestingCompletedArticle(taskId, {
+        original_text: completedArticle.trim(),
+        transfer_strength: transferStrength,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "全稿实验重写失败");
+    } finally {
+      setRewriting(false);
+    }
+  };
+
+  const parseZhuquePair = async () => {
+    if (!baselineFile || !candidateFile || !rewriteResult) {
+      setError("请同时上传原稿朱雀 PDF 和候选稿朱雀 PDF。");
+      return;
+    }
+    setError("");
+    setParsingReports(true);
+    try {
+      const [before, after] = await Promise.all([
+        api.parseAigcReviewReport(baselineFile, completedArticle.trim(), "article"),
+        api.parseAigcReviewReport(candidateFile, rewriteResult.candidate_text, "article"),
+      ]);
+      setBaselineReport(before);
+      setCandidateReport(after);
+      setZhuqueFeedback(await api.recordTestingZhuqueFeedback(taskId, before, after));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "朱雀 A/B 报告解析失败");
+    } finally {
+      setParsingReports(false);
     }
   };
 
@@ -240,6 +334,205 @@ export function TestingEndpoint() {
           Analyze
         </button>
       </section>
+
+      <section className="rounded-lg border border-gold-400/20 bg-base-800/70 p-6">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-warm-50">已完成文章全稿实验重写</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-warm-400">
+              以参考书的抽象统计画像和写作机制为目标，先审查、再全稿重组。不会把参考书原文交给改写模型，
+              也不会覆盖普通任务；是否提升人工特征，只认候选稿的真实朱雀复检报告。
+            </p>
+          </div>
+          <div className="rounded-lg border border-warm-100/10 bg-base-900/50 px-4 py-3 text-xs leading-5 text-warm-400">
+            本地统计：0 元<br />
+            OpenAI：审查 + 全稿重写
+          </div>
+        </div>
+
+        <label className="block">
+          <span className="mb-2 block text-sm text-warm-300">粘贴已完成文章</span>
+          <textarea
+            value={completedArticle}
+            onChange={(event) => {
+              setCompletedArticle(event.target.value);
+              setRewriteResult(null);
+              setBaselineReport(null);
+              setCandidateReport(null);
+              setZhuqueFeedback(null);
+            }}
+            rows={14}
+            placeholder="粘贴准备做朱雀 A/B 实验的完整文章……"
+            className="w-full resize-y rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3 text-sm leading-7 text-warm-100 outline-none transition focus:border-gold-400/50"
+          />
+        </label>
+
+        <div className="mt-4 flex flex-wrap items-end gap-4">
+          <label>
+            <span className="mb-2 block text-xs text-warm-400">迁移强度</span>
+            <select
+              value={transferStrength}
+              onChange={(event) => setTransferStrength(event.target.value as "strong" | "maximum")}
+              className="rounded-lg border border-warm-100/10 bg-base-900 px-3 py-2 text-sm text-warm-100"
+            >
+              <option value="maximum">最大幅度（首轮建议）</option>
+              <option value="strong">强迁移</option>
+            </select>
+          </label>
+          <div className="text-xs text-warm-500">{completedArticle.trim().length.toLocaleString()} 字符</div>
+          <button
+            type="button"
+            onClick={rewriteCompletedArticle}
+            disabled={rewriting || !analysisMessage}
+            className="inline-flex items-center gap-2 rounded-lg bg-gold-400 px-4 py-2 text-sm font-semibold text-base-950 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {rewriting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+            审查并完整重写
+          </button>
+        </div>
+      </section>
+
+      {rewriteResult && (
+        <section ref={rewriteResultsRef} className="space-y-5 rounded-lg border border-emerald-400/20 bg-base-800/70 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-warm-50">全稿实验候选</h2>
+              <p className="mt-1 text-sm text-warm-400">
+                {rewriteResult.model} · {rewriteResult.style_feature_version} ·
+                选中第 {rewriteResult.selected_attempt} 轮 / 共 {rewriteResult.rewrite_attempts.length} 轮 ·
+                仅供朱雀黑盒复检
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center text-xs">
+              <div className="rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3">
+                <div className="text-warm-500">统计距离变化</div>
+                <div className="mt-1 text-lg text-emerald-200">
+                  {rewriteResult.distance_improvement_percent > 0 ? "↓" : "↑"}
+                  {Math.abs(rewriteResult.distance_improvement_percent).toFixed(1)}%
+                </div>
+              </div>
+              <div className="rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3">
+                <div className="text-warm-500">四元语面改动</div>
+                <div className="mt-1 text-lg text-gold-100">{rewriteResult.surface_change_percent.toFixed(1)}%</div>
+              </div>
+            </div>
+          </div>
+
+          <details className="rounded-lg border border-warm-100/10 bg-base-900/50 p-4">
+            <summary className="cursor-pointer text-sm font-medium text-warm-100">查看全稿诊断与重写计划</summary>
+            <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-warm-300">{rewriteResult.audit_notes}</div>
+          </details>
+
+          <div className="overflow-x-auto rounded-lg border border-warm-100/10">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-base-900/80 text-warm-400">
+                <tr>
+                  <th className="px-4 py-3">可观察指标</th>
+                  <th className="px-4 py-3">人类参考画像</th>
+                  <th className="px-4 py-3">原稿</th>
+                  <th className="px-4 py-3">候选</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-warm-100/10">
+                {STYLE_METRICS.map(([key, label]) => (
+                  <tr key={key} className="text-warm-200">
+                    <td className="px-4 py-3">{label}</td>
+                    <td className="px-4 py-3">{formatMetric(rewriteResult.reference_statistics[key])}</td>
+                    <td className="px-4 py-3">{formatMetric(rewriteResult.original_statistics[key])}</td>
+                    <td className="px-4 py-3">{formatMetric(rewriteResult.candidate_statistics[key])}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs leading-5 text-warm-500">
+            “三元字符经验困惑度”是本地统计代理，不是朱雀内部困惑度；统计距离下降也不等于朱雀必然变绿。
+          </p>
+
+          <div className="rounded-lg border border-warm-100/10 bg-base-900/60 p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm font-medium text-warm-100">候选全文</div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(rewriteResult.candidate_text)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-warm-100/10 px-3 py-2 text-xs text-warm-200 hover:bg-warm-100/5"
+                >
+                  <ClipboardCopy className="h-4 w-4" />
+                  复制
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadText(rewriteResult.candidate_text, "human-reference-rewrite-candidate.txt")}
+                  className="inline-flex items-center gap-2 rounded-lg border border-warm-100/10 px-3 py-2 text-xs text-warm-200 hover:bg-warm-100/5"
+                >
+                  <Download className="h-4 w-4" />
+                  下载
+                </button>
+              </div>
+            </div>
+            <article className="max-h-[720px] overflow-y-auto whitespace-pre-wrap font-serif text-[16px] leading-8 text-warm-50">
+              {rewriteResult.candidate_text}
+            </article>
+          </div>
+
+          <div className="rounded-lg border border-gold-400/20 bg-gold-500/5 p-5">
+            <h3 className="text-sm font-semibold text-gold-100">真实朱雀 A/B 复检</h3>
+            <p className="mt-1 text-xs leading-5 text-warm-400">
+              分别上传这次原稿和候选稿的朱雀打印 PDF。系统会校验报告与正文匹配，只展示首页官方人工特征及真实增量。
+            </p>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <label className="rounded-lg border border-dashed border-warm-100/15 p-4 text-xs text-warm-300">
+                <span className="mb-2 block">原稿朱雀 PDF</span>
+                <input type="file" accept=".pdf,application/pdf" onChange={(event) => setBaselineFile(event.target.files?.[0] ?? null)} />
+              </label>
+              <label className="rounded-lg border border-dashed border-warm-100/15 p-4 text-xs text-warm-300">
+                <span className="mb-2 block">候选稿朱雀 PDF</span>
+                <input type="file" accept=".pdf,application/pdf" onChange={(event) => setCandidateFile(event.target.files?.[0] ?? null)} />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={parseZhuquePair}
+              disabled={parsingReports}
+              className="mt-4 inline-flex items-center gap-2 rounded-lg border border-gold-400/30 px-4 py-2 text-sm text-gold-100 hover:bg-gold-500/10 disabled:opacity-60"
+            >
+              {parsingReports && <Loader2 className="h-4 w-4 animate-spin" />}
+              解析并对比两份报告
+            </button>
+            {baselineReport && candidateReport && (
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg bg-base-900/60 p-4">
+                  <div className="text-xs text-warm-500">原稿官方人工特征</div>
+                  <div className="mt-1 text-xl text-warm-100">
+                    {baselineReport.official_overview_verified ? `${baselineReport.official_human_percent?.toFixed(2)}%` : "未可靠识别"}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-base-900/60 p-4">
+                  <div className="text-xs text-warm-500">候选官方人工特征</div>
+                  <div className="mt-1 text-xl text-warm-100">
+                    {candidateReport.official_overview_verified ? `${candidateReport.official_human_percent?.toFixed(2)}%` : "未可靠识别"}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-base-900/60 p-4">
+                  <div className="text-xs text-warm-500">真实变化</div>
+                  <div className="mt-1 text-xl text-emerald-200">
+                    {baselineReport.official_overview_verified && candidateReport.official_overview_verified
+                      ? `${((candidateReport.official_human_percent ?? 0) - (baselineReport.official_human_percent ?? 0)) >= 0 ? "+" : ""}${((candidateReport.official_human_percent ?? 0) - (baselineReport.official_human_percent ?? 0)).toFixed(2)} 个百分点`
+                      : "需要人工核对首页"}
+                  </div>
+                </div>
+              </div>
+            )}
+            {zhuqueFeedback && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100">
+                <CheckCircle2 className="h-4 w-4" />
+                真实 A/B 证据已回写，本任务累计 {zhuqueFeedback.verified_observation_count} 组有效观测。
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="rounded-lg border border-warm-100/10 bg-base-800/70 p-6">
         <div className="mb-5">

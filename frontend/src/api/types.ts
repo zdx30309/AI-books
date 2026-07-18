@@ -192,6 +192,70 @@ export interface TestingArticleResponse {
   articles: TestingGeneratedArticle[];
 }
 
+export interface TestingRewriteCompletedArticleRequest {
+  original_text: string;
+  transfer_strength?: "strong" | "maximum";
+}
+
+export interface TestingStyleComparison {
+  version: string;
+  overall_distance: number;
+  feature_count: number;
+  largest_gaps: Array<{
+    feature: string;
+    reference: number;
+    candidate: number;
+    delta: number;
+    normalized_distance: number;
+  }>;
+  features: Array<{
+    feature: string;
+    reference: number;
+    candidate: number;
+    delta: number;
+    normalized_distance: number;
+  }>;
+  disclaimer: string;
+}
+
+export interface TestingRewriteCompletedArticleResponse {
+  task_id: string;
+  status: "rewrite_complete";
+  audit_notes: string;
+  candidate_text: string;
+  original_sha256: string;
+  candidate_sha256: string;
+  style_feature_version: string;
+  reference_statistics: Record<string, number>;
+  original_statistics: Record<string, number>;
+  candidate_statistics: Record<string, number>;
+  original_distance: TestingStyleComparison;
+  candidate_distance: TestingStyleComparison;
+  distance_improvement_percent: number;
+  surface_change_percent: number;
+  surface_change_method: string;
+  selected_attempt: number;
+  rewrite_attempts: Array<{
+    attempt: number;
+    reference_distance: number;
+    distance_improvement_percent: number;
+    surface_change_percent: number;
+    selected: boolean;
+  }>;
+  model: string;
+  openai_calls: Array<Record<string, unknown>>;
+}
+
+export interface TestingZhuqueFeedbackResponse {
+  task_id: string;
+  status: "verified_feedback_recorded";
+  baseline_human_percent: number;
+  candidate_human_percent: number;
+  human_delta_percent_points: number;
+  experiment_candidate_sha256: string;
+  verified_observation_count: number;
+}
+
 export interface TestingTaskResponse {
   task_id: string;
   status: string;

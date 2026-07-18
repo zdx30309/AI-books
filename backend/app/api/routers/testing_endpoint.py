@@ -13,13 +13,19 @@ from app.schemas.testing_endpoint import (
     TestingAnalysisResponse,
     TestingArticleResponse,
     TestingGenerateArticleRequest,
+    TestingRewriteCompletedArticleRequest,
+    TestingRewriteCompletedArticleResponse,
     TestingTaskResponse,
+    TestingZhuqueFeedbackRequest,
+    TestingZhuqueFeedbackResponse,
 )
 from app.services.testing_endpoint import (
     ANALYSIS_COMPLETE_MESSAGE,
     TestingEndpointError,
     analyze_reference_books,
     generate_testing_article,
+    record_zhuque_feedback,
+    rewrite_completed_article,
     testing_payload,
     uploaded_reference_book_from_bytes,
 )
@@ -79,6 +85,52 @@ def get_testing_task(
 ) -> TestingTaskResponse:
     task = _get_owned_testing_task(db, task_id, user)
     return TestingTaskResponse(**testing_payload(task))
+
+
+@router.post(
+    "/tasks/{task_id}/rewrite-completed-article",
+    response_model=TestingRewriteCompletedArticleResponse,
+)
+def rewrite_testing_completed_article_endpoint(
+    task_id: UUID,
+    body: TestingRewriteCompletedArticleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TestingRewriteCompletedArticleResponse:
+    task = _get_owned_testing_task(db, task_id, user)
+    try:
+        result = rewrite_completed_article(
+            db,
+            task=task,
+            original_text=body.original_text,
+            transfer_strength=body.transfer_strength,
+        )
+        return TestingRewriteCompletedArticleResponse(**result)
+    except TestingEndpointError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/tasks/{task_id}/zhuque-feedback",
+    response_model=TestingZhuqueFeedbackResponse,
+)
+def record_testing_zhuque_feedback_endpoint(
+    task_id: UUID,
+    body: TestingZhuqueFeedbackRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TestingZhuqueFeedbackResponse:
+    task = _get_owned_testing_task(db, task_id, user)
+    try:
+        result = record_zhuque_feedback(
+            db,
+            task=task,
+            baseline_report=body.baseline_report,
+            candidate_report=body.candidate_report,
+        )
+        return TestingZhuqueFeedbackResponse(**result)
+    except TestingEndpointError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def _get_owned_testing_task(db: Session, task_id: UUID, user: User) -> Task:

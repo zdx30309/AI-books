@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.services.aigc_style_probe import (
+    STYLE_FEATURE_VERSION,
+    compare_style_profiles,
     profile_style,
     style_feature_delta,
     summarize_feature_effects,
@@ -18,6 +20,21 @@ def test_style_probe_measures_observable_content_format_and_statistics() -> None
     assert delta["discourse_markers_per_1000_chars"] < 0
     assert profile["punctuation_entropy"] >= 0
     assert profile["sentence_length_cv"] >= 0
+    assert profile["trigram_perplexity_proxy"] >= 0
+    assert profile["sentence_length_volatility"] >= 0
+    assert profile["compression_ratio"] >= 0
+    assert STYLE_FEATURE_VERSION == "style-probe-v2"
+
+
+def test_style_distance_is_explainable_and_zero_for_identical_profile() -> None:
+    profile = profile_style("短句。再来一句稍长的话，看看节奏如何变化。\n\n这一段另起。")
+
+    comparison = compare_style_profiles(profile, profile)
+
+    assert comparison["overall_distance"] == 0
+    assert comparison["feature_count"] > 10
+    assert comparison["features"]
+    assert "朱雀分数预测" in comparison["disclaimer"]
 
 
 def test_feature_learning_refuses_to_invent_rule_before_five_real_pairs() -> None:

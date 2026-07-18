@@ -23,6 +23,17 @@ class _FakeResponses:
         return SimpleNamespace(output_text="internal result", id="resp_test", usage=_FakeUsage())
 
 
+class _FakeDb:
+    def add(self, value):
+        self.added = value
+
+    def commit(self):
+        return None
+
+    def refresh(self, value):
+        return None
+
+
 def test_openai_testing_call_uses_configured_openai_model(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
     monkeypatch.setattr(testing_endpoint.settings, "TESTING_ENDPOINT_OPENAI_MODEL", "gpt-test-endpoint")
@@ -75,6 +86,188 @@ def test_testing_payload_does_not_expose_internal_style_profile() -> None:
     assert payload["articles"][0]["video_url"] == "https://example.test/1"
     assert "style_profile" not in payload
     assert "private profile" not in str(payload)
+
+
+def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "这是绝不能持久化的参考书原文。" * 100
+    book = testing_endpoint.UploadedReferenceBook(
+        filename="human.txt",
+        text=raw_text,
+        sha256="a" * 64,
+    )
+    monkeypatch.setattr(testing_endpoint, "_require_openai_credentials", lambda: "test-key")
+    monkeypatch.setattr(
+        testing_endpoint,
+        "_build_style_profile",
+        lambda books, reference_statistics: ("abstract profile", []),
+    )
+
+    task = testing_endpoint.analyze_reference_books(
+        _FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        books=[book],
+    )
+
+    persisted = task.config["testing_endpoint"]
+    assert persisted["style_feature_version"] == "style-probe-v2"
+    assert persisted["reference_statistics"]["char_count"] > 0
+    assert persisted["style_profile"] == "abstract profile"
+    assert raw_text not in str(task.config)
+
+
+def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "原稿保留事实。这个句子继续说明同一件事，不新增材料。" * 60
+    candidate = "事实仍在。原有说明换了节奏，但没有另添材料。\n\n这一层意思，仍旧如此。" * 45
+    reference_text = "短句。忽然拉长一点，把前后几层意思放在同一句里说清楚。\n\n再停一下。" * 80
+    prompts: list[tuple[str, str]] = []
+
+    def fake_call(prompt: str, *, action: str, max_output_tokens: int | None):
+        prompts.append((action, prompt))
+        if action == "testing_completed_article_audit":
+            return "## 审查\n需要全稿调整节奏。", {"action": action, "model": "gpt-test"}
+        return candidate, {"action": action, "model": "gpt-test"}
+
+    monkeypatch.setattr(testing_endpoint, "_require_openai_credentials", lambda: "test-key")
+    monkeypatch.setattr(testing_endpoint, "_call_openai_testing", fake_call)
+    monkeypatch.setattr(testing_endpoint, "_testing_model", lambda: "gpt-test")
+    task = Task(
+        id=uuid.uuid4(),
+        source_url="testing://reference-books",
+        status=TaskStatus.COMPLETED,
+        current_step="Analysis Complete",
+        config={
+            "category": "testing_endpoint",
+            "testing_endpoint": {
+                "status": "analysis_complete",
+                "style_profile": "只包含抽象节奏画像",
+                "style_feature_version": "style-probe-v2",
+                "reference_statistics": testing_endpoint.profile_style(reference_text),
+                "openai_calls": [],
+            },
+        },
+    )
+
+    result = testing_endpoint.rewrite_completed_article(
+        _FakeDb(),
+        task=task,
+        original_text=source,
+        transfer_strength="maximum",
+    )
+
+    assert result["candidate_text"] == candidate
+    assert result["style_feature_version"] == "style-probe-v2"
+    assert result["surface_change_percent"] > 0
+    assert result["selected_attempt"] == 1
+    assert len(result["rewrite_attempts"]) == 2
+    assert result["original_sha256"] != result["candidate_sha256"]
+    assert result["original_distance"]["feature_count"] > 10
+    assert result["candidate_distance"]["feature_count"] > 10
+    assert [item[0] for item in prompts] == [
+        "testing_completed_article_audit",
+        "testing_completed_article_rewrite",
+        "testing_completed_article_measured_refinement",
+    ]
+    assert "只包含抽象节奏画像" in prompts[1][1]
+    assert "参考书原文" not in prompts[1][1]
+    persisted = task.config["testing_endpoint"]["last_rewrite_experiment"]
+    assert persisted["original_text"] == source
+    assert persisted["candidate_text"] == candidate
+
+
+def test_verified_zhuque_feedback_is_hash_bound_and_idempotent() -> None:
+    original_hash = "a" * 64
+    candidate_hash = "b" * 64
+    task = Task(
+        id=uuid.uuid4(),
+        source_url="testing://reference-books",
+        status=TaskStatus.COMPLETED,
+        current_step="ready",
+        config={
+            "category": "testing_endpoint",
+            "testing_endpoint": {
+                "last_rewrite_experiment": {
+                    "original_sha256": original_hash,
+                    "candidate_sha256": candidate_hash,
+                    "style_feature_version": "style-probe-v2",
+                    "original_statistics": {"sentence_length_cv": 0.2},
+                    "candidate_statistics": {"sentence_length_cv": 0.5},
+                    "original_distance": {"overall_distance": 0.4},
+                    "candidate_distance": {"overall_distance": 0.2},
+                    "surface_change_percent": 45.0,
+                    "model": "gpt-test",
+                    "transfer_strength": "maximum",
+                },
+            },
+        },
+    )
+    baseline = {
+        "original_sha256": original_hash,
+        "source_match_verified": True,
+        "official_overview_verified": True,
+        "official_human_percent": 0.0,
+        "report_sha256": "c" * 64,
+        "report_storage_id": "baseline.pdf",
+    }
+    candidate = {
+        "original_sha256": candidate_hash,
+        "source_match_verified": True,
+        "official_overview_verified": True,
+        "official_human_percent": 28.5,
+        "report_sha256": "d" * 64,
+        "report_storage_id": "candidate.pdf",
+    }
+
+    first = testing_endpoint.record_zhuque_feedback(
+        _FakeDb(),
+        task=task,
+        baseline_report=baseline,
+        candidate_report=candidate,
+    )
+    second = testing_endpoint.record_zhuque_feedback(
+        _FakeDb(),
+        task=task,
+        baseline_report=baseline,
+        candidate_report=candidate,
+    )
+
+    assert first["human_delta_percent_points"] == 28.5
+    assert second["verified_observation_count"] == 1
+    observation = task.config["testing_endpoint"]["verified_zhuque_observations"][0]
+    assert observation["style_feature_delta"]["sentence_length_cv"] == 0.3
+    assert observation["evidence_type"] == "real_zhuque_verified_pair"
+
+
+def test_zhuque_feedback_rejects_report_for_another_candidate() -> None:
+    task = Task(
+        id=uuid.uuid4(),
+        source_url="testing://reference-books",
+        status=TaskStatus.COMPLETED,
+        current_step="ready",
+        config={
+            "category": "testing_endpoint",
+            "testing_endpoint": {
+                "last_rewrite_experiment": {
+                    "original_sha256": "a" * 64,
+                    "candidate_sha256": "b" * 64,
+                },
+            },
+        },
+    )
+
+    with pytest.raises(testing_endpoint.TestingEndpointError) as exc_info:
+        testing_endpoint.record_zhuque_feedback(
+            _FakeDb(),
+            task=task,
+            baseline_report={"original_sha256": "a" * 64},
+            candidate_report={"original_sha256": "x" * 64},
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "候选" in str(exc_info.value)
 
 
 def test_missing_openai_key_stops_with_actionable_issue(monkeypatch: pytest.MonkeyPatch) -> None:
