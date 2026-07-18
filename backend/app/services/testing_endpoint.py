@@ -26,7 +26,11 @@ from app.services.aigc_style_probe import (
     profile_style,
 )
 from app.services.aigc_report_review import normalize_manuscript_text
-from app.services.content_engine import _extract_openai_response_text
+from app.services.content_engine import (
+    _extract_openai_response_text,
+    _openai_response_debug_summary,
+    _openai_usage_payload,
+)
 from app.tasks.tasks import _fetch_video_text
 from app.utils.docx_text import DocxTextError, extract_docx_text, extract_pdf_text
 from app.utils.official_api import official_openai_base_url, official_proxy
@@ -599,20 +603,95 @@ def _build_style_profile(
 def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
     client = _testing_openai_client()
     model = _testing_model()
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "input": prompt,
-        "reasoning": {"effort": _reasoning_effort()},
-        "text": {"verbosity": _verbosity()},
+    initial_effort = _reasoning_effort_for_action(action)
+    initial_max_tokens = _output_budget_for_action(action, max_output_tokens)
+    attempts: list[dict[str, Any]] = []
+    total_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
     }
-    if max_output_tokens and max_output_tokens > 0:
-        kwargs["max_output_tokens"] = max_output_tokens
-    response = client.responses.create(**kwargs)
-    text = _extract_openai_response_text(response).strip()
+    response: Any | None = None
+    text = ""
+    effort = initial_effort
+    output_budget = initial_max_tokens
+
+    for attempt_number in (1, 2):
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": prompt,
+            "reasoning": {"effort": effort},
+            "text": {"verbosity": _verbosity()},
+        }
+        if output_budget and output_budget > 0:
+            kwargs["max_output_tokens"] = output_budget
+
+        logger.info(
+            "LLM action=%s provider=openai model=%s reasoning=%s attempt=%d status=started max_output_tokens=%s",
+            action,
+            model,
+            effort,
+            attempt_number,
+            output_budget or "model_default",
+        )
+        response = client.responses.create(**kwargs)
+        response_usage = _openai_usage_payload(response)
+        for key in total_usage:
+            total_usage[key] += int(response_usage.get(key) or 0)
+        text = _extract_openai_response_text(response).strip()
+        status = str(getattr(response, "status", "") or "unknown")
+        details = getattr(response, "incomplete_details", None)
+        incomplete_reason = str(getattr(details, "reason", "") or "")
+        attempts.append(
+            {
+                "attempt": attempt_number,
+                "reasoning_effort": effort,
+                "max_output_tokens": output_budget,
+                "response_id": str(getattr(response, "id", "") or ""),
+                "response_status": status,
+                "incomplete_reason": incomplete_reason or None,
+                "text_returned": bool(text),
+                "usage": response_usage,
+            }
+        )
+        logger.info(
+            "LLM action=%s provider=openai model=%s reasoning=%s attempt=%d status=%s "
+            "text_returned=%s input_tokens=%d output_tokens=%d reasoning_tokens=%d incomplete_reason=%s",
+            action,
+            model,
+            effort,
+            attempt_number,
+            status,
+            bool(text),
+            response_usage["input_tokens"],
+            response_usage["output_tokens"],
+            response_usage["reasoning_tokens"],
+            incomplete_reason or "none",
+        )
+        if text:
+            break
+        if attempt_number == 1:
+            logger.warning(
+                "OpenAI Testing Endpoint empty response; retrying once with a lower reasoning effort "
+                "and a safer output budget: action=%s %s",
+                action,
+                _openai_response_debug_summary(response),
+            )
+            effort = _fallback_reasoning_effort(effort)
+            output_budget = _empty_response_retry_budget(action, output_budget)
+
     if not text:
-        raise TestingEndpointError("OpenAI ChatGPT API 返回空内容，请检查模型访问权限或稍后重试。", status_code=502)
-    usage = getattr(response, "usage", None)
-    usage_payload = usage.model_dump() if hasattr(usage, "model_dump") else usage
+        last_attempt = attempts[-1]
+        reason = str(last_attempt.get("incomplete_reason") or last_attempt.get("response_status") or "unknown")
+        reasoning_tokens = int((last_attempt.get("usage") or {}).get("reasoning_tokens") or 0)
+        raise TestingEndpointError(
+            "OpenAI 未生成可用正文；系统已自动降低推理强度并重试一次仍为空。"
+            f"状态原因：{reason}，末次推理 token：{reasoning_tokens}。请稍后重试；若持续出现，请检查模型配额。",
+            status_code=502,
+        )
+
     return text, {
         "provider": "openai",
         "model": model,
@@ -621,7 +700,9 @@ def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | N
         "cost_cny": None,
         "cost_status": "pricing_not_configured",
         "response_id": str(getattr(response, "id", "") or ""),
-        "usage": usage_payload,
+        "usage": total_usage,
+        "attempt_count": len(attempts),
+        "attempts": attempts,
     }
 
 
@@ -925,12 +1006,58 @@ def _reasoning_effort() -> str:
     return (settings.TESTING_ENDPOINT_OPENAI_REASONING_EFFORT or settings.OPENAI_WRITER_REASONING_EFFORT).strip()
 
 
+def _reasoning_effort_for_action(action: str) -> str:
+    configured = _reasoning_effort().lower() or "medium"
+    # Extraction and synthesis need enough visible answer tokens, not maximal
+    # hidden reasoning.  Keep the configured (including xhigh) effort for the
+    # actual article-writing and rewriting calls.
+    if action in {
+        "testing_style_analysis",
+        "testing_style_synthesis",
+        "testing_video_digest",
+        "testing_completed_article_audit",
+    } and configured in {"high", "xhigh"}:
+        return "medium"
+    return configured
+
+
+def _fallback_reasoning_effort(current_effort: str) -> str:
+    normalized = str(current_effort or "").strip().lower()
+    return "low" if normalized != "low" else normalized
+
+
+def _output_budget_for_action(action: str, requested: int | None) -> int | None:
+    minimums = {
+        "testing_style_analysis": 6000,
+        "testing_style_synthesis": 8000,
+        "testing_completed_article_audit": 6000,
+    }
+    minimum = minimums.get(action, 0)
+    parsed = max(0, int(requested or 0))
+    effective = max(minimum, parsed)
+    return effective if effective > 0 else None
+
+
+def _empty_response_retry_budget(action: str, current: int | None) -> int | None:
+    minimums = {
+        "testing_style_analysis": 8000,
+        "testing_style_synthesis": 10000,
+        "testing_completed_article_audit": 8000,
+    }
+    minimum = minimums.get(action, 0)
+    parsed = max(0, int(current or 0))
+    if not parsed and not minimum:
+        return None
+    return min(16_000, max(minimum, parsed * 2))
+
+
 def _verbosity() -> str:
     return (settings.TESTING_ENDPOINT_OPENAI_VERBOSITY or settings.OPENAI_WRITER_VERBOSITY).strip()
 
 
 def _book_chunk_chars() -> int:
-    return max(10_000, int(settings.TESTING_ENDPOINT_BOOK_CHUNK_CHARS or 80_000))
+    configured = max(10_000, int(settings.TESTING_ENDPOINT_BOOK_CHUNK_CHARS or 50_000))
+    return min(50_000, configured)
 
 
 def _style_note_max_tokens() -> int:
