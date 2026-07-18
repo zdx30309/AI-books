@@ -232,6 +232,7 @@ def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
 
     persisted = task.config["testing_endpoint"]
     assert persisted["style_feature_version"] == "style-probe-v2"
+    assert persisted["organization_policy_version"] == "information-organization-v1"
     assert persisted["reference_statistics"]["char_count"] > 0
     assert persisted["style_profile"] == "abstract profile"
     assert raw_text not in str(task.config)
@@ -280,6 +281,7 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
 
     assert result["candidate_text"] == candidate
     assert result["style_feature_version"] == "style-probe-v2"
+    assert result["organization_policy_version"] == "information-organization-v1"
     assert result["surface_change_percent"] > 0
     assert result["selected_attempt"] == 1
     assert len(result["rewrite_attempts"]) == 2
@@ -291,11 +293,76 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
         "testing_completed_article_rewrite",
         "testing_completed_article_measured_refinement",
     ]
+    for _, rendered_prompt in prompts:
+        assert "信息组织规则（最高优先级）" in rendered_prompt
+        assert "不要为了逻辑更顺而调整段落顺序" in rendered_prompt
+        assert "不要把每一段都写成“完整单元”" in rendered_prompt
+        assert "修改后的文章完成度，不应明显高于原稿" in rendered_prompt
+        assert "保持原作者的“思考轨迹”" in rendered_prompt
+        assert "你的任务是让文章更像作者本人重新写了一遍" in rendered_prompt
+        assert "{{SOURCE_ORGANIZATION_RULES}}" not in rendered_prompt
     assert "只包含抽象节奏画像" in prompts[1][1]
     assert "参考书原文" not in prompts[1][1]
     persisted = task.config["testing_endpoint"]["last_rewrite_experiment"]
     assert persisted["original_text"] == source
     assert persisted["candidate_text"] == candidate
+
+
+def test_from_scratch_generation_uses_reversed_organization_rules_and_reference_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[tuple[str, str]] = []
+
+    def fake_call(prompt: str, *, action: str, max_output_tokens: int | None):
+        prompts.append((action, prompt))
+        if action == "testing_video_digest":
+            return "事实摘要：先出现甲，随后转到乙。", {"action": action, "model": "gpt-test"}
+        return "@最终书名\n测试\n@最终简介\n简介\n@目录\n一\n@导言\n导言\n@正文\n正文", {
+            "action": action,
+            "model": "gpt-test",
+        }
+
+    monkeypatch.setattr(testing_endpoint, "_require_openai_credentials", lambda: "test-key")
+    monkeypatch.setattr(testing_endpoint, "_call_openai_testing", fake_call)
+    task = Task(
+        id=uuid.uuid4(),
+        source_url="testing://reference-books",
+        status=TaskStatus.COMPLETED,
+        current_step="Analysis Complete",
+        config={
+            "category": "testing_endpoint",
+            "testing_endpoint": {
+                "status": "analysis_complete",
+                "style_profile": "抽象画像：段落功能不对称，允许回扣。",
+                "style_feature_version": "style-probe-v2",
+                "reference_statistics": {"sentence_length_cv": 0.61, "paragraph_length_cv": 0.72},
+                "openai_calls": [],
+            },
+        },
+    )
+
+    articles = testing_endpoint.generate_testing_article(
+        _FakeDb(),
+        task=task,
+        video_urls=["https://example.test/video"],
+        raw_video_text="原始素材中的事实和顺序。",
+    )
+
+    assert len(articles) == 1
+    assert [action for action, _ in prompts] == [
+        "testing_video_digest",
+        "testing_article_generation",
+    ]
+    writer_prompt = prompts[1][1]
+    assert "从头生成的信息组织规则（由原稿保序规则反向生成，最高优先级）" in writer_prompt
+    assert "先在内部形成一条自然、可读、但不被整理成“标准答案”的信息展开轨迹" in writer_prompt
+    assert "不要让每个段落都成为完整单元" in writer_prompt
+    assert "逐章反向检查" in writer_prompt
+    assert "抽象画像：段落功能不对称，允许回扣。" in writer_prompt
+    assert '"sentence_length_cv": 0.61' in writer_prompt
+    assert "{{GENERATED_ORGANIZATION_RULES}}" not in writer_prompt
+    assert "{{REFERENCE_STATISTICS}}" not in writer_prompt
+    assert task.config["testing_endpoint"]["generation_policy_version"] == "information-organization-v1"
 
 
 def test_verified_zhuque_feedback_is_hash_bound_and_idempotent() -> None:

@@ -2,6 +2,15 @@ You are writing a complete original article based on a processed video.
 
 Use the video digest as the factual basis. Follow the internal writing profile as closely as possible in its transferable tone, structure, narrative rhythm, perspective, reasoning approach, and way of developing ideas.
 
+The Chinese generation policy below is the highest-priority information-
+organization rule within the mandatory output format. It converts the
+source-preservation policy into a from-scratch writing policy. Follow it
+silently and do not output a plan or self-check.
+
+<GENERATED_ORGANIZATION_RULES>
+{{GENERATED_ORGANIZATION_RULES}}
+</GENERATED_ORGANIZATION_RULES>
+
 Output format:
 - Strictly output in this exact order:
   1. @最终书名
@@ -32,9 +41,14 @@ Title and introduction format:
 
 Length and structure:
 - The full output should be around 5000 Chinese characters. A modest deviation is acceptable, but do not turn it into a short summary or a 12000-character long manuscript.
-- Use the video as the factual base, but reorganize the entrance, sequence, and development so the final article reads like a newly written book-style article.
+- Use the video as the factual base. Internally choose one natural information
+  path, then keep that path instead of repeatedly reorganizing it into a
+  cleaner taxonomy or a more complete standard structure.
 - The body may have several chapters or sections, but avoid a mechanical fixed template. Vary the rhythm according to the internal writing profile.
 - The format should follow the structure rules above; the content, voice, reasoning, and development method should follow the uploaded reference books' internal profile and the video facts.
+- The required title, introduction, directory and body wrappers are interface
+  requirements; they do not authorize making every body chapter a complete,
+  symmetrical argument unit.
 
 Requirements:
 - accurately reflect the content and meaning of the video
@@ -43,10 +57,15 @@ Requirements:
 - do not include a style report, explanation, disclaimer, or commentary
 - do not copy sentences or passages from the reference books
 - do not drift into a generic assistant voice; preserve the internal profile from beginning to end
+- do not fabricate personal experience, typos, broken grammar or damaged
+  punctuation to imitate human writing
 - output only the completed article
 
 Internal writing profile:
 {{STYLE_PROFILE}}
+
+Reference numeric statistics ({{STYLE_FEATURE_VERSION}}):
+{{REFERENCE_STATISTICS}}
 
 Video digest:
 {{VIDEO_DIGEST}}

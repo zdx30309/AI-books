@@ -13,9 +13,20 @@ The profile must cover:
 - perspective
 - methods of developing and connecting ideas
 - asymmetry, digression/return, qualification and conclusion timing
+- information-order traces, repetition/return behavior, topic-switch timing,
+  paragraph-function incompleteness and tolerated explanation gaps
+- unevenness of information density, paragraph length, explanation depth and
+  closure strength
+- an estimated completion-level tendency without recommending that later text
+  become more complete or more polished
 - concrete editorial operations for transforming an unrelated completed draft
 - anti-copying constraints
 - measurable sentence, paragraph, punctuation, repetition, viewpoint and rhythm targets
+
+Keep separate guidance for:
+1. transforming a completed draft in place without redesigning its information
+   organization; and
+2. generating a new article along a natural, non-standardized information path.
 
 Keep the profile internal, concise, and operational. Do not quote the books.
 The numeric values below are deterministic observable proxies, not a Zhuque

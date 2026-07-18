@@ -232,7 +232,7 @@ export function TestingEndpoint() {
           </div>
           <div>
             <h1 className="font-serif text-3xl text-warm-50">Testing Endpoint</h1>
-            <p className="mt-1 text-sm text-warm-400">OpenAI ChatGPT API 专用测试链路</p>
+            <p className="mt-1 text-sm text-warm-400">双线并行：参考书约束的从头写作 / 原稿保序改写</p>
           </div>
         </div>
       </header>
@@ -338,10 +338,10 @@ export function TestingEndpoint() {
       <section className="rounded-lg border border-gold-400/20 bg-base-800/70 p-6">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold text-warm-50">已完成文章全稿实验重写</h2>
+            <h2 className="text-lg font-semibold text-warm-50">原稿保序改写</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-warm-400">
-              以参考书的抽象统计画像和写作机制为目标，先审查、再全稿重组。不会把参考书原文交给改写模型，
-              也不会覆盖普通任务；是否提升人工特征，只认候选稿的真实朱雀复检报告。
+              原稿的信息顺序、段落轨迹、跳跃、回扣、适度重复和完成度优先保留；只在这些边界内，
+              按参考书的抽象画像调整句法、节奏和表达。是否提升人工特征，只认真实朱雀复检报告。
             </p>
           </div>
           <div className="rounded-lg border border-warm-100/10 bg-base-900/50 px-4 py-3 text-xs leading-5 text-warm-400">
@@ -387,7 +387,7 @@ export function TestingEndpoint() {
             className="inline-flex items-center gap-2 rounded-lg bg-gold-400 px-4 py-2 text-sm font-semibold text-base-950 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {rewriting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-            审查并完整重写
+            按原稿轨迹审查并改写
           </button>
         </div>
       </section>
@@ -536,8 +536,10 @@ export function TestingEndpoint() {
 
       <section className="rounded-lg border border-warm-100/10 bg-base-800/70 p-6">
         <div className="mb-5">
-          <h2 className="text-lg font-semibold text-warm-50">Video Article</h2>
-          <p className="mt-1 text-sm text-warm-400">可一次粘贴多个视频链接，系统会逐条识别并分别生成文章。</p>
+          <h2 className="text-lg font-semibold text-warm-50">从头生成</h2>
+          <p className="mt-1 text-sm leading-6 text-warm-400">
+            输入视频或文字素材，系统结合参考书画像生成自然的信息展开轨迹，再逐条生成文章；不会把参考书原文交给写作模型。
+          </p>
         </div>
 
         <div className="space-y-4">

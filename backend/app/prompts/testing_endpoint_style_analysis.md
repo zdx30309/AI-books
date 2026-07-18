@@ -16,12 +16,21 @@ Analyze the reference material below. Focus only on transferable writing charact
   abstraction, uncertainty and conclusion without relying on a fixed template
 - recurring editorial operations that could transform an unrelated draft
   without borrowing any source content
+- information-organization traces: repetition, return, insertion, sudden
+  transition, local jump and the timing of examples or stopping points
+- paragraph-function incompleteness: where a paragraph only states, exemplifies
+  or adds one fact without explaining and summarizing
+- unevenness of information density, explanation depth, paragraph length and
+  closure strength
+- the source's apparent completion level and which gaps it deliberately leaves
+  unfilled
 
 Do not imitate or preserve names, scenes, private details, exact sentences, examples, jokes, metaphors, or distinctive passages from the source text.
 
 Return a compact abstract mechanism card that can guide a later unrelated
-article. Separate observed tendencies from uncertain guesses. Do not write an
-article and do not quote the source.
+article and an in-place rewrite. Separate observed tendencies from uncertain
+guesses. Distinguish genuine recurring organization behavior from isolated
+noise. Do not write an article and do not quote the source.
 
 Reference material:
 {{REFERENCE_TEXT}}

@@ -226,6 +226,7 @@ export interface TestingRewriteCompletedArticleResponse {
   original_sha256: string;
   candidate_sha256: string;
   style_feature_version: string;
+  organization_policy_version: string;
   reference_statistics: Record<string, number>;
   original_statistics: Record<string, number>;
   candidate_statistics: Record<string, number>;

@@ -44,6 +44,7 @@ class TestingRewriteCompletedArticleResponse(BaseModel):
     original_sha256: str
     candidate_sha256: str
     style_feature_version: str
+    organization_policy_version: str
     reference_statistics: dict[str, float]
     original_statistics: dict[str, float]
     candidate_statistics: dict[str, float]

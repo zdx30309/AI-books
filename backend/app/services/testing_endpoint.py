@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 TESTING_CONFIG_KEY = "testing_endpoint"
 ANALYSIS_COMPLETE_MESSAGE = "Analysis Complete"
+ORGANIZATION_POLICY_VERSION = "information-organization-v1"
 
 
 class TestingEndpointError(RuntimeError):
@@ -76,6 +77,7 @@ def analyze_reference_books(
             TESTING_CONFIG_KEY: {
                 "status": "analyzing",
                 "analysis_message": None,
+                "organization_policy_version": ORGANIZATION_POLICY_VERSION,
                 "books": [
                     {"filename": book.filename, "sha256": book.sha256, "chars": len(book.text)}
                     for book in books
@@ -99,6 +101,7 @@ def analyze_reference_books(
                 "analysis_message": ANALYSIS_COMPLETE_MESSAGE,
                 "style_profile": profile,
                 "style_feature_version": STYLE_FEATURE_VERSION,
+                "organization_policy_version": ORGANIZATION_POLICY_VERSION,
                 "reference_statistics": reference_statistics,
                 "openai_calls": [*list(testing.get("openai_calls") or []), *calls],
             }
@@ -138,6 +141,7 @@ def generate_testing_article(
     config = dict(task.config or {})
     testing = dict(config.get(TESTING_CONFIG_KEY) or {})
     style_profile = str(testing.get("style_profile") or "").strip()
+    reference_statistics = dict(testing.get("reference_statistics") or {})
     if not style_profile:
         raise TestingEndpointError("请先完成参考书的 OpenAI 风格分析。", status_code=409)
     unique_video_urls, duplicate_video_urls = _normalize_candidate_urls(video_urls)
@@ -181,7 +185,12 @@ def generate_testing_article(
             article, article_usage = _call_openai_testing(
                 _render_prompt(
                     "testing_endpoint_article_writer.md",
+                    GENERATED_ORGANIZATION_RULES=_render_prompt(
+                        "testing_endpoint_generated_organization_rules.md"
+                    ).strip(),
                     STYLE_PROFILE=style_profile,
+                    STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
+                    REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
                     VIDEO_DIGEST=digest,
                 ),
                 action="testing_article_generation",
@@ -197,6 +206,7 @@ def generate_testing_article(
                 "video_url": unique_video_urls[0],
                 "video_urls": unique_video_urls,
                 "duplicate_video_urls": duplicate_video_urls,
+                "generation_policy_version": ORGANIZATION_POLICY_VERSION,
                 "article": generated_articles[0]["article"] if len(generated_articles) == 1 else None,
                 "articles": generated_articles,
                 "openai_calls": [
@@ -264,11 +274,15 @@ def rewrite_completed_article(
     db.commit()
 
     new_calls: list[dict[str, Any]] = []
+    source_organization_rules = _render_prompt(
+        "testing_endpoint_source_organization_rules.md"
+    ).strip()
     try:
         audit_notes, audit_usage = _call_openai_testing(
             _render_prompt(
                 "testing_endpoint_completed_article_audit.md",
                 TRANSFER_STRENGTH=transfer_strength,
+                SOURCE_ORGANIZATION_RULES=source_organization_rules,
                 STYLE_PROFILE=style_profile,
                 STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
                 REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
@@ -287,6 +301,7 @@ def rewrite_completed_article(
             _render_prompt(
                 "testing_endpoint_completed_article_rewrite.md",
                 TRANSFER_STRENGTH=transfer_strength,
+                SOURCE_ORGANIZATION_RULES=source_organization_rules,
                 STYLE_PROFILE=style_profile,
                 REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
                 ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
@@ -329,6 +344,7 @@ def rewrite_completed_article(
                     _render_prompt(
                         "testing_endpoint_completed_article_refine.md",
                         TRANSFER_STRENGTH=transfer_strength,
+                        SOURCE_ORGANIZATION_RULES=source_organization_rules,
                         STYLE_PROFILE=style_profile,
                         REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
                         ORIGINAL_STATISTICS=_json_for_prompt(original_statistics),
@@ -399,6 +415,7 @@ def rewrite_completed_article(
             "original_sha256": original_sha256,
             "candidate_sha256": candidate_sha256,
             "style_feature_version": STYLE_FEATURE_VERSION,
+            "organization_policy_version": ORGANIZATION_POLICY_VERSION,
             "reference_statistics": reference_statistics,
             "original_statistics": original_statistics,
             "candidate_statistics": candidate_statistics,
@@ -424,6 +441,7 @@ def rewrite_completed_article(
         testing.update(
             {
                 "status": "rewrite_complete",
+                "organization_policy_version": ORGANIZATION_POLICY_VERSION,
                 "last_rewrite_experiment": previous_experiments[-1],
                 # Bound JSON growth while still retaining controlled A/B history.
                 "rewrite_experiments": previous_experiments[-3:],

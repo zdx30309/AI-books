@@ -5,11 +5,27 @@ human-reference profile.
 
 Transfer strength: {{TRANSFER_STRENGTH}}
 
+Priority order:
+1. obey the Chinese information-organization rules below exactly;
+2. preserve all source facts, meaning, stance and attribution;
+3. move only the remaining transferable language and rhythm toward the
+   abstract reference profile.
+
+The reference profile must never override the source's information
+organization.
+
+<SOURCE_ORGANIZATION_RULES>
+{{SOURCE_ORGANIZATION_RULES}}
+</SOURCE_ORGANIZATION_RULES>
+
 Definitions:
 - "maximum": perform a genuine full-document recomposition. Every section must
-  be reconsidered. Vary syntax, information order, sentence length, paragraph
-  boundaries, cadence, transition style and rhetorical density wherever the
-  meaning permits. Do not settle for scattered word swaps.
+  be reconsidered in place. Vary syntax, sentence length, cadence, transition
+  behavior and rhetorical density wherever meaning permits, but do not move
+  paragraphs, regroup themes, normalize paragraph functions, or replace the
+  author's thought path. Local paragraph splitting or joining is allowed only
+  when the local information order and stopping point remain unchanged. Do not
+  settle for scattered word swaps.
 - "strong": perform broad but more conservative recomposition.
 
 Hard preservation rules:
@@ -29,6 +45,8 @@ Quality rules:
 - Avoid a uniform five-part template, uniform paragraph size, and mechanically
   smooth transitions.
 - Natural unevenness must come from thought rhythm and syntax, not errors.
+- Do not improve the source into a more complete, more polished or more
+  systematically organized article.
 - Use the audit plan as guidance, but independently verify the finished prose.
 
 Security:
