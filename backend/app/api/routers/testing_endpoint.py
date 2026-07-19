@@ -47,7 +47,17 @@ async def analyze_testing_reference_books(
             for index, book in enumerate(books)
         ]
         task = analyze_reference_books(db, user=user, books=refs)
-        return TestingAnalysisResponse(task_id=str(task.id), message=ANALYSIS_COMPLETE_MESSAGE)
+        compression = dict(
+            ((task.config or {}).get("testing_endpoint") or {}).get("compression_metadata") or {}
+        )
+        return TestingAnalysisResponse(
+            task_id=str(task.id),
+            message=ANALYSIS_COMPLETE_MESSAGE,
+            reference_book_count=int(compression.get("book_count") or 0),
+            reference_chars=int(compression.get("source_chars") or 0),
+            reference_chunk_count=int(compression.get("chunk_count") or 0),
+            compressed_chars=int(compression.get("compressed_chars") or 0),
+        )
     except TestingEndpointError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

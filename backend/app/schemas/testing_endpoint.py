@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 class TestingAnalysisResponse(BaseModel):
     task_id: str
     status: str = "analysis_complete"
-    message: str = "Analysis Complete"
+    message: str = "参考书全分片压缩完成"
+    reference_book_count: int
+    reference_chars: int
+    reference_chunk_count: int
+    compressed_chars: int
+    reference_input_mode: str = "chunk_compressed"
 
 
 class TestingGenerateArticleRequest(BaseModel):
@@ -43,18 +48,9 @@ class TestingRewriteCompletedArticleResponse(BaseModel):
     candidate_text: str
     original_sha256: str
     candidate_sha256: str
-    style_feature_version: str
     organization_policy_version: str
-    reference_statistics: dict[str, float]
-    original_statistics: dict[str, float]
-    candidate_statistics: dict[str, float]
-    original_distance: dict[str, Any]
-    candidate_distance: dict[str, Any]
-    distance_improvement_percent: float
     surface_change_percent: float
     surface_change_method: str
-    selected_attempt: int
-    rewrite_attempts: list[dict[str, Any]] = Field(default_factory=list)
     model: str
     openai_calls: list[dict[str, Any]] = Field(default_factory=list)
 

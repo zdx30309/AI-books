@@ -170,7 +170,12 @@ export interface TaskCategoryListResponse {
 export interface TestingAnalysisResponse {
   task_id: string;
   status: "analysis_complete";
-  message: "Analysis Complete";
+  message: string;
+  reference_book_count: number;
+  reference_chars: number;
+  reference_chunk_count: number;
+  compressed_chars: number;
+  reference_input_mode: "chunk_compressed";
 }
 
 export interface TestingGenerateArticleRequest {
@@ -197,27 +202,6 @@ export interface TestingRewriteCompletedArticleRequest {
   transfer_strength?: "strong" | "maximum";
 }
 
-export interface TestingStyleComparison {
-  version: string;
-  overall_distance: number;
-  feature_count: number;
-  largest_gaps: Array<{
-    feature: string;
-    reference: number;
-    candidate: number;
-    delta: number;
-    normalized_distance: number;
-  }>;
-  features: Array<{
-    feature: string;
-    reference: number;
-    candidate: number;
-    delta: number;
-    normalized_distance: number;
-  }>;
-  disclaimer: string;
-}
-
 export interface TestingRewriteCompletedArticleResponse {
   task_id: string;
   status: "rewrite_complete";
@@ -225,24 +209,9 @@ export interface TestingRewriteCompletedArticleResponse {
   candidate_text: string;
   original_sha256: string;
   candidate_sha256: string;
-  style_feature_version: string;
   organization_policy_version: string;
-  reference_statistics: Record<string, number>;
-  original_statistics: Record<string, number>;
-  candidate_statistics: Record<string, number>;
-  original_distance: TestingStyleComparison;
-  candidate_distance: TestingStyleComparison;
-  distance_improvement_percent: number;
   surface_change_percent: number;
   surface_change_method: string;
-  selected_attempt: number;
-  rewrite_attempts: Array<{
-    attempt: number;
-    reference_distance: number;
-    distance_improvement_percent: number;
-    surface_change_percent: number;
-    selected: boolean;
-  }>;
   model: string;
   openai_calls: Array<Record<string, unknown>>;
 }

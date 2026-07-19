@@ -66,12 +66,13 @@ def test_openai_testing_call_uses_configured_openai_model(monkeypatch: pytest.Mo
             "input": "prompt",
             "reasoning": {"effort": "low"},
             "text": {"verbosity": "medium"},
+            "truncation": "disabled",
             "max_output_tokens": 123,
         }
     ]
 
 
-def test_reference_analysis_reserves_visible_output_and_retries_empty_response(
+def test_openai_call_retries_empty_response_once_without_hidden_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -117,13 +118,14 @@ def test_reference_analysis_reserves_visible_output_and_retries_empty_response(
 
     text, usage = testing_endpoint._call_openai_testing(
         "prompt",
-        action="testing_style_analysis",
+        action="testing_reference_chunk_compression",
         max_output_tokens=2500,
     )
 
     assert text == "style note"
     assert calls[0]["reasoning"] == {"effort": "medium"}
     assert calls[0]["max_output_tokens"] == 6000
+    assert calls[0]["truncation"] == "disabled"
     assert calls[1]["reasoning"] == {"effort": "low"}
     assert calls[1]["max_output_tokens"] == 12000
     assert usage["attempt_count"] == 2
@@ -165,7 +167,7 @@ def test_empty_openai_response_reports_actual_incomplete_reason_after_one_retry(
     with pytest.raises(testing_endpoint.TestingEndpointError) as exc_info:
         testing_endpoint._call_openai_testing(
             "prompt",
-            action="testing_style_analysis",
+            action="testing_reference_chunk_compression",
             max_output_tokens=2500,
         )
 
@@ -173,12 +175,6 @@ def test_empty_openai_response_reports_actual_incomplete_reason_after_one_retry(
     assert "max_output_tokens" in str(exc_info.value)
     assert "自动降低推理强度并重试一次" in str(exc_info.value)
     assert len(calls) == 2
-
-
-def test_reference_book_chunk_size_has_a_safe_upper_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(testing_endpoint.settings, "TESTING_ENDPOINT_BOOK_CHUNK_CHARS", 80_000)
-
-    assert testing_endpoint._book_chunk_chars() == 50_000
 
 
 def test_testing_payload_does_not_expose_internal_style_profile() -> None:
@@ -208,7 +204,13 @@ def test_testing_payload_does_not_expose_internal_style_profile() -> None:
     assert "private profile" not in str(payload)
 
 
-def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
+def test_reference_book_chunk_size_has_a_safe_upper_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(testing_endpoint.settings, "TESTING_ENDPOINT_BOOK_CHUNK_CHARS", 80_000)
+
+    assert testing_endpoint._book_chunk_chars() == 50_000
+
+
+def test_reference_upload_persists_compression_but_not_raw_book(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_text = "这是绝不能持久化的参考书原文。" * 100
@@ -218,11 +220,19 @@ def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
         sha256="a" * 64,
     )
     monkeypatch.setattr(testing_endpoint, "_require_openai_credentials", lambda: "test-key")
-    monkeypatch.setattr(
-        testing_endpoint,
-        "_build_style_profile",
-        lambda books, reference_statistics: ("abstract profile", []),
-    )
+    monkeypatch.setattr(testing_endpoint, "_build_reference_compression", lambda books: (
+        "可迁移写作参照；禁止模仿具体作者风格。",
+        [{"action": "testing_reference_chunk_compression"}],
+        {
+            "book_count": 1,
+            "source_chars": len(raw_text),
+            "chunk_count": 1,
+            "chunk_chars": 50_000,
+            "compressed_chars": 20,
+            "raw_text_persisted": False,
+            "specific_style_imitation_allowed": False,
+        },
+    ))
 
     task = testing_endpoint.analyze_reference_books(
         _FakeDb(),
@@ -231,19 +241,48 @@ def test_reference_analysis_persists_numeric_profile_but_not_raw_book(
     )
 
     persisted = task.config["testing_endpoint"]
-    assert persisted["style_feature_version"] == "style-probe-v2"
-    assert persisted["organization_policy_version"] == "information-organization-v2-single-candidate"
-    assert persisted["reference_statistics"]["char_count"] > 0
-    assert persisted["style_profile"] == "abstract profile"
+    assert persisted["organization_policy_version"] == "information-organization-v4-chunk-compressed-no-style-imitation"
+    assert persisted["reference_input_mode"] == "chunk_compressed"
+    assert persisted["reference_compression"].startswith("可迁移写作参照")
+    assert persisted["compression_metadata"]["specific_style_imitation_allowed"] is False
+    assert "style_profile" not in persisted
+    assert "style_feature_version" not in persisted
+    assert "reference_statistics" not in persisted
     assert raw_text not in str(task.config)
 
 
-def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candidate(
+def test_reference_compression_reads_every_book_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = []
+    books = [
+        testing_endpoint.UploadedReferenceBook("one.epub", "第一本开头。\n\n第一本结尾。", "a" * 64),
+        testing_endpoint.UploadedReferenceBook("two.pdf", "第二本开头。\n\n第二本最后一句。", "b" * 64),
+    ]
+    def fake_call(prompt: str, *, action: str, max_output_tokens: int | None):
+        prompts.append((action, prompt))
+        if action == "testing_reference_compression_synthesis":
+            return "最终压缩结果：只保留可迁移参照，禁止模仿具体作者风格。", {"action": action}
+        return f"分片压缩{len(prompts)}", {"action": action}
+
+    monkeypatch.setattr(testing_endpoint, "_call_openai_testing", fake_call)
+    compression, calls, metadata = testing_endpoint._build_reference_compression(books)
+
+    assert compression.startswith("最终压缩结果")
+    assert metadata["book_count"] == 2
+    assert metadata["chunk_count"] == 2
+    assert len(calls) == 3
+    assert "第一本开头" in prompts[0][1]
+    assert "第一本结尾" in prompts[0][1]
+    assert "第二本开头" in prompts[1][1]
+    assert "第二本最后一句" in prompts[1][1]
+    assert "分片压缩1" in prompts[2][1]
+    assert "分片压缩2" in prompts[2][1]
+
+
+def test_full_article_rewrite_uses_chunk_compression_without_style_imitation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = "原稿保留事实。这个句子继续说明同一件事，不新增材料。" * 60
     candidate = "事实仍在。原有说明换了节奏，但没有另添材料。\n\n这一层意思，仍旧如此。" * 45
-    reference_text = "短句。忽然拉长一点，把前后几层意思放在同一句里说清楚。\n\n再停一下。" * 80
     prompts: list[tuple[str, str]] = []
 
     def fake_call(prompt: str, *, action: str, max_output_tokens: int | None):
@@ -262,9 +301,7 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
             "category": "testing_endpoint",
             "testing_endpoint": {
                 "status": "analysis_complete",
-                "style_profile": "只包含抽象节奏画像",
-                "style_feature_version": "style-probe-v2",
-                "reference_statistics": testing_endpoint.profile_style(reference_text),
+                "reference_compression": "标点、推进、句长等可迁移写作参照。禁止模仿作者具体风格。",
                 "openai_calls": [],
             },
         },
@@ -278,39 +315,47 @@ def test_full_article_rewrite_uses_abstract_profile_and_returns_measured_candida
     )
 
     assert result["candidate_text"] == candidate
-    assert result["style_feature_version"] == "style-probe-v2"
-    assert result["organization_policy_version"] == "information-organization-v2-single-candidate"
+    assert result["organization_policy_version"] == "information-organization-v4-chunk-compressed-no-style-imitation"
     assert result["surface_change_percent"] > 0
-    assert result["selected_attempt"] == 1
-    assert len(result["rewrite_attempts"]) == 1
-    assert result["rewrite_attempts"][0]["selected"] is True
     assert result["original_sha256"] != result["candidate_sha256"]
-    assert result["original_distance"]["feature_count"] > 10
-    assert result["candidate_distance"]["feature_count"] > 10
+    assert "style_feature_version" not in result
+    assert "reference_statistics" not in result
+    assert "original_distance" not in result
     assert [item[0] for item in prompts] == ["testing_completed_article_rewrite"]
     for _, rendered_prompt in prompts:
+        complete_rules = testing_endpoint._render_prompt(
+            "testing_endpoint_source_organization_rules.md"
+        ).strip()
+        assert complete_rules in rendered_prompt
         assert "信息组织规则（最高优先级）" in rendered_prompt
+        assert "发生冲突时必须舍弃参考书参照" in rendered_prompt
+        assert "由参考书全部分片逐层压缩得到的写作参照" in rendered_prompt
+        assert "不得声称、暗示或尝试“像参考书作者一样写”" in rendered_prompt
+        assert "词语搭配" in rendered_prompt
+        assert "语法和句子结构" in rendered_prompt
+        assert "判断方式" in rendered_prompt
+        assert "论证习惯" in rendered_prompt
         assert "不要为了逻辑更顺而调整段落顺序" in rendered_prompt
         assert "不要把每一段都写成“完整单元”" in rendered_prompt
         assert "修改后的文章完成度，不应明显高于原稿" in rendered_prompt
         assert "保持原作者的“思考轨迹”" in rendered_prompt
         assert "你的任务是让文章更像作者本人重新写了一遍" in rendered_prompt
         assert "{{SOURCE_ORGANIZATION_RULES}}" not in rendered_prompt
-        assert "Preserve the exact number and order of non-empty paragraphs" in rendered_prompt
+        assert "可以重新切分或组合句子" in rendered_prompt
+        assert "保留全部事实、数据、案例、人物、核心观点" in rendered_prompt
         assert "genuine full-document recomposition" not in rendered_prompt
         assert "change the full article's statistical shape" not in rendered_prompt
         assert "Reconsider the full document" not in rendered_prompt
         assert "REFERENCE_STATISTICS" not in rendered_prompt
         assert "ORIGINAL_STATISTICS" not in rendered_prompt
-    assert "只包含抽象节奏画像" in prompts[0][1]
-    assert "参考书原文" not in prompts[0][1]
-    assert "单候选保序模式" in result["audit_notes"]
+    assert "STYLE_PROFILE" not in prompts[0][1]
+    assert "参考书全文已逐片读取并压缩" in result["audit_notes"]
     persisted = task.config["testing_endpoint"]["last_rewrite_experiment"]
     assert persisted["original_text"] == source
     assert persisted["candidate_text"] == candidate
 
 
-def test_from_scratch_generation_uses_reversed_organization_rules_and_reference_profile(
+def test_from_scratch_generation_uses_reversed_rules_and_chunk_compression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompts: list[tuple[str, str]] = []
@@ -335,9 +380,7 @@ def test_from_scratch_generation_uses_reversed_organization_rules_and_reference_
             "category": "testing_endpoint",
             "testing_endpoint": {
                 "status": "analysis_complete",
-                "style_profile": "抽象画像：段落功能不对称，允许回扣。",
-                "style_feature_version": "style-probe-v2",
-                "reference_statistics": {"sentence_length_cv": 0.61, "paragraph_length_cv": 0.72},
+                "reference_compression": "只含非作者专属的可迁移写作参照。",
                 "openai_calls": [],
             },
         },
@@ -360,13 +403,17 @@ def test_from_scratch_generation_uses_reversed_organization_rules_and_reference_
     assert "先在内部形成一条自然、可读、但不被整理成“标准答案”的信息展开轨迹" in writer_prompt
     assert "不要让每个段落都成为完整单元" in writer_prompt
     assert "逐章反向检查" in writer_prompt
-    assert "抽象画像：段落功能不对称，允许回扣。" in writer_prompt
-    assert '"sentence_length_cv": 0.61' in writer_prompt
+    assert "compression built from every chunk" in writer_prompt
+    assert "not an instruction to imitate the reference author's style" in writer_prompt
+    assert "collocations" in writer_prompt
+    assert "grammar" in writer_prompt
+    assert "sentence structure" in writer_prompt
+    assert "judgment, and argumentation" in writer_prompt
     assert "{{GENERATED_ORGANIZATION_RULES}}" not in writer_prompt
-    assert "{{REFERENCE_STATISTICS}}" not in writer_prompt
+    assert "{{STYLE_PROFILE}}" not in writer_prompt
     assert (
         task.config["testing_endpoint"]["generation_policy_version"]
-        == "information-organization-v2-single-candidate"
+        == "information-organization-v4-chunk-compressed-no-style-imitation"
     )
 
 
@@ -384,11 +431,6 @@ def test_verified_zhuque_feedback_is_hash_bound_and_idempotent() -> None:
                 "last_rewrite_experiment": {
                     "original_sha256": original_hash,
                     "candidate_sha256": candidate_hash,
-                    "style_feature_version": "style-probe-v2",
-                    "original_statistics": {"sentence_length_cv": 0.2},
-                    "candidate_statistics": {"sentence_length_cv": 0.5},
-                    "original_distance": {"overall_distance": 0.4},
-                    "candidate_distance": {"overall_distance": 0.2},
                     "surface_change_percent": 45.0,
                     "model": "gpt-test",
                     "transfer_strength": "maximum",
@@ -429,7 +471,7 @@ def test_verified_zhuque_feedback_is_hash_bound_and_idempotent() -> None:
     assert first["human_delta_percent_points"] == 28.5
     assert second["verified_observation_count"] == 1
     observation = task.config["testing_endpoint"]["verified_zhuque_observations"][0]
-    assert observation["style_feature_delta"]["sentence_length_cv"] == 0.3
+    assert "style_feature_delta" not in observation
     assert observation["evidence_type"] == "real_zhuque_verified_pair"
 
 

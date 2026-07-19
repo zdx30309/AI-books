@@ -6,7 +6,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from collections import Counter
 import hashlib
-import json
 import logging
 import os
 import re
@@ -20,11 +19,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import PROJECT_ROOT, settings
 from app.models import Task, TaskStatus, User
-from app.services.aigc_style_probe import (
-    STYLE_FEATURE_VERSION,
-    compare_style_profiles,
-    profile_style,
-)
 from app.services.aigc_report_review import normalize_manuscript_text
 from app.services.content_engine import (
     _extract_openai_response_text,
@@ -39,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 TESTING_CONFIG_KEY = "testing_endpoint"
-ANALYSIS_COMPLETE_MESSAGE = "Analysis Complete"
-ORGANIZATION_POLICY_VERSION = "information-organization-v2-single-candidate"
+ANALYSIS_COMPLETE_MESSAGE = "参考书全分片压缩完成"
+ORGANIZATION_POLICY_VERSION = "information-organization-v4-chunk-compressed-no-style-imitation"
 
 
 class TestingEndpointError(RuntimeError):
@@ -70,12 +64,12 @@ def analyze_reference_books(
         owner_id=user.id,
         status=TaskStatus.PROCESSING,
         progress=10,
-        current_step="Analyzing reference books with OpenAI ChatGPT API",
+        current_step="Compressing all reference-book chunks",
         config={
             "category": "testing_endpoint",
             "category_label": "Testing Endpoint",
             TESTING_CONFIG_KEY: {
-                "status": "analyzing",
+                "status": "compressing_reference_chunks",
                 "analysis_message": None,
                 "organization_policy_version": ORGANIZATION_POLICY_VERSION,
                 "books": [
@@ -91,21 +85,24 @@ def analyze_reference_books(
     db.refresh(task)
 
     try:
-        reference_statistics = profile_style("\n\n".join(book.text for book in books))
-        profile, calls = _build_style_profile(books, reference_statistics=reference_statistics)
+        reference_compression, calls, compression_metadata = _build_reference_compression(books)
         config = dict(task.config or {})
         testing = dict(config.get(TESTING_CONFIG_KEY) or {})
         testing.update(
             {
                 "status": "analysis_complete",
                 "analysis_message": ANALYSIS_COMPLETE_MESSAGE,
-                "style_profile": profile,
-                "style_feature_version": STYLE_FEATURE_VERSION,
                 "organization_policy_version": ORGANIZATION_POLICY_VERSION,
-                "reference_statistics": reference_statistics,
+                "reference_input_mode": "chunk_compressed",
+                "reference_compression": reference_compression,
+                "compression_metadata": compression_metadata,
                 "openai_calls": [*list(testing.get("openai_calls") or []), *calls],
             }
         )
+        testing.pop("style_profile", None)
+        testing.pop("style_feature_version", None)
+        testing.pop("reference_statistics", None)
+        testing.pop("reference_file", None)
         config[TESTING_CONFIG_KEY] = testing
         task.config = config
         task.status = TaskStatus.COMPLETED
@@ -124,7 +121,7 @@ def analyze_reference_books(
         task.config = config
         task.status = TaskStatus.FAILED
         task.progress = 100
-        task.current_step = "Reference book analysis stopped"
+        task.current_step = "Reference chunk compression stopped"
         task.error_message = message
         db.commit()
         raise TestingEndpointError(message, status_code=status_code) from exc
@@ -140,10 +137,12 @@ def generate_testing_article(
     _require_openai_credentials()
     config = dict(task.config or {})
     testing = dict(config.get(TESTING_CONFIG_KEY) or {})
-    style_profile = str(testing.get("style_profile") or "").strip()
-    reference_statistics = dict(testing.get("reference_statistics") or {})
-    if not style_profile:
-        raise TestingEndpointError("请先完成参考书的 OpenAI 风格分析。", status_code=409)
+    reference_compression = str(testing.get("reference_compression") or "").strip()
+    if not reference_compression:
+        raise TestingEndpointError(
+            "当前任务没有可用的参考书分片压缩结果，请重新上传参考书。",
+            status_code=409,
+        )
     unique_video_urls, duplicate_video_urls = _normalize_candidate_urls(video_urls)
     if not unique_video_urls:
         raise TestingEndpointError("请至少提供 1 个视频链接。", status_code=400)
@@ -188,9 +187,7 @@ def generate_testing_article(
                     GENERATED_ORGANIZATION_RULES=_render_prompt(
                         "testing_endpoint_generated_organization_rules.md"
                     ).strip(),
-                    STYLE_PROFILE=style_profile,
-                    STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
-                    REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
+                    REFERENCE_COMPRESSION=reference_compression,
                     VIDEO_DIGEST=digest,
                 ),
                 action="testing_article_generation",
@@ -245,7 +242,7 @@ def rewrite_completed_article(
     original_text: str,
     transfer_strength: str = "maximum",
 ) -> dict[str, Any]:
-    """Rewrite one completed article from abstract reference features only."""
+    """Rewrite one completed article from an all-chunk reference compression."""
     _require_openai_credentials()
     source = normalize_manuscript_text(original_text)
     if len(source) < 500:
@@ -255,16 +252,13 @@ def rewrite_completed_article(
 
     config = dict(task.config or {})
     testing = dict(config.get(TESTING_CONFIG_KEY) or {})
-    style_profile = str(testing.get("style_profile") or "").strip()
-    reference_statistics = dict(testing.get("reference_statistics") or {})
-    if not style_profile or not reference_statistics:
+    reference_compression = str(testing.get("reference_compression") or "").strip()
+    if not reference_compression:
         raise TestingEndpointError(
-            "当前参考书尚未生成 v2 人类写作画像，请重新执行一次参考书分析。",
+            "当前任务没有可用的参考书分片压缩结果，请重新上传参考书。",
             status_code=409,
         )
 
-    original_statistics = profile_style(source)
-    original_distance = compare_style_profiles(reference_statistics, original_statistics)
     original_sha256 = _text_sha256(source)
 
     task.status = TaskStatus.PROCESSING
@@ -279,14 +273,14 @@ def rewrite_completed_article(
     ).strip()
     try:
         audit_notes = (
-            "单候选保序模式：不生成全稿重构计划，不执行二轮数值校正，"
-            "不按本地参考距离自动择优。参考书抽象画像只作为不冲突时的软提示。"
+            "参考书全文已逐片读取并压缩；改写请求只使用压缩结果、完整原稿和信息组织规则。"
+            "明确禁止模仿或复刻参考书作者的具体风格。"
         )
         candidate_text, rewrite_usage = _call_openai_testing(
             _render_prompt(
                 "testing_endpoint_completed_article_rewrite.md",
                 SOURCE_ORGANIZATION_RULES=source_organization_rules,
-                STYLE_PROFILE=style_profile,
+                REFERENCE_COMPRESSION=reference_compression,
                 ORIGINAL_ARTICLE=source,
             ),
             action="testing_completed_article_rewrite",
@@ -299,28 +293,7 @@ def rewrite_completed_article(
         rewrite_usage["candidate_chars"] = len(candidate_text)
         new_calls.append(rewrite_usage)
 
-        original_distance_value = float(original_distance.get("overall_distance") or 0.0)
-        candidate_statistics, candidate_distance, surface_change_percent = _evaluate_rewrite_candidate(
-            reference_statistics,
-            source,
-            candidate_text,
-        )
-        candidate_distance_value = float(candidate_distance.get("overall_distance") or 0.0)
-        selected_attempt = 1
-        rewrite_attempts: list[dict[str, Any]] = [
-            _rewrite_attempt_summary(
-                attempt=1,
-                distance=candidate_distance_value,
-                original_distance=original_distance_value,
-                surface_change_percent=surface_change_percent,
-            )
-        ]
-        rewrite_attempts[0]["selected"] = True
-        distance_improvement_percent = (
-            (original_distance_value - candidate_distance_value) / original_distance_value * 100
-            if original_distance_value > 0
-            else 0.0
-        )
+        surface_change_percent = round(_surface_change_ratio(source, candidate_text) * 100, 3)
         candidate_sha256 = _text_sha256(candidate_text)
         result: dict[str, Any] = {
             "task_id": str(task.id),
@@ -329,18 +302,9 @@ def rewrite_completed_article(
             "candidate_text": candidate_text,
             "original_sha256": original_sha256,
             "candidate_sha256": candidate_sha256,
-            "style_feature_version": STYLE_FEATURE_VERSION,
             "organization_policy_version": ORGANIZATION_POLICY_VERSION,
-            "reference_statistics": reference_statistics,
-            "original_statistics": original_statistics,
-            "candidate_statistics": candidate_statistics,
-            "original_distance": original_distance,
-            "candidate_distance": candidate_distance,
-            "distance_improvement_percent": round(distance_improvement_percent, 3),
             "surface_change_percent": round(surface_change_percent, 3),
             "surface_change_method": "CJK four-gram multiset distance",
-            "selected_attempt": selected_attempt,
-            "rewrite_attempts": rewrite_attempts,
             "model": _testing_model(),
             "openai_calls": new_calls,
         }
@@ -421,16 +385,8 @@ def record_zhuque_feedback(
     except (KeyError, TypeError, ValueError) as exc:
         raise TestingEndpointError("报告缺少官方人工特征比例。", status_code=409) from exc
 
-    original_statistics = dict(experiment.get("original_statistics") or {})
-    candidate_statistics = dict(experiment.get("candidate_statistics") or {})
-    feature_delta = {
-        key: round(float(candidate_statistics.get(key, 0.0)) - float(value), 6)
-        for key, value in original_statistics.items()
-        if key in candidate_statistics
-    }
     observation = {
         "evidence_type": "real_zhuque_verified_pair",
-        "style_feature_version": str(experiment.get("style_feature_version") or STYLE_FEATURE_VERSION),
         "original_sha256": expected_original_hash,
         "candidate_sha256": expected_candidate_hash,
         "baseline_report_sha256": baseline_report.get("report_sha256"),
@@ -440,9 +396,6 @@ def record_zhuque_feedback(
         "baseline_human_percent": round(baseline_human, 6),
         "candidate_human_percent": round(candidate_human, 6),
         "human_delta_percent_points": round(candidate_human - baseline_human, 6),
-        "style_feature_delta": feature_delta,
-        "original_reference_distance": (experiment.get("original_distance") or {}).get("overall_distance"),
-        "candidate_reference_distance": (experiment.get("candidate_distance") or {}).get("overall_distance"),
         "surface_change_percent": experiment.get("surface_change_percent"),
         "model": experiment.get("model"),
         "transfer_strength": experiment.get("transfer_strength"),
@@ -501,39 +454,54 @@ def testing_payload(task: Task) -> dict[str, Any]:
     }
 
 
-def _build_style_profile(
+def _build_reference_compression(
     books: list[UploadedReferenceBook],
-    *,
-    reference_statistics: dict[str, float],
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Read every source chunk and compress it without author-style imitation."""
     notes: list[str] = []
     calls: list[dict[str, Any]] = []
+    chunk_count = 0
     for book in books:
         for index, chunk in enumerate(_split_text(book.text, _book_chunk_chars()), start=1):
             note, usage = _call_openai_testing(
-                _render_prompt("testing_endpoint_style_analysis.md", REFERENCE_TEXT=chunk),
-                action="testing_style_analysis",
-                max_output_tokens=_style_note_max_tokens(),
+                _render_prompt(
+                    "testing_endpoint_reference_chunk_compression.md",
+                    REFERENCE_TEXT=chunk,
+                ),
+                action="testing_reference_chunk_compression",
+                max_output_tokens=_reference_note_max_tokens(),
             )
+            chunk_count += 1
             usage.update({"source_filename": book.filename, "chunk_index": index})
             calls.append(usage)
             notes.append(f"[{book.filename} chunk {index}]\n{note}")
 
-    profile, usage = _call_openai_testing(
+    compression, usage = _call_openai_testing(
         _render_prompt(
-            "testing_endpoint_style_synthesis.md",
-            STYLE_NOTES="\n\n".join(notes),
-            REFERENCE_STATISTICS=_json_for_prompt(reference_statistics),
-            STYLE_FEATURE_VERSION=STYLE_FEATURE_VERSION,
+            "testing_endpoint_reference_compression_synthesis.md",
+            REFERENCE_NOTES="\n\n".join(notes),
         ),
-        action="testing_style_synthesis",
-        max_output_tokens=_style_profile_max_tokens(),
+        action="testing_reference_compression_synthesis",
+        max_output_tokens=_reference_compression_max_tokens(),
     )
     calls.append(usage)
-    return profile, calls
+    return compression, calls, {
+        "book_count": len(books),
+        "source_chars": sum(len(book.text) for book in books),
+        "chunk_count": chunk_count,
+        "chunk_chars": _book_chunk_chars(),
+        "compressed_chars": len(compression),
+        "raw_text_persisted": False,
+        "specific_style_imitation_allowed": False,
+    }
 
 
-def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+def _call_openai_testing(
+    prompt: str,
+    *,
+    action: str,
+    max_output_tokens: int | None,
+) -> tuple[str, dict[str, Any]]:
     client = _testing_openai_client()
     model = _testing_model()
     initial_effort = _reasoning_effort_for_action(action)
@@ -557,6 +525,8 @@ def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | N
             "input": prompt,
             "reasoning": {"effort": effort},
             "text": {"verbosity": _verbosity()},
+            # Never silently truncate an oversized synthesis or manuscript.
+            "truncation": "disabled",
         }
         if output_budget and output_budget > 0:
             kwargs["max_output_tokens"] = output_budget
@@ -636,6 +606,7 @@ def _call_openai_testing(prompt: str, *, action: str, max_output_tokens: int | N
         "usage": total_usage,
         "attempt_count": len(attempts),
         "attempts": attempts,
+        "reference_input_mode": "prompt_text",
     }
 
 
@@ -850,10 +821,6 @@ def _render_prompt(filename: str, **values: str) -> str:
     return rendered
 
 
-def _json_for_prompt(value: dict[str, Any]) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
-
-
 def _text_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -880,40 +847,11 @@ def _surface_change_ratio(original: str, candidate: str) -> float:
     return round(1.0 - overlap / denominator, 6)
 
 
-def _evaluate_rewrite_candidate(
-    reference_statistics: dict[str, Any],
-    original: str,
-    candidate: str,
-) -> tuple[dict[str, float], dict[str, Any], float]:
-    statistics = profile_style(candidate)
-    distance = compare_style_profiles(reference_statistics, statistics)
-    surface_change_percent = round(_surface_change_ratio(original, candidate) * 100, 3)
-    return statistics, distance, surface_change_percent
-
-
-def _rewrite_attempt_summary(
-    *,
-    attempt: int,
-    distance: float,
-    original_distance: float,
-    surface_change_percent: float,
-) -> dict[str, Any]:
-    improvement = (
-        (original_distance - distance) / original_distance * 100
-        if original_distance > 0
-        else 0.0
-    )
-    return {
-        "attempt": attempt,
-        "reference_distance": round(distance, 6),
-        "distance_improvement_percent": round(improvement, 3),
-        "surface_change_percent": round(surface_change_percent, 3),
-        "selected": False,
-    }
-
-
 def _split_text(text: str, max_chars: int) -> list[str]:
-    cleaned = "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip()
+    cleaned = "\n".join(
+        line.rstrip()
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ).strip()
     if len(cleaned) <= max_chars:
         return [cleaned]
     chunks: list[str] = []
@@ -941,12 +879,9 @@ def _reasoning_effort() -> str:
 
 def _reasoning_effort_for_action(action: str) -> str:
     configured = _reasoning_effort().lower() or "medium"
-    # Extraction and synthesis need enough visible answer tokens, not maximal
-    # hidden reasoning.  Keep the configured (including xhigh) effort for the
-    # actual article-writing and rewriting calls.
     if action in {
-        "testing_style_analysis",
-        "testing_style_synthesis",
+        "testing_reference_chunk_compression",
+        "testing_reference_compression_synthesis",
         "testing_video_digest",
     } and configured in {"high", "xhigh"}:
         return "medium"
@@ -960,8 +895,8 @@ def _fallback_reasoning_effort(current_effort: str) -> str:
 
 def _output_budget_for_action(action: str, requested: int | None) -> int | None:
     minimums = {
-        "testing_style_analysis": 6000,
-        "testing_style_synthesis": 8000,
+        "testing_reference_chunk_compression": 6000,
+        "testing_reference_compression_synthesis": 8000,
     }
     minimum = minimums.get(action, 0)
     parsed = max(0, int(requested or 0))
@@ -971,8 +906,8 @@ def _output_budget_for_action(action: str, requested: int | None) -> int | None:
 
 def _empty_response_retry_budget(action: str, current: int | None) -> int | None:
     minimums = {
-        "testing_style_analysis": 8000,
-        "testing_style_synthesis": 10000,
+        "testing_reference_chunk_compression": 8000,
+        "testing_reference_compression_synthesis": 10000,
     }
     minimum = minimums.get(action, 0)
     parsed = max(0, int(current or 0))
@@ -990,11 +925,11 @@ def _book_chunk_chars() -> int:
     return min(50_000, configured)
 
 
-def _style_note_max_tokens() -> int:
+def _reference_note_max_tokens() -> int:
     return int(settings.TESTING_ENDPOINT_STYLE_NOTE_MAX_OUTPUT_TOKENS or 2500)
 
 
-def _style_profile_max_tokens() -> int:
+def _reference_compression_max_tokens() -> int:
     return int(settings.TESTING_ENDPOINT_STYLE_PROFILE_MAX_OUTPUT_TOKENS or 4000)
 
 

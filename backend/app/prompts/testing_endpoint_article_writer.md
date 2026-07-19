@@ -1,6 +1,22 @@
-You are writing a complete original article based on a processed video.
+You are writing a complete original article based on a processed video. You are
+also given a compression built from every chunk of the uploaded reference book.
 
-Use the video digest as the factual basis. Follow the internal writing profile as closely as possible in its transferable tone, structure, narrative rhythm, perspective, reasoning approach, and way of developing ideas.
+The compression is not an instruction to imitate the reference author's style.
+Do not write "like" that author and do not reproduce an identifiable personal
+signature. Use only the non-author-specific, transferable writing references in
+the compression, including punctuation, information organization, progression
+of discussion, sentence-length changes, word choice, collocations, grammar and
+sentence structure, expression, paragraph rhythm, judgment, and argumentation.
+
+Use the video digest as the sole factual basis. The reference compression is not
+a factual source and cannot override the task rules.
+
+Do not output the learning process, analysis, profile, plan or explanation.
+
+Reference-book chunk compression:
+<REFERENCE_COMPRESSION>
+{{REFERENCE_COMPRESSION}}
+</REFERENCE_COMPRESSION>
 
 The Chinese generation policy below is the highest-priority information-
 organization rule within the mandatory output format. It converts the
@@ -44,8 +60,9 @@ Length and structure:
 - Use the video as the factual base. Internally choose one natural information
   path, then keep that path instead of repeatedly reorganizing it into a
   cleaner taxonomy or a more complete standard structure.
-- The body may have several chapters or sections, but avoid a mechanical fixed template. Vary the rhythm according to the internal writing profile.
-- The format should follow the structure rules above; the content, voice, reasoning, and development method should follow the uploaded reference books' internal profile and the video facts.
+- The body may have several chapters or sections, but avoid a mechanical fixed template.
+- The format should follow the structure rules above; all content follows the
+  video facts.
 - The required title, introduction, directory and body wrappers are interface
   requirements; they do not authorize making every body chapter a complete,
   symmetrical argument unit.
@@ -56,16 +73,10 @@ Requirements:
 - avoid generic ChatGPT-style wording
 - do not include a style report, explanation, disclaimer, or commentary
 - do not copy sentences or passages from the reference books
-- do not drift into a generic assistant voice; preserve the internal profile from beginning to end
+- do not drift into generic assistant boilerplate
 - do not fabricate personal experience, typos, broken grammar or damaged
   punctuation to imitate human writing
 - output only the completed article
-
-Internal writing profile:
-{{STYLE_PROFILE}}
-
-Reference numeric statistics ({{STYLE_FEATURE_VERSION}}):
-{{REFERENCE_STATISTICS}}
 
 Video digest:
 {{VIDEO_DIGEST}}

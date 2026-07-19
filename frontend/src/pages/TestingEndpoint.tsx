@@ -17,25 +17,6 @@ import type {
   TestingZhuqueFeedbackResponse,
 } from "@/api/types";
 
-const STYLE_METRICS = [
-  ["mean_sentence_chars", "平均句长"],
-  ["sentence_length_cv", "句长变异系数"],
-  ["sentence_length_volatility", "相邻句长波动"],
-  ["short_sentence_ratio", "短句占比"],
-  ["long_sentence_ratio", "长句占比"],
-  ["mean_paragraph_chars", "平均段长"],
-  ["paragraph_length_cv", "段长变异系数"],
-  ["discourse_markers_per_1000_chars", "连接词/千字"],
-  ["punctuation_entropy", "标点熵"],
-  ["trigram_perplexity_proxy", "三元字符经验困惑度"],
-  ["compression_ratio", "压缩率"],
-  ["repeated_four_gram_ratio", "重复四元组占比"],
-] as const;
-
-function formatMetric(value: number | undefined) {
-  return Number.isFinite(value) ? Number(value).toFixed(3) : "—";
-}
-
 function parseVideoLinks(input: string) {
   const seen = new Set<string>();
   return input
@@ -68,6 +49,12 @@ export function TestingEndpoint() {
   const [books, setBooks] = useState<File[]>([]);
   const [taskId, setTaskId] = useState("");
   const [analysisMessage, setAnalysisMessage] = useState("");
+  const [referenceSummary, setReferenceSummary] = useState<{
+    books: number;
+    chars: number;
+    chunks: number;
+    compressedChars: number;
+  } | null>(null);
   const [videoLinks, setVideoLinks] = useState("");
   const [rawVideoText, setRawVideoText] = useState("");
   const [articles, setArticles] = useState<TestingGeneratedArticle[]>([]);
@@ -116,6 +103,7 @@ export function TestingEndpoint() {
     }
     setError("");
     setAnalysisMessage("");
+    setReferenceSummary(null);
     setArticles([]);
     setRewriteResult(null);
     setBaselineReport(null);
@@ -126,6 +114,12 @@ export function TestingEndpoint() {
       const result = await api.analyzeTestingReferenceBooks(books);
       setTaskId(result.task_id);
       setAnalysisMessage(result.message);
+      setReferenceSummary({
+        books: result.reference_book_count,
+        chars: result.reference_chars,
+        chunks: result.reference_chunk_count,
+        compressedChars: result.compressed_chars,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "参考书分析失败");
     } finally {
@@ -233,7 +227,7 @@ export function TestingEndpoint() {
           </div>
           <div>
             <h1 className="font-serif text-3xl text-warm-50">Testing Endpoint</h1>
-            <p className="mt-1 text-sm text-warm-400">双线并行：参考书约束的从头写作 / 原稿保序改写</p>
+            <p className="mt-1 text-sm text-warm-400">双线并行：参考书全分片压缩的从头写作 / 原稿保序改写</p>
           </div>
         </div>
       </header>
@@ -248,7 +242,7 @@ export function TestingEndpoint() {
       <section className="rounded-lg border border-warm-100/10 bg-base-800/70 p-5">
         <div className="grid gap-3 md:grid-cols-4">
           {[
-            { id: "setup", label: "1. Reference", done: Boolean(analysisMessage), active: currentPhase === "setup" || currentPhase === "analyzing" },
+            { id: "setup", label: "1. Reference Compression", done: Boolean(analysisMessage), active: currentPhase === "setup" || currentPhase === "analyzing" },
             { id: "ready", label: "2. Video Input", done: articles.length > 0 || currentPhase === "ready" || currentPhase === "generating", active: currentPhase === "ready" },
             { id: "generating", label: "3. OpenAI Run", done: articles.length > 0, active: currentPhase === "generating" },
             { id: "complete", label: "4. Output", done: articles.length > 0, active: currentPhase === "complete" },
@@ -293,13 +287,23 @@ export function TestingEndpoint() {
       <section className="rounded-lg border border-warm-100/10 bg-base-800/70 p-6">
         <div className="mb-5 flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold text-warm-50">Reference Books</h2>
-            <p className="mt-1 text-sm text-warm-400">自定义上传参考书数量，支持 EPUB、PDF、Word、TXT、Markdown。</p>
+            <h2 className="text-lg font-semibold text-warm-50">参考书全分片压缩</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-warm-400">
+              EPUB 等文件会完整抽取后按连续分片逐片读取，再压缩合并。压缩结果只保留非作者专属的可迁移写作参照，
+              明确禁止模仿或复刻参考书作者的具体风格。支持 EPUB、PDF、Word、TXT、Markdown。
+            </p>
           </div>
           {analysisMessage && (
-            <div className="flex items-center gap-2 rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
-              <CheckCircle2 className="h-4 w-4" />
-              {analysisMessage}
+            <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4" />
+                {analysisMessage}
+              </div>
+              {referenceSummary && (
+                <div className="mt-1 text-xs text-emerald-100/70">
+                  {referenceSummary.books} 本 · {referenceSummary.chars.toLocaleString()} 字符 · {referenceSummary.chunks} 个分片 · 压缩后 {referenceSummary.compressedChars.toLocaleString()} 字符
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -307,7 +311,7 @@ export function TestingEndpoint() {
         <label className="block rounded-lg border border-dashed border-warm-100/15 bg-base-900/40 p-5">
           <div className="mb-3 flex items-center gap-2 text-sm text-warm-200">
             <UploadCloud className="h-4 w-4" />
-            Reference Books
+            选择参考书
           </div>
           <input
             type="file"
@@ -332,7 +336,7 @@ export function TestingEndpoint() {
           className="mt-5 inline-flex items-center gap-2 rounded-lg bg-gold-400 px-4 py-2 text-sm font-semibold text-base-950 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-          Analyze
+          {analyzing ? "逐片读取并压缩中" : "上传并压缩参考书"}
         </button>
       </section>
 
@@ -341,13 +345,13 @@ export function TestingEndpoint() {
           <div>
             <h2 className="text-lg font-semibold text-warm-50">原稿保序改写</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-warm-400">
-              原稿的信息顺序、段落轨迹、跳跃、回扣、适度重复和完成度优先保留；只在这些边界内，
-              按参考书的抽象画像调整句法、节奏和表达。是否提升人工特征，只认真实朱雀复检报告。
+              原稿的信息顺序、段落轨迹、跳跃、回扣、适度重复和完成度优先保留；系统先覆盖参考书全部分片并压缩，
+              改写时只使用非作者专属的写作参照，禁止模仿具体作者风格。是否提升人工特征，只认真实朱雀复检报告。
             </p>
           </div>
           <div className="rounded-lg border border-warm-100/10 bg-base-900/50 px-4 py-3 text-xs leading-5 text-warm-400">
-            本地统计：0 元<br />
-            OpenAI：单次保序改写
+            参考书：全分片压缩<br />
+            OpenAI：压缩结果 + 单次保序改写
           </div>
         </div>
 
@@ -389,17 +393,10 @@ export function TestingEndpoint() {
               <h2 className="text-lg font-semibold text-warm-50">全稿实验候选</h2>
               <p className="mt-1 text-sm text-warm-400">
                 {rewriteResult.model} · {rewriteResult.organization_policy_version} ·
-                单候选保序模式 · 仅供朱雀黑盒复检
+                全分片压缩单候选模式 · 仅供朱雀黑盒复检
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-center text-xs">
-              <div className="rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3">
-                <div className="text-warm-500">统计距离变化（仅诊断）</div>
-                <div className="mt-1 text-lg text-emerald-200">
-                  {rewriteResult.distance_improvement_percent > 0 ? "↓" : "↑"}
-                  {Math.abs(rewriteResult.distance_improvement_percent).toFixed(1)}%
-                </div>
-              </div>
+            <div className="text-center text-xs">
               <div className="rounded-lg border border-warm-100/10 bg-base-900/60 px-4 py-3">
                 <div className="text-warm-500">四元语面改动</div>
                 <div className="mt-1 text-lg text-gold-100">{rewriteResult.surface_change_percent.toFixed(1)}%</div>
@@ -411,32 +408,6 @@ export function TestingEndpoint() {
             <summary className="cursor-pointer text-sm font-medium text-warm-100">查看当前单候选策略说明</summary>
             <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-warm-300">{rewriteResult.audit_notes}</div>
           </details>
-
-          <div className="overflow-x-auto rounded-lg border border-warm-100/10">
-            <table className="min-w-full text-left text-xs">
-              <thead className="bg-base-900/80 text-warm-400">
-                <tr>
-                  <th className="px-4 py-3">可观察指标</th>
-                  <th className="px-4 py-3">人类参考画像</th>
-                  <th className="px-4 py-3">原稿</th>
-                  <th className="px-4 py-3">候选</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-warm-100/10">
-                {STYLE_METRICS.map(([key, label]) => (
-                  <tr key={key} className="text-warm-200">
-                    <td className="px-4 py-3">{label}</td>
-                    <td className="px-4 py-3">{formatMetric(rewriteResult.reference_statistics[key])}</td>
-                    <td className="px-4 py-3">{formatMetric(rewriteResult.original_statistics[key])}</td>
-                    <td className="px-4 py-3">{formatMetric(rewriteResult.candidate_statistics[key])}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-xs leading-5 text-warm-500">
-            “三元字符经验困惑度”和参考距离仅作诊断，不参与候选择优，也不能代表朱雀结果。
-          </p>
 
           <div className="rounded-lg border border-warm-100/10 bg-base-900/60 p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -527,7 +498,7 @@ export function TestingEndpoint() {
         <div className="mb-5">
           <h2 className="text-lg font-semibold text-warm-50">从头生成</h2>
           <p className="mt-1 text-sm leading-6 text-warm-400">
-            输入视频或文字素材，系统结合参考书画像生成自然的信息展开轨迹，再逐条生成文章；不会把参考书原文交给写作模型。
+             输入视频或文字素材，写作调用会携带参考书全分片压缩结果和反向组织规则，再生成自然的信息展开轨迹。
           </p>
         </div>
 
@@ -562,7 +533,7 @@ export function TestingEndpoint() {
           className="mt-5 inline-flex items-center gap-2 rounded-lg bg-gold-400 px-4 py-2 text-sm font-semibold text-base-950 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-          Generate Article
+          使用分片压缩结果生成文章
         </button>
       </section>
 
