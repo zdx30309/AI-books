@@ -555,9 +555,10 @@ def test_uploaded_reference_text_accepts_epub() -> None:
 
 def test_normalize_candidate_urls_deduplicates_and_cleans() -> None:
     urls, duplicates = testing_endpoint._normalize_candidate_urls([
-        "https://example.test/a，",
+        "【6700亿的低空经济，是真风口？】 https://example.test/a，",
         "https://example.test/b",
         "https://example.test/a",
+        "只有标题，没有链接",
         "",
     ])
 

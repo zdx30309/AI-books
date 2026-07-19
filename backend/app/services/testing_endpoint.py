@@ -35,6 +35,7 @@ PROMPT_DIR = PROJECT_ROOT / "backend" / "app" / "prompts"
 TESTING_CONFIG_KEY = "testing_endpoint"
 ANALYSIS_COMPLETE_MESSAGE = "参考书全分片压缩完成"
 ORGANIZATION_POLICY_VERSION = "information-organization-v4-chunk-compressed-no-style-imitation"
+HTTP_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 
 
 class TestingEndpointError(RuntimeError):
@@ -145,7 +146,7 @@ def generate_testing_article(
         )
     unique_video_urls, duplicate_video_urls = _normalize_candidate_urls(video_urls)
     if not unique_video_urls:
-        raise TestingEndpointError("请至少提供 1 个视频链接。", status_code=400)
+        raise TestingEndpointError("未识别到有效的 http/https 视频链接，请重新粘贴分享内容。", status_code=400)
     if len(unique_video_urls) > int(settings.TESTING_ENDPOINT_MAX_VIDEO_LINKS or 50):
         raise TestingEndpointError(
             f"Testing Endpoint 一次最多处理 {settings.TESTING_ENDPOINT_MAX_VIDEO_LINKS} 个视频链接。",
@@ -642,10 +643,12 @@ def _resolve_video_text(video_url: str, *, raw_video_text: str | None) -> str:
             },
         ).strip()
     except Exception as exc:
+        logger.warning("Testing Endpoint video content fetch failed: %s", video_url, exc_info=True)
+        detail = _concise_video_fetch_error(exc)
         raise TestingEndpointError(
             "视频内容获取失败：请确认链接可公开访问，或提供登录/授权/cookie/可访问链接；"
             "也可以先提供该视频的文字稿后继续生成。"
-            f"原始错误：{exc}",
+            f"错误摘要：{detail}",
             status_code=422,
         ) from exc
 
@@ -794,7 +797,17 @@ def _normalize_extracted_plain_text(text: str) -> str:
 
 
 def _clean_candidate_url(raw: str) -> str:
-    return (raw or "").strip().rstrip("，。；;、！？!?.,)）]】")
+    return (raw or "").strip().rstrip("，。；;、！？!?.,)）]】}>》”’")
+
+
+def _concise_video_fetch_error(exc: Exception) -> str:
+    text = " ".join(str(exc or "").split())
+    lowered = text.lower()
+    if "batchstatus" in lowered and "videocontent" in lowered:
+        return "上游视频解析没有返回可用正文；系统已按平台规则决定是否启用字幕或音频兜底。"
+    if len(text) > 360:
+        return text[:357].rstrip() + "..."
+    return text or exc.__class__.__name__
 
 
 def _normalize_candidate_urls(urls: list[str]) -> tuple[list[str], list[str]]:
@@ -802,14 +815,18 @@ def _normalize_candidate_urls(urls: list[str]) -> tuple[list[str], list[str]]:
     unique: list[str] = []
     duplicates: list[str] = []
     for raw in urls:
-        url = _clean_candidate_url(raw)
-        if not url:
-            continue
-        if url in seen:
-            duplicates.append(url)
-            continue
-        seen.add(url)
-        unique.append(url)
+        # Users commonly paste a share-card line such as
+        # "【video title】 https://b23.tv/xxxx".  Only the actual HTTP(S)
+        # address may be handed to the platform parser.
+        for matched in HTTP_URL_RE.findall(raw or ""):
+            url = _clean_candidate_url(matched)
+            if not url:
+                continue
+            if url in seen:
+                duplicates.append(url)
+                continue
+            seen.add(url)
+            unique.append(url)
     return unique, duplicates
 
 

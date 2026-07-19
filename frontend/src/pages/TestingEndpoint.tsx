@@ -19,9 +19,8 @@ import type {
 
 function parseVideoLinks(input: string) {
   const seen = new Set<string>();
-  return input
-    .split(/[\s,，]+/)
-    .map((item) => item.trim().replace(/[，。；;、！？!?.,)）\]】]+$/g, ""))
+  return (input.match(/https?:\/\/[^\s<>"'`]+/gi) ?? [])
+    .map((item) => item.trim().replace(/[，。；;、！？!?.,)）\]】}>》”’]+$/g, ""))
     .filter(Boolean)
     .filter((item) => {
       if (seen.has(item)) return false;
@@ -134,7 +133,7 @@ export function TestingEndpoint() {
     }
     const urls = parseVideoLinks(videoLinks);
     if (!urls.length) {
-      setError("请填写至少 1 个视频链接。");
+      setError("未识别到有效的 http/https 视频链接，请重新粘贴分享内容。");
       return;
     }
     if (urls.length > 1 && rawVideoText.trim()) {

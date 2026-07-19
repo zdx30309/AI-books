@@ -678,6 +678,28 @@ def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
 
 def _should_try_bilibili_fallback(exc: Exception) -> bool:
     text = str(exc).lower()
+    failed_batch = (
+        "batchstatus=2" in text
+        or "batchstatus': 2" in text
+        or '"batchstatus": 2' in text
+    )
+    failed_item = (
+        "status=1100" in text
+        or "'status': 1100" in text
+        or '"status": 1100' in text
+    )
+    no_content = (
+        "videocontent: none" in text
+        or "videocontent': none" in text
+        or '"videocontent": none' in text
+        or "未返回 videocontent" in text
+        or "未返回videocontent" in text
+    )
+    # Qingdou uses batchStatus=2 + item status=1100 for a completed platform
+    # parse failure.  It is not an in-progress/busy result, so the native
+    # Bilibili subtitle/audio fallback must be allowed to run.
+    if failed_batch and failed_item and no_content:
+        return True
     transient_or_uncertain = (
         "qingdoubusyerror",
         "返回繁忙",
@@ -696,13 +718,7 @@ def _should_try_bilibili_fallback(exc: Exception) -> bool:
     return (
         ("batchstatus=-2" in text or "batchstatus': -2" in text or '"batchstatus": -2' in text)
         and ("status=1113" in text or "'status': 1113" in text or '"status": 1113' in text)
-        and (
-            "videocontent: none" in text
-            or "videocontent': none" in text
-            or '"videocontent": none' in text
-            or "未返回 videocontent" in text
-            or "未返回videocontent" in text
-        )
+        and no_content
     )
 
 
