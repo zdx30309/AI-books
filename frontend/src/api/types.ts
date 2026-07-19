@@ -486,7 +486,7 @@ export interface AigcQualityReport {
 
 export type AigcReviewContentType = "article" | "classical" | "public_domain";
 export type AigcReviewRewriteProvider = "grok" | "deepseek";
-export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "positive_transfer" | "detector_probe";
+export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "positive_transfer" | "detector_probe" | "human_rate_first";
 
 export interface AigcReviewRewriteProviderStatus {
   id: AigcReviewRewriteProvider;
@@ -537,6 +537,7 @@ export interface AigcReviewStrategy {
   similarity_is_diagnostic_only: boolean;
   editorial_unit_chars: [number, number];
   macro_block_chars: [number, number];
+  human_rate_first_unit_chars?: [number, number];
   experiment_order: AigcReviewExperimentType[];
   audit_batch_units: number;
   audit_max_output_tokens: number;
@@ -845,6 +846,29 @@ export interface AigcReviewOptimizeResult {
     };
     quality_audit_required_after_detector_hit: boolean;
   };
+  human_rate_first?: {
+    mode: "isolated_high_coverage_macro_reauthor";
+    unit_chars: [number, number];
+    macro_region_count: number;
+    selected_source_segment_ids: number[];
+    selected_report_share_percent: number;
+    processed_source_chars: number;
+    processed_source_percent: number;
+    successful_units: number;
+    attempted_units: number;
+    max_attempts_per_unit: number;
+    observed_length_ratio: number;
+    literal_similarity: number;
+    ngram_similarity: number;
+    actual_text_change_percent: number;
+    original_preserved: boolean;
+    fact_gate_bypassed: boolean;
+    anchor_gate_bypassed: boolean;
+    length_gate_bypassed: boolean;
+    quality_audit_required_after_detector_hit: boolean;
+    automatic_delivery_allowed: false;
+    budget_stopped: boolean;
+  };
   editorial_unit_count?: number;
   audit_batch_count?: number;
   budget?: {
@@ -952,7 +976,8 @@ export type AigcReviewCalibrationVariant =
   | "syntax_constrained"
   | "combined"
   | "positive_transfer"
-  | "detector_probe";
+  | "detector_probe"
+  | "human_rate_first";
 
 export interface AigcReviewCalibrationSample {
   sample_id: string;

@@ -2794,3 +2794,151 @@ def test_positive_transfer_production_entry_is_frozen_before_paid_call() -> None
             [1],
             experiment_type="positive_transfer",
         )
+
+
+def test_human_rate_first_rewrites_all_selected_macro_units_without_quality_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review, "HUMAN_RATE_FIRST_UNIT_MIN_CHARS", 180)
+    monkeypatch.setattr(review, "HUMAN_RATE_FIRST_UNIT_MAX_CHARS", 320)
+    pieces = [
+        (f"Risk region {index} keeps repeating a highly regular sentence pattern. " * 8).strip()
+        for index in range(1, 4)
+    ]
+    original = "\n\n".join(pieces)
+    segments: list[ZhuqueSegment] = []
+    cursor = 0
+    for index, piece in enumerate(pieces, start=1):
+        start = original.index(piece, cursor)
+        end = start + len(piece)
+        segments.append(
+            ZhuqueSegment(
+                index,
+                100 / len(pieces),
+                len(piece),
+                0.99,
+                "ai",
+                start,
+                end,
+                piece,
+                1.0,
+                True,
+            )
+        )
+        cursor = end
+
+    calls: list[dict] = []
+
+    def rewrite_fn(prompt: str, **kwargs):
+        calls.append(kwargs)
+        assert "人工率优先实验" in prompt
+        source = kwargs["segment"].mapped_text
+        candidate = "A different macro telling starts here. " + source[::2]
+        return (
+            f"[[P0001]]\n{candidate}\n[[/P0001]]",
+            {"input_tokens": 100, "output_tokens": 80, "cost_cny": 0.01},
+        )
+
+    def forbidden_call(*_args, **_kwargs):
+        raise AssertionError("human_rate_first must not call fact extraction or Gemini audit")
+
+    result = optimize_report_segments(
+        original,
+        segments,
+        [1, 2, 3],
+        content_type="article",
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        audit_fn=forbidden_call,
+        fact_fn=forbidden_call,
+        experiment_type="human_rate_first",
+        budget_cny=20.0,
+    )
+
+    assert result["status"] == "probe_ready"
+    assert result["experiment_type"] == "human_rate_first"
+    assert result["candidate_text"] != original
+    assert result["original_text"] == original
+    assert result["experimental_quality_bypassed"] is True
+    assert result["quality_audit"] is None
+    assert result["models"]["fact"] == "skipped_human_rate_first"
+    assert result["models"]["audit"] == "skipped_human_rate_first"
+    assert result["human_rate_first"]["selected_source_segment_ids"] == [1, 2, 3]
+    assert result["human_rate_first"]["macro_region_count"] == 1
+    assert result["human_rate_first"]["processed_source_percent"] > 95
+    assert result["human_rate_first"]["observed_length_ratio"] < 0.8
+    assert len(calls) == result["editorial_unit_count"]
+    assert all(call.get("temperature") == 1.0 for call in calls)
+
+
+def test_human_rate_first_allows_grok_reasoning_and_skips_deepseek_temperature() -> None:
+    original = ("The source block has a stable sequence and a predictable cadence. " * 30).strip()
+    segment = ZhuqueSegment(
+        1, 100.0, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    captured: dict = {}
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        captured.update(kwargs)
+        source = kwargs["segment"].mapped_text
+        return (
+            f"[[P0001]]\n{source[::-1]}\n[[/P0001]]",
+            {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.02},
+        )
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="grok",
+        rewrite_reasoning_effort="high",
+        rewrite_fn=rewrite_fn,
+        experiment_type="human_rate_first",
+        budget_cny=20.0,
+    )
+
+    assert result["status"] == "probe_ready"
+    assert result["models"]["rewrite_provider"] == "grok"
+    assert result["models"]["rewrite_thinking"] == "high"
+    assert captured["reasoning_effort"] == "high"
+    assert "temperature" not in captured
+
+
+def test_human_rate_first_preserves_paid_partial_candidate_when_later_unit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review, "HUMAN_RATE_FIRST_UNIT_MIN_CHARS", 120)
+    monkeypatch.setattr(review, "HUMAN_RATE_FIRST_UNIT_MAX_CHARS", 220)
+    original = ("One regular sentence follows another without much variation. " * 20).strip()
+    segment = ZhuqueSegment(
+        1, 100.0, len(original), 0.99, "ai", 0, len(original), original, 1.0, True
+    )
+    calls = 0
+
+    def rewrite_fn(_prompt: str, **kwargs):
+        nonlocal calls
+        calls += 1
+        source = kwargs["segment"].mapped_text
+        if calls == 1:
+            return (
+                f"[[P0001]]\nA changed opening. {source[::-1]}\n[[/P0001]]",
+                {"input_tokens": 10, "output_tokens": 10, "cost_cny": 0.01},
+            )
+        raise RuntimeError("temporary model failure")
+
+    result = optimize_report_segments(
+        original,
+        [segment],
+        [1],
+        rewrite_provider="deepseek",
+        rewrite_fn=rewrite_fn,
+        experiment_type="human_rate_first",
+        budget_cny=20.0,
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["candidate_text"] != original
+    assert result["candidate_sha256"] == sha256_text(result["candidate_text"])
+    assert result["original_text"] == original
+    assert result["human_rate_first"]["successful_units"] == 1
+    assert result["human_rate_first"]["attempted_units"] > 1

@@ -101,10 +101,12 @@ export function AigcReview() {
     [report, selectedIds],
   );
   const finalPassed = Boolean(result?.status === "candidate_ready" && comparison?.strict_pass);
-  const probeMode = experimentType === "detector_probe" || experimentType === "positive_transfer";
+  const humanRateFirstMode = experimentType === "human_rate_first";
+  const probeMode = experimentType === "detector_probe" || experimentType === "positive_transfer" || humanRateFirstMode;
   const positiveTransferMode = experimentType === "positive_transfer";
   const resultIsPositiveTransfer = result?.experiment_type === "positive_transfer";
-  const resultIsProbe = result?.status === "probe_ready" || resultIsPositiveTransfer;
+  const resultIsHumanRateFirst = result?.experiment_type === "human_rate_first";
+  const resultIsProbe = result?.status === "probe_ready" || resultIsPositiveTransfer || resultIsHumanRateFirst;
   const rewriteProviderOptions = report?.model_strategy.rewrite_providers ?? [];
   const selectedRewriteProvider = rewriteProviderOptions.find((item) => item.id === rewriteProvider);
   const rewriteProviderReady = experimentType === "layout_only" || Boolean(selectedRewriteProvider?.configured);
@@ -262,6 +264,10 @@ export function AigcReview() {
     if (
       positiveTransferMode
       && !window.confirm("本轮只复现真实正样本中已观察到的约 9% 受控压缩和句长波动，固定使用 DeepSeek，不调用 Gemini。候选仅用于朱雀复检，原稿不会被覆盖。确认继续吗？")
+    ) return;
+    if (
+      humanRateFirstMode
+      && !window.confirm("本轮将对全部选中的非绿色区域做宏块级高覆盖重著，并跳过事实账本、锚点、长度和 Gemini 质量闸门。原稿会永久保留，输出仅用于朱雀复检，不是终稿。确认继续吗？")
     ) return;
     setError("");
     setOptimizing(true);
@@ -641,9 +647,11 @@ export function AigcReview() {
                   onChange={(event) => {
                     const value = event.target.value as AigcReviewExperimentType;
                     setExperimentType(value);
-                    if (value === "detector_probe" || value === "positive_transfer") {
-                      setRewriteProvider("deepseek");
-                      if (value === "positive_transfer") {
+                    if (value === "detector_probe" || value === "positive_transfer" || value === "human_rate_first") {
+                      if (value !== "human_rate_first") {
+                        setRewriteProvider("deepseek");
+                      }
+                      if (value === "positive_transfer" || value === "human_rate_first") {
                         setBudgetCny(20);
                       }
                       setSelectedIds(new Set(
@@ -659,13 +667,14 @@ export function AigcReview() {
                   <option value="layout_only">纯结构调整（0 元）</option>
                   <option value="syntax_constrained">质量安全编辑</option>
                   <option value="combined">结构 + 句法编辑</option>
+                  <option value="human_rate_first">人工率优先（激进全稿重著）</option>
                 </select>
                 <label htmlFor="aigc-rewrite-provider" className="text-xs text-warm-400">改写模型</label>
                 <select
                   id="aigc-rewrite-provider"
                   value={rewriteProvider}
                   onChange={(event) => setRewriteProvider(event.target.value as AigcReviewRewriteProvider)}
-                  disabled={optimizing || experimentType === "layout_only" || probeMode}
+                  disabled={optimizing || experimentType === "layout_only" || experimentType === "detector_probe" || positiveTransferMode}
                   className="rounded-lg border border-gold-500/15 bg-base-900 px-3 py-2 text-sm text-warm-100"
                 >
                   {rewriteProviderOptions.map((provider) => (
@@ -708,6 +717,8 @@ export function AigcReview() {
                     ? `零费用重组 ${selectedIds.size} 段`
                     : positiveTransferMode
                       ? "生成正样本迁移实验稿"
+                    : humanRateFirstMode
+                      ? "生成高覆盖人工率实验稿"
                     : probeMode
                       ? "生成强力组合实验稿"
                       : `用 ${selectedRewriteProvider?.label ?? "所选模型"} 编辑 ${selectedIds.size} 段`}
@@ -736,6 +747,8 @@ export function AigcReview() {
               ? " 本轮只调整空白和自然段边界，非空白正文必须完全一致，模型费用 0 元。"
               : positiveTransferMode
                 ? ` 本轮按 1200–1800 字宏单元从事实账本重新成文，保持原信息量；每单元最多生成 4 个独立候选后择优，只调用 DeepSeek，最多支出 ¥${budgetCny.toFixed(2)}。`
+              : humanRateFirstMode
+                ? ` 本轮把全部选中非绿色区域合并后按 2200–5500 字宏块重新成文；不调用事实账本和 Gemini，不受锚点、段落数、相似度或长度硬闸门回滚。原稿单独归档，实验稿只用于朱雀复检，最多支出 ¥${budgetCny.toFixed(2)}。`
               : probeMode
                 ? ` 本轮按 600–900 字单元轮换 5 种语气，完整执行高频词清理、长短句与段长打乱、独立短句、去编号结构、首段重写和基于原文的阅读反应；不调用 Gemini、不做质量回滚，最多支出 ¥${budgetCny.toFixed(2)}。`
                 : ` 系统按 600–900 字读取原稿和事实账本做最小必要编辑；字面相似度只诊断、不再强迫改得不像。本轮最多支出 ¥${budgetCny.toFixed(2)}。`}
@@ -776,7 +789,9 @@ export function AigcReview() {
               本轮估算 ¥{result.cost.estimated_cny.toFixed(4)} / 上限 ¥{result.budget?.limit_cny.toFixed(2) ?? budgetCny.toFixed(2)}<br />
               {result.editorial_unit_count ?? 0} 个编辑单元 · {resultIsProbe ? "实验模式不终审" : `${result.audit_batch_count ?? 0} 批终审`}<br />
               {resultIsProbe
-                ? (resultIsPositiveTransfer
+                ? (resultIsHumanRateFirst
+                  ? `人工率优先 · ${result.models.rewrite_provider} / ${result.models.rewrite} · ${result.human_rate_first?.macro_region_count ?? 0} 个连续区域`
+                  : resultIsPositiveTransfer
                   ? `正样本迁移 · ${result.models.rewrite_provider} / ${result.models.rewrite} · ${result.positive_transfer?.macro_region_count ?? 0} 个连续区域`
                   : `历史探索模式 · ${result.models.rewrite_provider} / ${result.models.rewrite}`)
                 : `事实 ${result.models.fact} → 重著 ${result.models.rewrite_provider} / ${result.models.rewrite}（${result.models.rewrite_thinking}）→ 终审 ${result.models.audit}`}
@@ -795,9 +810,19 @@ export function AigcReview() {
           {result.status === "manual_review" ? (
             <div className="mt-5 space-y-4">
               <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                <div className="font-medium">{resultIsPositiveTransfer ? "正样本迁移实验未完整生成，已保留安全候选" : "质量未过，已回滚并保留原稿"}</div>
+                <div className="font-medium">{resultIsHumanRateFirst ? "高覆盖实验未完整跑完，成功宏块已经保留" : (resultIsPositiveTransfer ? "正样本迁移实验未完整生成，已保留安全候选" : "质量未过，已回滚并保留原稿")}</div>
                 <div className="mt-1 text-warm-300">{result.next_action}</div>
               </div>
+
+              {resultIsHumanRateFirst && result.candidate_text && (
+                <div>
+                  <div className="mb-2 text-sm text-warm-300">已完成的高覆盖人工率实验稿（未完成宏块沿用原文，非终稿）</div>
+                  <textarea readOnly value={result.candidate_text} className="min-h-[360px] w-full resize-y rounded-lg border border-amber-400/20 bg-base-950/60 p-4 text-sm leading-7 text-warm-100" />
+                  <button type="button" onClick={() => downloadText(result.candidate_text, "人工率优先实验稿-部分完成-非终稿.txt")} className="btn-ghost mt-3 inline-flex items-center justify-center gap-2">
+                    <Download className="h-4 w-4" />下载已完成实验稿
+                  </button>
+                </div>
+              )}
 
               {result.quality_audit && (
                 <div className="rounded-lg border border-red-400/20 bg-red-500/5 p-5">
@@ -824,7 +849,7 @@ export function AigcReview() {
                 </div>
               )}
 
-              {result.segment_results.filter((item) => item.status === "rejected" || item.status === "partial").map((item) => {
+              {!resultIsHumanRateFirst && result.segment_results.filter((item) => item.status === "rejected" || item.status === "partial").map((item) => {
                 const lastAttempt = item.attempts[item.attempts.length - 1];
                 return (
                   <div key={item.segment_id} className="rounded-lg border border-gold-500/15 bg-base-950/45 p-5 text-sm">
@@ -852,8 +877,8 @@ export function AigcReview() {
             <>
               {resultIsProbe && (
                 <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-7 text-amber-100">
-                  <div className="font-medium">{resultIsPositiveTransfer ? "正样本迁移实验稿已生成" : "历史探索实验稿已生成"}（未做质量终审）</div>
-                  <div className="mt-1 text-warm-300">{resultIsPositiveTransfer ? "本轮按连续宏单元使用同一改写策略，并保留事实与锚点硬保护；未调用 Gemini。" : "本轮未调用 Gemini 终审。"}请只拿它做真实朱雀复检；即使达到 25%，也必须进入后续质量修复，不能直接交付。</div>
+                  <div className="font-medium">{resultIsHumanRateFirst ? "高覆盖人工率实验稿已生成" : (resultIsPositiveTransfer ? "正样本迁移实验稿已生成" : "历史探索实验稿已生成")}（未做质量终审）</div>
+                  <div className="mt-1 text-warm-300">{resultIsHumanRateFirst ? `本轮实际处理 ${result.human_rate_first?.processed_source_percent.toFixed(2) ?? "0.00"}% 正文、文字变化 ${result.human_rate_first?.actual_text_change_percent.toFixed(2) ?? "0.00"}%；事实、锚点、长度和 Gemini 闸门均未参与回滚。` : (resultIsPositiveTransfer ? "本轮按连续宏单元使用同一改写策略，并保留事实与锚点硬保护；未调用 Gemini。" : "本轮未调用 Gemini 终审。")}请只拿它做真实朱雀复检；即使达到 25%，也必须进入后续质量修复，不能直接交付。</div>
                 </div>
               )}
               {result.quality_audit && (
@@ -890,7 +915,7 @@ export function AigcReview() {
                       再优化一轮
                     </button>
                   )}
-                  <button type="button" onClick={() => downloadText(result.candidate_text, resultIsProbe ? "朱雀探索实验稿-非终稿.txt" : "朱雀复检通过终稿.txt")} disabled={!resultIsProbe && !finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
+                  <button type="button" onClick={() => downloadText(result.candidate_text, resultIsHumanRateFirst ? "人工率优先高覆盖实验稿-非终稿.txt" : (resultIsProbe ? "朱雀探索实验稿-非终稿.txt" : "朱雀复检通过终稿.txt"))} disabled={!resultIsProbe && !finalPassed} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-35">
                     <Download className="h-4 w-4" />{resultIsProbe ? "下载探索实验稿（非终稿）" : (finalPassed ? "下载双达标终稿" : "复检通过后才能下载终稿")}
                   </button>
                 </div>

@@ -77,6 +77,7 @@ class OptimizeAigcReviewRequest(BaseModel):
         "combined",
         "positive_transfer",
         "detector_probe",
+        "human_rate_first",
     ] = "syntax_constrained"
     budget_cny: float | None = Field(None, ge=0, le=20)
     title: str | None = Field(None, max_length=200)
@@ -121,6 +122,7 @@ class CalibrationSampleRequest(BaseModel):
         "combined",
         "positive_transfer",
         "detector_probe",
+        "human_rate_first",
     ]
     parent_sha256: str | None = Field(None, min_length=64, max_length=64)
     strategy_id: Literal["syntax_rebuild", "evidence_first", "rhythm_recompose"] | None = None
@@ -469,6 +471,9 @@ def _save_review_archive(
     positive_transfer_ready = (
         probe_ready and result.get("experiment_type") == "positive_transfer"
     )
+    human_rate_first_ready = (
+        probe_ready and result.get("experiment_type") == "human_rate_first"
+    )
     experimental_quality_bypassed = bool(
         result.get("experimental_quality_bypassed")
         if "experimental_quality_bypassed" in result
@@ -509,7 +514,15 @@ def _save_review_archive(
             "aigc_policy_version": "report-driven-v5",
             "aigc_required": True,
             "aigc_status": (
-                ("positive_transfer_ready" if positive_transfer_ready else "detector_probe_ready")
+                (
+                    "positive_transfer_ready"
+                    if positive_transfer_ready
+                    else (
+                        "human_rate_first_ready"
+                        if human_rate_first_ready
+                        else "detector_probe_ready"
+                    )
+                )
                 if probe_ready
                 else ("candidate_ready" if quality_passed else "manual_review")
             ),
@@ -605,8 +618,13 @@ def _update_review_archive(
     if not candidate or sha256_text(candidate) != stored_candidate_hash:
         raise ZhuqueReportError("复检候选正文哈希校验失败。")
     experiment_type = str(optimize_result.get("experiment_type") or "")
-    probe_mode = experiment_type in {"detector_probe", "positive_transfer"}
+    probe_mode = experiment_type in {
+        "detector_probe",
+        "positive_transfer",
+        "human_rate_first",
+    }
     positive_transfer_mode = experiment_type == "positive_transfer"
+    human_rate_first_mode = experiment_type == "human_rate_first"
     probe_hit = probe_mode and bool(comparison.get("detector_pass"))
     passed = bool(comparison.get("strict_pass")) and not probe_mode
     cfg.update(
@@ -615,10 +633,26 @@ def _update_review_archive(
                 "passed"
                 if passed
                 else (
-                    ("positive_transfer_hit" if positive_transfer_mode else "detector_probe_hit")
+                    (
+                        "positive_transfer_hit"
+                        if positive_transfer_mode
+                        else (
+                            "human_rate_first_hit"
+                            if human_rate_first_mode
+                            else "detector_probe_hit"
+                        )
+                    )
                     if probe_hit
                     else (
-                        ("positive_transfer_no_hit" if positive_transfer_mode else "detector_probe_no_hit")
+                        (
+                            "positive_transfer_no_hit"
+                            if positive_transfer_mode
+                            else (
+                                "human_rate_first_no_hit"
+                                if human_rate_first_mode
+                                else "detector_probe_no_hit"
+                            )
+                        )
                         if probe_mode
                         else "manual_review"
                     )

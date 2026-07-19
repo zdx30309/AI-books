@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = "zhuque-report-review-v5.5"
 PROBE_PROMPT_VERSION = "zhuque-detector-full-method-v5.0"
 POSITIVE_TRANSFER_PROMPT_VERSION = "zhuque-positive-pair-transfer-v2.0"
+HUMAN_RATE_FIRST_PROMPT_VERSION = "zhuque-human-rate-first-v1.0"
 EXTERNAL_GREEN_REPAIR_PROMPT_VERSION = "zhuque-external-green-global-repair-v3.0"
 DETECTOR_PROBE_RETIRED = True
 DETECTOR_PROBE_RETIREMENT_REASON = (
@@ -74,6 +75,10 @@ POSITIVE_TRANSFER_UNIT_MIN_CHARS = 1200
 POSITIVE_TRANSFER_UNIT_MAX_CHARS = 1800
 POSITIVE_TRANSFER_DEFAULT_BUDGET_CNY = 20.0
 POSITIVE_TRANSFER_MAX_ATTEMPTS = 4
+HUMAN_RATE_FIRST_UNIT_MIN_CHARS = 2200
+HUMAN_RATE_FIRST_UNIT_MAX_CHARS = 5500
+HUMAN_RATE_FIRST_DEFAULT_BUDGET_CNY = 20.0
+HUMAN_RATE_FIRST_MAX_ATTEMPTS = 2
 POSITIVE_TRANSFER_SAFETY_LENGTH_MIN = 0.95
 POSITIVE_TRANSFER_SAFETY_LENGTH_MAX = 1.05
 POSITIVE_TRANSFER_NGRAM_SIMILARITY_MAX = 0.55
@@ -89,6 +94,7 @@ _REWRITE_PROMPT_PATH = _PROMPT_DIR / "aigc_report_rewrite.md"
 _FACT_LEDGER_PROMPT_PATH = _PROMPT_DIR / "aigc_report_fact_ledger.md"
 _REAUTHOR_PROMPT_PATH = _PROMPT_DIR / "aigc_report_reauthor.md"
 _POSITIVE_TRANSFER_PROMPT_PATH = _PROMPT_DIR / "aigc_positive_transfer.md"
+_HUMAN_RATE_FIRST_PROMPT_PATH = _PROMPT_DIR / "aigc_human_rate_first.md"
 _EXTERNAL_GREEN_REPAIR_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_repair.md"
 _EXTERNAL_GREEN_AUDIT_PROMPT_PATH = _PROMPT_DIR / "aigc_external_green_patch_audit.md"
 _EXTERNAL_GREEN_GLOBAL_REPAIR_PROMPT_PATH = (
@@ -852,8 +858,13 @@ def compare_zhuque_reports(
     # an observation and require isolated exact-hash samples for learning.
     recommended_next_strategy = None
     experiment_type = str(optimize_result.get("experiment_type") or "")
-    probe_mode = experiment_type in {"detector_probe", "positive_transfer"}
+    probe_mode = experiment_type in {
+        "detector_probe",
+        "positive_transfer",
+        "human_rate_first",
+    }
     positive_transfer_mode = experiment_type == "positive_transfer"
+    human_rate_first_mode = experiment_type == "human_rate_first"
     experimental_quality_bypassed = bool(
         optimize_result.get("experimental_quality_bypassed")
     )
@@ -883,7 +894,17 @@ def compare_zhuque_reports(
         )
 
     if probe_mode and not positive_transfer_mode:
-        if detector_pass and experimental_quality_bypassed:
+        if human_rate_first_mode and detector_pass:
+            recommendation_reason = (
+                "人工率优先实验命中：官方首页人工特征已达到 25%。"
+                "该候选绕开了事实、锚点、长度和质量回滚，只能作为低检测基底；下一步必须单独重建质量并再次送检。"
+            )
+        elif human_rate_first_mode:
+            recommendation_reason = (
+                "人工率优先实验未命中：即使进行了宏块级高覆盖重著，官方首页人工特征仍低于 25%。"
+                "停止自动追加费用，保留本轮真实阴性证据和原稿。"
+            )
+        elif detector_pass and experimental_quality_bypassed:
             recommendation_reason = (
                 "检测指标命中：完整方法实验使官方首页人工特征达到 25%。"
                 "本候选故意未运行质量终审，只能作为后续质量修复的低检测基底，不能直接交付。"
@@ -4472,6 +4493,357 @@ def _positive_transfer_regions(
     return regions
 
 
+def _extract_human_rate_first_candidate(raw_text: str) -> str:
+    """Extract one macro rewrite while tolerating harmless wrapper variations."""
+    cleaned = _clean_model_text(raw_text)
+    match = re.search(
+        r"\[\[P0001\]\]\s*(.*?)\s*\[\[/P0001\]\]",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    candidate = match.group(1).strip() if match else cleaned.strip()
+    return candidate
+
+
+def render_human_rate_first_prompt(
+    original: str,
+    *,
+    previous_context: str,
+    next_context: str,
+    content_type: str,
+    retry_feedback: str = "",
+) -> str:
+    """Render the isolated, high-coverage detector experiment prompt."""
+    template = _HUMAN_RATE_FIRST_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("{{STYLE_DIAGNOSIS}}", diagnose_segment_style(original))
+        .replace("{{CONTENT_TYPE_RULES}}", _content_type_rules(content_type))
+        .replace("{{PREVIOUS_CONTEXT}}", previous_context)
+        .replace("{{NEXT_CONTEXT}}", next_context)
+        .replace("{{ORIGINAL}}", original)
+        .replace("{{RETRY_FEEDBACK}}", retry_feedback)
+    )
+
+
+def build_human_rate_first_result(
+    original: str,
+    segments: Iterable[ZhuqueSegment],
+    selected_ids: Iterable[int],
+    *,
+    content_type: str,
+    rewrite: Callable[..., Any],
+    rewrite_provider: str,
+    rewrite_model: str,
+    rewrite_reasoning: str,
+    request_id: str,
+    iteration: int,
+    budget_cny: float,
+) -> dict[str, Any]:
+    """Rewrite all selected risk regions without the production quality gates.
+
+    This path is intentionally isolated from the quality-safe editor.  It keeps
+    the immutable original, skips fact/audit calls, and produces a non-final
+    black-box candidate for a real Zhuque recheck.  The only automatic checks
+    here are transport checks: a response must be non-empty, materially changed,
+    and large enough to be a macro rewrite rather than a summary fragment.
+    """
+    if content_type == "classical":
+        raise ZhuqueReportError("古文/佛经暂不参加人工率优先的激进重著实验。")
+    if budget_cny <= 0:
+        raise ZhuqueReportError("人工率优先实验会调用改写模型，预算必须大于 0 元。")
+
+    normalized_segments = list(segments)
+    selected = sorted({int(value) for value in selected_ids})
+    by_id = {item.segment_id: item for item in normalized_segments}
+    regions = _positive_transfer_regions(original, normalized_segments, selected)
+    replacements: list[tuple[int, int, str]] = []
+    segment_results: list[dict[str, Any]] = []
+    total_input_tokens = 0
+    total_cached_input_tokens = 0
+    total_output_tokens = 0
+    total_reasoning_tokens = 0
+    total_cost_cny = 0.0
+    successful_source_chars = 0
+    attempted_units = 0
+    successful_units = 0
+    stopped_for_budget = False
+    incomplete = False
+
+    for region, source_segment_ids in regions:
+        source_region = original[region.start:region.end]
+        units = split_editorial_units(
+            source_region,
+            min_chars=HUMAN_RATE_FIRST_UNIT_MIN_CHARS,
+            max_chars=HUMAN_RATE_FIRST_UNIT_MAX_CHARS,
+        )
+        unit_results: list[dict[str, Any]] = []
+        region_ready = True
+        for unit in units:
+            if total_cost_cny >= budget_cny:
+                stopped_for_budget = True
+                incomplete = True
+                region_ready = False
+                unit_results.append(
+                    {
+                        "unit_id": unit.unit_id,
+                        "status": "kept_original_budget_stop",
+                        "original_chars": len(unit.text),
+                        "candidate_chars": len(unit.text),
+                        "attempts": [],
+                    }
+                )
+                continue
+
+            global_start = region.start + unit.start
+            global_end = region.start + unit.end
+            source = original[global_start:global_end]
+            synthetic_segment = ZhuqueSegment(
+                segment_id=region.segment_id,
+                share_percent=region.share_percent,
+                char_count=len(source),
+                aigc_value=region.aigc_value,
+                label=region.label,
+                start=global_start,
+                end=global_end,
+                mapped_text=source,
+                mapping_confidence=region.mapping_confidence,
+                recommended=True,
+            )
+            previous_context = original[max(0, global_start - 600):global_start]
+            next_context = original[global_end:min(len(original), global_end + 600)]
+            attempt_records: list[dict[str, Any]] = []
+            accepted_candidate = ""
+            attempted_units += 1
+
+            for attempt in range(1, HUMAN_RATE_FIRST_MAX_ATTEMPTS + 1):
+                retry_feedback = ""
+                if attempt > 1:
+                    retry_feedback = (
+                        "上一次返回为空、几乎未改写或退化成摘要。请完整覆盖当前宏块，"
+                        "从句法和信息落点重新成文，并严格只输出 P0001 块。"
+                    )
+                prompt = render_human_rate_first_prompt(
+                    source,
+                    previous_context=previous_context,
+                    next_context=next_context,
+                    content_type=content_type,
+                    retry_feedback=retry_feedback,
+                )
+                try:
+                    call_kwargs: dict[str, Any] = {
+                        "segment": synthetic_segment,
+                        "request_id": request_id,
+                        "attempt": attempt,
+                    }
+                    if rewrite_provider == "grok":
+                        call_kwargs["reasoning_effort"] = rewrite_reasoning
+                    else:
+                        call_kwargs["temperature"] = 1.0
+                        call_kwargs["max_output_tokens"] = min(
+                            12000,
+                            max(6000, int(len(source) * 1.6)),
+                        )
+                    raw, usage = _coerce_model_result(rewrite(prompt, **call_kwargs))
+                    candidate = _extract_human_rate_first_candidate(raw)
+                    input_tokens = int(usage.get("input_tokens") or 0)
+                    cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
+                    output_tokens = int(usage.get("output_tokens") or 0)
+                    reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+                    cost_cny = float(usage.get("cost_cny") or 0.0)
+                    total_input_tokens += input_tokens
+                    total_cached_input_tokens += cached_input_tokens
+                    total_output_tokens += output_tokens
+                    total_reasoning_tokens += reasoning_tokens
+                    total_cost_cny += cost_cny
+                    source_compact = _non_whitespace_text(source)
+                    candidate_compact = _non_whitespace_text(candidate)
+                    changed = candidate_compact != source_compact
+                    not_summary_fragment = len(candidate_compact) >= max(
+                        80,
+                        int(len(source_compact) * 0.35),
+                    )
+                    wrapper_clean = not re.search(r"\[\[/?P\d+\]\]", candidate)
+                    accepted = bool(candidate and changed and not_summary_fragment and wrapper_clean)
+                    attempt_records.append(
+                        {
+                            "attempt": attempt,
+                            "accepted": accepted,
+                            "input_tokens": input_tokens,
+                            "cached_input_tokens": cached_input_tokens,
+                            "output_tokens": output_tokens,
+                            "reasoning_tokens": reasoning_tokens,
+                            "cost_cny": round(cost_cny, 6),
+                            "candidate_chars": len(candidate),
+                            "length_ratio": round(
+                                len(candidate_compact) / max(1, len(source_compact)),
+                                6,
+                            ),
+                            "literal_similarity": round(
+                                SequenceMatcher(
+                                    None,
+                                    source_compact,
+                                    candidate_compact,
+                                    autojunk=False,
+                                ).ratio(),
+                                6,
+                            ),
+                        }
+                    )
+                    if accepted:
+                        accepted_candidate = candidate
+                        break
+                except Exception as exc:  # preserve already-paid successful units
+                    logger.warning(
+                        "LLM action=aigc_human_rate_first request_id=%s model=%s unit=%s attempt=%s status=failed error=%s",
+                        request_id,
+                        rewrite_model,
+                        unit.unit_id,
+                        attempt,
+                        exc,
+                    )
+                    attempt_records.append(
+                        {
+                            "attempt": attempt,
+                            "accepted": False,
+                            "error": str(exc)[:500],
+                        }
+                    )
+
+            if accepted_candidate:
+                replacements.append((global_start, global_end, accepted_candidate))
+                successful_source_chars += len(source)
+                successful_units += 1
+                status = "ready"
+            else:
+                incomplete = True
+                region_ready = False
+                status = "kept_original_model_failure"
+            unit_results.append(
+                {
+                    "unit_id": unit.unit_id,
+                    "status": status,
+                    "scope_start": global_start,
+                    "scope_end": global_end,
+                    "original_chars": len(source),
+                    "candidate_chars": len(accepted_candidate) if accepted_candidate else len(source),
+                    "rewrite_attempts": len(attempt_records),
+                    "attempts": attempt_records,
+                    "candidate_preview": accepted_candidate[:500],
+                }
+            )
+
+        segment_results.append(
+            {
+                "segment_id": region.segment_id,
+                "source_segment_ids": source_segment_ids,
+                "status": "ready" if region_ready else "partial",
+                "strategy_id": "human_rate_first_macro_reauthor",
+                "rewrite_provider": rewrite_provider,
+                "rewrite_model": rewrite_model,
+                "original_chars": len(source_region),
+                "editorial_unit_count": len(units),
+                "unit_results": unit_results,
+            }
+        )
+
+    assembled = _assemble_replacements(original, replacements)
+    original_compact = _non_whitespace_text(original)
+    candidate_compact = _non_whitespace_text(assembled)
+    literal_similarity = SequenceMatcher(
+        None,
+        original_compact,
+        candidate_compact,
+        autojunk=False,
+    ).ratio()
+    selected_share = sum(
+        by_id[segment_id].share_percent
+        for segment_id in selected
+        if segment_id in by_id
+    )
+    status = "probe_ready" if replacements and not incomplete else "manual_review"
+    next_action = (
+        "高覆盖人工率实验稿已经生成。请直接下载并送朱雀复检；它不是终稿，"
+        "只有真实报告确认人工特征提升后，才进入单独的质量重建阶段。"
+        if status == "probe_ready"
+        else "本轮模型或预算未覆盖全部宏块；已保留成功候选和原稿，请复核后重跑未完成区域。"
+    )
+    return {
+        "request_id": request_id,
+        "status": status,
+        "deliverable": False,
+        "next_action": next_action,
+        "original_sha256": sha256_text(original),
+        "candidate_sha256": sha256_text(assembled),
+        "original_text": original,
+        "candidate_text": assembled,
+        "selected_segment_ids": selected,
+        "iteration": iteration,
+        "preferred_strategy": "human_rate_first_macro_reauthor",
+        "content_type": content_type,
+        "experiment_type": "human_rate_first",
+        "segment_results": segment_results,
+        "quality_audit": None,
+        "experimental_quality_bypassed": True,
+        "editorial_unit_count": attempted_units,
+        "audit_batch_count": 0,
+        "budget": {
+            "currency": "CNY",
+            "limit_cny": round(budget_cny, 4),
+            "spent_cny": round(total_cost_cny, 6),
+            "exhausted": stopped_for_budget or total_cost_cny >= budget_cny,
+        },
+        "cost": {
+            "currency": "CNY",
+            "estimated": False,
+            "input_tokens": total_input_tokens,
+            "cached_input_tokens": total_cached_input_tokens,
+            "output_tokens": total_output_tokens,
+            "reasoning_tokens": total_reasoning_tokens,
+            "estimated_cny": round(total_cost_cny, 6),
+        },
+        "models": {
+            "rewrite_provider": rewrite_provider,
+            "rewrite": rewrite_model,
+            "fact": "skipped_human_rate_first",
+            "audit": "skipped_human_rate_first",
+            "rewrite_thinking": rewrite_reasoning,
+        },
+        "prompt_version": HUMAN_RATE_FIRST_PROMPT_VERSION,
+        "human_rate_first": {
+            "mode": "isolated_high_coverage_macro_reauthor",
+            "unit_chars": [
+                HUMAN_RATE_FIRST_UNIT_MIN_CHARS,
+                HUMAN_RATE_FIRST_UNIT_MAX_CHARS,
+            ],
+            "macro_region_count": len(regions),
+            "selected_source_segment_ids": selected,
+            "selected_report_share_percent": round(selected_share, 4),
+            "processed_source_chars": successful_source_chars,
+            "processed_source_percent": round(
+                successful_source_chars * 100 / max(1, len(original)),
+                4,
+            ),
+            "successful_units": successful_units,
+            "attempted_units": attempted_units,
+            "max_attempts_per_unit": HUMAN_RATE_FIRST_MAX_ATTEMPTS,
+            "observed_length_ratio": round(
+                len(candidate_compact) / max(1, len(original_compact)),
+                6,
+            ),
+            "literal_similarity": round(literal_similarity, 6),
+            "ngram_similarity": round(_character_ngram_cosine(original, assembled), 6),
+            "actual_text_change_percent": round((1.0 - literal_similarity) * 100, 4),
+            "original_preserved": True,
+            "fact_gate_bypassed": True,
+            "anchor_gate_bypassed": True,
+            "length_gate_bypassed": True,
+            "quality_audit_required_after_detector_hit": True,
+            "automatic_delivery_allowed": False,
+            "budget_stopped": stopped_for_budget,
+        },
+    }
+
+
 def _controlled_probe_scope(
     original: str,
     segments: list[ZhuqueSegment],
@@ -4940,7 +5312,11 @@ def optimize_report_segments(
     missing = [value for value in selected_ids if value not in by_id]
     if missing:
         raise ZhuqueReportError(f"报告中不存在片段: {missing}")
-    detector_experiment = experiment_type in {"detector_probe", "positive_transfer"}
+    detector_experiment = experiment_type in {
+        "detector_probe",
+        "positive_transfer",
+        "human_rate_first",
+    }
     positive_transfer_mode = experiment_type == "positive_transfer"
     if positive_transfer_mode and POSITIVE_TRANSFER_RETIRED and rewrite_fn is None:
         raise ZhuqueReportError(POSITIVE_TRANSFER_RETIREMENT_REASON)
@@ -4961,6 +5337,7 @@ def optimize_report_segments(
         "combined",
         "positive_transfer",
         "detector_probe",
+        "human_rate_first",
     }:
         raise ZhuqueReportError("未知实验类型。")
 
@@ -4971,6 +5348,34 @@ def optimize_report_segments(
             selected_ids,
             content_type=content_type,
             request_id=request_id,
+        )
+
+    if experiment_type == "human_rate_first":
+        selected_provider = _normalize_rewrite_provider(rewrite_provider)
+        selected_reasoning = (
+            _normalize_grok_reasoning(rewrite_reasoning_effort)
+            if selected_provider == "grok"
+            else "disabled"
+        )
+        if rewrite_fn is None:
+            _ensure_rewrite_provider_configured(selected_provider)
+        effective_budget = float(
+            budget_cny
+            if budget_cny is not None
+            else HUMAN_RATE_FIRST_DEFAULT_BUDGET_CNY
+        )
+        return build_human_rate_first_result(
+            original,
+            normalized_segments,
+            selected_ids,
+            content_type=content_type,
+            rewrite=rewrite_fn or _rewrite_callable(selected_provider),
+            rewrite_provider=selected_provider,
+            rewrite_model=_rewrite_model_for_provider(selected_provider),
+            rewrite_reasoning=selected_reasoning,
+            request_id=request_id,
+            iteration=iteration,
+            budget_cny=effective_budget,
         )
 
     if experiment_type == "detector_probe":
@@ -7213,6 +7618,7 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
             "layout_only",
             "syntax_constrained",
             "combined",
+            "human_rate_first",
             "positive_transfer",
             "detector_probe",
         ],
@@ -7230,6 +7636,10 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
         "macro_block_chars": [
             int(settings.AIGC_REVIEW_MACRO_BLOCK_MIN_CHARS),
             int(settings.AIGC_REVIEW_MACRO_BLOCK_MAX_CHARS),
+        ],
+        "human_rate_first_unit_chars": [
+            HUMAN_RATE_FIRST_UNIT_MIN_CHARS,
+            HUMAN_RATE_FIRST_UNIT_MAX_CHARS,
         ],
         "audit_batch_units": int(settings.AIGC_REVIEW_AUDIT_BATCH_UNITS),
         "audit_max_output_tokens": int(settings.AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS),
@@ -7457,9 +7867,14 @@ def _deepseek_rewrite(
     request_id: str,
     attempt: int = 1,
     temperature: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     model = settings.AIGC_REVIEW_REWRITE_MODEL
-    max_tokens = min(12000, max(1600, int(len(segment.mapped_text) * 0.9)))
+    max_tokens = (
+        min(12000, max(1600, int(max_output_tokens)))
+        if max_output_tokens is not None
+        else min(12000, max(1600, int(len(segment.mapped_text) * 0.9)))
+    )
     effective_temperature = 0.85 if temperature is None else float(temperature)
     logger.info(
         "LLM action=aigc_report_rewrite request_id=%s model=%s segment=%s attempt=%s temperature=%.2f status=started",
