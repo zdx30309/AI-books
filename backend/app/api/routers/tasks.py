@@ -1911,7 +1911,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     md = cfg.get("markdown")
     if md:
-        return normalize_final_markdown(str(md), category=str(cfg.get("category") or ""))
+        return _normalize_download_markdown(str(md), category=str(cfg.get("category") or ""))
 
     chapters = (
         db.query(Chapter)
@@ -1919,7 +1919,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
         .order_by(Chapter.chapter_num.asc())
         .all()
     )
-    return normalize_final_markdown(
+    return _normalize_download_markdown(
         "\n".join(f"@{c.title}\n{c.content}" for c in chapters),
         category=str(cfg.get("category") or ""),
     )
@@ -2049,6 +2049,17 @@ def _docx_category(markdown_category: str | None) -> str:
         return ""
 
 
+def _normalize_download_markdown(markdown: str, *, category: str | None = None) -> str:
+    """Normalize exports while allowing independent task categories.
+
+    Public-domain fusion and other standalone workflows share the bookshelf
+    downloader but are intentionally not prompt-registry categories.  They use
+    the generic delivery normalizer instead of failing the download.
+    """
+    normalized_category = _docx_category(category)
+    return normalize_final_markdown(markdown, category=normalized_category or None)
+
+
 def _classical_chinese_docx_lines(markdown: str, *, category: str = "classical_chinese") -> list[str]:
     lines: list[str] = []
     skipping_intro = False
@@ -2091,7 +2102,7 @@ def _markdown_to_docx(
     ):
         docx_lines = _classical_chinese_docx_lines(markdown, category=normalized_category)
     else:
-        docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
+        docx_lines = _normalize_download_markdown(markdown, category=category).splitlines()
     for line in docx_lines:
         image_filename = image_filename_from_markdown(line)
         image_path = None
@@ -2747,7 +2758,7 @@ def _build_batch_download_response(
                 )
                 filename = _safe_download_name(task, "docx")
             else:
-                content = normalize_final_markdown(md, category=category)
+                content = _normalize_download_markdown(md, category=category)
                 filename = _safe_download_name(task, "md")
             archive.writestr(_unique_zip_name(filename, used_names), content)
             written += 1
@@ -2868,7 +2879,7 @@ def _build_single_download_response(
         file_path = download_dir / ("final_preview.docx" if use_preview_docx else "final.docx")
         file_path.write_bytes(content)
     else:
-        content = normalize_final_markdown(md, category=category)
+        content = _normalize_download_markdown(md, category=category)
         media_type = "text/markdown; charset=utf-8"
         filename = _safe_download_name(task, "md")
         file_path = download_dir / "final.md"
