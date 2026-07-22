@@ -384,7 +384,9 @@ export interface PublicDomainRewriteSource {
   text: string;
   author?: string | null;
   publication_year?: number | null;
-  rights_note?: string | null;
+  author_death_year?: number | null;
+  rights_note: string;
+  rights_evidence_url?: string | null;
 }
 
 export interface PublicDomainRewriteRequest {
@@ -392,35 +394,9 @@ export interface PublicDomainRewriteRequest {
   target_title?: string | null;
   target_direction?: string | null;
   target_length?: number;
+  target_chapters?: number;
   output_style?: string | null;
   public_domain_confirmed: boolean;
-}
-
-export interface PublicDomainSourceReport {
-  title: string;
-  chars: number;
-  public_domain_basis: string;
-  sampled_chars: number;
-}
-
-export interface PublicDomainRewriteResponse {
-  task_id?: string | null;
-  title: string;
-  manuscript: string;
-  blueprint: string;
-  quality_report: string;
-  source_reports: PublicDomainSourceReport[];
-  warnings: string[];
-  status: string;
-  source_count: number;
-  manuscript_chars: number;
-  aigc_required: boolean;
-  aigc_status: string;
-  aigc_initial_max_score: number | null;
-  aigc_final_max_score: number | null;
-  aigc_rewrite_rounds: number;
-  aigc_quality_passed: boolean | null;
-  aigc_report_available: boolean;
 }
 
 export interface AigcQualityReport {

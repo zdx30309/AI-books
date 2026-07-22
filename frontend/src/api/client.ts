@@ -71,7 +71,6 @@ import type {
   PolishParagraphRequest,
   PolishParagraphResponse,
   PublicDomainRewriteRequest,
-  PublicDomainRewriteResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
@@ -730,7 +729,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   generatePublicDomainRewrite: (body: PublicDomainRewriteRequest) =>
-    request<PublicDomainRewriteResponse>("/public-domain-rewrite/generate", {
+    request<CreateTaskResponse>("/public-domain-rewrite/generate", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -739,7 +738,7 @@ export const api = {
     metadata: Omit<PublicDomainRewriteRequest, "sources"> & {
       sources: Array<Omit<PublicDomainRewriteRequest["sources"][number], "text">>;
     },
-  ) => uploadPublicDomainRewriteFiles<PublicDomainRewriteResponse>(files, metadata),
+  ) => uploadPublicDomainRewriteFiles<CreateTaskResponse>(files, metadata),
 
   // 独立朱雀报告审稿台：不修改历史任务，不依赖全局闸门
   getAigcReviewStrategy: () => request<AigcReviewStrategy>("/aigc-review/strategy"),

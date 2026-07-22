@@ -519,7 +519,12 @@ def _dispatch_task(task: Task) -> None:
     try:
         if not acquire_task_dispatch_guard(str(task.id)):
             return
-        process_video.delay(str(task.id))
+        if bool((task.config or {}).get("public_domain_longform_v2")):
+            from app.tasks.tasks import process_public_domain_longform
+
+            process_public_domain_longform.delay(str(task.id))
+        else:
+            process_video.delay(str(task.id))
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
         raise RuntimeError(f"Celery dispatch failed: {e}") from e
@@ -1376,6 +1381,26 @@ def retry_failed_tasks(
                 )
             )
             continue
+        if bool((task.config or {}).get("public_domain_longform_v2")):
+            if bool((task.config or {}).get("generation_complete")):
+                skipped.append(
+                    BatchRetryTaskItem(
+                        task_id=task.id,
+                        status="skipped",
+                        reason="公版长篇正文已完成，请在单本详情仅重跑朱雀阶段",
+                    )
+                )
+                continue
+            _prepare_task_for_retry(task)
+            tasks_to_dispatch.append(task)
+            retried.append(
+                BatchRetryTaskItem(
+                    task_id=task.id,
+                    status=TaskStatus.PENDING,
+                    reason="从公版证据/规划/合格章节断点继续生成",
+                )
+            )
+            continue
         if bool((task.config or {}).get("public_domain_rewrite")):
             skipped.append(
                 BatchRetryTaskItem(
@@ -1623,6 +1648,25 @@ def retry_task(
     if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED, TaskStatus.MANUAL_REVIEW}:
         raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
 
+    if bool((task.config or {}).get("public_domain_longform_v2")):
+        cfg = dict(task.config or {})
+        if bool(cfg.get("generation_complete")):
+            raise HTTPException(
+                status_code=409,
+                detail="公版长篇正文已完成；若仅朱雀未通过，请使用“仅重跑朱雀阶段”。",
+            )
+        _prepare_task_for_retry(task)
+        task.current_step = "从公版证据、规划和已通过章节断点继续生成"
+        db.commit()
+        db.refresh(task)
+        try:
+            _dispatch_task(task)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error_message = f"Celery dispatch failed: {e}"[:2000]
+            db.commit()
+            raise HTTPException(status_code=503, detail=f"公版长篇重试投递失败: {e}") from e
+        return CreateTaskResponse(task_id=task.id, status=task.status)
     if bool((task.config or {}).get("public_domain_rewrite")):
         raise HTTPException(
             status_code=409,

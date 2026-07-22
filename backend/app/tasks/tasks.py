@@ -42,7 +42,11 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
 )
 from app.services.content_engine import generate_full_book, normalize_final_markdown
-from app.services.aigc_quality_gate import AigcManualReviewRequired, AigcTechnicalError
+from app.services.aigc_quality_gate import (
+    AigcManualReviewRequired,
+    AigcTechnicalError,
+    enforce_aigc_quality_gate,
+)
 from app.services.qingdou import (
     QingdouDurationExceededError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
@@ -832,7 +836,15 @@ def _dispatch_task_ids(task_ids: list[str], *, label: str) -> None:
         try:
             if not acquire_task_dispatch_guard(task_id):
                 continue
-            process_video.delay(task_id)
+            with SessionLocal() as dispatch_db:
+                dispatch_task = dispatch_db.get(Task, uuid.UUID(task_id))
+                is_public_longform = bool(
+                    dispatch_task and (dispatch_task.config or {}).get("public_domain_longform_v2")
+                )
+            if is_public_longform:
+                process_public_domain_longform.delay(task_id)
+            else:
+                process_video.delay(task_id)
         except Exception:
             logger.exception("[task %s] %s dispatch failed", task_id, label)
     if task_ids:
@@ -1608,6 +1620,281 @@ def _cover_markdown(task: Task, output_dir: Path) -> str:
         if path.exists() and path.stat().st_size > 0:
             return path.read_text(encoding="utf-8").strip()
     return ""
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.process_public_domain_longform",
+    max_retries=0,
+)
+def process_public_domain_longform(_self, task_id: str) -> dict:
+    """Serial, resumable 8–10-source public-domain long-form pipeline."""
+    from app.services.public_domain_longform import (
+        POLICY_VERSION,
+        PublicDomainQualityError,
+        PublicDomainValidationError,
+        audit_edited_final_manuscript,
+        count_text_chars,
+        parse_final_markdown,
+        run_public_domain_longform,
+        source_from_dict,
+    )
+
+    db: Session = SessionLocal()
+    task: Task | None = None
+    owns_run = False
+    run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
+    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+
+    def update(progress: int, step: str, *, status: str | None = None) -> None:
+        if task is None:
+            return
+        cfg = dict(task.config or {})
+        cfg["active_run_id"] = run_id
+        cfg["active_run_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        task.config = cfg
+        task.progress = max(0, min(100, int(progress)))
+        task.current_step = step[:255]
+        if status:
+            task.status = status
+        db.commit()
+
+    def clear_run() -> None:
+        if task is None:
+            return
+        cfg = dict(task.config or {})
+        for key in ("active_run_id", "active_run_started_at", "active_run_heartbeat_at"):
+            cfg.pop(key, None)
+        task.config = cfg
+        clear_task_dispatch_guard(str(task.id))
+
+    try:
+        task = db.execute(
+            select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
+        ).scalar_one_or_none()
+        if task is None:
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": "missing"}
+        cfg = dict(task.config or {})
+        if not bool(cfg.get("public_domain_longform_v2")):
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": "wrong_pipeline"}
+        if task.status == TaskStatus.COMPLETED:
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
+        active_run = str(cfg.get("active_run_id") or "")
+        if active_run and active_run != run_id and task.status == TaskStatus.PROCESSING:
+            return {"task_id": task_id, "status": "already_running"}
+        cfg.update(
+            active_run_id=run_id,
+            active_run_started_at=datetime.now(timezone.utc).isoformat(),
+            active_run_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        )
+        task.config = cfg
+        task.status = TaskStatus.PROCESSING
+        owns_run = True
+        task.error_message = None
+        task.current_step = "正在验证 8–10 本来源及权利清单"
+        db.commit()
+
+        snapshot_path = output_dir / "00_public_domain_sources.json"
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise PublicDomainValidationError("公版来源快照格式错误")
+        sources = [source_from_dict(item) for item in payload if isinstance(item, dict)]
+        cfg = dict(task.config or {})
+        result = run_public_domain_longform(
+            sources=sources,
+            work_dir=output_dir,
+            target_title=str(cfg.get("target_title") or "").strip() or None,
+            target_direction=str(cfg.get("target_direction") or "").strip() or None,
+            target_length=int(cfg.get("target_length") or 0) or None,
+            target_chapters=int(cfg.get("target_chapters") or 0) or None,
+            output_style=str(cfg.get("output_style") or "").strip() or None,
+            public_domain_confirmed=bool(cfg.get("public_domain_confirmed")),
+            on_progress=lambda progress, step: update(progress, step, status=TaskStatus.PROCESSING),
+        )
+        cfg = dict(task.config or {})
+        cfg.update(
+            generation_complete=True,
+            public_domain_policy_version=POLICY_VERSION,
+            title=result.title,
+            summary=result.summary,
+            target_length=result.dimensions.target_chars,
+            target_chapters=result.dimensions.target_chapters,
+            actual_length=sum(count_text_chars(item.text) for item in result.chapters),
+            actual_chapters=len(result.chapters),
+            quality_report=str(output_dir / "quality_report.json"),
+            quality_report_summary="公版权利、事实证据、来源重合、章节与全书终审通过",
+            source_reports=[
+                {
+                    "source_id": item.source_id,
+                    "title": item.title,
+                    "author": item.author,
+                    "chars": item.chars,
+                    "detected_chapters": item.detected_chapters,
+                    "rights_basis": item.rights_basis,
+                    "sha256": item.sha256,
+                }
+                for item in result.source_reports
+            ],
+        )
+        task.config = cfg
+        pre_aigc_markdown = result.markdown
+        final_markdown = pre_aigc_markdown
+        final_chapters = list(result.chapters)
+        update(94, "长篇质量终审通过，正在执行最终交付闸门")
+
+        if bool(cfg.get("aigc_required")):
+            try:
+                gate_result = asyncio.run(
+                    enforce_aigc_quality_gate(
+                        pre_aigc_markdown,
+                        category="public_domain_rewrite",
+                        output_dir=output_dir,
+                        required=True,
+                    )
+                )
+                source_quality = audit_edited_final_manuscript(
+                    work_dir=output_dir,
+                    manuscript=gate_result.text,
+                    sources=sources,
+                )
+                _, _, parsed_chapters = parse_final_markdown(gate_result.text)
+                if source_quality.get("status") != "ok" or len(parsed_chapters) != result.dimensions.target_chapters:
+                    raise AigcManualReviewRequired(
+                        "朱雀候选改变了章节结构，或未通过逐章事实、语言、篇幅、来源重合与全书复检",
+                        result=gate_result,
+                    )
+                final_markdown = gate_result.text
+                final_chapters = parsed_chapters
+                cfg = dict(task.config or {})
+                cfg.update(
+                    aigc_status="passed",
+                    aigc_passed=True,
+                    aigc_quality_passed=True,
+                    aigc_report_available=bool(gate_result.report),
+                    aigc_initial_max_score=gate_result.initial_max_score,
+                    aigc_final_max_score=gate_result.max_score,
+                    aigc_max_score=gate_result.max_score,
+                    aigc_rewrite_rounds=gate_result.rewrite_rounds,
+                )
+                task.config = cfg
+                (output_dir / "05_aigc_final.md").write_text(final_markdown, encoding="utf-8")
+            except AigcManualReviewRequired:
+                raise
+            except AigcTechnicalError:
+                raise
+        else:
+            cfg = dict(task.config or {})
+            cfg.update(aigc_status="not_required", aigc_passed=True, aigc_quality_passed=True)
+            task.config = cfg
+
+        db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
+        for chapter in final_chapters:
+            db.add(
+                Chapter(
+                    task_id=task.id,
+                    chapter_num=chapter.number,
+                    title=chapter.title[:512],
+                    content=chapter.text,
+                    word_count=len(chapter.text),
+                )
+            )
+        cfg = dict(task.config or {})
+        cfg.update(
+            markdown=final_markdown,
+            markdown_chars=len(final_markdown),
+            status="ok",
+        )
+        task.config = cfg
+        clear_run()
+        task.status = TaskStatus.COMPLETED
+        task.progress = 100
+        task.current_step = f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
+        task.error_message = None
+        db.commit()
+        return {"task_id": task_id, "status": TaskStatus.COMPLETED, "chapters": len(final_chapters)}
+    except AigcManualReviewRequired as exc:
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            cfg = dict(task.config or {})
+            report = exc.result.report if exc.result else None
+            cfg.update(
+                generation_complete=True,
+                aigc_status="manual_review",
+                aigc_passed=False,
+                aigc_quality_passed=False,
+                aigc_report_available=bool(report),
+                aigc_manual_review_reason=str(exc)[:4000],
+            )
+            if report:
+                cfg.update(
+                    aigc_initial_max_score=int(report.get("initialMaxScore") or 0),
+                    aigc_final_max_score=int(report.get("finalMaxScore") or 0),
+                    aigc_max_score=int(report.get("finalMaxScore") or report.get("maxScore") or 0),
+                    aigc_rewrite_rounds=int(report.get("rewriteRounds") or 0),
+                )
+            task.config = cfg
+            clear_run()
+            task.status = TaskStatus.MANUAL_REVIEW
+            task.progress = 96
+            task.current_step = "高质量公版长篇原稿已保留；朱雀候选未通过全部终稿闸门"
+            task.error_message = str(exc)[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}
+    except AigcTechnicalError as exc:
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            cfg = dict(task.config or {})
+            cfg.update(
+                generation_complete=True,
+                aigc_status="technical_failed",
+                aigc_passed=False,
+                aigc_report_available=bool(exc.report),
+            )
+            task.config = cfg
+            clear_run()
+            task.status = TaskStatus.FAILED
+            task.progress = 96
+            task.current_step = "朱雀技术故障；高质量公版长篇原稿已保留"
+            task.error_message = str(exc)[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.FAILED}
+    except (PublicDomainValidationError, PublicDomainQualityError) as exc:
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            cfg = dict(task.config or {})
+            cfg.update(
+                generation_complete=False,
+                public_domain_quality_blocked=True,
+                public_domain_quality_reason=str(exc)[:4000],
+            )
+            task.config = cfg
+            clear_run()
+            task.status = TaskStatus.MANUAL_REVIEW
+            task.current_step = "公版/事实/来源重合/质量硬闸门未通过，未交付终稿"
+            task.error_message = str(exc)[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}
+    except Exception as exc:
+        logger.exception("[task %s] public-domain long-form pipeline failed", task_id)
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            clear_run()
+            task.status = TaskStatus.FAILED
+            task.current_step = "技术故障；已保存证据、规划和合格章节断点，可继续生成"
+            task.error_message = f"{type(exc).__name__}: {exc}"[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.FAILED}
+    finally:
+        if owns_run:
+            clear_task_dispatch_guard(task_id)
+        db.close()
 
 
 def _mark_cover_failed(db: Session, task_id: str, message: str) -> None:
