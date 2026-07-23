@@ -2196,22 +2196,14 @@ def _build_or_resume_chapter(
             maximum_chars=maximum_chars,
         )
         action = f"chapter_repair:{chapter_number:03d}:attempt{attempt}"
-        if generation_mode == RESEARCH_PREVIEW_MODE and (resumed_failed_candidate or attempt >= 3):
-            repaired = _call_openai_preview_writer(
-                work_dir,
-                action=action,
-                prompt=repair_prompt,
-                max_output_tokens=_chapter_tokens(target_chars),
-            )
-        else:
-            repaired = _call_llm(
-                work_dir,
-                action=action,
-                prompt=repair_prompt,
-                temperature=0.15,
-                max_output_tokens=_chapter_tokens(target_chars),
-                model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
-            )
+        repaired = _call_chapter_repair_model(
+            work_dir,
+            action=action,
+            prompt=repair_prompt,
+            max_output_tokens=_chapter_tokens(target_chars),
+            generation_mode=generation_mode,
+            prefer_openai=bool(resumed_failed_candidate or attempt >= 3),
+        )
         candidate = _parse_json_object(repaired)
     _atomic_write_json(
         chapter_dir / f"{chapter_number:03d}.failed.json",
@@ -2253,6 +2245,50 @@ def _select_chapter_repair_source(
         if current_text and current_chars >= max(1, int(target_chars * 0.60)):
             return candidate, audit
     return best_full_candidate or candidate, best_full_audit or audit
+
+
+def _call_chapter_repair_model(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+    max_output_tokens: int,
+    generation_mode: str,
+    prefer_openai: bool,
+) -> str:
+    """Call a repair model without losing a chapter on provider failure.
+
+    A preview repair is recoverable work: the paid candidate and its audit are
+    already checkpointed. If DeepSeek times out, is rate-limited, or reaches its
+    token ceiling, use the configured OpenAI preview writer for the same bounded
+    repair. Full production mode keeps its original fail-fast behavior.
+    """
+
+    if generation_mode == RESEARCH_PREVIEW_MODE and prefer_openai:
+        return _call_openai_preview_writer(
+            work_dir,
+            action=action,
+            prompt=prompt,
+            max_output_tokens=max_output_tokens,
+        )
+    try:
+        return _call_llm(
+            work_dir,
+            action=action,
+            prompt=prompt,
+            temperature=0.15,
+            max_output_tokens=max_output_tokens,
+            model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
+        )
+    except Exception:
+        if generation_mode != RESEARCH_PREVIEW_MODE:
+            raise
+        return _call_openai_preview_writer(
+            work_dir,
+            action=action,
+            prompt=prompt,
+            max_output_tokens=max_output_tokens,
+        )
 
 
 def _audit_chapter(

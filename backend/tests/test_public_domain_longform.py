@@ -180,6 +180,35 @@ def test_research_preview_rolls_back_truncated_repair_candidate() -> None:
     assert audit is stale_audit
 
 
+def test_research_preview_repair_falls_back_when_deepseek_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "_call_llm",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("max tokens")),
+    )
+    fallback_actions: list[str] = []
+
+    def _fallback(*_args, **kwargs) -> str:
+        fallback_actions.append(str(kwargs.get("action") or ""))
+        return '{"title":"第三章","text":"正文","summary":"摘要","used_claim_ids":[]}'
+
+    monkeypatch.setattr(service, "_call_openai_preview_writer", _fallback)
+    result = service._call_chapter_repair_model(  # noqa: SLF001
+        tmp_path,
+        action="chapter_repair:003:attempt1",
+        prompt="repair",
+        max_output_tokens=6_000,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        prefer_openai=False,
+    )
+
+    assert json.loads(result)["title"] == "第三章"
+    assert fallback_actions == ["chapter_repair:003:attempt1"]
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")
