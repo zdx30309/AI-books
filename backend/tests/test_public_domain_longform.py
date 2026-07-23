@@ -60,6 +60,36 @@ def test_requires_eight_to_ten_sources_before_llm() -> None:
         validate_sources(_sources(11), public_domain_confirmed=True)
 
 
+def test_research_preview_accepts_five_sources_without_claiming_public_domain() -> None:
+    items = _sources(5)
+    items[0] = PublicDomainSource(
+        **{**asdict(items[0]), "text": items[0].text + "\n版权所有，未经许可不得转载"}
+    )
+    cleaned = validate_sources(
+        items,
+        public_domain_confirmed=False,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        research_use_confirmed=True,
+    )
+    assert len(cleaned) == 5
+
+
+def test_research_preview_requires_explicit_research_confirmation() -> None:
+    with pytest.raises(PublicDomainValidationError, match="事实/概念线索"):
+        validate_sources(
+            _sources(5),
+            public_domain_confirmed=False,
+            generation_mode=service.RESEARCH_PREVIEW_MODE,
+            research_use_confirmed=False,
+        )
+
+
+def test_research_preview_defaults_to_three_chapters_and_ten_thousand_chars() -> None:
+    dimensions = derive_dimensions(_sources(5), generation_mode=service.RESEARCH_PREVIEW_MODE)
+    assert dimensions.target_chars == 10_000
+    assert dimensions.target_chapters == 3
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")
@@ -171,6 +201,10 @@ def test_all_longform_prompts_live_in_template_files() -> None:
         "chapter_audit.md",
         "chapter_repair.md",
         "final_audit.md",
+        "source_evidence_research_preview.md",
+        "book_plan_research_preview.md",
+        "chapter_writer_research_preview.md",
+        "final_audit_research_preview.md",
     }
     assert expected <= {path.name for path in service.PROMPT_DIR.glob("*.md")}
 

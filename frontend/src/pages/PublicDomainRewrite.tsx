@@ -27,6 +27,8 @@ interface SourceDraft {
 
 const MIN_SOURCES = 8;
 const MAX_SOURCES = 10;
+const PREVIEW_MIN_SOURCES = 5;
+const PREVIEW_MAX_SOURCES = 7;
 
 const emptySource = (index: number): SourceDraft => ({
   title: `公版图书 ${index}`,
@@ -65,6 +67,7 @@ function formatChars(value: string) {
 export function PublicDomainRewrite() {
   const navigate = useNavigate();
   const [sources, setSources] = useState<SourceDraft[]>(initialSources);
+  const [generationMode, setGenerationMode] = useState<"full" | "research_preview">("full");
   const [targetTitle, setTargetTitle] = useState("");
   const [targetDirection, setTargetDirection] = useState("");
   const [targetLength, setTargetLength] = useState("");
@@ -79,10 +82,13 @@ export function PublicDomainRewrite() {
   );
   const fileMode = preparedSources.length > 0 && preparedSources.every((item) => item.file);
   const mixedMode = preparedSources.some((item) => item.file) && !fileMode;
-  const metadataComplete = preparedSources.every((item) => item.rightsNote.trim().length >= 4);
+  const preview = generationMode === "research_preview";
+  const minSources = preview ? PREVIEW_MIN_SOURCES : MIN_SOURCES;
+  const maxSources = preview ? PREVIEW_MAX_SOURCES : MAX_SOURCES;
+  const metadataComplete = preview || preparedSources.every((item) => item.rightsNote.trim().length >= 4);
   const canSubmit =
-    preparedSources.length >= MIN_SOURCES &&
-    preparedSources.length <= MAX_SOURCES &&
+    preparedSources.length >= minSources &&
+    preparedSources.length <= maxSources &&
     metadataComplete &&
     confirmed &&
     !mixedMode &&
@@ -93,11 +99,28 @@ export function PublicDomainRewrite() {
   };
 
   const addSource = () => {
-    setSources((items) => (items.length >= MAX_SOURCES ? items : [...items, emptySource(items.length + 1)]));
+    setSources((items) => (items.length >= maxSources ? items : [...items, emptySource(items.length + 1)]));
   };
 
   const removeSource = (index: number) => {
-    setSources((items) => (items.length <= MIN_SOURCES ? items : items.filter((_, idx) => idx !== index)));
+    setSources((items) => (items.length <= minSources ? items : items.filter((_, idx) => idx !== index)));
+  };
+
+  const changeMode = (mode: "full" | "research_preview") => {
+    setGenerationMode(mode);
+    setSources((items) => {
+      const wanted = mode === "research_preview" ? PREVIEW_MIN_SOURCES : MIN_SOURCES;
+      const maximum = mode === "research_preview" ? PREVIEW_MAX_SOURCES : MAX_SOURCES;
+      if (items.length > maximum) return items.slice(0, wanted);
+      if (items.length >= wanted) return items;
+      return [
+        ...items,
+        ...Array.from({ length: wanted - items.length }, (_, index) => emptySource(items.length + index + 1)),
+      ];
+    });
+    setTargetLength(mode === "research_preview" ? "10000" : "");
+    setTargetChapters(mode === "research_preview" ? "3" : "");
+    setConfirmed(false);
   };
 
   const submit = async () => {
@@ -106,13 +129,23 @@ export function PublicDomainRewrite() {
       setError(
         mixedMode
           ? "请统一使用全文粘贴或文件上传，不要在同一任务中混用。"
-          : `必须完整提供 ${MIN_SOURCES}–${MAX_SOURCES} 本来源、逐本公版依据，并勾选权利确认。`,
+          : preview
+            ? `必须完整提供 ${minSources}–${maxSources} 份研究材料，并确认只抽取事实/概念线索。`
+            : `必须完整提供 ${minSources}–${maxSources} 本来源、逐本公版依据，并勾选权利确认。`,
       );
       return;
     }
     setLoading(true);
+    const payloadFor = (item: SourceDraft) => toPayload({
+      ...item,
+      rightsNote: preview
+        ? "研究试稿：仅作事实/概念线索与来源重合排查，未主张现代整理本属于公版"
+        : item.rightsNote,
+    });
     const common = {
-      public_domain_confirmed: true,
+      public_domain_confirmed: !preview,
+      generation_mode: generationMode,
+      research_use_confirmed: preview,
       target_title: targetTitle.trim() || null,
       target_direction: targetDirection.trim() || null,
       target_length: optionalNumber(targetLength) ?? undefined,
@@ -126,7 +159,7 @@ export function PublicDomainRewrite() {
             {
               ...common,
               sources: preparedSources.map((item) => {
-                const payload = toPayload(item);
+                const payload = payloadFor(item);
                 const { text: _text, ...metadata } = payload;
                 return metadata;
               }),
@@ -134,7 +167,7 @@ export function PublicDomainRewrite() {
           )
         : await api.generatePublicDomainRewrite({
             ...common,
-            sources: preparedSources.map(toPayload),
+            sources: preparedSources.map(payloadFor),
           });
       navigate(`/book/${response.task_id}`);
     } catch (err) {
@@ -149,11 +182,13 @@ export function PublicDomainRewrite() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 px-4 py-2 text-xs text-emerald-100">
             <ShieldCheck className="h-4 w-4" />
-            仅处理 8–10 本公版 / 公共领域来源
+            {preview ? "5–7 份材料 · 约一万字研究试稿" : "仅处理 8–10 本公版 / 公共领域来源"}
           </div>
           <h1 className="font-serif text-4xl text-warm-50">公版融合长篇</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
-            系统会完整分片抽取每本书的事实证据，按参考书中位篇幅规划十几万字长篇，逐章串行写作与复审。任何来源权利不清、事实无证据、连续复述过高或终稿质量不合格，都会阻止下载。
+            {preview
+              ? "先生成 2–4 章、约 8,000–15,000 字的研究试稿。现代整理本只作为事实/概念线索和重合排查材料，原文、独创故事与现代评论不会进入写作层。"
+              : "系统会完整分片抽取每本书的事实证据，按参考书中位篇幅规划十几万字长篇，逐章串行写作与复审。任何来源权利不清、事实无证据、连续复述过高或终稿质量不合格，都会阻止下载。"}
           </p>
         </div>
         <button
@@ -163,7 +198,16 @@ export function PublicDomainRewrite() {
           className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          {loading ? "正在创建任务" : "开始长篇融合"}
+          {loading ? "正在创建任务" : preview ? "生成约一万字试稿" : "开始长篇融合"}
+        </button>
+      </section>
+
+      <section className="card-warm flex flex-wrap gap-3 p-4">
+        <button type="button" onClick={() => changeMode("full")} className={generationMode === "full" ? "btn-gold" : "btn-ghost"}>
+          正式长书（8–10 本）
+        </button>
+        <button type="button" onClick={() => changeMode("research_preview")} className={preview ? "btn-gold" : "btn-ghost"}>
+          研究试稿（5–7 份 / 约一万字）
         </button>
       </section>
 
@@ -184,11 +228,11 @@ export function PublicDomainRewrite() {
         </label>
         <label className="text-sm text-warm-300">
           目标字数（可空，自动取来源中位数）
-          <input type="number" min={80000} max={220000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder="例如 150000" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={preview ? 8000 : 80000} max={preview ? 15000 : 220000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder={preview ? "例如 10000" : "例如 150000"} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300">
           目标章节（可空，自动匹配来源）
-          <input type="number" min={12} max={36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder="例如 24" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={preview ? 2 : 12} max={preview ? 4 : 36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder={preview ? "例如 3" : "例如 24"} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300 md:col-span-2 xl:col-span-1">
           融合方向（可空）
@@ -207,11 +251,11 @@ export function PublicDomainRewrite() {
                 <div>
                   <div className="font-medium text-warm-100">{source.title || `公版图书 ${index + 1}`}</div>
                   <div className="text-xs text-warm-500">
-                    {source.file ? source.file.name : `${formatChars(source.text)} 字`} · {source.rightsNote ? "已填权利依据" : "待填权利依据"}
+                    {source.file ? source.file.name : `${formatChars(source.text)} 字`} · {preview ? "研究线索用途" : source.rightsNote ? "已填权利依据" : "待填权利依据"}
                   </div>
                 </div>
               </div>
-              {sources.length > MIN_SOURCES && (
+              {sources.length > minSources && (
                 <button type="button" onClick={(event) => { event.preventDefault(); removeSource(index); }} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm">
                   <Trash2 className="h-4 w-4" />移除
                 </button>
@@ -223,7 +267,7 @@ export function PublicDomainRewrite() {
               <input value={source.author} onChange={(event) => updateSource(index, { author: event.target.value })} placeholder="作者（可填佚名）" className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none" />
               <input type="number" value={source.publicationYear} onChange={(event) => updateSource(index, { publicationYear: event.target.value })} placeholder="首次出版年份" className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none" />
               <input type="number" value={source.authorDeathYear} onChange={(event) => updateSource(index, { authorDeathYear: event.target.value })} placeholder="作者去世年份（如适用）" className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none" />
-              <input value={source.rightsNote} onChange={(event) => updateSource(index, { rightsNote: event.target.value })} placeholder="必填：公版/公共领域依据与核对理由" className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none md:col-span-2" />
+              <input value={source.rightsNote} onChange={(event) => updateSource(index, { rightsNote: event.target.value })} placeholder={preview ? "试稿模式自动按研究线索用途隔离" : "必填：公版/公共领域依据与核对理由"} disabled={preview} className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none disabled:opacity-55 md:col-span-2" />
               <input value={source.rightsEvidenceUrl} onChange={(event) => updateSource(index, { rightsEvidenceUrl: event.target.value })} placeholder="权利依据链接（建议填写）" className="rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-sm text-warm-100 outline-none md:col-span-2" />
             </div>
 
@@ -236,8 +280,8 @@ export function PublicDomainRewrite() {
           </details>
         ))}
 
-        <button type="button" onClick={addSource} disabled={sources.length >= MAX_SOURCES} className="btn-ghost inline-flex items-center gap-2 disabled:opacity-40">
-          <Plus className="h-4 w-4" />添加第 {sources.length + 1} 本（最多 {MAX_SOURCES} 本）
+        <button type="button" onClick={addSource} disabled={sources.length >= maxSources} className="btn-ghost inline-flex items-center gap-2 disabled:opacity-40">
+          <Plus className="h-4 w-4" />添加第 {sources.length + 1} 份（最多 {maxSources} 份）
         </button>
       </section>
 
@@ -245,7 +289,9 @@ export function PublicDomainRewrite() {
         <label className="flex cursor-pointer items-start gap-3 text-sm leading-7 text-warm-200">
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-1.5 h-4 w-4 accent-amber-500" />
           <span>
-            我已逐本核对权利依据，确认 8–10 个输入均可作为公版/公共领域材料使用。系统会保存来源哈希和权利清单；依据不完整或正文带版权限制标记时，不会调用模型。
+            {preview
+              ? "我确认这些材料只用于抽取可独立核验的事实/概念线索和检查来源重合；不得复制原文、独创故事、现代评论或来源结构，也不把现代整理本标为公版。"
+              : "我已逐本核对权利依据，确认 8–10 个输入均可作为公版/公共领域材料使用。系统会保存来源哈希和权利清单；依据不完整或正文带版权限制标记时，不会调用模型。"}
           </span>
         </label>
         <div className="mt-5 grid gap-3 text-xs leading-6 text-warm-400 md:grid-cols-3">

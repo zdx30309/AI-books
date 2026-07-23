@@ -24,9 +24,13 @@ from app.services.aigc_quality_gate import (
 )
 from app.services.image_ocr import ImageOcrError, is_supported_ocr_image_suffix, ocr_image_bytes
 from app.services.public_domain_longform import (
+    FULL_MODE,
     MAX_SOURCES,
     MIN_SOURCES,
     POLICY_VERSION,
+    PREVIEW_MAX_SOURCES,
+    PREVIEW_MIN_SOURCES,
+    RESEARCH_PREVIEW_MODE,
     PublicDomainSource,
     PublicDomainValidationError,
     audit_edited_final_manuscript,
@@ -58,13 +62,15 @@ class PublicDomainSourcePayload(BaseModel):
 
 
 class PublicDomainRewriteRequest(BaseModel):
-    sources: list[PublicDomainSourcePayload] = Field(..., min_length=MIN_SOURCES, max_length=MAX_SOURCES)
+    sources: list[PublicDomainSourcePayload] = Field(..., min_length=PREVIEW_MIN_SOURCES, max_length=MAX_SOURCES)
     target_title: str | None = Field(default=None, max_length=200)
     target_direction: str | None = Field(default=None, max_length=3000)
-    target_length: int | None = Field(default=None, ge=80_000, le=220_000)
-    target_chapters: int | None = Field(default=None, ge=12, le=36)
+    target_length: int | None = Field(default=None, ge=8_000, le=220_000)
+    target_chapters: int | None = Field(default=None, ge=2, le=36)
     output_style: str | None = Field(default=None, max_length=1000)
     public_domain_confirmed: bool = False
+    generation_mode: str = FULL_MODE
+    research_use_confirmed: bool = False
 
 
 @router.post(
@@ -97,8 +103,11 @@ async def generate_public_domain_rewrite_from_files(
             raise ValueError("metadata_json must be an object")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"metadata_json 格式错误: {exc}") from exc
-    if not MIN_SOURCES <= len(files) <= MAX_SOURCES:
-        raise HTTPException(status_code=400, detail=f"请一次上传 {MIN_SOURCES} 到 {MAX_SOURCES} 本来源文件。")
+    generation_mode = str(metadata.get("generation_mode") or FULL_MODE)
+    min_files = PREVIEW_MIN_SOURCES if generation_mode == RESEARCH_PREVIEW_MODE else MIN_SOURCES
+    max_files = PREVIEW_MAX_SOURCES if generation_mode == RESEARCH_PREVIEW_MODE else MAX_SOURCES
+    if not min_files <= len(files) <= max_files:
+        raise HTTPException(status_code=400, detail=f"请一次上传 {min_files} 到 {max_files} 本来源文件。")
     source_meta = metadata.get("sources") or []
     if not isinstance(source_meta, list) or len(source_meta) != len(files):
         raise HTTPException(status_code=400, detail="metadata_json.sources 必须与上传文件逐一对应。")
@@ -133,6 +142,8 @@ async def generate_public_domain_rewrite_from_files(
             target_chapters=_optional_int(metadata.get("target_chapters")),
             output_style=metadata.get("output_style"),
             public_domain_confirmed=bool(metadata.get("public_domain_confirmed")),
+            generation_mode=generation_mode,
+            research_use_confirmed=bool(metadata.get("research_use_confirmed")),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"任务参数不正确: {exc}") from exc
@@ -141,12 +152,19 @@ async def generate_public_domain_rewrite_from_files(
 
 def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> CreateTaskResponse:
     raw_sources = [_to_service_source(item) for item in req.sources]
+    preview = req.generation_mode == RESEARCH_PREVIEW_MODE
     try:
-        sources = validate_sources(raw_sources, public_domain_confirmed=req.public_domain_confirmed)
+        sources = validate_sources(
+            raw_sources,
+            public_domain_confirmed=req.public_domain_confirmed,
+            generation_mode=req.generation_mode,
+            research_use_confirmed=req.research_use_confirmed,
+        )
         dimensions = derive_dimensions(
             sources,
             requested_chars=req.target_length,
             requested_chapters=req.target_chapters,
+            generation_mode=req.generation_mode,
         )
         reports = build_source_reports(sources)
     except PublicDomainValidationError as exc:
@@ -175,10 +193,18 @@ def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> Cr
     task = Task(
         id=task_id,
         owner_id=user.id,
-        source_url="manual://public-domain-longform",
+        source_url=(
+            "manual://public-domain-research-preview"
+            if preview
+            else "manual://public-domain-longform"
+        ),
         status=TaskStatus.PENDING,
         progress=0,
-        current_step=f"已接收 {len(sources)} 本公版来源，等待证据抽取",
+        current_step=(
+            f"已接收 {len(sources)} 份研究材料，等待隔离抽取事实/概念线索"
+            if preview
+            else f"已接收 {len(sources)} 本公版来源，等待证据抽取"
+        ),
         config={
             "title": (req.target_title or "公版融合长篇")[:120],
             "bookshelf": PUBLIC_DOMAIN_BOOKSHELF,
@@ -186,6 +212,9 @@ def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> Cr
             "category_label": PUBLIC_DOMAIN_BOOKSHELF,
             "public_domain_rewrite": True,
             "public_domain_longform_v2": True,
+            "generation_mode": req.generation_mode,
+            "research_preview": preview,
+            "research_use_confirmed": bool(req.research_use_confirmed),
             "public_domain_policy_version": POLICY_VERSION,
             "source_snapshot": str(snapshot_path),
             "source_count": len(sources),
@@ -197,12 +226,12 @@ def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> Cr
             "median_source_chars": dimensions.median_source_chars,
             "median_source_chapters": dimensions.median_source_chapters,
             "output_style": req.output_style,
-            "public_domain_confirmed": True,
+            "public_domain_confirmed": bool(req.public_domain_confirmed),
             "generation_complete": False,
             "cover_disabled": True,
             "aigc_policy_version": AIGC_POLICY_VERSION,
-            "aigc_required": bool(settings.AIGC_GATE_ENABLED),
-            "aigc_status": "pending" if settings.AIGC_GATE_ENABLED else "not_required",
+            "aigc_required": bool(settings.AIGC_GATE_ENABLED) and not preview,
+            "aigc_status": "pending" if settings.AIGC_GATE_ENABLED and not preview else "not_required",
             "aigc_report_available": False,
         },
     )

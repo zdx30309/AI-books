@@ -1630,6 +1630,7 @@ def _cover_markdown(task: Task, output_dir: Path) -> str:
 def process_public_domain_longform(_self, task_id: str) -> dict:
     """Serial, resumable 8–10-source public-domain long-form pipeline."""
     from app.services.public_domain_longform import (
+        FULL_MODE,
         POLICY_VERSION,
         PublicDomainQualityError,
         PublicDomainValidationError,
@@ -1694,7 +1695,12 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.status = TaskStatus.PROCESSING
         owns_run = True
         task.error_message = None
-        task.current_step = "正在验证 8–10 本来源及权利清单"
+        generation_mode = str(cfg.get("generation_mode") or FULL_MODE)
+        task.current_step = (
+            "正在隔离研究材料并建立事实/概念证据账本"
+            if generation_mode == "research_preview"
+            else "正在验证 8–10 本来源及权利清单"
+        )
         db.commit()
 
         snapshot_path = output_dir / "00_public_domain_sources.json"
@@ -1712,12 +1718,15 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             target_chapters=int(cfg.get("target_chapters") or 0) or None,
             output_style=str(cfg.get("output_style") or "").strip() or None,
             public_domain_confirmed=bool(cfg.get("public_domain_confirmed")),
+            generation_mode=generation_mode,
+            research_use_confirmed=bool(cfg.get("research_use_confirmed")),
             on_progress=lambda progress, step: update(progress, step, status=TaskStatus.PROCESSING),
         )
         cfg = dict(task.config or {})
         cfg.update(
             generation_complete=True,
             public_domain_policy_version=POLICY_VERSION,
+            generation_mode=generation_mode,
             title=result.title,
             summary=result.summary,
             target_length=result.dimensions.target_chars,
@@ -1725,7 +1734,11 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             actual_length=sum(count_text_chars(item.text) for item in result.chapters),
             actual_chapters=len(result.chapters),
             quality_report=str(output_dir / "quality_report.json"),
-            quality_report_summary="公版权利、事实证据、来源重合、章节与全书终审通过",
+            quality_report_summary=(
+                "研究材料隔离、事实证据、来源重合、章节与全稿终审通过"
+                if generation_mode == "research_preview"
+                else "公版权利、事实证据、来源重合、章节与全书终审通过"
+            ),
             source_reports=[
                 {
                     "source_id": item.source_id,
@@ -1811,7 +1824,11 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         clear_run()
         task.status = TaskStatus.COMPLETED
         task.progress = 100
-        task.current_step = f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
+        task.current_step = (
+            f"研究试稿完成：{len(final_chapters)} 章已通过事实、来源重合与质量闸门"
+            if generation_mode == "research_preview"
+            else f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
+        )
         task.error_message = None
         db.commit()
         return {"task_id": task_id, "status": TaskStatus.COMPLETED, "chapters": len(final_chapters)}

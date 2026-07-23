@@ -24,8 +24,12 @@ from app.services.gemini import generate_text as gemini_generate_text
 
 
 POLICY_VERSION = "public-domain-longform-v2"
+FULL_MODE = "full"
+RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
 MAX_SOURCES = 10
+PREVIEW_MIN_SOURCES = 5
+PREVIEW_MAX_SOURCES = 7
 MIN_SOURCE_CHARS = 5_000
 MAX_SOURCE_CHARS = 1_500_000
 MAX_TOTAL_SOURCE_CHARS = 4_000_000
@@ -33,6 +37,12 @@ MIN_TARGET_CHARS = 80_000
 MAX_TARGET_CHARS = 220_000
 MIN_CHAPTERS = 12
 MAX_CHAPTERS = 36
+PREVIEW_MIN_TARGET_CHARS = 8_000
+PREVIEW_MAX_TARGET_CHARS = 15_000
+PREVIEW_DEFAULT_TARGET_CHARS = 10_000
+PREVIEW_MIN_CHAPTERS = 2
+PREVIEW_MAX_CHAPTERS = 4
+PREVIEW_DEFAULT_CHAPTERS = 3
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
@@ -154,11 +164,24 @@ def validate_sources(
     sources: Iterable[PublicDomainSource],
     *,
     public_domain_confirmed: bool,
+    generation_mode: str = FULL_MODE,
+    research_use_confirmed: bool = False,
 ) -> list[PublicDomainSource]:
     items = list(sources)
-    if not MIN_SOURCES <= len(items) <= MAX_SOURCES:
-        raise PublicDomainValidationError(f"必须提供 {MIN_SOURCES} 到 {MAX_SOURCES} 本公版来源。")
-    if not public_domain_confirmed:
+    preview = generation_mode == RESEARCH_PREVIEW_MODE
+    if generation_mode not in {FULL_MODE, RESEARCH_PREVIEW_MODE}:
+        raise PublicDomainValidationError(f"不支持的公版生成模式：{generation_mode}")
+    min_sources = PREVIEW_MIN_SOURCES if preview else MIN_SOURCES
+    max_sources = PREVIEW_MAX_SOURCES if preview else MAX_SOURCES
+    if not min_sources <= len(items) <= max_sources:
+        label = "研究试稿来源" if preview else "公版来源"
+        raise PublicDomainValidationError(f"必须提供 {min_sources} 到 {max_sources} 本{label}。")
+    if preview:
+        if not research_use_confirmed:
+            raise PublicDomainValidationError(
+                "研究试稿必须确认：来源只用于抽取事实/概念线索和检查重合，不复制原文、独创故事或现代评论。"
+            )
+    elif not public_domain_confirmed:
         raise PublicDomainValidationError("请先逐本核对并确认全部来源均可作为公版/公共领域材料使用。")
 
     cleaned: list[PublicDomainSource] = []
@@ -187,16 +210,16 @@ def validate_sources(
             )
         lowered = text.lower()
         marker = next((value for value in _COPYRIGHT_MARKERS if value in lowered), None)
-        if marker:
+        if marker and not preview:
             raise PublicDomainValidationError(
                 f"《{title}》正文检测到版权限制标记“{marker}”，已在模型调用前阻止。"
             )
         rights_lower = f"{rights_note} {rights_url}".lower()
-        if not rights_note or not any(hint in rights_lower for hint in _PUBLIC_DOMAIN_HINTS):
+        if not preview and (not rights_note or not any(hint in rights_lower for hint in _PUBLIC_DOMAIN_HINTS)):
             raise PublicDomainValidationError(
                 f"《{title}》缺少可审计的公版依据；请在权利依据中明确写明“公版/公共领域/CC0/保护期届满”及核对理由。"
             )
-        if not rights_url and item.publication_year is None and item.author_death_year is None:
+        if not preview and not rights_url and item.publication_year is None and item.author_death_year is None:
             raise PublicDomainValidationError(
                 f"《{title}》除文字说明外没有出版年份、作者去世年份或依据链接，无法形成可审计权利清单。"
             )
@@ -211,7 +234,10 @@ def validate_sources(
                 author=str(item.author or "").strip() or None,
                 publication_year=item.publication_year,
                 author_death_year=item.author_death_year,
-                rights_note=rights_note,
+                rights_note=(
+                    rights_note
+                    or "研究试稿：仅作事实/概念线索与来源重合排查，未主张该现代整理本属于公版"
+                ),
                 rights_evidence_url=rights_url or None,
             )
         )
@@ -223,10 +249,22 @@ def derive_dimensions(
     *,
     requested_chars: int | None = None,
     requested_chapters: int | None = None,
+    generation_mode: str = FULL_MODE,
 ) -> BookDimensions:
     items = list(sources)
     lengths = [count_text_chars(item.text) for item in items]
     median_chars = int(statistics.median(lengths))
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        target_chars = int(requested_chars or PREVIEW_DEFAULT_TARGET_CHARS)
+        target_chars = max(PREVIEW_MIN_TARGET_CHARS, min(PREVIEW_MAX_TARGET_CHARS, target_chars))
+        target_chapters = int(requested_chapters or PREVIEW_DEFAULT_CHAPTERS)
+        target_chapters = max(PREVIEW_MIN_CHAPTERS, min(PREVIEW_MAX_CHAPTERS, target_chapters))
+        return BookDimensions(
+            target_chars=target_chars,
+            target_chapters=target_chapters,
+            median_source_chars=median_chars,
+            median_source_chapters=None,
+        )
     target_chars = int(requested_chars or round(median_chars / 1000) * 1000)
     target_chars = max(MIN_TARGET_CHARS, min(MAX_TARGET_CHARS, target_chars))
 
@@ -271,6 +309,8 @@ def run_public_domain_longform(
     target_chapters: int | None = None,
     output_style: str | None = None,
     public_domain_confirmed: bool = False,
+    generation_mode: str = FULL_MODE,
+    research_use_confirmed: bool = False,
     on_progress: ProgressCallback | None = None,
 ) -> PublicDomainLongformResult:
     """Build or resume a long-form public-domain synthesis.
@@ -279,15 +319,24 @@ def run_public_domain_longform(
     completed evidence chunks, source digests and accepted chapters.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
-    clean_sources = validate_sources(sources, public_domain_confirmed=public_domain_confirmed)
+    clean_sources = validate_sources(
+        sources,
+        public_domain_confirmed=public_domain_confirmed,
+        generation_mode=generation_mode,
+        research_use_confirmed=research_use_confirmed,
+    )
     dimensions = derive_dimensions(
         clean_sources,
         requested_chars=target_length,
         requested_chapters=target_chapters,
+        generation_mode=generation_mode,
     )
     reports = build_source_reports(clean_sources)
-    _write_rights_manifest(work_dir, reports, clean_sources, dimensions)
-    _notify(on_progress, 5, f"已验证 {len(clean_sources)} 本来源与权利依据")
+    _write_rights_manifest(work_dir, reports, clean_sources, dimensions, generation_mode=generation_mode)
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        _notify(on_progress, 5, f"已隔离 {len(clean_sources)} 本研究材料；只抽取事实/概念线索")
+    else:
+        _notify(on_progress, 5, f"已验证 {len(clean_sources)} 本来源与权利依据")
 
     all_evidence: list[dict[str, Any]] = []
     digests: list[dict[str, Any]] = []
@@ -310,6 +359,7 @@ def run_public_domain_longform(
             source,
             report,
             work_dir,
+            generation_mode=generation_mode,
             on_chunk_completed=evidence_chunk_done,
         )
         if len(evidence) < 8:
@@ -329,6 +379,7 @@ def run_public_domain_longform(
         target_title=target_title,
         target_direction=target_direction,
         output_style=output_style,
+        generation_mode=generation_mode,
     )
     _notify(on_progress, 38, f"长篇规划完成：{dimensions.target_chapters} 章 / 目标 {dimensions.target_chars} 字")
 
@@ -346,6 +397,7 @@ def run_public_domain_longform(
             previous_summary=previous_summary,
             allowed_evidence=allowed_evidence,
             overlap_indexes=overlap_indexes,
+            generation_mode=generation_mode,
         )
         chapters.append(chapter)
         previous_summary = chapter.summary
@@ -365,9 +417,18 @@ def run_public_domain_longform(
         source_reports=reports,
         dimensions=dimensions,
         overlap_indexes=overlap_indexes,
+        generation_mode=generation_mode,
     )
     _atomic_write_text(work_dir / "04_format.md", markdown)
-    _notify(on_progress, 93, "公版权利、事实、来源重合、章节与全书质量终审通过")
+    _notify(
+        on_progress,
+        93,
+        (
+            "研究材料隔离、事实、来源重合、章节与全稿质量终审通过"
+            if generation_mode == RESEARCH_PREVIEW_MODE
+            else "公版权利、事实、来源重合、章节与全书质量终审通过"
+        ),
+    )
     return PublicDomainLongformResult(
         title=str(plan.get("title") or target_title or "公版融合长篇").strip(),
         summary=str(plan.get("summary") or "").strip(),
@@ -673,6 +734,7 @@ def _extract_source_evidence(
     report: SourceReport,
     work_dir: Path,
     *,
+    generation_mode: str = FULL_MODE,
     on_chunk_completed: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     source_dir = work_dir / "evidence" / report.source_id
@@ -682,11 +744,17 @@ def _extract_source_evidence(
     for index, chunk in enumerate(chunks, start=1):
         chunk_id = f"C{index:04d}"
         path = source_dir / f"{chunk_id}.json"
-        expected_key = text_sha256(f"{POLICY_VERSION}\n{report.sha256}\n{chunk_id}\n{chunk}")
+        expected_key = text_sha256(
+            f"{POLICY_VERSION}\n{generation_mode}\n{report.sha256}\n{chunk_id}\n{chunk}"
+        )
         cached = _load_versioned_artifact(path, expected_key)
         if cached is None:
             prompt = _render_prompt(
-                "source_evidence.md",
+                (
+                    "source_evidence_research_preview.md"
+                    if generation_mode == RESEARCH_PREVIEW_MODE
+                    else "source_evidence.md"
+                ),
                 source_id=report.source_id,
                 source_title=source.title,
                 chunk_id=chunk_id,
@@ -819,6 +887,7 @@ def _build_book_plan(
     target_title: str | None,
     target_direction: str | None,
     output_style: str | None,
+    generation_mode: str = FULL_MODE,
 ) -> dict[str, Any]:
     path = work_dir / "02_book_plan.json"
     plan_input = {
@@ -829,17 +898,25 @@ def _build_book_plan(
         "target_title": target_title or "",
         "target_direction": target_direction or "",
         "output_style": output_style or "",
+        "generation_mode": generation_mode,
     }
     expected_key = text_sha256(json.dumps(plan_input, ensure_ascii=False, sort_keys=True))
     cached = _load_versioned_artifact(path, expected_key)
     if cached is not None:
         return dict(cached["plan"])
     prompt = _render_prompt(
-        "book_plan.md",
+        "book_plan_research_preview.md" if generation_mode == RESEARCH_PREVIEW_MODE else "book_plan.md",
         target_chars=dimensions.target_chars,
         target_chapters=dimensions.target_chapters,
         target_title=target_title or "由材料自然拟定",
-        target_direction=target_direction or "从 8–10 本来源的交叉材料中形成独立问题与论述",
+        target_direction=(
+            target_direction
+            or (
+                "从全部研究材料共同出现的概念与事实线索中形成独立问题与论述；排除独创故事和现代作者评论"
+                if generation_mode == RESEARCH_PREVIEW_MODE
+                else "从 8–10 本来源的交叉材料中形成独立问题与论述"
+            )
+        ),
         output_style=output_style or "清晰、克制、准确、可读；不模仿任何单一来源",
         source_digests=json.dumps(source_digests, ensure_ascii=False),
     )
@@ -959,6 +1036,7 @@ def _build_or_resume_chapter(
     previous_summary: str,
     allowed_evidence: list[dict[str, Any]],
     overlap_indexes: list[dict[str, Any]],
+    generation_mode: str = FULL_MODE,
 ) -> ChapterResult:
     chapter_dir = work_dir / "chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
@@ -970,6 +1048,7 @@ def _build_or_resume_chapter(
                 "contract": contract,
                 "evidence_ids": [item.get("claim_id") for item in allowed_evidence],
                 "previous_summary": previous_summary,
+                "generation_mode": generation_mode,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -991,7 +1070,11 @@ def _build_or_resume_chapter(
         for item in allowed_evidence
     ]
     prompt = _render_prompt(
-        "chapter_writer.md",
+        (
+            "chapter_writer_research_preview.md"
+            if generation_mode == RESEARCH_PREVIEW_MODE
+            else "chapter_writer.md"
+        ),
         book_summary=book_summary,
         previous_summary=previous_summary,
         chapter_contract=json.dumps(contract, ensure_ascii=False),
@@ -1170,6 +1253,7 @@ def _run_final_gate(
     source_reports: tuple[SourceReport, ...],
     dimensions: BookDimensions,
     overlap_indexes: list[dict[str, Any]],
+    generation_mode: str = FULL_MODE,
 ) -> dict[str, Any]:
     body = "\n\n".join(item.text for item in chapters)
     body_chars = count_text_chars(body)
@@ -1192,10 +1276,16 @@ def _run_final_gate(
             if source_id in source_usage:
                 source_usage[source_id] += 1
                 source_chapter_usage[source_id].add(chapter.number)
+    min_claims = 2 if generation_mode == RESEARCH_PREVIEW_MODE else 4
+    min_source_chapters = 1 if generation_mode == RESEARCH_PREVIEW_MODE else 2
     for report in source_reports:
-        if source_usage[report.source_id] < 4 or len(source_chapter_usage[report.source_id]) < 2:
+        if (
+            source_usage[report.source_id] < min_claims
+            or len(source_chapter_usage[report.source_id]) < min_source_chapters
+        ):
             blocking.append(
-                f"{report.source_id}《{report.title}》未达到至少 4 条证据、分布在至少两章的实质贡献"
+                f"{report.source_id}《{report.title}》未达到至少 {min_claims} 条证据、"
+                f"分布在至少 {min_source_chapters} 章的实质贡献"
             )
 
     overlap = _overlap_reports(body, overlap_indexes)
@@ -1210,6 +1300,7 @@ def _run_final_gate(
 
     deterministic = {
         "policy_version": POLICY_VERSION,
+        "generation_mode": generation_mode,
         "target_chars": dimensions.target_chars,
         "actual_chars": body_chars,
         "target_chapters": dimensions.target_chapters,
@@ -1231,7 +1322,7 @@ def _run_final_gate(
         "deterministic": deterministic,
     }
     prompt = _render_prompt(
-        "final_audit.md",
+        "final_audit_research_preview.md" if generation_mode == RESEARCH_PREVIEW_MODE else "final_audit.md",
         audit_material=json.dumps(audit_material, ensure_ascii=False),
     )
     raw = _call_gemini(
@@ -1356,11 +1447,20 @@ def _write_rights_manifest(
     reports: tuple[SourceReport, ...],
     sources: list[PublicDomainSource],
     dimensions: BookDimensions,
+    *,
+    generation_mode: str = FULL_MODE,
 ) -> None:
+    preview = generation_mode == RESEARCH_PREVIEW_MODE
     manifest = {
         "policy_version": POLICY_VERSION,
+        "generation_mode": generation_mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "legal_note": "系统记录并核对用户提供的权利依据，但不替代专业法律意见。任何依据不清的来源不得进入生成。",
+        "legal_note": (
+            "研究试稿未主张现代整理本属于公版。原始文字只用于事实/概念线索抽取与重合排查；"
+            "写作层不得接触原文、独创故事、来源句法或现代评论。该技术隔离不替代专业法律意见。"
+            if preview
+            else "系统记录并核对用户提供的权利依据，但不替代专业法律意见。任何依据不清的来源不得进入生成。"
+        ),
         "dimensions": asdict(dimensions),
         "sources": [
             {
@@ -1598,9 +1698,13 @@ def _optional_int(value: object) -> int | None:
 __all__ = [
     "BookDimensions",
     "ChapterResult",
+    "FULL_MODE",
     "MAX_SOURCES",
     "MIN_SOURCES",
     "POLICY_VERSION",
+    "PREVIEW_MAX_SOURCES",
+    "PREVIEW_MIN_SOURCES",
+    "RESEARCH_PREVIEW_MODE",
     "PublicDomainLongformResult",
     "PublicDomainQualityError",
     "PublicDomainSource",
