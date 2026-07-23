@@ -28,6 +28,7 @@ from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v2-title-anchor"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -83,6 +84,33 @@ _RESEARCH_PROCESS_LEAKS = (
     "现代作者认为",
 )
 _MODERN_PRIMARY_CATEGORIES = ("中華民國", "民國", "现代", "現代")
+_MODERN_PRIMARY_TITLE_MARKERS = (
+    "判決",
+    "判决",
+    "白皮書",
+    "白皮书",
+    "工作報告",
+    "工作报告",
+    "公報",
+    "公报",
+    "政策",
+    "方案",
+    "講話",
+    "讲话",
+    "淺釋",
+    "浅释",
+    "講義",
+    "讲义",
+    "摘要",
+    "白話",
+    "白话",
+    "故事",
+    "全知道",
+    "辭典",
+    "辞典",
+    "感應分類輯要",
+    "感应分类辑要",
+)
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_longform"
 
@@ -1007,6 +1035,7 @@ def _verify_research_evidence(
             json.dumps(
                 {
                     "policy": POLICY_VERSION,
+                    "primary_retrieval": PRIMARY_RETRIEVAL_VERSION,
                     "batch": batch_input,
                     "hosts": _PRIMARY_SOURCE_HOSTS,
                     "model": settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL,
@@ -1060,6 +1089,7 @@ def _verify_research_evidence(
             {
                 "artifact_key": artifact_key,
                 "policy_version": POLICY_VERSION,
+                "primary_retrieval_version": PRIMARY_RETRIEVAL_VERSION,
                 "tool_sources": tool_sources,
                 "primary_pages": [
                     {
@@ -1156,6 +1186,7 @@ def _verify_research_evidence(
         work_dir / "01_verified_primary_ledger.json",
         {
             "policy_version": POLICY_VERSION,
+            "primary_retrieval_version": PRIMARY_RETRIEVAL_VERSION,
             "evidence_status": "verified_primary",
             "generation_eligible": True,
             "approved_hosts": list(_PRIMARY_SOURCE_HOSTS),
@@ -1170,7 +1201,7 @@ def _select_discovery_candidates(evidence: list[dict[str, Any]]) -> list[dict[st
     seen: set[str] = set()
     for item in sorted(
         evidence,
-        key=lambda value: (-int(value.get("importance") or 1), str(value.get("claim_id") or "")),
+        key=lambda value: (-_discovery_candidate_priority(value), str(value.get("claim_id") or "")),
     ):
         if item.get("evidence_status") != "discovery_only" or bool(item.get("generation_eligible")):
             continue
@@ -1191,6 +1222,43 @@ def _select_discovery_candidates(evidence: list[dict[str, Any]]) -> list[dict[st
         source_ids = [value for value in source_ids if buckets[value]]
         offset += 1
     return selected
+
+
+def _discovery_candidate_priority(item: dict[str, Any]) -> int:
+    """Prefer source-anchored clues over broad modern explanations.
+
+    The modern research books are useful as an index into ancient texts, but a
+    generic definition such as "what pure mind means" is a poor search key.  An
+    explicit sutra title, locator, or attributed quotation is substantially
+    more likely to produce auditable primary evidence and therefore receives a
+    deterministic priority boost before any paid model call.
+    """
+    statement = str(item.get("statement") or "")
+    qualifier = str(item.get("qualifier") or "")
+    text = f"{statement} {qualifier}"
+    titles = _primary_title_hints(text)
+    score = max(1, min(3, int(item.get("importance") or 1))) * 10
+    if titles:
+        score += 120
+    if _primary_title_hints(qualifier):
+        score += 30
+    if any(marker in text for marker in ("出自", "见《", "見《", "卷", "品", "偈", "经云", "經云", "佛说", "佛說")):
+        score += 35
+    if any(marker in qualifier for marker in ("原文", "引文", "出处", "出處")):
+        score += 20
+    if any(marker in statement for marker in ("指的是", "一般指", "可以理解为", "可以理解為", "通常是", "概念是")):
+        score -= 25
+    return score
+
+
+def _primary_title_hints(text: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            value.strip()
+            for value in re.findall(r"《([^》]{2,60})》", text or "")
+            if value.strip()
+        )
+    )
 
 
 def _normalize_verified_batch(
@@ -1297,13 +1365,19 @@ def _discover_primary_pages_for_batch(batch: list[dict[str, Any]]) -> list[dict[
 
 def _primary_search_queries(item: dict[str, Any]) -> list[str]:
     text = f"{item.get('statement') or ''} {item.get('qualifier') or ''}".strip()
-    titles = [value.strip() for value in re.findall(r"《([^》]{2,60})》", text)]
+    titles = _primary_title_hints(text)
     clauses = [
         value.strip()
         for value in re.split(r"[，。；：、！？,.!?;:\s]+", re.sub(r"《[^》]+》", " ", text))
         if 4 <= len(value.strip()) <= 28
     ]
-    queries = titles + sorted(clauses, key=len, reverse=True)[:2]
+    # ``title:`` is an internal exact-page instruction consumed below.  It is
+    # deliberately tried before free search so an explicit 《金刚经》 citation
+    # cannot be displaced by unrelated pages that merely mention the same
+    # generic Buddhist term.
+    queries = [f"title:{title}" for title in titles]
+    queries.extend(titles)
+    queries.extend(sorted(clauses, key=len, reverse=True)[:2])
     if not queries:
         compact = _compact(text)
         if compact:
@@ -1312,24 +1386,32 @@ def _primary_search_queries(item: dict[str, Any]) -> list[str]:
 
 
 def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
-    params = urlencode(
-        {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": query,
-            "gsrnamespace": 0,
-            "gsrlimit": 3,
-            "prop": "extracts|categories",
-            "explaintext": 1,
-            "exchars": 6000,
-            "cllimit": "max",
-            "format": "json",
-            "formatversion": 2,
-            "utf8": 1,
-            "variant": "zh-hant",
-            "converttitles": 1,
-        }
-    )
+    exact_title = query.removeprefix("title:").strip() if query.startswith("title:") else ""
+    request_params: dict[str, Any] = {
+        "action": "query",
+        "prop": "extracts|categories",
+        "explaintext": 1,
+        "exchars": 6000,
+        "cllimit": "max",
+        "format": "json",
+        "formatversion": 2,
+        "utf8": 1,
+        "variant": "zh-hant",
+        "converttitles": 1,
+        "redirects": 1,
+    }
+    if exact_title:
+        request_params["titles"] = exact_title
+    else:
+        request_params.update(
+            {
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrnamespace": 0,
+                "gsrlimit": 3,
+            }
+        )
+    params = urlencode(request_params)
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     try:
         with httpx.Client(
@@ -1360,6 +1442,11 @@ def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
                 for category in categories
                 for marker in _MODERN_PRIMARY_CATEGORIES
             )
+            or not _looks_like_ancient_buddhist_primary_page(
+                title=title,
+                categories=categories,
+                exact_title=exact_title,
+            )
         ):
             continue
         result.append(
@@ -1371,6 +1458,34 @@ def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
             }
         )
     return result
+
+
+def _looks_like_ancient_buddhist_primary_page(
+    *,
+    title: str,
+    categories: list[str],
+    exact_title: str = "",
+) -> bool:
+    compact_title = _compact(title)
+    if not compact_title or any(marker in compact_title for marker in _MODERN_PRIMARY_TITLE_MARKERS):
+        return False
+    category_text = " ".join(categories)
+    category_signal = any(
+        marker in category_text
+        for marker in ("佛經", "佛经", "大藏經", "大藏经", "經部", "经部", "律部", "論部", "论部")
+    )
+    title_signal = bool(
+        re.search(r"(?:經|经|律|論|论|疏|記|记|錄|录|品|頌|颂|咒)(?:/.*)?$", compact_title)
+        or compact_title.startswith(("佛說", "佛说"))
+    )
+    if exact_title:
+        # MediaWiki may convert a simplified requested title to a traditional
+        # canonical title (金刚经 -> 金剛經).  The exact ``titles=`` lookup already
+        # constrains the response to that page, so suffix/category validation is
+        # the stable check here; raw character equality would reject a valid
+        # simplified/traditional redirect.
+        return title_signal or category_signal
+    return title_signal or category_signal
 
 
 def _build_primary_source_reports(evidence: list[dict[str, Any]]) -> tuple[SourceReport, ...]:

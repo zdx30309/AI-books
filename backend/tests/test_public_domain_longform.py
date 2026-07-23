@@ -440,6 +440,57 @@ def test_primary_quote_must_exist_in_fetched_page() -> None:
     assert result == []
 
 
+def test_discovery_candidate_selection_prioritizes_explicit_primary_anchor() -> None:
+    discoveries = [
+        {
+            "claim_id": "S01-C0001-01",
+            "source_id": "S01",
+            "statement": "清净心一般指不受杂念干扰的心理状态",
+            "qualifier": "",
+            "importance": 3,
+            "evidence_status": "discovery_only",
+            "generation_eligible": False,
+        },
+        {
+            "claim_id": "S01-C0002-01",
+            "source_id": "S01",
+            "statement": "忍辱波罗蜜，如来说非忍辱波罗蜜，是名忍辱波罗蜜",
+            "qualifier": "出自《金刚经》",
+            "importance": 2,
+            "evidence_status": "discovery_only",
+            "generation_eligible": False,
+        },
+    ]
+    selected = service._select_discovery_candidates(discoveries)  # noqa: SLF001
+    assert selected[0]["claim_id"] == "S01-C0002-01"
+
+
+def test_primary_search_tries_exact_canonical_title_before_broad_clauses() -> None:
+    queries = service._primary_search_queries(  # noqa: SLF001
+        {
+            "statement": "忍辱波罗蜜，如来说非忍辱波罗蜜，是名忍辱波罗蜜",
+            "qualifier": "出自《金刚经》",
+        }
+    )
+    assert queries[0] == "title:金刚经"
+
+
+def test_primary_page_filter_rejects_modern_noise_and_accepts_canonical_text() -> None:
+    assert service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
+        title="佛說八大人覺經",
+        categories=["大正新脩大藏經"],
+        exact_title="佛说八大人觉经",
+    )
+    assert not service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
+        title="某地人民法院民事判決書",
+        categories=["中華人民共和國司法文書"],
+    )
+    assert not service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
+        title="大佛頂首楞嚴經淺釋",
+        categories=["佛教"],
+    )
+
+
 def test_modern_source_and_process_language_are_hard_blocked() -> None:
     sources = [
         PublicDomainSource(
