@@ -107,6 +107,42 @@ def test_research_preview_auditor_falls_back_when_gemini_is_unavailable(
     assert result == '{"pass": true}'
 
 
+def test_research_preview_audit_falls_back_when_provider_returns_non_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(service, "_call_auditor", lambda *_args, **_kwargs: "无法按要求返回结果")
+    fallback_actions: list[str] = []
+
+    def _valid_fallback(*_args, **kwargs) -> str:
+        fallback_actions.append(str(kwargs.get("action") or ""))
+        return json.dumps(
+            {
+                "pass": True,
+                "unsupported_claims": [],
+                "contradictions": [],
+                "missing_materials": [],
+                "language_issues": [],
+                "repair_instructions": [],
+            }
+        )
+
+    monkeypatch.setattr(service, "_call_openai_auditor", _valid_fallback)
+    result = service._audit_chapter(  # noqa: SLF001
+        work_dir=tmp_path,
+        chapter_number=1,
+        contract={"title": "第一章", "must_cover": []},
+        allowed_evidence=[],
+        chapter_text="候选正文",
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+    )
+
+    assert result["pass"] is True
+    assert fallback_actions == ["chapter_audit:001:json_fallback"]
+    log_rows = [json.loads(line) for line in (tmp_path / "llm_calls.jsonl").read_text().splitlines()]
+    assert log_rows[-1]["status"] == "malformed_output"
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")

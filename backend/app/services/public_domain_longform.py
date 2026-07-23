@@ -2241,15 +2241,49 @@ def _audit_chapter(
         allowed_evidence=json.dumps(allowed_evidence, ensure_ascii=False),
         chapter_text=chapter_text,
     )
+    action = f"chapter_audit:{chapter_number:03d}"
     raw = _call_auditor(
         work_dir,
-        action=f"chapter_audit:{chapter_number:03d}",
+        action=action,
         prompt=prompt,
         temperature=0.0,
         max_output_tokens=5000,
         generation_mode=generation_mode,
     )
-    audit = _parse_json_object(raw)
+    try:
+        audit = _parse_json_object(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        # Gemini occasionally returns a short natural-language refusal or an
+        # incomplete object while the provider call itself is reported as OK.
+        # Treat that as a provider-format failure, never as an audit result.
+        # Research previews can safely fail over to the already configured
+        # independent OpenAI auditor without regenerating the paid chapter.
+        _append_jsonl(
+            work_dir / "llm_calls.jsonl",
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "policy_version": POLICY_VERSION,
+                "action": f"{action}:parse",
+                "provider": "audit-parser",
+                "status": "malformed_output",
+                "output_chars": len(raw or ""),
+                "error": f"{type(exc).__name__}: {exc}"[:2000],
+            },
+        )
+        if generation_mode != RESEARCH_PREVIEW_MODE:
+            raise
+        fallback_prompt = (
+            prompt
+            + "\n\n上一个审稿器未返回可解析的 JSON。请重新独立审查，并且只输出题目要求的单个完整 JSON 对象；"
+            "不要解释、不要 Markdown、不要省略任何数组字段。"
+        )
+        fallback_raw = _call_openai_auditor(
+            work_dir,
+            action=f"{action}:json_fallback",
+            prompt=fallback_prompt,
+            max_output_tokens=5000,
+        )
+        audit = _parse_json_object(fallback_raw)
     audit["pass"] = bool(audit.get("pass"))
     for key in ("unsupported_claims", "contradictions", "missing_materials", "language_issues", "repair_instructions"):
         audit[key] = [str(value) for value in audit.get(key) or []]
