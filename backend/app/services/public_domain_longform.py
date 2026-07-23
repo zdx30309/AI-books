@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+from html import unescape as html_unescape
 import json
 import math
 from pathlib import Path
@@ -28,7 +29,7 @@ from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
-PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v2-title-anchor"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v3-hydrated-evidence-url"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -1077,6 +1078,10 @@ def _verify_research_evidence(
             prompt=prompt,
         )
         payload = _parse_json_object(raw)
+        primary_pages = _hydrate_requested_primary_pages(
+            payload=payload,
+            existing_pages=primary_pages,
+        )
         normalized = _normalize_verified_batch(
             payload=payload,
             batch=batch,
@@ -1090,6 +1095,7 @@ def _verify_research_evidence(
                 "artifact_key": artifact_key,
                 "policy_version": POLICY_VERSION,
                 "primary_retrieval_version": PRIMARY_RETRIEVAL_VERSION,
+                "verifier_payload": payload,
                 "tool_sources": tool_sources,
                 "primary_pages": [
                     {
@@ -1337,6 +1343,83 @@ def _normalize_verified_batch(
     return normalized
 
 
+def _hydrate_requested_primary_pages(
+    *,
+    payload: dict[str, Any],
+    existing_pages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Independently fetch every approved evidence URL returned by the verifier.
+
+    The web-search model may identify a more precise translation, volume, or
+    subpage than the pre-search title lookup.  Previously those correct URLs
+    were discarded solely because their path differed from the coarse page
+    supplied in the prompt.  We now fetch the requested approved URL ourselves
+    and still require the evidence quote to occur literally in its content.
+    Thus URL variants are accepted without trusting model memory.
+    """
+    pages_by_url: dict[str, dict[str, Any]] = {}
+    for page in existing_pages:
+        url = _normalize_evidence_url(str(page.get("url") or ""))
+        if url:
+            pages_by_url[url] = {**page, "url": url}
+    requested_urls = {
+        _normalize_evidence_url(str(url or ""))
+        for item in payload.get("verified_claims") or []
+        if isinstance(item, dict)
+        for url in (item.get("evidence_urls") or [item.get("evidence_url")])
+        if _normalize_evidence_url(str(url or ""))
+        and _is_approved_primary_url(str(url or ""))
+    }
+    for url in sorted(requested_urls):
+        if url in pages_by_url:
+            continue
+        fetched = _fetch_primary_page_by_url(url)
+        if fetched is not None:
+            pages_by_url[url] = {**fetched, "url": url, "requested_url": url}
+    return list(pages_by_url.values())
+
+
+def _fetch_primary_page_by_url(url: str) -> dict[str, Any] | None:
+    normalized = _normalize_evidence_url(url)
+    if not normalized or not _is_approved_primary_url(normalized):
+        return None
+    parts = urlsplit(normalized)
+    host = (parts.hostname or "").lower()
+    if host == "zh.wikisource.org" or host.endswith(".zh.wikisource.org"):
+        path = unquote(parts.path or "")
+        title = ""
+        for prefix in ("/wiki/", "/zh-hant/", "/zh-hans/", "/zh/"):
+            if path.startswith(prefix):
+                title = path[len(prefix) :].replace("_", " ").strip()
+                break
+        if not title:
+            return None
+        pages = _search_wikisource_pages(f"title:{title}")
+        if not pages:
+            return None
+        return pages[0]
+
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
+    try:
+        with httpx.Client(
+            proxy=proxy or None,
+            timeout=20,
+            follow_redirects=True,
+            headers={"User-Agent": "video-plan-public-domain/3.1 (primary-source verification)"},
+        ) as client:
+            response = client.get(normalized)
+            response.raise_for_status()
+            if not _is_approved_primary_url(str(response.url)):
+                return None
+            text = html_unescape(re.sub(r"<[^>]+>", " ", response.text))
+            text = re.sub(r"\s+", " ", text).strip()
+    except Exception:
+        return None
+    if len(_compact(text)) < 80:
+        return None
+    return {"title": parts.path.rsplit("/", 1)[-1], "text": text, "categories": []}
+
+
 def _discover_primary_pages_for_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fetch concrete ancient-text pages from Wikisource's public API.
 
@@ -1473,7 +1556,7 @@ def _looks_like_ancient_buddhist_primary_page(
     categories: list[str],
     exact_title: str = "",
 ) -> bool:
-    compact_title = _compact(title)
+    compact_title = re.sub(r"\s+", "", str(title or ""))
     if not compact_title or any(marker in compact_title for marker in _MODERN_PRIMARY_TITLE_MARKERS):
         return False
     category_text = " ".join(categories)
@@ -1481,9 +1564,11 @@ def _looks_like_ancient_buddhist_primary_page(
         marker in category_text
         for marker in ("佛經", "佛经", "大藏經", "大藏经", "經部", "经部", "律部", "論部", "论部")
     )
+    title_root = compact_title.split("/", 1)[0]
+    title_stem = re.split(r"[_（(]", title_root, maxsplit=1)[0]
     title_signal = bool(
-        re.search(r"(?:經|经|律|論|论|疏|記|记|錄|录|品|頌|颂|咒)(?:/.*)?$", compact_title)
-        or compact_title.startswith(("佛說", "佛说"))
+        re.search(r"(?:經|经|律|論|论|疏|記|记|錄|录|品|頌|颂|咒)$", title_stem)
+        or title_stem.startswith(("佛說", "佛说"))
     )
     if exact_title:
         # MediaWiki may convert a simplified requested title to a traditional

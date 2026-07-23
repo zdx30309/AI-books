@@ -505,11 +505,65 @@ def test_successful_exact_title_lookup_skips_broad_search(
     assert len(pages) == 1
 
 
+def test_verifier_discovered_subpage_is_fetched_before_literal_quote_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://zh.wikisource.org/zh-hant/金剛般若波羅蜜經_(鳩摩羅什)"
+    payload = {
+        "verified_claims": [
+            {
+                "candidate_ids": ["S01-C0001-01"],
+                "statement": "原典记载忍辱波罗蜜，如来说非忍辱波罗蜜",
+                "canonical_title": "《金刚般若波罗蜜经》",
+                "canonical_locator": "离相寂灭分第十四",
+                "evidence_quote": "忍辱波羅蜜，如來說非忍辱波羅蜜",
+                "evidence_urls": [url],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        service,
+        "_fetch_primary_page_by_url",
+        lambda requested_url: {
+            "title": "金剛般若波羅蜜經 (鳩摩羅什)",
+            "text": "須菩提！忍辱波羅蜜，如來說非忍辱波羅蜜。" * 10,
+            "categories": ["大正新脩大藏經"],
+        }
+        if requested_url == service._normalize_evidence_url(url)  # noqa: SLF001
+        else None,
+    )
+    pages = service._hydrate_requested_primary_pages(  # noqa: SLF001
+        payload=payload,
+        existing_pages=[],
+    )
+    result = service._normalize_verified_batch(  # noqa: SLF001
+        payload=payload,
+        batch=[
+            {
+                "claim_id": "S01-C0001-01",
+                "source_id": "S01",
+                "kind": "concept",
+                "importance": 3,
+            }
+        ],
+        tool_sources=[],
+        primary_pages=pages,
+        modern_titles=set(),
+    )
+    assert len(result) == 1
+    assert result[0]["evidence_urls"] == [service._normalize_evidence_url(url)]  # noqa: SLF001
+
+
 def test_primary_page_filter_rejects_modern_noise_and_accepts_canonical_text() -> None:
     assert service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
         title="佛說八大人覺經",
         categories=["大正新脩大藏經"],
         exact_title="佛说八大人觉经",
+    )
+    assert service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
+        title="舊雜譬喻經/卷上",
+        categories=[],
+        exact_title="旧杂譬喻经/卷上",
     )
     assert not service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
         title="某地人民法院民事判決書",
