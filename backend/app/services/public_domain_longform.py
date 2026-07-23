@@ -29,7 +29,7 @@ from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
-PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v3-hydrated-evidence-url"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v4-full-page-quote-check"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -1394,7 +1394,11 @@ def _fetch_primary_page_by_url(url: str) -> dict[str, Any] | None:
                 break
         if not title:
             return None
-        pages = _search_wikisource_pages(f"title:{title}")
+        # The context page shown to the verifier is intentionally shortened,
+        # but the final literal-quote gate must inspect the complete primary
+        # page.  Otherwise a valid quote after the first 6,000 characters is
+        # incorrectly rejected.
+        pages = _search_wikisource_pages(f"title:{title}", extract_chars=None)
         if not pages:
             return None
         return pages[0]
@@ -1475,13 +1479,16 @@ def _primary_search_queries(item: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(queries))[:3]
 
 
-def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
+def _search_wikisource_pages(
+    query: str,
+    *,
+    extract_chars: int | None = 6000,
+) -> list[dict[str, str]]:
     exact_title = query.removeprefix("title:").strip() if query.startswith("title:") else ""
     request_params: dict[str, Any] = {
         "action": "query",
         "prop": "extracts|categories",
         "explaintext": 1,
-        "exchars": 6000,
         "cllimit": "max",
         "format": "json",
         "formatversion": 2,
@@ -1490,6 +1497,8 @@ def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
         "converttitles": 1,
         "redirects": 1,
     }
+    if extract_chars is not None:
+        request_params["exchars"] = max(100, int(extract_chars))
     if exact_title:
         request_params["titles"] = exact_title
     else:
