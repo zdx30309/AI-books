@@ -1270,7 +1270,11 @@ def _audit_chapter(
     generation_mode: str = FULL_MODE,
 ) -> dict[str, Any]:
     prompt = _render_prompt(
-        "chapter_audit.md",
+        (
+            "chapter_audit_research_preview.md"
+            if generation_mode == RESEARCH_PREVIEW_MODE
+            else "chapter_audit.md"
+        ),
         chapter_contract=json.dumps(contract, ensure_ascii=False),
         allowed_evidence=json.dumps(allowed_evidence, ensure_ascii=False),
         chapter_text=chapter_text,
