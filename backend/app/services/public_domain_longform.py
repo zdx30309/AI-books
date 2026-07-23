@@ -1311,7 +1311,13 @@ def _call_openai_primary_verifier(
             model=model,
             input=prompt,
             reasoning={"effort": "low"},
-            tools=[{"type": "web_search", "search_context_size": "high"}],
+            tools=[
+                {
+                    "type": "web_search",
+                    "search_context_size": "high",
+                    "filters": {"allowed_domains": list(_PRIMARY_SOURCE_HOSTS)},
+                }
+            ],
             tool_choice="required",
             include=["web_search_call.action.sources"],
         )
