@@ -475,6 +475,10 @@ def test_primary_search_tries_exact_canonical_title_before_broad_clauses() -> No
     assert queries[0] == "title:金刚经"
 
 
+def test_canonical_title_drops_trailing_edition_annotation() -> None:
+    assert service._normalize_canonical_title("《大般涅槃经》三十六卷本》") == "《大般涅槃经》"  # noqa: SLF001
+
+
 def test_successful_exact_title_lookup_skips_broad_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

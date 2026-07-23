@@ -29,7 +29,7 @@ from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
-PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v5-exact-ancient-page"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -51,10 +51,10 @@ PREVIEW_MAX_CHAPTERS = 4
 PREVIEW_DEFAULT_CHAPTERS = 3
 PREVIEW_DEEPSEEK_MODEL = "deepseek-chat"
 PREVIEW_PRIMARY_BATCH_SIZE = 8
-PREVIEW_MAX_DISCOVERY_CANDIDATES = 64
+PREVIEW_MAX_DISCOVERY_CANDIDATES = 96
 PREVIEW_MIN_VERIFIED_CLAIMS = 18
 PREVIEW_MIN_PRIMARY_TITLES = 3
-PREVIEW_MAX_PRIMARY_TITLES = 5
+PREVIEW_MAX_PRIMARY_TITLES = 24
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
@@ -1757,7 +1757,8 @@ def _is_approved_primary_url(value: str) -> bool:
 
 def _normalize_canonical_title(value: str) -> str:
     title = str(value or "").strip()
-    title = re.sub(r"^[《〈]|[》〉]$", "", title).strip()
+    quoted = re.search(r"[《〈]([^》〉]{2,80})[》〉]", title)
+    title = quoted.group(1).strip() if quoted else re.sub(r"^[《〈]|[》〉]$", "", title).strip()
     if not 1 < len(title) <= 80:
         return ""
     return f"《{title}》"
