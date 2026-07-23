@@ -17,7 +17,8 @@ import re
 import statistics
 import time
 from typing import Any, Callable, Iterable
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 from app.core.config import settings
 from app.services.deepseek import generate_text as deepseek_generate_text
@@ -79,6 +80,7 @@ _RESEARCH_PROCESS_LEAKS = (
     "现代整理本",
     "现代作者认为",
 )
+_MODERN_PRIMARY_CATEGORIES = ("中華民國", "民國", "现代", "現代")
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_longform"
 
@@ -1019,10 +1021,24 @@ def _verify_research_evidence(
             )
             continue
 
+        primary_pages = _discover_primary_pages_for_batch(batch)
         prompt = _render_prompt(
             "primary_source_verification.md",
             allowed_hosts="、".join(_PRIMARY_SOURCE_HOSTS),
             candidates=json.dumps(batch_input, ensure_ascii=False),
+            primary_page_context=json.dumps(
+                [
+                    {
+                        "candidate_ids": item.get("candidate_ids") or [],
+                        "canonical_title_hint": item.get("title"),
+                        "categories": item.get("categories") or [],
+                        "url": item.get("url"),
+                        "page_text": str(item.get("text") or "")[:5000],
+                    }
+                    for item in primary_pages
+                ],
+                ensure_ascii=False,
+            ),
         )
         raw, tool_sources = _call_openai_primary_verifier(
             work_dir,
@@ -1034,6 +1050,7 @@ def _verify_research_evidence(
             payload=payload,
             batch=batch,
             tool_sources=tool_sources,
+            primary_pages=primary_pages,
             modern_titles=modern_titles,
         )
         _atomic_write_json(
@@ -1042,6 +1059,16 @@ def _verify_research_evidence(
                 "artifact_key": artifact_key,
                 "policy_version": POLICY_VERSION,
                 "tool_sources": tool_sources,
+                "primary_pages": [
+                    {
+                        "candidate_ids": item.get("candidate_ids") or [],
+                        "title": item.get("title"),
+                        "categories": item.get("categories") or [],
+                        "url": item.get("url"),
+                        "sha256": text_sha256(str(item.get("text") or "")),
+                    }
+                    for item in primary_pages
+                ],
                 "verified_claims": normalized,
                 "rejected_candidate_ids": payload.get("rejected_candidate_ids") or [],
             },
@@ -1169,11 +1196,16 @@ def _normalize_verified_batch(
     payload: dict[str, Any],
     batch: list[dict[str, Any]],
     tool_sources: list[dict[str, str]],
+    primary_pages: list[dict[str, Any]] | None = None,
     modern_titles: set[str],
 ) -> list[dict[str, Any]]:
     candidates = {str(item.get("claim_id") or ""): item for item in batch}
-    actual_urls = {_normalize_evidence_url(item.get("url") or "") for item in tool_sources}
-    actual_urls.discard("")
+    page_text_by_url = {
+        _normalize_evidence_url(str(item.get("url") or "")): str(item.get("text") or "")
+        for item in (primary_pages or [])
+        if _normalize_evidence_url(str(item.get("url") or ""))
+        and _is_approved_primary_url(str(item.get("url") or ""))
+    }
     normalized: list[dict[str, Any]] = []
     for raw in payload.get("verified_claims") or []:
         if not isinstance(raw, dict):
@@ -1195,15 +1227,20 @@ def _normalize_verified_batch(
             {
                 _normalize_evidence_url(str(value or ""))
                 for value in requested_urls
-                if _normalize_evidence_url(str(value or "")) in actual_urls
+                if _normalize_evidence_url(str(value or "")) in page_text_by_url
                 and _is_approved_primary_url(str(value or ""))
             }
+        )
+        quote_supported = any(
+            _compact(evidence_quote) in _compact(page_text_by_url.get(url) or "")
+            for url in evidence_urls
         )
         if (
             len(_compact(statement)) < 8
             or not locator
             or len(_compact(evidence_quote)) < 4
             or not evidence_urls
+            or not quote_supported
             or _contains_research_process_leak(statement)
             or any(value and (value in statement or value in qualifier) for value in modern_titles)
         ):
@@ -1228,6 +1265,106 @@ def _normalize_verified_batch(
             }
         )
     return normalized
+
+
+def _discover_primary_pages_for_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fetch concrete ancient-text pages from Wikisource's public API.
+
+    These pages are discovery/audit inputs only.  Their raw text is never sent
+    to the chapter writer, and an evidence quote must occur verbatim in the
+    fetched page before the claim can become generation-eligible.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for item in batch:
+        candidate_id = str(item.get("claim_id") or "")
+        for query in _primary_search_queries(item):
+            for page in _search_wikisource_pages(query):
+                url = _normalize_evidence_url(str(page.get("url") or ""))
+                if not url:
+                    continue
+                current = found.get(url)
+                if current is None:
+                    current = {**page, "url": url, "candidate_ids": []}
+                    found[url] = current
+                if candidate_id and candidate_id not in current["candidate_ids"]:
+                    current["candidate_ids"].append(candidate_id)
+            if sum(candidate_id in value["candidate_ids"] for value in found.values()) >= 3:
+                break
+    return list(found.values())[:24]
+
+
+def _primary_search_queries(item: dict[str, Any]) -> list[str]:
+    text = f"{item.get('statement') or ''} {item.get('qualifier') or ''}".strip()
+    titles = [value.strip() for value in re.findall(r"《([^》]{2,60})》", text)]
+    clauses = [
+        value.strip()
+        for value in re.split(r"[，。；：、！？,.!?;:\s]+", re.sub(r"《[^》]+》", " ", text))
+        if 4 <= len(value.strip()) <= 28
+    ]
+    queries = titles + sorted(clauses, key=len, reverse=True)[:2]
+    if not queries:
+        compact = _compact(text)
+        if compact:
+            queries.append(compact[:32])
+    return list(dict.fromkeys(queries))[:3]
+
+
+def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
+    params = urlencode(
+        {
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": query,
+            "gsrnamespace": 0,
+            "gsrlimit": 3,
+            "prop": "extracts|categories",
+            "explaintext": 1,
+            "exchars": 6000,
+            "cllimit": "max",
+            "format": "json",
+            "formatversion": 2,
+            "utf8": 1,
+            "variant": "zh-hant",
+            "converttitles": 1,
+        }
+    )
+    request = Request(
+        f"https://zh.wikisource.org/w/api.php?{params}",
+        headers={"User-Agent": "video-plan-public-domain/3.0 (primary-source verification)"},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:  # noqa: S310 - fixed approved host
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    result: list[dict[str, str]] = []
+    for page in (payload.get("query") or {}).get("pages") or []:
+        title = str(page.get("title") or "").strip()
+        text = str(page.get("extract") or "").strip()
+        categories = [
+            str(item.get("title") or "").removeprefix("Category:").strip()
+            for item in page.get("categories") or []
+        ]
+        if (
+            len(_compact(text)) < 80
+            or title.startswith(("Portal:", "Category:", "Template:"))
+            or title.startswith("佛學大辭典/")
+            or any(
+                marker in category
+                for category in categories
+                for marker in _MODERN_PRIMARY_CATEGORIES
+            )
+        ):
+            continue
+        result.append(
+            {
+                "title": title,
+                "url": f"https://zh.wikisource.org/wiki/{quote(title.replace(' ', '_'), safe='/:()')}",
+                "text": text,
+                "categories": categories,
+            }
+        )
+    return result
 
 
 def _build_primary_source_reports(evidence: list[dict[str, Any]]) -> tuple[SourceReport, ...]:
@@ -1311,13 +1448,7 @@ def _call_openai_primary_verifier(
             model=model,
             input=prompt,
             reasoning={"effort": "low"},
-            tools=[
-                {
-                    "type": "web_search",
-                    "search_context_size": "high",
-                    "filters": {"allowed_domains": list(_PRIMARY_SOURCE_HOSTS)},
-                }
-            ],
+            tools=[{"type": "web_search", "search_context_size": "high"}],
             tool_choice="required",
             include=["web_search_call.action.sources"],
         )

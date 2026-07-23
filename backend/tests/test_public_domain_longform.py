@@ -349,6 +349,19 @@ def test_research_discovery_is_promoted_only_by_real_primary_tool_sources(
         ]
 
     monkeypatch.setattr(service, "_call_openai_primary_verifier", fake_verify)
+    monkeypatch.setattr(
+        service,
+        "_discover_primary_pages_for_batch",
+        lambda batch: [
+            {
+                "candidate_ids": [str(item.get("claim_id") or "") for item in batch],
+                "title": title,
+                "url": url,
+                "text": "这是古代原典中的短证据，且正文足够长。" * 10,
+            }
+            for title, url in zip(canonical, urls)
+        ],
+    )
     result = service._verify_research_evidence(  # noqa: SLF001
         work_dir=tmp_path,
         discovery_evidence=discoveries,
@@ -390,6 +403,39 @@ def test_hallucinated_primary_url_is_not_promoted() -> None:
         batch=batch,
         tool_sources=[{"url": "https://zh.wikisource.org/wiki/雜阿含經", "title": "杂阿含经"}],
         modern_titles={"现代佛教故事"},
+    )
+    assert result == []
+
+
+def test_primary_quote_must_exist_in_fetched_page() -> None:
+    batch = [
+        {
+            "claim_id": "S01-C0001-01",
+            "source_id": "S01",
+            "kind": "fact",
+            "statement": "待核验命题具有足够长度",
+            "importance": 3,
+        }
+    ]
+    url = "https://zh.wikisource.org/wiki/法句經"
+    payload = {
+        "verified_claims": [
+            {
+                "candidate_ids": ["S01-C0001-01"],
+                "statement": "待核验命题具有足够长度",
+                "canonical_title": "《法句经》",
+                "canonical_locator": "卷一",
+                "evidence_quote": "模型虚构、页面实际不存在的短证据",
+                "evidence_urls": [url],
+            }
+        ]
+    }
+    result = service._normalize_verified_batch(  # noqa: SLF001
+        payload=payload,
+        batch=batch,
+        tool_sources=[{"url": url, "title": "法句经"}],
+        primary_pages=[{"url": url, "title": "法句经", "text": "页面只有另一段真实原典正文。" * 20}],
+        modern_titles=set(),
     )
     assert result == []
 
