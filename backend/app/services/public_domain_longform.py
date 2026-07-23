@@ -29,7 +29,7 @@ from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
-PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v4-full-page-quote-check"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v5-exact-ancient-page"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -1581,11 +1581,12 @@ def _looks_like_ancient_buddhist_primary_page(
     )
     if exact_title:
         # MediaWiki may convert a simplified requested title to a traditional
-        # canonical title (金刚经 -> 金剛經).  The exact ``titles=`` lookup already
-        # constrains the response to that page, so suffix/category validation is
-        # the stable check here; raw character equality would reject a valid
-        # simplified/traditional redirect.
-        return title_signal or category_signal
+        # canonical title (金刚经 -> 金剛經).  Exact verified URLs also legitimately
+        # end in 傳、林、錄 or a volume number, e.g.《續高僧傳/卷20》and
+        #《法苑珠林/卷090》.  The exact ``titles=`` lookup plus the modern-page
+        # exclusions above constrain the page; final eligibility still requires
+        # a literal quote from the complete fetched text.
+        return True
     return title_signal or category_signal
 
 

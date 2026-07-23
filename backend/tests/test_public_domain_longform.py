@@ -565,6 +565,11 @@ def test_primary_page_filter_rejects_modern_noise_and_accepts_canonical_text() -
         categories=[],
         exact_title="旧杂譬喻经/卷上",
     )
+    assert service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
+        title="續高僧傳/卷20",
+        categories=[],
+        exact_title="续高僧传/卷20",
+    )
     assert not service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
         title="某地人民法院民事判決書",
         categories=["中華人民共和國司法文書"],
