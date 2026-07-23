@@ -27,6 +27,7 @@
 }
 
 importance 只能为 1、2、3。不得输出 event、position，不得复制连续长句。
+每个片段最多输出 12 条 claims；宁缺毋滥，不要为了凑数量把故事细节改写成事实。
 
 来源编号：{source_id}
 来源书名：{source_title}

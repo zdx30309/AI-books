@@ -43,6 +43,7 @@ PREVIEW_DEFAULT_TARGET_CHARS = 10_000
 PREVIEW_MIN_CHAPTERS = 2
 PREVIEW_MAX_CHAPTERS = 4
 PREVIEW_DEFAULT_CHAPTERS = 3
+PREVIEW_DEEPSEEK_MODEL = "deepseek-chat"
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
@@ -367,7 +368,15 @@ def run_public_domain_longform(
                 f"《{source.title}》只得到 {len(evidence)} 条可锚定材料，无法支持高质量长篇融合。"
             )
         all_evidence.extend(evidence)
-        digests.append(_build_source_digest(source, report, evidence, work_dir))
+        digests.append(
+            _build_source_digest(
+                source,
+                report,
+                evidence,
+                work_dir,
+                generation_mode=generation_mode,
+            )
+        )
         progress = 8 + int(27 * source_index / total_sources)
         _notify(on_progress, progress, f"已完成来源证据抽取 {source_index}/{total_sources}")
 
@@ -745,7 +754,9 @@ def _extract_source_evidence(
         chunk_id = f"C{index:04d}"
         path = source_dir / f"{chunk_id}.json"
         expected_key = text_sha256(
-            f"{POLICY_VERSION}\n{generation_mode}\n{report.sha256}\n{chunk_id}\n{chunk}"
+            f"{POLICY_VERSION}\n{generation_mode}\n"
+            f"{PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else settings.DEEPSEEK_MODEL}\n"
+            f"{report.sha256}\n{chunk_id}\n{chunk}"
         )
         cached = _load_versioned_artifact(path, expected_key)
         if cached is None:
@@ -765,7 +776,8 @@ def _extract_source_evidence(
                 action=f"evidence:{report.source_id}:{chunk_id}",
                 prompt=prompt,
                 temperature=0.0,
-                max_output_tokens=5000,
+                max_output_tokens=1800 if generation_mode == RESEARCH_PREVIEW_MODE else 5000,
+                model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
             )
             payload = _parse_json_object(raw)
             claims: list[dict[str, Any]] = []
@@ -834,10 +846,14 @@ def _build_source_digest(
     report: SourceReport,
     evidence: list[dict[str, Any]],
     work_dir: Path,
+    *,
+    generation_mode: str = FULL_MODE,
 ) -> dict[str, Any]:
     path = work_dir / "evidence" / report.source_id / "digest.json"
     evidence_hash = text_sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True))
-    expected_key = text_sha256(f"{POLICY_VERSION}\n{report.sha256}\n{evidence_hash}")
+    expected_key = text_sha256(
+        f"{POLICY_VERSION}\n{generation_mode}\n{report.sha256}\n{evidence_hash}"
+    )
     cached = _load_versioned_artifact(path, expected_key)
     if cached is not None:
         return dict(cached.get("digest") or {})
@@ -862,7 +878,8 @@ def _build_source_digest(
         action=f"source_digest:{report.source_id}",
         prompt=prompt,
         temperature=0.0,
-        max_output_tokens=5000,
+        max_output_tokens=2500 if generation_mode == RESEARCH_PREVIEW_MODE else 5000,
+        model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
     digest = _parse_json_object(raw)
     digest["source_id"] = report.source_id
@@ -925,7 +942,8 @@ def _build_book_plan(
         action="book_plan",
         prompt=prompt,
         temperature=0.15,
-        max_output_tokens=9000,
+        max_output_tokens=3000 if generation_mode == RESEARCH_PREVIEW_MODE else 9000,
+        model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
     plan = _normalize_plan(_parse_json_object(raw), source_reports, dimensions, target_title)
     _atomic_write_json(
@@ -1086,6 +1104,7 @@ def _build_or_resume_chapter(
         prompt=prompt,
         temperature=0.35,
         max_output_tokens=_chapter_tokens(int(contract["target_chars"])),
+        model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
     candidate = _parse_json_object(raw)
     last_audit: dict[str, Any] = {}
@@ -1146,6 +1165,7 @@ def _build_or_resume_chapter(
             prompt=repair_prompt,
             temperature=0.15,
             max_output_tokens=_chapter_tokens(int(contract["target_chars"])),
+            model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
         )
         candidate = _parse_json_object(repaired)
     _atomic_write_json(
@@ -1501,13 +1521,15 @@ def _call_llm(
     prompt: str,
     temperature: float,
     max_output_tokens: int,
+    model: str | None = None,
 ) -> str:
+    selected_model = model or settings.DEEPSEEK_MODEL
     started = time.monotonic()
     log: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "policy_version": POLICY_VERSION,
         "action": action,
-        "model": settings.DEEPSEEK_MODEL,
+        "model": selected_model,
         "input_chars": len(prompt),
         "max_output_tokens": max_output_tokens,
         "status": "started",
@@ -1515,7 +1537,7 @@ def _call_llm(
     try:
         output = deepseek_generate_text(
             prompt,
-            model=settings.DEEPSEEK_MODEL,
+            model=selected_model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             fail_on_max_tokens=True,
