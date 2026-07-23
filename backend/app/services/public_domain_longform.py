@@ -18,11 +18,13 @@ import statistics
 import time
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+
+import httpx
 
 from app.core.config import settings
 from app.services.deepseek import generate_text as deepseek_generate_text
 from app.services.gemini import generate_text as gemini_generate_text
+from app.utils.official_api import official_proxy
 
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
@@ -1328,13 +1330,17 @@ def _search_wikisource_pages(query: str) -> list[dict[str, str]]:
             "converttitles": 1,
         }
     )
-    request = Request(
-        f"https://zh.wikisource.org/w/api.php?{params}",
-        headers={"User-Agent": "video-plan-public-domain/3.0 (primary-source verification)"},
-    )
+    proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     try:
-        with urlopen(request, timeout=15) as response:  # noqa: S310 - fixed approved host
-            payload = json.loads(response.read().decode("utf-8"))
+        with httpx.Client(
+            proxy=proxy or None,
+            timeout=20,
+            follow_redirects=True,
+            headers={"User-Agent": "video-plan-public-domain/3.0 (primary-source verification)"},
+        ) as client:
+            response = client.get(f"https://zh.wikisource.org/w/api.php?{params}")
+            response.raise_for_status()
+            payload = response.json()
     except Exception:
         return []
     result: list[dict[str, str]] = []
