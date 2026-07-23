@@ -1095,23 +1095,28 @@ def _build_or_resume_chapter(
     candidate: dict[str, Any] | None = None
     resumed_failed_candidate = False
     failed_path = chapter_dir / f"{chapter_number:03d}.failed.json"
-    if generation_mode == RESEARCH_PREVIEW_MODE and failed_path.exists():
-        try:
-            failed_payload = json.loads(failed_path.read_text(encoding="utf-8"))
-            failed_candidate = dict(failed_payload.get("last_candidate") or {})
-            failed_text = str(failed_candidate.get("text") or "").strip()
-            failed_ids = tuple(str(value) for value in failed_candidate.get("used_claim_ids") or [])
-            allowed_ids = {str(item.get("claim_id") or "") for item in allowed_evidence}
-            if (
-                failed_payload.get("contract") == contract
-                and int(target_chars * 0.88) <= count_text_chars(failed_text) <= int(target_chars * 1.12)
-                and failed_ids
-                and all(value in allowed_ids for value in failed_ids)
-            ):
-                candidate = failed_candidate
-                resumed_failed_candidate = True
-        except (OSError, TypeError, ValueError):
-            candidate = None
+    checkpoint_path = chapter_dir / f"{chapter_number:03d}.checkpoint.json"
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        for recovery_path in (checkpoint_path, failed_path):
+            if not recovery_path.exists():
+                continue
+            try:
+                failed_payload = json.loads(recovery_path.read_text(encoding="utf-8"))
+                failed_candidate = dict(failed_payload.get("last_candidate") or {})
+                failed_text = str(failed_candidate.get("text") or "").strip()
+                failed_ids = tuple(str(value) for value in failed_candidate.get("used_claim_ids") or [])
+                allowed_ids = {str(item.get("claim_id") or "") for item in allowed_evidence}
+                if (
+                    failed_payload.get("contract") == contract
+                    and int(target_chars * 0.88) <= count_text_chars(failed_text) <= int(target_chars * 1.12)
+                    and failed_ids
+                    and all(value in allowed_ids for value in failed_ids)
+                ):
+                    candidate = failed_candidate
+                    resumed_failed_candidate = True
+                    break
+            except (OSError, TypeError, ValueError):
+                continue
     if candidate is None:
         prompt = _render_prompt(
             (
@@ -1171,6 +1176,17 @@ def _build_or_resume_chapter(
         if minimum_chars <= count_text_chars(text) <= maximum_chars:
             best_full_candidate = dict(candidate)
             best_full_audit = dict(audit)
+            if generation_mode == RESEARCH_PREVIEW_MODE:
+                _atomic_write_json(
+                    checkpoint_path,
+                    {
+                        "artifact_key": artifact_key,
+                        "policy_version": POLICY_VERSION,
+                        "contract": contract,
+                        "last_candidate": candidate,
+                        "last_audit": audit,
+                    },
+                )
         if _audit_passed(audit):
             chapter = ChapterResult(
                 number=chapter_number,
@@ -1189,6 +1205,7 @@ def _build_or_resume_chapter(
                 },
             )
             _atomic_write_text(chapter_dir / f"{chapter_number:03d}.md", text)
+            checkpoint_path.unlink(missing_ok=True)
             return chapter
         if attempt >= attempt_limit:
             break
@@ -1749,7 +1766,7 @@ def _call_openai_preview_writer(
     try:
         output = _openai_writer_call(
             prompt,
-            reasoning_effort="high",
+            reasoning_effort="medium",
             verbosity="medium",
             max_output_tokens=max_output_tokens,
             service_tier="default",
