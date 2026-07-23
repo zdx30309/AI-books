@@ -48,6 +48,7 @@ EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
 MAX_CHAPTER_ATTEMPTS = 3
+PREVIEW_MAX_CHAPTER_ATTEMPTS = 5
 OVERLAP_WINDOW = 36
 OVERLAP_SOURCE_STEP = 1
 OVERLAP_OUTPUT_STEP = 4
@@ -1088,6 +1089,9 @@ def _build_or_resume_chapter(
         }
         for item in allowed_evidence
     ]
+    target_chars = int(contract["target_chars"])
+    minimum_chars = int(target_chars * 0.90)
+    maximum_chars = int(target_chars * 1.10)
     prompt = _render_prompt(
         (
             "chapter_writer_research_preview.md"
@@ -1098,18 +1102,28 @@ def _build_or_resume_chapter(
         previous_summary=previous_summary,
         chapter_contract=json.dumps(contract, ensure_ascii=False),
         allowed_evidence=json.dumps(evidence_payload, ensure_ascii=False),
+        target_chars=target_chars,
+        minimum_chars=minimum_chars,
+        maximum_chars=maximum_chars,
     )
     raw = _call_llm(
         work_dir,
         action=f"chapter_write:{chapter_number:03d}",
         prompt=prompt,
         temperature=0.35,
-        max_output_tokens=_chapter_tokens(int(contract["target_chars"])),
+        max_output_tokens=_chapter_tokens(target_chars),
         model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
     candidate = _parse_json_object(raw)
     last_audit: dict[str, Any] = {}
-    for attempt in range(1, MAX_CHAPTER_ATTEMPTS + 1):
+    attempt_limit = (
+        PREVIEW_MAX_CHAPTER_ATTEMPTS
+        if generation_mode == RESEARCH_PREVIEW_MODE
+        else MAX_CHAPTER_ATTEMPTS
+    )
+    best_full_candidate: dict[str, Any] | None = None
+    best_full_audit: dict[str, Any] | None = None
+    for attempt in range(1, attempt_limit + 1):
         text = str(candidate.get("text") or "").strip()
         title = str(candidate.get("title") or contract.get("title") or f"第{chapter_number}章").strip()
         summary = str(candidate.get("summary") or "").strip()
@@ -1133,6 +1147,9 @@ def _build_or_resume_chapter(
             audit["pass"] = False
             audit.setdefault("repair_instructions", []).extend(deterministic)
         last_audit = audit
+        if minimum_chars <= count_text_chars(text) <= maximum_chars:
+            best_full_candidate = dict(candidate)
+            best_full_audit = dict(audit)
         if _audit_passed(audit):
             chapter = ChapterResult(
                 number=chapter_number,
@@ -1152,23 +1169,43 @@ def _build_or_resume_chapter(
             )
             _atomic_write_text(chapter_dir / f"{chapter_number:03d}.md", text)
             return chapter
-        if attempt >= MAX_CHAPTER_ATTEMPTS:
+        if attempt >= attempt_limit:
             break
+        repair_source = best_full_candidate or candidate
+        repair_source_text = str(repair_source.get("text") or "").strip()
+        repair_audit = best_full_audit or audit
         repair_prompt = _render_prompt(
-            "chapter_repair.md",
+            (
+                "chapter_repair_research_preview.md"
+                if generation_mode == RESEARCH_PREVIEW_MODE
+                else "chapter_repair.md"
+            ),
             chapter_contract=json.dumps(contract, ensure_ascii=False),
             allowed_evidence=json.dumps(evidence_payload, ensure_ascii=False),
-            audit_report=json.dumps(audit, ensure_ascii=False),
-            chapter_text=text,
+            audit_report=json.dumps(repair_audit, ensure_ascii=False),
+            chapter_text=repair_source_text,
+            current_chars=count_text_chars(repair_source_text),
+            target_chars=target_chars,
+            minimum_chars=minimum_chars,
+            maximum_chars=maximum_chars,
         )
-        repaired = _call_llm(
-            work_dir,
-            action=f"chapter_repair:{chapter_number:03d}:attempt{attempt}",
-            prompt=repair_prompt,
-            temperature=0.15,
-            max_output_tokens=_chapter_tokens(int(contract["target_chars"])),
-            model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
-        )
+        action = f"chapter_repair:{chapter_number:03d}:attempt{attempt}"
+        if generation_mode == RESEARCH_PREVIEW_MODE and attempt >= 3:
+            repaired = _call_openai_preview_writer(
+                work_dir,
+                action=action,
+                prompt=repair_prompt,
+                max_output_tokens=_chapter_tokens(target_chars),
+            )
+        else:
+            repaired = _call_llm(
+                work_dir,
+                action=action,
+                prompt=repair_prompt,
+                temperature=0.15,
+                max_output_tokens=_chapter_tokens(target_chars),
+                model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
+            )
         candidate = _parse_json_object(repaired)
     _atomic_write_json(
         chapter_dir / f"{chapter_number:03d}.failed.json",
@@ -1180,7 +1217,7 @@ def _build_or_resume_chapter(
         },
     )
     raise PublicDomainQualityError(
-        f"第 {chapter_number} 章在 {MAX_CHAPTER_ATTEMPTS} 次内未同时通过事实、篇幅、来源重合与语言闸门。"
+        f"第 {chapter_number} 章在 {attempt_limit} 次内未同时通过事实、篇幅、来源重合与语言闸门。"
     )
 
 
@@ -1641,6 +1678,57 @@ def _call_openai_auditor(
             prompt,
             reasoning_effort="low",
             verbosity="low",
+            max_output_tokens=max_output_tokens,
+            service_tier="default",
+            retry_on_failure=True,
+        ).strip()
+        log.update(
+            status="ok",
+            output_chars=len(output),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage_tokens=None,
+            cost=None,
+            currency=None,
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        return output
+    except Exception as exc:
+        log.update(
+            status="failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=f"{type(exc).__name__}: {exc}"[:2000],
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        raise
+
+
+def _call_openai_preview_writer(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+    max_output_tokens: int,
+) -> str:
+    """Use the configured official OpenAI writer only after preview repairs stagnate."""
+    from app.services.content_engine import _openai_writer_call
+
+    started = time.monotonic()
+    model = str(settings.OPENAI_WRITER_MODEL or "openai-writer")
+    log: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "policy_version": POLICY_VERSION,
+        "action": action,
+        "provider": "openai-preview-writer-fallback",
+        "model": model,
+        "input_chars": len(prompt),
+        "max_output_tokens": max_output_tokens,
+        "status": "started",
+    }
+    try:
+        output = _openai_writer_call(
+            prompt,
+            reasoning_effort="medium",
+            verbosity="medium",
             max_output_tokens=max_output_tokens,
             service_tier="default",
             retry_on_failure=True,

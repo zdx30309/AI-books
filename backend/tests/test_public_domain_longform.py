@@ -221,6 +221,7 @@ def test_all_longform_prompts_live_in_template_files() -> None:
         "source_evidence_research_preview.md",
         "book_plan_research_preview.md",
         "chapter_writer_research_preview.md",
+        "chapter_repair_research_preview.md",
         "final_audit_research_preview.md",
     }
     assert expected <= {path.name for path in service.PROMPT_DIR.glob("*.md")}
