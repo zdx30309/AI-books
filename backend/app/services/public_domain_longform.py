@@ -1348,7 +1348,8 @@ def _discover_primary_pages_for_batch(batch: list[dict[str, Any]]) -> list[dict[
     for item in batch:
         candidate_id = str(item.get("claim_id") or "")
         for query in _primary_search_queries(item):
-            for page in _search_wikisource_pages(query):
+            pages = _search_wikisource_pages(query)
+            for page in pages:
                 url = _normalize_evidence_url(str(page.get("url") or ""))
                 if not url:
                     continue
@@ -1358,6 +1359,12 @@ def _discover_primary_pages_for_batch(batch: list[dict[str, Any]]) -> list[dict[
                     found[url] = current
                 if candidate_id and candidate_id not in current["candidate_ids"]:
                     current["candidate_ids"].append(candidate_id)
+            # A successful exact-title lookup is stronger than multiple broad
+            # search hits and is sufficient context for literal quote
+            # validation.  Do not spend two more requests collecting noisy
+            # pages for the same candidate.
+            if query.startswith("title:") and pages:
+                break
             if sum(candidate_id in value["candidate_ids"] for value in found.values()) >= 3:
                 break
     return list(found.values())[:24]

@@ -475,6 +475,36 @@ def test_primary_search_tries_exact_canonical_title_before_broad_clauses() -> No
     assert queries[0] == "title:金刚经"
 
 
+def test_successful_exact_title_lookup_skips_broad_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_search(query: str):
+        calls.append(query)
+        return [
+            {
+                "title": "金剛般若波羅蜜經",
+                "url": "https://zh.wikisource.org/wiki/金剛般若波羅蜜經",
+                "text": "如是我聞，古代原典正文。" * 20,
+                "categories": ["大正新脩大藏經"],
+            }
+        ]
+
+    monkeypatch.setattr(service, "_search_wikisource_pages", fake_search)
+    pages = service._discover_primary_pages_for_batch(  # noqa: SLF001
+        [
+            {
+                "claim_id": "S01-C0001-01",
+                "statement": "忍辱波罗蜜，如来说非忍辱波罗蜜",
+                "qualifier": "出自《金刚经》",
+            }
+        ]
+    )
+    assert calls == ["title:金刚经"]
+    assert len(pages) == 1
+
+
 def test_primary_page_filter_rejects_modern_noise_and_accepts_canonical_text() -> None:
     assert service._looks_like_ancient_buddhist_primary_page(  # noqa: SLF001
         title="佛說八大人覺經",
