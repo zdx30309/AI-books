@@ -48,7 +48,7 @@ EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
 MAX_CHAPTER_ATTEMPTS = 3
-PREVIEW_MAX_CHAPTER_ATTEMPTS = 5
+PREVIEW_MAX_CHAPTER_ATTEMPTS = 7
 OVERLAP_WINDOW = 36
 OVERLAP_SOURCE_STEP = 1
 OVERLAP_OUTPUT_STEP = 4
@@ -1092,29 +1092,50 @@ def _build_or_resume_chapter(
     target_chars = int(contract["target_chars"])
     minimum_chars = int(target_chars * 0.90)
     maximum_chars = int(target_chars * 1.10)
-    prompt = _render_prompt(
-        (
-            "chapter_writer_research_preview.md"
-            if generation_mode == RESEARCH_PREVIEW_MODE
-            else "chapter_writer.md"
-        ),
-        book_summary=book_summary,
-        previous_summary=previous_summary,
-        chapter_contract=json.dumps(contract, ensure_ascii=False),
-        allowed_evidence=json.dumps(evidence_payload, ensure_ascii=False),
-        target_chars=target_chars,
-        minimum_chars=minimum_chars,
-        maximum_chars=maximum_chars,
-    )
-    raw = _call_llm(
-        work_dir,
-        action=f"chapter_write:{chapter_number:03d}",
-        prompt=prompt,
-        temperature=0.35,
-        max_output_tokens=_chapter_tokens(target_chars),
-        model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
-    )
-    candidate = _parse_json_object(raw)
+    candidate: dict[str, Any] | None = None
+    resumed_failed_candidate = False
+    failed_path = chapter_dir / f"{chapter_number:03d}.failed.json"
+    if generation_mode == RESEARCH_PREVIEW_MODE and failed_path.exists():
+        try:
+            failed_payload = json.loads(failed_path.read_text(encoding="utf-8"))
+            failed_candidate = dict(failed_payload.get("last_candidate") or {})
+            failed_text = str(failed_candidate.get("text") or "").strip()
+            failed_ids = tuple(str(value) for value in failed_candidate.get("used_claim_ids") or [])
+            allowed_ids = {str(item.get("claim_id") or "") for item in allowed_evidence}
+            if (
+                failed_payload.get("contract") == contract
+                and int(target_chars * 0.88) <= count_text_chars(failed_text) <= int(target_chars * 1.12)
+                and failed_ids
+                and all(value in allowed_ids for value in failed_ids)
+            ):
+                candidate = failed_candidate
+                resumed_failed_candidate = True
+        except (OSError, TypeError, ValueError):
+            candidate = None
+    if candidate is None:
+        prompt = _render_prompt(
+            (
+                "chapter_writer_research_preview.md"
+                if generation_mode == RESEARCH_PREVIEW_MODE
+                else "chapter_writer.md"
+            ),
+            book_summary=book_summary,
+            previous_summary=previous_summary,
+            chapter_contract=json.dumps(contract, ensure_ascii=False),
+            allowed_evidence=json.dumps(evidence_payload, ensure_ascii=False),
+            target_chars=target_chars,
+            minimum_chars=minimum_chars,
+            maximum_chars=maximum_chars,
+        )
+        raw = _call_llm(
+            work_dir,
+            action=f"chapter_write:{chapter_number:03d}",
+            prompt=prompt,
+            temperature=0.35,
+            max_output_tokens=_chapter_tokens(target_chars),
+            model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
+        )
+        candidate = _parse_json_object(raw)
     last_audit: dict[str, Any] = {}
     attempt_limit = (
         PREVIEW_MAX_CHAPTER_ATTEMPTS
@@ -1190,7 +1211,7 @@ def _build_or_resume_chapter(
             maximum_chars=maximum_chars,
         )
         action = f"chapter_repair:{chapter_number:03d}:attempt{attempt}"
-        if generation_mode == RESEARCH_PREVIEW_MODE and attempt >= 3:
+        if generation_mode == RESEARCH_PREVIEW_MODE and (resumed_failed_candidate or attempt >= 3):
             repaired = _call_openai_preview_writer(
                 work_dir,
                 action=action,
@@ -1210,6 +1231,7 @@ def _build_or_resume_chapter(
     _atomic_write_json(
         chapter_dir / f"{chapter_number:03d}.failed.json",
         {
+            "artifact_key": artifact_key,
             "policy_version": POLICY_VERSION,
             "contract": contract,
             "last_candidate": candidate,
@@ -1727,7 +1749,7 @@ def _call_openai_preview_writer(
     try:
         output = _openai_writer_call(
             prompt,
-            reasoning_effort="medium",
+            reasoning_effort="high",
             verbosity="medium",
             max_output_tokens=max_output_tokens,
             service_tier="default",
