@@ -90,6 +90,23 @@ def test_research_preview_defaults_to_three_chapters_and_ten_thousand_chars() ->
     assert dimensions.target_chapters == 3
 
 
+def test_research_preview_auditor_falls_back_when_gemini_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(service, "_call_gemini", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("429")))
+    monkeypatch.setattr(service, "_call_openai_auditor", lambda *_args, **_kwargs: '{"pass": true}')
+    result = service._call_auditor(  # noqa: SLF001
+        tmp_path,
+        action="test-audit",
+        prompt="audit",
+        temperature=0.0,
+        max_output_tokens=100,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+    )
+    assert result == '{"pass": true}'
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")

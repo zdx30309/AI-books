@@ -808,12 +808,13 @@ def _extract_source_evidence(
                     chunk_text=chunk,
                     claims=json.dumps(claims, ensure_ascii=False),
                 )
-                audit_raw = _call_gemini(
+                audit_raw = _call_auditor(
                     work_dir,
                     action=f"evidence_audit:{report.source_id}:{chunk_id}",
                     prompt=audit_prompt,
                     temperature=0.0,
                     max_output_tokens=4000,
+                    generation_mode=generation_mode,
                 )
                 evidence_audit = _parse_json_object(audit_raw)
                 valid_ids = {str(value) for value in evidence_audit.get("valid_claim_ids") or []}
@@ -1126,6 +1127,7 @@ def _build_or_resume_chapter(
             contract=contract,
             allowed_evidence=evidence_payload,
             chapter_text=text,
+            generation_mode=generation_mode,
         )
         if deterministic:
             audit["pass"] = False
@@ -1189,6 +1191,7 @@ def _audit_chapter(
     contract: dict[str, Any],
     allowed_evidence: list[dict[str, Any]],
     chapter_text: str,
+    generation_mode: str = FULL_MODE,
 ) -> dict[str, Any]:
     prompt = _render_prompt(
         "chapter_audit.md",
@@ -1196,12 +1199,13 @@ def _audit_chapter(
         allowed_evidence=json.dumps(allowed_evidence, ensure_ascii=False),
         chapter_text=chapter_text,
     )
-    raw = _call_gemini(
+    raw = _call_auditor(
         work_dir,
         action=f"chapter_audit:{chapter_number:03d}",
         prompt=prompt,
         temperature=0.0,
         max_output_tokens=5000,
+        generation_mode=generation_mode,
     )
     audit = _parse_json_object(raw)
     audit["pass"] = bool(audit.get("pass"))
@@ -1345,12 +1349,13 @@ def _run_final_gate(
         "final_audit_research_preview.md" if generation_mode == RESEARCH_PREVIEW_MODE else "final_audit.md",
         audit_material=json.dumps(audit_material, ensure_ascii=False),
     )
-    raw = _call_gemini(
+    raw = _call_auditor(
         work_dir,
         action="final_audit",
         prompt=prompt,
         temperature=0.0,
         max_output_tokens=5000,
+        generation_mode=generation_mode,
     )
     model_audit = _parse_json_object(raw)
     model_blocking = [str(value) for value in model_audit.get("blocking_issues") or []]
@@ -1607,6 +1612,85 @@ def _call_gemini(
         )
         _append_jsonl(work_dir / "llm_calls.jsonl", log)
         raise
+
+
+def _call_openai_auditor(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+    max_output_tokens: int,
+) -> str:
+    """Use the existing official OpenAI writer client as an independent audit fallback."""
+    from app.services.content_engine import _openai_writer_call
+
+    started = time.monotonic()
+    model = str(settings.OPENAI_WRITER_MODEL or "openai-writer")
+    log: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "policy_version": POLICY_VERSION,
+        "action": action,
+        "provider": "openai-audit-fallback",
+        "model": model,
+        "input_chars": len(prompt),
+        "max_output_tokens": max_output_tokens,
+        "status": "started",
+    }
+    try:
+        output = _openai_writer_call(
+            prompt,
+            reasoning_effort="low",
+            verbosity="low",
+            max_output_tokens=max_output_tokens,
+            service_tier="default",
+            retry_on_failure=True,
+        ).strip()
+        log.update(
+            status="ok",
+            output_chars=len(output),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage_tokens=None,
+            cost=None,
+            currency=None,
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        return output
+    except Exception as exc:
+        log.update(
+            status="failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=f"{type(exc).__name__}: {exc}"[:2000],
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        raise
+
+
+def _call_auditor(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+    temperature: float,
+    max_output_tokens: int,
+    generation_mode: str = FULL_MODE,
+) -> str:
+    try:
+        return _call_gemini(
+            work_dir,
+            action=action,
+            prompt=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+    except Exception:
+        if generation_mode != RESEARCH_PREVIEW_MODE:
+            raise
+        return _call_openai_auditor(
+            work_dir,
+            action=action,
+            prompt=prompt,
+            max_output_tokens=max_output_tokens,
+        )
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
