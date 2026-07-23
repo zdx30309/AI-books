@@ -1622,6 +1622,17 @@ def _cover_markdown(task: Task, output_dir: Path) -> str:
     return ""
 
 
+def _clear_public_domain_failure_state(config: dict[str, Any]) -> dict[str, Any]:
+    """Remove stale retry/manual-review flags after a successful final gate."""
+
+    cleaned = dict(config or {})
+    cleaned["public_domain_quality_blocked"] = False
+    cleaned.pop("public_domain_quality_reason", None)
+    cleaned.pop("auto_requeue_reason", None)
+    cleaned.pop("auto_requeued_at", None)
+    return cleaned
+
+
 @celery_app.task(
     bind=True,
     name="tasks.process_public_domain_longform",
@@ -1826,6 +1837,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             markdown_chars=len(final_markdown),
             status="ok",
         )
+        cfg = _clear_public_domain_failure_state(cfg)
         task.config = cfg
         clear_run()
         task.status = TaskStatus.COMPLETED

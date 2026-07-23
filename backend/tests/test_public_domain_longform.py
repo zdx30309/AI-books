@@ -272,6 +272,26 @@ def test_research_preview_source_gate_rejects_too_little_global_diversity() -> N
     assert len(issues) == 2
 
 
+def test_public_domain_success_clears_stale_manual_review_flags() -> None:
+    from app.tasks import tasks as task_service
+
+    cleaned = task_service._clear_public_domain_failure_state(  # noqa: SLF001
+        {
+            "public_domain_quality_blocked": True,
+            "public_domain_quality_reason": "旧失败原因",
+            "auto_requeue_reason": "stale",
+            "auto_requeued_at": "yesterday",
+            "status": "ok",
+        }
+    )
+
+    assert cleaned["public_domain_quality_blocked"] is False
+    assert "public_domain_quality_reason" not in cleaned
+    assert "auto_requeue_reason" not in cleaned
+    assert "auto_requeued_at" not in cleaned
+    assert cleaned["status"] == "ok"
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")
