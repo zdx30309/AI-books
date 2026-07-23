@@ -209,6 +209,69 @@ def test_research_preview_repair_falls_back_when_deepseek_fails(
     assert fallback_actions == ["chapter_repair:003:attempt1"]
 
 
+def test_research_preview_source_gate_uses_global_diversity_not_every_title() -> None:
+    reports = tuple(
+        service.SourceReport(
+            source_id=f"P{index:02d}",
+            title=f"原典{index}",
+            author="古代",
+            chars=1_000,
+            detected_chapters=1,
+            rights_basis="verified primary",
+            sha256=str(index),
+        )
+        for index in range(1, 20)
+    )
+    used_claim_ids = {
+        f"P{source:02d}-V{claim:04d}"
+        for source in range(1, 7)
+        for claim in range(1, 3)
+    }
+    used_source_ids = {value.split("-", 1)[0] for value in used_claim_ids}
+
+    issues = service._source_contribution_issues(  # noqa: SLF001
+        source_reports=reports,
+        source_usage={report.source_id: (2 if report.source_id in used_source_ids else 0) for report in reports},
+        source_chapter_usage={
+            report.source_id: ({1} if report.source_id in used_source_ids else set()) for report in reports
+        },
+        used_claim_ids=used_claim_ids,
+        used_source_ids=used_source_ids,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        verified_claim_count=25,
+    )
+
+    assert issues == []
+
+
+def test_research_preview_source_gate_rejects_too_little_global_diversity() -> None:
+    reports = tuple(
+        service.SourceReport(
+            source_id=f"P{index:02d}",
+            title=f"原典{index}",
+            author="古代",
+            chars=1_000,
+            detected_chapters=1,
+            rights_basis="verified primary",
+            sha256=str(index),
+        )
+        for index in range(1, 8)
+    )
+    used_claim_ids = {"P01-V0001", "P02-V0001", "P03-V0001"}
+
+    issues = service._source_contribution_issues(  # noqa: SLF001
+        source_reports=reports,
+        source_usage={report.source_id: 0 for report in reports},
+        source_chapter_usage={report.source_id: set() for report in reports},
+        used_claim_ids=used_claim_ids,
+        used_source_ids={"P01", "P02", "P03"},
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        verified_claim_count=18,
+    )
+
+    assert len(issues) == 2
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")

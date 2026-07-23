@@ -55,6 +55,8 @@ PREVIEW_MAX_DISCOVERY_CANDIDATES = 96
 PREVIEW_MIN_VERIFIED_CLAIMS = 18
 PREVIEW_MIN_PRIMARY_TITLES = 3
 PREVIEW_MAX_PRIMARY_TITLES = 24
+PREVIEW_MIN_USED_CLAIMS = 12
+PREVIEW_MIN_USED_PRIMARY_TITLES = 6
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
@@ -2487,17 +2489,24 @@ def _run_final_gate(
             if source_id in source_usage:
                 source_usage[source_id] += 1
                 source_chapter_usage[source_id].add(chapter.number)
-    min_claims = 2 if generation_mode == RESEARCH_PREVIEW_MODE else 4
-    min_source_chapters = 1 if generation_mode == RESEARCH_PREVIEW_MODE else 2
-    for report in source_reports:
-        if (
-            source_usage[report.source_id] < min_claims
-            or len(source_chapter_usage[report.source_id]) < min_source_chapters
-        ):
-            blocking.append(
-                f"{report.source_id}《{report.title}》未达到至少 {min_claims} 条证据、"
-                f"分布在至少 {min_source_chapters} 章的实质贡献"
-            )
+    used_claim_ids = {
+        str(claim_id)
+        for chapter in chapters
+        for claim_id in chapter.used_claim_ids
+        if str(claim_id).strip()
+    }
+    used_source_ids = {claim_id.split("-", 1)[0] for claim_id in used_claim_ids}
+    blocking.extend(
+        _source_contribution_issues(
+            source_reports=source_reports,
+            source_usage=source_usage,
+            source_chapter_usage=source_chapter_usage,
+            used_claim_ids=used_claim_ids,
+            used_source_ids=used_source_ids,
+            generation_mode=generation_mode,
+            verified_claim_count=len(verified_evidence or []),
+        )
+    )
 
     overlap = _overlap_reports(body, overlap_indexes)
     for item in overlap:
@@ -2518,6 +2527,8 @@ def _run_final_gate(
         "actual_chapters": len(chapters),
         "source_usage": source_usage,
         "source_chapter_usage": {key: sorted(value) for key, value in source_chapter_usage.items()},
+        "distinct_used_claim_count": len(used_claim_ids),
+        "distinct_used_primary_title_count": len(used_source_ids),
         "source_overlap": [asdict(item) for item in overlap],
         "internal_duplicate_ratio": duplicate_ratio,
         "rights_complete": all(bool(item.rights_basis) for item in source_reports),
@@ -2554,7 +2565,34 @@ def _run_final_gate(
         max_output_tokens=5000,
         generation_mode=generation_mode,
     )
-    model_audit = _parse_json_object(raw)
+    try:
+        model_audit = _parse_json_object(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        _append_jsonl(
+            work_dir / "llm_calls.jsonl",
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "policy_version": POLICY_VERSION,
+                "action": "final_audit:parse",
+                "provider": "audit-parser",
+                "status": "malformed_output",
+                "output_chars": len(raw or ""),
+                "error": f"{type(exc).__name__}: {exc}"[:2000],
+            },
+        )
+        if generation_mode != RESEARCH_PREVIEW_MODE:
+            raise
+        fallback_raw = _call_openai_auditor(
+            work_dir,
+            action="final_audit:json_fallback",
+            prompt=(
+                prompt
+                + "\n\n上一个审稿器未返回可解析的 JSON。请重新独立终审，只输出题目要求的单个完整 JSON 对象；"
+                "不要解释、不要 Markdown、不要省略字段。"
+            ),
+            max_output_tokens=5000,
+        )
+        model_audit = _parse_json_object(fallback_raw)
     model_blocking = [str(value) for value in model_audit.get("blocking_issues") or []]
     passed = not blocking and bool(model_audit.get("pass")) and not model_blocking
     quality = {
@@ -2568,6 +2606,48 @@ def _run_final_gate(
         reasons = blocking + model_blocking
         raise PublicDomainQualityError("全书终审未通过：" + "；".join(reasons[:8]))
     return quality
+
+
+def _source_contribution_issues(
+    *,
+    source_reports: tuple[SourceReport, ...],
+    source_usage: dict[str, int],
+    source_chapter_usage: dict[str, set[int]],
+    used_claim_ids: set[str],
+    used_source_ids: set[str],
+    generation_mode: str,
+    verified_claim_count: int,
+) -> list[str]:
+    """Validate meaningful source use without making previews impossible.
+
+    A three-chapter preview may verify many one-claim primary titles. Requiring
+    two claims from every verified title is mathematically impossible and also
+    turns optional planning sources into mandatory padding. Chapter audits
+    already enforce every ``must_cover`` item. The preview final gate therefore
+    checks strong manuscript-wide diversity; full-length mode keeps the stricter
+    per-source, cross-chapter contribution rule.
+    """
+
+    issues: list[str] = []
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        required_claims = min(PREVIEW_MIN_USED_CLAIMS, max(0, verified_claim_count))
+        required_sources = min(PREVIEW_MIN_USED_PRIMARY_TITLES, len(source_reports))
+        if len(used_claim_ids) < required_claims:
+            issues.append(
+                f"全稿仅实质使用 {len(used_claim_ids)} 条不同原典证据，至少需要 {required_claims} 条"
+            )
+        if len(used_source_ids) < required_sources:
+            issues.append(
+                f"全稿仅实质使用 {len(used_source_ids)} 部不同古代原典，至少需要 {required_sources} 部"
+            )
+        return issues
+
+    for report in source_reports:
+        if source_usage[report.source_id] < 4 or len(source_chapter_usage[report.source_id]) < 2:
+            issues.append(
+                f"{report.source_id}《{report.title}》未达到至少 4 条证据、分布在至少 2 章的实质贡献"
+            )
+    return issues
 
 
 def _build_overlap_indexes(
