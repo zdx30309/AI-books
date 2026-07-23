@@ -224,6 +224,7 @@ def test_all_longform_prompts_live_in_template_files() -> None:
         "chapter_audit_research_preview.md",
         "chapter_repair_research_preview.md",
         "final_audit_research_preview.md",
+        "primary_source_verification.md",
     }
     assert expected <= {path.name for path in service.PROMPT_DIR.glob("*.md")}
 
@@ -232,9 +233,10 @@ def test_post_edit_audit_reuses_only_exact_accepted_hash(tmp_path: Path) -> None
     manuscript = "已通过的独立公版融合终稿"
     (tmp_path / "quality_report.json").write_text(
         json.dumps(
-            {
-                "passed": True,
-                "final_sha256": service.text_sha256(manuscript),
+                {
+                    "passed": True,
+                    "policy_version": service.POLICY_VERSION,
+                    "final_sha256": service.text_sha256(manuscript),
             },
             ensure_ascii=False,
         ),
@@ -247,6 +249,168 @@ def test_post_edit_audit_reuses_only_exact_accepted_hash(tmp_path: Path) -> None
     )
     assert result["status"] == "ok"
     assert result["reused_original_audit"] is True
+
+
+def test_old_quality_report_cannot_bypass_primary_evidence_policy(tmp_path: Path) -> None:
+    manuscript = "旧策略曾经通过的研究试稿"
+    (tmp_path / "quality_report.json").write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "policy_version": "public-domain-longform-v2",
+                "final_sha256": service.text_sha256(manuscript),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = service.audit_edited_final_manuscript(
+        work_dir=tmp_path,
+        manuscript=manuscript,
+        sources=_sources(),
+    )
+    assert result["status"] == "needs_repair"
+    assert result.get("reused_original_audit") is not True
+
+
+def test_preview_quality_report_cannot_bypass_missing_primary_ledger(tmp_path: Path) -> None:
+    manuscript = "当前策略曾通过、但原典核验账本已经丢失的试稿"
+    (tmp_path / "00_rights_manifest.json").write_text(
+        json.dumps({"generation_mode": service.RESEARCH_PREVIEW_MODE}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "quality_report.json").write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "policy_version": service.POLICY_VERSION,
+                "final_sha256": service.text_sha256(manuscript),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = service.audit_edited_final_manuscript(
+        work_dir=tmp_path,
+        manuscript=manuscript,
+        sources=_sources(),
+    )
+    assert result["status"] == "needs_repair"
+    assert result.get("reused_original_audit") is not True
+
+
+def test_research_discovery_is_promoted_only_by_real_primary_tool_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    discoveries = []
+    for index in range(1, 31):
+        source_id = f"S{((index - 1) % 5) + 1:02d}"
+        discoveries.append(
+            {
+                "claim_id": f"{source_id}-C{index:04d}-01",
+                "source_id": source_id,
+                "source_title": f"现代整理书{source_id}",
+                "kind": "concept",
+                "statement": f"待核验的佛教概念命题{index}具有明确边界",
+                "qualifier": "",
+                "importance": 3,
+                "evidence_status": "discovery_only",
+                "generation_eligible": False,
+            }
+        )
+
+    canonical = ["《杂阿含经》", "《长阿含经》", "《法句经》"]
+    urls = [
+        "https://zh.wikisource.org/wiki/雜阿含經",
+        "https://cbetaonline.dila.edu.tw/zh/T0001",
+        "https://tripitaka.cbeta.org/T04n0210",
+    ]
+
+    def fake_verify(_work_dir: Path, *, action: str, prompt: str):
+        batch = json.loads(prompt.split("待核验候选：", 1)[1].strip())
+        verified = []
+        for offset, item in enumerate(batch):
+            slot = offset % 3
+            verified.append(
+                {
+                    "candidate_ids": [item["candidate_id"]],
+                    "kind": item["kind"],
+                    "statement": item["statement"],
+                    "qualifier": "",
+                    "canonical_title": canonical[slot],
+                    "canonical_locator": f"卷{offset + 1}",
+                    "evidence_quote": "这是古代原典中的短证据",
+                    "evidence_urls": [urls[slot]],
+                }
+            )
+        return json.dumps({"verified_claims": verified}, ensure_ascii=False), [
+            {"url": url, "title": title} for url, title in zip(urls, canonical)
+        ]
+
+    monkeypatch.setattr(service, "_call_openai_primary_verifier", fake_verify)
+    result = service._verify_research_evidence(  # noqa: SLF001
+        work_dir=tmp_path,
+        discovery_evidence=discoveries,
+        modern_sources=_sources(5),
+    )
+    assert len(result) >= service.PREVIEW_MIN_VERIFIED_CLAIMS
+    assert len({item["source_title"] for item in result}) == 3
+    assert all(item["evidence_status"] == "verified_primary" for item in result)
+    assert all(item["generation_eligible"] is True for item in result)
+    assert all("现代整理书" not in item["source_title"] for item in result)
+    ledger = json.loads((tmp_path / "01_verified_primary_ledger.json").read_text(encoding="utf-8"))
+    assert ledger["evidence_status"] == "verified_primary"
+
+
+def test_hallucinated_primary_url_is_not_promoted() -> None:
+    batch = [
+        {
+            "claim_id": "S01-C0001-01",
+            "source_id": "S01",
+            "kind": "fact",
+            "statement": "待核验命题具有足够长度",
+            "importance": 3,
+        }
+    ]
+    payload = {
+        "verified_claims": [
+            {
+                "candidate_ids": ["S01-C0001-01"],
+                "statement": "待核验命题具有足够长度",
+                "canonical_title": "《法句经》",
+                "canonical_locator": "卷一",
+                "evidence_quote": "古代原典中的短证据",
+                "evidence_urls": ["https://zh.wikisource.org/wiki/法句經"],
+            }
+        ]
+    }
+    result = service._normalize_verified_batch(  # noqa: SLF001
+        payload=payload,
+        batch=batch,
+        tool_sources=[{"url": "https://zh.wikisource.org/wiki/雜阿含經", "title": "杂阿含经"}],
+        modern_titles={"现代佛教故事"},
+    )
+    assert result == []
+
+
+def test_modern_source_and_process_language_are_hard_blocked() -> None:
+    sources = [
+        PublicDomainSource(
+            title="不可不知的佛教故事全集",
+            author="谢志强",
+            rights_note="研究材料",
+            text="现代整理材料" * 3000,
+        )
+    ]
+    issues = service._modern_source_leakage_issues(  # noqa: SLF001
+        "据《不可不知的佛教故事全集》记载，片段中还提到另一件事。",
+        modern_sources=sources,
+        approved_primary_titles={"《法句经》"},
+    )
+    assert any("现代整理资料名称" in item for item in issues)
+    assert any("研究过程措辞" in item for item in issues)
+    assert any("未进入核验账本" in item for item in issues)
 
 
 def test_changed_final_never_bypasses_missing_evidence_artifacts(tmp_path: Path) -> None:

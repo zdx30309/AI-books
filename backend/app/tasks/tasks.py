@@ -1697,7 +1697,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.error_message = None
         generation_mode = str(cfg.get("generation_mode") or FULL_MODE)
         task.current_step = (
-            "正在隔离研究材料并建立事实/概念证据账本"
+            "正在把现代材料隔离为待核验线索；正文只允许使用古代原典证据"
             if generation_mode == "research_preview"
             else "正在验证 8–10 本来源及权利清单"
         )
@@ -1735,7 +1735,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             actual_chapters=len(result.chapters),
             quality_report=str(output_dir / "quality_report.json"),
             quality_report_summary=(
-                "研究材料隔离、事实证据、来源重合、章节与全稿终审通过"
+                "现代材料已隔离；古代原典证据、来源重合、章节与全稿终审通过"
                 if generation_mode == "research_preview"
                 else "公版权利、事实证据、来源重合、章节与全书终审通过"
             ),
@@ -1751,6 +1751,12 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
                 }
                 for item in result.source_reports
             ],
+            primary_verification_status=(
+                "passed" if generation_mode == "research_preview" else "not_required"
+            ),
+            verified_primary_claim_count=int(
+                result.quality_report.get("verified_primary_claim_count") or 0
+            ),
         )
         task.config = cfg
         pre_aigc_markdown = result.markdown
@@ -1825,7 +1831,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.status = TaskStatus.COMPLETED
         task.progress = 100
         task.current_step = (
-            f"研究试稿完成：{len(final_chapters)} 章已通过事实、来源重合与质量闸门"
+            f"研究试稿完成：{len(final_chapters)} 章仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
             else f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
         )
@@ -1889,11 +1895,14 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
                 generation_complete=False,
                 public_domain_quality_blocked=True,
                 public_domain_quality_reason=str(exc)[:4000],
+                primary_verification_status=(
+                    "failed" if str(cfg.get("generation_mode")) == "research_preview" else "not_required"
+                ),
             )
             task.config = cfg
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
-            task.current_step = "公版/事实/来源重合/质量硬闸门未通过，未交付终稿"
+            task.current_step = "原典核验/公版/事实/来源重合/质量硬闸门未通过，未交付终稿"
             task.error_message = str(exc)[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}

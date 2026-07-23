@@ -201,7 +201,7 @@ def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> Cr
         status=TaskStatus.PENDING,
         progress=0,
         current_step=(
-            f"已接收 {len(sources)} 份研究材料，等待隔离抽取事实/概念线索"
+            f"已接收 {len(sources)} 份现代研究材料；仅作发现线索，等待古代原典联网核验"
             if preview
             else f"已接收 {len(sources)} 本公版来源，等待证据抽取"
         ),
@@ -215,6 +215,11 @@ def _create_task(db: Session, user: User, req: PublicDomainRewriteRequest) -> Cr
             "generation_mode": req.generation_mode,
             "research_preview": preview,
             "research_use_confirmed": bool(req.research_use_confirmed),
+            "source_provenance_policy": (
+                "discovery_only_then_verified_primary" if preview else "verified_public_domain_sources"
+            ),
+            "primary_verification_required": preview,
+            "primary_verification_status": "pending" if preview else "not_required",
             "public_domain_policy_version": POLICY_VERSION,
             "source_snapshot": str(snapshot_path),
             "source_count": len(sources),

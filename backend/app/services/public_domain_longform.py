@@ -17,13 +17,14 @@ import re
 import statistics
 import time
 from typing import Any, Callable, Iterable
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from app.core.config import settings
 from app.services.deepseek import generate_text as deepseek_generate_text
 from app.services.gemini import generate_text as gemini_generate_text
 
 
-POLICY_VERSION = "public-domain-longform-v2"
+POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -44,6 +45,11 @@ PREVIEW_MIN_CHAPTERS = 2
 PREVIEW_MAX_CHAPTERS = 4
 PREVIEW_DEFAULT_CHAPTERS = 3
 PREVIEW_DEEPSEEK_MODEL = "deepseek-chat"
+PREVIEW_PRIMARY_BATCH_SIZE = 8
+PREVIEW_MAX_DISCOVERY_CANDIDATES = 64
+PREVIEW_MIN_VERIFIED_CLAIMS = 18
+PREVIEW_MIN_PRIMARY_TITLES = 3
+PREVIEW_MAX_PRIMARY_TITLES = 5
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
@@ -54,6 +60,25 @@ OVERLAP_SOURCE_STEP = 1
 OVERLAP_OUTPUT_STEP = 4
 OVERLAP_RATIO_BLOCK = 0.015
 LONG_EXACT_WINDOW = 120
+
+_PRIMARY_SOURCE_HOSTS = (
+    "zh.wikisource.org",
+    "cbetaonline.dila.edu.tw",
+    "tripitaka.cbeta.org",
+)
+_RESEARCH_PROCESS_LEAKS = (
+    "根据材料",
+    "据材料",
+    "材料中提到",
+    "材料指出",
+    "来源指出",
+    "来源提到",
+    "片段中",
+    "本片段",
+    "研究材料",
+    "现代整理本",
+    "现代作者认为",
+)
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_longform"
 
@@ -238,7 +263,8 @@ def validate_sources(
                 author_death_year=item.author_death_year,
                 rights_note=(
                     rights_note
-                    or "研究试稿：仅作事实/概念线索与来源重合排查，未主张该现代整理本属于公版"
+                    or "研究试稿：仅作 discovery_only 检索线索与来源重合排查；"
+                    "未主张现代整理本属于公版，未经古代原典核验不得进入正文"
                 ),
                 rights_evidence_url=rights_url or None,
             )
@@ -369,21 +395,47 @@ def run_public_domain_longform(
                 f"《{source.title}》只得到 {len(evidence)} 条可锚定材料，无法支持高质量长篇融合。"
             )
         all_evidence.extend(evidence)
-        digests.append(
-            _build_source_digest(
-                source,
-                report,
-                evidence,
-                work_dir,
-                generation_mode=generation_mode,
+        if generation_mode != RESEARCH_PREVIEW_MODE:
+            digests.append(
+                _build_source_digest(
+                    source,
+                    report,
+                    evidence,
+                    work_dir,
+                    generation_mode=generation_mode,
+                )
             )
-        )
         progress = 8 + int(27 * source_index / total_sources)
         _notify(on_progress, progress, f"已完成来源证据抽取 {source_index}/{total_sources}")
 
+    planning_reports = reports
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        _atomic_write_json(
+            work_dir / "01_discovery_only_ledger.json",
+            {
+                "policy_version": POLICY_VERSION,
+                "evidence_status": "discovery_only",
+                "generation_eligible": False,
+                "claims": all_evidence,
+            },
+        )
+        _notify(on_progress, 35, "现代材料线索抽取完成，正在联网核验古代原典")
+        all_evidence = _verify_research_evidence(
+            work_dir=work_dir,
+            discovery_evidence=all_evidence,
+            modern_sources=clean_sources,
+        )
+        planning_reports = _build_primary_source_reports(all_evidence)
+        digests = _build_primary_source_digests(all_evidence, planning_reports)
+        _notify(
+            on_progress,
+            37,
+            f"古代原典核验完成：{len(all_evidence)} 条证据 / {len(planning_reports)} 部原典",
+        )
+
     plan = _build_book_plan(
         work_dir=work_dir,
-        source_reports=reports,
+        source_reports=planning_reports,
         source_digests=digests,
         dimensions=dimensions,
         target_title=target_title,
@@ -398,7 +450,7 @@ def run_public_domain_longform(
     previous_summary = "这是第一章，没有上一章。"
     contracts = list(plan["chapters"])
     for chapter_index, contract in enumerate(contracts, start=1):
-        allowed_evidence = _select_chapter_evidence(contract, all_evidence, reports)
+        allowed_evidence = _select_chapter_evidence(contract, all_evidence, planning_reports)
         chapter = _build_or_resume_chapter(
             work_dir=work_dir,
             chapter_number=chapter_index,
@@ -408,6 +460,8 @@ def run_public_domain_longform(
             allowed_evidence=allowed_evidence,
             overlap_indexes=overlap_indexes,
             generation_mode=generation_mode,
+            forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
+            approved_source_titles={item.title for item in planning_reports},
         )
         chapters.append(chapter)
         previous_summary = chapter.summary
@@ -424,10 +478,12 @@ def run_public_domain_longform(
         markdown=markdown,
         plan=plan,
         chapters=chapters,
-        source_reports=reports,
+        source_reports=planning_reports,
         dimensions=dimensions,
         overlap_indexes=overlap_indexes,
         generation_mode=generation_mode,
+        verified_evidence=all_evidence if generation_mode == RESEARCH_PREVIEW_MODE else None,
+        forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
     )
     _atomic_write_text(work_dir / "04_format.md", markdown)
     _notify(
@@ -444,7 +500,7 @@ def run_public_domain_longform(
         summary=str(plan.get("summary") or "").strip(),
         markdown=markdown,
         chapters=tuple(chapters),
-        source_reports=reports,
+        source_reports=planning_reports,
         dimensions=dimensions,
         quality_report=quality,
         plan=plan,
@@ -481,6 +537,16 @@ def audit_edited_final_manuscript(
     changed manuscript must pass deterministic structure/overlap checks and a
     fresh evidence-grounded Gemini audit for every chapter before delivery.
     """
+    generation_mode = FULL_MODE
+    try:
+        rights_manifest = json.loads((work_dir / "00_rights_manifest.json").read_text(encoding="utf-8"))
+        generation_mode = str(rights_manifest.get("generation_mode") or FULL_MODE)
+    except (OSError, ValueError, TypeError):
+        pass
+    preview_ledger_ready = (
+        generation_mode != RESEARCH_PREVIEW_MODE
+        or (work_dir / "01_verified_primary_ledger.json").exists()
+    )
     candidate_hash = text_sha256(manuscript)
     original_report_path = work_dir / "quality_report.json"
     if original_report_path.exists():
@@ -488,7 +554,12 @@ def audit_edited_final_manuscript(
             original_report = json.loads(original_report_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             original_report = {}
-        if bool(original_report.get("passed")) and original_report.get("final_sha256") == candidate_hash:
+        if (
+            bool(original_report.get("passed"))
+            and original_report.get("policy_version") == POLICY_VERSION
+            and original_report.get("final_sha256") == candidate_hash
+            and preview_ledger_ready
+        ):
             return {
                 "status": "ok",
                 "passed": True,
@@ -535,8 +606,8 @@ def audit_edited_final_manuscript(
         )
 
     clean_sources = list(sources)
-    source_reports = build_source_reports(clean_sources)
-    overlap_indexes = _build_overlap_indexes(clean_sources, source_reports)
+    raw_source_reports = build_source_reports(clean_sources)
+    overlap_indexes = _build_overlap_indexes(clean_sources, raw_source_reports)
     deterministic = check_final_manuscript(manuscript, clean_sources)
     blocking.extend(
         f"与《{item.get('source_title') or item.get('source_id')}》来源重合超限"
@@ -546,18 +617,39 @@ def audit_edited_final_manuscript(
         blocking.append("终稿含模型说明或任务残留")
 
     all_evidence: list[dict[str, Any]] = []
-    for source_report in source_reports:
-        ledger_path = work_dir / "evidence" / source_report.source_id / "ledger.json"
+    if generation_mode == RESEARCH_PREVIEW_MODE:
         try:
-            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-            claims = [item for item in ledger.get("claims") or [] if isinstance(item, dict)]
+            ledger = json.loads((work_dir / "01_verified_primary_ledger.json").read_text(encoding="utf-8"))
+            all_evidence = [item for item in ledger.get("claims") or [] if isinstance(item, dict)]
+            if (
+                ledger.get("evidence_status") != "verified_primary"
+                or not bool(ledger.get("generation_eligible"))
+            ):
+                raise ValueError("verified primary ledger is not generation eligible")
         except (OSError, ValueError, TypeError) as exc:
-            claims = []
-            blocking.append(f"{source_report.source_id} 证据账本不可用：{type(exc).__name__}: {exc}")
-        all_evidence.extend(claims)
+            blocking.append(f"古代原典核验账本不可用：{type(exc).__name__}: {exc}")
+        source_reports = _build_primary_source_reports(all_evidence)
+        blocking.extend(
+            _modern_source_leakage_issues(
+                "\n\n".join(item.text for item in chapters),
+                modern_sources=clean_sources,
+                approved_primary_titles={item.title for item in source_reports},
+            )
+        )
+    else:
+        source_reports = raw_source_reports
+        for source_report in source_reports:
+            ledger_path = work_dir / "evidence" / source_report.source_id / "ledger.json"
+            try:
+                ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                claims = [item for item in ledger.get("claims") or [] if isinstance(item, dict)]
+            except (OSError, ValueError, TypeError) as exc:
+                claims = []
+                blocking.append(f"{source_report.source_id} 证据账本不可用：{type(exc).__name__}: {exc}")
+            all_evidence.extend(claims)
 
     chapter_audits: list[dict[str, Any]] = []
-    if len(chapters) == len(contracts) and not any("证据账本不可用" in item for item in blocking):
+    if len(chapters) == len(contracts) and not any("账本不可用" in item for item in blocking):
         for chapter, contract in zip(chapters, contracts):
             try:
                 allowed_evidence = _select_chapter_evidence(contract, all_evidence, source_reports)
@@ -566,6 +658,8 @@ def audit_edited_final_manuscript(
                         "claim_id": item.get("claim_id"),
                         "source_id": item.get("source_id"),
                         "source_title": item.get("source_title"),
+                        "canonical_locator": item.get("canonical_locator"),
+                        "evidence_status": item.get("evidence_status"),
                         "kind": item.get("kind"),
                         "statement": item.get("statement"),
                         "qualifier": item.get("qualifier"),
@@ -578,6 +672,7 @@ def audit_edited_final_manuscript(
                     contract=contract,
                     allowed_evidence=evidence_payload,
                     chapter_text=chapter.text,
+                    generation_mode=generation_mode,
                 )
                 chapter_issues = _post_edit_chapter_issues(
                     text=chapter.text,
@@ -587,6 +682,15 @@ def audit_edited_final_manuscript(
                 if chapter_issues:
                     audit["pass"] = False
                     audit.setdefault("repair_instructions", []).extend(chapter_issues)
+                if generation_mode == RESEARCH_PREVIEW_MODE:
+                    leakage = _modern_source_leakage_issues(
+                        chapter.text,
+                        modern_sources=clean_sources,
+                        approved_primary_titles={item.title for item in source_reports},
+                    )
+                    if leakage:
+                        audit["pass"] = False
+                        audit.setdefault("repair_instructions", []).extend(leakage)
                 if not _audit_passed(audit):
                     blocking.append(f"第 {chapter.number} 章未通过终稿事实与语言复审")
                 chapter_audits.append(
@@ -615,15 +719,20 @@ def audit_edited_final_manuscript(
             },
         }
         try:
-            raw = _call_gemini(
+            raw = _call_auditor(
                 work_dir,
                 action="post_edit_final_audit",
                 prompt=_render_prompt(
-                    "final_audit.md",
+                    (
+                        "final_audit_research_preview.md"
+                        if generation_mode == RESEARCH_PREVIEW_MODE
+                        else "final_audit.md"
+                    ),
                     audit_material=json.dumps(audit_material, ensure_ascii=False),
                 ),
                 temperature=0.0,
                 max_output_tokens=5000,
+                generation_mode=generation_mode,
             )
             model_audit = _parse_json_object(raw)
             blocking.extend(str(value) for value in model_audit.get("blocking_issues") or [])
@@ -640,6 +749,10 @@ def audit_edited_final_manuscript(
         "reused_original_audit": False,
         "target_chars": target_chars,
         "actual_chars": actual_chars,
+        "generation_mode": generation_mode,
+        "verified_primary_claim_count": (
+            len(all_evidence) if generation_mode == RESEARCH_PREVIEW_MODE else None
+        ),
         "chapter_audits": chapter_audits,
         "source_overlap": deterministic.get("overlap") or [],
         "model_audit": model_audit,
@@ -801,6 +914,12 @@ def _extract_source_evidence(
                         "anchor": anchor[:24],
                         "importance": max(1, min(3, int(claim.get("importance") or 1))),
                         "chunk_sha256": text_sha256(chunk),
+                        "evidence_status": (
+                            "discovery_only"
+                            if generation_mode == RESEARCH_PREVIEW_MODE
+                            else "source_grounded"
+                        ),
+                        "generation_eligible": generation_mode != RESEARCH_PREVIEW_MODE,
                     }
                 )
             if claims:
@@ -841,6 +960,477 @@ def _extract_source_evidence(
         },
     )
     return evidence
+
+
+def _verify_research_evidence(
+    *,
+    work_dir: Path,
+    discovery_evidence: list[dict[str, Any]],
+    modern_sources: list[PublicDomainSource],
+) -> list[dict[str, Any]]:
+    """Promote discovery-only hints only after a tool-grounded ancient-source lookup.
+
+    The modern books are deliberately absent from every downstream generation
+    payload.  A candidate becomes generation-eligible only when its cited URL
+    was returned by the web-search tool and belongs to an approved primary-text
+    host.  Failure is a quality stop, never a best-effort generation fallback.
+    """
+    candidates = _select_discovery_candidates(discovery_evidence)
+    if not candidates:
+        raise PublicDomainQualityError("现代整理材料没有提取到可供古代原典核验的中性线索。")
+
+    verification_dir = work_dir / "primary_verification"
+    verification_dir.mkdir(parents=True, exist_ok=True)
+    modern_titles = {
+        value
+        for item in modern_sources
+        for value in (str(item.title or "").strip(), str(item.author or "").strip())
+        if value
+    }
+    verified: list[dict[str, Any]] = []
+    for batch_index, start in enumerate(range(0, len(candidates), PREVIEW_PRIMARY_BATCH_SIZE), start=1):
+        batch = candidates[start : start + PREVIEW_PRIMARY_BATCH_SIZE]
+        batch_input = [
+            {
+                "candidate_id": item.get("claim_id"),
+                "kind": item.get("kind"),
+                "statement": item.get("statement"),
+                "qualifier": item.get("qualifier"),
+            }
+            for item in batch
+        ]
+        artifact_key = text_sha256(
+            json.dumps(
+                {
+                    "policy": POLICY_VERSION,
+                    "batch": batch_input,
+                    "hosts": _PRIMARY_SOURCE_HOSTS,
+                    "model": settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        path = verification_dir / f"batch_{batch_index:03d}.json"
+        cached = _load_versioned_artifact(path, artifact_key)
+        if cached is not None:
+            verified.extend(
+                item for item in cached.get("verified_claims") or [] if isinstance(item, dict)
+            )
+            continue
+
+        prompt = _render_prompt(
+            "primary_source_verification.md",
+            allowed_hosts="、".join(_PRIMARY_SOURCE_HOSTS),
+            candidates=json.dumps(batch_input, ensure_ascii=False),
+        )
+        raw, tool_sources = _call_openai_primary_verifier(
+            work_dir,
+            action=f"primary_verify:{batch_index:03d}",
+            prompt=prompt,
+        )
+        payload = _parse_json_object(raw)
+        normalized = _normalize_verified_batch(
+            payload=payload,
+            batch=batch,
+            tool_sources=tool_sources,
+            modern_titles=modern_titles,
+        )
+        _atomic_write_json(
+            path,
+            {
+                "artifact_key": artifact_key,
+                "policy_version": POLICY_VERSION,
+                "tool_sources": tool_sources,
+                "verified_claims": normalized,
+                "rejected_candidate_ids": payload.get("rejected_candidate_ids") or [],
+            },
+        )
+        verified.extend(normalized)
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in verified:
+        key = (str(item.get("canonical_title") or ""), _compact(str(item.get("statement") or "")))
+        if not key[0] or not key[1]:
+            continue
+        current = merged.get(key)
+        if current is None:
+            merged[key] = dict(item)
+            continue
+        current["discovery_claim_ids"] = sorted(
+            set(current.get("discovery_claim_ids") or []) | set(item.get("discovery_claim_ids") or [])
+        )
+        current["discovery_source_ids"] = sorted(
+            set(current.get("discovery_source_ids") or []) | set(item.get("discovery_source_ids") or [])
+        )
+        current["evidence_urls"] = sorted(
+            set(current.get("evidence_urls") or []) | set(item.get("evidence_urls") or [])
+        )
+        current["importance"] = max(int(current.get("importance") or 1), int(item.get("importance") or 1))
+
+    title_counts: dict[str, int] = {}
+    for item in merged.values():
+        title = str(item.get("canonical_title") or "")
+        title_counts[title] = title_counts.get(title, 0) + 1
+    selected_titles = {
+        title
+        for title, _ in sorted(title_counts.items(), key=lambda pair: (-pair[1], pair[0]))[
+            :PREVIEW_MAX_PRIMARY_TITLES
+        ]
+    }
+    selected = [item for item in merged.values() if item.get("canonical_title") in selected_titles]
+    covered_discovery_sources = {
+        value for item in selected for value in item.get("discovery_source_ids") or [] if value
+    }
+    if len(selected) < PREVIEW_MIN_VERIFIED_CLAIMS:
+        raise PublicDomainQualityError(
+            f"古代原典只核验成功 {len(selected)} 条证据，至少需要 {PREVIEW_MIN_VERIFIED_CLAIMS} 条；"
+            "现代整理材料不得直接进入正文。"
+        )
+    if len(selected_titles) < PREVIEW_MIN_PRIMARY_TITLES:
+        raise PublicDomainQualityError(
+            f"古代原典只覆盖 {len(selected_titles)} 部，至少需要 {PREVIEW_MIN_PRIMARY_TITLES} 部独立原典。"
+        )
+    if len(covered_discovery_sources) < min(3, len(modern_sources)):
+        raise PublicDomainQualityError(
+            f"核验后的事实线索只覆盖 {len(covered_discovery_sources)} 份研究材料，交叉发现范围不足。"
+        )
+
+    source_id_by_title = {
+        title: f"P{index:02d}"
+        for index, title in enumerate(sorted(selected_titles), start=1)
+    }
+    counters: dict[str, int] = {}
+    final: list[dict[str, Any]] = []
+    for item in sorted(
+        selected,
+        key=lambda value: (
+            source_id_by_title[str(value.get("canonical_title") or "")],
+            -int(value.get("importance") or 1),
+            str(value.get("statement") or ""),
+        ),
+    ):
+        title = str(item.get("canonical_title") or "")
+        source_id = source_id_by_title[title]
+        counters[source_id] = counters.get(source_id, 0) + 1
+        final.append(
+            {
+                **item,
+                "claim_id": f"{source_id}-V{counters[source_id]:04d}",
+                "source_id": source_id,
+                "source_title": title,
+                "evidence_status": "verified_primary",
+                "generation_eligible": True,
+            }
+        )
+    _atomic_write_json(
+        work_dir / "01_verified_primary_ledger.json",
+        {
+            "policy_version": POLICY_VERSION,
+            "evidence_status": "verified_primary",
+            "generation_eligible": True,
+            "approved_hosts": list(_PRIMARY_SOURCE_HOSTS),
+            "claims": final,
+        },
+    )
+    return final
+
+
+def _select_discovery_candidates(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    seen: set[str] = set()
+    for item in sorted(
+        evidence,
+        key=lambda value: (-int(value.get("importance") or 1), str(value.get("claim_id") or "")),
+    ):
+        if item.get("evidence_status") != "discovery_only" or bool(item.get("generation_eligible")):
+            continue
+        compact = _compact(str(item.get("statement") or ""))
+        if len(compact) < 8 or compact in seen:
+            continue
+        seen.add(compact)
+        source_id = str(item.get("source_id") or "")
+        buckets.setdefault(source_id, []).append(item)
+    selected: list[dict[str, Any]] = []
+    source_ids = sorted(buckets)
+    offset = 0
+    while source_ids and len(selected) < PREVIEW_MAX_DISCOVERY_CANDIDATES:
+        source_id = source_ids[offset % len(source_ids)]
+        bucket = buckets[source_id]
+        if bucket:
+            selected.append(bucket.pop(0))
+        source_ids = [value for value in source_ids if buckets[value]]
+        offset += 1
+    return selected
+
+
+def _normalize_verified_batch(
+    *,
+    payload: dict[str, Any],
+    batch: list[dict[str, Any]],
+    tool_sources: list[dict[str, str]],
+    modern_titles: set[str],
+) -> list[dict[str, Any]]:
+    candidates = {str(item.get("claim_id") or ""): item for item in batch}
+    actual_urls = {_normalize_evidence_url(item.get("url") or "") for item in tool_sources}
+    actual_urls.discard("")
+    normalized: list[dict[str, Any]] = []
+    for raw in payload.get("verified_claims") or []:
+        if not isinstance(raw, dict):
+            continue
+        candidate_ids = [
+            str(value) for value in raw.get("candidate_ids") or [] if str(value) in candidates
+        ]
+        if not candidate_ids:
+            continue
+        title = _normalize_canonical_title(str(raw.get("canonical_title") or ""))
+        if not title or any(value and value in title for value in modern_titles):
+            continue
+        statement = str(raw.get("statement") or "").strip()[:180]
+        qualifier = str(raw.get("qualifier") or "").strip()[:120]
+        locator = str(raw.get("canonical_locator") or "").strip()[:120]
+        evidence_quote = str(raw.get("evidence_quote") or "").strip()[:120]
+        requested_urls = raw.get("evidence_urls") or [raw.get("evidence_url")]
+        evidence_urls = sorted(
+            {
+                _normalize_evidence_url(str(value or ""))
+                for value in requested_urls
+                if _normalize_evidence_url(str(value or "")) in actual_urls
+                and _is_approved_primary_url(str(value or ""))
+            }
+        )
+        if (
+            len(_compact(statement)) < 8
+            or not locator
+            or len(_compact(evidence_quote)) < 4
+            or not evidence_urls
+            or _contains_research_process_leak(statement)
+            or any(value and (value in statement or value in qualifier) for value in modern_titles)
+        ):
+            continue
+        discovery_source_ids = sorted(
+            {str(candidates[value].get("source_id") or "") for value in candidate_ids}
+        )
+        importance = max(int(candidates[value].get("importance") or 1) for value in candidate_ids)
+        kind = str(raw.get("kind") or candidates[candidate_ids[0]].get("kind") or "fact")[:24]
+        normalized.append(
+            {
+                "canonical_title": title,
+                "canonical_locator": locator,
+                "statement": statement,
+                "qualifier": qualifier,
+                "kind": kind,
+                "importance": max(1, min(3, importance)),
+                "evidence_quote": evidence_quote,
+                "evidence_urls": evidence_urls,
+                "discovery_claim_ids": sorted(set(candidate_ids)),
+                "discovery_source_ids": discovery_source_ids,
+            }
+        )
+    return normalized
+
+
+def _build_primary_source_reports(evidence: list[dict[str, Any]]) -> tuple[SourceReport, ...]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in evidence:
+        grouped.setdefault(str(item.get("source_id") or ""), []).append(item)
+    reports: list[SourceReport] = []
+    for source_id in sorted(grouped):
+        claims = grouped[source_id]
+        title = str(claims[0].get("canonical_title") or claims[0].get("source_title") or "古代原典")
+        urls = sorted({url for item in claims for url in item.get("evidence_urls") or []})
+        reports.append(
+            SourceReport(
+                source_id=source_id,
+                title=title,
+                author="古代原典",
+                chars=0,
+                detected_chapters=0,
+                rights_basis="古代原典；仅使用经联网定位的短证据进行事实核验，不复制现代整理材料",
+                sha256=text_sha256(f"{title}\n" + "\n".join(urls)),
+            )
+        )
+    return tuple(reports)
+
+
+def _build_primary_source_digests(
+    evidence: list[dict[str, Any]],
+    reports: tuple[SourceReport, ...],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for report in reports:
+        claims = [item for item in evidence if item.get("source_id") == report.source_id]
+        result.append(
+            {
+                "source_id": report.source_id,
+                "title": report.title,
+                "evidence_status": "verified_primary",
+                "core_materials": [
+                    {
+                        "claim_id": item.get("claim_id"),
+                        "statement": item.get("statement"),
+                        "qualifier": item.get("qualifier"),
+                        "canonical_locator": item.get("canonical_locator"),
+                    }
+                    for item in claims[:30]
+                ],
+                "usable_topics": sorted({str(item.get("kind") or "fact") for item in claims}),
+                "limits": ["只允许使用已核验的中性表述；不得补写原典未支持的故事、心理、因果或评价"],
+            }
+        )
+    return result
+
+
+def _call_openai_primary_verifier(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+) -> tuple[str, list[dict[str, str]]]:
+    from app.services.content_engine import (
+        _extract_openai_response_text,
+        _get_openai_writer_client,
+        _resolve_openai_api_key,
+    )
+
+    if not _resolve_openai_api_key():
+        raise PublicDomainQualityError("古代原典联网核验需要 OPENAI_API_KEY；没有核验结果时禁止生成。")
+    model = str(settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
+    started = time.monotonic()
+    log: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "policy_version": POLICY_VERSION,
+        "action": action,
+        "provider": "openai-web-search",
+        "model": model,
+        "input_chars": len(prompt),
+        "status": "started",
+    }
+    try:
+        response = _get_openai_writer_client().responses.create(
+            model=model,
+            input=prompt,
+            reasoning={"effort": "low"},
+            tools=[{"type": "web_search", "search_context_size": "high"}],
+            tool_choice="required",
+            include=["web_search_call.action.sources"],
+        )
+        output = _extract_openai_response_text(response).strip()
+        tool_sources = _collect_web_tool_sources(response)
+        if not output or not tool_sources:
+            raise RuntimeError("联网核验没有同时返回正文和可审计来源")
+        log.update(
+            status="ok",
+            output_chars=len(output),
+            source_count=len(tool_sources),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage_tokens=None,
+            cost=None,
+            currency=None,
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        return output, tool_sources
+    except PublicDomainQualityError:
+        raise
+    except Exception as exc:
+        log.update(
+            status="failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=f"{type(exc).__name__}: {exc}"[:2000],
+        )
+        _append_jsonl(work_dir / "llm_calls.jsonl", log)
+        raise PublicDomainQualityError(f"古代原典联网核验失败：{type(exc).__name__}: {exc}") from exc
+
+
+def _collect_web_tool_sources(response: Any) -> list[dict[str, str]]:
+    try:
+        payload = response.model_dump(mode="json")
+    except Exception:
+        payload = response
+    found: dict[str, dict[str, str]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            url = str(value.get("url") or "").strip()
+            if url.startswith(("http://", "https://")):
+                normalized = _normalize_evidence_url(url)
+                if normalized:
+                    found[normalized] = {
+                        "url": normalized,
+                        "title": str(value.get("title") or value.get("name") or "").strip()[:300],
+                    }
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return list(found.values())
+
+
+def _normalize_evidence_url(value: str) -> str:
+    try:
+        parts = urlsplit(str(value or "").strip())
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        return ""
+    netloc = parts.hostname.lower()
+    try:
+        port = parts.port
+    except ValueError:
+        return ""
+    if port and not (parts.scheme.lower() == "https" and port == 443):
+        netloc = f"{netloc}:{port}"
+    path = unquote(re.sub(r"/{2,}", "/", parts.path or "/")).rstrip("/") or "/"
+    return urlunsplit((parts.scheme.lower(), netloc, path, "", ""))
+
+
+def _is_approved_primary_url(value: str) -> bool:
+    try:
+        host = (urlsplit(value).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == allowed or host.endswith("." + allowed) for allowed in _PRIMARY_SOURCE_HOSTS)
+
+
+def _normalize_canonical_title(value: str) -> str:
+    title = str(value or "").strip()
+    title = re.sub(r"^[《〈]|[》〉]$", "", title).strip()
+    if not 1 < len(title) <= 80:
+        return ""
+    return f"《{title}》"
+
+
+def _contains_research_process_leak(text: str) -> bool:
+    return any(value in str(text or "") for value in _RESEARCH_PROCESS_LEAKS)
+
+
+def _modern_source_leakage_issues(
+    text: str,
+    *,
+    modern_sources: Iterable[PublicDomainSource],
+    approved_primary_titles: set[str],
+) -> list[str]:
+    value = str(text or "")
+    issues: list[str] = []
+    for marker in _RESEARCH_PROCESS_LEAKS:
+        if marker in value:
+            issues.append(f"正文泄漏研究过程措辞：{marker}")
+    for source in modern_sources:
+        title = str(source.title or "").strip()
+        author = str(source.author or "").strip()
+        if len(title) >= 2 and (title in value or f"《{title.strip('《》')}》" in value):
+            issues.append(f"正文出现现代整理资料名称：{title}")
+        if len(author) >= 2 and author in value:
+            issues.append(f"正文出现现代整理资料作者：{author}")
+    approved = {item.strip() for item in approved_primary_titles if item.strip()}
+    approved_plain = {item.strip("《》") for item in approved}
+    for title in re.findall(r"《([^》]{1,80})》", value):
+        if title.strip() not in approved_plain:
+            issues.append(f"正文引用未进入核验账本的书名：《{title.strip()}》")
+    return list(dict.fromkeys(issues))
 
 
 def _build_source_digest(
@@ -990,12 +1580,17 @@ def _normalize_plan(
         )
     # Ensure every source participates in at least two chapter contracts.
     for source_offset, source_id in enumerate(source_ids):
-        used = [item for item in chapters if source_id in item["source_ids"]]
-        while len(used) < 2:
-            target = chapters[(source_offset + len(used) * len(source_ids)) % len(chapters)]
-            if source_id not in target["source_ids"]:
-                target["source_ids"].append(source_id)
-            used = [item for item in chapters if source_id in item["source_ids"]]
+        used_count = sum(source_id in item["source_ids"] for item in chapters)
+        candidates = [
+            chapters[index % len(chapters)]
+            for index in range(source_offset, source_offset + len(chapters))
+            if source_id not in chapters[index % len(chapters)]["source_ids"]
+        ]
+        for target in candidates:
+            if used_count >= min(2, len(chapters)):
+                break
+            target["source_ids"].append(source_id)
+            used_count += 1
     return {
         "title": str(target_title or plan.get("title") or "公版融合长篇").strip()[:120],
         "subtitle": str(plan.get("subtitle") or "").strip()[:160],
@@ -1057,6 +1652,8 @@ def _build_or_resume_chapter(
     allowed_evidence: list[dict[str, Any]],
     overlap_indexes: list[dict[str, Any]],
     generation_mode: str = FULL_MODE,
+    forbidden_sources: Iterable[PublicDomainSource] = (),
+    approved_source_titles: set[str] | None = None,
 ) -> ChapterResult:
     chapter_dir = work_dir / "chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
@@ -1083,6 +1680,8 @@ def _build_or_resume_chapter(
             "claim_id": item.get("claim_id"),
             "source_id": item.get("source_id"),
             "source_title": item.get("source_title"),
+            "canonical_locator": item.get("canonical_locator"),
+            "evidence_status": item.get("evidence_status"),
             "kind": item.get("kind"),
             "statement": item.get("statement"),
             "qualifier": item.get("qualifier"),
@@ -1160,6 +1759,8 @@ def _build_or_resume_chapter(
             used_claim_ids=used_claim_ids,
             allowed_evidence=allowed_evidence,
             overlap_indexes=overlap_indexes,
+            forbidden_sources=forbidden_sources,
+            approved_source_titles=approved_source_titles,
         )
         audit = _audit_chapter(
             work_dir=work_dir,
@@ -1301,6 +1902,8 @@ def _chapter_deterministic_issues(
     used_claim_ids: tuple[str, ...],
     allowed_evidence: list[dict[str, Any]],
     overlap_indexes: list[dict[str, Any]],
+    forbidden_sources: Iterable[PublicDomainSource] = (),
+    approved_source_titles: set[str] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     chars = count_text_chars(text)
@@ -1314,6 +1917,20 @@ def _chapter_deterministic_issues(
         issues.append(f"used_claim_ids 含未授权证据：{', '.join(unknown_ids[:8])}")
     if len([value for value in used_claim_ids if value in allowed_ids]) < 4:
         issues.append("至少要明确使用 4 条允许证据，不能靠空泛扩写凑篇幅")
+    ineligible = [
+        item.get("claim_id")
+        for item in allowed_evidence
+        if item.get("evidence_status") == "discovery_only" or item.get("generation_eligible") is False
+    ]
+    if ineligible:
+        issues.append("允许证据中混入 discovery_only 现代材料线索，已拒绝候选")
+    issues.extend(
+        _modern_source_leakage_issues(
+            text,
+            modern_sources=forbidden_sources,
+            approved_primary_titles=approved_source_titles or set(),
+        )
+    )
     residues = [value for value in _AI_RESIDUE if value in text.lower()]
     if residues:
         issues.append(f"存在模型说明或任务残留：{', '.join(residues)}")
@@ -1358,6 +1975,8 @@ def _run_final_gate(
     dimensions: BookDimensions,
     overlap_indexes: list[dict[str, Any]],
     generation_mode: str = FULL_MODE,
+    verified_evidence: list[dict[str, Any]] | None = None,
+    forbidden_sources: Iterable[PublicDomainSource] = (),
 ) -> dict[str, Any]:
     body = "\n\n".join(item.text for item in chapters)
     body_chars = count_text_chars(body)
@@ -1371,6 +1990,30 @@ def _run_final_gate(
     failed_chapters = [item.number for item in chapters if not _audit_passed(item.audit)]
     if failed_chapters:
         blocking.append(f"章节审查未通过：{failed_chapters}")
+
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        verified_items = list(verified_evidence or [])
+        if len(verified_items) < PREVIEW_MIN_VERIFIED_CLAIMS:
+            blocking.append(
+                f"古代原典核验证据只有 {len(verified_items)} 条，至少需要 {PREVIEW_MIN_VERIFIED_CLAIMS} 条"
+            )
+        invalid_verified = [
+            item.get("claim_id")
+            for item in verified_items
+            if item.get("evidence_status") != "verified_primary"
+            or not bool(item.get("generation_eligible"))
+            or not item.get("canonical_locator")
+            or not item.get("evidence_urls")
+        ]
+        if invalid_verified:
+            blocking.append(f"原典证据账本含未晋级或不可审计记录：{invalid_verified[:8]}")
+        blocking.extend(
+            _modern_source_leakage_issues(
+                body,
+                modern_sources=forbidden_sources,
+                approved_primary_titles={item.title for item in source_reports},
+            )
+        )
 
     source_usage: dict[str, int] = {item.source_id: 0 for item in source_reports}
     source_chapter_usage: dict[str, set[int]] = {item.source_id: set() for item in source_reports}
@@ -1414,6 +2057,16 @@ def _run_final_gate(
         "source_overlap": [asdict(item) for item in overlap],
         "internal_duplicate_ratio": duplicate_ratio,
         "rights_complete": all(bool(item.rights_basis) for item in source_reports),
+        "verified_primary_claim_count": (
+            len(verified_evidence or []) if generation_mode == RESEARCH_PREVIEW_MODE else None
+        ),
+        "modern_source_leakage_count": len(
+            _modern_source_leakage_issues(
+                body,
+                modern_sources=forbidden_sources,
+                approved_primary_titles={item.title for item in source_reports},
+            )
+        ) if generation_mode == RESEARCH_PREVIEW_MODE else 0,
         "blocking_issues": blocking,
     }
     audit_material = {
@@ -1561,8 +2214,10 @@ def _write_rights_manifest(
         "generation_mode": generation_mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "legal_note": (
-            "研究试稿未主张现代整理本属于公版。原始文字只用于事实/概念线索抽取与重合排查；"
-            "写作层不得接触原文、独创故事、来源句法或现代评论。该技术隔离不替代专业法律意见。"
+            "现代整理本仅用于产生 discovery_only 检索线索与成稿重合排查，不属于写作证据。"
+            "只有经联网命中古代原典页面并晋级为 verified_primary 的中性事实才能进入计划、写作和审稿；"
+            "写作层不得接触现代原文、现代书名、独创故事、来源句法或现代评论。"
+            "该技术隔离不替代专业法律意见。"
             if preview
             else "系统记录并核对用户提供的权利依据，但不替代专业法律意见。任何依据不清的来源不得进入生成。"
         ),
