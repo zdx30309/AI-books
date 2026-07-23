@@ -2171,9 +2171,15 @@ def _build_or_resume_chapter(
             return chapter
         if attempt >= attempt_limit:
             break
-        repair_source = best_full_candidate or candidate
+        repair_source, repair_audit = _select_chapter_repair_source(
+            candidate=candidate,
+            audit=audit,
+            best_full_candidate=best_full_candidate,
+            best_full_audit=best_full_audit,
+            target_chars=target_chars,
+            generation_mode=generation_mode,
+        )
         repair_source_text = str(repair_source.get("text") or "").strip()
-        repair_audit = best_full_audit or audit
         repair_prompt = _render_prompt(
             (
                 "chapter_repair_research_preview.md"
@@ -2220,6 +2226,33 @@ def _build_or_resume_chapter(
     raise PublicDomainQualityError(
         f"第 {chapter_number} 章在 {attempt_limit} 次内未同时通过事实、篇幅、来源重合与语言闸门。"
     )
+
+
+def _select_chapter_repair_source(
+    *,
+    candidate: dict[str, Any],
+    audit: dict[str, Any],
+    best_full_candidate: dict[str, Any] | None,
+    best_full_audit: dict[str, Any] | None,
+    target_chars: int,
+    generation_mode: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep cumulative safe repairs instead of restoring rejected prose.
+
+    Removing unsupported quotations can temporarily shorten a preview chapter.
+    Reverting every such round to the first full-length draft reintroduces the
+    same rejected claims forever. A current candidate retaining at least 60%
+    of the contract length remains the repair base, so the next round can fill
+    only from the approved evidence ledger. Truly truncated output still rolls
+    back to the best complete candidate.
+    """
+
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        current_text = str(candidate.get("text") or "").strip()
+        current_chars = count_text_chars(current_text)
+        if current_text and current_chars >= max(1, int(target_chars * 0.60)):
+            return candidate, audit
+    return best_full_candidate or candidate, best_full_audit or audit
 
 
 def _audit_chapter(

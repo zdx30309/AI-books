@@ -143,6 +143,43 @@ def test_research_preview_audit_falls_back_when_provider_returns_non_json(
     assert log_rows[-1]["status"] == "malformed_output"
 
 
+def test_research_preview_repairs_accumulate_from_safe_shorter_candidate() -> None:
+    stale_full = {"text": "旧" * 1_000}
+    repaired = {"text": "新" * 650}
+    stale_audit = {"repair_instructions": ["旧问题"]}
+    current_audit = {"repair_instructions": ["只剩新问题"]}
+
+    source, audit = service._select_chapter_repair_source(  # noqa: SLF001
+        candidate=repaired,
+        audit=current_audit,
+        best_full_candidate=stale_full,
+        best_full_audit=stale_audit,
+        target_chars=1_000,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+    )
+
+    assert source is repaired
+    assert audit is current_audit
+
+
+def test_research_preview_rolls_back_truncated_repair_candidate() -> None:
+    stale_full = {"text": "旧" * 1_000}
+    truncated = {"text": "新" * 100}
+    stale_audit = {"repair_instructions": ["旧问题"]}
+
+    source, audit = service._select_chapter_repair_source(  # noqa: SLF001
+        candidate=truncated,
+        audit={"repair_instructions": ["截断"]},
+        best_full_candidate=stale_full,
+        best_full_audit=stale_audit,
+        target_chars=1_000,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+    )
+
+    assert source is stale_full
+    assert audit is stale_audit
+
+
 def test_rights_basis_is_mandatory() -> None:
     items = _sources()
     items[3] = PublicDomainSource(title="权利不清", text=items[3].text, rights_note="网上下载")
