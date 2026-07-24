@@ -397,7 +397,7 @@ export interface PublicDomainRewriteRequest {
   target_chapters?: number;
   output_style?: string | null;
   public_domain_confirmed: boolean;
-  generation_mode?: "full" | "research_preview";
+  generation_mode?: "legacy_simple" | "full" | "research_preview";
   research_use_confirmed?: boolean;
 }
 

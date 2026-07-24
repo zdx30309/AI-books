@@ -25,10 +25,8 @@ interface SourceDraft {
   rightsEvidenceUrl: string;
 }
 
-const MIN_SOURCES = 8;
+const MIN_SOURCES = 1;
 const MAX_SOURCES = 10;
-const PREVIEW_MIN_SOURCES = 5;
-const PREVIEW_MAX_SOURCES = 7;
 
 const emptySource = (index: number): SourceDraft => ({
   title: `公版图书 ${index}`,
@@ -67,7 +65,7 @@ function formatChars(value: string) {
 export function PublicDomainRewrite() {
   const navigate = useNavigate();
   const [sources, setSources] = useState<SourceDraft[]>(initialSources);
-  const [generationMode, setGenerationMode] = useState<"full" | "research_preview">("full");
+  const generationMode = "legacy_simple" as const;
   const [targetTitle, setTargetTitle] = useState("");
   const [targetDirection, setTargetDirection] = useState("");
   const [targetLength, setTargetLength] = useState("");
@@ -82,10 +80,10 @@ export function PublicDomainRewrite() {
   );
   const fileMode = preparedSources.length > 0 && preparedSources.every((item) => item.file);
   const mixedMode = preparedSources.some((item) => item.file) && !fileMode;
-  const preview = generationMode === "research_preview";
-  const minSources = preview ? PREVIEW_MIN_SOURCES : MIN_SOURCES;
-  const maxSources = preview ? PREVIEW_MAX_SOURCES : MAX_SOURCES;
-  const metadataComplete = preview || preparedSources.every((item) => item.rightsNote.trim().length >= 4);
+  const preview = false;
+  const minSources = MIN_SOURCES;
+  const maxSources = MAX_SOURCES;
+  const metadataComplete = preparedSources.every((item) => item.rightsNote.trim().length >= 4);
   const canSubmit =
     preparedSources.length >= minSources &&
     preparedSources.length <= maxSources &&
@@ -104,23 +102,6 @@ export function PublicDomainRewrite() {
 
   const removeSource = (index: number) => {
     setSources((items) => (items.length <= minSources ? items : items.filter((_, idx) => idx !== index)));
-  };
-
-  const changeMode = (mode: "full" | "research_preview") => {
-    setGenerationMode(mode);
-    setSources((items) => {
-      const wanted = mode === "research_preview" ? PREVIEW_MIN_SOURCES : MIN_SOURCES;
-      const maximum = mode === "research_preview" ? PREVIEW_MAX_SOURCES : MAX_SOURCES;
-      if (items.length > maximum) return items.slice(0, wanted);
-      if (items.length >= wanted) return items;
-      return [
-        ...items,
-        ...Array.from({ length: wanted - items.length }, (_, index) => emptySource(items.length + index + 1)),
-      ];
-    });
-    setTargetLength(mode === "research_preview" ? "10000" : "");
-    setTargetChapters(mode === "research_preview" ? "3" : "");
-    setConfirmed(false);
   };
 
   const submit = async () => {
@@ -205,10 +186,10 @@ export function PublicDomainRewrite() {
       </section>
 
       <section className="card-warm flex flex-wrap gap-3 p-4">
-        <button type="button" onClick={() => changeMode("full")} className={generationMode === "full" ? "btn-gold" : "btn-ghost"}>
+        <button type="button" onClick={() => undefined} className="btn-gold">
           正式长书（8–10 本）
         </button>
-        <button type="button" onClick={() => changeMode("research_preview")} className={preview ? "btn-gold" : "btn-ghost"}>
+        <button type="button" onClick={() => undefined} className="btn-ghost hidden">
           叙事化非虚构预览（5–7 份 / 约一万字）
         </button>
       </section>
@@ -230,11 +211,11 @@ export function PublicDomainRewrite() {
         </label>
         <label className="text-sm text-warm-300">
           目标字数（可空，自动取来源中位数）
-          <input type="number" min={preview ? 8000 : 80000} max={preview ? 15000 : 220000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder={preview ? "例如 10000" : "例如 150000"} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={800} max={20000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder="例如 10000" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300">
           目标章节（可空，自动匹配来源）
-          <input type="number" min={preview ? 2 : 12} max={preview ? 4 : 36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder={preview ? "例如 3" : "例如 24"} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={1} max={36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder="例如 1" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300 md:col-span-2 xl:col-span-1">
           融合方向（可空）
