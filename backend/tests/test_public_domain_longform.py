@@ -789,6 +789,51 @@ def test_exact_source_copy_is_blocked_but_independent_text_is_not() -> None:
     assert independent["status"] == "ok"
 
 
+def test_full_public_domain_run_is_single_pass_and_style_profile_is_disabled() -> None:
+    assert service.MAX_CHAPTER_ATTEMPTS == 1
+    assert service.PREVIEW_MAX_CHAPTER_ATTEMPTS == 1
+    assert service.PUBLIC_DOMAIN_STYLE_PROFILE_ENABLED is False
+
+
+def test_chapter_gate_requires_real_cross_source_fusion() -> None:
+    allowed = [
+        {"claim_id": "S01-C0001-01"},
+        {"claim_id": "S01-C0001-02"},
+        {"claim_id": "S01-C0001-03"},
+        {"claim_id": "S01-C0001-04"},
+        {"claim_id": "S02-C0001-01"},
+    ]
+    one_source_issues = service._chapter_deterministic_issues(  # noqa: SLF001
+        text="独立组织的正文内容。" * 30,
+        contract={"narrative_beats": []},
+        target_chars=240,
+        used_claim_ids=(
+            "S01-C0001-01",
+            "S01-C0001-02",
+            "S01-C0001-03",
+            "S01-C0001-04",
+        ),
+        allowed_evidence=allowed,
+        overlap_indexes=[],
+    )
+    mixed_source_issues = service._chapter_deterministic_issues(  # noqa: SLF001
+        text="独立组织的正文内容。" * 30,
+        contract={"narrative_beats": []},
+        target_chars=240,
+        used_claim_ids=(
+            "S01-C0001-01",
+            "S01-C0001-02",
+            "S01-C0001-03",
+            "S02-C0001-01",
+        ),
+        allowed_evidence=allowed,
+        overlap_indexes=[],
+    )
+
+    assert any("至少融合两个来源" in item for item in one_source_issues)
+    assert not any("至少融合两个来源" in item for item in mixed_source_issues)
+
+
 def test_final_markdown_preserves_real_chapter_structure() -> None:
     chapters = [
         ChapterResult(

@@ -28,12 +28,15 @@ from app.services.gemini import generate_text as gemini_generate_text
 from app.utils.official_api import official_proxy
 
 
-POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
-PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v6"
+POLICY_VERSION = "public-domain-longform-v4-independent-synthesis"
+PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v7-independent-synthesis"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v7"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 CHAPTER_AUDIT_CACHE_VERSION = "chapter-audit-cache-v1"
+# Source text may be used only to extract factual material. Never derive a
+# source-specific writing/style profile for a new public-domain task.
+PUBLIC_DOMAIN_STYLE_PROFILE_ENABLED = False
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -64,9 +67,11 @@ PREVIEW_MIN_USED_PRIMARY_TITLES = 6
 EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
-MAX_CHAPTER_ATTEMPTS = 3
-# Research previews are deliberately single-pass. A failed chapter is kept
-# for manual review instead of entering an opaque paid repair loop.
+MAX_CHAPTER_ATTEMPTS = 1
+# Public-domain work is deliberately single-pass. A failed chapter is kept
+# for manual review instead of entering an opaque paid repair loop. This is
+# also the cost guard for full-length runs; a retry must be an explicit user
+# action against a checkpoint.
 PREVIEW_MAX_CHAPTER_ATTEMPTS = 1
 PREVIEW_AUTO_REPAIR = False
 OVERLAP_WINDOW = 36
@@ -562,8 +567,13 @@ def run_public_domain_longform(
     )
     reports = build_source_reports(clean_sources)
     _write_rights_manifest(work_dir, reports, clean_sources, dimensions, generation_mode=generation_mode)
-    narrative_profile = _build_narrative_mechanism_profile(clean_sources, reports, work_dir)
-    if generation_mode == RESEARCH_PREVIEW_MODE:
+    # Modern compilations are discovery indexes only. Do not build a
+    # sentence/paragraph profile for a new task: it is not a writing template
+    # and would turn copyrighted editorial choices into hidden style input.
+    narrative_profile: dict[str, Any] = {}
+    if PUBLIC_DOMAIN_STYLE_PROFILE_ENABLED:
+        narrative_profile = _build_narrative_mechanism_profile(clean_sources, reports, work_dir)
+    if generation_mode in {FULL_MODE, RESEARCH_PREVIEW_MODE}:
         _notify(
             on_progress,
             5,
@@ -668,7 +678,7 @@ def run_public_domain_longform(
             allowed_evidence=allowed_evidence,
             overlap_indexes=overlap_indexes,
             generation_mode=generation_mode,
-            forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
+            forbidden_sources=clean_sources,
             approved_source_titles={item.title for item in planning_reports},
             narrative_blueprint=narrative_blueprint,
             narrative_profile=narrative_profile,
@@ -693,7 +703,7 @@ def run_public_domain_longform(
         overlap_indexes=overlap_indexes,
         generation_mode=generation_mode,
         verified_evidence=all_evidence if generation_mode == RESEARCH_PREVIEW_MODE else None,
-        forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
+        forbidden_sources=clean_sources,
         narrative_profile=narrative_profile,
     )
     _atomic_write_text(work_dir / "04_format.md", markdown)
@@ -811,15 +821,10 @@ def audit_edited_final_manuscript(
 
     title, summary, chapters = parse_final_markdown(manuscript)
     narrative_blueprint = _narrative_blueprint(plan)
+    # Historical profile artifacts are intentionally ignored. They were only
+    # aggregate style hints and are not allowed to steer a new public-domain
+    # synthesis.
     narrative_profile: dict[str, Any] = {}
-    profile_path = work_dir / "01_narrative_mechanism_profile.json"
-    if profile_path.exists():
-        try:
-            narrative_profile = dict(
-                json.loads(profile_path.read_text(encoding="utf-8")).get("profile") or {}
-            )
-        except (OSError, TypeError, ValueError):
-            narrative_profile = {}
     if len(chapters) != len(contracts):
         blocking.append(f"终稿章节数 {len(chapters)}，规划要求 {len(contracts)}")
     if [item.number for item in chapters] != list(range(1, len(chapters) + 1)):
@@ -875,6 +880,19 @@ def audit_edited_final_manuscript(
                 claims = []
                 blocking.append(f"{source_report.source_id} 证据账本不可用：{type(exc).__name__}: {exc}")
             all_evidence.extend(claims)
+        # Full mode may use user-confirmed public-domain source material, but
+        # the uploaded source's modern editorial layer must never leak into
+        # the manuscript. Re-run the same title/author/process-language gate
+        # during post-edit review.
+        manuscript_body = "\n\n".join(item.text for item in chapters)
+        blocking.extend(
+            _modern_source_leakage_issues(
+                manuscript_body,
+                modern_sources=clean_sources,
+                approved_primary_titles={item.title for item in source_reports},
+            )
+        )
+        blocking.extend(_narrative_nonfiction_form_issues(manuscript_body))
 
     chapter_audits: list[dict[str, Any]] = []
     if len(chapters) == len(contracts) and not any("账本不可用" in item for item in blocking):
@@ -908,12 +926,12 @@ def audit_edited_final_manuscript(
                     text=chapter.text,
                     target_chars=int(contract.get("target_chars") or 0),
                     overlap_indexes=overlap_indexes,
-                    require_narrative_nonfiction=generation_mode == RESEARCH_PREVIEW_MODE,
+                    require_narrative_nonfiction=True,
                 )
                 if chapter_issues:
                     audit["pass"] = False
                     audit.setdefault("repair_instructions", []).extend(chapter_issues)
-                if generation_mode == RESEARCH_PREVIEW_MODE:
+                if forbidden_sources:
                     leakage = _modern_source_leakage_issues(
                         chapter.text,
                         modern_sources=clean_sources,
@@ -3166,6 +3184,13 @@ def _chapter_deterministic_issues(
         issues.append(
             f"至少要明确使用 {minimum_evidence} 条允许证据，不能靠空泛扩写凑篇幅"
         )
+    used_source_ids = {
+        value.split("-", 1)[0]
+        for value in used_claim_ids
+        if value in allowed_ids and "-" in value
+    }
+    if len(used_source_ids) < 2:
+        issues.append("每个章节至少融合两个来源的证据，禁止整章只写一个来源")
     required_claim_ids = {
         str(claim_id).strip()
         for beat in (contract.get("narrative_beats") or [])
@@ -3330,6 +3355,17 @@ def _run_final_gate(
         ]
         if invalid_verified:
             blocking.append(f"原典证据账本含未晋级或不可审计记录：{invalid_verified[:8]}")
+        blocking.extend(
+            _modern_source_leakage_issues(
+                body,
+                modern_sources=forbidden_sources,
+                approved_primary_titles={item.title for item in source_reports},
+            )
+        )
+        blocking.extend(_narrative_nonfiction_form_issues(body, whole_book=True))
+    elif forbidden_sources:
+        # Full mode is allowed to use user-confirmed public-domain evidence,
+        # but never the modern editorial layer of an uploaded compilation.
         blocking.extend(
             _modern_source_leakage_issues(
                 body,
