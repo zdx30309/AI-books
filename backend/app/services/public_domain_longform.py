@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v7"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v6"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
