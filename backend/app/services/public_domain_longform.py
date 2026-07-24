@@ -2453,7 +2453,7 @@ def _build_or_resume_chapter(
             previous_summary=previous_summary,
             chapter_contract=json.dumps(contract, ensure_ascii=False),
             allowed_evidence=json.dumps(evidence_payload, ensure_ascii=False),
-            target_chars=target_chars,
+            target_chars=int(target_chars * 1.08),
             minimum_chars=minimum_chars,
             maximum_chars=maximum_chars,
             narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
@@ -2554,7 +2554,7 @@ def _build_or_resume_chapter(
             audit=audit,
             best_full_candidate=best_full_candidate,
             best_full_audit=best_full_audit,
-            target_chars=target_chars,
+            target_chars=int(target_chars * 1.08),
             generation_mode=generation_mode,
         )
         repair_source_text = str(repair_source.get("text") or "").strip()
@@ -3481,7 +3481,7 @@ def _call_openai_preview_writer(
         output = _openai_writer_call(
             prompt,
             reasoning_effort="medium",
-            verbosity="medium",
+            verbosity="high",
             max_output_tokens=max_output_tokens,
             service_tier="default",
             retry_on_failure=True,
