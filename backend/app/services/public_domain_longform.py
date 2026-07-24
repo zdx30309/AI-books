@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v6"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v7"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
@@ -2627,6 +2627,80 @@ def _build_or_resume_chapter(
             prefer_openai=bool(resumed_failed_candidate or attempt >= 3),
         )
         candidate = _parse_json_object(repaired)
+    if (
+        generation_mode == RESEARCH_PREVIEW_MODE
+        and _can_apply_short_preview_expansion(
+            text=str(candidate.get("text") or "").strip(),
+            audit=last_audit,
+            deterministic_issues=deterministic,
+            minimum_chars=minimum_chars,
+        )
+    ):
+        expanded = _expand_short_preview_candidate(
+            work_dir=work_dir,
+            chapter_number=chapter_number,
+            candidate=candidate,
+            contract=contract,
+            allowed_evidence=evidence_payload,
+            minimum_chars=minimum_chars,
+            maximum_chars=maximum_chars,
+            narrative_blueprint=narrative_blueprint,
+            narrative_profile=narrative_profile,
+        )
+        if expanded is not None:
+            expanded_text = str(expanded.get("text") or "").strip()
+            expanded_ids = tuple(
+                dict.fromkeys(str(value) for value in expanded.get("used_claim_ids") or [])
+            )
+            expanded_audit = _audit_chapter(
+                work_dir=work_dir,
+                chapter_number=chapter_number,
+                contract=contract,
+                allowed_evidence=evidence_payload,
+                chapter_text=expanded_text,
+                generation_mode=generation_mode,
+                narrative_blueprint=narrative_blueprint,
+                narrative_profile=narrative_profile,
+            )
+            expanded_deterministic = _chapter_deterministic_issues(
+                text=expanded_text,
+                contract=contract,
+                target_chars=int(contract["target_chars"]),
+                used_claim_ids=expanded_ids,
+                allowed_evidence=allowed_evidence,
+                overlap_indexes=overlap_indexes,
+                forbidden_sources=forbidden_sources,
+                approved_source_titles=approved_source_titles,
+                require_narrative_nonfiction=True,
+            )
+            if expanded_deterministic:
+                expanded_audit["pass"] = False
+                expanded_audit.setdefault("repair_instructions", []).extend(
+                    expanded_deterministic
+                )
+            candidate = expanded
+            last_audit = expanded_audit
+            if _audit_passed(expanded_audit):
+                chapter = ChapterResult(
+                    number=chapter_number,
+                    title=str(expanded.get("title") or contract.get("title") or "")[:120],
+                    text=expanded_text,
+                    summary=str(expanded.get("summary") or "")[:800]
+                    or _fallback_summary(expanded_text),
+                    used_claim_ids=expanded_ids,
+                    audit=expanded_audit,
+                )
+                _atomic_write_json(
+                    path,
+                    {
+                        "artifact_key": artifact_key,
+                        "policy_version": POLICY_VERSION,
+                        "chapter": _chapter_to_dict(chapter),
+                    },
+                )
+                _atomic_write_text(chapter_dir / f"{chapter_number:03d}.md", expanded_text)
+                checkpoint_path.unlink(missing_ok=True)
+                return chapter
     _atomic_write_json(
         chapter_dir / f"{chapter_number:03d}.failed.json",
         {
