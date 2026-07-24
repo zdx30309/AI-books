@@ -165,6 +165,25 @@ def test_research_preview_repairs_accumulate_from_safe_shorter_candidate() -> No
     assert audit is current_audit
 
 
+def test_research_preview_repair_rolls_back_content_unsafe_candidate() -> None:
+    safe = {"text": "安全候选" * 700}
+    unsafe = {"text": "坏候选" * 700}
+    safe_audit = {"repair_instructions": ["仅篇幅不足"]}
+    unsafe_audit = {"unsupported_claims": ["新增人物"], "repair_instructions": ["删除"]}
+
+    source, audit = service._select_chapter_repair_source(  # noqa: SLF001
+        candidate=unsafe,
+        audit=unsafe_audit,
+        best_full_candidate=safe,
+        best_full_audit=safe_audit,
+        target_chars=1_000,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+    )
+
+    assert source is safe
+    assert audit is safe_audit
+
+
 def test_research_preview_rolls_back_truncated_repair_candidate() -> None:
     stale_full = {"text": "旧" * 1_000}
     truncated = {"text": "新" * 100}

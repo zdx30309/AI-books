@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v4"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v5"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
@@ -2517,7 +2517,22 @@ def _build_or_resume_chapter(
             audit["pass"] = False
             audit.setdefault("repair_instructions", []).extend(deterministic)
         last_audit = audit
-        if minimum_chars <= count_text_chars(text) <= maximum_chars:
+        audit_has_content_issue = any(
+            audit.get(key)
+            for key in ("unsupported_claims", "contradictions", "missing_materials", "language_issues")
+        )
+        if (
+            generation_mode == RESEARCH_PREVIEW_MODE
+            and not audit_has_content_issue
+            and candidate
+            and count_text_chars(text) >= max(1, int(target_chars * 0.60))
+            and (best_full_candidate is None or count_text_chars(text) > count_text_chars(str(best_full_candidate.get("text") or "")))
+        ):
+            # Keep a safe short candidate as a repair base. A later model
+            # repair that introduces unsupported claims must never replace it.
+            best_full_candidate = dict(candidate)
+            best_full_audit = dict(audit)
+        if minimum_chars <= count_text_chars(text) <= maximum_chars and not audit_has_content_issue:
             best_full_candidate = dict(candidate)
             best_full_audit = dict(audit)
             if generation_mode == RESEARCH_PREVIEW_MODE:
@@ -2775,6 +2790,12 @@ def _select_chapter_repair_source(
     if generation_mode == RESEARCH_PREVIEW_MODE:
         current_text = str(candidate.get("text") or "").strip()
         current_chars = count_text_chars(current_text)
+        content_issue = any(
+            audit.get(key)
+            for key in ("unsupported_claims", "contradictions", "missing_materials", "language_issues")
+        )
+        if content_issue and best_full_candidate is not None:
+            return best_full_candidate, best_full_audit or audit
         if current_text and current_chars >= max(1, int(target_chars * 0.60)):
             return candidate, audit
     return best_full_candidate or candidate, best_full_audit or audit
