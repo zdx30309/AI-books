@@ -107,6 +107,68 @@ def test_research_preview_auditor_falls_back_when_gemini_is_unavailable(
     assert result == '{"pass": true}'
 
 
+def test_chapter_audit_cache_reuses_exact_candidate_without_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def _audit(*_args, **kwargs) -> str:
+        calls.append(str(kwargs.get("action") or ""))
+        return json.dumps(
+            {
+                "pass": True,
+                "unsupported_claims": [],
+                "contradictions": [],
+                "missing_materials": [],
+                "language_issues": [],
+                "repair_instructions": [],
+            }
+        )
+
+    monkeypatch.setattr(service, "_call_auditor", _audit)
+    kwargs = {
+        "work_dir": tmp_path,
+        "chapter_number": 1,
+        "contract": {"title": "测试", "must_cover": []},
+        "allowed_evidence": [{"claim_id": "P01-V0001", "statement": "事实"}],
+        "chapter_text": "同一候选正文",
+        "generation_mode": service.FULL_MODE,
+    }
+    first = service._audit_chapter(**kwargs)  # noqa: SLF001
+    second = service._audit_chapter(**kwargs)  # noqa: SLF001
+
+    assert first == second
+    assert calls == ["chapter_audit:001"]
+    assert list((tmp_path / "audits").glob("001-*.json"))
+
+
+def test_chapter_audit_cache_misses_when_candidate_text_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_call_auditor",
+        lambda *_args, **kwargs: (
+            calls.append(str(kwargs.get("action") or ""))
+            or '{"pass": true, "unsupported_claims": [], "contradictions": [], "missing_materials": [], "language_issues": [], "repair_instructions": []}'
+        ),
+    )
+    base = {
+        "work_dir": tmp_path,
+        "chapter_number": 1,
+        "contract": {"title": "测试", "must_cover": []},
+        "allowed_evidence": [{"claim_id": "P01-V0001", "statement": "事实"}],
+        "generation_mode": service.FULL_MODE,
+    }
+    service._audit_chapter(chapter_text="候选一", **base)  # noqa: SLF001
+    service._audit_chapter(chapter_text="候选二", **base)  # noqa: SLF001
+
+    assert calls == ["chapter_audit:001", "chapter_audit:001"]
+
+
 def test_research_preview_audit_falls_back_when_provider_returns_non_json(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

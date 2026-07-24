@@ -33,6 +33,7 @@ PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
 NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v6"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
+CHAPTER_AUDIT_CACHE_VERSION = "chapter-audit-cache-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -64,7 +65,10 @@ EVIDENCE_CHUNK_CHARS = 24_000
 EVIDENCE_CHUNK_OVERLAP = 400
 MAX_EVIDENCE_PER_CHAPTER = 90
 MAX_CHAPTER_ATTEMPTS = 3
-PREVIEW_MAX_CHAPTER_ATTEMPTS = 7
+# Research previews are deliberately single-pass. A failed chapter is kept
+# for manual review instead of entering an opaque paid repair loop.
+PREVIEW_MAX_CHAPTER_ATTEMPTS = 1
+PREVIEW_AUTO_REPAIR = False
 OVERLAP_WINDOW = 36
 OVERLAP_SOURCE_STEP = 1
 OVERLAP_OUTPUT_STEP = 4
@@ -2433,13 +2437,29 @@ def _build_or_resume_chapter(
                 failed_candidate = dict(failed_payload.get("last_candidate") or {})
                 failed_text = str(failed_candidate.get("text") or "").strip()
                 failed_ids = tuple(str(value) for value in failed_candidate.get("used_claim_ids") or [])
+                failed_audit = dict(failed_payload.get("last_audit") or {})
                 allowed_ids = {str(item.get("claim_id") or "") for item in allowed_evidence}
+                # A failed candidate with content-level defects is not a safe
+                # resume base. Reusing it would trigger another paid audit
+                # and repair loop without adding evidence. Only checkpoint
+                # candidates that failed on a mechanical/evidence-map issue
+                # may be resumed.
+                has_content_issue = any(
+                    failed_audit.get(key)
+                    for key in (
+                        "unsupported_claims",
+                        "contradictions",
+                        "missing_materials",
+                        "language_issues",
+                    )
+                )
                 if (
                     failed_payload.get("artifact_key") == artifact_key
                     and failed_payload.get("contract") == contract
                     and int(target_chars * 0.88) <= count_text_chars(failed_text) <= int(target_chars * 1.12)
                     and failed_ids
                     and all(value in allowed_ids for value in failed_ids)
+                    and not has_content_issue
                 ):
                     candidate = failed_candidate
                     resumed_failed_candidate = True
@@ -2569,7 +2589,8 @@ def _build_or_resume_chapter(
         if attempt >= attempt_limit:
             break
         if (
-            generation_mode == RESEARCH_PREVIEW_MODE
+            PREVIEW_AUTO_REPAIR
+            and generation_mode == RESEARCH_PREVIEW_MODE
             and _can_apply_short_preview_expansion(
                 text=text,
                 audit=audit,
@@ -2628,7 +2649,8 @@ def _build_or_resume_chapter(
         )
         candidate = _parse_json_object(repaired)
     if (
-        generation_mode == RESEARCH_PREVIEW_MODE
+        PREVIEW_AUTO_REPAIR
+        and generation_mode == RESEARCH_PREVIEW_MODE
         and _can_apply_short_preview_expansion(
             text=str(candidate.get("text") or "").strip(),
             audit=last_audit,
@@ -2930,12 +2952,27 @@ def _audit_chapter(
     narrative_blueprint: dict[str, Any] | None = None,
     narrative_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    prompt_filename = (
+        "chapter_audit_research_preview.md"
+        if generation_mode == RESEARCH_PREVIEW_MODE
+        else "chapter_audit.md"
+    )
+    audit_key = _chapter_audit_cache_key(
+        chapter_number=chapter_number,
+        contract=contract,
+        allowed_evidence=allowed_evidence,
+        chapter_text=chapter_text,
+        generation_mode=generation_mode,
+        narrative_blueprint=narrative_blueprint,
+        narrative_profile=narrative_profile,
+        prompt_filename=prompt_filename,
+    )
+    cache_path = work_dir / "audits" / f"{chapter_number:03d}-{audit_key}.json"
+    cached = _load_chapter_audit_cache(cache_path, audit_key)
+    if cached is not None:
+        return cached
     prompt = _render_prompt(
-        (
-            "chapter_audit_research_preview.md"
-            if generation_mode == RESEARCH_PREVIEW_MODE
-            else "chapter_audit.md"
-        ),
+        prompt_filename,
         chapter_contract=json.dumps(contract, ensure_ascii=False),
         allowed_evidence=json.dumps(allowed_evidence, ensure_ascii=False),
         chapter_text=chapter_text,
@@ -3029,7 +3066,77 @@ def _audit_chapter(
         audit["fact_sentence_count"] = fact_count
         audit["mapped_fact_sentence_count"] = mapped_count
         audit["evidence_map"] = evidence_map
+    _atomic_write_json(
+        cache_path,
+        {
+            "cache_version": CHAPTER_AUDIT_CACHE_VERSION,
+            "audit_key": audit_key,
+            "policy_version": POLICY_VERSION,
+            "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+            "audit": audit,
+        },
+    )
     return audit
+
+
+def _chapter_audit_cache_key(
+    *,
+    chapter_number: int,
+    contract: dict[str, Any],
+    allowed_evidence: list[dict[str, Any]],
+    chapter_text: str,
+    generation_mode: str,
+    narrative_blueprint: dict[str, Any] | None,
+    narrative_profile: dict[str, Any] | None,
+    prompt_filename: str,
+) -> str:
+    """Return a versioned, exact-input key for paid chapter audits.
+
+    The candidate text hash is deliberately part of the key. A changed
+    character must be a new audit, while an unchanged candidate must never
+    be sent to Gemini/OpenAI again just because a repair loop was resumed.
+    """
+
+    prompt_path = PROMPT_DIR / prompt_filename
+    try:
+        prompt_hash = text_sha256(prompt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        prompt_hash = "missing-prompt"
+    payload = {
+        "cache_version": CHAPTER_AUDIT_CACHE_VERSION,
+        "policy_version": POLICY_VERSION,
+        "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+        "chapter_number": int(chapter_number),
+        "generation_mode": generation_mode,
+        "contract": contract,
+        "allowed_evidence": allowed_evidence,
+        "chapter_text_sha256": text_sha256(str(chapter_text or "")),
+        "narrative_blueprint": narrative_blueprint or {},
+        "narrative_profile": narrative_profile or {},
+        "prompt_filename": prompt_filename,
+        "prompt_sha256": prompt_hash,
+    }
+    return text_sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _load_chapter_audit_cache(path: Path, expected_key: str) -> dict[str, Any] | None:
+    if not path.exists() or path.stat().st_size <= 0:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("cache_version") != CHAPTER_AUDIT_CACHE_VERSION
+        or payload.get("audit_key") != expected_key
+        or payload.get("policy_version") != POLICY_VERSION
+        or payload.get("narrative_synthesis_version") != NARRATIVE_SYNTHESIS_VERSION
+    ):
+        return None
+    audit = payload.get("audit")
+    return dict(audit) if isinstance(audit, dict) else None
 
 
 def _chapter_deterministic_issues(
