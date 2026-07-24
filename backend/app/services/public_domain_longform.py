@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v1"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v2"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
@@ -2072,12 +2072,17 @@ def _build_book_plan(
         max_output_tokens=3000 if generation_mode == RESEARCH_PREVIEW_MODE else 9000,
         model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
-    allowed_claim_ids = {
-        str(item.get("claim_id") or "")
+    claim_catalog = {
+        str(item.get("claim_id") or ""): {
+            "source_id": str(digest.get("source_id") or ""),
+            "statement": str(item.get("statement") or "").strip(),
+            "qualifier": str(item.get("qualifier") or "").strip(),
+        }
         for digest in source_digests
         for item in digest.get("core_materials") or []
-        if str(item.get("claim_id") or "")
+        if str(item.get("claim_id") or "").strip()
     }
+    allowed_claim_ids = set(claim_catalog)
     plan = _normalize_plan(
         _parse_json_object(raw),
         source_reports,
@@ -2085,6 +2090,7 @@ def _build_book_plan(
         target_title,
         generation_mode=generation_mode,
         allowed_claim_ids=allowed_claim_ids,
+        claim_catalog=claim_catalog,
     )
     _atomic_write_json(
         path,
@@ -2101,6 +2107,7 @@ def _normalize_plan(
     *,
     generation_mode: str = FULL_MODE,
     allowed_claim_ids: set[str] | None = None,
+    claim_catalog: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     raw_chapters = [item for item in plan.get("chapters") or [] if isinstance(item, dict)]
     if len(raw_chapters) != dimensions.target_chapters:
@@ -2144,9 +2151,53 @@ def _normalize_plan(
             item for item in narrative_beats if item["description"] and item["claim_ids"]
         ][:8]
         if generation_mode == RESEARCH_PREVIEW_MODE:
+            # Planning models occasionally omit or truncate the nested beat array.
+            # Repair the structure only from the already verified primary-evidence
+            # ledger.  This is deliberately not a prose/model fallback: the exact
+            # verified statement becomes the beat, so no person, event, relation,
+            # cause, dialogue, or scene detail can be invented while making the
+            # downstream contract runnable.
+            existing_claim_ids = {
+                claim_id for item in narrative_beats for claim_id in item["claim_ids"]
+            }
+            catalog = claim_catalog or {}
+            preferred = [
+                claim_id
+                for claim_id, record in sorted(catalog.items())
+                if record.get("source_id") in selected
+                and record.get("statement")
+                and claim_id not in existing_claim_ids
+            ]
+            remaining = [
+                claim_id
+                for claim_id, record in sorted(catalog.items())
+                if record.get("statement")
+                and claim_id not in existing_claim_ids
+                and claim_id not in preferred
+            ]
+            candidates = preferred + remaining
+            if candidates:
+                offset = ((index - 1) * 3) % len(candidates)
+                candidates = candidates[offset:] + candidates[:offset]
+            for claim_id in candidates:
+                if len(narrative_beats) >= 3:
+                    break
+                record = catalog[claim_id]
+                narrative_beats.append(
+                    {
+                        "description": record["statement"][:260],
+                        "claim_ids": [claim_id],
+                        "boundary": (
+                            record.get("qualifier")
+                            or "只写该证据直接支持的事实，不补写场景、心理、对话或因果"
+                        )[:220],
+                    }
+                )
+                existing_claim_ids.add(claim_id)
             if len(narrative_beats) < 3:
                 raise PublicDomainQualityError(
-                    f"第 {index} 章至少需要 3 个由 claim_id 支持的叙事推进点。"
+                    f"第 {index} 章至少需要 3 个由 claim_id 支持的叙事推进点；"
+                    "核验账本也不足以安全补齐，禁止靠模型杜撰。"
                 )
             unknown_claim_ids = sorted(
                 {

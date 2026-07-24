@@ -406,6 +406,55 @@ def test_preview_plan_requires_evidence_bound_narrative_nonfiction() -> None:
     assert all(item["narrative_beats"][0]["claim_ids"] for item in plan["chapters"])
 
 
+def test_preview_plan_fills_missing_beats_only_from_verified_claim_catalog() -> None:
+    reports = build_source_reports(_sources(5))
+    dimensions = BookDimensions(10_000, 2, 10_000, 2)
+    raw = {
+        "title": "言语留下的路",
+        "book_premise": "只重组已经核验的古代原典事实。",
+        "narrative_thread": "沿不同原典事实所呈现的选择与后果逐章推进。",
+        "chapters": [
+            {
+                "title": f"第{index}章",
+                "source_ids": ["S01", "S02"],
+                "narrative_beats": [
+                    {
+                        "description": "模型唯一完整返回的推进点",
+                        "claim_ids": ["S01-V0001"],
+                        "boundary": "不补写",
+                    }
+                ],
+            }
+            for index in range(1, 3)
+        ],
+    }
+    catalog = {
+        "S01-V0001": {"source_id": "S01", "statement": "已核验事实一", "qualifier": ""},
+        "S01-V0002": {"source_id": "S01", "statement": "已核验事实二", "qualifier": "限定二"},
+        "S02-V0001": {"source_id": "S02", "statement": "已核验事实三", "qualifier": ""},
+        "S03-V0001": {"source_id": "S03", "statement": "已核验事实四", "qualifier": ""},
+    }
+
+    plan = service._normalize_plan(  # noqa: SLF001
+        raw,
+        reports,
+        dimensions,
+        None,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        allowed_claim_ids=set(catalog),
+        claim_catalog=catalog,
+    )
+
+    assert all(len(chapter["narrative_beats"]) == 3 for chapter in plan["chapters"])
+    added = plan["chapters"][0]["narrative_beats"][1:]
+    assert {item["description"] for item in added} <= {
+        "已核验事实二",
+        "已核验事实三",
+        "已核验事实四",
+    }
+    assert all(item["claim_ids"][0] in catalog for item in added)
+
+
 def test_preview_plan_rejects_fictional_people_and_events() -> None:
     reports = build_source_reports(_sources(5))
     dimensions = BookDimensions(10_000, 2, 10_000, 2)
