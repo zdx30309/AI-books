@@ -31,6 +31,7 @@ from app.utils.official_api import official_proxy
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
 NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v4"
+NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
@@ -2067,7 +2068,10 @@ def _build_book_plan(
         "target_direction": target_direction or "",
         "output_style": output_style or "",
         "generation_mode": generation_mode,
-        "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+        # Chapter-writing fixes must not invalidate a verified book plan.
+        # Keep the plan version independent so retries do not pay for or risk
+        # regenerating the same planning JSON.
+        "narrative_synthesis_version": NARRATIVE_PLAN_VERSION,
         "narrative_profile": narrative_profile or {},
     }
     expected_key = text_sha256(json.dumps(plan_input, ensure_ascii=False, sort_keys=True))
@@ -2099,7 +2103,7 @@ def _build_book_plan(
         action="book_plan",
         prompt=prompt,
         temperature=0.30 if generation_mode == RESEARCH_PREVIEW_MODE else 0.15,
-        max_output_tokens=3000 if generation_mode == RESEARCH_PREVIEW_MODE else 9000,
+        max_output_tokens=6000 if generation_mode == RESEARCH_PREVIEW_MODE else 9000,
         model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
     claim_catalog = {

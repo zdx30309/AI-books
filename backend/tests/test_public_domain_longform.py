@@ -841,6 +841,10 @@ def test_preview_plan_cache_is_invalidated_by_narrative_profile(
     assert len(calls) == 2
 
 
+def test_preview_plan_cache_version_is_independent_from_chapter_writer_version() -> None:
+    assert service.NARRATIVE_PLAN_VERSION != service.NARRATIVE_SYNTHESIS_VERSION
+
+
 def test_post_edit_audit_reuses_only_exact_accepted_hash(tmp_path: Path) -> None:
     manuscript = "已通过的独立公版融合终稿"
     (tmp_path / "quality_report.json").write_text(
