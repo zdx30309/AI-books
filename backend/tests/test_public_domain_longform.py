@@ -307,6 +307,13 @@ def test_research_preview_repair_uses_openai_writer_directly(
     assert fallback_actions == ["chapter_repair:003:attempt1"]
 
 
+def test_json_parser_repairs_only_common_wrapper_errors() -> None:
+    assert service._parse_json_object('{"title":"ok",}')["title"] == "ok"  # noqa: SLF001
+    assert service._parse_json_object('{"title":"ok"')["title"] == "ok"  # noqa: SLF001
+    with pytest.raises(ValueError):
+        service._parse_json_object('{"title":"unterminated')  # noqa: SLF001
+
+
 def test_research_preview_source_gate_uses_global_diversity_not_every_title() -> None:
     reports = tuple(
         service.SourceReport(

@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v5"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v6"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
@@ -3714,12 +3714,75 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     value = re.sub(r"\s*```$", "", value)
     start = value.find("{")
     end = value.rfind("}")
-    if start < 0 or end <= start:
+    if start < 0:
         raise ValueError("模型输出不含完整 JSON 对象")
-    payload = json.loads(value[start : end + 1])
+    value = value[start : end + 1] if end > start else value[start:]
+    last_error: json.JSONDecodeError | None = None
+    payload: Any = None
+    for candidate in _json_repair_candidates(value):
+        try:
+            payload = json.loads(candidate)
+            break
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    else:
+        raise ValueError(f"模型输出不是合法 JSON: {last_error}")
     if not isinstance(payload, dict):
         raise ValueError("模型 JSON 顶层必须为对象")
     return payload
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    """Repair only common JSON framing errors; never alter prose semantics."""
+
+    candidates = [text]
+    repaired = re.sub(r",\s*([}\]])", r"\1", text)
+    repaired = re.sub(r"([}\]])\s*(?=[{\[])", r"\1,", repaired)
+    repaired = re.sub(
+        r"([}\]\"0-9])\s*\n\s*(\"[A-Za-z_][A-Za-z0-9_]*\"\s*:)",
+        r"\1,\n\2",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(true|false|null)\s*\n\s*(\"[A-Za-z_][A-Za-z0-9_]*\"\s*:)",
+        r"\1,\n\2",
+        repaired,
+    )
+    repaired = re.sub(
+        r"([}\]\"0-9])\s*\n\s*(\"[^\"\n]+\"\s*(?:,|\]))",
+        r"\1,\n\2",
+        repaired,
+    )
+    if repaired != text:
+        candidates.append(repaired)
+    balanced = _balance_json_tail(repaired)
+    if balanced != repaired:
+        candidates.append(balanced)
+    return list(dict.fromkeys(candidates))
+
+
+def _balance_json_tail(text: str) -> str:
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char in "{[":
+            stack.append(char)
+        elif char in "}]" and stack:
+            stack.pop()
+    suffix = "".join("}" if char == "{" else "]" for char in reversed(stack))
+    return text + suffix
 
 
 def _load_versioned_artifact(path: Path, expected_key: str) -> dict[str, Any] | None:
