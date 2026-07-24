@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v3"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v4"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
@@ -2549,6 +2549,29 @@ def _build_or_resume_chapter(
             return chapter
         if attempt >= attempt_limit:
             break
+        if (
+            generation_mode == RESEARCH_PREVIEW_MODE
+            and _can_apply_short_preview_expansion(
+                text=text,
+                audit=audit,
+                deterministic_issues=deterministic,
+                minimum_chars=minimum_chars,
+            )
+        ):
+            expanded = _expand_short_preview_candidate(
+                work_dir=work_dir,
+                chapter_number=chapter_number,
+                candidate=candidate,
+                contract=contract,
+                allowed_evidence=evidence_payload,
+                minimum_chars=minimum_chars,
+                maximum_chars=maximum_chars,
+                narrative_blueprint=narrative_blueprint,
+                narrative_profile=narrative_profile,
+            )
+            if expanded is not None:
+                candidate = expanded
+                continue
         repair_source, repair_audit = _select_chapter_repair_source(
             candidate=candidate,
             audit=audit,
@@ -2598,6 +2621,132 @@ def _build_or_resume_chapter(
     raise PublicDomainQualityError(
         f"第 {chapter_number} 章在 {attempt_limit} 次内未同时通过事实、篇幅、来源重合与语言闸门。"
     )
+
+
+def _can_apply_short_preview_expansion(
+    *,
+    text: str,
+    audit: dict[str, Any],
+    deterministic_issues: list[str],
+    minimum_chars: int,
+) -> bool:
+    """Use a narrow continuation only when length is the sole failing gate."""
+
+    current_chars = count_text_chars(text)
+    if current_chars < int(minimum_chars * 0.72) or current_chars >= minimum_chars:
+        return False
+    for key in ("unsupported_claims", "contradictions", "missing_materials", "language_issues"):
+        if audit.get(key):
+            return False
+    return bool(deterministic_issues) and all(
+        _is_length_only_issue(str(issue)) for issue in deterministic_issues
+    )
+
+
+def _is_length_only_issue(issue: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(issue or ""))
+    return (
+        ("字数" in normalized or "有效字" in normalized or "长度" in normalized)
+        and ("必须" in normalized or "范围" in normalized or "比例" in normalized)
+    )
+
+
+def _expand_short_preview_candidate(
+    *,
+    work_dir: Path,
+    chapter_number: int,
+    candidate: dict[str, Any],
+    contract: dict[str, Any],
+    allowed_evidence: list[dict[str, Any]],
+    minimum_chars: int,
+    maximum_chars: int,
+    narrative_blueprint: dict[str, Any] | None,
+    narrative_profile: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Insert a small evidence-bound passage instead of rewriting a safe chapter.
+
+    The returned candidate is never accepted here. It re-enters the complete
+    deterministic and model audit on the next loop, so this optimization cannot
+    bypass fact, modern-source, overlap, or language gates.
+    """
+
+    current_text = str(candidate.get("text") or "").strip()
+    current_chars = count_text_chars(current_text)
+    if not current_text or current_chars >= minimum_chars:
+        return None
+
+    allowed_by_id = {
+        str(item.get("claim_id") or ""): item
+        for item in allowed_evidence
+        if str(item.get("claim_id") or "")
+    }
+    used_ids = tuple(
+        dict.fromkeys(str(value) for value in candidate.get("used_claim_ids") or [])
+    )
+    used_id_set = set(used_ids)
+    unused_evidence = [
+        item
+        for claim_id, item in allowed_by_id.items()
+        if claim_id not in used_id_set
+    ]
+    if not unused_evidence:
+        return None
+
+    desired_additional_chars = min(
+        max(180, int(contract.get("target_chars") or minimum_chars) - current_chars + 120),
+        max(180, maximum_chars - current_chars - 40),
+    )
+    prompt = _render_prompt(
+        "chapter_expand_research_preview.md",
+        chapter_contract=json.dumps(contract, ensure_ascii=False),
+        unused_evidence=json.dumps(unused_evidence[:16], ensure_ascii=False),
+        chapter_text=current_text,
+        current_chars=current_chars,
+        minimum_chars=minimum_chars,
+        maximum_chars=maximum_chars,
+        desired_additional_chars=desired_additional_chars,
+        narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
+        narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
+    )
+    raw = _call_openai_preview_writer(
+        work_dir,
+        action=f"chapter_expand:{chapter_number:03d}",
+        prompt=prompt,
+        max_output_tokens=2_400,
+    )
+    try:
+        patch = _parse_json_object(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    insertion = str(patch.get("insertion") or "").strip()
+    patch_ids = tuple(
+        dict.fromkeys(str(value) for value in patch.get("used_claim_ids") or [])
+    )
+    if (
+        not insertion
+        or not patch_ids
+        or any(claim_id not in allowed_by_id for claim_id in patch_ids)
+        or count_text_chars(insertion) < 120
+    ):
+        return None
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", current_text)
+        if paragraph.strip()
+    ]
+    if len(paragraphs) >= 2:
+        merged_text = "\n\n".join([*paragraphs[:-1], insertion, paragraphs[-1]])
+    else:
+        merged_text = f"{current_text}\n\n{insertion}"
+    merged_chars = count_text_chars(merged_text)
+    if merged_chars > maximum_chars or merged_chars <= current_chars:
+        return None
+    return {
+        **candidate,
+        "text": merged_text,
+        "used_claim_ids": list(dict.fromkeys([*used_ids, *patch_ids])),
+    }
 
 
 def _select_chapter_repair_source(

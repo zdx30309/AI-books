@@ -183,6 +183,82 @@ def test_research_preview_rolls_back_truncated_repair_candidate() -> None:
     assert audit is stale_audit
 
 
+def test_short_preview_expansion_requires_length_as_the_only_issue() -> None:
+    safe_audit = {
+        "unsupported_claims": [],
+        "contradictions": [],
+        "missing_materials": [],
+        "language_issues": [],
+    }
+    assert service._can_apply_short_preview_expansion(  # noqa: SLF001
+        text="正文" * 1_350,
+        audit=safe_audit,
+        deterministic_issues=["正文有效字数 2700，必须在 2933–3734 字之间"],
+        minimum_chars=2_933,
+    )
+    assert not service._can_apply_short_preview_expansion(  # noqa: SLF001
+        text="正文" * 1_350,
+        audit={**safe_audit, "unsupported_claims": ["新增事实"]},
+        deterministic_issues=["正文有效字数 2700，必须在 2933–3734 字之间"],
+        minimum_chars=2_933,
+    )
+    assert not service._can_apply_short_preview_expansion(  # noqa: SLF001
+        text="正文" * 1_350,
+        audit=safe_audit,
+        deterministic_issues=["出现现代来源书名"],
+        minimum_chars=2_933,
+    )
+
+
+def test_short_preview_expansion_uses_only_unused_verified_claims(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original = "第一段说明已经核验的事实。" * 100 + "\n\n结尾保留余意。"
+    allowed = [
+        {"claim_id": "P01-V0001", "statement": "已使用事实"},
+        {"claim_id": "P02-V0001", "statement": "未使用事实"},
+    ]
+    captured_prompts: list[str] = []
+
+    def fake_writer(*_args, **kwargs) -> str:
+        captured_prompts.append(str(kwargs["prompt"]))
+        return json.dumps(
+            {
+                "insertion": "新增段落只推进未使用事实。" * 20,
+                "used_claim_ids": ["P02-V0001"],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(service, "_call_openai_preview_writer", fake_writer)
+    result = service._expand_short_preview_candidate(  # noqa: SLF001
+        work_dir=tmp_path,
+        chapter_number=1,
+        candidate={
+            "title": "章名",
+            "text": original,
+            "summary": "摘要",
+            "used_claim_ids": ["P01-V0001"],
+        },
+        contract={"target_chars": 2_600},
+        allowed_evidence=allowed,
+        minimum_chars=2_300,
+        maximum_chars=3_000,
+        narrative_blueprint={},
+        narrative_profile={},
+    )
+
+    assert result is not None
+    assert result["used_claim_ids"] == ["P01-V0001", "P02-V0001"]
+    assert result["text"].endswith("结尾保留余意。")
+    assert "P02-V0001" in captured_prompts[0]
+    unused_section = captured_prompts[0].split(
+        "尚未使用的已核验古代原典证据：", 1
+    )[-1].split("当前章节：", 1)[0]
+    assert "P01-V0001" not in unused_section
+
+
 def test_research_preview_repair_uses_openai_writer_directly(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -671,6 +747,7 @@ def test_all_longform_prompts_live_in_template_files() -> None:
         "chapter_writer_research_preview.md",
         "chapter_audit_research_preview.md",
         "chapter_repair_research_preview.md",
+        "chapter_expand_research_preview.md",
         "final_audit_research_preview.md",
         "primary_source_verification.md",
     }
