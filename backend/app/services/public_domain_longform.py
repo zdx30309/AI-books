@@ -30,7 +30,7 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
-NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v2"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v3"
 NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
@@ -101,6 +101,36 @@ _ACADEMIC_NARRATIVE_MARKERS = (
     "该段能确认",
     "综合上述",
     "总而言之",
+    "文字没有",
+    "材料没有",
+    "经文没有",
+    "原典没有",
+    "没有展开",
+    "没有补写",
+    "没有被写",
+    "没有另写",
+    "不能被合成",
+    "事实边界",
+    "传本位置",
+    "题下署",
+    "題下署",
+    "一处论述",
+    "一處論述",
+    "这一处材料",
+    "這一處材料",
+    "同一处材料",
+    "同一處材料",
+    "另一处材料",
+    "另一處材料",
+    "不同文本",
+    "不同材料",
+    "各自出现在",
+    "不替另一",
+    "没有要求读者",
+    "沒有要求讀者",
+    "没有进一步叙述",
+    "沒有進一步敘述",
+    "不需要把",
 )
 _ACADEMIC_ATTRIBUTION_TERMS = (
     "原典",
@@ -2177,10 +2207,10 @@ def _normalize_plan(
             ]
             candidates = preferred + remaining
             if candidates:
-                offset = ((index - 1) * 3) % len(candidates)
+                offset = ((index - 1) * 6) % len(candidates)
                 candidates = candidates[offset:] + candidates[:offset]
             for claim_id in candidates:
-                if len(narrative_beats) >= 3:
+                if len(narrative_beats) >= 6:
                     break
                 record = catalog[claim_id]
                 narrative_beats.append(
@@ -2194,9 +2224,9 @@ def _normalize_plan(
                     }
                 )
                 existing_claim_ids.add(claim_id)
-            if len(narrative_beats) < 3:
+            if len(narrative_beats) < 6:
                 raise PublicDomainQualityError(
-                    f"第 {index} 章至少需要 3 个由 claim_id 支持的叙事推进点；"
+                    f"第 {index} 章至少需要 6 个由 claim_id 支持的叙事推进点；"
                     "核验账本也不足以安全补齐，禁止靠模型杜撰。"
                 )
             unknown_claim_ids = sorted(
@@ -2429,14 +2459,21 @@ def _build_or_resume_chapter(
             narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
             narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
         )
-        raw = _call_llm(
-            work_dir,
-            action=f"chapter_write:{chapter_number:03d}",
-            prompt=prompt,
-            temperature=0.65 if generation_mode == RESEARCH_PREVIEW_MODE else 0.35,
-            max_output_tokens=_chapter_tokens(target_chars),
-            model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
-        )
+        if generation_mode == RESEARCH_PREVIEW_MODE:
+            raw = _call_openai_preview_writer(
+                work_dir,
+                action=f"chapter_write:{chapter_number:03d}",
+                prompt=prompt,
+                max_output_tokens=_chapter_tokens(target_chars),
+            )
+        else:
+            raw = _call_llm(
+                work_dir,
+                action=f"chapter_write:{chapter_number:03d}",
+                prompt=prompt,
+                temperature=0.35,
+                max_output_tokens=_chapter_tokens(target_chars),
+            )
         candidate = _parse_json_object(raw)
     last_audit: dict[str, Any] = {}
     attempt_limit = (
@@ -2602,12 +2639,12 @@ def _call_chapter_repair_model(
     """Call a repair model without losing a chapter on provider failure.
 
     A preview repair is recoverable work: the paid candidate and its audit are
-    already checkpointed. If DeepSeek times out, is rate-limited, or reaches its
-    token ceiling, use the configured OpenAI preview writer for the same bounded
-    repair. Full production mode keeps its original fail-fast behavior.
+    already checkpointed.  Use the configured OpenAI preview writer for the
+    evidence-bound prose repair; full production mode keeps its original
+    fail-fast DeepSeek behavior.
     """
 
-    if generation_mode == RESEARCH_PREVIEW_MODE and prefer_openai:
+    if generation_mode == RESEARCH_PREVIEW_MODE:
         return _call_openai_preview_writer(
             work_dir,
             action=action,
@@ -2769,8 +2806,11 @@ def _chapter_deterministic_issues(
     unknown_ids = [value for value in used_claim_ids if value not in allowed_ids]
     if unknown_ids:
         issues.append(f"used_claim_ids 含未授权证据：{', '.join(unknown_ids[:8])}")
-    if len([value for value in used_claim_ids if value in allowed_ids]) < 4:
-        issues.append("至少要明确使用 4 条允许证据，不能靠空泛扩写凑篇幅")
+    minimum_evidence = 6 if require_narrative_nonfiction else 4
+    if len([value for value in used_claim_ids if value in allowed_ids]) < minimum_evidence:
+        issues.append(
+            f"至少要明确使用 {minimum_evidence} 条允许证据，不能靠空泛扩写凑篇幅"
+        )
     required_claim_ids = {
         str(claim_id).strip()
         for beat in (contract.get("narrative_beats") or [])
@@ -2863,7 +2903,11 @@ def _narrative_nonfiction_form_metrics(text: str) -> dict[str, Any]:
     }
 
 
-def _narrative_nonfiction_form_issues(text: str) -> list[str]:
+def _narrative_nonfiction_form_issues(
+    text: str,
+    *,
+    whole_book: bool = False,
+) -> list[str]:
     metrics = _narrative_nonfiction_form_metrics(text)
     issues: list[str] = []
     if metrics["academic_marker_counts"]:
@@ -2875,7 +2919,7 @@ def _narrative_nonfiction_form_issues(text: str) -> list[str]:
             "正文以原典归属和证据边界代替叙事："
             f"归属词 {metrics['academic_attribution_count']} 次，最多允许 {attribution_limit} 次"
         )
-    if metrics["book_title_mentions"] > 1:
+    if not whole_book and metrics["book_title_mentions"] > 1:
         issues.append(
             f"单章出现 {metrics['book_title_mentions']} 处书名号文献归属，叙事正文最多允许 1 处"
         )
@@ -2938,7 +2982,7 @@ def _run_final_gate(
                 approved_primary_titles={item.title for item in source_reports},
             )
         )
-        blocking.extend(_narrative_nonfiction_form_issues(body))
+        blocking.extend(_narrative_nonfiction_form_issues(body, whole_book=True))
 
     source_usage: dict[str, int] = {item.source_id: 0 for item in source_reports}
     source_chapter_usage: dict[str, set[int]] = {item.source_id: set() for item in source_reports}
@@ -3418,7 +3462,7 @@ def _call_openai_preview_writer(
     prompt: str,
     max_output_tokens: int,
 ) -> str:
-    """Use the configured official OpenAI writer only after preview repairs stagnate."""
+    """Use the configured official OpenAI writer for evidence-bound preview prose."""
     from app.services.content_engine import _openai_writer_call
 
     started = time.monotonic()
@@ -3427,7 +3471,7 @@ def _call_openai_preview_writer(
         "at": datetime.now(timezone.utc).isoformat(),
         "policy_version": POLICY_VERSION,
         "action": action,
-        "provider": "openai-preview-writer-fallback",
+        "provider": "openai-preview-writer",
         "model": model,
         "input_chars": len(prompt),
         "max_output_tokens": max_output_tokens,

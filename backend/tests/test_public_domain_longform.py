@@ -183,7 +183,7 @@ def test_research_preview_rolls_back_truncated_repair_candidate() -> None:
     assert audit is stale_audit
 
 
-def test_research_preview_repair_falls_back_when_deepseek_fails(
+def test_research_preview_repair_uses_openai_writer_directly(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -384,6 +384,9 @@ def test_preview_plan_requires_evidence_bound_narrative_nonfiction() -> None:
                     {"description": "事实一", "claim_ids": ["S01-V0001"], "boundary": "不补心理"},
                     {"description": "事实二", "claim_ids": ["S02-V0001"], "boundary": "不补对话"},
                     {"description": "事实三", "claim_ids": ["S01-V0002"], "boundary": "不补因果"},
+                    {"description": "事实四", "claim_ids": ["S02-V0002"], "boundary": "不补场景"},
+                    {"description": "事实五", "claim_ids": ["S01-V0003"], "boundary": "不补关系"},
+                    {"description": "事实六", "claim_ids": ["S02-V0003"], "boundary": "不补评价"},
                 ],
                 "evidence_function": "形成事实推进，不逐条讲解",
             }
@@ -397,12 +400,19 @@ def test_preview_plan_requires_evidence_bound_narrative_nonfiction() -> None:
         dimensions,
         None,
         generation_mode=service.RESEARCH_PREVIEW_MODE,
-        allowed_claim_ids={"S01-V0001", "S02-V0001", "S01-V0002"},
+        allowed_claim_ids={
+            "S01-V0001",
+            "S01-V0002",
+            "S01-V0003",
+            "S02-V0001",
+            "S02-V0002",
+            "S02-V0003",
+        },
     )
 
     assert plan["narrative_mode"] == "verified_narrative_nonfiction"
     assert "fictional_characters" not in plan
-    assert all(len(item["narrative_beats"]) == 3 for item in plan["chapters"])
+    assert all(len(item["narrative_beats"]) == 6 for item in plan["chapters"])
     assert all(item["narrative_beats"][0]["claim_ids"] for item in plan["chapters"])
 
 
@@ -433,6 +443,8 @@ def test_preview_plan_fills_missing_beats_only_from_verified_claim_catalog() -> 
         "S01-V0002": {"source_id": "S01", "statement": "已核验事实二", "qualifier": "限定二"},
         "S02-V0001": {"source_id": "S02", "statement": "已核验事实三", "qualifier": ""},
         "S03-V0001": {"source_id": "S03", "statement": "已核验事实四", "qualifier": ""},
+        "S04-V0001": {"source_id": "S04", "statement": "已核验事实五", "qualifier": ""},
+        "S05-V0001": {"source_id": "S05", "statement": "已核验事实六", "qualifier": ""},
     }
 
     plan = service._normalize_plan(  # noqa: SLF001
@@ -445,12 +457,14 @@ def test_preview_plan_fills_missing_beats_only_from_verified_claim_catalog() -> 
         claim_catalog=catalog,
     )
 
-    assert all(len(chapter["narrative_beats"]) == 3 for chapter in plan["chapters"])
+    assert all(len(chapter["narrative_beats"]) == 6 for chapter in plan["chapters"])
     added = plan["chapters"][0]["narrative_beats"][1:]
     assert {item["description"] for item in added} <= {
         "已核验事实二",
         "已核验事实三",
         "已核验事实四",
+        "已核验事实五",
+        "已核验事实六",
     }
     assert all(item["claim_ids"][0] in catalog for item in added)
 
@@ -504,17 +518,38 @@ def test_narrative_nonfiction_gate_rejects_paper_and_source_catalogue_voice() ->
 def test_narrative_nonfiction_gate_accepts_plain_independent_prose_without_quotes() -> None:
     text = "\n".join(
         [
-            "事情从一个已经确认的问题开始。这里没有必要替古人补写当时的天气。",
-            "能够确定的行为先写下来，不能确定的动机留在空处。",
-            "另一条材料把问题推向了言语与后果，但没有说明两件事发生在同一天。",
-            "两条记录因此分开叙述。它们彼此照见，却不被拼成一个场面。",
-            "有些事实适合慢慢展开，有些事实说到这里就够了。",
-            "读者可以看到选择的差异，正文不替真实人物制造一句对白。",
-            "这一节停在已经确认的事实边界上，余下的判断留给下一节。",
+            "事情从一次已经发生的选择开始，言语出口之后，人的处境也随之改变。",
+            "另一个人停住了原本会造成伤害的行为，选择因此有了看得见的分量。",
+            "有些转折来得很快，前一刻仍在犹疑，下一刻便要承担自己的决定。",
+            "长句把前因慢慢铺开，短句只留下结果。没有人替当事人作答。",
+            "读者看到的是几种不同选择，它们并排存在，又各自通向不同后果。",
+            "到了最后，最具体的行动仍留在那里，判断反而可以稍后再来。",
+            "那个人停下脚步。事情也就在这个动作上换了方向。",
         ]
     ) * 40
 
     assert service._narrative_nonfiction_form_issues(text) == []  # noqa: SLF001
+
+
+def test_narrative_nonfiction_gate_rejects_visible_safety_boundary_commentary() -> None:
+    text = (
+        "这一处材料只留下题下署名，文字没有展开当时场景。"
+        "同一处材料也没有补写人物心理，事实边界停在传本位置。"
+    ) * 40
+
+    issues = service._narrative_nonfiction_form_issues(text)  # noqa: SLF001
+
+    assert any("论文/资料汇编" in item for item in issues)
+
+
+def test_whole_book_form_gate_does_not_treat_one_title_per_chapter_as_single_chapter_overuse() -> None:
+    text = ("第一章偶尔出现《甲经》，其余正文自然推进。\n" * 80) + (
+        "第二章偶尔出现《乙经》，其余正文自然推进。\n" * 80
+    )
+
+    issues = service._narrative_nonfiction_form_issues(text, whole_book=True)  # noqa: SLF001
+
+    assert not any("单章出现" in item for item in issues)
 
 
 def test_narrative_nonfiction_gate_rejects_direct_dialogue_without_quote_evidence() -> None:
@@ -687,6 +722,9 @@ def test_preview_plan_cache_is_invalidated_by_narrative_profile(
                             {"description": "事实一", "claim_ids": ["S01-V0001"], "boundary": "不补心理"},
                             {"description": "事实二", "claim_ids": ["S02-V0001"], "boundary": "不补对话"},
                             {"description": "事实三", "claim_ids": ["S01-V0002"], "boundary": "不补因果"},
+                            {"description": "事实四", "claim_ids": ["S02-V0002"], "boundary": "不补场景"},
+                            {"description": "事实五", "claim_ids": ["S01-V0003"], "boundary": "不补关系"},
+                            {"description": "事实六", "claim_ids": ["S02-V0003"], "boundary": "不补评价"},
                         ],
                         "evidence_function": "限制思想边界",
                     }
@@ -704,9 +742,12 @@ def test_preview_plan_cache_is_invalidated_by_narrative_profile(
             {
                 "source_id": "S01",
                 "core_materials": [
-                    {"claim_id": "S01-V0001"},
-                    {"claim_id": "S01-V0002"},
-                    {"claim_id": "S02-V0001"},
+                    {"claim_id": "S01-V0001", "statement": "事实一"},
+                    {"claim_id": "S01-V0002", "statement": "事实三"},
+                    {"claim_id": "S01-V0003", "statement": "事实五"},
+                    {"claim_id": "S02-V0001", "statement": "事实二"},
+                    {"claim_id": "S02-V0002", "statement": "事实四"},
+                    {"claim_id": "S02-V0003", "statement": "事实六"},
                 ],
             }
         ],
