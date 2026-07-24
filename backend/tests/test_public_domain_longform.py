@@ -124,6 +124,9 @@ def test_research_preview_audit_falls_back_when_provider_returns_non_json(
                 "missing_materials": [],
                 "language_issues": [],
                 "repair_instructions": [],
+                "fact_sentence_count": 1,
+                "mapped_fact_sentence_count": 1,
+                "evidence_map": [{"fact": "候选正文", "claim_ids": ["P01-V0001"]}],
             }
         )
 
@@ -132,7 +135,7 @@ def test_research_preview_audit_falls_back_when_provider_returns_non_json(
         work_dir=tmp_path,
         chapter_number=1,
         contract={"title": "第一章", "must_cover": []},
-        allowed_evidence=[],
+        allowed_evidence=[{"claim_id": "P01-V0001"}],
         chapter_text="候选正文",
         generation_mode=service.RESEARCH_PREVIEW_MODE,
     )
@@ -353,6 +356,182 @@ def test_plan_normalization_enforces_exact_length_and_every_source_twice() -> No
         assert sum(source_id in item["source_ids"] for item in plan["chapters"]) >= 2
 
 
+def test_preview_plan_requires_evidence_bound_narrative_nonfiction() -> None:
+    reports = build_source_reports(_sources(5))
+    dimensions = BookDimensions(
+        target_chars=10_000,
+        target_chapters=3,
+        median_source_chars=10_000,
+        median_source_chapters=3,
+    )
+    raw = {
+        "title": "言语留下的路",
+        "summary": "从古代原典已经确认的事实出发，观察言语、选择与修行之间的关系。",
+        "central_question": "人在言语造成的后果面前如何重新选择",
+        "book_premise": "只重组古代原典核验事实，不新增人物与事件。",
+        "narrative_thread": "沿言语、心念和行为三条线逐章推进。",
+        "chapters": [
+            {
+                "number": index,
+                "title": f"雨声{index}",
+                "purpose": "推进全书问题",
+                "source_ids": ["S01", "S02"],
+                "topics": ["言语"],
+                "must_cover": ["已核验事实边界"],
+                "must_not_claim": ["不冒充历史"],
+                "narrative_goal": "让真实材料自然推进",
+                "narrative_beats": [
+                    {"description": "事实一", "claim_ids": ["S01-V0001"], "boundary": "不补心理"},
+                    {"description": "事实二", "claim_ids": ["S02-V0001"], "boundary": "不补对话"},
+                    {"description": "事实三", "claim_ids": ["S01-V0002"], "boundary": "不补因果"},
+                ],
+                "evidence_function": "形成事实推进，不逐条讲解",
+            }
+            for index in range(1, 4)
+        ],
+    }
+
+    plan = service._normalize_plan(  # noqa: SLF001
+        raw,
+        reports,
+        dimensions,
+        None,
+        generation_mode=service.RESEARCH_PREVIEW_MODE,
+        allowed_claim_ids={"S01-V0001", "S02-V0001", "S01-V0002"},
+    )
+
+    assert plan["narrative_mode"] == "verified_narrative_nonfiction"
+    assert "fictional_characters" not in plan
+    assert all(len(item["narrative_beats"]) == 3 for item in plan["chapters"])
+    assert all(item["narrative_beats"][0]["claim_ids"] for item in plan["chapters"])
+
+
+def test_preview_plan_rejects_fictional_people_and_events() -> None:
+    reports = build_source_reports(_sources(5))
+    dimensions = BookDimensions(10_000, 2, 10_000, 2)
+    raw = {
+        "title": "错误计划",
+        "book_premise": "虚构故事",
+        "narrative_thread": "虚构推进",
+        "fictional_characters": [{"name": "某甲"}],
+        "chapters": [{"title": "一"}, {"title": "二"}],
+    }
+
+    with pytest.raises(service.PublicDomainQualityError, match="不得包含虚构"):
+        service._normalize_plan(  # noqa: SLF001
+            raw,
+            reports,
+            dimensions,
+            None,
+            generation_mode=service.RESEARCH_PREVIEW_MODE,
+        )
+
+
+def test_narrative_profile_contains_only_anonymous_aggregate_statistics(tmp_path: Path) -> None:
+    items = _sources(5)
+    reports = build_source_reports(items)
+    profile = service._build_narrative_mechanism_profile(items, reports, tmp_path)  # noqa: SLF001
+    serialized = json.dumps(profile, ensure_ascii=False)
+
+    assert profile["version"] == service.NARRATIVE_PROFILE_VERSION
+    assert profile["contains_raw_text"] is False
+    assert profile["contains_source_identity"] is False
+    assert all(item.title not in serialized and item.author not in serialized for item in items)
+    assert "来源1记录事项" not in serialized
+
+
+def test_narrative_nonfiction_gate_rejects_paper_and_source_catalogue_voice() -> None:
+    text = (
+        "本章依据《十不善业道经》展开讨论。原典所能确认的是妄语位于语业之首。"
+        "据《华严经》记载，本章讨论另一组次序。综合上述，可以确认本章结论。"
+    ) * 20
+
+    issues = service._narrative_nonfiction_form_issues(text)  # noqa: SLF001
+
+    assert any("论文/资料汇编" in item for item in issues)
+    assert any("书名号" in item for item in issues)
+
+
+def test_narrative_nonfiction_gate_accepts_plain_independent_prose_without_quotes() -> None:
+    text = "\n".join(
+        [
+            "事情从一个已经确认的问题开始。这里没有必要替古人补写当时的天气。",
+            "能够确定的行为先写下来，不能确定的动机留在空处。",
+            "另一条材料把问题推向了言语与后果，但没有说明两件事发生在同一天。",
+            "两条记录因此分开叙述。它们彼此照见，却不被拼成一个场面。",
+            "有些事实适合慢慢展开，有些事实说到这里就够了。",
+            "读者可以看到选择的差异，正文不替真实人物制造一句对白。",
+            "这一节停在已经确认的事实边界上，余下的判断留给下一节。",
+        ]
+    ) * 40
+
+    assert service._narrative_nonfiction_form_issues(text) == []  # noqa: SLF001
+
+
+def test_narrative_nonfiction_gate_rejects_direct_dialogue_without_quote_evidence() -> None:
+    text = ("事情已经有记录。\n“我当时就是这样想的。”\n其余事实仍按边界叙述。\n" * 200)
+
+    issues = service._narrative_nonfiction_form_issues(text)  # noqa: SLF001
+
+    assert any("直接引语" in item for item in issues)
+
+
+def test_narrative_beats_force_exact_claims_into_chapter_evidence() -> None:
+    evidence = [
+        {
+            "claim_id": f"P01-V{index:04d}",
+            "source_id": "P01",
+            "statement": "普通材料" if index < 20 else "与章节主题完全无关但被计划明确绑定",
+            "qualifier": "",
+            "importance": 1,
+        }
+        for index in range(1, 21)
+    ]
+    reports = (
+        service.SourceReport("P01", "古代原典", "古代原典", 0, 0, "古代原典", "hash"),
+    )
+    contract = {
+        "number": 1,
+        "title": "普通主题",
+        "source_ids": ["P01"],
+        "narrative_beats": [
+            {"description": "必须使用的推进点", "claim_ids": ["P01-V0020"]}
+        ],
+    }
+
+    selected = service._select_chapter_evidence(contract, evidence, reports)  # noqa: SLF001
+
+    assert selected[0]["claim_id"] == "P01-V0020"
+
+
+def test_chapter_gate_rejects_missing_planned_claim_mapping() -> None:
+    contract = {
+        "narrative_beats": [
+            {"description": "必须覆盖", "claim_ids": ["P01-V0005"]}
+        ]
+    }
+    allowed = [
+        {
+            "claim_id": f"P01-V{index:04d}",
+            "evidence_status": "verified_primary",
+            "generation_eligible": True,
+        }
+        for index in range(1, 6)
+    ]
+
+    issues = service._chapter_deterministic_issues(  # noqa: SLF001
+        text="一段只用于验证证据覆盖的正文。" * 20,
+        contract=contract,
+        target_chars=260,
+        used_claim_ids=("P01-V0001", "P01-V0002", "P01-V0003", "P01-V0004"),
+        allowed_evidence=allowed,
+        overlap_indexes=[],
+        require_narrative_nonfiction=True,
+    )
+
+    assert any("P01-V0005" in item for item in issues)
+
+
 def test_exact_source_copy_is_blocked_but_independent_text_is_not() -> None:
     items = _sources()
     copied = check_final_manuscript(items[0].text, items)
@@ -412,6 +591,87 @@ def test_all_longform_prompts_live_in_template_files() -> None:
         "primary_source_verification.md",
     }
     assert expected <= {path.name for path in service.PROMPT_DIR.glob("*.md")}
+
+
+def test_preview_prompts_enforce_verified_narrative_without_modern_sources() -> None:
+    plan_prompt = (service.PROMPT_DIR / "book_plan_research_preview.md").read_text(encoding="utf-8")
+    writer_prompt = (service.PROMPT_DIR / "chapter_writer_research_preview.md").read_text(encoding="utf-8")
+    audit_prompt = (service.PROMPT_DIR / "chapter_audit_research_preview.md").read_text(encoding="utf-8")
+
+    assert '"narrative_mode": "verified_narrative_nonfiction"' in plan_prompt
+    assert "多书聚合叙事统计" in plan_prompt
+    assert "不是论文" in writer_prompt
+    assert "不得创造人物、地点、事件、关系、对话" in plan_prompt
+    assert "人物、地点、事件、时间、数字、动作、对话、心理" in writer_prompt
+    assert "每个事实性句子都要能映射到允许证据" in audit_prompt
+    assert "现代书名、作者、出版社" in writer_prompt
+    assert "不得推测、复原或模仿任何单一来源" in plan_prompt
+
+
+def test_preview_plan_cache_is_invalidated_by_narrative_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reports = build_source_reports(_sources(5))
+    dimensions = BookDimensions(10_000, 3, 10_000, 3)
+    calls: list[str] = []
+
+    def fake_plan(*_args, **kwargs) -> str:
+        calls.append(kwargs["prompt"])
+        return json.dumps(
+            {
+                "title": "言语留下的路",
+                "summary": "从已核验古代事实出发，观察言语与行为的关系。",
+                "central_question": "说出口的话如何改变关系",
+                "book_premise": "只重组古代原典核验事实。",
+                "narrative_thread": "沿言语、行为与后果推进。",
+                "chapters": [
+                    {
+                        "title": f"第{index}夜",
+                        "purpose": "推进问题",
+                        "source_ids": ["S01", "S02"],
+                        "topics": ["言语"],
+                        "must_cover": ["事实边界"],
+                        "must_not_claim": ["不冒充历史"],
+                        "narrative_goal": "让真实材料自然推进",
+                        "narrative_beats": [
+                            {"description": "事实一", "claim_ids": ["S01-V0001"], "boundary": "不补心理"},
+                            {"description": "事实二", "claim_ids": ["S02-V0001"], "boundary": "不补对话"},
+                            {"description": "事实三", "claim_ids": ["S01-V0002"], "boundary": "不补因果"},
+                        ],
+                        "evidence_function": "限制思想边界",
+                    }
+                    for index in range(1, 4)
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(service, "_call_llm", fake_plan)
+    kwargs = {
+        "work_dir": tmp_path,
+        "source_reports": reports,
+        "source_digests": [
+            {
+                "source_id": "S01",
+                "core_materials": [
+                    {"claim_id": "S01-V0001"},
+                    {"claim_id": "S01-V0002"},
+                    {"claim_id": "S02-V0001"},
+                ],
+            }
+        ],
+        "dimensions": dimensions,
+        "target_title": None,
+        "target_direction": None,
+        "output_style": None,
+        "generation_mode": service.RESEARCH_PREVIEW_MODE,
+    }
+    service._build_book_plan(**kwargs, narrative_profile={"sentence_chars": {"mean": 30}})  # noqa: SLF001
+    service._build_book_plan(**kwargs, narrative_profile={"sentence_chars": {"mean": 30}})  # noqa: SLF001
+    service._build_book_plan(**kwargs, narrative_profile={"sentence_chars": {"mean": 36}})  # noqa: SLF001
+
+    assert len(calls) == 2
 
 
 def test_post_edit_audit_reuses_only_exact_accepted_hash(tmp_path: Path) -> None:

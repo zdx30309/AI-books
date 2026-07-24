@@ -30,6 +30,8 @@ from app.utils.official_api import official_proxy
 
 POLICY_VERSION = "public-domain-longform-v3-primary-evidence"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v6-expanded-anchored-candidates"
+NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v1"
+NARRATIVE_PROFILE_VERSION = "cross-source-narrative-profile-v1"
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
 MIN_SOURCES = 8
@@ -85,6 +87,29 @@ _RESEARCH_PROCESS_LEAKS = (
     "研究材料",
     "现代整理本",
     "现代作者认为",
+)
+_ACADEMIC_NARRATIVE_MARKERS = (
+    "本试稿",
+    "本章依据",
+    "本章所据",
+    "本章讨论",
+    "本章考察",
+    "本文依据",
+    "原典所能确认",
+    "所据原典",
+    "可据原典",
+    "该段能确认",
+    "综合上述",
+    "总而言之",
+)
+_ACADEMIC_ATTRIBUTION_TERMS = (
+    "原典",
+    "据《",
+    "记载",
+    "该经",
+    "该论",
+    "经文未",
+    "本章",
 )
 _MODERN_PRIMARY_CATEGORIES = ("中華民國", "民國", "现代", "現代")
 _MODERN_PRIMARY_TITLE_MARKERS = (
@@ -241,7 +266,8 @@ def validate_sources(
     if preview:
         if not research_use_confirmed:
             raise PublicDomainValidationError(
-                "研究试稿必须确认：来源只用于抽取事实/概念线索和检查重合，不复制原文、独创故事或现代评论。"
+                "研究试稿必须确认：来源只用于抽取事实/概念线索、匿名聚合叙事统计和检查重合；"
+                "不复制来源原文、来源故事或现代评论，成稿人物与情节另行原创。"
             )
     elif not public_domain_confirmed:
         raise PublicDomainValidationError("请先逐本核对并确认全部来源均可作为公版/公共领域材料使用。")
@@ -298,8 +324,8 @@ def validate_sources(
                 author_death_year=item.author_death_year,
                 rights_note=(
                     rights_note
-                    or "研究试稿：仅作 discovery_only 检索线索与来源重合排查；"
-                    "未主张现代整理本属于公版，未经古代原典核验不得进入正文"
+                    or "研究试稿：仅作 discovery_only 检索线索、匿名聚合叙事统计与来源重合排查；"
+                    "未主张现代整理本属于公版，现代内容不得进入正文；成稿人物与情节必须另行原创"
                 ),
                 rights_evidence_url=rights_url or None,
             )
@@ -362,6 +388,111 @@ def build_source_reports(sources: Iterable[PublicDomainSource]) -> tuple[SourceR
     return tuple(reports)
 
 
+def _build_narrative_mechanism_profile(
+    sources: Iterable[PublicDomainSource],
+    reports: tuple[SourceReport, ...],
+    work_dir: Path,
+) -> dict[str, Any]:
+    """Distil non-identifying corpus mechanics without retaining source prose.
+
+    The uploaded modern books are not generation evidence and may still be
+    copyrighted.  This profile therefore stores only aggregate distributions;
+    it contains no title, author, quotation, phrase, scene, character or raw
+    source fragment.  The writer receives this profile plus verified ancient
+    facts, never the modern books themselves.
+    """
+
+    path = work_dir / "01_narrative_mechanism_profile.json"
+    expected_key = text_sha256(
+        json.dumps(
+            {
+                "policy": POLICY_VERSION,
+                "profile_version": NARRATIVE_PROFILE_VERSION,
+                "source_hashes": [item.sha256 for item in reports],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    cached = _load_versioned_artifact(path, expected_key)
+    if cached is not None:
+        return dict(cached.get("profile") or {})
+
+    per_source: list[dict[str, float]] = []
+    for source in sources:
+        text = normalize_source_text(source.text)
+        sentence_lengths = [
+            count_text_chars(value)
+            for value in re.split(r"[。！？!?]+", text)
+            if 1 <= count_text_chars(value) <= 300
+        ]
+        paragraph_lengths = [
+            count_text_chars(value)
+            for value in text.splitlines()
+            if 6 <= count_text_chars(value) <= 800
+        ]
+        if not sentence_lengths:
+            sentence_lengths = [max(1, count_text_chars(text))]
+        if not paragraph_lengths:
+            paragraph_lengths = sentence_lengths
+        paragraph_mean = statistics.mean(paragraph_lengths)
+        per_source.append(
+            {
+                "sentence_mean": statistics.mean(sentence_lengths),
+                "sentence_sd": statistics.pstdev(sentence_lengths)
+                if len(sentence_lengths) > 1
+                else 0.0,
+                "short_sentence_ratio": sum(value <= 12 for value in sentence_lengths)
+                / len(sentence_lengths),
+                "long_sentence_ratio": sum(value >= 45 for value in sentence_lengths)
+                / len(sentence_lengths),
+                "paragraph_mean": paragraph_mean,
+                "paragraph_cv": (
+                    statistics.pstdev(paragraph_lengths) / paragraph_mean
+                    if len(paragraph_lengths) > 1 and paragraph_mean
+                    else 0.0
+                ),
+                "dialogue_marks_per_10k": (
+                    (text.count("“") + text.count("”") + text.count("曰：") + text.count("问："))
+                    * 10_000
+                    / max(1, count_text_chars(text))
+                ),
+            }
+        )
+
+    def median(field: str) -> float:
+        return round(statistics.median(item[field] for item in per_source), 4)
+
+    profile = {
+        "version": NARRATIVE_PROFILE_VERSION,
+        "aggregation": "median_across_all_uploaded_sources",
+        "source_count": len(per_source),
+        "sentence_chars": {
+            "mean": median("sentence_mean"),
+            "standard_deviation": median("sentence_sd"),
+            "short_ratio_le_12": median("short_sentence_ratio"),
+            "long_ratio_ge_45": median("long_sentence_ratio"),
+        },
+        "paragraph_chars": {
+            "mean": median("paragraph_mean"),
+            "coefficient_of_variation": median("paragraph_cv"),
+        },
+        "dialogue_marks_per_10k": median("dialogue_marks_per_10k"),
+        "contains_raw_text": False,
+        "contains_source_identity": False,
+        "contains_source_specific_style": False,
+    }
+    _atomic_write_json(
+        path,
+        {
+            "artifact_key": expected_key,
+            "policy_version": POLICY_VERSION,
+            "profile": profile,
+        },
+    )
+    return profile
+
+
 def run_public_domain_longform(
     *,
     sources: Iterable[PublicDomainSource],
@@ -396,8 +527,13 @@ def run_public_domain_longform(
     )
     reports = build_source_reports(clean_sources)
     _write_rights_manifest(work_dir, reports, clean_sources, dimensions, generation_mode=generation_mode)
+    narrative_profile = _build_narrative_mechanism_profile(clean_sources, reports, work_dir)
     if generation_mode == RESEARCH_PREVIEW_MODE:
-        _notify(on_progress, 5, f"已隔离 {len(clean_sources)} 本研究材料；只抽取事实/概念线索")
+        _notify(
+            on_progress,
+            5,
+            f"已隔离 {len(clean_sources)} 本研究材料；只抽取事实线索与匿名聚合叙事统计",
+        )
     else:
         _notify(on_progress, 5, f"已验证 {len(clean_sources)} 本来源与权利依据")
 
@@ -477,12 +613,14 @@ def run_public_domain_longform(
         target_direction=target_direction,
         output_style=output_style,
         generation_mode=generation_mode,
+        narrative_profile=narrative_profile,
     )
     _notify(on_progress, 38, f"长篇规划完成：{dimensions.target_chapters} 章 / 目标 {dimensions.target_chars} 字")
 
     overlap_indexes = _build_overlap_indexes(clean_sources, reports)
     chapters: list[ChapterResult] = []
     previous_summary = "这是第一章，没有上一章。"
+    narrative_blueprint = _narrative_blueprint(plan)
     contracts = list(plan["chapters"])
     for chapter_index, contract in enumerate(contracts, start=1):
         allowed_evidence = _select_chapter_evidence(contract, all_evidence, planning_reports)
@@ -497,6 +635,8 @@ def run_public_domain_longform(
             generation_mode=generation_mode,
             forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
             approved_source_titles={item.title for item in planning_reports},
+            narrative_blueprint=narrative_blueprint,
+            narrative_profile=narrative_profile,
         )
         chapters.append(chapter)
         previous_summary = chapter.summary
@@ -519,6 +659,7 @@ def run_public_domain_longform(
         generation_mode=generation_mode,
         verified_evidence=all_evidence if generation_mode == RESEARCH_PREVIEW_MODE else None,
         forbidden_sources=clean_sources if generation_mode == RESEARCH_PREVIEW_MODE else (),
+        narrative_profile=narrative_profile,
     )
     _atomic_write_text(work_dir / "04_format.md", markdown)
     _notify(
@@ -594,6 +735,10 @@ def audit_edited_final_manuscript(
             and original_report.get("policy_version") == POLICY_VERSION
             and original_report.get("final_sha256") == candidate_hash
             and preview_ledger_ready
+            and (
+                generation_mode != RESEARCH_PREVIEW_MODE
+                or original_report.get("narrative_synthesis_version") == NARRATIVE_SYNTHESIS_VERSION
+            )
         ):
             return {
                 "status": "ok",
@@ -604,7 +749,9 @@ def audit_edited_final_manuscript(
             }
 
     cache_path = work_dir / "post_edit_quality_report.json"
-    cache_key = text_sha256(f"{POLICY_VERSION}\npost-edit\n{candidate_hash}")
+    cache_key = text_sha256(
+        f"{POLICY_VERSION}\n{NARRATIVE_SYNTHESIS_VERSION}\npost-edit\n{candidate_hash}"
+    )
     cached = _load_versioned_artifact(cache_path, cache_key)
     if cached is not None:
         return dict(cached.get("report") or {})
@@ -628,6 +775,16 @@ def audit_edited_final_manuscript(
         return report
 
     title, summary, chapters = parse_final_markdown(manuscript)
+    narrative_blueprint = _narrative_blueprint(plan)
+    narrative_profile: dict[str, Any] = {}
+    profile_path = work_dir / "01_narrative_mechanism_profile.json"
+    if profile_path.exists():
+        try:
+            narrative_profile = dict(
+                json.loads(profile_path.read_text(encoding="utf-8")).get("profile") or {}
+            )
+        except (OSError, TypeError, ValueError):
+            narrative_profile = {}
     if len(chapters) != len(contracts):
         blocking.append(f"终稿章节数 {len(chapters)}，规划要求 {len(contracts)}")
     if [item.number for item in chapters] != list(range(1, len(chapters) + 1)):
@@ -671,6 +828,7 @@ def audit_edited_final_manuscript(
                 approved_primary_titles={item.title for item in source_reports},
             )
         )
+        blocking.extend(_narrative_nonfiction_form_issues("\n\n".join(item.text for item in chapters)))
     else:
         source_reports = raw_source_reports
         for source_report in source_reports:
@@ -708,11 +866,14 @@ def audit_edited_final_manuscript(
                     allowed_evidence=evidence_payload,
                     chapter_text=chapter.text,
                     generation_mode=generation_mode,
+                    narrative_blueprint=narrative_blueprint,
+                    narrative_profile=narrative_profile,
                 )
                 chapter_issues = _post_edit_chapter_issues(
                     text=chapter.text,
                     target_chars=int(contract.get("target_chars") or 0),
                     overlap_indexes=overlap_indexes,
+                    require_narrative_nonfiction=generation_mode == RESEARCH_PREVIEW_MODE,
                 )
                 if chapter_issues:
                     audit["pass"] = False
@@ -751,6 +912,10 @@ def audit_edited_final_manuscript(
                 "actual_chars": actual_chars,
                 "source_overlap": deterministic.get("overlap") or [],
                 "blocking_issues": [],
+                "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+                "narrative_nonfiction_form": _narrative_nonfiction_form_metrics(
+                    "\n\n".join(item.text for item in chapters)
+                ) if generation_mode == RESEARCH_PREVIEW_MODE else None,
             },
         }
         try:
@@ -1860,6 +2025,7 @@ def _build_book_plan(
     target_direction: str | None,
     output_style: str | None,
     generation_mode: str = FULL_MODE,
+    narrative_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path = work_dir / "02_book_plan.json"
     plan_input = {
@@ -1871,6 +2037,8 @@ def _build_book_plan(
         "target_direction": target_direction or "",
         "output_style": output_style or "",
         "generation_mode": generation_mode,
+        "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+        "narrative_profile": narrative_profile or {},
     }
     expected_key = text_sha256(json.dumps(plan_input, ensure_ascii=False, sort_keys=True))
     cached = _load_versioned_artifact(path, expected_key)
@@ -1884,23 +2052,40 @@ def _build_book_plan(
         target_direction=(
             target_direction
             or (
-                "从全部研究材料共同出现的概念与事实线索中形成独立问题与论述；排除独创故事和现代作者评论"
+                "只使用已核验古代原典中的人物、事件与观点，写成叙事化非虚构新书；不新增事实，排除现代材料内容和论文式论述"
                 if generation_mode == RESEARCH_PREVIEW_MODE
                 else "从 8–10 本来源的交叉材料中形成独立问题与论述"
             )
         ),
-        output_style=output_style or "清晰、克制、准确、可读；不模仿任何单一来源",
+        output_style=(
+            output_style
+            or "通俗、有叙事推进和阅读气息；不模仿任何单一来源，不写论文或经典导读，不新增原典未支持的事实"
+        ),
         source_digests=json.dumps(source_digests, ensure_ascii=False),
+        narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
     )
     raw = _call_llm(
         work_dir,
         action="book_plan",
         prompt=prompt,
-        temperature=0.15,
+        temperature=0.30 if generation_mode == RESEARCH_PREVIEW_MODE else 0.15,
         max_output_tokens=3000 if generation_mode == RESEARCH_PREVIEW_MODE else 9000,
         model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
     )
-    plan = _normalize_plan(_parse_json_object(raw), source_reports, dimensions, target_title)
+    allowed_claim_ids = {
+        str(item.get("claim_id") or "")
+        for digest in source_digests
+        for item in digest.get("core_materials") or []
+        if str(item.get("claim_id") or "")
+    }
+    plan = _normalize_plan(
+        _parse_json_object(raw),
+        source_reports,
+        dimensions,
+        target_title,
+        generation_mode=generation_mode,
+        allowed_claim_ids=allowed_claim_ids,
+    )
     _atomic_write_json(
         path,
         {"artifact_key": expected_key, "policy_version": POLICY_VERSION, "plan": plan},
@@ -1913,6 +2098,9 @@ def _normalize_plan(
     source_reports: tuple[SourceReport, ...],
     dimensions: BookDimensions,
     target_title: str | None,
+    *,
+    generation_mode: str = FULL_MODE,
+    allowed_claim_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     raw_chapters = [item for item in plan.get("chapters") or [] if isinstance(item, dict)]
     if len(raw_chapters) != dimensions.target_chapters:
@@ -1920,6 +2108,11 @@ def _normalize_plan(
             f"长篇规划返回 {len(raw_chapters)} 章，必须精确为 {dimensions.target_chapters} 章。"
         )
     source_ids = [item.source_id for item in source_reports]
+    if generation_mode == RESEARCH_PREVIEW_MODE and any(
+        plan.get(key)
+        for key in ("fiction_notice", "story_premise", "fictional_setting", "fictional_characters")
+    ):
+        raise PublicDomainQualityError("叙事化非虚构规划不得包含虚构人物、地点、故事前提或虚构声明。")
     base = dimensions.target_chars // dimensions.target_chapters
     remainder = dimensions.target_chars - base * dimensions.target_chapters
     chapters: list[dict[str, Any]] = []
@@ -1929,6 +2122,44 @@ def _normalize_plan(
             candidate = source_ids[(index - 1 + offset) % len(source_ids)]
             if candidate not in selected:
                 selected.append(candidate)
+        narrative_beats = []
+        for value in raw.get("narrative_beats") or []:
+            if not isinstance(value, dict):
+                continue
+            claim_ids = list(
+                dict.fromkeys(
+                    str(claim_id).strip()
+                    for claim_id in value.get("claim_ids") or []
+                    if str(claim_id).strip()
+                )
+            )[:8]
+            narrative_beats.append(
+                {
+                    "description": str(value.get("description") or "").strip()[:260],
+                    "claim_ids": claim_ids,
+                    "boundary": str(value.get("boundary") or "").strip()[:220],
+                }
+            )
+        narrative_beats = [
+            item for item in narrative_beats if item["description"] and item["claim_ids"]
+        ][:8]
+        if generation_mode == RESEARCH_PREVIEW_MODE:
+            if len(narrative_beats) < 3:
+                raise PublicDomainQualityError(
+                    f"第 {index} 章至少需要 3 个由 claim_id 支持的叙事推进点。"
+                )
+            unknown_claim_ids = sorted(
+                {
+                    claim_id
+                    for item in narrative_beats
+                    for claim_id in item["claim_ids"]
+                    if allowed_claim_ids is not None and claim_id not in allowed_claim_ids
+                }
+            )
+            if unknown_claim_ids:
+                raise PublicDomainQualityError(
+                    f"第 {index} 章叙事推进点引用未授权证据：{unknown_claim_ids[:8]}"
+                )
         chapters.append(
             {
                 "number": index,
@@ -1939,6 +2170,9 @@ def _normalize_plan(
                 "topics": [str(value)[:80] for value in (raw.get("topics") or [])[:8]],
                 "must_cover": [str(value)[:160] for value in (raw.get("must_cover") or [])[:10]],
                 "must_not_claim": [str(value)[:160] for value in (raw.get("must_not_claim") or [])[:8]],
+                "narrative_goal": str(raw.get("narrative_goal") or "").strip()[:300],
+                "narrative_beats": narrative_beats,
+                "evidence_function": str(raw.get("evidence_function") or "").strip()[:300],
             }
         )
     # Ensure every source participates in at least two chapter contracts.
@@ -1954,12 +2188,31 @@ def _normalize_plan(
                 break
             target["source_ids"].append(source_id)
             used_count += 1
-    return {
+    normalized = {
         "title": str(target_title or plan.get("title") or "公版融合长篇").strip()[:120],
         "subtitle": str(plan.get("subtitle") or "").strip()[:160],
         "summary": str(plan.get("summary") or "").strip()[:1200],
         "central_question": str(plan.get("central_question") or "").strip()[:500],
         "chapters": chapters,
+    }
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        normalized.update(
+            narrative_mode="verified_narrative_nonfiction",
+            book_premise=str(plan.get("book_premise") or "").strip()[:800],
+            narrative_thread=str(plan.get("narrative_thread") or "").strip()[:800],
+        )
+        if not normalized["book_premise"] or not normalized["narrative_thread"]:
+            raise PublicDomainQualityError("叙事化非虚构规划缺少全书前提或主题推进线。")
+    return normalized
+
+
+def _narrative_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "narrative_mode": plan.get("narrative_mode"),
+        "book_premise": plan.get("book_premise"),
+        "narrative_thread": plan.get("narrative_thread"),
+        "central_question": plan.get("central_question"),
+        "summary": plan.get("summary"),
     }
 
 
@@ -1969,6 +2222,15 @@ def _select_chapter_evidence(
     reports: tuple[SourceReport, ...],
 ) -> list[dict[str, Any]]:
     selected_sources = set(contract.get("source_ids") or [])
+    required_claim_ids = list(
+        dict.fromkeys(
+            str(claim_id).strip()
+            for beat in contract.get("narrative_beats") or []
+            if isinstance(beat, dict)
+            for claim_id in beat.get("claim_ids") or []
+            if str(claim_id).strip()
+        )
+    )
     query = " ".join(
         [
             str(contract.get("title") or ""),
@@ -1988,9 +2250,23 @@ def _select_chapter_evidence(
         score = overlap * 10 + float(item.get("importance") or 1)
         scored.append((score, item))
     scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("claim_id") or "")))
-    result: list[dict[str, Any]] = []
+    evidence_by_id = {
+        str(item.get("claim_id") or ""): item
+        for item in evidence
+        if str(item.get("claim_id") or "")
+    }
+    result: list[dict[str, Any]] = [
+        evidence_by_id[claim_id]
+        for claim_id in required_claim_ids
+        if claim_id in evidence_by_id
+    ]
     per_source: dict[str, int] = {}
+    for item in result:
+        source_id = str(item.get("source_id") or "")
+        per_source[source_id] = per_source.get(source_id, 0) + 1
     for _, item in scored:
+        if item in result:
+            continue
         source_id = str(item.get("source_id") or "")
         if per_source.get(source_id, 0) >= 32:
             continue
@@ -2017,6 +2293,8 @@ def _build_or_resume_chapter(
     generation_mode: str = FULL_MODE,
     forbidden_sources: Iterable[PublicDomainSource] = (),
     approved_source_titles: set[str] | None = None,
+    narrative_blueprint: dict[str, Any] | None = None,
+    narrative_profile: dict[str, Any] | None = None,
 ) -> ChapterResult:
     chapter_dir = work_dir / "chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
@@ -2029,6 +2307,9 @@ def _build_or_resume_chapter(
                 "evidence_ids": [item.get("claim_id") for item in allowed_evidence],
                 "previous_summary": previous_summary,
                 "generation_mode": generation_mode,
+                "narrative_synthesis_version": NARRATIVE_SYNTHESIS_VERSION,
+                "narrative_blueprint": narrative_blueprint or {},
+                "narrative_profile": narrative_profile or {},
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2069,7 +2350,8 @@ def _build_or_resume_chapter(
                 failed_ids = tuple(str(value) for value in failed_candidate.get("used_claim_ids") or [])
                 allowed_ids = {str(item.get("claim_id") or "") for item in allowed_evidence}
                 if (
-                    failed_payload.get("contract") == contract
+                    failed_payload.get("artifact_key") == artifact_key
+                    and failed_payload.get("contract") == contract
                     and int(target_chars * 0.88) <= count_text_chars(failed_text) <= int(target_chars * 1.12)
                     and failed_ids
                     and all(value in allowed_ids for value in failed_ids)
@@ -2093,12 +2375,14 @@ def _build_or_resume_chapter(
             target_chars=target_chars,
             minimum_chars=minimum_chars,
             maximum_chars=maximum_chars,
+            narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
+            narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
         )
         raw = _call_llm(
             work_dir,
             action=f"chapter_write:{chapter_number:03d}",
             prompt=prompt,
-            temperature=0.35,
+            temperature=0.65 if generation_mode == RESEARCH_PREVIEW_MODE else 0.35,
             max_output_tokens=_chapter_tokens(target_chars),
             model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
         )
@@ -2118,12 +2402,14 @@ def _build_or_resume_chapter(
         used_claim_ids = tuple(dict.fromkeys(str(value) for value in candidate.get("used_claim_ids") or []))
         deterministic = _chapter_deterministic_issues(
             text=text,
+            contract=contract,
             target_chars=int(contract["target_chars"]),
             used_claim_ids=used_claim_ids,
             allowed_evidence=allowed_evidence,
             overlap_indexes=overlap_indexes,
             forbidden_sources=forbidden_sources,
             approved_source_titles=approved_source_titles,
+            require_narrative_nonfiction=generation_mode == RESEARCH_PREVIEW_MODE,
         )
         audit = _audit_chapter(
             work_dir=work_dir,
@@ -2132,6 +2418,8 @@ def _build_or_resume_chapter(
             allowed_evidence=evidence_payload,
             chapter_text=text,
             generation_mode=generation_mode,
+            narrative_blueprint=narrative_blueprint,
+            narrative_profile=narrative_profile,
         )
         if deterministic:
             audit["pass"] = False
@@ -2196,6 +2484,8 @@ def _build_or_resume_chapter(
             target_chars=target_chars,
             minimum_chars=minimum_chars,
             maximum_chars=maximum_chars,
+            narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
+            narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
         )
         action = f"chapter_repair:{chapter_number:03d}:attempt{attempt}"
         repaired = _call_chapter_repair_model(
@@ -2278,7 +2568,7 @@ def _call_chapter_repair_model(
             work_dir,
             action=action,
             prompt=prompt,
-            temperature=0.15,
+            temperature=0.30,
             max_output_tokens=max_output_tokens,
             model=PREVIEW_DEEPSEEK_MODEL if generation_mode == RESEARCH_PREVIEW_MODE else None,
         )
@@ -2301,6 +2591,8 @@ def _audit_chapter(
     allowed_evidence: list[dict[str, Any]],
     chapter_text: str,
     generation_mode: str = FULL_MODE,
+    narrative_blueprint: dict[str, Any] | None = None,
+    narrative_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prompt = _render_prompt(
         (
@@ -2311,6 +2603,8 @@ def _audit_chapter(
         chapter_contract=json.dumps(contract, ensure_ascii=False),
         allowed_evidence=json.dumps(allowed_evidence, ensure_ascii=False),
         chapter_text=chapter_text,
+        narrative_blueprint=json.dumps(narrative_blueprint or {}, ensure_ascii=False),
+        narrative_profile=json.dumps(narrative_profile or {}, ensure_ascii=False),
     )
     action = f"chapter_audit:{chapter_number:03d}"
     raw = _call_auditor(
@@ -2358,18 +2652,61 @@ def _audit_chapter(
     audit["pass"] = bool(audit.get("pass"))
     for key in ("unsupported_claims", "contradictions", "missing_materials", "language_issues", "repair_instructions"):
         audit[key] = [str(value) for value in audit.get(key) or []]
+    if generation_mode == RESEARCH_PREVIEW_MODE:
+        allowed_ids = {
+            str(item.get("claim_id") or "")
+            for item in allowed_evidence
+            if str(item.get("claim_id") or "")
+        }
+        try:
+            fact_count = int(audit.get("fact_sentence_count"))
+            mapped_count = int(audit.get("mapped_fact_sentence_count"))
+        except (TypeError, ValueError):
+            fact_count = -1
+            mapped_count = -1
+        evidence_map = [
+            item for item in audit.get("evidence_map") or [] if isinstance(item, dict)
+        ]
+        invalid_rows = []
+        for item in evidence_map:
+            claim_ids = [
+                str(value).strip()
+                for value in item.get("claim_ids") or []
+                if str(value).strip()
+            ]
+            if (
+                not str(item.get("fact") or "").strip()
+                or not claim_ids
+                or any(value not in allowed_ids for value in claim_ids)
+            ):
+                invalid_rows.append(item)
+        if (
+            fact_count < 1
+            or mapped_count != fact_count
+            or len(evidence_map) != fact_count
+            or invalid_rows
+        ):
+            audit["pass"] = False
+            audit["repair_instructions"].append(
+                "事实句证据映射不完整：必须逐句映射，且 fact_sentence_count、mapped_fact_sentence_count 与 evidence_map 条目数完全一致，所有 claim_id 均在允许证据内"
+            )
+        audit["fact_sentence_count"] = fact_count
+        audit["mapped_fact_sentence_count"] = mapped_count
+        audit["evidence_map"] = evidence_map
     return audit
 
 
 def _chapter_deterministic_issues(
     *,
     text: str,
+    contract: dict[str, Any],
     target_chars: int,
     used_claim_ids: tuple[str, ...],
     allowed_evidence: list[dict[str, Any]],
     overlap_indexes: list[dict[str, Any]],
     forbidden_sources: Iterable[PublicDomainSource] = (),
     approved_source_titles: set[str] | None = None,
+    require_narrative_nonfiction: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     chars = count_text_chars(text)
@@ -2383,6 +2720,16 @@ def _chapter_deterministic_issues(
         issues.append(f"used_claim_ids 含未授权证据：{', '.join(unknown_ids[:8])}")
     if len([value for value in used_claim_ids if value in allowed_ids]) < 4:
         issues.append("至少要明确使用 4 条允许证据，不能靠空泛扩写凑篇幅")
+    required_claim_ids = {
+        str(claim_id).strip()
+        for beat in (contract.get("narrative_beats") or [])
+        if isinstance(beat, dict)
+        for claim_id in beat.get("claim_ids") or []
+        if str(claim_id).strip()
+    }
+    missing_required_ids = sorted(required_claim_ids - set(used_claim_ids))
+    if missing_required_ids:
+        issues.append(f"章节未覆盖计划中的叙事证据：{missing_required_ids[:8]}")
     ineligible = [
         item.get("claim_id")
         for item in allowed_evidence
@@ -2400,6 +2747,8 @@ def _chapter_deterministic_issues(
     residues = [value for value in _AI_RESIDUE if value in text.lower()]
     if residues:
         issues.append(f"存在模型说明或任务残留：{', '.join(residues)}")
+    if require_narrative_nonfiction:
+        issues.extend(_narrative_nonfiction_form_issues(text))
     blocked = [item for item in _overlap_reports(text, overlap_indexes) if _overlap_blocked(item)]
     for item in blocked:
         issues.append(
@@ -2413,6 +2762,7 @@ def _post_edit_chapter_issues(
     text: str,
     target_chars: int,
     overlap_indexes: list[dict[str, Any]],
+    require_narrative_nonfiction: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     chars = count_text_chars(text)
@@ -2423,11 +2773,67 @@ def _post_edit_chapter_issues(
     residues = [value for value in _AI_RESIDUE if value in text.lower()]
     if residues:
         issues.append(f"存在模型说明或任务残留：{', '.join(residues)}")
+    if require_narrative_nonfiction:
+        issues.extend(_narrative_nonfiction_form_issues(text))
     for item in _overlap_reports(text, overlap_indexes):
         if _overlap_blocked(item):
             issues.append(
                 f"与《{item.source_title}》连续表达重合偏高（{item.ratio:.2%}，长连续重合={item.long_exact_match}）"
             )
+    return issues
+
+
+def _narrative_nonfiction_form_metrics(text: str) -> dict[str, Any]:
+    chars = count_text_chars(text)
+    paragraphs = [value.strip() for value in re.split(r"\n+", text) if value.strip()]
+    sentences = [
+        count_text_chars(value)
+        for value in re.split(r"[。！？!?]+", text)
+        if count_text_chars(value) > 0
+    ]
+    academic_markers = {
+        marker: text.count(marker)
+        for marker in _ACADEMIC_NARRATIVE_MARKERS
+        if marker in text
+    }
+    attribution_count = sum(text.count(marker) for marker in _ACADEMIC_ATTRIBUTION_TERMS)
+    return {
+        "chars": chars,
+        "paragraph_count": len(paragraphs),
+        "sentence_mean": round(statistics.mean(sentences), 3) if sentences else 0.0,
+        "sentence_sd": round(statistics.pstdev(sentences), 3) if len(sentences) > 1 else 0.0,
+        "short_sentence_ratio": (
+            round(sum(value <= 12 for value in sentences) / len(sentences), 4) if sentences else 0.0
+        ),
+        "book_title_mentions": len(re.findall(r"《[^》]{1,80}》", text)),
+        "academic_attribution_count": attribution_count,
+        "academic_marker_counts": academic_markers,
+        "direct_quote_marks": min(text.count("“"), text.count("”")),
+    }
+
+
+def _narrative_nonfiction_form_issues(text: str) -> list[str]:
+    metrics = _narrative_nonfiction_form_metrics(text)
+    issues: list[str] = []
+    if metrics["academic_marker_counts"]:
+        labels = "、".join(metrics["academic_marker_counts"].keys())
+        issues.append(f"叙事化非虚构正文出现论文/资料汇编式模板句：{labels}")
+    attribution_limit = max(2, int(metrics["chars"] / 2_000))
+    if metrics["academic_attribution_count"] > attribution_limit:
+        issues.append(
+            "正文以原典归属和证据边界代替叙事："
+            f"归属词 {metrics['academic_attribution_count']} 次，最多允许 {attribution_limit} 次"
+        )
+    if metrics["book_title_mentions"] > 1:
+        issues.append(
+            f"单章出现 {metrics['book_title_mentions']} 处书名号文献归属，叙事正文最多允许 1 处"
+        )
+    if metrics["chars"] >= 1_500 and metrics["paragraph_count"] < 6:
+        issues.append("叙事化非虚构段落过度整块化，至少需要 6 个自然段承载不同信息与节奏")
+    if metrics["direct_quote_marks"]:
+        issues.append(
+            f"正文出现 {metrics['direct_quote_marks']} 处直接引语；写作层没有原典逐字引文权限，必须改为有证据支持的间接转述"
+        )
     return issues
 
 
@@ -2443,6 +2849,7 @@ def _run_final_gate(
     generation_mode: str = FULL_MODE,
     verified_evidence: list[dict[str, Any]] | None = None,
     forbidden_sources: Iterable[PublicDomainSource] = (),
+    narrative_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     body = "\n\n".join(item.text for item in chapters)
     body_chars = count_text_chars(body)
@@ -2480,6 +2887,7 @@ def _run_final_gate(
                 approved_primary_titles={item.title for item in source_reports},
             )
         )
+        blocking.extend(_narrative_nonfiction_form_issues(body))
 
     source_usage: dict[str, int] = {item.source_id: 0 for item in source_reports}
     source_chapter_usage: dict[str, set[int]] = {item.source_id: set() for item in source_reports}
@@ -2543,6 +2951,13 @@ def _run_final_gate(
             )
         ) if generation_mode == RESEARCH_PREVIEW_MODE else 0,
         "blocking_issues": blocking,
+        "narrative_synthesis_version": (
+            NARRATIVE_SYNTHESIS_VERSION if generation_mode == RESEARCH_PREVIEW_MODE else None
+        ),
+        "narrative_profile": narrative_profile if generation_mode == RESEARCH_PREVIEW_MODE else None,
+        "narrative_nonfiction_form": (
+            _narrative_nonfiction_form_metrics(body) if generation_mode == RESEARCH_PREVIEW_MODE else None
+        ),
     }
     audit_material = {
         "plan": plan,
@@ -2758,9 +3173,10 @@ def _write_rights_manifest(
         "generation_mode": generation_mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "legal_note": (
-            "现代整理本仅用于产生 discovery_only 检索线索与成稿重合排查，不属于写作证据。"
+            "现代整理本仅用于产生 discovery_only 检索线索、计算不含原文和身份的多书聚合叙事统计，以及成稿重合排查，不属于写作证据。"
             "只有经联网命中古代原典页面并晋级为 verified_primary 的中性事实才能进入计划、写作和审稿；"
-            "写作层不得接触现代原文、现代书名、独创故事、来源句法或现代评论。"
+            "写作层不得接触现代原文、现代书名、作者身份、来源句法、具体表达或现代评论。"
+            "成稿只能叙述 verified_primary 古代原典直接支持的人物、事件与观点；不得新增人物、地点、情节、对话、心理、场景、因果或评价。"
             "该技术隔离不替代专业法律意见。"
             if preview
             else "系统记录并核对用户提供的权利依据，但不替代专业法律意见。任何依据不清的来源不得进入生成。"

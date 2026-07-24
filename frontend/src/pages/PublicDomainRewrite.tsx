@@ -130,7 +130,7 @@ export function PublicDomainRewrite() {
         mixedMode
           ? "请统一使用全文粘贴或文件上传，不要在同一任务中混用。"
           : preview
-            ? `必须完整提供 ${minSources}–${maxSources} 份研究材料，并确认只抽取事实/概念线索。`
+            ? `必须完整提供 ${minSources}–${maxSources} 份研究材料，并确认现代内容隔离与古代原典事实边界。`
             : `必须完整提供 ${minSources}–${maxSources} 本来源、逐本公版依据，并勾选权利确认。`,
       );
       return;
@@ -139,7 +139,7 @@ export function PublicDomainRewrite() {
     const payloadFor = (item: SourceDraft) => toPayload({
       ...item,
       rightsNote: preview
-        ? "研究试稿：仅作事实/概念线索与来源重合排查，未主张现代整理本属于公版"
+        ? "叙事化非虚构预览：仅作事实线索、匿名聚合叙事统计与来源重合排查，未主张现代整理本属于公版"
         : item.rightsNote,
     });
     const common = {
@@ -150,7 +150,9 @@ export function PublicDomainRewrite() {
       target_direction: targetDirection.trim() || null,
       target_length: optionalNumber(targetLength) ?? undefined,
       target_chapters: optionalNumber(targetChapters) ?? undefined,
-      output_style: "清晰、克制、准确、可读；不模仿任何单一来源",
+      output_style: preview
+        ? "通俗、有叙事推进和阅读气息；不模仿任何单一来源，不写论文或经典导读；不新增古代原典未支持的人物、事件、对话、心理、场景、因果或评价"
+        : "通俗、叙事有起伏；不模仿任何单一来源，不写论文或经典导读",
     };
     try {
       const response = fileMode
@@ -182,12 +184,12 @@ export function PublicDomainRewrite() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 px-4 py-2 text-xs text-emerald-100">
             <ShieldCheck className="h-4 w-4" />
-            {preview ? "5–7 份材料 · 约一万字研究试稿" : "仅处理 8–10 本公版 / 公共领域来源"}
+            {preview ? "5–7 份材料 · 约一万字叙事化非虚构预览" : "仅处理 8–10 本公版 / 公共领域来源"}
           </div>
           <h1 className="font-serif text-4xl text-warm-50">公版融合长篇</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
             {preview
-              ? "先生成 2–4 章、约 8,000–15,000 字的研究试稿。现代整理本只作为事实/概念线索和重合排查材料，原文、独创故事与现代评论不会进入写作层。"
+              ? "先生成 2–4 章、约 8,000–15,000 字的叙事化非虚构新书。现代整理本只用于发现待核验线索、计算匿名节奏参数和检查重合；正文只采用已核验古代原典事实，不新增人物、事件、对话、心理、场景、因果或评价。"
               : "系统会完整分片抽取每本书的事实证据，按参考书中位篇幅规划十几万字长篇，逐章串行写作与复审。任何来源权利不清、事实无证据、连续复述过高或终稿质量不合格，都会阻止下载。"}
           </p>
         </div>
@@ -198,7 +200,7 @@ export function PublicDomainRewrite() {
           className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          {loading ? "正在创建任务" : preview ? "生成约一万字试稿" : "开始长篇融合"}
+          {loading ? "正在创建任务" : preview ? "生成约一万字叙事新书" : "开始长篇融合"}
         </button>
       </section>
 
@@ -207,7 +209,7 @@ export function PublicDomainRewrite() {
           正式长书（8–10 本）
         </button>
         <button type="button" onClick={() => changeMode("research_preview")} className={preview ? "btn-gold" : "btn-ghost"}>
-          研究试稿（5–7 份 / 约一万字）
+          叙事化非虚构预览（5–7 份 / 约一万字）
         </button>
       </section>
 
@@ -290,13 +292,13 @@ export function PublicDomainRewrite() {
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-1.5 h-4 w-4 accent-amber-500" />
           <span>
             {preview
-              ? "我确认这些材料只用于抽取可独立核验的事实/概念线索和检查来源重合；不得复制原文、独创故事、现代评论或来源结构，也不把现代整理本标为公版。"
+              ? "我确认现代材料只用于发现待核验线索、匿名聚合叙事统计和来源重合检查；不得复制其原文、故事、人物、桥段、现代评论或来源结构，也不把现代整理本标为公版。正文只能叙述古代原典直接支持的事实，绝不另造人物与情节。"
               : "我已逐本核对权利依据，确认 8–10 个输入均可作为公版/公共领域材料使用。系统会保存来源哈希和权利清单；依据不完整或正文带版权限制标记时，不会调用模型。"}
           </span>
         </label>
         <div className="mt-5 grid gap-3 text-xs leading-6 text-warm-400 md:grid-cols-3">
-          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />只把中性事实证据交给写作层，不把原书文风交给模型模仿。</div>
-          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />逐章检查无证据新增、来源连续重合、篇幅和语言硬伤；终稿有任何变化都会重新审查。</div>
+          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />人物、地点、事件与观点只来自已核验古代原典，禁止任何无证据补写。</div>
+          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />逐章拦截论文腔、现代材料泄漏、事实越界、来源重合和语言硬伤。</div>
           <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />全书终审未通过时保留断点并禁止下载，不把半成品标为完成。</div>
         </div>
       </section>

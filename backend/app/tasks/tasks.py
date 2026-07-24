@@ -1642,6 +1642,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
     """Serial, resumable 8–10-source public-domain long-form pipeline."""
     from app.services.public_domain_longform import (
         FULL_MODE,
+        NARRATIVE_SYNTHESIS_VERSION,
         POLICY_VERSION,
         PublicDomainQualityError,
         PublicDomainValidationError,
@@ -1708,7 +1709,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.error_message = None
         generation_mode = str(cfg.get("generation_mode") or FULL_MODE)
         task.current_step = (
-            "正在把现代材料隔离为待核验线索；正文只允许使用古代原典证据"
+            "正在隔离现代材料并建立匿名叙事参数；佛教事实只允许使用古代原典证据"
             if generation_mode == "research_preview"
             else "正在验证 8–10 本来源及权利清单"
         )
@@ -1737,6 +1738,9 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         cfg.update(
             generation_complete=True,
             public_domain_policy_version=POLICY_VERSION,
+            public_domain_narrative_version=(
+                NARRATIVE_SYNTHESIS_VERSION if generation_mode == "research_preview" else None
+            ),
             generation_mode=generation_mode,
             title=result.title,
             summary=result.summary,
@@ -1746,7 +1750,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             actual_chapters=len(result.chapters),
             quality_report=str(output_dir / "quality_report.json"),
             quality_report_summary=(
-                "现代材料已隔离；古代原典证据、来源重合、章节与全稿终审通过"
+                "现代材料已隔离；叙事化非虚构、古代原典事实、来源重合与全稿终审通过"
                 if generation_mode == "research_preview"
                 else "公版权利、事实证据、来源重合、章节与全书终审通过"
             ),
@@ -1843,7 +1847,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.status = TaskStatus.COMPLETED
         task.progress = 100
         task.current_step = (
-            f"研究试稿完成：{len(final_chapters)} 章仅使用已核验古代原典证据"
+            f"叙事化非虚构新书完成：{len(final_chapters)} 章，人物、事件与观点仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
             else f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
         )
