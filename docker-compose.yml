@@ -23,6 +23,8 @@ services:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
       PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+      CELERY_BROKER_URL: redis://redis-gate:6379/1
+      CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:
       redis-gate:
         condition: service_healthy
@@ -42,6 +44,8 @@ services:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
       PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+      CELERY_BROKER_URL: redis://redis-gate:6379/1
+      CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:
       redis-gate:
         condition: service_healthy
@@ -75,6 +79,8 @@ services:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
       PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+      CELERY_BROKER_URL: redis://redis-gate:6379/1
+      CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:
       redis-gate:
         condition: service_healthy
