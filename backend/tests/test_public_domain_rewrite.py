@@ -17,6 +17,7 @@ from app.services import public_domain_rewrite as service
 from app.services.public_domain_rewrite import (
     PublicDomainRewriteError,
     PublicDomainSource,
+    _infer_source_mode,
     check_public_domain_manuscript,
     rewrite_public_domain_fusion,
 )
@@ -114,6 +115,31 @@ def test_tied_source_types_use_chapter_level_hybrid_mode(
     )
     assert result.source_mode == "hybrid"
     assert "按章分配写法" in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("title", "direction", "expected"),
+    [
+        ("古代人物列传", "按史实与年代讲述生平", "historical"),
+        ("传统经文注疏", "围绕原典做译注", "classical"),
+        ("修习入门手册", "给出可执行的实践步骤", "practical"),
+    ],
+)
+def test_remaining_source_modes_choose_distinct_architectures(
+    title: str,
+    direction: str,
+    expected: str,
+) -> None:
+    profile = _infer_source_mode(
+        [_source(title)],
+        target_direction=direction,
+        output_style=None,
+    )
+
+    assert profile.key == expected
+    guidance = service._load_mode_guidance(profile.key)
+    assert guidance
+    assert "65%—75%" not in guidance
 
 
 def test_public_domain_rewrite_rejects_empty_or_unconfirmed_sources(
