@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    # Paid upstream concurrency gates are isolated from Celery/Upstash so a
+    # queue-side rate limit cannot block or duplicate model requests.
+    PAID_API_GATE_REDIS_URL: str = ""
     CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
     CELERY_BROKER_HEARTBEAT: int = 30
     CELERY_BROKER_POOL_LIMIT: int = 0

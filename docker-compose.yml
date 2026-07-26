@@ -1,4 +1,14 @@
 services:
+  redis-gate:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   backend:
     build:
       context: .
@@ -12,6 +22,10 @@ services:
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
+      PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+    depends_on:
+      redis-gate:
+        condition: service_healthy
     command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   worker:
@@ -27,6 +41,10 @@ services:
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
+      PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+    depends_on:
+      redis-gate:
+        condition: service_healthy
     command:
       [
         "python",
@@ -56,6 +74,10 @@ services:
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
+      PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+    depends_on:
+      redis-gate:
+        condition: service_healthy
     command:
       [
         "python",

@@ -22,7 +22,12 @@ class DistributedLimitError(RuntimeError):
 
 
 def _redis_url() -> str:
-    return (settings.REDIS_URL or settings.CELERY_BROKER_URL or "").strip()
+    return (
+        settings.PAID_API_GATE_REDIS_URL
+        or settings.REDIS_URL
+        or settings.CELERY_BROKER_URL
+        or ""
+    ).strip()
 
 
 @lru_cache(maxsize=1)
