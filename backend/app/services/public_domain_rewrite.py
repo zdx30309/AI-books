@@ -415,8 +415,12 @@ def _infer_source_mode(
     title_rules: dict[str, tuple[str, ...]] = {
         "narrative": ("故事", "公案", "寓言", "传奇", "小说", "演义", "轶事"),
         "historical": ("传记", "列传", "年谱", "通史", "史话", "史记", "纪事", "人物志"),
-        "classical": ("经", "论", "注", "疏", "语录", "古文", "诗", "词", "赋", "文选"),
-        "expository": ("知识", "全知道", "百科", "概论", "导论", "常识", "辞典", "智慧"),
+        # Avoid the single character “经”: titles such as “佛经故事” are
+        # narrative collections, not automatically source-text exegesis.
+        "classical": ("原典", "经文", "译注", "注疏", "笺注", "语录", "古文", "诗选", "词选", "赋选", "文选"),
+        # “智慧” is too broad to decide architecture on its own; many story
+        # collections use it as marketing language.
+        "expository": ("知识", "全知道", "百科", "概论", "导论", "常识", "辞典"),
         "practical": ("方法", "指南", "手册", "修习", "修行", "养生", "技法", "入门"),
     }
     request_rules: dict[str, tuple[str, ...]] = {
@@ -430,16 +434,57 @@ def _infer_source_mode(
     evidence: dict[str, list[str]] = {key: [] for key in title_rules}
     for source in sources:
         title = source.title.strip()
+        title_matched = False
         for mode, hints in title_rules.items():
             matched = [hint for hint in hints if hint in title]
             if not matched:
                 continue
+            title_matched = True
             scores[mode] += 3
             evidence[mode].append(f"《{title}》命中“{matched[0]}”")
 
+        if (
+            not title_matched
+            and title.endswith("经")
+            and "故事" not in title
+            and "智慧" not in title
+        ):
+            title_matched = True
+            scores["classical"] += 3
+            evidence["classical"].append(f"《{title}》以经典名称结尾")
+
+        # Only inspect text when the title provides no useful type signal.
+        # This is local and free, and prevents an ambiguous title from making
+        # an actual story collection fall back to the wrong architecture.
+        if not title_matched:
+            sample = _sample_source(source.text)
+            narrative_hits = sum(
+                sample.count(marker)
+                for marker in (
+                    "从前",
+                    "有一天",
+                    "有一位",
+                    "来到",
+                    "看见",
+                    "听见",
+                    "问道",
+                    "回答",
+                    "说道",
+                    "国王",
+                    "禅师",
+                    "比丘",
+                    "弟子",
+                    "老人",
+                )
+            )
+            quote_pairs = min(sample.count("“"), sample.count("”"))
+            if narrative_hits >= 8 or (narrative_hits >= 4 and quote_pairs >= 2):
+                scores["narrative"] += 3
+                evidence["narrative"].append(f"《{title}》正文抽样呈连续叙事特征")
+
     request_text = f"{target_direction or ''}\n{output_style or ''}"
     for mode, hints in request_rules.items():
-        matched = [hint for hint in hints if hint in request_text]
+        matched = [hint for hint in hints if _has_positive_request_hint(request_text, hint)]
         if not matched:
             continue
         scores[mode] += 5
@@ -468,6 +513,18 @@ def _infer_source_mode(
         labels[best_mode],
         tuple(evidence[best_mode][:6]),
     )
+
+
+def _has_positive_request_hint(text: str, hint: str) -> bool:
+    """Ignore type words that occur inside an explicit negative request."""
+
+    for match in re.finditer(re.escape(hint), text):
+        before = text[max(0, match.start() - 14) : match.start()]
+        clause = re.split(r"[，。；;\n]", before)[-1]
+        if re.search(r"(?:不要|不得|避免|禁止|并非|不是|不再|无须|无需).{0,10}$", clause):
+            continue
+        return True
+    return False
 
 
 def _quality_check(

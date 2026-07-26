@@ -142,6 +142,51 @@ def test_remaining_source_modes_choose_distinct_architectures(
     assert "65%—75%" not in guidance
 
 
+def test_story_collection_titles_win_over_generic_wisdom_and_sutra_words() -> None:
+    profile = _infer_source_mode(
+        [
+            _source("佛学知识全知道"),
+            _source("佛经的智慧"),
+            _source("佛教·佛经故事"),
+            _source("不可不知的佛教故事全集"),
+            _source("佛家经典智慧故事"),
+        ],
+        target_direction="形成一部约五章、可以连续阅读的中文通俗读物",
+        output_style="自然、准确，避免论文腔、百科腔和机械总结",
+    )
+
+    assert profile.key == "narrative"
+
+
+def test_negative_style_words_do_not_override_source_mode() -> None:
+    profile = _infer_source_mode(
+        [_source("古代人物故事")],
+        target_direction=None,
+        output_style="避免百科腔，不要写成知识条目",
+    )
+
+    assert profile.key == "narrative"
+
+
+def test_ambiguous_title_can_be_identified_from_story_body() -> None:
+    source = PublicDomainSource(
+        title="旧闻杂录",
+        rights_note="公版文本",
+        text=(
+            "从前有一位老人来到山中，看见弟子在门前等候。弟子问道缘由，老人回答之后离去。"
+            "有一天，国王听见此事，又来到寺中询问比丘。禅师看见来客，只说了一句话。"
+        )
+        * 10,
+    )
+    profile = _infer_source_mode(
+        [source],
+        target_direction=None,
+        output_style=None,
+    )
+
+    assert profile.key == "narrative"
+
+
 def test_public_domain_rewrite_rejects_empty_or_unconfirmed_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
