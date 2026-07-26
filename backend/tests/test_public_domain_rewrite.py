@@ -187,6 +187,34 @@ def test_ambiguous_title_can_be_identified_from_story_body() -> None:
     assert profile.key == "narrative"
 
 
+def test_narrative_sampling_removes_known_modern_anecdotes() -> None:
+    modern = (
+        "我出差回来，外甥正在阳台玩冰球。后来听说外甥结婚，我又到车站见他。"
+        "那个小朋友患了重感冒，舅舅还说太不卫生。"
+    ) * 30
+    traditional = (
+        "从前有一位比丘来到王城，国王问道修行之要，比丘回答后便离开。"
+    ) * 30
+
+    sample = service._sample_source(modern + traditional, source_mode="narrative")
+
+    assert "冰球" not in sample
+    assert "出差" not in sample
+    assert "外甥" not in sample
+    assert "比丘" in sample
+
+
+def test_modern_anecdote_markers_force_manual_review() -> None:
+    source = _source("传统故事")
+    report = check_public_domain_manuscript(
+        "他出差回来，发现外甥正在阳台玩冰球。" * 20,
+        [source],
+    )
+
+    assert report["status"] == "needs_review"
+    assert "冰球" in report["modern_narrative_issues"]
+
+
 def test_public_domain_rewrite_rejects_empty_or_unconfirmed_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

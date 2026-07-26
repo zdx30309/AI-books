@@ -200,12 +200,17 @@ def _save_bookshelf_item(db: Session, user: User, result) -> CreateTaskResponse:
         }
         for item in result.source_reports
     ]
+    review_required = result.status != "ok"
     task = Task(
         source_url="manual://public-domain-rewrite-simple",
         owner_id=user.id,
-        status=TaskStatus.COMPLETED,
+        status=TaskStatus.MANUAL_REVIEW if review_required else TaskStatus.COMPLETED,
         progress=100,
-        current_step="公版融合完成（简洁链路；可下载并人工复核）",
+        current_step=(
+            "公版融合已生成，但本地材料检查未通过；仅供人工复核"
+            if review_required
+            else "公版融合完成（简洁链路；可下载并人工复核）"
+        ),
         config={
             "title": title,
             "bookshelf": PUBLIC_DOMAIN_BOOKSHELF,

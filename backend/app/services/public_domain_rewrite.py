@@ -38,6 +38,50 @@ OVERLAP_RATIO_BLOCK = 0.12
 OVERLAP_RATIO_WARN = 0.07
 
 _PUBLIC_DOMAIN_HINTS = ("公版", "公共领域", "public domain", "cc0", "保护期届满")
+
+# Strong signals of contemporary anecdotes or modern derivative stories that
+# must not be fed back as traditional material in narrative-mode generation.
+# These are deliberately narrow to avoid treating ordinary ancient vocabulary
+# as modern merely because a word still exists today.
+_MODERN_NARRATIVE_MARKERS = (
+    "手机",
+    "微信",
+    "互联网",
+    "电脑",
+    "电视",
+    "电影",
+    "记者",
+    "公司",
+    "老板",
+    "同事",
+    "办公室",
+    "上班",
+    "下班",
+    "出差",
+    "车站",
+    "火车",
+    "汽车",
+    "飞机",
+    "医院",
+    "重感冒",
+    "太不卫生",
+    "阳台",
+    "小朋友",
+    "外甥",
+    "舅舅",
+    "请了假",
+    "冰球",
+    "爱地巴",
+    "藏族兄弟",
+    "乾达多",
+    "蜘蛛丝",
+    "蛛儿",
+    "甘鹿",
+    "长风公主",
+    "太子芝草",
+    "一见钟情",
+    "深情地拥抱",
+)
 _COPYRIGHT_MARKERS = (
     "版权所有",
     "版權所有",
@@ -147,9 +191,12 @@ def rewrite_public_domain_fusion(
         output_style=output_style,
     )
     mode_guidance = _load_mode_guidance(source_mode.key)
-    source_reports = tuple(_build_source_report(item) for item in clean_sources)
+    source_reports = tuple(
+        _build_source_report(item, source_mode.key) for item in clean_sources
+    )
     source_briefs = "\n\n".join(
-        _source_brief(item, index + 1) for index, item in enumerate(clean_sources)
+        _source_brief(item, index + 1, source_mode.key)
+        for index, item in enumerate(clean_sources)
     )
 
     blueprint_prompt = _render_prompt(
@@ -334,12 +381,12 @@ def _public_domain_basis(item: PublicDomainSource) -> str:
     return "用户确认；未在服务端替代人工权利审查"
 
 
-def _build_source_report(item: PublicDomainSource) -> SourceReport:
+def _build_source_report(item: PublicDomainSource, source_mode: str | None = None) -> SourceReport:
     return SourceReport(
         title=item.title,
         chars=len(item.text),
         public_domain_basis=_public_domain_basis(item),
-        sampled_chars=len(_sample_source(item.text)),
+        sampled_chars=len(_sample_source(item.text, source_mode=source_mode)),
     )
 
 
@@ -361,8 +408,12 @@ def _normalize_source_text(text: str) -> str:
     return "\n".join(result).strip()
 
 
-def _source_brief(item: PublicDomainSource, index: int) -> str:
-    sample = _sample_source(item.text)
+def _source_brief(
+    item: PublicDomainSource,
+    index: int,
+    source_mode: str | None = None,
+) -> str:
+    sample = _sample_source(item.text, source_mode=source_mode)
     return (
         f"来源 {index}：{item.title}\n"
         f"作者：{item.author or '未填写'}；出版年份：{item.publication_year or '未填写'}；"
@@ -372,8 +423,10 @@ def _source_brief(item: PublicDomainSource, index: int) -> str:
     )
 
 
-def _sample_source(text: str) -> str:
+def _sample_source(text: str, *, source_mode: str | None = None) -> str:
     text = _normalize_source_text(text)
+    if source_mode == "narrative":
+        text = _filter_modern_narrative_lines(text)
     if len(text) <= MAX_PROMPT_SAMPLE_CHARS:
         return text
     head = text[:3_200]
@@ -381,6 +434,23 @@ def _sample_source(text: str) -> str:
     middle = text[middle_start : middle_start + 2_800]
     tail = text[-2_000:]
     return f"[开篇节选]\n{head}\n\n[中段节选]\n{middle}\n\n[结尾节选]\n{tail}"
+
+
+def _filter_modern_narrative_lines(text: str) -> str:
+    lines = [
+        item.strip()
+        for item in re.split(r"(?:\n+|(?<=[。！？!?]))", text)
+        if item.strip()
+    ]
+    kept = [
+        line
+        for line in lines
+        if not any(marker in line for marker in _MODERN_NARRATIVE_MARKERS)
+    ]
+    filtered = _normalize_source_text("\n".join(kept))
+    # Never turn a usable source into an empty prompt because of aggressive
+    # filtering. The post-generation check still catches any leaked markers.
+    return filtered if len(filtered) >= MIN_SOURCE_CHARS else text
 
 
 def _render_prompt(filename: str, **values: object) -> str:
@@ -533,6 +603,7 @@ def _quality_check(
     warnings: list[str] = []
     overlap_issues: list[OverlapIssue] = []
     residue_issues: list[str] = []
+    modern_narrative_issues: list[str] = []
     for source in sources:
         issue = _overlap_issue(manuscript, source)
         if issue and issue.ratio >= OVERLAP_RATIO_WARN:
@@ -543,17 +614,24 @@ def _quality_check(
         if pattern in lowered:
             residue_issues.append(pattern)
             warnings.append(f"疑似输出残留：{pattern}")
+    for marker in _MODERN_NARRATIVE_MARKERS:
+        if marker in manuscript:
+            modern_narrative_issues.append(marker)
+            warnings.append(f"疑似现代案例或现代衍生材料：{marker}")
     status = "ok"
     if any(issue.ratio >= OVERLAP_RATIO_BLOCK for issue in overlap_issues):
         status = "needs_review"
         warnings.append("本地重合提示仅供人工复核，系统未自动发起修复调用。")
     if residue_issues:
         status = "needs_review"
+    if modern_narrative_issues:
+        status = "needs_review"
     return {
         "status": status,
         "warnings": warnings,
         "overlap_issues": overlap_issues,
         "residue_issues": residue_issues,
+        "modern_narrative_issues": modern_narrative_issues,
     }
 
 
