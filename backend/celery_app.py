@@ -40,8 +40,13 @@ celery_app = Celery(
 
 import ssl
 
-celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
-celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+# Celery rejects SSL options when a local ``redis://`` URL is used. Keep the
+# relaxed Upstash compatibility setting only for TLS-backed ``rediss://``
+# endpoints; local Docker Redis must receive no SSL transport configuration.
+if broker_url.startswith("rediss://"):
+    celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+if backend_url.startswith("rediss://"):
+    celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 celery_app.autodiscover_tasks(["app.tasks"], force=True)
 
