@@ -81,6 +81,13 @@ class SourceReport:
 
 
 @dataclass(frozen=True)
+class SourceModeProfile:
+    key: str
+    label: str
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class OverlapIssue:
     source_title: str
     matched_chunks: int
@@ -98,6 +105,9 @@ class PublicDomainFusionResult:
     source_reports: tuple[SourceReport, ...]
     warnings: tuple[str, ...]
     status: str
+    source_mode: str = "hybrid"
+    source_mode_label: str = "混合型"
+    source_mode_evidence: tuple[str, ...] = ()
     # Compatibility fields used by the old task/detail page.  The simple
     # public-domain route does not enable the AIGC gate.
     pre_aigc_manuscript: str = ""
@@ -131,6 +141,12 @@ def rewrite_public_domain_fusion(
         list(sources), public_domain_confirmed=public_domain_confirmed
     )
     target_length = _auto_target_length(clean_sources, target_length)
+    source_mode = _infer_source_mode(
+        clean_sources,
+        target_direction=target_direction,
+        output_style=output_style,
+    )
+    mode_guidance = _load_mode_guidance(source_mode.key)
     source_reports = tuple(_build_source_report(item) for item in clean_sources)
     source_briefs = "\n\n".join(
         _source_brief(item, index + 1) for index, item in enumerate(clean_sources)
@@ -144,6 +160,9 @@ def rewrite_public_domain_fusion(
         target_direction=target_direction or "从多来源材料中提炼一个新的中心问题和叙述路径",
         target_length=target_length,
         output_style=output_style or "自然、耐读、有叙事感，不写成论文",
+        source_mode=source_mode.label,
+        source_mode_evidence="；".join(source_mode.evidence) or "未发现单一类型占绝对优势",
+        mode_guidance=mode_guidance,
     )
     blueprint = deepseek_generate_text(
         blueprint_prompt,
@@ -166,6 +185,9 @@ def rewrite_public_domain_fusion(
         target_direction=target_direction or "把材料融会为一部独立的新作",
         target_length=target_length,
         output_style=output_style or "自然、耐读、有叙事感，不写成论文",
+        source_mode=source_mode.label,
+        source_mode_evidence="；".join(source_mode.evidence) or "未发现单一类型占绝对优势",
+        mode_guidance=mode_guidance,
     )
     manuscript = deepseek_generate_text(
         manuscript_prompt,
@@ -230,7 +252,10 @@ def rewrite_public_domain_fusion(
 
     title = _pick_title(target_title, manuscript or pre_aigc_manuscript)
     report = _format_quality_report(
-        quality, source_reports, len(manuscript or pre_aigc_manuscript)
+        quality,
+        source_reports,
+        len(manuscript or pre_aigc_manuscript),
+        source_mode,
     )
     return PublicDomainFusionResult(
         title=title,
@@ -240,6 +265,9 @@ def rewrite_public_domain_fusion(
         source_reports=source_reports,
         warnings=tuple(dict.fromkeys(warnings)),
         status=str(quality["status"]),
+        source_mode=source_mode.key,
+        source_mode_label=source_mode.label,
+        source_mode_evidence=source_mode.evidence,
         pre_aigc_manuscript=pre_aigc_manuscript,
         aigc_required=aigc_required,
         aigc_status=aigc_status,
@@ -369,6 +397,79 @@ def _render_prompt(filename: str, **values: object) -> str:
     return template
 
 
+def _load_mode_guidance(mode: str) -> str:
+    path = _PROMPT_DIR / "modes" / f"{mode}.md"
+    if not path.exists():
+        path = _PROMPT_DIR / "modes" / "hybrid.md"
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _infer_source_mode(
+    sources: list[PublicDomainSource],
+    *,
+    target_direction: str | None,
+    output_style: str | None,
+) -> SourceModeProfile:
+    """Choose a writing architecture without adding another model call."""
+
+    title_rules: dict[str, tuple[str, ...]] = {
+        "narrative": ("故事", "公案", "寓言", "传奇", "小说", "演义", "轶事"),
+        "historical": ("传记", "列传", "年谱", "通史", "史话", "史记", "纪事", "人物志"),
+        "classical": ("经", "论", "注", "疏", "语录", "古文", "诗", "词", "赋", "文选"),
+        "expository": ("知识", "全知道", "百科", "概论", "导论", "常识", "辞典", "智慧"),
+        "practical": ("方法", "指南", "手册", "修习", "修行", "养生", "技法", "入门"),
+    }
+    request_rules: dict[str, tuple[str, ...]] = {
+        "narrative": ("故事", "叙事", "讲述", "情节", "人物"),
+        "historical": ("传记", "生平", "历史", "年代", "沿革"),
+        "classical": ("原典", "原文", "译注", "注疏", "经文", "古文"),
+        "expository": ("知识", "解释", "概念", "义理", "科普", "百科"),
+        "practical": ("方法", "步骤", "实践", "指南", "训练", "修习"),
+    }
+    scores = {key: 0 for key in title_rules}
+    evidence: dict[str, list[str]] = {key: [] for key in title_rules}
+    for source in sources:
+        title = source.title.strip()
+        for mode, hints in title_rules.items():
+            matched = [hint for hint in hints if hint in title]
+            if not matched:
+                continue
+            scores[mode] += 3
+            evidence[mode].append(f"《{title}》命中“{matched[0]}”")
+
+    request_text = f"{target_direction or ''}\n{output_style or ''}"
+    for mode, hints in request_rules.items():
+        matched = [hint for hint in hints if hint in request_text]
+        if not matched:
+            continue
+        scores[mode] += 5
+        evidence[mode].append(f"目标要求命中“{matched[0]}”")
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_mode, best_score = ranked[0]
+    second_score = ranked[1][1]
+    labels = {
+        "narrative": "故事叙事型",
+        "historical": "史传纪实型",
+        "classical": "原典阐释型",
+        "expository": "知识义理型",
+        "practical": "实践指南型",
+        "hybrid": "混合型",
+    }
+    if best_score < 3 or (best_score == second_score and best_score < 8):
+        combined = tuple(
+            item
+            for mode, _score in ranked[:2]
+            for item in evidence.get(mode, [])[:2]
+        )
+        return SourceModeProfile("hybrid", labels["hybrid"], combined)
+    return SourceModeProfile(
+        best_mode,
+        labels[best_mode],
+        tuple(evidence[best_mode][:6]),
+    )
+
+
 def _quality_check(
     manuscript: str, sources: list[PublicDomainSource]
 ) -> dict[str, object]:
@@ -438,11 +539,14 @@ def _format_quality_report(
     quality: dict[str, object],
     source_reports: tuple[SourceReport, ...],
     manuscript_chars: int,
+    source_mode: SourceModeProfile,
 ) -> str:
     lines = [
         f"状态：{quality['status']}",
         f"成稿字数：{manuscript_chars}",
         f"来源数量：{len(source_reports)}",
+        f"来源类型：{source_mode.label}",
+        f"类型依据：{'；'.join(source_mode.evidence) or '自动归为混合型'}",
         "来源仅作为输入材料；现代整理本的文字、章节安排、评论和现代例子不得直接进入正文。",
     ]
     for item in source_reports:
@@ -487,6 +591,7 @@ __all__ = [
     "PublicDomainFusionResult",
     "PublicDomainRewriteError",
     "PublicDomainSource",
+    "SourceModeProfile",
     "SourceReport",
     "check_public_domain_manuscript",
     "rewrite_public_domain_fusion",

@@ -56,6 +56,66 @@ def test_public_domain_rewrite_allows_one_to_ten_sources(monkeypatch: pytest.Mon
     assert "朱雀" not in calls[1]
 
 
+def test_story_sources_use_narrative_architecture(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_generate(prompt: str, **_kwargs) -> str:
+        calls.append(prompt)
+        return "故事蓝图" if len(calls) == 1 else "故事成稿。" * 100
+
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+    result = rewrite_public_domain_fusion(
+        sources=[
+            _source("古代佛教故事集"),
+            _source("禅门公案故事"),
+            _source("人物轶事选"),
+            _source("佛学知识概论"),
+        ],
+        target_direction="以故事为主，写成连续可读的叙事作品",
+        public_domain_confirmed=True,
+    )
+    assert result.source_mode == "narrative"
+    assert result.source_mode_label == "故事叙事型"
+    assert "65%—75%" in calls[0]
+    assert "每个主要故事至少分成 4—8 个自然段" in calls[1]
+
+
+def test_knowledge_source_does_not_force_story_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_generate(prompt: str, **_kwargs) -> str:
+        calls.append(prompt)
+        return "知识蓝图" if len(calls) == 1 else "知识成稿。" * 100
+
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+    result = rewrite_public_domain_fusion(
+        sources=[_source("传统文化知识全知道")],
+        target_direction="解释核心概念与知识关系",
+        public_domain_confirmed=True,
+    )
+    assert result.source_mode == "expository"
+    assert "概念为主、例证为辅" in calls[0]
+    assert "65%—75%" not in calls[1]
+
+
+def test_tied_source_types_use_chapter_level_hybrid_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_generate(prompt: str, **_kwargs) -> str:
+        calls.append(prompt)
+        return "混合蓝图" if len(calls) == 1 else "混合成稿。" * 100
+
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+    result = rewrite_public_domain_fusion(
+        sources=[_source("古代故事集"), _source("传统知识概论")],
+        public_domain_confirmed=True,
+    )
+    assert result.source_mode == "hybrid"
+    assert "按章分配写法" in calls[0]
+
+
 def test_public_domain_rewrite_rejects_empty_or_unconfirmed_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
