@@ -191,6 +191,7 @@ def test_narrative_sampling_removes_known_modern_anecdotes() -> None:
     modern = (
         "我出差回来，外甥正在阳台玩冰球。后来听说外甥结婚，我又到车站见他。"
         "那个小朋友患了重感冒，舅舅还说太不卫生。"
+        "阿瑟刚当上军官，行军时总在队伍后面。"
     ) * 30
     traditional = (
         "从前有一位比丘来到王城，国王问道修行之要，比丘回答后便离开。"
@@ -201,6 +202,7 @@ def test_narrative_sampling_removes_known_modern_anecdotes() -> None:
     assert "冰球" not in sample
     assert "出差" not in sample
     assert "外甥" not in sample
+    assert "阿瑟" not in sample
     assert "比丘" in sample
 
 
