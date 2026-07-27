@@ -104,6 +104,7 @@ _AI_RESIDUE_PATTERNS = (
     "根据要求",
     "参考来源",
 )
+_PROHIBITED_DASH_RE = re.compile(r"(?:——|—|–)")
 _PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 
 
@@ -220,6 +221,7 @@ def rewrite_public_domain_fusion(
             "不要复制现代整理本的表达、章节安排或评论。"
         ),
     ).strip()
+    blueprint = _remove_prohibited_dashes(blueprint)
     if not blueprint:
         raise RuntimeError("DeepSeek returned an empty fusion blueprint")
 
@@ -245,6 +247,7 @@ def rewrite_public_domain_fusion(
             "不补写没有依据的现代人物、现代事件、心理和结论。"
         ),
     ).strip()
+    manuscript = _remove_prohibited_dashes(manuscript)
     if not manuscript:
         raise RuntimeError("DeepSeek returned an empty manuscript")
 
@@ -274,7 +277,7 @@ def rewrite_public_domain_fusion(
                     required=True,
                 )
             )
-            manuscript = gate_result.text.strip()
+            manuscript = _remove_prohibited_dashes(gate_result.text.strip())
             aigc_status = gate_result.status
             aigc_initial_max_score = gate_result.initial_max_score
             aigc_final_max_score = gate_result.max_score
@@ -467,6 +470,33 @@ def _render_prompt(filename: str, **values: object) -> str:
     return template
 
 
+def _remove_prohibited_dashes(text: str) -> str:
+    """Remove Chinese dash punctuation without launching a repair model call."""
+
+    cleaned = text or ""
+    paired = re.compile(r"(?:——|—|–)([^\n—–]{1,120}?)(?:——|—|–)")
+    previous = None
+    while cleaned != previous:
+        previous = cleaned
+        cleaned = paired.sub(r"（\1）", cleaned)
+    cleaned = _PROHIBITED_DASH_RE.sub("，", cleaned)
+    for old, new in (
+        ("，，", "，"),
+        ("，。", "。"),
+        ("，；", "；"),
+        ("，：", "："),
+        ("，！", "！"),
+        ("，？", "？"),
+        ("。，", "。"),
+        ("；，", "；"),
+        ("：，", "："),
+        ("（，", "（"),
+        ("，）", "）"),
+    ):
+        cleaned = cleaned.replace(old, new)
+    return cleaned
+
+
 def _load_mode_guidance(mode: str) -> str:
     path = _PROMPT_DIR / "modes" / f"{mode}.md"
     if not path.exists():
@@ -604,6 +634,7 @@ def _quality_check(
     overlap_issues: list[OverlapIssue] = []
     residue_issues: list[str] = []
     modern_narrative_issues: list[str] = []
+    dash_issues: list[str] = []
     for source in sources:
         issue = _overlap_issue(manuscript, source)
         if issue and issue.ratio >= OVERLAP_RATIO_WARN:
@@ -618,6 +649,9 @@ def _quality_check(
         if marker in manuscript:
             modern_narrative_issues.append(marker)
             warnings.append(f"疑似现代案例或现代衍生材料：{marker}")
+    dash_issues = sorted(set(_PROHIBITED_DASH_RE.findall(manuscript)))
+    if dash_issues:
+        warnings.append("公版成稿不得出现破折号。")
     status = "ok"
     if any(issue.ratio >= OVERLAP_RATIO_BLOCK for issue in overlap_issues):
         status = "needs_review"
@@ -626,12 +660,15 @@ def _quality_check(
         status = "needs_review"
     if modern_narrative_issues:
         status = "needs_review"
+    if dash_issues:
+        status = "needs_review"
     return {
         "status": status,
         "warnings": warnings,
         "overlap_issues": overlap_issues,
         "residue_issues": residue_issues,
         "modern_narrative_issues": modern_narrative_issues,
+        "dash_issues": dash_issues,
     }
 
 

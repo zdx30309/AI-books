@@ -77,8 +77,8 @@ def test_story_sources_use_narrative_architecture(monkeypatch: pytest.MonkeyPatc
     )
     assert result.source_mode == "narrative"
     assert result.source_mode_label == "故事叙事型"
-    assert "65%—75%" in calls[0]
-    assert "每个主要故事至少分成 4—8 个自然段" in calls[1]
+    assert "65% 至 75%" in calls[0]
+    assert "每个主要故事至少分成 4 至 8 个自然段" in calls[1]
 
 
 def test_knowledge_source_does_not_force_story_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,7 +96,7 @@ def test_knowledge_source_does_not_force_story_ratio(monkeypatch: pytest.MonkeyP
     )
     assert result.source_mode == "expository"
     assert "概念为主、例证为辅" in calls[0]
-    assert "65%—75%" not in calls[1]
+    assert "65% 至 75%" not in calls[1]
 
 
 def test_tied_source_types_use_chapter_level_hybrid_mode(
@@ -139,7 +139,7 @@ def test_remaining_source_modes_choose_distinct_architectures(
     assert profile.key == expected
     guidance = service._load_mode_guidance(profile.key)
     assert guidance
-    assert "65%—75%" not in guidance
+    assert "65% 至 75%" not in guidance
 
 
 def test_story_collection_titles_win_over_generic_wisdom_and_sutra_words() -> None:
@@ -213,6 +213,39 @@ def test_modern_anecdote_markers_force_manual_review() -> None:
 
     assert report["status"] == "needs_review"
     assert "冰球" in report["modern_narrative_issues"]
+
+
+def test_public_domain_rewrite_removes_dashes_without_extra_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_generate(prompt: str, **_kwargs) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "蓝图——故事在前——义理在后。"
+        return "他停下来——不是因为畏惧——而是为了辨明方向。后来—他继续前行。"
+
+    monkeypatch.setattr(service, "deepseek_generate_text", fake_generate)
+    result = rewrite_public_domain_fusion(
+        sources=[_source("古代人物故事")],
+        target_direction="以故事为主",
+        public_domain_confirmed=True,
+    )
+
+    assert len(calls) == 2
+    assert "不得使用任何中文破折号" in calls[1]
+    assert not any(mark in result.blueprint for mark in ("——", "—", "–"))
+    assert not any(mark in result.manuscript for mark in ("——", "—", "–"))
+    assert result.manuscript == "他停下来（不是因为畏惧）而是为了辨明方向。后来，他继续前行。"
+    assert result.quality_report.startswith("状态：ok")
+
+
+def test_public_domain_checker_rejects_remaining_dashes() -> None:
+    report = check_public_domain_manuscript("仍有一句——用了破折号。" * 30, [_source("来源")])
+
+    assert report["status"] == "needs_review"
+    assert report["dash_issues"]
 
 
 def test_public_domain_rewrite_rejects_empty_or_unconfirmed_sources(
