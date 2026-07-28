@@ -22,6 +22,7 @@ SERIAL_POLICY_VERSION = "public-domain-serial-story-v1"
 # padded merely to make every chapter mechanically identical; the final book
 # still has a strict 90% whole-manuscript floor.
 _MIN_CHAPTER_RATIO = 0.70
+_MIN_BOOK_RATIO = 0.90
 _MAX_CHAPTER_RATIO = 1.10
 _SOURCE_EXCERPT_CHARS = 2_200
 _PROHIBITED_DASH_RE = re.compile(r"(?:——|—|–)")
@@ -252,7 +253,51 @@ def _build_or_resume_chapter(
     )
     cached = _load_artifact(path, artifact_key)
     if cached is not None:
-        return legacy._chapter_from_dict(dict(cached["chapter"]))  # noqa: SLF001
+        cached_chapter = legacy._chapter_from_dict(  # noqa: SLF001
+            dict(cached["chapter"])
+        )
+        cleaned_text = _deduplicate_exact_paragraphs(cached_chapter.text)
+        issues, local_report = _chapter_local_issues(
+            text=cleaned_text,
+            target_chars=int(contract["target_chars"]),
+            sources=sources,
+            previous_chapters=chapter_dir,
+            number=number,
+        )
+        if issues:
+            raise legacy.PublicDomainQualityError(
+                f"第 {number} 章缓存终检未通过：{'；'.join(issues)}"
+            )
+        chapter = legacy.ChapterResult(
+            number=cached_chapter.number,
+            title=cached_chapter.title,
+            text=cleaned_text,
+            summary=legacy._fallback_summary(cleaned_text),  # noqa: SLF001
+            used_claim_ids=cached_chapter.used_claim_ids,
+            audit={
+                "pass": True,
+                "policy_version": SERIAL_POLICY_VERSION,
+                "deterministic_issues": [],
+                "local_report": local_report,
+                "paid_auditor_calls": 0,
+                "reused_checkpoint": True,
+                "exact_duplicate_paragraphs_removed": (
+                    cleaned_text != cached_chapter.text
+                ),
+            },
+        )
+        legacy._atomic_write_json(  # noqa: SLF001
+            path,
+            {
+                "artifact_key": artifact_key,
+                "policy_version": SERIAL_POLICY_VERSION,
+                "chapter": legacy._chapter_to_dict(chapter),  # noqa: SLF001
+            },
+        )
+        legacy._atomic_write_text(  # noqa: SLF001
+            chapter_dir / f"{number:03d}.md", chapter.text
+        )
+        return chapter
 
     failed_path = chapter_dir / f"{number:03d}.failed.json"
     failed_cached = _load_artifact(failed_path, artifact_key)
@@ -450,6 +495,9 @@ def _chapter_local_issues(
     repeated = _cross_chapter_repetition(text, previous_chapters, number)
     if repeated:
         issues.append(f"与前文章节存在 {len(repeated)} 处 80 字连续重复")
+    intra_chapter_repeated = _intra_chapter_repetition(text)
+    if intra_chapter_repeated:
+        issues.append(f"章节内存在 {len(intra_chapter_repeated)} 个完整重复段落")
     report = {
         "chars": chars,
         "paragraphs": len(paragraphs),
@@ -458,6 +506,7 @@ def _chapter_local_issues(
         "residue_markers": list(quality.get("residue_issues") or []),
         "overlap": [asdict(item) for item in quality.get("overlap_issues") or []],
         "cross_chapter_repeat_samples": repeated,
+        "intra_chapter_repeat_samples": intra_chapter_repeated,
     }
     return list(dict.fromkeys(issues)), report
 
@@ -471,7 +520,7 @@ def _final_quality_report(
 ) -> dict[str, Any]:
     body = "\n\n".join(item.text for item in chapters)
     chars = legacy.count_text_chars(body)
-    lower = int(dimensions.target_chars * _MIN_CHAPTER_RATIO)
+    lower = int(dimensions.target_chars * _MIN_BOOK_RATIO)
     upper = int(dimensions.target_chars * _MAX_CHAPTER_RATIO)
     blocking: list[str] = []
     if len(chapters) != dimensions.target_chapters:
@@ -484,6 +533,9 @@ def _final_quality_report(
     quality = simple.check_public_domain_manuscript(body, sources)
     if quality.get("status") != "ok":
         blocking.extend(str(value) for value in quality.get("warnings") or [])
+    intra_chapter_repeated = _intra_chapter_repetition(body)
+    if intra_chapter_repeated:
+        blocking.append(f"全书存在 {len(intra_chapter_repeated)} 个完整重复段落")
     failed = [item.number for item in chapters if not bool(item.audit.get("pass"))]
     if failed:
         blocking.append(f"章节本地终检失败：{failed}")
@@ -502,6 +554,7 @@ def _final_quality_report(
         "source_overlap": [asdict(item) for item in quality.get("overlap_issues") or []],
         "modern_markers": list(quality.get("modern_narrative_issues") or []),
         "residue_markers": list(quality.get("residue_issues") or []),
+        "duplicate_paragraph_samples": intra_chapter_repeated,
         "chapter_reports": [item.audit.get("local_report") for item in chapters],
     }
 
@@ -518,7 +571,8 @@ def _clean_chapter_text(text: str, title: str) -> str:
     value = "\n".join(lines).strip()
     value = simple._remove_prohibited_dashes(value)  # noqa: SLF001
     value = _remove_modern_sentences(value)
-    return simple._normalize_source_text(value)  # noqa: SLF001
+    value = simple._normalize_source_text(value)  # noqa: SLF001
+    return _deduplicate_exact_paragraphs(value)
 
 
 def _clean_plan_text(value: object) -> str:
@@ -537,7 +591,8 @@ def _merge_continuation(original: str, extension: str) -> str:
         else:
             break
     merged = f"{original.rstrip()}\n\n{'\n'.join(lines).strip()}".strip()
-    return simple._remove_prohibited_dashes(merged)  # noqa: SLF001
+    merged = simple._remove_prohibited_dashes(merged)  # noqa: SLF001
+    return _deduplicate_exact_paragraphs(merged)
 
 
 def _truncate_at_sentence(text: str, maximum_chars: int) -> str:
@@ -578,6 +633,34 @@ def _cross_chapter_repetition(text: str, chapter_dir: Path, number: int) -> list
                 if len(samples) >= 3:
                     return samples
     return samples
+
+
+def _intra_chapter_repetition(text: str) -> list[str]:
+    seen: set[str] = set()
+    repeated: list[str] = []
+    for paragraph in (value.strip() for value in re.split(r"\n+", text)):
+        compact = simple._compact_for_overlap(paragraph)  # noqa: SLF001
+        if len(compact) < 80:
+            continue
+        if compact in seen and compact[:80] not in repeated:
+            repeated.append(compact[:80])
+        seen.add(compact)
+    return repeated[:10]
+
+
+def _deduplicate_exact_paragraphs(text: str) -> str:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for paragraph in (value.strip() for value in re.split(r"\n+", text)):
+        if not paragraph:
+            continue
+        compact = simple._compact_for_overlap(paragraph)  # noqa: SLF001
+        if len(compact) >= 80 and compact in seen:
+            continue
+        if len(compact) >= 80:
+            seen.add(compact)
+        kept.append(paragraph)
+    return "\n\n".join(kept).strip()
 
 
 def _trim_fragment(text: str) -> str:

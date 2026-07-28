@@ -271,3 +271,31 @@ def test_naturally_short_chapter_can_pass_without_padding() -> None:
 
     assert report["chars"] >= 7_000
     assert not any("有效字数" in issue for issue in issues)
+
+
+def test_continuation_exact_paragraph_overlap_is_removed() -> None:
+    repeated = (
+        "This complete narrative paragraph preserves the character situation action "
+        "and result and must not be copied again when a continuation is appended. " * 2
+    ).strip()
+    original = f"Opening paragraph.\n\n{repeated}"
+    extension = f"{repeated}\n\nA genuinely new continuation paragraph."
+
+    merged = serial._merge_continuation(original, extension)  # noqa: SLF001
+
+    assert merged.count(repeated) == 1
+    assert "A genuinely new continuation paragraph." in merged
+    assert serial._intra_chapter_repetition(merged) == []  # noqa: SLF001
+
+
+def test_intra_chapter_duplicate_paragraph_is_reported() -> None:
+    repeated = (
+        "This long paragraph exists twice inside one chapter and the final quality "
+        "gate must identify that exact duplication before delivery. " * 2
+    ).strip()
+    body = f"First paragraph.\n\n{repeated}\n\nMiddle paragraph.\n\n{repeated}"
+
+    samples = serial._intra_chapter_repetition(body)  # noqa: SLF001
+
+    assert len(samples) == 1
+    assert samples[0] == simple._compact_for_overlap(repeated)[:80]  # noqa: SLF001
