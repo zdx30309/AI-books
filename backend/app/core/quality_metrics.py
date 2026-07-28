@@ -408,7 +408,12 @@ _CONTINUATION_PREFIXES = (
     "这种",
     "这类",
 )
-_FINAL_QA_EXCLUDED_CATEGORIES = {"comic_series", "healing_comic"}
+_FINAL_QA_EXCLUDED_CATEGORIES = {
+    "comic_series",
+    "healing_comic",
+    "story_comic",
+    "homophone_comic",
+}
 _CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
 _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES = {
     _CLASSICAL_INTERLEAVED_CATEGORY,

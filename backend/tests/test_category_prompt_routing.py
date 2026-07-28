@@ -114,6 +114,8 @@ WRITER_ROUTING_CATEGORIES = [
     not in {
         "comic_series",
         "healing_comic",
+        "story_comic",
+        "homophone_comic",
         "finance_technology",
         "finance_technology_recommendation",
     }

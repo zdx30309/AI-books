@@ -21,7 +21,12 @@ interface Props {
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
-const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
+const HEALING_COMIC_FAMILY_IDS = new Set([
+  "healing_comic",
+  "story_comic",
+  "homophone_comic",
+]);
+const COMIC_CATEGORY_IDS = new Set(["comic_series", ...HEALING_COMIC_FAMILY_IDS]);
 const HEALING_COMIC_DEFAULT_PANEL_COUNT = 32;
 const HEALING_COMIC_MIN_PANEL_COUNT = 1;
 const CLASSICAL_VARIANTS = [
@@ -204,7 +209,14 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       ? "reference_translation"
       : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
-  const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
+  const isHealingComicFamily = HEALING_COMIC_FAMILY_IDS.has(category);
+  const comicCategoryLabel = category === "story_comic"
+    ? "图文故事"
+    : category === "homophone_comic"
+      ? "谐音梗"
+      : category === "healing_comic"
+        ? "漫画"
+        : "插画";
   const supportsStyleReference =
     category === "web_short_story"
     || category === "social_science_test"
@@ -457,10 +469,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     }
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
-      if (comicCategory === "healing_comic") {
+      if (HEALING_COMIC_FAMILY_IDS.has(comicCategory)) {
         const cleanedTitle = comicTitle.trim();
         if (!cleanedTitle) {
-          setError("漫画需要输入书名");
+          setError(`${comicCategoryLabel}需要输入书名`);
           return;
         }
         const panelCount = parsePanelCount(comicPanelCount);
@@ -468,7 +480,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           !Number.isInteger(panelCount) ||
           panelCount < HEALING_COMIC_MIN_PANEL_COUNT
         ) {
-          setError(`漫画章节数需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
+          setError(`${comicCategoryLabel}章节数需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
           return;
         }
         const characterPrompt = comicThemeRequirement.trim();
@@ -483,9 +495,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         setSubmitting(true);
         try {
           const res = await api.createTask({
-            url: "manual://healing_comic",
+            url: `manual://${comicCategory}`,
             config: {
-              category: "healing_comic",
+              category: comicCategory,
               comic_title: cleanedTitle,
               comic_panel_count: panelCount,
               comic_character_prompt: characterPrompt || undefined,
@@ -921,6 +933,30 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             >
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
               漫画
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic", "story_comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic" && category === "story_comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              图文故事
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic", "homophone_comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic" && category === "homophone_comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              谐音梗
             </button>
           </div>
 
@@ -1505,7 +1541,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
-              {category === "healing_comic" ? (
+              {isHealingComicFamily ? (
                 <>
                 <div>
                   <label
@@ -1522,7 +1558,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。
+                    {category === "story_comic"
+                      ? "治愈系图文故事：每章一张单画面或三至四格故事页，场景、动作和人物关系持续变化，画面只保留一句完整文案。"
+                      : category === "homophone_comic"
+                        ? "治愈系谐音短剧：先批量构思并筛掉生硬、陈旧和需要解释的梗，再把最优笑点写成三至四格连续故事。"
+                        : "输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。"}
                   </p>
                 </div>
                 <div>
@@ -1543,7 +1583,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。
+                    {category === "healing_comic"
+                      ? `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。`
+                      : `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章生成 1 张完整故事页，另含 1 张封面。`}
                   </p>
                 </div>
                 <div>
@@ -1567,7 +1609,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
+                    {category === "healing_comic"
+                      ? "可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。"
+                      : "可留空；填写后会约束原创角色。图文故事和谐音梗仍会主动变化场所、动作、关系、物件与镜头，避免只换主角。"}
                   </p>
                 </div>
                 <div>
@@ -1608,7 +1652,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   id="comic-title"
                   value={comicTitle}
                   onChange={(e) => setComicTitle(e.target.value)}
-                  placeholder={category === "healing_comic" ? "看见你，心就软了" : "今晚，月亮替我抱抱你"}
+                  placeholder="今晚，月亮替我抱抱你"
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 <p className="mt-2 text-xs leading-relaxed text-warm-500">

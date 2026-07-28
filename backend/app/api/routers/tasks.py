@@ -47,6 +47,7 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
     validate_comic_phrases,
 )
+from app.services.comic_variants import is_healing_comic_family
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
     CLASSICAL_CHINESE_CATEGORY_IDS,
@@ -272,7 +273,7 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("classical_variant", None)
         cfg.pop("classical_variant_label", None)
         cfg.pop("classical_original_title", None)
-    if category == "healing_comic":
+    if is_healing_comic_family(category):
         title = parse_comic_title(
             cfg.get("comic_title")
             or cfg.get("title")
@@ -1256,7 +1257,7 @@ def create_task_batch(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
-    if cfg.get("category") in {"comic_series", "healing_comic"}:
+    if cfg.get("category") == "comic_series" or is_healing_comic_family(cfg.get("category")):
         label = str(cfg.get("category_label") or "插画")
         raise HTTPException(status_code=400, detail=f"{label}不支持候选链接库，请使用{label}入口输入 5 或 6 条短语")
     existing_urls = {
@@ -1595,7 +1596,7 @@ def pause_comic_task(
 
     cfg = dict(task.config or {})
     category = str(cfg.get("category") or "").strip()
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=409, detail="当前任务不是漫画分类，不能使用漫画暂停")
     if task.status == TaskStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="任务已完成，不能暂停")
@@ -2154,7 +2155,7 @@ def _markdown_to_docx(
             candidate = image_base_dir / "comic_images" / image_filename
             if candidate.exists():
                 image_path = candidate
-            if comic_preview_images and normalized_category == "healing_comic":
+            if comic_preview_images and is_healing_comic_family(normalized_category):
                 preview_path = _comic_image_preview_path_from_output_dir(image_base_dir, image_filename)
                 if preview_path is not None:
                     image_path = preview_path
@@ -2510,7 +2511,7 @@ def get_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     image_path = _task_comic_image_preview_path(task_id, filename)
     if image_path is None:
@@ -2539,7 +2540,7 @@ def download_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2564,7 +2565,7 @@ def download_task_image_preview_direct(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2907,7 +2908,7 @@ def _build_single_download_response(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
-    use_preview_docx = bool(comic_preview_images and category == "healing_comic" and fmt == "docx")
+    use_preview_docx = bool(comic_preview_images and is_healing_comic_family(category) and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
     download_dir.mkdir(parents=True, exist_ok=True)

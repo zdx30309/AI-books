@@ -41,6 +41,7 @@ from app.services.comic_series import (
     parse_healing_comic_panel_count,
     parse_healing_comic_source_content,
 )
+from app.services.comic_variants import is_healing_comic_family
 from app.services.content_engine import generate_full_book, normalize_final_markdown
 from app.services.aigc_quality_gate import (
     AigcManualReviewRequired,
@@ -1234,12 +1235,13 @@ def process_video(_self, task_id: str) -> dict:
             category_prompt_status=category_meta["prompt_status"],
         )
 
-        is_comic_category = category in {"comic_series", "healing_comic"}
+        is_comic_category = category == "comic_series" or is_healing_comic_family(category)
         comic_label = category_meta["label"]
         start_step = f"即将生成{comic_label}短语结构" if is_comic_category else "即将启动主模型"
         _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
+            "comic_jokes_selected": (38, "谐音笑点候选已完成六维筛选"),
             "comic_structure_done": (45, f"{comic_label}短语结构已生成"),
             "comic_images_start": (86, f"{comic_label}配图启动"),
             "comic_image": (88, f"{comic_label}配图生成中"),
@@ -1358,7 +1360,7 @@ def process_video(_self, task_id: str) -> dict:
                 ),
                 healing_comic_should_pause=(
                     (lambda: _healing_comic_pause_requested(task_id, run_id))
-                    if category == "healing_comic"
+                    if is_healing_comic_family(category)
                     else None
                 ),
                 input_source=input_source,

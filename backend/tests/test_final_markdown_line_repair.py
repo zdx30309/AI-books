@@ -300,6 +300,8 @@ def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories(
     special_layout_categories = {
         "comic_series",
         "healing_comic",
+        "story_comic",
+        "homophone_comic",
         "classical_chinese",
         "classical_chinese_interleaved",
         "classical_chinese_novel_style",

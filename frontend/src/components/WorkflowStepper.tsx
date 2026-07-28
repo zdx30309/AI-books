@@ -56,7 +56,8 @@ export function WorkflowStepper({ progress, currentStep, status, category, aigcR
   const isPaused = status === "paused" || isManualReview;
   const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
-    category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
+    ["comic_series", "healing_comic", "story_comic", "homophone_comic"].includes(category || "")
+    || currentStep.includes("漫画");
   const isDirectWriterWorkflow =
     category === "classical_chinese_novel_style" ||
     category === "classical_chinese_reference_rewrite";

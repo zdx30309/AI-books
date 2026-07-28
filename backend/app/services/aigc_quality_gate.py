@@ -31,6 +31,8 @@ AIGC_EXCLUDED_CATEGORY_IDS = frozenset(
     {
         "comic_series",
         "healing_comic",
+        "story_comic",
+        "homophone_comic",
         "history_culture",
         "web_short_story",
         "suspense_micro_reasoning",

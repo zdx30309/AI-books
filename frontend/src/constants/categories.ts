@@ -194,6 +194,20 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "story_comic",
+    label: "图文故事",
+    core_feature: "治愈系生活小故事，每章为单画面或三至四格，并只保留一句完整文案",
+    directions: "生活小事、连续动作、温暖转折、完整文案、场景变化",
+    prompt_status: "ready",
+  },
+  {
+    id: "homophone_comic",
+    label: "谐音梗",
+    core_feature: "先筛选笑点，再生成三至四格治愈系谐音短剧",
+    directions: "自然铺垫、双义误读、视觉反转、温暖笑点、无需解释",
+    prompt_status: "ready",
+  },
+  {
     id: "health_wellness",
     label: "健康·养生",
     core_feature: "轻科普，可立即行动",
