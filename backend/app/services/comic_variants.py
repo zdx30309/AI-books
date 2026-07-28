@@ -42,7 +42,44 @@ _STALE_PUN_PAIRS = {
     frozenset(("好事", "好柿")),
     frozenset(("期待", "脐带")),
     frozenset(("知足", "蜘蛛")),
+    # Production samples proved that these pairs become soft illustrations,
+    # not jokes with a real reversal.  Keep them out of future batches.
+    frozenset(("晚点", "碗垫")),
+    frozenset(("鼓励", "谷粒")),
+    frozenset(("踏实", "踏石")),
 }
+
+_HOMOPHONE_ROAST_MODES = frozenset(
+    {
+        "self_roast",
+        "upward_satire",
+        "peer_banter",
+        "boast_deflation",
+        "excuse_exposure",
+        "double_standard",
+        "empty_promise",
+        "literal_misread",
+    }
+)
+_HOMOPHONE_SCORE_KEYS = (
+    "naturalness",
+    "surprise",
+    "visual_payoff",
+    "freshness",
+    "instant_clarity",
+    "laugh_out_loud",
+    "roast_precision",
+    "status_reversal",
+    "memorability",
+    "forcedness",
+    "harm_risk",
+)
+_HOMOPHONE_EXPLANATION_RE = re.compile(
+    r"(?:这个梗|谐音梗|意思是|也就是说|换句话说|原来是|所谓的.+就是)"
+)
+_HOMOPHONE_SOFT_ENDING_RE = re.compile(
+    r"(?:终于都有地方|慢慢变|一步一步|有了起飞的劲|温柔地|轻轻地|暖暖地)"
+)
 
 _STORY_FALLBACKS = (
     {
@@ -85,43 +122,123 @@ _STORY_FALLBACKS = (
 
 _HOMOPHONE_FALLBACKS = (
     {
-        "source_word": "放心",
-        "pun_word": "芳心",
-        "pinyin_pair": "fàng xīn / fāng xīn",
-        "caption": "邻居让她尽管放心，她却先替窗台接住了那盆摇摇欲坠的芳心。",
-        "protagonist": "系绿色围裙的原创花店学徒",
-        "place": "阵雨刚到的老楼走廊",
-        "relationship": "花店学徒和临时出门的邻居",
-        "key_prop": "一盆被风吹歪的芳香植物",
-        "story_setup": "邻居出门前托她照看窗台并说尽管放心",
-        "story_change": "雨风把花盆推到窗台边，她赶紧伸手接住",
-        "story_ending": "邻居回来时，她抱着仍在开花的植物站在门口",
+        "source_word": "加薪",
+        "pun_word": "夹心",
+        "pinyin_pair": "jiā xīn / jiā xīn",
+        "caption": "老板说今天给全组加薪，结果每个人桌上只多了一块夹心饼干。",
+        "protagonist": "刚入职的小浣熊和笑容满面的狐狸经理",
+        "place": "周一早会后的共享办公室",
+        "relationship": "爱画饼的经理和等结果的员工",
+        "key_prop": "六块单独装进信封的夹心饼干",
+        "target_behavior": "用漂亮承诺代替真实回报的画饼",
+        "roast_mode": "empty_promise",
+        "audience_expectation": "经理郑重宣布今天给全组加薪，员工们以为承诺终于兑现",
+        "misread_trigger": "经理把装得鼓鼓的工资信封逐个发到桌上",
+        "literal_action": "大家打开信封，里面各躺着一块夹心饼干",
+        "status_reversal": "最会制造期待的经理被一屋子沉默盯住",
+        "target_reaction": "经理还保持鼓掌姿势，笑容一点点僵住",
+        "story_setup": "经理在早会上郑重宣布今天给全组加薪，员工们第一次集体坐直",
+        "story_change": "他把一摞鼓鼓的信封逐一摆到每个人桌上",
+        "story_ending": "信封里各有一块夹心饼干，员工沉默看向仍在鼓掌的经理",
+        "layout": "four_panel",
+        "panel_script": [
+            {"panel": 1, "visual": "狐狸经理站在白板前郑重宣布消息，员工们从困倦变成期待"},
+            {"panel": 2, "visual": "经理把一摞鼓鼓的信封逐一放到每个人桌上"},
+            {"panel": 3, "visual": "员工同时拆开信封，里面各躺着一块夹心饼干"},
+            {"panel": 4, "visual": "全屋沉默盯住仍在鼓掌的经理，经理的笑容僵在脸上"},
+        ],
+        "scores": {
+            "naturalness": 9,
+            "surprise": 9,
+            "visual_payoff": 9,
+            "freshness": 8,
+            "instant_clarity": 10,
+            "laugh_out_loud": 9,
+            "roast_precision": 9,
+            "status_reversal": 9,
+            "memorability": 9,
+            "forcedness": 1,
+            "harm_risk": 0
+        },
     },
     {
-        "source_word": "天意",
-        "pun_word": "添衣",
-        "pinyin_pair": "tiān yì / tiān yī",
-        "caption": "他一直等所谓的天意，外婆却先追到站台，认真替他添衣。",
-        "protagonist": "准备远行的原创年轻木匠与白发外婆",
-        "place": "清晨有风的乡镇站台",
-        "relationship": "外婆和第一次远行的外孙",
-        "key_prop": "一件多缝了内袋的旧外套",
-        "story_setup": "年轻人望着远处等一个决定是否出发的征兆",
-        "story_change": "外婆从坡道追来，把旧外套披到他肩上",
-        "story_ending": "车门打开时，他把外套扣好并回头挥手",
+        "source_word": "有才",
+        "pun_word": "油菜",
+        "pinyin_pair": "yǒu cái / yóu cài",
+        "caption": "他刚夸自己全班最有才，老师请他展示，他却抱来了一捆油菜。",
+        "protagonist": "总爱抢答的小孔雀和表情平静的山羊老师",
+        "place": "手工课快结束的小学教室",
+        "relationship": "爱自夸的学生和不拆穿人的老师",
+        "key_prop": "一捆还沾着泥的油菜",
+        "target_behavior": "还没展示本事就先把自己夸满的虚荣",
+        "roast_mode": "boast_deflation",
+        "audience_expectation": "小孔雀连续举手，自称是全班最有才的人",
+        "misread_trigger": "老师微笑着请他把才华拿到讲台上给大家看看",
+        "literal_action": "他冲出教室又抱回一大捆油菜",
+        "status_reversal": "原本等着被崇拜的学生成了全班沉默注视的对象",
+        "target_reaction": "小孔雀抱着油菜等掌声，老师只把菜篮递给他",
+        "story_setup": "小孔雀在手工课上不断抢答，夸自己全班最有才",
+        "story_change": "老师请他上台展示，他兴奋地跑出教室搬东西",
+        "story_ending": "他抱回一捆油菜站上讲台，全班和老师一起沉默",
+        "layout": "three_panel",
+        "panel_script": [
+            {"panel": 1, "visual": "小孔雀高高举手自信发言，同学们回头看他"},
+            {"panel": 2, "visual": "山羊老师伸手请他上台，小孔雀兴奋跑出教室"},
+            {"panel": 3, "visual": "小孔雀抱着一捆带泥油菜等掌声，老师和全班安静看着他"},
+        ],
+        "scores": {
+            "naturalness": 9,
+            "surprise": 9,
+            "visual_payoff": 10,
+            "freshness": 8,
+            "instant_clarity": 10,
+            "laugh_out_loud": 9,
+            "roast_precision": 8,
+            "status_reversal": 9,
+            "memorability": 9,
+            "forcedness": 1,
+            "harm_risk": 0
+        },
     },
     {
-        "source_word": "无谓",
-        "pun_word": "无味",
-        "pinyin_pair": "wú wèi / wú wèi",
-        "caption": "她劝两位厨师别再作无谓争论，一尝汤才发现今天真正无味的是这一锅。",
-        "protagonist": "戴格纹头巾的原创小餐馆老板",
-        "place": "午市前忙乱的小餐馆后厨",
-        "relationship": "老板和两位争论配方的厨师",
-        "key_prop": "一勺忘记放盐的热汤",
-        "story_setup": "两位厨师隔着灶台争论谁记错了配方",
-        "story_change": "老板端起汤勺让两个人先停下来尝一口",
-        "story_ending": "三个人同时看向原封未动的盐罐并笑出声",
+        "source_word": "诚意",
+        "pun_word": "橙衣",
+        "pinyin_pair": "chéng yì / chéng yī",
+        "caption": "他迟到两小时还说自己带足了诚意，原来只是特地换了件橙衣。",
+        "protagonist": "精心打扮却总找借口的橘猫和等到打烊的兔子",
+        "place": "已经开始收椅子的街角小餐馆",
+        "relationship": "第一次见面的相亲对象",
+        "key_prop": "一件亮得扎眼的橙色外套",
+        "target_behavior": "把表面功夫当成诚意并为迟到找借口",
+        "roast_mode": "excuse_exposure",
+        "audience_expectation": "兔子独自等到店员开始收桌，仍以为对方会认真道歉",
+        "misread_trigger": "橘猫进门后拍着胸口强调自己今天带足了诚意",
+        "literal_action": "他得意地转身展示新买的橙色外套",
+        "status_reversal": "迟到者自以为完成补救，却让借口显得更荒唐",
+        "target_reaction": "兔子把账单推给他，店员在旁边忍住笑",
+        "story_setup": "兔子在餐馆等到打烊，桌上的水已经添了三次",
+        "story_change": "橘猫迟到两小时进门，拍着胸口说自己带足了诚意",
+        "story_ending": "他转身展示橙色外套，兔子直接把账单推到他面前",
+        "layout": "four_panel",
+        "panel_script": [
+            {"panel": 1, "visual": "兔子独坐在餐馆窗边，时钟走过约定时间，店员第三次添水"},
+            {"panel": 2, "visual": "店员开始收椅子，橘猫终于推门进来并拍着胸口解释"},
+            {"panel": 3, "visual": "橘猫得意转身，完整展示亮得扎眼的橙色外套"},
+            {"panel": 4, "visual": "兔子面无表情把账单推给橘猫，旁边店员低头忍笑"},
+        ],
+        "scores": {
+            "naturalness": 9,
+            "surprise": 8,
+            "visual_payoff": 9,
+            "freshness": 8,
+            "instant_clarity": 10,
+            "laugh_out_loud": 8,
+            "roast_precision": 9,
+            "status_reversal": 9,
+            "memorability": 8,
+            "forcedness": 1,
+            "harm_risk": 0
+        },
     },
 )
 
@@ -207,7 +324,10 @@ def build_homophone_idea_prompt(
     source_content: str | None = None,
 ) -> str:
     episode_count = parse_healing_comic_panel_count(panel_count)
-    candidate_count = min(max(episode_count * 2, 6), 48)
+    # Comedy needs a wider writers-room funnel than ordinary copy.  The second
+    # call still sees only a compact shortlist, so this raises quality without
+    # multiplying image calls or adding retry loops.
+    candidate_count = min(max(episode_count * 4, 12), 64)
     return _render_prompt(
         "comic_homophone_ideas.md",
         TITLE=parse_healing_comic_title(title) or "今天也有好笑的事",
@@ -249,35 +369,62 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
         ):
             continue
         scores_raw = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
-        scores = {
-            key: _score_int(scores_raw.get(key))
-            for key in (
-                "naturalness",
-                "surprise",
-                "visual_payoff",
-                "warmth",
-                "freshness",
-                "instant_clarity",
-                "forcedness",
+        scores = {key: _score_int(scores_raw.get(key)) for key in _HOMOPHONE_SCORE_KEYS}
+        target_behavior = _text(raw.get("target_behavior"), "", limit=120)
+        roast_mode = _text(raw.get("roast_mode"), "", limit=32)
+        audience_expectation = _text(raw.get("audience_expectation"), "", limit=180)
+        misread_trigger = _text(raw.get("misread_trigger"), "", limit=180)
+        literal_action = _text(raw.get("literal_action"), "", limit=180)
+        status_reversal = _text(raw.get("status_reversal"), "", limit=180)
+        target_reaction = _text(raw.get("target_reaction"), "", limit=180)
+        caption = normalize_complete_caption(
+            raw.get("caption"),
+            fallback=f"有人把{source_word}听成了{pun_word}，场面一下变得很具体。",
+        )
+        contract_complete = all(
+            len(value) >= minimum
+            for value, minimum in (
+                (target_behavior, 6),
+                (audience_expectation, 8),
+                (misread_trigger, 8),
+                (literal_action, 8),
+                (status_reversal, 8),
+                (target_reaction, 6),
             )
-        }
+        )
+        lexical_clarity = source_word in caption and pun_word in caption
+        no_explanation = not _HOMOPHONE_EXPLANATION_RE.search(caption)
+        no_soft_landing = not _HOMOPHONE_SOFT_ENDING_RE.search(caption)
         total = (
-            scores["naturalness"] * 24
-            + scores["surprise"] * 20
-            + scores["visual_payoff"] * 22
-            + scores["warmth"] * 14
-            + scores["freshness"] * 12
-            + scores["instant_clarity"] * 8
-            - scores["forcedness"] * 25
+            scores["laugh_out_loud"] * 25
+            + scores["roast_precision"] * 20
+            + scores["status_reversal"] * 18
+            + scores["visual_payoff"] * 16
+            + scores["surprise"] * 12
+            + scores["instant_clarity"] * 12
+            + scores["memorability"] * 10
+            + scores["freshness"] * 8
+            + scores["naturalness"] * 6
+            - scores["forcedness"] * 28
+            - scores["harm_risk"] * 30
         )
         strict_pass = (
             scores["naturalness"] >= 8
-            and scores["surprise"] >= 7
+            and scores["surprise"] >= 8
             and scores["visual_payoff"] >= 8
-            and scores["warmth"] >= 7
-            and scores["freshness"] >= 7
-            and scores["instant_clarity"] >= 8
+            and scores["freshness"] >= 8
+            and scores["instant_clarity"] >= 9
+            and scores["laugh_out_loud"] >= 8
+            and scores["roast_precision"] >= 8
+            and scores["status_reversal"] >= 8
+            and scores["memorability"] >= 8
             and scores["forcedness"] <= 2
+            and scores["harm_risk"] <= 1
+            and roast_mode in _HOMOPHONE_ROAST_MODES
+            and contract_complete
+            and lexical_clarity
+            and no_explanation
+            and no_soft_landing
         )
         normalized.append(
             {
@@ -297,10 +444,14 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
                 "setup": _text(raw.get("setup"), "一个可信的日常开场", limit=180),
                 "visual_turn": _text(raw.get("visual_turn"), "人物用动作改变眼前情形", limit=180),
                 "payoff": _text(raw.get("payoff"), "最后一格完成双义回扣", limit=180),
-                "caption": normalize_complete_caption(
-                    raw.get("caption"),
-                    fallback=f"事情拐了一个弯，最后刚好落在{pun_word}上。",
-                ),
+                "target_behavior": target_behavior,
+                "roast_mode": roast_mode,
+                "audience_expectation": audience_expectation,
+                "misread_trigger": misread_trigger,
+                "literal_action": literal_action,
+                "status_reversal": status_reversal,
+                "target_reaction": target_reaction,
+                "caption": caption,
                 "scores": scores,
                 "strict_pass": strict_pass,
                 "quality_total": total,
@@ -316,6 +467,8 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
     used_places: set[str] = set()
     used_domains: set[str] = set()
     for candidate in normalized:
+        if not candidate["strict_pass"]:
+            continue
         pun_word = str(candidate["pun_word"])
         place = str(candidate["place"])
         domain = str(candidate["semantic_domain"])
@@ -329,7 +482,11 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
             break
     if len(selected) < target:
         for candidate in normalized:
-            if candidate in selected or str(candidate["pun_word"]) in used_puns:
+            if (
+                not candidate["strict_pass"]
+                or candidate in selected
+                or str(candidate["pun_word"]) in used_puns
+            ):
                 continue
             selected.append(candidate)
             used_puns.add(str(candidate["pun_word"]))
@@ -357,7 +514,15 @@ def format_homophone_joke_bank(candidates: list[dict[str, object]]) -> str:
                     "setup",
                     "visual_turn",
                     "payoff",
+                    "target_behavior",
+                    "roast_mode",
+                    "audience_expectation",
+                    "misread_trigger",
+                    "literal_action",
+                    "status_reversal",
+                    "target_reaction",
                     "caption",
+                    "scores",
                 )
             }
         )
@@ -399,11 +564,70 @@ def _layout(value: object, *, variant: str, index: int) -> str:
     return raw if raw in {"three_panel", "four_panel"} else ("three_panel" if index % 2 else "four_panel")
 
 
-def _fallback_episode(variant: str, index: int) -> dict[str, str]:
-    source = (_STORY_FALLBACKS if variant == STORY_COMIC_CATEGORY else _HOMOPHONE_FALLBACKS)[
-        (index - 1) % 3
-    ]
-    return {str(key): str(value) for key, value in source.items()}
+def _fallback_episode(variant: str, index: int) -> dict[str, object]:
+    collection = _STORY_FALLBACKS if variant == STORY_COMIC_CATEGORY else _HOMOPHONE_FALLBACKS
+    source = collection[(index - 1) % len(collection)]
+    return {str(key): value for key, value in source.items()}
+
+
+def _homophone_contract_passes(
+    item: dict[str, object],
+    *,
+    source_word: str,
+    pun_word: str,
+    pinyin_pair: str,
+    caption: str,
+) -> bool:
+    """Deterministic floor for a roast-comedy episode.
+
+    The model's taste scores are not treated as proof by themselves.  A valid
+    episode also has to expose the target behaviour, misunderstanding action,
+    visible status reversal and reaction that make the last panel a joke.
+    """
+
+    if (
+        not source_word
+        or not pun_word
+        or source_word == pun_word
+        or frozenset((source_word, pun_word)) in _STALE_PUN_PAIRS
+        or not _credible_pinyin_pair(pinyin_pair)
+        or source_word not in caption
+        or pun_word not in caption
+        or _HOMOPHONE_EXPLANATION_RE.search(caption)
+        or _HOMOPHONE_SOFT_ENDING_RE.search(caption)
+    ):
+        return False
+    roast_mode = _text(item.get("roast_mode"), "", limit=32)
+    if roast_mode not in _HOMOPHONE_ROAST_MODES:
+        return False
+    required = (
+        (item.get("target_behavior"), 6),
+        (item.get("audience_expectation"), 8),
+        (item.get("misread_trigger"), 8),
+        (item.get("literal_action"), 8),
+        (item.get("status_reversal"), 8),
+        (item.get("target_reaction"), 6),
+        (item.get("story_setup"), 8),
+        (item.get("story_change"), 8),
+        (item.get("story_ending"), 8),
+    )
+    if any(len(_text(value, "", limit=220)) < minimum for value, minimum in required):
+        return False
+    scores_raw = item.get("scores") if isinstance(item.get("scores"), dict) else {}
+    scores = {key: _score_int(scores_raw.get(key)) for key in _HOMOPHONE_SCORE_KEYS}
+    return (
+        scores["naturalness"] >= 8
+        and scores["surprise"] >= 8
+        and scores["visual_payoff"] >= 8
+        and scores["freshness"] >= 8
+        and scores["instant_clarity"] >= 9
+        and scores["laugh_out_loud"] >= 8
+        and scores["roast_precision"] >= 8
+        and scores["status_reversal"] >= 8
+        and scores["memorability"] >= 8
+        and scores["forcedness"] <= 2
+        and scores["harm_risk"] <= 1
+    )
 
 
 def _normalize_panel_script(value: object, *, layout: str, visual: str) -> list[dict[str, object]]:
@@ -436,16 +660,38 @@ def _normalize_episode(
     index: int,
 ) -> dict[str, object]:
     fallback = _fallback_episode(variant, index)
+    if variant == HOMOPHONE_COMIC_CATEGORY:
+        candidate_source = _text(item.get("source_word"), "", limit=18)
+        candidate_pun = _text(item.get("pun_word"), "", limit=18)
+        candidate_pinyin = _text(item.get("pinyin_pair"), "", limit=48)
+        candidate_caption = normalize_complete_caption(
+            item.get("caption") or item.get("image_text"),
+            fallback=str(fallback["caption"]),
+        )
+        if not _homophone_contract_passes(
+            item,
+            source_word=candidate_source,
+            pun_word=candidate_pun,
+            pinyin_pair=candidate_pinyin,
+            caption=candidate_caption,
+        ):
+            # Fail closed to a fully aligned script, not just a replacement
+            # word pair.  Replacing only the words would desynchronise the
+            # caption from the panels and recreate the old production bug.
+            item = dict(fallback)
     layout = _layout(item.get("layout"), variant=variant, index=index)
-    place = _text(item.get("place"), fallback["place"], limit=80)
-    protagonist = _text(item.get("protagonist"), fallback["protagonist"], limit=120)
-    relationship = _text(item.get("relationship"), fallback["relationship"], limit=80)
-    key_prop = _text(item.get("key_prop"), fallback["key_prop"], limit=80)
-    setup = _text(item.get("story_setup"), fallback["story_setup"], limit=180)
-    change = _text(item.get("story_change"), fallback["story_change"], limit=180)
-    ending = _text(item.get("story_ending"), fallback["story_ending"], limit=180)
+    place = _text(item.get("place"), str(fallback["place"]), limit=80)
+    protagonist = _text(item.get("protagonist"), str(fallback["protagonist"]), limit=120)
+    relationship = _text(item.get("relationship"), str(fallback["relationship"]), limit=80)
+    key_prop = _text(item.get("key_prop"), str(fallback["key_prop"]), limit=80)
+    setup = _text(item.get("story_setup"), str(fallback["story_setup"]), limit=180)
+    change = _text(item.get("story_change"), str(fallback["story_change"]), limit=180)
+    ending = _text(item.get("story_ending"), str(fallback["story_ending"]), limit=180)
     visual = f"{place}；{protagonist}；{setup}；{change}；{ending}"
-    caption = normalize_complete_caption(item.get("caption") or item.get("image_text"), fallback=fallback["caption"])
+    caption = normalize_complete_caption(
+        item.get("caption") or item.get("image_text"),
+        fallback=str(fallback["caption"]),
+    )
     episode: dict[str, object] = {
         "title": _text(item.get("title"), f"小故事{index}", limit=24),
         "layout": layout,
@@ -465,27 +711,34 @@ def _normalize_episode(
         "panel_script": _normalize_panel_script(item.get("panel_script"), layout=layout, visual=visual),
     }
     if variant == HOMOPHONE_COMIC_CATEGORY:
-        source_word = _text(item.get("source_word"), fallback["source_word"], limit=18)
-        pun_word = _text(item.get("pun_word"), fallback["pun_word"], limit=18)
-        pinyin_pair = _text(item.get("pinyin_pair"), fallback["pinyin_pair"], limit=48)
-        if (
-            source_word == pun_word
-            or pun_word not in caption
-            or frozenset((source_word, pun_word)) in _STALE_PUN_PAIRS
-            or not _credible_pinyin_pair(pinyin_pair)
-        ):
-            source_word = fallback["source_word"]
-            pun_word = fallback["pun_word"]
-            pinyin_pair = fallback["pinyin_pair"]
-            caption = normalize_complete_caption(fallback["caption"], fallback=fallback["caption"])
-            episode["caption"] = caption
-            episode["image_text"] = [caption]
-            episode["phrases"] = [caption]
+        source_word = _text(item.get("source_word"), str(fallback["source_word"]), limit=18)
+        pun_word = _text(item.get("pun_word"), str(fallback["pun_word"]), limit=18)
+        pinyin_pair = _text(item.get("pinyin_pair"), str(fallback["pinyin_pair"]), limit=48)
         episode.update(
             {
                 "source_word": source_word,
                 "pun_word": pun_word,
                 "pinyin_pair": pinyin_pair,
+                "target_behavior": _text(item.get("target_behavior"), str(fallback["target_behavior"]), limit=120),
+                "roast_mode": _text(item.get("roast_mode"), str(fallback["roast_mode"]), limit=32),
+                "audience_expectation": _text(
+                    item.get("audience_expectation"),
+                    str(fallback["audience_expectation"]),
+                    limit=180,
+                ),
+                "misread_trigger": _text(
+                    item.get("misread_trigger"), str(fallback["misread_trigger"]), limit=180
+                ),
+                "literal_action": _text(
+                    item.get("literal_action"), str(fallback["literal_action"]), limit=180
+                ),
+                "status_reversal": _text(
+                    item.get("status_reversal"), str(fallback["status_reversal"]), limit=180
+                ),
+                "target_reaction": _text(
+                    item.get("target_reaction"), str(fallback["target_reaction"]), limit=180
+                ),
+                "scores": item.get("scores") if isinstance(item.get("scores"), dict) else fallback["scores"],
             }
         )
     episode["images"] = [
@@ -611,6 +864,13 @@ def build_variant_panel_prompt(
                 "SOURCE_WORD": panel.get("source_word"),
                 "PUN_WORD": panel.get("pun_word"),
                 "PINYIN_PAIR": panel.get("pinyin_pair"),
+                "TARGET_BEHAVIOR": panel.get("target_behavior"),
+                "ROAST_MODE": panel.get("roast_mode"),
+                "AUDIENCE_EXPECTATION": panel.get("audience_expectation"),
+                "MISREAD_TRIGGER": panel.get("misread_trigger"),
+                "LITERAL_ACTION": panel.get("literal_action"),
+                "STATUS_REVERSAL": panel.get("status_reversal"),
+                "TARGET_REACTION": panel.get("target_reaction"),
             }
         )
         return _render_prompt("comic_homophone_image.md", **common)

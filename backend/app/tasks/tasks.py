@@ -1241,7 +1241,7 @@ def process_video(_self, task_id: str) -> dict:
         _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
 
         _STAGE_TO_PROGRESS: dict[str, tuple[int, str]] = {
-            "comic_jokes_selected": (38, "谐音笑点候选已完成六维筛选"),
+            "comic_jokes_selected": (38, "谐音笑点已通过爆笑、嘲讽与反转闸门"),
             "comic_structure_done": (45, f"{comic_label}短语结构已生成"),
             "comic_images_start": (86, f"{comic_label}配图启动"),
             "comic_image": (88, f"{comic_label}配图生成中"),

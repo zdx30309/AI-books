@@ -35,15 +35,26 @@ def _joke_candidate(
         "setup": "邻居托主角照看门口的花",
         "visual_turn": "主角抱着花追上忘记带钥匙的邻居",
         "payoff": "花盆正好挡住写着放心的便签",
-        "caption": f"邻居让他放心，他却认真抱稳了那盆芳心{index}。",
+        "target_behavior": "只会说漂亮话却不肯落实承诺",
+        "roast_mode": "empty_promise",
+        "audience_expectation": "邻居以为对方真的会兑现此前的承诺",
+        "misread_trigger": "对方当众强调这次绝对可以放心",
+        "literal_action": "主角抱来一盆写着芳心的巨大花盆",
+        "status_reversal": "原本说漂亮话的人被当场堵得说不出话",
+        "target_reaction": "对方保持伸手姿势，笑容直接僵在脸上",
+        "caption": f"邻居让他{source_word}，他却认真抱稳了那盆{pun_word}{index}。",
         "scores": {
             "naturalness": 9,
             "surprise": 8,
             "visual_payoff": 9,
-            "warmth": 9,
             "freshness": 8,
             "instant_clarity": 9,
+            "laugh_out_loud": 8,
+            "roast_precision": 8,
+            "status_reversal": 9,
+            "memorability": 8,
             "forcedness": 1,
+            "harm_risk": 0,
         },
     }
 
@@ -96,7 +107,7 @@ def test_homophone_joke_bank_filters_stale_forced_and_duplicate_contexts() -> No
     assert all(frozenset((str(item["source_word"]), str(item["pun_word"]))) != frozenset(("压力", "鸭力")) for item in selected)
 
 
-def test_story_and_homophone_writer_contracts_are_separate_and_healing() -> None:
+def test_story_and_homophone_writer_contracts_are_separate() -> None:
     story = comic_variants.build_variant_writer_prompt(
         "story_comic",
         "给你讲个故事",
@@ -114,8 +125,72 @@ def test_story_and_homophone_writer_contracts_are_separate_and_healing() -> None
     assert "具体生活含义" in story
     assert "JOKE_BANK" in homophone
     assert "添衣" in homophone
-    assert "治愈" in homophone
+    assert "治愈只保留为画面观感" in homophone
+    assert "犀利吐槽" in homophone
+    assert "地位反转" in homophone
     assert "压力/鸭力" not in homophone
+
+
+def test_homophone_joke_bank_rejects_soft_production_pair_even_with_high_scores() -> None:
+    candidate = _joke_candidate(
+        1,
+        source_word="鼓励",
+        pun_word="谷粒",
+        pinyin_pair="gǔ lì / gǔ lì",
+    )
+    payload = json.dumps({"candidates": [candidate]}, ensure_ascii=False)
+    assert comic_variants.parse_homophone_idea_output(payload, panel_count=1) == []
+
+
+def test_homophone_joke_bank_requires_both_words_in_caption() -> None:
+    candidate = _joke_candidate(1)
+    candidate["caption"] = "邻居只会说漂亮话，最后被花盆堵得一句也接不上。"
+    payload = json.dumps({"candidates": [candidate]}, ensure_ascii=False)
+    assert comic_variants.parse_homophone_idea_output(payload, panel_count=1) == []
+
+
+def test_invalid_homophone_writer_episode_falls_back_as_one_aligned_story() -> None:
+    writer = {
+        "episodes": [
+            {
+                "title": "软掉的梗",
+                "layout": "three_panel",
+                "caption": "大家互相鼓励，最后每只小鸟都收到了谷粒。",
+                "source_word": "鼓励",
+                "pun_word": "谷粒",
+                "pinyin_pair": "gǔ lì / gǔ lì",
+                "story_setup": "小鸟站在树下",
+                "story_change": "朋友送来谷粒",
+                "story_ending": "大家温柔地一起吃饭",
+                "panel_script": [{"visual": "小鸟吃谷粒"}] * 3,
+            }
+        ]
+    }
+    _, _, episodes, _ = comic_variants.parse_variant_writer_output(
+        "homophone_comic",
+        json.dumps(writer, ensure_ascii=False),
+        "今天谁又画饼",
+        panel_count=1,
+    )
+    episode = episodes[0]
+    assert episode["source_word"] == "加薪"
+    assert episode["pun_word"] == "夹心"
+    assert "夹心饼干" in episode["caption"]
+    assert "经理" in episode["story_setup"]
+    assert "经理" in episode["panel_script"][-1]["visual"]
+
+
+def test_homophone_image_prompt_carries_roast_and_reaction_contract() -> None:
+    panel = comic_variants._normalize_episode({}, variant="homophone_comic", index=1)
+    prompt = comic_variants.build_variant_panel_prompt(
+        "homophone_comic",
+        panel=panel,
+        index=1,
+        title="今天谁又画饼",
+    )
+    assert "用漂亮承诺代替真实回报" in prompt
+    assert "经理还保持鼓掌姿势" in prompt
+    assert "不得画成双方温柔微笑" in prompt
 
 
 def test_variant_parser_makes_one_complete_caption_and_one_image_per_episode() -> None:

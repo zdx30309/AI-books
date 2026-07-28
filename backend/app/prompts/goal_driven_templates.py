@@ -373,7 +373,7 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "homophone_comic",
         "label": "谐音梗",
-        "core_feature": "先筛选高质量笑点，再生成三至四格治愈系谐音短剧",
+        "core_feature": "治愈手绘视觉承载犀利谐音讽刺，三至四格完成误读、打脸与地位反转",
         "directions": "自然铺垫、双义误读、视觉反转、温暖笑点、完整一句文案",
         "prompt_status": "ready",
     },
