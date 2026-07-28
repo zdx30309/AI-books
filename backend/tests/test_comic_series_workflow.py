@@ -230,8 +230,11 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
             assert "封面" in prompt
         else:
             assert "必须写在图上的短句" in prompt
+            assert "逐字原样写入" in prompt
+            assert "遮住文字" in prompt
             assert "本章分类下的小故事汇总" in prompt
             assert "主角形象圣经" in prompt
+            assert "同一个原创动物" in prompt
             assert "微信读书" in prompt
             assert "白底" in prompt or "留白" in prompt
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,6 +253,9 @@ def test_healing_comic_category_uses_simple_prompt_and_generates_multi_image_cha
         assert "不是默认固定值" in prompt
         assert "20 张" in prompt
         assert "章节本身相当于一个温暖分类" in prompt
+        assert "原创温暖治愈动物漫画" in prompt
+        assert "该图唯一落字来源" in prompt
+        assert "不得改成人类主角" in prompt
         assert "温暖、治愈、柔和" in prompt
         assert "禁止使用“把”字句、“被”字句" in prompt
         panels = [
