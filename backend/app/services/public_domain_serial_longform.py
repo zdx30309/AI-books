@@ -18,7 +18,10 @@ from app.services import public_domain_longform as legacy
 from app.services import public_domain_rewrite as simple
 
 SERIAL_POLICY_VERSION = "public-domain-serial-story-v1"
-_MIN_CHAPTER_RATIO = 0.90
+# Chapters are allowed to breathe.  A genuinely short chapter should not be
+# padded merely to make every chapter mechanically identical; the final book
+# still has a strict 90% whole-manuscript floor.
+_MIN_CHAPTER_RATIO = 0.70
 _MAX_CHAPTER_RATIO = 1.10
 _SOURCE_EXCERPT_CHARS = 2_200
 _PROHIBITED_DASH_RE = re.compile(r"(?:——|—|–)")

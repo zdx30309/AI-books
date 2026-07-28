@@ -250,3 +250,24 @@ def test_failed_candidate_is_rechecked_before_any_paid_retry(
     assert calls == ["serial_chapter_write:001"]
     assert chapter.audit["pass"] is True
     assert chapter.audit["reused_failed_candidate"] is True
+
+
+def test_naturally_short_chapter_can_pass_without_padding() -> None:
+    target = 10_000
+    body = "\n\n".join(
+        f"第{index}段让人物处境与行动自然展开，不为整齐字数强行补写。"
+        for index in range(1, 140)
+    )
+    while legacy.count_text_chars(body) < 7_050:
+        body += "叙述保留必要余地。"
+
+    issues, report = serial._chapter_local_issues(  # noqa: SLF001
+        text=body,
+        target_chars=target,
+        sources=_short_sources(),
+        previous_chapters=Path("missing"),
+        number=1,
+    )
+
+    assert report["chars"] >= 7_000
+    assert not any("有效字数" in issue for issue in issues)
