@@ -53,11 +53,13 @@ def _sources(count: int = 8, **kwargs) -> list[PublicDomainSource]:
     return [_source(index, **kwargs) for index in range(1, count + 1)]
 
 
-def test_requires_eight_to_ten_sources_before_llm() -> None:
-    with pytest.raises(PublicDomainValidationError, match="8 到 10"):
-        validate_sources(_sources(7), public_domain_confirmed=True)
-    with pytest.raises(PublicDomainValidationError, match="8 到 10"):
+def test_requires_five_to_ten_sources_before_llm() -> None:
+    with pytest.raises(PublicDomainValidationError, match="5 到 10"):
+        validate_sources(_sources(4), public_domain_confirmed=True)
+    with pytest.raises(PublicDomainValidationError, match="5 到 10"):
         validate_sources(_sources(11), public_domain_confirmed=True)
+
+    assert len(validate_sources(_sources(5), public_domain_confirmed=True)) == 5
 
 
 def test_research_preview_accepts_five_sources_without_claiming_public_domain() -> None:

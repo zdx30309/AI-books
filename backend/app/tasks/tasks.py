@@ -1681,6 +1681,42 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.config = cfg
         clear_task_dispatch_guard(str(task.id))
 
+    def persist_chapter_checkpoint(chapter) -> None:
+        """Expose each durable serial chapter on the bookshelf immediately."""
+
+        if task is None:
+            return
+        existing = (
+            db.query(Chapter)
+            .filter(
+                Chapter.task_id == task.id,
+                Chapter.chapter_num == int(chapter.number),
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = Chapter(task_id=task.id, chapter_num=int(chapter.number))
+            db.add(existing)
+        existing.title = str(chapter.title or f"第{chapter.number}章")[:512]
+        existing.content = str(chapter.text or "")
+        existing.word_count = len(existing.content)
+        cfg = dict(task.config or {})
+        cfg.update(
+            checkpoint_chapters=max(
+                int(cfg.get("checkpoint_chapters") or 0),
+                int(chapter.number),
+            ),
+            checkpoint_chars=sum(
+                int(value or 0)
+                for (value,) in db.query(Chapter.word_count)
+                .filter(Chapter.task_id == task.id)
+                .all()
+            )
+            + (0 if existing.id is not None else len(existing.content)),
+        )
+        task.config = cfg
+        db.commit()
+
     try:
         task = db.execute(
             select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
@@ -1711,7 +1747,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             "正在隔离现代材料并建立匿名叙事参数；佛教事实只允许使用古代原典证据"
             if generation_mode == "research_preview"
-            else "正在验证 8–10 本来源及权利清单"
+            else "正在验证 5–10 本来源并建立逐章串行检查点"
         )
         db.commit()
 
@@ -1733,6 +1769,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             generation_mode=generation_mode,
             research_use_confirmed=bool(cfg.get("research_use_confirmed")),
             on_progress=lambda progress, step: update(progress, step, status=TaskStatus.PROCESSING),
+            on_chapter_completed=persist_chapter_checkpoint,
         )
         cfg = dict(task.config or {})
         cfg.update(
@@ -1752,7 +1789,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             quality_report_summary=(
                 "现代材料已隔离；叙事化非虚构、古代原典事实、来源重合与全稿终审通过"
                 if generation_mode == "research_preview"
-                else "公版权利、事实证据、来源重合、章节与全书终审通过"
+                else "逐章串行、来源重合、现代材料、语言结构与破折号终审通过"
             ),
             source_reports=[
                 {
@@ -1849,7 +1886,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             f"叙事化非虚构新书完成：{len(final_chapters)} 章，人物、事件与观点仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
-            else f"全部完成：{len(final_chapters)} 章已通过公版、事实、重合与质量闸门"
+            else f"全部完成：{len(final_chapters)} 章已串行落盘并通过整书质量终检"
         )
         task.error_message = None
         db.commit()
@@ -1918,7 +1955,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             task.config = cfg
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
-            task.current_step = "原典核验/公版/事实/来源重合/质量硬闸门未通过，未交付终稿"
+            task.current_step = "公版长篇本地质量终检未通过，已保留规划和合格章节断点"
             task.error_message = str(exc)[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}

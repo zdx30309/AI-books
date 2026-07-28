@@ -11,13 +11,14 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
+from app.core.config import PROJECT_ROOT
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
 from app.schemas.task import CreateTaskResponse
@@ -25,6 +26,28 @@ from app.services.image_ocr import (
     ImageOcrError,
     is_supported_ocr_image_suffix,
     ocr_image_bytes,
+)
+from app.services.public_domain_longform import (
+    FULL_MODE,
+    PublicDomainValidationError,
+)
+from app.services.public_domain_longform import (
+    POLICY_VERSION as LONGFORM_POLICY_VERSION,
+)
+from app.services.public_domain_longform import (
+    PublicDomainSource as LongformSource,
+)
+from app.services.public_domain_longform import (
+    build_source_reports as build_longform_source_reports,
+)
+from app.services.public_domain_longform import (
+    derive_dimensions as derive_longform_dimensions,
+)
+from app.services.public_domain_longform import (
+    source_to_dict as longform_source_to_dict,
+)
+from app.services.public_domain_longform import (
+    validate_sources as validate_longform_sources,
 )
 from app.services.public_domain_rewrite import (
     MAX_SOURCES,
@@ -38,7 +61,7 @@ from app.utils.epub_text import EpubTextError, extract_epub_text
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/public-domain-rewrite", tags=["Public Domain Rewrite"])
 
-PUBLIC_DOMAIN_BOOKSHELF = "公版融合改写"
+PUBLIC_DOMAIN_BOOKSHELF = "公版融合长篇"
 
 
 class PublicDomainSourcePayload(BaseModel):
@@ -60,12 +83,13 @@ class PublicDomainRewriteRequest(BaseModel):
     )
     target_title: str | None = Field(default=None, max_length=200)
     target_direction: str | None = Field(default=None, max_length=3000)
-    target_length: int | None = Field(default=None, ge=800, le=20_000)
+    target_length: int | None = Field(default=None, ge=800, le=220_000)
     target_chapters: int | None = Field(default=None, ge=1, le=36)
     output_style: str | None = Field(default=None, max_length=1000)
     public_domain_confirmed: bool = False
-    # Kept so old clients do not break.  Both values use the same simple flow.
-    generation_mode: str = "legacy_simple"
+    # ``full`` is the resumable serial long-book flow.  ``legacy_simple`` is
+    # retained only for old short-preview clients.
+    generation_mode: str = FULL_MODE
     research_use_confirmed: bool = False
 
 
@@ -79,6 +103,10 @@ async def generate_public_domain_rewrite(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CreateTaskResponse:
+    if req.generation_mode == FULL_MODE:
+        return _create_longform_task(db, user, req)
+    if req.generation_mode != "legacy_simple":
+        raise HTTPException(status_code=400, detail=f"不支持的公版生成模式：{req.generation_mode}")
     try:
         result = await asyncio.to_thread(
             rewrite_public_domain_fusion,
@@ -150,8 +178,114 @@ async def generate_public_domain_rewrite_from_files(
         target_chapters=_optional_int(metadata.get("target_chapters")),
         output_style=metadata.get("output_style"),
         public_domain_confirmed=bool(metadata.get("public_domain_confirmed")),
+        generation_mode=str(metadata.get("generation_mode") or FULL_MODE),
     )
     return await generate_public_domain_rewrite(request, user, db)
+
+
+def _create_longform_task(
+    db: Session,
+    user: User,
+    req: PublicDomainRewriteRequest,
+) -> CreateTaskResponse:
+    raw_sources = [_to_longform_source(item) for item in req.sources]
+    try:
+        sources = validate_longform_sources(
+            raw_sources,
+            public_domain_confirmed=req.public_domain_confirmed,
+            generation_mode=FULL_MODE,
+        )
+        dimensions = derive_longform_dimensions(
+            sources,
+            requested_chars=req.target_length,
+            requested_chapters=req.target_chapters,
+            generation_mode=FULL_MODE,
+        )
+        reports = build_longform_source_reports(sources)
+    except PublicDomainValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    task_id = uuid4()
+    output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = output_dir / "00_public_domain_sources.json"
+    snapshot_path.write_text(
+        json.dumps(
+            [longform_source_to_dict(item) for item in sources],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    source_reports = [
+        {
+            "source_id": item.source_id,
+            "title": item.title,
+            "author": item.author,
+            "chars": item.chars,
+            "detected_chapters": item.detected_chapters,
+            "rights_basis": item.rights_basis,
+            "sha256": item.sha256,
+        }
+        for item in reports
+    ]
+    task = Task(
+        id=task_id,
+        source_url="manual://public-domain-serial-longform",
+        owner_id=user.id,
+        status=TaskStatus.PENDING,
+        progress=0,
+        current_step=f"已接收 {len(sources)} 本来源，等待整书规划",
+        config={
+            "title": (req.target_title or "公版融合长篇")[:120],
+            "bookshelf": PUBLIC_DOMAIN_BOOKSHELF,
+            "category": "public_domain_rewrite",
+            "category_label": PUBLIC_DOMAIN_BOOKSHELF,
+            "public_domain_rewrite": True,
+            "public_domain_longform_v2": True,
+            "public_domain_serial_story": True,
+            "public_domain_policy_version": LONGFORM_POLICY_VERSION,
+            "generation_mode": FULL_MODE,
+            "source_snapshot": str(snapshot_path),
+            "source_count": len(sources),
+            "source_reports": source_reports,
+            "target_title": req.target_title,
+            "target_direction": req.target_direction,
+            "target_length": dimensions.target_chars,
+            "target_chapters": dimensions.target_chapters,
+            "median_source_chars": dimensions.median_source_chars,
+            "median_source_chapters": dimensions.median_source_chapters,
+            "output_style": req.output_style,
+            "public_domain_confirmed": True,
+            "generation_complete": False,
+            "cover_disabled": True,
+            "aigc_required": False,
+            "aigc_status": "not_required",
+            "aigc_passed": True,
+            "aigc_quality_passed": True,
+            "aigc_report_available": False,
+        },
+    )
+    try:
+        db.add(task)
+        db.commit()
+        from app.tasks.tasks import process_public_domain_longform
+
+        process_public_domain_longform.delay(str(task.id))
+    except Exception as exc:
+        db.rollback()
+        persisted = db.get(Task, task_id)
+        if persisted is not None:
+            persisted.status = TaskStatus.FAILED
+            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            persisted.current_step = "任务已保存，但后台队列投递失败，可点击继续生成"
+            db.commit()
+        logger.exception("Failed to dispatch serial public-domain long-form task %s", task_id)
+        raise HTTPException(
+            status_code=503,
+            detail=f"任务已保存但后台投递失败 (task_id={task_id}): {exc}",
+        ) from exc
+    return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
 @router.post(
@@ -180,6 +314,18 @@ def _to_service_source(item: PublicDomainSourcePayload) -> PublicDomainSource:
         author=item.author,
         publication_year=item.publication_year,
         rights_note=item.rights_note,
+    )
+
+
+def _to_longform_source(item: PublicDomainSourcePayload) -> LongformSource:
+    return LongformSource(
+        title=item.title,
+        text=item.text,
+        author=item.author,
+        publication_year=item.publication_year,
+        author_death_year=item.author_death_year,
+        rights_note=item.rights_note,
+        rights_evidence_url=item.rights_evidence_url,
     )
 
 

@@ -25,7 +25,7 @@ interface SourceDraft {
   rightsEvidenceUrl: string;
 }
 
-const MIN_SOURCES = 1;
+const MIN_SOURCES = 5;
 const MAX_SOURCES = 10;
 
 const emptySource = (index: number): SourceDraft => ({
@@ -65,7 +65,7 @@ function formatChars(value: string) {
 export function PublicDomainRewrite() {
   const navigate = useNavigate();
   const [sources, setSources] = useState<SourceDraft[]>(initialSources);
-  const generationMode = "legacy_simple" as const;
+  const generationMode = "full" as const;
   const [targetTitle, setTargetTitle] = useState("");
   const [targetDirection, setTargetDirection] = useState("");
   const [targetLength, setTargetLength] = useState("");
@@ -165,13 +165,13 @@ export function PublicDomainRewrite() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 px-4 py-2 text-xs text-emerald-100">
             <ShieldCheck className="h-4 w-4" />
-            {preview ? "5–7 份材料 · 约一万字叙事化非虚构预览" : "仅处理 8–10 本公版 / 公共领域来源"}
+            {preview ? "5–7 份材料 · 约一万字叙事化非虚构预览" : "5–10 本来源 · 逐章串行长篇"}
           </div>
           <h1 className="font-serif text-4xl text-warm-50">公版融合长篇</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
             {preview
               ? "先生成 2–4 章、约 8,000–15,000 字的叙事化非虚构新书。现代整理本只用于发现待核验线索、计算匿名节奏参数和检查重合；正文只采用已核验古代原典事实，不新增人物、事件、对话、心理、场景、因果或评价。"
-              : "系统会完整分片抽取每本书的事实证据，按参考书中位篇幅规划十几万字长篇，逐章串行写作与复审。任何来源权利不清、事实无证据、连续复述过高或终稿质量不合格，都会阻止下载。"}
+              : "系统按来源中位篇幅规划十几万字长篇，只做一次整书规划，随后逐章串行创作并立即落盘。每章执行免费的字数、重复、现代材料和破折号检查，不启动反复付费审稿循环。"}
           </p>
         </div>
         <button
@@ -187,7 +187,7 @@ export function PublicDomainRewrite() {
 
       <section className="card-warm flex flex-wrap gap-3 p-4">
         <button type="button" onClick={() => undefined} className="btn-gold">
-          正式长书（8–10 本）
+          正式长书（5–10 本）
         </button>
         <button type="button" onClick={() => undefined} className="btn-ghost hidden">
           叙事化非虚构预览（5–7 份 / 约一万字）
@@ -211,11 +211,11 @@ export function PublicDomainRewrite() {
         </label>
         <label className="text-sm text-warm-300">
           目标字数（可空，自动取来源中位数）
-          <input type="number" min={800} max={20000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder="例如 10000" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={80000} max={220000} value={targetLength} onChange={(event) => setTargetLength(event.target.value)} placeholder="例如 145000" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300">
           目标章节（可空，自动匹配来源）
-          <input type="number" min={1} max={36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder="例如 1" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
+          <input type="number" min={12} max={36} value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} placeholder="例如 26" className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         <label className="text-sm text-warm-300 md:col-span-2 xl:col-span-1">
           融合方向（可空）
@@ -274,13 +274,13 @@ export function PublicDomainRewrite() {
           <span>
             {preview
               ? "我确认现代材料只用于发现待核验线索、匿名聚合叙事统计和来源重合检查；不得复制其原文、故事、人物、桥段、现代评论或来源结构，也不把现代整理本标为公版。正文只能叙述古代原典直接支持的事实，绝不另造人物与情节。"
-              : "我已逐本核对权利依据，确认 8–10 个输入均可作为公版/公共领域材料使用。系统会保存来源哈希和权利清单；依据不完整或正文带版权限制标记时，不会调用模型。"}
+              : "我已逐本核对权利依据，确认 5–10 个输入均可用于本次公版融合。系统会保存来源哈希和权利清单；正文带版权限制标记时，不会调用模型。"}
           </span>
         </label>
         <div className="mt-5 grid gap-3 text-xs leading-6 text-warm-400 md:grid-cols-3">
-          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />人物、地点、事件与观点只来自已核验古代原典，禁止任何无证据补写。</div>
-          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />逐章拦截论文腔、现代材料泄漏、事实越界、来源重合和语言硬伤。</div>
-          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />全书终审未通过时保留断点并禁止下载，不把半成品标为完成。</div>
+          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />现代整理内容只作题材线索，正文不得复制现代例子、评论或独特表达。</div>
+          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />每章完成即落盘，逐章检查字数、长段摘要、跨章重复、现代材料与破折号。</div>
+          <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />失败候选保留在断点，不自动进入反复付费改写或模型审稿循环。</div>
         </div>
       </section>
     </div>

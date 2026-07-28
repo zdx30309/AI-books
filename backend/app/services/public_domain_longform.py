@@ -28,7 +28,7 @@ from app.services.gemini import generate_text as gemini_generate_text
 from app.utils.official_api import official_proxy
 
 
-POLICY_VERSION = "public-domain-longform-v4-independent-synthesis"
+POLICY_VERSION = "public-domain-longform-v5-serial-story"
 PRIMARY_RETRIEVAL_VERSION = "primary-retrieval-v7-independent-synthesis"
 NARRATIVE_SYNTHESIS_VERSION = "public-domain-verified-narrative-v7"
 NARRATIVE_PLAN_VERSION = "public-domain-verified-narrative-v3"
@@ -39,7 +39,7 @@ CHAPTER_AUDIT_CACHE_VERSION = "chapter-audit-cache-v1"
 PUBLIC_DOMAIN_STYLE_PROFILE_ENABLED = False
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
-MIN_SOURCES = 8
+MIN_SOURCES = 5
 MAX_SOURCES = 10
 PREVIEW_MIN_SOURCES = 5
 PREVIEW_MAX_SOURCES = 7
@@ -285,6 +285,7 @@ class PublicDomainLongformResult:
 
 
 ProgressCallback = Callable[[int, str], None]
+ChapterCompletedCallback = Callable[[ChapterResult], None]
 
 
 def validate_sources(
@@ -347,13 +348,15 @@ def validate_sources(
             raise PublicDomainValidationError(
                 f"《{title}》缺少可审计的公版依据；请在权利依据中明确写明“公版/公共领域/CC0/保护期届满”及核对理由。"
             )
-        if not preview and not rights_url and item.publication_year is None and item.author_death_year is None:
-            raise PublicDomainValidationError(
-                f"《{title}》除文字说明外没有出版年份、作者去世年份或依据链接，无法形成可审计权利清单。"
-            )
+        # The user may have completed the rights review outside this app.  A
+        # specific written basis plus the explicit task-level confirmation is
+        # sufficient to create the auditable manifest; year/URL fields remain
+        # recommended metadata rather than a generation blocker.
         digest = text_sha256(text)
         if digest in seen_hashes:
-            raise PublicDomainValidationError(f"《{title}》与另一来源正文完全相同，不能重复计入 8–10 本来源。")
+            raise PublicDomainValidationError(
+                f"《{title}》与另一来源正文完全相同，不能重复计入 {min_sources}–{max_sources} 本来源。"
+            )
         seen_hashes.add(digest)
         cleaned.append(
             PublicDomainSource(
@@ -546,6 +549,7 @@ def run_public_domain_longform(
     generation_mode: str = FULL_MODE,
     research_use_confirmed: bool = False,
     on_progress: ProgressCallback | None = None,
+    on_chapter_completed: ChapterCompletedCallback | None = None,
 ) -> PublicDomainLongformResult:
     """Build or resume a long-form public-domain synthesis.
 
@@ -567,6 +571,26 @@ def run_public_domain_longform(
     )
     reports = build_source_reports(clean_sources)
     _write_rights_manifest(work_dir, reports, clean_sources, dimensions, generation_mode=generation_mode)
+    if generation_mode == FULL_MODE:
+        # The formal bookshelf flow uses the lightweight serial writer.  It
+        # keeps the proven story prompt, one durable checkpoint per chapter,
+        # and local deterministic QA.  The older evidence/auditor pipeline is
+        # retained below only for the explicitly selected research preview.
+        from app.services.public_domain_serial_longform import (
+            run_serial_public_domain_longform,
+        )
+
+        return run_serial_public_domain_longform(
+            sources=clean_sources,
+            reports=reports,
+            dimensions=dimensions,
+            work_dir=work_dir,
+            target_title=target_title,
+            target_direction=target_direction,
+            output_style=output_style,
+            on_progress=on_progress,
+            on_chapter_completed=on_chapter_completed,
+        )
     # Modern compilations are discovery indexes only. Do not build a
     # sentence/paragraph profile for a new task: it is not a writing template
     # and would turn copyrighted editorial choices into hidden style input.
