@@ -251,6 +251,48 @@ def _build_or_resume_chapter(
     if cached is not None:
         return legacy._chapter_from_dict(dict(cached["chapter"]))  # noqa: SLF001
 
+    failed_path = chapter_dir / f"{number:03d}.failed.json"
+    failed_cached = _load_artifact(failed_path, artifact_key)
+    if failed_cached is not None:
+        candidate = legacy._chapter_from_dict(  # noqa: SLF001
+            dict(failed_cached["chapter"])
+        )
+        issues, local_report = _chapter_local_issues(
+            text=candidate.text,
+            target_chars=int(contract["target_chars"]),
+            sources=sources,
+            previous_chapters=chapter_dir,
+            number=number,
+        )
+        if not issues:
+            chapter = legacy.ChapterResult(
+                number=candidate.number,
+                title=candidate.title,
+                text=candidate.text,
+                summary=candidate.summary,
+                used_claim_ids=candidate.used_claim_ids,
+                audit={
+                    "pass": True,
+                    "policy_version": SERIAL_POLICY_VERSION,
+                    "deterministic_issues": [],
+                    "local_report": local_report,
+                    "paid_auditor_calls": 0,
+                    "reused_failed_candidate": True,
+                },
+            )
+            legacy._atomic_write_json(  # noqa: SLF001
+                path,
+                {
+                    "artifact_key": artifact_key,
+                    "policy_version": SERIAL_POLICY_VERSION,
+                    "chapter": legacy._chapter_to_dict(chapter),  # noqa: SLF001
+                },
+            )
+            legacy._atomic_write_text(  # noqa: SLF001
+                chapter_dir / f"{number:03d}.md", chapter.text
+            )
+            return chapter
+
     target_chars = int(contract["target_chars"])
     prompt = _render_prompt(
         "longform_chapter.md",
@@ -328,7 +370,7 @@ def _build_or_resume_chapter(
     )
     if issues:
         legacy._atomic_write_json(  # noqa: SLF001
-            chapter_dir / f"{number:03d}.failed.json",
+            failed_path,
             {
                 "artifact_key": artifact_key,
                 "policy_version": SERIAL_POLICY_VERSION,

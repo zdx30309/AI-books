@@ -172,3 +172,81 @@ def test_serial_prompt_templates_contain_no_prohibited_dash_character() -> None:
         text = (prompt_dir / name).read_text(encoding="utf-8")
         assert "—" not in text
         assert "–" not in text
+
+
+def test_story_dialogue_with_wo_jiang_is_not_ai_residue() -> None:
+    text = "比丘说：\"我将这持戒的功德回向给那条龙，它便自然被降伏了。\""
+
+    report = simple._quality_check(text, _short_sources())  # noqa: SLF001
+
+    assert report["residue_issues"] == []
+
+
+def test_model_process_wo_jiang_is_still_blocked() -> None:
+    text = "我将根据要求整理全文，并输出以下内容。"
+
+    report = simple._quality_check(text, _short_sources())  # noqa: SLF001
+
+    assert "我将" in report["residue_issues"]
+
+
+def test_failed_candidate_is_rechecked_before_any_paid_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    body = "\n\n".join(
+        f"第{index}段保留传统故事的处境、行动和结果，让叙述自然向前推进。"
+        for index in range(1, 80)
+    )
+    target = legacy.count_text_chars(body)
+    calls: list[str] = []
+    blocked = {"value": True}
+
+    def fake_call(*_args, **kwargs):
+        calls.append(str(kwargs["action"]))
+        return body
+
+    def fake_quality(*_args, **_kwargs):
+        return {
+            "status": "needs_review" if blocked["value"] else "ok",
+            "warnings": ["暂时误报"] if blocked["value"] else [],
+            "overlap_issues": [],
+            "modern_narrative_issues": [],
+            "residue_issues": [],
+        }
+
+    monkeypatch.setattr(legacy, "_call_llm", fake_call)
+    monkeypatch.setattr(simple, "check_public_domain_manuscript", fake_quality)
+    sources = _short_sources()
+    contract = {
+        "number": 1,
+        "title": "持戒故事",
+        "purpose": "让故事自然出现",
+        "focus": "人物的选择",
+        "source_indexes": [1, 2, 3],
+        "target_chars": target,
+    }
+    kwargs = {
+        "work_dir": tmp_path,
+        "number": 1,
+        "contract": contract,
+        "plan": {
+            "title": "新书",
+            "summary": "简介",
+            "central_thread": "中心线索",
+            "chapters": [contract],
+        },
+        "sources": sources,
+        "previous_summaries": [],
+        "source_mode": simple.SourceModeProfile("narrative", "故事叙事型", ()),
+        "mode_guidance": "故事为主，说理为辅",
+    }
+
+    with pytest.raises(legacy.PublicDomainQualityError, match="暂时误报"):
+        serial._build_or_resume_chapter(**kwargs)  # noqa: SLF001
+    blocked["value"] = False
+    chapter = serial._build_or_resume_chapter(**kwargs)  # noqa: SLF001
+
+    assert calls == ["serial_chapter_write:001"]
+    assert chapter.audit["pass"] is True
+    assert chapter.audit["reused_failed_candidate"] is True

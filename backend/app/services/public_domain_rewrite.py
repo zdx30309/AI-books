@@ -644,7 +644,16 @@ def _quality_check(
             warnings.append(f"与《{source.title}》存在连续短句重合：{issue.ratio:.1%}")
     lowered = manuscript.lower()
     for pattern in _AI_RESIDUE_PATTERNS:
-        if pattern in lowered:
+        if pattern == "我将":
+            found = bool(
+                re.search(
+                    r"(?:^|\n)\s*我将(?:根据|按照|为你|为您|先|开始|输出|撰写|生成|修改|整理)",
+                    lowered,
+                )
+            )
+        else:
+            found = pattern in lowered
+        if found:
             residue_issues.append(pattern)
             warnings.append(f"疑似输出残留：{pattern}")
     for marker in _MODERN_NARRATIVE_MARKERS:
