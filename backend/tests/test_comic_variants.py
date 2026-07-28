@@ -309,3 +309,42 @@ def test_story_variant_generation_uses_variant_pipeline_without_changing_healing
     assert "雨停以后" in output
     assert (tmp_path / "02_comic_variant_script.json").exists()
     assert not (tmp_path / "02_healing_comic_script.json").exists()
+
+
+def test_homophone_generation_never_auto_retries_paid_writer_calls(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    writer_kwargs: list[dict[str, object]] = []
+
+    async def fake_writer(*_args, **kwargs):
+        writer_kwargs.append(dict(kwargs))
+        return "{}" if len(writer_kwargs) == 1 else ""
+
+    def fake_images(category, panels, output_dir, **kwargs):
+        assert category == "homophone_comic"
+        return comic_variants.plan_variant_comic_images(
+            category,
+            panels,
+            output_dir,
+            title=kwargs["title"],
+            intro=kwargs["intro"],
+            series_meta=kwargs["series_meta"],
+        )
+
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_writer)
+    monkeypatch.setattr(comic_variants, "generate_variant_comic_images", fake_images)
+    monkeypatch.setattr(content_engine, "_healing_comic_research_context", lambda _title: "cached healing base")
+
+    asyncio.run(
+        content_engine.generate_full_book(
+            "书名：今天谁又没说实话",
+            category="homophone_comic",
+            output_dir=tmp_path,
+            healing_comic_panel_count=1,
+        )
+    )
+
+    assert len(writer_kwargs) == 2
+    assert all(kwargs["retry_on_failure"] is False for kwargs in writer_kwargs)
+    assert all(kwargs["reasoning_effort"] == "medium" for kwargs in writer_kwargs)

@@ -2769,6 +2769,10 @@ def _get_openai_writer_client() -> OpenAI:
     client_kwargs: dict[str, Any] = {
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": request_timeout,
+        # Retries are controlled explicitly by _openai_writer_call_result.  Leaving
+        # the SDK retry loop enabled multiplies one configured attempt into several
+        # long, invisible paid waits when the production proxy is unhealthy.
+        "max_retries": 0,
     }
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     if proxy:
@@ -5742,9 +5746,10 @@ async def _generate_comic_variant_book(
                 try:
                     idea_output = await _route_writer_call(
                         idea_prompt,
-                        reasoning_effort="high",
+                        reasoning_effort="medium",
                         verbosity="low",
                         max_output_tokens=0,
+                        retry_on_failure=False,
                     )
                 except Exception as exc:
                     logger.warning("ChatGPT homophone ideation fallback: %s", exc)
@@ -5776,9 +5781,10 @@ async def _generate_comic_variant_book(
         try:
             writer_output = await _route_writer_call(
                 writer_prompt,
-                reasoning_effort="high" if category == HOMOPHONE_COMIC_CATEGORY else "medium",
+                reasoning_effort="medium",
                 verbosity="low",
                 max_output_tokens=0,
+                retry_on_failure=category != HOMOPHONE_COMIC_CATEGORY,
             )
         except Exception as exc:
             logger.warning("ChatGPT comic variant writer fallback: %s", exc)
