@@ -71,6 +71,8 @@ _HOMOPHONE_SCORE_KEYS = (
     "roast_precision",
     "status_reversal",
     "memorability",
+    "base_comedy_strength",
+    "caption_punch",
     "forcedness",
     "harm_risk",
 )
@@ -79,6 +81,10 @@ _HOMOPHONE_EXPLANATION_RE = re.compile(
 )
 _HOMOPHONE_SOFT_ENDING_RE = re.compile(
     r"(?:终于都有地方|慢慢变|一步一步|有了起飞的劲|温柔地|轻轻地|暖暖地)"
+)
+_HOMOPHONE_AI_CAPTION_RE = re.compile(
+    r"(?:替[他她它]?(?:认罪|开口)|把(?:奖金|承诺|梦想|箭头).{0,8}(?:戳|扎|砸|压)成|"
+    r"箭头.{0,8}扎向|笑不活|直接封神|狠狠拿捏)"
 )
 
 _STORY_FALLBACKS = (
@@ -125,7 +131,7 @@ _HOMOPHONE_FALLBACKS = (
         "source_word": "加薪",
         "pun_word": "夹心",
         "pinyin_pair": "jiā xīn / jiā xīn",
-        "caption": "老板说今天给全组加薪，结果每个人桌上只多了一块夹心饼干。",
+        "caption": "老板答应今天加薪，信封里却只有一块夹心饼干。",
         "protagonist": "刚入职的小浣熊和笑容满面的狐狸经理",
         "place": "周一早会后的共享办公室",
         "relationship": "爱画饼的经理和等结果的员工",
@@ -137,6 +143,9 @@ _HOMOPHONE_FALLBACKS = (
         "literal_action": "大家打开信封，里面各躺着一块夹心饼干",
         "status_reversal": "最会制造期待的经理被一屋子沉默盯住",
         "target_reaction": "经理还保持鼓掌姿势，笑容一点点僵住",
+        "base_roast": "老板把没有兑现的利益包装成郑重福利，员工拆开后只得到不值钱的东西",
+        "pun_advantage": "加薪与夹心把空头承诺变成一眼可见的廉价实物",
+        "delivery_mode": "promise_receipt",
         "story_setup": "经理在早会上郑重宣布今天给全组加薪，员工们第一次集体坐直",
         "story_change": "他把一摞鼓鼓的信封逐一摆到每个人桌上",
         "story_ending": "信封里各有一块夹心饼干，员工沉默看向仍在鼓掌的经理",
@@ -157,6 +166,8 @@ _HOMOPHONE_FALLBACKS = (
             "roast_precision": 9,
             "status_reversal": 9,
             "memorability": 9,
+            "base_comedy_strength": 9,
+            "caption_punch": 9,
             "forcedness": 1,
             "harm_risk": 0
         },
@@ -165,7 +176,7 @@ _HOMOPHONE_FALLBACKS = (
         "source_word": "有才",
         "pun_word": "油菜",
         "pinyin_pair": "yǒu cái / yóu cài",
-        "caption": "他刚夸自己全班最有才，老师请他展示，他却抱来了一捆油菜。",
+        "caption": "他刚夸自己全班最有才，下一秒就抱着一捆油菜上台了。",
         "protagonist": "总爱抢答的小孔雀和表情平静的山羊老师",
         "place": "手工课快结束的小学教室",
         "relationship": "爱自夸的学生和不拆穿人的老师",
@@ -177,6 +188,9 @@ _HOMOPHONE_FALLBACKS = (
         "literal_action": "他冲出教室又抱回一大捆油菜",
         "status_reversal": "原本等着被崇拜的学生成了全班沉默注视的对象",
         "target_reaction": "小孔雀抱着油菜等掌声，老师只把菜篮递给他",
+        "base_roast": "还没有展示能力就先自封第一的人，真正上台时只剩尴尬",
+        "pun_advantage": "有才与油菜让空洞自夸变成沉重又可见的舞台道具",
+        "delivery_mode": "boast_demolition",
         "story_setup": "小孔雀在手工课上不断抢答，夸自己全班最有才",
         "story_change": "老师请他上台展示，他兴奋地跑出教室搬东西",
         "story_ending": "他抱回一捆油菜站上讲台，全班和老师一起沉默",
@@ -196,6 +210,8 @@ _HOMOPHONE_FALLBACKS = (
             "roast_precision": 8,
             "status_reversal": 9,
             "memorability": 9,
+            "base_comedy_strength": 8,
+            "caption_punch": 8,
             "forcedness": 1,
             "harm_risk": 0
         },
@@ -204,7 +220,7 @@ _HOMOPHONE_FALLBACKS = (
         "source_word": "诚意",
         "pun_word": "橙衣",
         "pinyin_pair": "chéng yì / chéng yī",
-        "caption": "他迟到两小时还说自己带足了诚意，原来只是特地换了件橙衣。",
+        "caption": "他迟到两小时还说带足诚意，结果只带来一件崭新的橙衣。",
         "protagonist": "精心打扮却总找借口的橘猫和等到打烊的兔子",
         "place": "已经开始收椅子的街角小餐馆",
         "relationship": "第一次见面的相亲对象",
@@ -216,6 +232,9 @@ _HOMOPHONE_FALLBACKS = (
         "literal_action": "他得意地转身展示新买的橙色外套",
         "status_reversal": "迟到者自以为完成补救，却让借口显得更荒唐",
         "target_reaction": "兔子把账单推给他，店员在旁边忍住笑",
+        "base_roast": "迟到者拿表面功夫冒充道歉，还期待对方为他的打扮买单",
+        "pun_advantage": "诚意与橙衣把虚假的补救压缩成一件刺眼外套",
+        "delivery_mode": "excuse_exposure",
         "story_setup": "兔子在餐馆等到打烊，桌上的水已经添了三次",
         "story_change": "橘猫迟到两小时进门，拍着胸口说自己带足了诚意",
         "story_ending": "他转身展示橙色外套，兔子直接把账单推到他面前",
@@ -236,6 +255,8 @@ _HOMOPHONE_FALLBACKS = (
             "roast_precision": 9,
             "status_reversal": 9,
             "memorability": 8,
+            "base_comedy_strength": 8,
+            "caption_punch": 8,
             "forcedness": 1,
             "harm_risk": 0
         },
@@ -316,6 +337,23 @@ def _credible_pinyin_pair(value: object) -> bool:
     return len(left) >= 2 and len(right) >= 2 and _edit_distance_at_most_one(left, right)
 
 
+def _homophone_caption_has_punch_shape(caption: str) -> bool:
+    """Reject plot summaries and synthetic three-clause punchlines.
+
+    A publishable one-liner gets one setup beat and one payoff beat.  This is
+    deliberately structural; model-provided humour scores are never enough to
+    pass a caption that reads like an AI synopsis.
+    """
+
+    body = str(caption or "").rstrip(_TERMINAL_PUNCTUATION)
+    pause_count = sum(body.count(mark) for mark in ("，", ",", "；", ";", "：", ":"))
+    return (
+        18 <= len(body) <= 42
+        and pause_count <= 1
+        and not _HOMOPHONE_AI_CAPTION_RE.search(body)
+    )
+
+
 def build_homophone_idea_prompt(
     title: str,
     *,
@@ -377,6 +415,9 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
         literal_action = _text(raw.get("literal_action"), "", limit=180)
         status_reversal = _text(raw.get("status_reversal"), "", limit=180)
         target_reaction = _text(raw.get("target_reaction"), "", limit=180)
+        base_roast = _text(raw.get("base_roast"), "", limit=180)
+        pun_advantage = _text(raw.get("pun_advantage"), "", limit=180)
+        delivery_mode = _text(raw.get("delivery_mode"), "", limit=48)
         caption = normalize_complete_caption(
             raw.get("caption"),
             fallback=f"有人把{source_word}听成了{pun_word}，场面一下变得很具体。",
@@ -390,6 +431,9 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
                 (literal_action, 8),
                 (status_reversal, 8),
                 (target_reaction, 6),
+                (base_roast, 12),
+                (pun_advantage, 12),
+                (delivery_mode, 4),
             )
         )
         lexical_clarity = source_word in caption and pun_word in caption
@@ -405,6 +449,8 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
             + scores["memorability"] * 10
             + scores["freshness"] * 8
             + scores["naturalness"] * 6
+            + scores["base_comedy_strength"] * 20
+            + scores["caption_punch"] * 22
             - scores["forcedness"] * 28
             - scores["harm_risk"] * 30
         )
@@ -418,6 +464,8 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
             and scores["roast_precision"] >= 8
             and scores["status_reversal"] >= 8
             and scores["memorability"] >= 8
+            and scores["base_comedy_strength"] >= 8
+            and scores["caption_punch"] >= 8
             and scores["forcedness"] <= 2
             and scores["harm_risk"] <= 1
             and roast_mode in _HOMOPHONE_ROAST_MODES
@@ -425,6 +473,7 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
             and lexical_clarity
             and no_explanation
             and no_soft_landing
+            and _homophone_caption_has_punch_shape(caption)
         )
         normalized.append(
             {
@@ -451,6 +500,9 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
                 "literal_action": literal_action,
                 "status_reversal": status_reversal,
                 "target_reaction": target_reaction,
+                "base_roast": base_roast,
+                "pun_advantage": pun_advantage,
+                "delivery_mode": delivery_mode,
                 "caption": caption,
                 "scores": scores,
                 "strict_pass": strict_pass,
@@ -521,6 +573,9 @@ def format_homophone_joke_bank(candidates: list[dict[str, object]]) -> str:
                     "literal_action",
                     "status_reversal",
                     "target_reaction",
+                    "base_roast",
+                    "pun_advantage",
+                    "delivery_mode",
                     "caption",
                     "scores",
                 )
@@ -595,6 +650,7 @@ def _homophone_contract_passes(
         or pun_word not in caption
         or _HOMOPHONE_EXPLANATION_RE.search(caption)
         or _HOMOPHONE_SOFT_ENDING_RE.search(caption)
+        or not _homophone_caption_has_punch_shape(caption)
     ):
         return False
     roast_mode = _text(item.get("roast_mode"), "", limit=32)
@@ -607,6 +663,9 @@ def _homophone_contract_passes(
         (item.get("literal_action"), 8),
         (item.get("status_reversal"), 8),
         (item.get("target_reaction"), 6),
+        (item.get("base_roast"), 12),
+        (item.get("pun_advantage"), 12),
+        (item.get("delivery_mode"), 4),
         (item.get("story_setup"), 8),
         (item.get("story_change"), 8),
         (item.get("story_ending"), 8),
@@ -625,6 +684,8 @@ def _homophone_contract_passes(
         and scores["roast_precision"] >= 8
         and scores["status_reversal"] >= 8
         and scores["memorability"] >= 8
+        and scores["base_comedy_strength"] >= 8
+        and scores["caption_punch"] >= 8
         and scores["forcedness"] <= 2
         and scores["harm_risk"] <= 1
     )
@@ -737,6 +798,13 @@ def _normalize_episode(
                 ),
                 "target_reaction": _text(
                     item.get("target_reaction"), str(fallback["target_reaction"]), limit=180
+                ),
+                "base_roast": _text(item.get("base_roast"), str(fallback["base_roast"]), limit=180),
+                "pun_advantage": _text(
+                    item.get("pun_advantage"), str(fallback["pun_advantage"]), limit=180
+                ),
+                "delivery_mode": _text(
+                    item.get("delivery_mode"), str(fallback["delivery_mode"]), limit=48
                 ),
                 "scores": item.get("scores") if isinstance(item.get("scores"), dict) else fallback["scores"],
             }
@@ -871,6 +939,9 @@ def build_variant_panel_prompt(
                 "LITERAL_ACTION": panel.get("literal_action"),
                 "STATUS_REVERSAL": panel.get("status_reversal"),
                 "TARGET_REACTION": panel.get("target_reaction"),
+                "BASE_ROAST": panel.get("base_roast"),
+                "PUN_ADVANTAGE": panel.get("pun_advantage"),
+                "DELIVERY_MODE": panel.get("delivery_mode"),
             }
         )
         return _render_prompt("comic_homophone_image.md", **common)

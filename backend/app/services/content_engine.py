@@ -5742,7 +5742,7 @@ async def _generate_comic_variant_book(
                 try:
                     idea_output = await _route_writer_call(
                         idea_prompt,
-                        reasoning_effort="medium",
+                        reasoning_effort="high",
                         verbosity="low",
                         max_output_tokens=0,
                     )
@@ -5776,7 +5776,7 @@ async def _generate_comic_variant_book(
         try:
             writer_output = await _route_writer_call(
                 writer_prompt,
-                reasoning_effort="medium",
+                reasoning_effort="high" if category == HOMOPHONE_COMIC_CATEGORY else "medium",
                 verbosity="low",
                 max_output_tokens=0,
             )

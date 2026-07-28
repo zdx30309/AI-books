@@ -23,11 +23,16 @@
 - 笑点只攻击可选择行为，可以向上讽刺、同辈互损或自嘲；禁止地域歧视、疾病玩笑、身体羞辱、贫困羞辱、职业尊严羞辱、品牌梗、热搜梗或现成段子复刻。
 - 禁止“终于、慢慢、轻轻、暖暖、陪着、照顾、安心、给了力量”等治愈收束。治愈只保留为画面观感，不能消解讽刺。
 
+【现实矛盾先于词对】
+- 每章先检查 base_roast：完全拿掉 source_word 和 pun_word 后，仍必须留下一个真实、具体、带地位反转的喜剧冲突。若只剩为梗硬搭的道具和动作，立即淘汰。
+- 谐音是放大器，不是呼吸机。不得为了让梗成立凭空制造会自证清白的便签、神奇检测器、突然出现的证据或不合常理的规则。
+- 先让读者因“这人现实里真烦”产生共鸣，再用谐音动作狠狠干净地反杀。最后一格不讲道理，只展示输家失去气势。
+
 【真人喜剧闸门】
 - 前两格必须建立一个清楚的错误预期，第三格执行荒诞的字面理解，最后一格给出更高地位者、吹牛者或犯错者的吃瘪表情与动作。
 - 每章选择一种不同的 roast_mode：self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、double_standard、empty_promise、literal_misread。
 - 每章必须填写 target_behavior、audience_expectation、misread_trigger、literal_action、status_reversal、target_reaction；这些字段只是给绘图和机器闸门使用，不会额外写在画面上。
-- 分数必须诚实。任何一项低于门槛都要在内部重写后再输出：naturalness≥8、surprise≥8、visual_payoff≥8、freshness≥8、instant_clarity≥9、laugh_out_loud≥8、roast_precision≥8、status_reversal≥8、memorability≥8、forcedness≤2、harm_risk≤1。
+- 分数必须诚实。任何一项低于门槛都要在内部重写后再输出：naturalness≥8、surprise≥8、visual_payoff≥8、freshness≥8、instant_clarity≥9、laugh_out_loud≥8、roast_precision≥8、status_reversal≥8、memorability≥8、base_comedy_strength≥8、caption_punch≥8、forcedness≤2、harm_risk≤1。
 
 【故事与版式】
 - 每章输出一张含三格或四格的漫画页。各格必须有推进，最后一格既让谐音成立，也让被嘲讽行为当场露馅。
@@ -36,8 +41,9 @@
 - 继承成熟治愈漫画链路的出版感、留白、清楚动作、文字画面一一对应、原创角色与断点续跑能力，但不继承其温柔叙事、固定动物主角和碎片短句。
 
 【文案硬标准】
-- caption 是画面唯一允许出现的中文文案，必须是一句 18 到 48 个中文字符的完整句子，以“。」「！」「？」之一结束。
-- caption 必须同时自然使用 source_word 和 pun_word，清楚指出承诺/吹牛与荒诞结果之间的落差；不得用引号突出谐音词，不得用“这个梗的意思是、也就是说、原来是”解释。
+- caption 是画面唯一允许出现的中文文案，必须是一句 18 到 42 个中文字符的完整句子，以“。」「！」「？」之一结束。
+- caption 必须同时自然使用 source_word 和 pun_word，只写两个节拍：“一个现实铺垫 + 一个讽刺爆点”。全句最多一个逗号或分号；严禁“A 做事，B 执行谐音，C 再总结”的同质化三段式。
+- caption 不是四格剧情摘要。禁止“报销单把奖金戳成零”“便签替他认罪”“箭头扎向他”这类抽象物件不自然地替人物行动；主语、动作和因果必须像真人会吐槽的话。
 - 禁止四五字碎片、斜杠拼句、标题党、鸡汤升华、温柔收束和生硬网络口吻。句子要像真人在事后精准吐槽，而不是 AI 帮故事写总结。
 
 【版权与安全】
@@ -70,6 +76,9 @@
       "literal_action": "把谐音义执行成的可见荒诞动作",
       "status_reversal": "原本占上风者如何失去气势",
       "target_reaction": "最后一格被打脸者的表情或动作",
+      "base_roast": "拿掉谐音后仍然成立的现实讽刺笑点",
+      "pun_advantage": "谐音如何放大已有笑点",
+      "delivery_mode": "与相邻章节不同的英文抛梗方式",
       "story_setup": "正常场景和铺垫",
       "story_change": "误会或动作如何改变理解",
       "story_ending": "最后一格可见结果",
@@ -83,6 +92,8 @@
         "roast_precision": 0,
         "status_reversal": 0,
         "memorability": 0,
+        "base_comedy_strength": 0,
+        "caption_punch": 0,
         "forcedness": 0,
         "harm_risk": 0
       },

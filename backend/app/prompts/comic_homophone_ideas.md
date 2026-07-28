@@ -13,7 +13,12 @@
 - 不是冷笑话海报，不是把两个同音词并排写出来，不是善意小故事，也不是角色解释“这是一个谐音梗”。删除最后一格后必须悬着，最后一格出现才发生笑点爆破。
 
 【人类审美筛选】
-每个候选都先做一次“冷读测试”，再过十一道门槛：
+候选必须按“现实矛盾在先，谐音武器在后”的顺序构思：
+1. 先写一个完全拿掉谐音仍然成立的讽刺笑点，必须有真实痛点、具体行为和地位反转。
+2. 再寻找能够把这个矛盾变成可见动作的自然词对。找不到就丢弃现实矛盾，不得反过来为词对编造证据或硬搭场景。
+3. 谐音只负责把已有笑点放大，不能承担全部笑点。藏起两个谐音词后，如果故事只剩莫名其妙的动作，该候选直接淘汰。
+
+每个候选都先做一次“冷读测试”，再过十三道门槛：
 1. 自然度：铺垫像真实生活，不像为谐音硬搭舞台。
 2. 意外度：前两格让人形成明确预期，后两格把预期掀翻。
 3. 可视化：不用解释，只靠动作、物件、表情和关系就能看到打脸过程。
@@ -25,6 +30,8 @@
 9. 记忆度：最后一格有一个能被记住的表情、动作或物件构图。
 10. 生硬度：词对、场景和转折都不能像为了押音硬凑。
 11. 伤害风险：不向弱者开火，不羞辱身份，不把刻薄当幽默。
+12. 基础喜剧强度：拿掉谐音后，现实冲突本身仍值得笑，不能依靠凭空出现的便签、检测器或证据救场。
+13. 文案爆点：一句话听起来像真人吐槽，不像机器复述四格剧情。
 
 可使用的 roast_mode 仅限以下英文枚举：
 self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、double_standard、empty_promise、literal_misread。
@@ -32,7 +39,9 @@ self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、d
 【硬性淘汰】
 - source_word 与 pun_word 必须是两个不同、真实、自然使用的现代汉语词或短语；普通话同音或近音关系必须可信。
 - 禁止错别字、生造词、只换“你/您”、方言限定、品牌、现实 IP、热搜梗、疾病与群体冒犯。
-- caption 必须是一句 18 至 48 个中文字符的自然完整句，并同时自然出现 source_word 与 pun_word，让嘲讽对象和结果清楚可见；不能用“意思是、也就是说、原来是、这个梗”等方式解释。
+- caption 必须是一句 18 至 42 个中文字符的自然完整句，并同时自然出现 source_word 与 pun_word，让嘲讽对象和结果清楚可见；全句最多只能有一个逗号或分号，只写“一个铺垫 + 一个爆点”，禁止“A 做事，B 执行，C 总结”的三段式剧情摘要。
+- 禁止把抽象名词写成不自然的施事者，例如“报销单把奖金戳成零”“便签替他认罪”“箭头扎向他”；画面可以夸张，句子的主谓关系必须像真人会说的话。
+- base_roast 必须说明拿掉谐音后仍成立的讽刺冲突，pun_advantage 必须说明谐音究竟把笑点放大在哪里，delivery_mode 用 4 至 24 个英文小写字母或下划线概括抛梗方式。同批不得连续使用同一种 delivery_mode。
 - 禁止把结尾写成温柔陪伴、互相帮助、终于安心、慢慢变好等治愈小故事；这里的治愈只属于视觉基座，不属于笑点机制。
 - 同一批候选不得重复主角类型、场所、关系、关键物件、双义领域或笑点结构。
 
@@ -59,6 +68,9 @@ self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、d
       "literal_action": "角色把谐音义执行成什么可见动作",
       "status_reversal": "原本占上风的人如何失去气势",
       "target_reaction": "最后一格被打脸者的具体表情或动作",
+      "base_roast": "拿掉谐音后仍然成立的现实讽刺笑点",
+      "pun_advantage": "这组谐音如何放大已有笑点而非凭空制造故事",
+      "delivery_mode": "本条不同于相邻候选的英文抛梗方式",
       "caption": "同时自然出现两个词、无需解释且带嘲讽的一句完整文案。",
       "scores": {
         "naturalness": 0,
@@ -70,6 +82,8 @@ self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、d
         "roast_precision": 0,
         "status_reversal": 0,
         "memorability": 0,
+        "base_comedy_strength": 0,
+        "caption_punch": 0,
         "forcedness": 0,
         "harm_risk": 0
       }
@@ -77,4 +91,4 @@ self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、d
   ]
 }
 
-除 forcedness 与 harm_risk 外，分数越高越好；forcedness 与 harm_risk 越低越好。所有分数使用 0 至 10 的整数，不得虚报。只是温暖、可爱或双关成立但不够好笑的候选，laugh_out_loud 不得高于 5；没有明确地位反转的候选，status_reversal 不得高于 4；依赖解释的候选，forcedness 必须大于 5。
+除 forcedness 与 harm_risk 外，分数越高越好；forcedness 与 harm_risk 越低越好。所有分数使用 0 至 10 的整数，不得虚报。只是温暖、可爱或双关成立但不够好笑的候选，laugh_out_loud 不得高于 5；拿掉谐音就失去全部逻辑的候选，base_comedy_strength 不得高于 4；文案出现三段式摘要或抽象名词乱施事时，caption_punch 不得高于 4；没有明确地位反转的候选，status_reversal 不得高于 4；依赖解释的候选，forcedness 必须大于 5。

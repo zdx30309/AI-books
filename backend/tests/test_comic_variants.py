@@ -42,6 +42,9 @@ def _joke_candidate(
         "literal_action": "主角抱来一盆写着芳心的巨大花盆",
         "status_reversal": "原本说漂亮话的人被当场堵得说不出话",
         "target_reaction": "对方保持伸手姿势，笑容直接僵在脸上",
+        "base_roast": "只会说漂亮话的人最终被自己没有兑现的承诺当场拆穿",
+        "pun_advantage": "放心与芳心把空话变成一个能够被看见的荒唐物件",
+        "delivery_mode": f"promise_receipt_{index}",
         "caption": f"邻居让他{source_word}，他却认真抱稳了那盆{pun_word}{index}。",
         "scores": {
             "naturalness": 9,
@@ -53,6 +56,8 @@ def _joke_candidate(
             "roast_precision": 8,
             "status_reversal": 9,
             "memorability": 8,
+            "base_comedy_strength": 8,
+            "caption_punch": 8,
             "forcedness": 1,
             "harm_risk": 0,
         },
@@ -145,6 +150,13 @@ def test_homophone_joke_bank_rejects_soft_production_pair_even_with_high_scores(
 def test_homophone_joke_bank_requires_both_words_in_caption() -> None:
     candidate = _joke_candidate(1)
     candidate["caption"] = "邻居只会说漂亮话，最后被花盆堵得一句也接不上。"
+    payload = json.dumps({"candidates": [candidate]}, ensure_ascii=False)
+    assert comic_variants.parse_homophone_idea_output(payload, panel_count=1) == []
+
+
+def test_homophone_joke_bank_rejects_ai_three_clause_plot_summary() -> None:
+    candidate = _joke_candidate(1)
+    candidate["caption"] = "邻居让他放心，他端来一盆芳心，花盆最后替他认罪。"
     payload = json.dumps({"candidates": [candidate]}, ensure_ascii=False)
     assert comic_variants.parse_homophone_idea_output(payload, panel_count=1) == []
 
