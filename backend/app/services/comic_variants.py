@@ -382,7 +382,7 @@ def build_homophone_idea_prompt(
             "未指定，由模型设计原创治愈系角色。",
             limit=2000,
         ),
-        SOURCE_CONTENT=_text(source_content, "未提供，只根据书名原创。", limit=20000),
+        SOURCE_CONTENT=_prompt_block(source_content, "未提供，只根据书名原创。", limit=20000),
     )
 
 
@@ -612,6 +612,15 @@ def normalize_complete_caption(value: object, *, fallback: str) -> str:
 
 def _text(value: object, fallback: str, *, limit: int = 220) -> str:
     cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+    return (cleaned or fallback)[:limit]
+
+
+def _prompt_block(value: object, fallback: str, *, limit: int) -> str:
+    """Keep form fields legible in prompts without preserving noisy spacing."""
+
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in raw.split("\n")]
+    cleaned = "\n".join(line for line in lines if line).strip()
     return (cleaned or fallback)[:limit]
 
 
@@ -946,7 +955,7 @@ def build_variant_writer_prompt(
         TITLE=parse_healing_comic_title(title) or ("给你讲个故事" if category == STORY_COMIC_CATEGORY else "今天也有好笑的事"),
         EPISODE_COUNT=parse_healing_comic_panel_count(panel_count),
         CHARACTER_REQUIREMENT=_text(character_prompt, "未指定，由模型按每个故事单独设计原创主角。", limit=2000),
-        SOURCE_CONTENT=_text(source_content, "未提供，只根据书名原创。", limit=20000),
+        SOURCE_CONTENT=_prompt_block(source_content, "未提供，只根据书名原创。", limit=20000),
         RESEARCH_CONTEXT=_text(research_context, "沿用现有漫画链路的出版感、留白、动作清楚与原创要求。", limit=8000),
         JOKE_BANK=_text(joke_bank, "[]", limit=30000),
     )

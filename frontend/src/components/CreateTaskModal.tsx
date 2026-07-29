@@ -11,6 +11,14 @@ import {
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { ClassicalReferenceTemplateResponse, TaskCategoryOption } from "@/api/types";
+import {
+  HomophoneComicCreator,
+  StoryComicCreator,
+  buildHomophoneComicBrief,
+  buildStoryComicBrief,
+  createHomophoneComicForm,
+  createStoryComicForm,
+} from "@/components/ComicVariantCreator";
 
 interface Props {
   open: boolean;
@@ -173,6 +181,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [comicSourceContent, setComicSourceContent] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
+  const [storyComicForm, setStoryComicForm] = useState(createStoryComicForm);
+  const [homophoneComicForm, setHomophoneComicForm] = useState(createHomophoneComicForm);
   const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
@@ -210,6 +220,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
   const isHealingComicFamily = HEALING_COMIC_FAMILY_IDS.has(category);
+  const isComicVariantWorkbench = mode === "comic"
+    && (category === "story_comic" || category === "homophone_comic");
   const comicCategoryLabel = category === "story_comic"
     ? "图文故事"
     : category === "homophone_comic"
@@ -253,6 +265,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setComicSourceContent("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
+      setStoryComicForm(createStoryComicForm());
+      setHomophoneComicForm(createHomophoneComicForm());
       setCategory(defaultCategoryId ?? "social_science");
       setStyleReference("");
       setStyleNotes("");
@@ -469,7 +483,74 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     }
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
-      if (HEALING_COMIC_FAMILY_IDS.has(comicCategory)) {
+      if (comicCategory === "story_comic" || comicCategory === "homophone_comic") {
+        const isStory = comicCategory === "story_comic";
+        const variantForm = isStory ? storyComicForm : homophoneComicForm;
+        const cleanedTitle = variantForm.title.trim();
+        if (!cleanedTitle) {
+          setError(`${comicCategoryLabel}需要输入系列名`);
+          return;
+        }
+        const panelCount = parsePanelCount(variantForm.episodeCount);
+        if (!Number.isInteger(panelCount) || panelCount < HEALING_COMIC_MIN_PANEL_COUNT) {
+          setError(`${comicCategoryLabel}故事数量需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
+          return;
+        }
+        const characterPrompt = variantForm.character.trim();
+        const sourceContent = isStory
+          ? buildStoryComicBrief(storyComicForm)
+          : buildHomophoneComicBrief(homophoneComicForm);
+        const rawText = [
+          `书名：${cleanedTitle}`,
+          characterPrompt ? `固定角色：${characterPrompt}` : "",
+          sourceContent,
+        ].filter(Boolean).join("\n");
+
+        setSubmitting(true);
+        try {
+          const variantConfig = isStory
+            ? {
+                comic_story_premise: storyComicForm.premise.trim() || undefined,
+                comic_story_setting: storyComicForm.setting,
+                comic_story_mood: storyComicForm.mood,
+                comic_story_ending: storyComicForm.ending,
+              }
+            : {
+                comic_homophone_seed: homophoneComicForm.seed.trim() || undefined,
+                comic_humor_scene: homophoneComicForm.scene,
+                comic_humor_flavor: homophoneComicForm.flavor,
+                comic_humor_edge: homophoneComicForm.edge,
+                comic_avoid_topics: homophoneComicForm.avoidTopics.trim() || undefined,
+              };
+          const res = await api.createTask({
+            url: `manual://${comicCategory}`,
+            config: {
+              category: comicCategory,
+              comic_interface_version: "variant-workbench-v1",
+              comic_title: cleanedTitle,
+              comic_panel_count: panelCount,
+              comic_character_prompt: characterPrompt || undefined,
+              comic_source_content: sourceContent,
+              title: cleanedTitle,
+              raw_text: rawText,
+              ...variantConfig,
+            },
+          });
+          onCreated(res.task_id);
+        } catch (e) {
+          const msg =
+            e instanceof ApiError
+              ? `[${e.status}] ${e.detail}`
+              : e instanceof Error
+                ? e.message
+                : "创建任务失败";
+          setError(msg);
+        } finally {
+          setSubmitting(false);
+        }
+        return;
+      }
+      if (comicCategory === "healing_comic") {
         const cleanedTitle = comicTitle.trim();
         if (!cleanedTitle) {
           setError(`${comicCategoryLabel}需要输入书名`);
@@ -757,7 +838,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       onClick={onClose}
     >
       <div
-        className="card-warm relative max-h-[calc(100dvh-32px)] w-[min(600px,90vw)] overflow-y-auto p-6 shadow-card-warm"
+        className={`card-warm relative max-h-[calc(100dvh-32px)] overflow-y-auto p-6 shadow-card-warm ${
+          isComicVariantWorkbench ? "w-[min(760px,94vw)]" : "w-[min(600px,90vw)]"
+        }`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -772,10 +855,18 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         </button>
 
         <h2 className="font-serif text-2xl tracking-wide text-warm-100">
-          开始创作
+          {category === "story_comic"
+            ? "图文故事工作台"
+            : category === "homophone_comic"
+              ? "谐音梗编剧室"
+              : "开始创作"}
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
+          {category === "story_comic"
+            ? "从一个生活起点出发，生成可以连续滑动、逐页发生变化的原创图文小故事。"
+            : category === "homophone_comic"
+              ? "选择笑点场景与喜剧口味，让编剧室先海选，再把真正成立的谐音写成完整故事。"
+              : "选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库"}
         </p>
 
         <div className="mt-6 space-y-4">
@@ -1541,7 +1632,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
-              {isHealingComicFamily ? (
+              {category === "story_comic" ? (
+                <StoryComicCreator value={storyComicForm} onChange={setStoryComicForm} />
+              ) : category === "homophone_comic" ? (
+                <HomophoneComicCreator value={homophoneComicForm} onChange={setHomophoneComicForm} />
+              ) : isHealingComicFamily ? (
                 <>
                 <div>
                   <label
@@ -1785,7 +1880,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 {mode === "batch"
                   ? "加入候选库"
                   : mode === "comic"
-                    ? `生成${comicCategoryLabel}`
+                    ? category === "story_comic"
+                      ? "开始编故事"
+                      : category === "homophone_comic"
+                        ? "海选笑点并生成"
+                        : `生成${comicCategoryLabel}`
                     : mode === "articleBatch"
                       ? "批量抓取生成"
                     : mode === "article"

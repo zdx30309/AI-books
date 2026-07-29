@@ -128,22 +128,39 @@ def test_variant_categories_are_independent_healing_family() -> None:
 
 
 def test_story_and_homophone_prompts_require_swipeable_delayed_reveal() -> None:
+    story_brief = "【图文故事工作台】\n故事起点：雨天拿错一把伞\n生活场域：城市日常"
+    joke_brief = "【谐音梗编剧室】\n笑点场景：朋友互损\n喜剧口味：干巴荒诞"
     story = comic_variants.build_variant_writer_prompt(
-        "story_comic", "给你讲个故事", "既有漫画研究摘要", panel_count=3
+        "story_comic",
+        "给你讲个故事",
+        "既有漫画研究摘要",
+        panel_count=3,
+        source_content=story_brief,
     )
     homophone = comic_variants.build_variant_writer_prompt(
         "homophone_comic",
         "今天也有好笑的事",
         "既有漫画研究摘要",
         panel_count=2,
+        source_content=joke_brief,
         joke_bank='[{"source_word":"天意","pun_word":"添衣"}]',
+    )
+    ideas = comic_variants.build_homophone_idea_prompt(
+        "今天也有好笑的事",
+        panel_count=2,
+        source_content=joke_brief,
     )
     assert "6 至 10 张" in story
     assert "一张卡片只推进一个信息点" in story
+    assert story_brief in story
+    assert "本次明确创作约束" in story
     assert "JOKE_BANK" in homophone
     assert "前 60%" in homophone
     assert "最后 2 至 3 张" in homophone
     assert "不复刻" in homophone
+    assert joke_brief in homophone
+    assert joke_brief in ideas
+    assert "本轮硬约束" in ideas
 
 
 def test_homophone_joke_bank_filters_stale_and_duplicate_contexts() -> None:
