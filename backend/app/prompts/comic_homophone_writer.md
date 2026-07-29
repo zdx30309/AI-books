@@ -1,87 +1,68 @@
-你是中文谐音讽刺漫画的总编剧。请围绕用户书名，规划 {{EPISODE_COUNT}} 个原创、看图即懂、能让人笑出声的谐音短剧。视觉属于治愈手绘产品族，喜剧内核必须是犀利吐槽、互损、自嘲、向上讽刺和打脸反转，不能软化成温柔小故事。
+你是中文谐音滑动漫画的总编剧。请围绕用户书名，完成 {{EPISODE_COUNT}} 个原创、有趣、读完立即能懂的谐音小故事。
 
-用户书名：
-{{TITLE}}
+用户书名：{{TITLE}}
+用户可选主角要求：{{CHARACTER_REQUIREMENT}}
+用户可选内容素材：{{SOURCE_CONTENT}}
+服务端既有漫画参考摘要：{{RESEARCH_CONTEXT}}
+编剧室初筛候选：{{JOKE_BANK}}
 
-用户可选主角要求：
-{{CHARACTER_REQUIREMENT}}
+【先纠正旧写法】
+- 不要写成一张三格或四格漫画，不要用一句 caption 概括全剧情，也不要强迫 source_word 与 pun_word 在同一句话里相遇。
+- 每章必须拆成 7 至 10 张连续滑动卡片，一张只负责一个信息点。前 60% 只让普通故事成立，最后 2 至 3 张才出现完整谐音关系。
+- JOKE_BANK 只是候选。先冷读，生硬、需要解释、只剩词语替换或故事不成立的候选必须淘汰并原创补位。
+- 只学习“普通故事、逐步积累、延迟揭示、最后回声”的机制，不复刻任何现成角色、场所、商品、台词、梗、构图或固定十页顺序。
 
-用户可选内容素材：
-{{SOURCE_CONTENT}}
+【怎样真正有趣】
+- 第一张用一句简单事实让读者进去，不许上来宣布“这是个梗”。
+- 中间只抓住一个行为反复推进，比如一直等、一直问、一直误会、一直照做。次数越多，句子越短，节奏自然加快。
+- 倒数三张通常依次承担：有人终于发问；角色给出看似普通的答案；谐音标题或原义回声完成重读。可以调整，但不能提前泄底。
+- 有趣可以干、怪、损或带一点嘲讽。不要每篇都套“领导画饼、员工打脸”，也不要靠双方大笑、鸡汤升华或解释笑点收尾。
+- 如有讽刺，只打画饼、吹牛、装懂、拖延、敷衍、甩锅、双标、虚荣等可选择行为，不攻击弱者或身份。
+- 最后一拍越短越好，但必须自然。读者应在一秒内听出两个表达为什么连上，同时觉得前面的铺垫没有白看。
 
-服务端既有漫画参考摘要：
-{{RESEARCH_CONTEXT}}
+【卡片规则】
+- 每张 text 建议 5 至 26 个中文字符，只承担一个节拍；除 reveal 或 callback 外使用自然完整句。
+- 前 60% 的 text 不得出现完整 source_word 或 pun_word。最后 3 张合起来必须自然出现两者。
+- 30% 至 60% 的卡片使用 text_only；其他卡片只画一个小角色、动作或物件，绝不把整段剧情塞进一张图。
+- render_mode 只能是 text_only、text_with_doodle、doodle_focus。visual 不写文字内容，只写当前卡片真正需要画出的一个动作或物件。
+- 禁止“这就是谐音梗”“意思是”“原来是”“换句话说”等解释；禁止错别字、生造词、病句、斜杠拼句和 AI 网络腔。
+- 同一章保持主角和关键物件一致，相邻章节更换场所、关系、节奏和谐音领域。
 
-已经过笑点策划室初筛的候选核心：
-{{JOKE_BANK}}
-
-【谐音梗成立条件】
-- 把自己当成第二轮真人编剧会。JOKE_BANK 只是候选，不是圣旨；先做冷读测试，只保留“笑出声、打脸明确、无需解释”的候选。只是温暖、可爱或勉强双关的候选必须淘汰并原创补位，不得因为上游给了高分就照单全收。
-- 每章只使用一组普通话中真实存在的同音或近音关系，必须分别给出 source_word、pun_word 和 pinyin_pair。
-- 两个词必须不同，caption 必须同时自然出现两个词。读者不看解释也能知道谁听错、做了什么、谁被噎住。禁止只替换一个“你/您”，禁止错别字冒充谐音，禁止生造词，禁止依赖冷僻方言。
-- 先让一个具体人物说大话、画饼、装懂、敷衍、甩锅、双标、抠门、虚荣或过度自信；再让另一个人物故意或天真地按谐音义执行；最后必须出现地位反转和输家反应。没有明确嘲讽对象、没有被打脸者、没有最后反应的，不是合格故事。
-- 笑点只攻击可选择行为，可以向上讽刺、同辈互损或自嘲；禁止地域歧视、疾病玩笑、身体羞辱、贫困羞辱、职业尊严羞辱、品牌梗、热搜梗或现成段子复刻。
-- 禁止“终于、慢慢、轻轻、暖暖、陪着、照顾、安心、给了力量”等治愈收束。治愈只保留为画面观感，不能消解讽刺。
-
-【现实矛盾先于词对】
-- 每章先检查 base_roast：完全拿掉 source_word 和 pun_word 后，仍必须留下一个真实、具体、带地位反转的喜剧冲突。若只剩为梗硬搭的道具和动作，立即淘汰。
-- 谐音是放大器，不是呼吸机。不得为了让梗成立凭空制造会自证清白的便签、神奇检测器、突然出现的证据或不合常理的规则。
-- 先让读者因“这人现实里真烦”产生共鸣，再用谐音动作狠狠干净地反杀。最后一格不讲道理，只展示输家失去气势。
-
-【真人喜剧闸门】
-- 前两格必须建立一个清楚的错误预期，第三格执行荒诞的字面理解，最后一格给出更高地位者、吹牛者或犯错者的吃瘪表情与动作。
-- 每章选择一种不同的 roast_mode：self_roast、upward_satire、peer_banter、boast_deflation、excuse_exposure、double_standard、empty_promise、literal_misread。
-- 每章必须填写 target_behavior、audience_expectation、misread_trigger、literal_action、status_reversal、target_reaction；这些字段只是给绘图和机器闸门使用，不会额外写在画面上。
-- 分数必须诚实。任何一项低于门槛都要在内部重写后再输出：naturalness≥8、surprise≥8、visual_payoff≥8、freshness≥8、instant_clarity≥9、laugh_out_loud≥8、roast_precision≥8、status_reversal≥8、memorability≥8、base_comedy_strength≥8、caption_punch≥8、forcedness≤2、harm_risk≤1。
-
-【故事与版式】
-- 每章输出一张含三格或四格的漫画页。各格必须有推进，最后一格既让谐音成立，也让被嘲讽行为当场露馅。
-- 相邻两章必须更换主角类型、场所、关系、关键物件和谐音语义领域，禁止连续使用水果、动物站立、柜台对话等同一种套路。
-- 每章有明确地点、事件和可见结果。不得只是主角站在白底中央说一句话。
-- 继承成熟治愈漫画链路的出版感、留白、清楚动作、文字画面一一对应、原创角色与断点续跑能力，但不继承其温柔叙事、固定动物主角和碎片短句。
-
-【文案硬标准】
-- caption 是画面唯一允许出现的中文文案，必须是一句 18 到 42 个中文字符的完整句子，以“。」「！」「？」之一结束。
-- caption 必须同时自然使用 source_word 和 pun_word，只写两个节拍：“一个现实铺垫 + 一个讽刺爆点”。全句最多一个逗号或分号；严禁“A 做事，B 执行谐音，C 再总结”的同质化三段式。
-- caption 不是四格剧情摘要。禁止“报销单把奖金戳成零”“便签替他认罪”“箭头扎向他”这类抽象物件不自然地替人物行动；主语、动作和因果必须像真人会吐槽的话。
-- 禁止四五字碎片、斜杠拼句、标题党、鸡汤升华、温柔收束和生硬网络口吻。句子要像真人在事后精准吐槽，而不是 AI 帮故事写总结。
-
-【版权与安全】
-- 所有角色、故事、台词和画面必须原创；不得出现真实 IP、品牌、平台、作者、出版物页面、水印或现成梗图构图。
-- 不模仿任何在世创作者或账号的独特个人画风，只使用通用原创手绘漫画语言。
-- 不制造错别字、乱码、病句或畸形肢体。
+【视觉与版权】
+- 视觉使用通用的原创极简手绘卡片语言：奶油白、大留白、略有手工感的黑线、少量低饱和色。喜剧可以犀利，画面仍干净。
+- 后端会逐字排版 text，绘图模型只画小涂鸦，不得自行生成文字。
+- 所有故事、角色、台词和画面原创；不模仿任何在世创作者或账号的独特画风，不使用真实 IP、品牌、平台界面、水印或现成梗图。
 
 只输出 JSON，不要解释，不要代码块。必须正好给出 {{EPISODE_COUNT}} 个 episodes：
 {
+  "pipeline_version": "carousel-v2",
   "title": "沿用用户书名",
   "intro": "一句原创简介",
-  "series_style": "全书通用的原创手绘视觉基座，不含任何作者或账号名称",
+  "series_style": "原创极简手绘视觉基座",
   "cover_visual": "原创封面画面",
   "episodes": [
     {
-      "title": "本章标题",
-      "layout": "three_panel 或 four_panel",
-      "caption": "自然成立的一句完整谐音梗文案。",
-      "source_word": "原义词",
-      "pun_word": "谐音词",
-      "pinyin_pair": "两个词的普通话拼音",
-      "protagonist": "本章原创主角的可视特征",
+      "title": "不提前泄露谐音的章节标题",
+      "source_word": "原义词或短语",
+      "pun_word": "谐音词或短语",
+      "pinyin_pair": "两者普通话拼音，用 / 分隔",
+      "protagonist": "本章原创主角的稳定可视特征",
       "place": "具体场所",
       "relationship": "人物关系",
-      "key_prop": "推动谐音成立的物件",
-      "target_behavior": "被嘲讽的具体可选择行为",
-      "roast_mode": "八种英文枚举之一",
-      "audience_expectation": "读者在反转前的明确预期",
-      "misread_trigger": "触发谐音误读的可见言行",
-      "literal_action": "把谐音义执行成的可见荒诞动作",
-      "status_reversal": "原本占上风者如何失去气势",
-      "target_reaction": "最后一格被打脸者的表情或动作",
-      "base_roast": "拿掉谐音后仍然成立的现实讽刺笑点",
-      "pun_advantage": "谐音如何放大已有笑点",
-      "delivery_mode": "与相邻章节不同的英文抛梗方式",
-      "story_setup": "正常场景和铺垫",
-      "story_change": "误会或动作如何改变理解",
-      "story_ending": "最后一格可见结果",
+      "key_prop": "关键物件",
+      "roast_mode": "允许枚举之一",
+      "ordinary_story": "拿掉谐音后仍成立的小故事",
+      "audience_expectation": "前半段形成的自然预期",
+      "odd_repetition": "中段逐渐显得不对劲的单一行为",
+      "reveal_trigger": "打开揭示的问题或动作",
+      "reveal_line": "自然包含 pun_word 的晚揭示",
+      "final_callback": "自然包含 source_word 的最后回声",
+      "delayed_reveal_plan": "前六成如何藏住答案",
+      "human_reason": "为什么真人会觉得它好玩",
+      "delivery_mode": "英文抛梗方式",
+      "story_setup": "正常开场",
+      "story_change": "中段行为如何累积",
+      "story_ending": "最后回扣",
       "scores": {
         "naturalness": 0,
         "surprise": 0,
@@ -89,18 +70,21 @@
         "freshness": 0,
         "instant_clarity": 0,
         "laugh_out_loud": 0,
-        "roast_precision": 0,
-        "status_reversal": 0,
-        "memorability": 0,
-        "base_comedy_strength": 0,
-        "caption_punch": 0,
+        "story_logic": 0,
+        "delayed_reveal": 0,
+        "phonetic_payoff": 0,
+        "human_rhythm": 0,
         "forcedness": 0,
         "harm_risk": 0
       },
-      "panel_script": [
-        {"panel": 1, "visual": "只写可画出的动作、场景和物件，不额外添加画面文字"},
-        {"panel": 2, "visual": "连续事件的第二步"},
-        {"panel": 3, "visual": "让谐音动作完成并画出被打脸者的明确反应"}
+      "cards": [
+        {
+          "card_role": "hook、setup、delay、question、answer、reveal、callback 中的一种",
+          "text": "本卡逐字显示的自然句子",
+          "render_mode": "text_only、text_with_doodle 或 doodle_focus",
+          "visual": "当前卡只需画出的一个动作或物件，text_only 时留空",
+          "narrative": "本卡如何推进故事且是否保密"
+        }
       ]
     }
   ]

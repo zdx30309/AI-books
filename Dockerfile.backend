@@ -10,7 +10,7 @@ WORKDIR /app
 
 RUN sed -i 's#http://deb.debian.org/debian#http://mirrors.aliyun.com/debian#g; s#http://deb.debian.org/debian-security#http://mirrors.aliyun.com/debian-security#g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends curl ffmpeg libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends curl ffmpeg fonts-noto-cjk libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt /app/backend/requirements.txt

@@ -1559,9 +1559,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
                     {category === "story_comic"
-                      ? "治愈系图文故事：每章一张单画面或三至四格故事页，场景、动作和人物关系持续变化，画面只保留一句完整文案。"
+                      ? "原创滑动图文故事：每章拆成 6 到 10 张连续卡片，一张只推进一个信息点，穿插纯文字留白页与小涂鸦，让普通生活小事逐页变得有趣。"
                       : category === "homophone_comic"
-                        ? "治愈手绘视觉下的犀利谐音讽刺：先筛掉温吞、生硬和需要解释的梗，再用三至四格完成误读、吐槽、地位反转和当场打脸。"
+                        ? "原创谐音滑动故事：前六成先讲一件正常小事，中段让一个动作逐渐不对劲，最后两三张才揭示谐音；可以干、怪、损或轻讽刺，但绝不解释笑点。"
                         : "输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。"}
                   </p>
                 </div>
@@ -1585,7 +1585,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
                     {category === "healing_comic"
                       ? `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。`
-                      : `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章生成 1 张完整故事页，另含 1 张封面。`}
+                      : `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章生成 6 到 10 张连续图文卡片，另含 1 张封面。纯文字卡片由本地准确排字，不产生绘图费用。`}
                   </p>
                 </div>
                 <div>

@@ -366,15 +366,15 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "story_comic",
         "label": "图文故事",
-        "core_feature": "治愈系生活小故事，支持单画面和三至四格叙事，每章只保留一句完整高级文案",
-        "directions": "具体生活场景、连续动作、温暖转折、完整一句文案、单图或三四格漫画页",
+        "core_feature": "原创滑动图文小故事，每章六至十张单拍卡片，以普通生活、停顿和晚揭示制造趣味",
+        "directions": "具体生活场景、单卡单拍、纯文字留白、小涂鸦、自然误会、晚一点揭示",
         "prompt_status": "ready",
     },
     {
         "id": "homophone_comic",
         "label": "谐音梗",
-        "core_feature": "治愈手绘视觉承载犀利谐音讽刺，三至四格完成误读、打脸与地位反转",
-        "directions": "自然铺垫、双义误读、视觉反转、温暖笑点、完整一句文案",
+        "core_feature": "故事先行的滑动谐音漫画，前六成藏住答案，最后三张完成声音回扣",
+        "directions": "干巴荒诞、自嘲互损、生活观察、向上讽刺、延迟揭示、无需解释",
         "prompt_status": "ready",
     },
     {

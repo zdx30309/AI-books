@@ -8,6 +8,7 @@ contracts and copy validation.
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -28,6 +29,9 @@ from app.services.comic_series import (
 STORY_COMIC_CATEGORY = "story_comic"
 HOMOPHONE_COMIC_CATEGORY = "homophone_comic"
 COMIC_VARIANT_CATEGORIES = frozenset({STORY_COMIC_CATEGORY, HOMOPHONE_COMIC_CATEGORY})
+COMIC_VARIANT_PIPELINE_VERSION = "carousel-v2"
+COMIC_VARIANT_MIN_CARDS = 6
+COMIC_VARIANT_MAX_CARDS = 10
 HEALING_COMIC_FAMILY_CATEGORIES = frozenset(
     {"healing_comic", STORY_COMIC_CATEGORY, HOMOPHONE_COMIC_CATEGORY}
 )
@@ -59,6 +63,9 @@ _HOMOPHONE_ROAST_MODES = frozenset(
         "double_standard",
         "empty_promise",
         "literal_misread",
+        "dry_absurdity",
+        "delayed_reveal",
+        "observational_satire",
     }
 )
 _HOMOPHONE_SCORE_KEYS = (
@@ -68,11 +75,10 @@ _HOMOPHONE_SCORE_KEYS = (
     "freshness",
     "instant_clarity",
     "laugh_out_loud",
-    "roast_precision",
-    "status_reversal",
-    "memorability",
-    "base_comedy_strength",
-    "caption_punch",
+    "story_logic",
+    "delayed_reveal",
+    "phonetic_payoff",
+    "human_rhythm",
     "forcedness",
     "harm_risk",
 )
@@ -128,27 +134,27 @@ _STORY_FALLBACKS = (
 
 _HOMOPHONE_FALLBACKS = (
     {
-        "source_word": "加薪",
-        "pun_word": "夹心",
-        "pinyin_pair": "jiā xīn / jiā xīn",
-        "caption": "老板答应今天加薪，信封里却只有一块夹心饼干。",
-        "protagonist": "刚入职的小浣熊和笑容满面的狐狸经理",
-        "place": "周一早会后的共享办公室",
-        "relationship": "爱画饼的经理和等结果的员工",
-        "key_prop": "六块单独装进信封的夹心饼干",
-        "target_behavior": "用漂亮承诺代替真实回报的画饼",
-        "roast_mode": "empty_promise",
-        "audience_expectation": "经理郑重宣布今天给全组加薪，员工们以为承诺终于兑现",
-        "misread_trigger": "经理把装得鼓鼓的工资信封逐个发到桌上",
-        "literal_action": "大家打开信封，里面各躺着一块夹心饼干",
-        "status_reversal": "最会制造期待的经理被一屋子沉默盯住",
-        "target_reaction": "经理还保持鼓掌姿势，笑容一点点僵住",
-        "base_roast": "老板把没有兑现的利益包装成郑重福利，员工拆开后只得到不值钱的东西",
-        "pun_advantage": "加薪与夹心把空头承诺变成一眼可见的廉价实物",
-        "delivery_mode": "promise_receipt",
-        "story_setup": "经理在早会上郑重宣布今天给全组加薪，员工们第一次集体坐直",
-        "story_change": "他把一摞鼓鼓的信封逐一摆到每个人桌上",
-        "story_ending": "信封里各有一块夹心饼干，员工沉默看向仍在鼓掌的经理",
+        "source_word": "报销",
+        "pun_word": "抱箱",
+        "pinyin_pair": "bào xiāo / bào xiāng",
+        "caption": "财务说月底报销，它却已经认真抱箱半个月了。",
+        "protagonist": "戴深绿色邮差帽的原创小水獭和橘色狐狸同事",
+        "place": "社区快递柜旁的办公室走廊",
+        "relationship": "做事过分认真的同事和看不下去的邻座",
+        "key_prop": "一个每天都在变大的空纸箱和一张发票",
+        "target_behavior": "把一句普通流程通知执行得过分具体",
+        "roast_mode": "literal_misread",
+        "audience_expectation": "同事以为水獭抱着纸箱是在等一件重要快递",
+        "misread_trigger": "狐狸发现水獭连续很多天把同一个空箱抱到工位",
+        "literal_action": "水獭每天认真抱着纸箱去财务室门口排队",
+        "status_reversal": "大家最后才发现它只是把报销听成了抱箱",
+        "target_reaction": "狐狸看了看发票，又看了看已经压扁的纸箱",
+        "base_roast": "过分认真的人把一句流程用语执行成了一项体力工作",
+        "pun_advantage": "报销与抱箱让一项抽象流程变成连续半个月的可见动作",
+        "delivery_mode": "dry_office_misread",
+        "story_setup": "小水獭每天一上班就抱着同一个空纸箱",
+        "story_change": "纸箱越换越大，狐狸终于问它到底在办什么",
+        "story_ending": "水獭掏出发票，说财务答应月底报销",
         "layout": "four_panel",
         "panel_script": [
             {"panel": 1, "visual": "狐狸经理站在白板前郑重宣布消息，员工们从困倦变成期待"},
@@ -217,27 +223,27 @@ _HOMOPHONE_FALLBACKS = (
         },
     },
     {
-        "source_word": "诚意",
-        "pun_word": "橙衣",
-        "pinyin_pair": "chéng yì / chéng yī",
-        "caption": "他迟到两小时还说带足诚意，结果只带来一件崭新的橙衣。",
-        "protagonist": "精心打扮却总找借口的橘猫和等到打烊的兔子",
-        "place": "已经开始收椅子的街角小餐馆",
-        "relationship": "第一次见面的相亲对象",
-        "key_prop": "一件亮得扎眼的橙色外套",
-        "target_behavior": "把表面功夫当成诚意并为迟到找借口",
-        "roast_mode": "excuse_exposure",
-        "audience_expectation": "兔子独自等到店员开始收桌，仍以为对方会认真道歉",
-        "misread_trigger": "橘猫进门后拍着胸口强调自己今天带足了诚意",
-        "literal_action": "他得意地转身展示新买的橙色外套",
-        "status_reversal": "迟到者自以为完成补救，却让借口显得更荒唐",
-        "target_reaction": "兔子把账单推给他，店员在旁边忍住笑",
-        "base_roast": "迟到者拿表面功夫冒充道歉，还期待对方为他的打扮买单",
-        "pun_advantage": "诚意与橙衣把虚假的补救压缩成一件刺眼外套",
-        "delivery_mode": "excuse_exposure",
-        "story_setup": "兔子在餐馆等到打烊，桌上的水已经添了三次",
-        "story_change": "橘猫迟到两小时进门，拍着胸口说自己带足了诚意",
-        "story_ending": "他转身展示橙色外套，兔子直接把账单推到他面前",
+        "source_word": "不知所措",
+        "pun_word": "不知锁错",
+        "pinyin_pair": "bù zhī suǒ cuò / bù zhī suǒ cuò",
+        "caption": "它在更衣室试了半天，最后承认自己不知锁错了哪一格。",
+        "protagonist": "戴圆眼镜的原创猫头鹰和抱着毛巾的河狸朋友",
+        "place": "游泳馆快关门的更衣室",
+        "relationship": "把储物柜钥匙混在一起的两个朋友",
+        "key_prop": "一串没有号码牌的旧储物柜钥匙",
+        "target_behavior": "做事不留标记，出问题后只能挨个试",
+        "roast_mode": "self_roast",
+        "audience_expectation": "河狸以为猫头鹰只是忘了自己的柜子号码",
+        "misread_trigger": "猫头鹰拿着一串钥匙，从第一排一直试到最后一排",
+        "literal_action": "它承认自己不但忘了号码，还可能把包锁进了别人的柜子",
+        "status_reversal": "平时最爱教别人整理的猫头鹰被自己的钥匙困住",
+        "target_reaction": "河狸抱着毛巾坐下，决定先看它把整排试完",
+        "base_roast": "最爱讲整理方法的人，最后被自己没有标记的钥匙难住",
+        "pun_advantage": "不知所措与不知锁错让慌乱来自一个非常具体的错误",
+        "delivery_mode": "self_roast_locker",
+        "story_setup": "游泳馆快关门时，猫头鹰还在第一排储物柜前试钥匙",
+        "story_change": "它从第一格一路试到最后一格，河狸终于问发生了什么",
+        "story_ending": "猫头鹰说自己已经不知锁错了哪一格",
         "layout": "four_panel",
         "panel_script": [
             {"panel": 1, "visual": "兔子独坐在餐馆窗边，时钟走过约定时间，店员第三次添水"},
@@ -381,7 +387,13 @@ def build_homophone_idea_prompt(
 
 
 def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str, object]]:
-    """Select a diverse high-quality joke bank from a single ideation call."""
+    """Select story-first homophone premises from a single writers-room call.
+
+    The first stage does not write final cards.  It proves that the ordinary
+    story works before the sound-alike reveal and that the reveal can be held
+    until the last few cards.  This avoids the former failure mode where a word
+    pair was mistaken for a joke and then forced into a synthetic one-liner.
+    """
     target = parse_healing_comic_panel_count(panel_count)
     try:
         payload = _json_object(text)
@@ -410,70 +422,62 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
         scores = {key: _score_int(scores_raw.get(key)) for key in _HOMOPHONE_SCORE_KEYS}
         target_behavior = _text(raw.get("target_behavior"), "", limit=120)
         roast_mode = _text(raw.get("roast_mode"), "", limit=32)
+        ordinary_story = _text(raw.get("ordinary_story") or raw.get("base_roast"), "", limit=240)
         audience_expectation = _text(raw.get("audience_expectation"), "", limit=180)
-        misread_trigger = _text(raw.get("misread_trigger"), "", limit=180)
-        literal_action = _text(raw.get("literal_action"), "", limit=180)
-        status_reversal = _text(raw.get("status_reversal"), "", limit=180)
-        target_reaction = _text(raw.get("target_reaction"), "", limit=180)
-        base_roast = _text(raw.get("base_roast"), "", limit=180)
-        pun_advantage = _text(raw.get("pun_advantage"), "", limit=180)
-        delivery_mode = _text(raw.get("delivery_mode"), "", limit=48)
-        caption = normalize_complete_caption(
-            raw.get("caption"),
-            fallback=f"有人把{source_word}听成了{pun_word}，场面一下变得很具体。",
-        )
+        odd_repetition = _text(raw.get("odd_repetition") or raw.get("literal_action"), "", limit=180)
+        reveal_trigger = _text(raw.get("reveal_trigger") or raw.get("misread_trigger"), "", limit=180)
+        reveal_line = _text(raw.get("reveal_line") or raw.get("payoff"), "", limit=80)
+        final_callback = _text(raw.get("final_callback"), source_word, limit=80)
+        delayed_reveal_plan = _text(raw.get("delayed_reveal_plan"), "", limit=220)
+        human_reason = _text(raw.get("human_reason"), "", limit=180)
+        delivery_mode = _text(raw.get("delivery_mode"), "delayed_reveal", limit=48)
         contract_complete = all(
             len(value) >= minimum
             for value, minimum in (
-                (target_behavior, 6),
+                (ordinary_story, 16),
                 (audience_expectation, 8),
-                (misread_trigger, 8),
-                (literal_action, 8),
-                (status_reversal, 8),
-                (target_reaction, 6),
-                (base_roast, 12),
-                (pun_advantage, 12),
+                (odd_repetition, 8),
+                (reveal_trigger, 8),
+                (reveal_line, 2),
+                (final_callback, 2),
+                (delayed_reveal_plan, 12),
+                (human_reason, 8),
                 (delivery_mode, 4),
             )
         )
-        lexical_clarity = source_word in caption and pun_word in caption
-        no_explanation = not _HOMOPHONE_EXPLANATION_RE.search(caption)
-        no_soft_landing = not _HOMOPHONE_SOFT_ENDING_RE.search(caption)
+        lexical_clarity = source_word in final_callback and pun_word in reveal_line
+        no_explanation = not _HOMOPHONE_EXPLANATION_RE.search(reveal_line + final_callback)
         total = (
-            scores["laugh_out_loud"] * 25
-            + scores["roast_precision"] * 20
-            + scores["status_reversal"] * 18
-            + scores["visual_payoff"] * 16
+            scores["laugh_out_loud"] * 20
+            + scores["phonetic_payoff"] * 20
+            + scores["delayed_reveal"] * 18
+            + scores["story_logic"] * 18
+            + scores["instant_clarity"] * 16
+            + scores["human_rhythm"] * 14
             + scores["surprise"] * 12
-            + scores["instant_clarity"] * 12
-            + scores["memorability"] * 10
+            + scores["visual_payoff"] * 10
             + scores["freshness"] * 8
-            + scores["naturalness"] * 6
-            + scores["base_comedy_strength"] * 20
-            + scores["caption_punch"] * 22
-            - scores["forcedness"] * 28
+            + scores["naturalness"] * 8
+            - scores["forcedness"] * 30
             - scores["harm_risk"] * 30
         )
         strict_pass = (
             scores["naturalness"] >= 8
-            and scores["surprise"] >= 8
-            and scores["visual_payoff"] >= 8
-            and scores["freshness"] >= 8
+            and scores["surprise"] >= 7
+            and scores["visual_payoff"] >= 7
+            and scores["freshness"] >= 7
             and scores["instant_clarity"] >= 9
-            and scores["laugh_out_loud"] >= 8
-            and scores["roast_precision"] >= 8
-            and scores["status_reversal"] >= 8
-            and scores["memorability"] >= 8
-            and scores["base_comedy_strength"] >= 8
-            and scores["caption_punch"] >= 8
+            and scores["laugh_out_loud"] >= 7
+            and scores["story_logic"] >= 8
+            and scores["delayed_reveal"] >= 8
+            and scores["phonetic_payoff"] >= 9
+            and scores["human_rhythm"] >= 8
             and scores["forcedness"] <= 2
             and scores["harm_risk"] <= 1
             and roast_mode in _HOMOPHONE_ROAST_MODES
             and contract_complete
             and lexical_clarity
             and no_explanation
-            and no_soft_landing
-            and _homophone_caption_has_punch_shape(caption)
         )
         normalized.append(
             {
@@ -491,19 +495,19 @@ def parse_homophone_idea_output(text: str, *, panel_count: int) -> list[dict[str
                 "relationship": _text(raw.get("relationship"), "彼此友善的伙伴", limit=80),
                 "key_prop": _text(raw.get("key_prop"), "推动反转的日常物件", limit=80),
                 "setup": _text(raw.get("setup"), "一个可信的日常开场", limit=180),
-                "visual_turn": _text(raw.get("visual_turn"), "人物用动作改变眼前情形", limit=180),
-                "payoff": _text(raw.get("payoff"), "最后一格完成双义回扣", limit=180),
+                "visual_turn": _text(raw.get("visual_turn"), "一个逐渐显得不对劲的小动作", limit=180),
+                "payoff": _text(raw.get("payoff"), "最后两张卡片完成声音回扣", limit=180),
                 "target_behavior": target_behavior,
                 "roast_mode": roast_mode,
+                "ordinary_story": ordinary_story,
                 "audience_expectation": audience_expectation,
-                "misread_trigger": misread_trigger,
-                "literal_action": literal_action,
-                "status_reversal": status_reversal,
-                "target_reaction": target_reaction,
-                "base_roast": base_roast,
-                "pun_advantage": pun_advantage,
+                "odd_repetition": odd_repetition,
+                "reveal_trigger": reveal_trigger,
+                "reveal_line": reveal_line,
+                "final_callback": final_callback,
+                "delayed_reveal_plan": delayed_reveal_plan,
+                "human_reason": human_reason,
                 "delivery_mode": delivery_mode,
-                "caption": caption,
                 "scores": scores,
                 "strict_pass": strict_pass,
                 "quality_total": total,
@@ -568,15 +572,15 @@ def format_homophone_joke_bank(candidates: list[dict[str, object]]) -> str:
                     "payoff",
                     "target_behavior",
                     "roast_mode",
+                    "ordinary_story",
                     "audience_expectation",
-                    "misread_trigger",
-                    "literal_action",
-                    "status_reversal",
-                    "target_reaction",
-                    "base_roast",
-                    "pun_advantage",
+                    "odd_repetition",
+                    "reveal_trigger",
+                    "reveal_line",
+                    "final_callback",
+                    "delayed_reveal_plan",
+                    "human_reason",
                     "delivery_mode",
-                    "caption",
                     "scores",
                 )
             }
@@ -612,11 +616,8 @@ def _text(value: object, fallback: str, *, limit: int = 220) -> str:
 
 
 def _layout(value: object, *, variant: str, index: int) -> str:
-    raw = str(value or "").strip().lower()
-    if variant == STORY_COMIC_CATEGORY:
-        allowed = {"single_scene", "three_panel", "four_panel"}
-        return raw if raw in allowed else ("single_scene", "three_panel", "four_panel")[(index - 1) % 3]
-    return raw if raw in {"three_panel", "four_panel"} else ("three_panel" if index % 2 else "four_panel")
+    del value, variant, index
+    return "carousel"
 
 
 def _fallback_episode(variant: str, index: int) -> dict[str, object]:
@@ -625,93 +626,199 @@ def _fallback_episode(variant: str, index: int) -> dict[str, object]:
     return {str(key): value for key, value in source.items()}
 
 
-def _homophone_contract_passes(
-    item: dict[str, object],
+def _card_text(value: object, fallback: str, *, role: str = "story") -> str:
+    raw = str(value or "").replace("\r", "").replace("\n", " ").strip()
+    raw = _DASH_RE.sub("，", raw)
+    raw = re.sub(r"\s+", " ", raw).strip(" \t")
+    if not raw:
+        raw = fallback
+    raw = raw[:42].rstrip("，,；;：:")
+    if role not in {"reveal", "callback"} and raw and raw[-1] not in "。！？?!…」”』》":
+        raw += "。"
+    return raw
+
+
+def _fallback_cards(
+    *,
+    variant: str,
+    fallback: dict[str, object],
+    place: str,
+    protagonist: str,
+    key_prop: str,
+    setup: str,
+    change: str,
+    ending: str,
+) -> list[dict[str, object]]:
+    if variant == HOMOPHONE_COMIC_CATEGORY:
+        pair = (str(fallback.get("source_word") or ""), str(fallback.get("pun_word") or ""))
+        if pair == ("报销", "抱箱"):
+            raw_cards = [
+                ("hook", "小水獭每天一上班，就抱着同一个纸箱。", "小水獭抱着空纸箱经过快递柜", "text_with_doodle"),
+                ("setup", "它先去财务室门口站一会儿。", "小水獭抱箱站在关着的财务室门前", "text_with_doodle"),
+                ("delay", "门没开，它就把箱子抱回工位。", "小水獭抱箱坐在电脑前", "text_with_doodle"),
+                ("delay", "第二天，箱子换成了更大的。", "更大的空纸箱挡住小水獭半张脸", "doodle_focus"),
+                ("question", "狐狸终于问它，到底在办什么。", "狐狸同事困惑地看着纸箱", "text_with_doodle"),
+                ("answer", "小水獭从箱底掏出一张发票。", "小水獭从空箱底拿出发票", "doodle_focus"),
+                ("reveal", "它说，财务月底会给它报销。", "狐狸看发票，又看被抱皱的纸箱", "text_with_doodle"),
+                ("callback", "可它已经认真抱箱半个月了。", "", "text_only"),
+            ]
+        elif pair == ("有才", "油菜"):
+            raw_cards = [
+                ("hook", "手工课快结束时，小孔雀又举手了。", "小孔雀高高举手", "text_with_doodle"),
+                ("setup", "它说，今天准备了一个大作品。", "同学们一起看向小孔雀", "text_with_doodle"),
+                ("delay", "老师请它上台，它却先跑出了教室。", "小孔雀兴奋跑出教室", "text_with_doodle"),
+                ("delay", "过了一会儿，它抱着一个麻袋回来。", "小孔雀吃力拖着麻袋", "doodle_focus"),
+                ("question", "老师问，作品为什么还带着泥。", "山羊老师看着地上的泥点", "text_with_doodle"),
+                ("answer", "小孔雀把麻袋当场打开。", "麻袋里露出一捆绿色蔬菜", "doodle_focus"),
+                ("reveal", "它说，这是自己种的油菜。", "小孔雀抱着一捆油菜等掌声", "text_with_doodle"),
+                ("callback", "全班点头，它确实很有才。", "", "text_only"),
+            ]
+        else:
+            raw_cards = [
+                ("hook", "游泳馆快关门时，猫头鹰还在试钥匙。", "猫头鹰站在一排储物柜前", "text_with_doodle"),
+                ("setup", "第一把打不开，它就换了第二把。", "猫头鹰拿着一串钥匙", "doodle_focus"),
+                ("delay", "第二排试完，它又走向第三排。", "猫头鹰沿着储物柜逐格尝试", "text_with_doodle"),
+                ("delay", "河狸抱着毛巾，在长凳上坐下了。", "河狸抱毛巾坐在长凳上等待", "text_with_doodle"),
+                ("question", "它问，难道连号码也忘了吗。", "河狸指着储物柜号码牌", "text_with_doodle"),
+                ("answer", "猫头鹰看了看手里那串钥匙。", "猫头鹰低头看没有标签的钥匙", "doodle_focus"),
+                ("reveal", "它说，自己已经不知锁错哪一格。", "猫头鹰对着整排柜子发愣", "text_with_doodle"),
+                ("callback", "这回真有点不知所措。", "", "text_only"),
+            ]
+    else:
+        raw_cards = [
+            ("hook", f"那天，{protagonist}来到{place}。", f"{place}里的{protagonist}", "text_with_doodle"),
+            ("setup", setup, f"{setup}，关键动作清楚可见", "text_with_doodle"),
+            ("detail", f"{key_prop}一直放在旁边。", f"{key_prop}的简单近景", "doodle_focus"),
+            ("pause", "中间有一小会儿，谁也没有说话。", "", "text_only"),
+            ("turn", change, f"{change}，画出局面变化", "text_with_doodle"),
+            ("ending", ending, f"{ending}，留下可见结果", "text_with_doodle"),
+        ]
+    return [
+        {
+            "sub_index": index,
+            "card_role": role,
+            "text": _card_text(text, text, role=role),
+            "image_text": [_card_text(text, text, role=role)],
+            "visual": visual,
+            "render_mode": mode,
+            "scene_role": role,
+            "narrative": text,
+            "layout": "single_card",
+        }
+        for index, (role, text, visual, mode) in enumerate(raw_cards, start=1)
+    ]
+
+
+def _homophone_sequence_passes(
+    cards: list[dict[str, object]],
     *,
     source_word: str,
     pun_word: str,
     pinyin_pair: str,
-    caption: str,
 ) -> bool:
-    """Deterministic floor for a roast-comedy episode.
-
-    The model's taste scores are not treated as proof by themselves.  A valid
-    episode also has to expose the target behaviour, misunderstanding action,
-    visible status reversal and reaction that make the last panel a joke.
-    """
-
     if (
-        not source_word
+        len(cards) < 7
+        or len(cards) > COMIC_VARIANT_MAX_CARDS
+        or not source_word
         or not pun_word
         or source_word == pun_word
         or frozenset((source_word, pun_word)) in _STALE_PUN_PAIRS
         or not _credible_pinyin_pair(pinyin_pair)
-        or source_word not in caption
-        or pun_word not in caption
-        or _HOMOPHONE_EXPLANATION_RE.search(caption)
-        or _HOMOPHONE_SOFT_ENDING_RE.search(caption)
-        or not _homophone_caption_has_punch_shape(caption)
     ):
         return False
-    roast_mode = _text(item.get("roast_mode"), "", limit=32)
-    if roast_mode not in _HOMOPHONE_ROAST_MODES:
-        return False
-    required = (
-        (item.get("target_behavior"), 6),
-        (item.get("audience_expectation"), 8),
-        (item.get("misread_trigger"), 8),
-        (item.get("literal_action"), 8),
-        (item.get("status_reversal"), 8),
-        (item.get("target_reaction"), 6),
-        (item.get("base_roast"), 12),
-        (item.get("pun_advantage"), 12),
-        (item.get("delivery_mode"), 4),
-        (item.get("story_setup"), 8),
-        (item.get("story_change"), 8),
-        (item.get("story_ending"), 8),
-    )
-    if any(len(_text(value, "", limit=220)) < minimum for value, minimum in required):
-        return False
-    scores_raw = item.get("scores") if isinstance(item.get("scores"), dict) else {}
-    scores = {key: _score_int(scores_raw.get(key)) for key in _HOMOPHONE_SCORE_KEYS}
+    texts = [str(card.get("text") or "") for card in cards]
+    early = "".join(texts[: max(2, int(len(texts) * 0.6))])
+    late = "".join(texts[-3:])
     return (
-        scores["naturalness"] >= 8
-        and scores["surprise"] >= 8
-        and scores["visual_payoff"] >= 8
-        and scores["freshness"] >= 8
-        and scores["instant_clarity"] >= 9
-        and scores["laugh_out_loud"] >= 8
-        and scores["roast_precision"] >= 8
-        and scores["status_reversal"] >= 8
-        and scores["memorability"] >= 8
-        and scores["base_comedy_strength"] >= 8
-        and scores["caption_punch"] >= 8
-        and scores["forcedness"] <= 2
-        and scores["harm_risk"] <= 1
+        source_word not in early
+        and pun_word not in early
+        and source_word in late
+        and pun_word in late
+        and not _HOMOPHONE_EXPLANATION_RE.search("".join(texts))
+        and len(set(texts)) == len(texts)
     )
 
 
-def _normalize_panel_script(value: object, *, layout: str, visual: str) -> list[dict[str, object]]:
-    expected = {"single_scene": 1, "three_panel": 3, "four_panel": 4}[layout]
-    result: list[dict[str, object]] = []
-    if isinstance(value, list):
-        for item in value:
-            if isinstance(item, dict):
-                item_visual = _text(item.get("visual"), visual, limit=360)
-            else:
-                item_visual = _text(item, visual, limit=360)
-            if item_visual:
-                result.append({"panel": len(result) + 1, "visual": item_visual})
-            if len(result) >= expected:
-                break
-    while len(result) < expected:
-        result.append(
+def _homophone_item_sequence_passes(item: dict[str, object]) -> bool:
+    raw_cards = item.get("cards")
+    if not isinstance(raw_cards, list):
+        return False
+    cards = [
+        {"text": str(raw.get("text") or raw.get("caption") or "").strip()}
+        for raw in raw_cards
+        if isinstance(raw, dict)
+    ]
+    if len(cards) != len(raw_cards):
+        return False
+    return _homophone_sequence_passes(
+        cards,
+        source_word=_text(item.get("source_word"), "", limit=18),
+        pun_word=_text(item.get("pun_word"), "", limit=18),
+        pinyin_pair=_text(item.get("pinyin_pair"), "", limit=64),
+    )
+
+
+def _normalize_cards(
+    item: dict[str, object],
+    *,
+    variant: str,
+    fallback: dict[str, object],
+    place: str,
+    protagonist: str,
+    key_prop: str,
+    setup: str,
+    change: str,
+    ending: str,
+) -> list[dict[str, object]]:
+    fallback_cards = _fallback_cards(
+        variant=variant,
+        fallback=fallback,
+        place=place,
+        protagonist=protagonist,
+        key_prop=key_prop,
+        setup=setup,
+        change=change,
+        ending=ending,
+    )
+    raw_cards = item.get("cards")
+    if not isinstance(raw_cards, list) or not (
+        COMIC_VARIANT_MIN_CARDS <= len(raw_cards) <= COMIC_VARIANT_MAX_CARDS
+    ):
+        return fallback_cards
+    cards: list[dict[str, object]] = []
+    allowed_modes = {"text_only", "text_with_doodle", "doodle_focus"}
+    for position, raw in enumerate(raw_cards, start=1):
+        if not isinstance(raw, dict):
+            return fallback_cards
+        role = _text(raw.get("card_role"), "story", limit=24).lower()
+        text = _card_text(raw.get("text") or raw.get("caption"), "", role=role)
+        if len(text) < 2 or _HOMOPHONE_EXPLANATION_RE.search(text):
+            return fallback_cards
+        mode = _text(raw.get("render_mode"), "text_with_doodle", limit=24).lower()
+        if mode not in allowed_modes:
+            mode = "text_with_doodle"
+        visual = "" if mode == "text_only" else _text(raw.get("visual"), f"{protagonist}在{place}完成当前动作", limit=260)
+        cards.append(
             {
-                "panel": len(result) + 1,
-                "visual": f"{visual}；连续事件的第{len(result) + 1}步，必须画出新的动作和可见变化。",
+                "sub_index": position,
+                "card_role": role,
+                "text": text,
+                "image_text": [text],
+                "visual": visual,
+                "render_mode": mode,
+                "scene_role": role,
+                "narrative": _text(raw.get("narrative"), text, limit=260),
+                "layout": "single_card",
             }
         )
-    return result
+    if len({str(card["text"]) for card in cards}) != len(cards):
+        return fallback_cards
+    if not any(card["render_mode"] == "text_only" for card in cards):
+        cards[min(3, len(cards) - 1)]["render_mode"] = "text_only"
+        cards[min(3, len(cards) - 1)]["visual"] = ""
+    if variant == HOMOPHONE_COMIC_CATEGORY and not _homophone_item_sequence_passes(item):
+        return fallback_cards
+    return cards
 
 
 def _normalize_episode(
@@ -721,25 +828,6 @@ def _normalize_episode(
     index: int,
 ) -> dict[str, object]:
     fallback = _fallback_episode(variant, index)
-    if variant == HOMOPHONE_COMIC_CATEGORY:
-        candidate_source = _text(item.get("source_word"), "", limit=18)
-        candidate_pun = _text(item.get("pun_word"), "", limit=18)
-        candidate_pinyin = _text(item.get("pinyin_pair"), "", limit=48)
-        candidate_caption = normalize_complete_caption(
-            item.get("caption") or item.get("image_text"),
-            fallback=str(fallback["caption"]),
-        )
-        if not _homophone_contract_passes(
-            item,
-            source_word=candidate_source,
-            pun_word=candidate_pun,
-            pinyin_pair=candidate_pinyin,
-            caption=candidate_caption,
-        ):
-            # Fail closed to a fully aligned script, not just a replacement
-            # word pair.  Replacing only the words would desynchronise the
-            # caption from the panels and recreate the old production bug.
-            item = dict(fallback)
     layout = _layout(item.get("layout"), variant=variant, index=index)
     place = _text(item.get("place"), str(fallback["place"]), limit=80)
     protagonist = _text(item.get("protagonist"), str(fallback["protagonist"]), limit=120)
@@ -749,10 +837,46 @@ def _normalize_episode(
     change = _text(item.get("story_change"), str(fallback["story_change"]), limit=180)
     ending = _text(item.get("story_ending"), str(fallback["story_ending"]), limit=180)
     visual = f"{place}；{protagonist}；{setup}；{change}；{ending}"
-    caption = normalize_complete_caption(
-        item.get("caption") or item.get("image_text"),
-        fallback=str(fallback["caption"]),
+    cards = _normalize_cards(
+        item,
+        variant=variant,
+        fallback=fallback,
+        place=place,
+        protagonist=protagonist,
+        key_prop=key_prop,
+        setup=setup,
+        change=change,
+        ending=ending,
     )
+    if variant == HOMOPHONE_COMIC_CATEGORY and (
+        not _homophone_item_sequence_passes(item)
+        or not _homophone_sequence_passes(
+            cards,
+            source_word=_text(item.get("source_word"), "", limit=18),
+            pun_word=_text(item.get("pun_word"), "", limit=18),
+            pinyin_pair=_text(item.get("pinyin_pair"), "", limit=64),
+        )
+    ):
+        item = dict(fallback)
+        place = _text(item.get("place"), str(fallback["place"]), limit=80)
+        protagonist = _text(item.get("protagonist"), str(fallback["protagonist"]), limit=120)
+        relationship = _text(item.get("relationship"), str(fallback["relationship"]), limit=80)
+        key_prop = _text(item.get("key_prop"), str(fallback["key_prop"]), limit=80)
+        setup = _text(item.get("story_setup"), str(fallback["story_setup"]), limit=180)
+        change = _text(item.get("story_change"), str(fallback["story_change"]), limit=180)
+        ending = _text(item.get("story_ending"), str(fallback["story_ending"]), limit=180)
+        visual = f"{place}；{protagonist}；{setup}；{change}；{ending}"
+        cards = _fallback_cards(
+            variant=variant,
+            fallback=fallback,
+            place=place,
+            protagonist=protagonist,
+            key_prop=key_prop,
+            setup=setup,
+            change=change,
+            ending=ending,
+        )
+    caption = str(cards[-1].get("text") or fallback["caption"])
     episode: dict[str, object] = {
         "title": _text(item.get("title"), f"小故事{index}", limit=24),
         "layout": layout,
@@ -769,7 +893,11 @@ def _normalize_episode(
         "story_change": change,
         "story_ending": ending,
         "visual": visual,
-        "panel_script": _normalize_panel_script(item.get("panel_script"), layout=layout, visual=visual),
+        "panel_script": [
+            {"panel": int(card["sub_index"]), "visual": str(card.get("visual") or "纯文字留白页")}
+            for card in cards
+        ],
+        "cards": cards,
     }
     if variant == HOMOPHONE_COMIC_CATEGORY:
         source_word = _text(item.get("source_word"), str(fallback["source_word"]), limit=18)
@@ -782,44 +910,21 @@ def _normalize_episode(
                 "pinyin_pair": pinyin_pair,
                 "target_behavior": _text(item.get("target_behavior"), str(fallback["target_behavior"]), limit=120),
                 "roast_mode": _text(item.get("roast_mode"), str(fallback["roast_mode"]), limit=32),
-                "audience_expectation": _text(
-                    item.get("audience_expectation"),
-                    str(fallback["audience_expectation"]),
-                    limit=180,
-                ),
-                "misread_trigger": _text(
-                    item.get("misread_trigger"), str(fallback["misread_trigger"]), limit=180
-                ),
-                "literal_action": _text(
-                    item.get("literal_action"), str(fallback["literal_action"]), limit=180
-                ),
-                "status_reversal": _text(
-                    item.get("status_reversal"), str(fallback["status_reversal"]), limit=180
-                ),
-                "target_reaction": _text(
-                    item.get("target_reaction"), str(fallback["target_reaction"]), limit=180
-                ),
-                "base_roast": _text(item.get("base_roast"), str(fallback["base_roast"]), limit=180),
-                "pun_advantage": _text(
-                    item.get("pun_advantage"), str(fallback["pun_advantage"]), limit=180
-                ),
+                "ordinary_story": _text(item.get("ordinary_story"), setup, limit=240),
+                "audience_expectation": _text(item.get("audience_expectation"), setup, limit=180),
+                "odd_repetition": _text(item.get("odd_repetition"), change, limit=180),
+                "reveal_trigger": _text(item.get("reveal_trigger"), ending, limit=180),
+                "reveal_line": _text(item.get("reveal_line"), pun_word, limit=80),
+                "final_callback": _text(item.get("final_callback"), source_word, limit=80),
+                "delayed_reveal_plan": _text(item.get("delayed_reveal_plan"), "最后三张卡片才出现谐音答案", limit=220),
+                "human_reason": _text(item.get("human_reason"), "故事先成立，谐音最后才回扣", limit=180),
                 "delivery_mode": _text(
-                    item.get("delivery_mode"), str(fallback["delivery_mode"]), limit=48
+                    item.get("delivery_mode"), "delayed_reveal", limit=48
                 ),
                 "scores": item.get("scores") if isinstance(item.get("scores"), dict) else fallback["scores"],
             }
         )
-    episode["images"] = [
-        {
-            "sub_index": 1,
-            "scene_role": "完整图文小故事" if variant == STORY_COMIC_CATEGORY else "完整谐音梗小故事",
-            "image_text": [episode["caption"]],
-            "visual": visual,
-            "narrative": f"{setup}；{change}；{ending}",
-            "layout": layout,
-            "panel_script": episode["panel_script"],
-        }
-    ]
+    episode["images"] = cards
     return episode
 
 
@@ -886,28 +991,30 @@ def parse_variant_writer_output(
     return final_title, _text(payload.get("intro"), f"一本由具体生活小事组成的{variant_label}。", limit=180), episodes, series_meta
 
 
-def _panel_script_text(panel: dict[str, object]) -> str:
-    script = panel.get("panel_script")
-    if not isinstance(script, list):
-        return "- 1：按本页故事画出完整事件。"
-    return "\n".join(
-        f"- {index}：{_text(item.get('visual') if isinstance(item, dict) else item, '连续动作', limit=360)}"
-        for index, item in enumerate(script, start=1)
-    )
-
-
 def build_variant_panel_prompt(
     category: str,
     *,
     panel: dict[str, object],
     index: int,
     title: str,
+    image: dict[str, object] | None = None,
+    sub_index: int = 1,
 ) -> str:
+    cards = panel.get("images")
+    if image is None and isinstance(cards, list) and cards:
+        raw_image = cards[min(max(sub_index - 1, 0), len(cards) - 1)]
+        image = raw_image if isinstance(raw_image, dict) else {}
+    image = image or {}
     common = {
         "BOOK_TITLE": title,
         "EPISODE_INDEX": index,
         "EPISODE_TITLE": panel.get("title"),
-        "LAYOUT": panel.get("layout"),
+        "CARD_INDEX": sub_index,
+        "CARD_TOTAL": len(cards) if isinstance(cards, list) else 1,
+        "CARD_ROLE": image.get("card_role") or image.get("scene_role") or "story",
+        "CARD_TEXT": image.get("text") or panel.get("caption"),
+        "CARD_VISUAL": image.get("visual") or "纯文字留白页",
+        "RENDER_MODE": image.get("render_mode") or "text_with_doodle",
         "PROTAGONIST": panel.get("protagonist"),
         "PLACE": panel.get("place"),
         "RELATIONSHIP": panel.get("relationship"),
@@ -915,8 +1022,6 @@ def build_variant_panel_prompt(
         "STORY_SETUP": panel.get("story_setup"),
         "STORY_CHANGE": panel.get("story_change"),
         "STORY_ENDING": panel.get("story_ending"),
-        "PANEL_SCRIPT": _panel_script_text(panel),
-        "CAPTION": panel.get("caption"),
     }
     if category == STORY_COMIC_CATEGORY:
         common.update(
@@ -932,15 +1037,14 @@ def build_variant_panel_prompt(
                 "SOURCE_WORD": panel.get("source_word"),
                 "PUN_WORD": panel.get("pun_word"),
                 "PINYIN_PAIR": panel.get("pinyin_pair"),
-                "TARGET_BEHAVIOR": panel.get("target_behavior"),
                 "ROAST_MODE": panel.get("roast_mode"),
+                "ORDINARY_STORY": panel.get("ordinary_story"),
                 "AUDIENCE_EXPECTATION": panel.get("audience_expectation"),
-                "MISREAD_TRIGGER": panel.get("misread_trigger"),
-                "LITERAL_ACTION": panel.get("literal_action"),
-                "STATUS_REVERSAL": panel.get("status_reversal"),
-                "TARGET_REACTION": panel.get("target_reaction"),
-                "BASE_ROAST": panel.get("base_roast"),
-                "PUN_ADVANTAGE": panel.get("pun_advantage"),
+                "ODD_REPETITION": panel.get("odd_repetition"),
+                "REVEAL_TRIGGER": panel.get("reveal_trigger"),
+                "REVEAL_LINE": panel.get("reveal_line"),
+                "FINAL_CALLBACK": panel.get("final_callback"),
+                "DELAYED_REVEAL_PLAN": panel.get("delayed_reveal_plan"),
                 "DELIVERY_MODE": panel.get("delivery_mode"),
             }
         )
@@ -1000,25 +1104,114 @@ def plan_variant_comic_images(
         )
     ]
     for index, panel in enumerate(panels, start=1):
-        prompt = build_variant_panel_prompt(category, panel=panel, index=index, title=title)
-        filename = f"comic_section_{index:02d}_01.png"
-        path = image_dir / filename
-        (image_dir / f"comic_section_{index:02d}_01_prompt.txt").write_text(prompt, encoding="utf-8")
-        results.append(
-            ComicSectionImage(
+        raw_images = panel.get("images")
+        images = [item for item in raw_images if isinstance(item, dict)] if isinstance(raw_images, list) else []
+        for sub_index, image_item in enumerate(images, start=1):
+            prompt = build_variant_panel_prompt(
+                category,
+                panel=panel,
+                image=image_item,
                 index=index,
-                phrase=str(panel.get("caption") or ""),
-                title=str(panel.get("title") or f"第{index}章"),
-                animal="原创角色",
-                subject=str(panel.get("visual") or ""),
-                prompt=prompt,
-                filename=filename,
-                path=path,
-                sub_index=1,
+                sub_index=sub_index,
+                title=title,
             )
-        )
+            filename = f"comic_section_{index:02d}_{sub_index:02d}.png"
+            path = image_dir / filename
+            (image_dir / f"comic_section_{index:02d}_{sub_index:02d}_prompt.txt").write_text(prompt, encoding="utf-8")
+            results.append(
+                ComicSectionImage(
+                    index=index,
+                    phrase=str(image_item.get("text") or panel.get("caption") or ""),
+                    title=str(panel.get("title") or f"第{index}章"),
+                    animal=str(image_item.get("render_mode") or "text_with_doodle"),
+                    subject=str(image_item.get("visual") or ""),
+                    prompt=prompt,
+                    filename=filename,
+                    path=path,
+                    sub_index=sub_index,
+                )
+            )
     _write_manifest(image_dir, results)
     return results
+
+
+def _comic_cjk_font_path() -> Path:
+    configured = str(os.getenv("COMIC_CJK_FONT_PATH") or "").strip()
+    candidates = [
+        configured,
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ]
+    for raw in candidates:
+        if raw and Path(raw).exists():
+            return Path(raw)
+    raise RuntimeError("缺少中文漫画排版字体，请安装 fonts-noto-cjk 或配置 COMIC_CJK_FONT_PATH")
+
+
+def _wrap_card_text(draw: object, text: str, font: object, max_width: int) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for char in text:
+        candidate = current + char
+        bbox = draw.textbbox((0, 0), candidate, font=font)
+        if current and bbox[2] - bbox[0] > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
+    """Typeset exact copy after illustration generation.
+
+    The image model only paints the doodle.  Pillow owns every Chinese glyph,
+    so the published card cannot silently lose, invent or misspell the copy.
+    Re-running is idempotent because the text region is painted clean first.
+    """
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    if render_mode == "text_only" or not path.exists():
+        canvas = Image.new("RGB", (2450, 3500), (255, 253, 248))
+    else:
+        with Image.open(path) as source:
+            canvas = source.convert("RGB")
+    width, height = canvas.size
+    draw = ImageDraw.Draw(canvas)
+    top_region = int(height * (0.47 if render_mode != "text_only" else 1.0))
+    draw.rectangle((0, 0, width, top_region), fill=(255, 253, 248))
+    font_path = _comic_cjk_font_path()
+    max_width = int(width * 0.82)
+    selected_font = None
+    selected_lines: list[str] = []
+    for size in range(max(44, int(width * 0.075)), max(32, int(width * 0.035)) - 1, -4):
+        font = ImageFont.truetype(str(font_path), size=size)
+        lines = _wrap_card_text(draw, text, font, max_width)
+        if len(lines) <= 2:
+            selected_font = font
+            selected_lines = lines
+            break
+    if selected_font is None:
+        selected_font = ImageFont.truetype(str(font_path), size=max(32, int(width * 0.035)))
+        selected_lines = _wrap_card_text(draw, text, selected_font, max_width)[:3]
+    line_gap = max(12, int(selected_font.size * 0.42))
+    boxes = [draw.textbbox((0, 0), line, font=selected_font) for line in selected_lines]
+    heights = [box[3] - box[1] for box in boxes]
+    block_height = sum(heights) + line_gap * max(0, len(selected_lines) - 1)
+    center_y = int(height * (0.47 if render_mode == "text_only" else 0.22))
+    y = max(int(height * 0.06), center_y - block_height // 2)
+    for line, box, line_height in zip(selected_lines, boxes, heights):
+        line_width = box[2] - box[0]
+        x = (width - line_width) // 2
+        draw.text((x, y), line, font=selected_font, fill=(24, 24, 22))
+        y += line_height + line_gap
+    canvas.save(path, format="PNG", optimize=True)
 
 
 def generate_variant_comic_images(
@@ -1054,17 +1247,26 @@ def generate_variant_comic_images(
     def generate_one(image: ComicSectionImage) -> ComicSectionImage:
         raise_if_paused()
         stem = image.path.stem
-        return _generate_image_with_comic_protection(
+        if image.index >= 1 and image.animal == "text_only":
+            _typeset_variant_card(image.path, image.phrase, render_mode="text_only")
+            return ComicSectionImage(**{**image.__dict__, "status": "completed", "error": None})
+        generated = _generate_image_with_comic_protection(
             image,
             image_dir=image_dir,
             stem=stem,
             response_path=image_dir / f"{stem}_response.json",
             uncertain_path=image_dir / f"{stem}_uncertain.json",
             permanent_path=image_dir / f"{stem}_permanent.json",
-            force=force,
-            allow_uncertain=allow_uncertain,
-            retry_uncertain=retry_uncertain,
-        )
+                force=force,
+                allow_uncertain=allow_uncertain,
+                retry_uncertain=retry_uncertain,
+            )
+        if generated.path.exists() and generated.path.stat().st_size > 0:
+            if generated.index == -1:
+                _typeset_variant_card(generated.path, generated.phrase, render_mode="cover")
+            elif generated.index >= 1:
+                _typeset_variant_card(generated.path, generated.phrase, render_mode=generated.animal)
+        return generated
 
     if results:
         results[0] = generate_one(results[0])
@@ -1118,18 +1320,17 @@ def assemble_variant_comic_markdown(
         lines.append(f"{index}. {panel.get('title') or f'第{index}章'}")
     lines.append("@正文")
     for index, panel in enumerate(panels, start=1):
-        lines.extend(
-            [
-                f"@{index}. {panel.get('title') or f'第{index}章'}",
-                f"{{{{COMIC_IMAGE_{index}_1}}}}",
-                str(panel.get("caption") or ""),
-            ]
-        )
+        lines.append(f"@{index}. {panel.get('title') or f'第{index}章'}")
+        images = panel.get("images")
+        if isinstance(images, list):
+            for sub_index, _ in enumerate(images, start=1):
+                lines.append(f"{{{{COMIC_IMAGE_{index}_{sub_index}}}}}")
     return "\n".join(lines).strip()
 
 
 __all__ = [
     "COMIC_VARIANT_CATEGORIES",
+    "COMIC_VARIANT_PIPELINE_VERSION",
     "HEALING_COMIC_FAMILY_CATEGORIES",
     "HOMOPHONE_COMIC_CATEGORY",
     "STORY_COMIC_CATEGORY",

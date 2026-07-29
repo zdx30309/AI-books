@@ -5683,6 +5683,7 @@ async def _generate_comic_variant_book(
     )
     from app.services.comic_variants import (
         COMIC_VARIANT_CATEGORIES,
+        COMIC_VARIANT_PIPELINE_VERSION,
         HOMOPHONE_COMIC_CATEGORY,
         assemble_variant_comic_markdown,
         build_homophone_idea_prompt,
@@ -5709,8 +5710,9 @@ async def _generate_comic_variant_book(
         if should_pause is not None and should_pause():
             raise ComicGenerationPaused("漫画生成已暂停")
 
+    cached_script = _read_comic_variant_script_stage(output_dir)
     cached_final = _read_stage_file(output_dir, "04_format.md")
-    if cached_final:
+    if cached_final and cached_script is not None:
         if on_stage:
             on_stage("format_done", {"chars": len(cached_final), "reused_stage": True})
         return cached_final
@@ -5723,7 +5725,7 @@ async def _generate_comic_variant_book(
     if source_content:
         _dump_stage(output_dir, "00_comic_variant_source_content.md", source_content)
 
-    cached_script = _read_comic_variant_script_stage(output_dir)
+    script_reused = cached_script is not None
     if cached_script is not None:
         title, intro, panels, series_meta = cached_script
         if on_stage:
@@ -5801,6 +5803,7 @@ async def _generate_comic_variant_book(
             "02_comic_variant_script.json",
             json.dumps(
                 {
+                    "pipeline_version": COMIC_VARIANT_PIPELINE_VERSION,
                     "category": category,
                     "title": title,
                     "intro": intro,
@@ -5815,12 +5818,17 @@ async def _generate_comic_variant_book(
             on_stage("comic_structure_done", {"episodes": len(panels), "category": category})
 
     _raise_if_paused()
-    refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+    refined_markdown = _read_stage_file(output_dir, "03_refine.md") if script_reused else ""
     if not refined_markdown:
         refined_markdown = assemble_variant_comic_markdown(title, intro, panels)
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
     if on_stage:
-        on_stage("comic_images_start", {"total": len(panels) + 1})
+        card_total = sum(
+            len(panel.get("images") or [])
+            for panel in panels
+            if isinstance(panel.get("images"), list)
+        )
+        on_stage("comic_images_start", {"total": card_total + 1})
 
     def _image_progress(index: int, total: int) -> None:
         if on_stage:
@@ -5862,6 +5870,15 @@ def _read_comic_variant_script_stage(output_dir: Path | None) -> tuple[
         logger.warning("读取漫画分支脚本缓存失败: %s", exc)
         return None
     if not isinstance(payload, dict):
+        return None
+    from app.services.comic_variants import COMIC_VARIANT_PIPELINE_VERSION
+
+    if payload.get("pipeline_version") != COMIC_VARIANT_PIPELINE_VERSION:
+        logger.info(
+            "漫画分支缓存版本过期，重新生成：cached=%s current=%s",
+            payload.get("pipeline_version"),
+            COMIC_VARIANT_PIPELINE_VERSION,
+        )
         return None
     panels = payload.get("panels")
     if not isinstance(panels, list) or not panels:

@@ -196,15 +196,15 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "story_comic",
     label: "图文故事",
-    core_feature: "治愈系生活小故事，每章为单画面或三至四格，并只保留一句完整文案",
-    directions: "生活小事、连续动作、温暖转折、完整文案、场景变化",
+    core_feature: "原创滑动图文小故事，每章 6 至 10 张单拍卡片，以生活观察、停顿和晚揭示制造趣味",
+    directions: "普通生活、单卡单拍、文字留白页、小涂鸦、自然误会、晚一点揭示",
     prompt_status: "ready",
   },
   {
     id: "homophone_comic",
     label: "谐音梗",
-    core_feature: "治愈手绘视觉承载犀利谐音讽刺，三至四格完成误读、打脸与地位反转",
-    directions: "行为吐槽、双义误读、犀利嘲讽、地位反转、最后一格打脸、无需解释",
+    core_feature: "故事先行的滑动谐音漫画，前六成藏住答案，末三张完成声音回扣",
+    directions: "干巴荒诞、自嘲互损、生活观察、向上讽刺、延迟揭示、无需解释",
     prompt_status: "ready",
   },
   {
