@@ -5683,7 +5683,6 @@ async def _generate_comic_variant_book(
     )
     from app.services.comic_variants import (
         COMIC_VARIANT_CATEGORIES,
-        COMIC_VARIANT_PIPELINE_VERSION,
         HOMOPHONE_COMIC_CATEGORY,
         assemble_variant_comic_markdown,
         build_homophone_idea_prompt,
@@ -5692,6 +5691,7 @@ async def _generate_comic_variant_book(
         generate_variant_comic_images,
         parse_homophone_idea_output,
         parse_variant_writer_output,
+        variant_pipeline_version,
     )
 
     if category not in COMIC_VARIANT_CATEGORIES:
@@ -5710,7 +5710,7 @@ async def _generate_comic_variant_book(
         if should_pause is not None and should_pause():
             raise ComicGenerationPaused("漫画生成已暂停")
 
-    cached_script = _read_comic_variant_script_stage(output_dir)
+    cached_script = _read_comic_variant_script_stage(output_dir, category=category)
     cached_final = _read_stage_file(output_dir, "04_format.md")
     if cached_final and cached_script is not None:
         if on_stage:
@@ -5803,7 +5803,7 @@ async def _generate_comic_variant_book(
             "02_comic_variant_script.json",
             json.dumps(
                 {
-                    "pipeline_version": COMIC_VARIANT_PIPELINE_VERSION,
+                    "pipeline_version": variant_pipeline_version(category),
                     "category": category,
                     "title": title,
                     "intro": intro,
@@ -5855,7 +5855,11 @@ async def _generate_comic_variant_book(
     return final_markdown
 
 
-def _read_comic_variant_script_stage(output_dir: Path | None) -> tuple[
+def _read_comic_variant_script_stage(
+    output_dir: Path | None,
+    *,
+    category: str = "story_comic",
+) -> tuple[
     str,
     str,
     list[dict[str, object]],
@@ -5871,13 +5875,14 @@ def _read_comic_variant_script_stage(output_dir: Path | None) -> tuple[
         return None
     if not isinstance(payload, dict):
         return None
-    from app.services.comic_variants import COMIC_VARIANT_PIPELINE_VERSION
+    from app.services.comic_variants import variant_pipeline_version
 
-    if payload.get("pipeline_version") != COMIC_VARIANT_PIPELINE_VERSION:
+    expected_version = variant_pipeline_version(category)
+    if payload.get("pipeline_version") != expected_version:
         logger.info(
             "漫画分支缓存版本过期，重新生成：cached=%s current=%s",
             payload.get("pipeline_version"),
-            COMIC_VARIANT_PIPELINE_VERSION,
+            expected_version,
         )
         return None
     panels = payload.get("panels")

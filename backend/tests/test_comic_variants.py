@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from PIL import Image
+from PIL import Image, ImageFont
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -268,6 +268,7 @@ def test_image_prompt_requests_one_card_and_forbids_model_text() -> None:
     assert "上半部至少 47%" in prompt
     assert "严禁上下分色" in prompt
     assert "至少自然出现三种" in prompt
+    assert "儿童马克笔与蜡笔平涂小涂鸦" not in prompt
     assert "禁止泥灰" in prompt
     cover_prompt = comic_variants.build_variant_cover_prompt(
         "story_comic", title="给你讲个故事", intro="一件小事。", panels=[panel], series_meta={}
@@ -276,6 +277,45 @@ def test_image_prompt_requests_one_card_and_forbids_model_text() -> None:
     assert "绝对不要生成任何文字" in cover_prompt
     assert "封面必须是一张连续完整的画面" in cover_prompt
     assert "统一棕黄滤镜" in cover_prompt
+    assert "儿童马克笔与蜡笔平涂小涂鸦" not in cover_prompt
+
+
+def test_homophone_prompt_and_cover_use_marker_doodle_direction() -> None:
+    panel = comic_variants._normalize_episode({}, variant="homophone_comic", index=1)
+    prompt = comic_variants.build_variant_panel_prompt(
+        "homophone_comic",
+        panel=panel,
+        image=panel["images"][0],
+        sub_index=1,
+        index=1,
+        title="今天也有好笑的事",
+    )
+    assert "下方至少 28%" in prompt
+    assert "儿童马克笔与蜡笔平涂小涂鸦" in prompt
+    assert "深炭灰轮廓粗而不完全均匀" in prompt
+    assert any(color in prompt for color in ("天蓝色", "奶油黄色", "薄荷绿色", "珊瑚粉色", "淡紫色"))
+    cover_prompt = comic_variants.build_variant_cover_prompt(
+        "homophone_comic",
+        title="今天也有好笑的事",
+        intro="一个谐音梗。",
+        panels=[panel],
+        series_meta={},
+    )
+    assert "儿童马克笔与蜡笔平涂小涂鸦" in cover_prompt
+    assert "下方至少 28%" in cover_prompt
+
+
+def test_homophone_uses_bundled_open_font_and_stable_episode_background() -> None:
+    font_path = comic_variants._homophone_cjk_font_path()
+    assert font_path.name == "Xiaolai-Regular.ttf"
+    assert font_path.exists()
+    assert (font_path.parent / "OFL-Xiaolai.txt").exists()
+    font = ImageFont.truetype(str(font_path), size=96)
+    assert bytes(font.getmask("这")) != bytes(font.getmask("?"))
+    first = comic_variants._variant_background_name("homophone_comic", "同一章")
+    second = comic_variants._variant_background_name("homophone_comic", "同一章")
+    assert first == second
+    assert "#" in first
 
 
 def test_variant_typesetter_has_no_hard_horizontal_color_seam(tmp_path: Path) -> None:
@@ -287,10 +327,11 @@ def test_variant_typesetter_has_no_hard_horizontal_color_seam(tmp_path: Path) ->
         card,
         "今天也有一件好笑的事。",
         render_mode="text_with_doodle",
+        category="homophone_comic",
     )
 
     with Image.open(card).convert("RGB") as rendered:
-        boundary = int(rendered.height * 0.47)
+        boundary = int(rendered.height * 0.70)
         above = rendered.getpixel((96, boundary - 2))
         below = rendered.getpixel((96, boundary + 2))
         assert max(abs(left - right) for left, right in zip(above, below)) <= 3
@@ -339,6 +380,20 @@ def test_old_variant_script_cache_is_invalidated(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert content_engine._read_comic_variant_script_stage(tmp_path) is not None
+    assert content_engine._read_comic_variant_script_stage(
+        tmp_path,
+        category="homophone_comic",
+    ) is None
+    payload = json.loads((tmp_path / "02_comic_variant_script.json").read_text(encoding="utf-8"))
+    payload["pipeline_version"] = comic_variants.HOMOPHONE_COMIC_PIPELINE_VERSION
+    (tmp_path / "02_comic_variant_script.json").write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert content_engine._read_comic_variant_script_stage(
+        tmp_path,
+        category="homophone_comic",
+    ) is not None
 
 
 def test_new_comic_task_config_keeps_selected_variant() -> None:

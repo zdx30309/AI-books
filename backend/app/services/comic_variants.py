@@ -7,6 +7,7 @@ contracts and copy validation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ STORY_COMIC_CATEGORY = "story_comic"
 HOMOPHONE_COMIC_CATEGORY = "homophone_comic"
 COMIC_VARIANT_CATEGORIES = frozenset({STORY_COMIC_CATEGORY, HOMOPHONE_COMIC_CATEGORY})
 COMIC_VARIANT_PIPELINE_VERSION = "carousel-v3-unified-paper"
+HOMOPHONE_COMIC_PIPELINE_VERSION = "carousel-v4-handwritten-marker"
 COMIC_VARIANT_MIN_CARDS = 6
 COMIC_VARIANT_MAX_CARDS = 10
 HEALING_COMIC_FAMILY_CATEGORIES = frozenset(
@@ -37,6 +39,7 @@ HEALING_COMIC_FAMILY_CATEGORIES = frozenset(
 )
 
 _PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+_FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 _TERMINAL_PUNCTUATION = "。！？"
 _NON_TERMINAL_PUNCTUATION_RE = re.compile(r"[。！？!?]+")
 _DASH_RE = re.compile(r"[—–﹣－]+")
@@ -92,6 +95,33 @@ _HOMOPHONE_AI_CAPTION_RE = re.compile(
     r"(?:替[他她它]?(?:认罪|开口)|把(?:奖金|承诺|梦想|箭头).{0,8}(?:戳|扎|砸|压)成|"
     r"箭头.{0,8}扎向|笑不活|直接封神|狠狠拿捏)"
 )
+
+_VARIANT_BACKGROUND_NAMES = (
+    "清亮天蓝色（约 #AEE8F4）",
+    "明快奶油黄色（约 #FFE39A）",
+    "清新薄荷绿色（约 #CBEFBE）",
+    "柔亮珊瑚粉色（约 #FFC6BD）",
+    "清透淡紫色（约 #DCCFF6）",
+)
+
+
+def _variant_background_name(category: str, seed: object) -> str:
+    """Choose one stable full-page colour for every card in an episode."""
+
+    digest = hashlib.sha256(f"{category}:{seed}".encode("utf-8")).digest()
+    return _VARIANT_BACKGROUND_NAMES[digest[0] % len(_VARIANT_BACKGROUND_NAMES)]
+
+
+def variant_pipeline_version(category: str) -> str:
+    """Return a category-scoped cache version.
+
+    Story comics intentionally stay on their established pipeline.  Only the
+    homophone branch invalidates its image/script cache for the new art system.
+    """
+
+    if category == HOMOPHONE_COMIC_CATEGORY:
+        return HOMOPHONE_COMIC_PIPELINE_VERSION
+    return COMIC_VARIANT_PIPELINE_VERSION
 
 _STORY_FALLBACKS = (
     {
@@ -988,14 +1018,21 @@ def parse_variant_writer_output(
     while len(episodes) < count:
         episodes.append(_normalize_episode({}, variant=category, index=len(episodes) + 1))
     variant_label = "原创图文小故事" if category == STORY_COMIC_CATEGORY else "原创谐音梗漫画"
+    default_series_style = (
+        "统一的清透暖白纸底、大留白、圆润原创手绘线条；"
+        "杏橙、天蓝、叶绿、珊瑚粉等三至五种清楚的低中饱和色自然分布，"
+        "没有泥灰、泛黄滤镜或上下分色，场景和镜头持续变化。"
+    )
+    if category == HOMOPHONE_COMIC_CATEGORY:
+        default_series_style = (
+            "原创儿童马克笔与蜡笔平涂小涂鸦：单页使用一种明亮纯色铺满背景，"
+            "深炭灰粗线条略有手绘抖动，形体高度简化，色块鲜明，少量自然擦痕；"
+            "不做暖白水彩、精致二次元、写实光影、上下分色或矢量图标感。"
+        )
     series_meta = {
         "series_style": _text(
-            payload.get("series_style"),
-            (
-                "统一的清透暖白纸底、大留白、圆润原创手绘线条；"
-                "杏橙、天蓝、叶绿、珊瑚粉等三至五种清楚的低中饱和色自然分布，"
-                "没有泥灰、泛黄滤镜或上下分色，场景和镜头持续变化。"
-            ),
+            payload.get("series_style") if category == STORY_COMIC_CATEGORY else None,
+            default_series_style,
             limit=500,
         ),
         "cover_visual": _text(payload.get("cover_visual"), f"用一个具体生活场景呈现{variant_label}的气质。", limit=300),
@@ -1047,6 +1084,7 @@ def build_variant_panel_prompt(
     if category == HOMOPHONE_COMIC_CATEGORY:
         common.update(
             {
+                "CARD_BACKGROUND": _variant_background_name(category, panel.get("title") or index),
                 "SOURCE_WORD": panel.get("source_word"),
                 "PUN_WORD": panel.get("pun_word"),
                 "PINYIN_PAIR": panel.get("pinyin_pair"),
@@ -1073,14 +1111,20 @@ def build_variant_cover_prompt(
     panels: list[dict[str, object]],
     series_meta: dict[str, str],
 ) -> str:
+    prompt_name = (
+        "comic_homophone_cover.md"
+        if category == HOMOPHONE_COMIC_CATEGORY
+        else "comic_variant_cover.md"
+    )
     return _render_prompt(
-        "comic_variant_cover.md",
+        prompt_name,
         BOOK_TITLE=title,
         INTRO=intro,
         VARIANT_LABEL=series_meta.get("variant_label") or category,
         SERIES_STYLE=series_meta.get("series_style"),
         COVER_VISUAL=series_meta.get("cover_visual"),
         EPISODE_TITLES="、".join(str(panel.get("title") or "") for panel in panels[:12]),
+        CARD_BACKGROUND=_variant_background_name(category, title),
     )
 
 
@@ -1169,6 +1213,24 @@ def _comic_cjk_font_path() -> Path:
     raise RuntimeError("缺少中文漫画排版字体，请安装 fonts-noto-cjk 或配置 COMIC_CJK_FONT_PATH")
 
 
+def _homophone_cjk_font_path() -> Path:
+    """Use the bundled OFL handwritten font only for homophone cards."""
+
+    configured = str(os.getenv("HOMOPHONE_COMIC_FONT_PATH") or "").strip()
+    candidates = [
+        configured,
+        str(_FONT_DIR / "Xiaolai-Regular.ttf"),
+        "C:/Windows/Fonts/FZYTK.TTF",
+        "C:/Windows/Fonts/SIMYOU.TTF",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    ]
+    for raw in candidates:
+        if raw and Path(raw).exists():
+            return Path(raw)
+    raise RuntimeError("缺少谐音梗漫画手写中文字体，请恢复内置 Xiaolai 字体或配置 HOMOPHONE_COMIC_FONT_PATH")
+
+
 def _wrap_card_text(draw: object, text: str, font: object, max_width: int) -> list[str]:
     lines: list[str] = []
     current = ""
@@ -1188,12 +1250,12 @@ def _wrap_card_text(draw: object, text: str, font: object, max_width: int) -> li
 _VARIANT_PAPER_RGB = (255, 252, 244)
 _VARIANT_INK_RGB = (62, 52, 44)
 _VARIANT_TEXT_SHADOW_RGB = (218, 190, 161, 92)
+_HOMOPHONE_BACKGROUND_RGB = (174, 232, 244)
+_HOMOPHONE_INK_RGB = (58, 62, 66)
 
 
 def _sample_variant_paper_color(image: object) -> tuple[int, int, int]:
-    """Estimate the illustration's paper tone from its outer blank margins."""
-
-    from PIL import ImageStat
+    """Estimate the story illustration's warm paper tone."""
 
     width, height = image.size
     sample_width = max(8, int(width * 0.055))
@@ -1218,11 +1280,35 @@ def _sample_variant_paper_color(image: object) -> tuple[int, int, int]:
         return _VARIANT_PAPER_RGB
     candidates.sort(key=lambda color: (sum(color), color))
     median = candidates[len(candidates) // 2]
-    # Keep generated cards in one stable family while respecting the actual
-    # paper tone, so a batch never alternates between white and old-paper yellow.
     return tuple(
         max(238, min(255, round(channel * 0.62 + preferred * 0.38)))
         for channel, preferred in zip(median, _VARIANT_PAPER_RGB)
+    )
+
+
+def _sample_homophone_background_color(image: object) -> tuple[int, int, int]:
+    """Estimate the homophone card's full-bleed pastel background."""
+
+    width, height = image.size
+    sample_width = max(8, int(width * 0.055))
+    sample_height = max(8, int(height * 0.16))
+    regions = (
+        image.crop((0, 0, width, sample_height)),
+        image.crop((0, 0, sample_width, height)),
+        image.crop((width - sample_width, 0, width, height)),
+    )
+    candidates: list[tuple[int, int, int]] = []
+    for region in regions:
+        reduced = region.resize((24, 24)).convert("RGB")
+        pixels = reduced.get_flattened_data() if hasattr(reduced, "get_flattened_data") else reduced.getdata()
+        for red, green, blue in pixels:
+            if max(red, green, blue) >= 210 and min(red, green, blue) >= 145:
+                candidates.append((red, green, blue))
+    if not candidates:
+        return _HOMOPHONE_BACKGROUND_RGB
+    return tuple(
+        sorted(color[channel] for color in candidates)[len(candidates) // 2]
+        for channel in range(3)
     )
 
 
@@ -1231,8 +1317,9 @@ def _soft_clear_variant_text_region(
     *,
     top_region: int,
     paper_rgb: tuple[int, int, int],
+    anchor: str = "top",
 ) -> object:
-    """Clear model artifacts without introducing a horizontal color seam."""
+    """Clear the caption area without introducing a horizontal colour seam."""
 
     from PIL import Image, ImageDraw
 
@@ -1241,16 +1328,24 @@ def _soft_clear_variant_text_region(
     mask = Image.new("L", (width, height), 0)
     mask_draw = ImageDraw.Draw(mask)
     feather = max(120, int(height * 0.115))
-    solid_end = max(0, top_region - feather)
-    fade_end = min(height - 1, top_region + feather)
-    mask_draw.rectangle((0, 0, width, solid_end), fill=255)
-    span = max(1, fade_end - solid_end)
-    for y in range(solid_end, fade_end + 1):
-        progress = (y - solid_end) / span
-        # Smoothstep gives a quiet watercolor-like transition instead of a band.
-        smooth = progress * progress * (3.0 - 2.0 * progress)
-        alpha = round(255 * (1.0 - smooth))
-        mask_draw.line((0, y, width, y), fill=alpha)
+    if anchor == "bottom":
+        fade_start = max(0, top_region - feather)
+        solid_start = min(height - 1, top_region + feather)
+        mask_draw.rectangle((0, solid_start, width, height), fill=255)
+        span = max(1, solid_start - fade_start)
+        for y in range(fade_start, solid_start + 1):
+            progress = (y - fade_start) / span
+            smooth = progress * progress * (3.0 - 2.0 * progress)
+            mask_draw.line((0, y, width, y), fill=round(255 * smooth))
+    else:
+        solid_end = max(0, top_region - feather)
+        fade_end = min(height - 1, top_region + feather)
+        mask_draw.rectangle((0, 0, width, solid_end), fill=255)
+        span = max(1, fade_end - solid_end)
+        for y in range(solid_end, fade_end + 1):
+            progress = (y - solid_end) / span
+            smooth = progress * progress * (3.0 - 2.0 * progress)
+            mask_draw.line((0, y, width, y), fill=round(255 * (1.0 - smooth)))
     return Image.composite(overlay, canvas, mask)
 
 
@@ -1261,7 +1356,7 @@ def _draw_cartoon_card_text(
     font: object,
     center_y: int,
 ) -> None:
-    """Draw accurate Chinese copy with a restrained storybook/cartoon finish."""
+    """Draw accurate Chinese copy with the established story-card finish."""
 
     from PIL import Image, ImageDraw
 
@@ -1308,7 +1403,62 @@ def _draw_cartoon_card_text(
         y += line_height + line_gap
 
 
-def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
+def _draw_handwritten_card_text(
+    canvas: object,
+    *,
+    lines: list[str],
+    font: object,
+    center_y: int,
+) -> None:
+    """Typeset exact copy in a loose but readable child-handwritten rhythm."""
+
+    from PIL import Image, ImageDraw
+
+    width, height = canvas.size
+    measure = ImageDraw.Draw(canvas)
+    line_gap = max(14, int(font.size * 0.28))
+    boxes = [measure.textbbox((0, 0), line, font=font, stroke_width=0) for line in lines]
+    line_heights = [box[3] - box[1] for box in boxes]
+    block_height = sum(line_heights) + line_gap * max(0, len(lines) - 1)
+    y = max(int(height * 0.055), center_y - block_height // 2)
+    for line_index, (line, box, line_height) in enumerate(zip(lines, boxes, line_heights)):
+        line_width = box[2] - box[0]
+        padding = max(20, int(font.size * 0.15))
+        x = (width - line_width) // 2
+        for char_index, char in enumerate(line):
+            char_box = measure.textbbox((0, 0), char, font=font, stroke_width=0)
+            char_width = max(1, char_box[2] - char_box[0])
+            char_height = max(1, char_box[3] - char_box[1])
+            layer = Image.new(
+                "RGBA",
+                (char_width + padding * 2, char_height + padding * 2),
+                (0, 0, 0, 0),
+            )
+            layer_draw = ImageDraw.Draw(layer)
+            layer_draw.text(
+                (padding - char_box[0], padding - char_box[1]),
+                char,
+                font=font,
+                fill=(*_HOMOPHONE_INK_RGB, 255),
+            )
+            seed = (line_index + 1) * 1009 + (char_index + 1) * 131 + ord(char)
+            angle = ((seed % 13) - 6) * 0.22
+            rotated = layer.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+            baseline_jitter = ((seed // 13) % 7 - 3) * max(1, int(font.size * 0.016))
+            paste_x = x - (rotated.width - layer.width) // 2
+            paste_y = y + baseline_jitter - (rotated.height - layer.height) // 2
+            canvas.paste(rotated, (paste_x, paste_y), rotated)
+            x += char_width
+        y += line_height + line_gap
+
+
+def _typeset_variant_card(
+    path: Path,
+    text: str,
+    *,
+    render_mode: str,
+    category: str = STORY_COMIC_CATEGORY,
+) -> None:
     """Typeset exact copy after illustration generation.
 
     The image model only paints the doodle.  Pillow owns every Chinese glyph,
@@ -1318,26 +1468,34 @@ def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
 
     from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
+    is_homophone = category == HOMOPHONE_COMIC_CATEGORY
+    base_rgb = _HOMOPHONE_BACKGROUND_RGB if is_homophone else _VARIANT_PAPER_RGB
     if render_mode == "text_only" or not path.exists():
-        canvas = Image.new("RGB", (2450, 3500), _VARIANT_PAPER_RGB)
-        paper_rgb = _VARIANT_PAPER_RGB
+        canvas = Image.new("RGB", (2450, 3500), base_rgb)
+        paper_rgb = base_rgb
     else:
         with Image.open(path) as source:
             canvas = source.convert("RGB")
-        paper_rgb = _sample_variant_paper_color(canvas)
-        canvas = ImageEnhance.Color(canvas).enhance(1.20)
-        canvas = ImageEnhance.Contrast(canvas).enhance(1.035)
+        paper_rgb = (
+            _sample_homophone_background_color(canvas)
+            if is_homophone
+            else _sample_variant_paper_color(canvas)
+        )
+        canvas = ImageEnhance.Color(canvas).enhance(1.10 if is_homophone else 1.20)
+        canvas = ImageEnhance.Contrast(canvas).enhance(1.04 if is_homophone else 1.035)
     width, height = canvas.size
     draw = ImageDraw.Draw(canvas)
-    top_region = int(height * (0.47 if render_mode != "text_only" else 1.0))
+    text_boundary = 0.70 if is_homophone else 0.47
+    top_region = int(height * (text_boundary if render_mode != "text_only" else 1.0))
     if render_mode != "text_only":
         canvas = _soft_clear_variant_text_region(
             canvas,
             top_region=top_region,
             paper_rgb=paper_rgb,
+            anchor="bottom" if is_homophone else "top",
         )
         draw = ImageDraw.Draw(canvas)
-    font_path = _comic_cjk_font_path()
+    font_path = _homophone_cjk_font_path() if is_homophone else _comic_cjk_font_path()
     max_width = int(width * 0.82)
     selected_font = None
     selected_lines: list[str] = []
@@ -1351,8 +1509,16 @@ def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
     if selected_font is None:
         selected_font = ImageFont.truetype(str(font_path), size=max(32, int(width * 0.035)))
         selected_lines = _wrap_card_text(draw, text, selected_font, max_width)[:3]
-    center_y = int(height * (0.47 if render_mode == "text_only" else 0.22))
-    _draw_cartoon_card_text(
+    center_y = int(
+        height
+        * (
+            0.50
+            if render_mode == "text_only"
+            else (0.83 if is_homophone else 0.22)
+        )
+    )
+    draw_text = _draw_handwritten_card_text if is_homophone else _draw_cartoon_card_text
+    draw_text(
         canvas,
         lines=selected_lines,
         font=selected_font,
@@ -1395,7 +1561,12 @@ def generate_variant_comic_images(
         raise_if_paused()
         stem = image.path.stem
         if image.index >= 1 and image.animal == "text_only":
-            _typeset_variant_card(image.path, image.phrase, render_mode="text_only")
+            _typeset_variant_card(
+                image.path,
+                image.phrase,
+                render_mode="text_only",
+                category=category,
+            )
             return ComicSectionImage(**{**image.__dict__, "status": "completed", "error": None})
         generated = _generate_image_with_comic_protection(
             image,
@@ -1410,9 +1581,19 @@ def generate_variant_comic_images(
             )
         if generated.path.exists() and generated.path.stat().st_size > 0:
             if generated.index == -1:
-                _typeset_variant_card(generated.path, generated.phrase, render_mode="cover")
+                _typeset_variant_card(
+                    generated.path,
+                    generated.phrase,
+                    render_mode="cover",
+                    category=category,
+                )
             elif generated.index >= 1:
-                _typeset_variant_card(generated.path, generated.phrase, render_mode=generated.animal)
+                _typeset_variant_card(
+                    generated.path,
+                    generated.phrase,
+                    render_mode=generated.animal,
+                    category=category,
+                )
         return generated
 
     if results:
@@ -1478,6 +1659,7 @@ def assemble_variant_comic_markdown(
 __all__ = [
     "COMIC_VARIANT_CATEGORIES",
     "COMIC_VARIANT_PIPELINE_VERSION",
+    "HOMOPHONE_COMIC_PIPELINE_VERSION",
     "HEALING_COMIC_FAMILY_CATEGORIES",
     "HOMOPHONE_COMIC_CATEGORY",
     "STORY_COMIC_CATEGORY",
@@ -1493,4 +1675,5 @@ __all__ = [
     "parse_homophone_idea_output",
     "parse_variant_writer_output",
     "plan_variant_comic_images",
+    "variant_pipeline_version",
 ]
