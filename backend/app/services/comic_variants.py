@@ -29,7 +29,7 @@ from app.services.comic_series import (
 STORY_COMIC_CATEGORY = "story_comic"
 HOMOPHONE_COMIC_CATEGORY = "homophone_comic"
 COMIC_VARIANT_CATEGORIES = frozenset({STORY_COMIC_CATEGORY, HOMOPHONE_COMIC_CATEGORY})
-COMIC_VARIANT_PIPELINE_VERSION = "carousel-v2"
+COMIC_VARIANT_PIPELINE_VERSION = "carousel-v3-unified-paper"
 COMIC_VARIANT_MIN_CARDS = 6
 COMIC_VARIANT_MAX_CARDS = 10
 HEALING_COMIC_FAMILY_CATEGORIES = frozenset(
@@ -991,7 +991,11 @@ def parse_variant_writer_output(
     series_meta = {
         "series_style": _text(
             payload.get("series_style"),
-            "奶油白纸色、大留白、简洁原创手绘线条、克制配色、轻微纸张颗粒、场景和镜头持续变化。",
+            (
+                "统一的清透暖白纸底、大留白、圆润原创手绘线条；"
+                "杏橙、天蓝、叶绿、珊瑚粉等三至五种清楚的低中饱和色自然分布，"
+                "没有泥灰、泛黄滤镜或上下分色，场景和镜头持续变化。"
+            ),
             limit=500,
         ),
         "cover_visual": _text(payload.get("cover_visual"), f"用一个具体生活场景呈现{variant_label}的气质。", limit=300),
@@ -1148,9 +1152,14 @@ def _comic_cjk_font_path() -> Path:
     configured = str(os.getenv("COMIC_CJK_FONT_PATH") or "").strip()
     candidates = [
         configured,
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/SIMYOU.TTF",
+        "C:/Windows/Fonts/msyhbd.ttc",
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
     ]
@@ -1176,6 +1185,129 @@ def _wrap_card_text(draw: object, text: str, font: object, max_width: int) -> li
     return lines
 
 
+_VARIANT_PAPER_RGB = (255, 252, 244)
+_VARIANT_INK_RGB = (62, 52, 44)
+_VARIANT_TEXT_SHADOW_RGB = (218, 190, 161, 92)
+
+
+def _sample_variant_paper_color(image: object) -> tuple[int, int, int]:
+    """Estimate the illustration's paper tone from its outer blank margins."""
+
+    from PIL import ImageStat
+
+    width, height = image.size
+    sample_width = max(8, int(width * 0.055))
+    sample_height = max(8, int(height * 0.16))
+    regions = (
+        image.crop((0, 0, width, sample_height)),
+        image.crop((0, 0, sample_width, height)),
+        image.crop((width - sample_width, 0, width, height)),
+    )
+    candidates: list[tuple[int, int, int]] = []
+    for region in regions:
+        reduced = region.resize((24, 24)).convert("RGB")
+        pixels = (
+            reduced.get_flattened_data()
+            if hasattr(reduced, "get_flattened_data")
+            else reduced.getdata()
+        )
+        for red, green, blue in pixels:
+            if min(red, green, blue) >= 205 and max(red, green, blue) - min(red, green, blue) <= 38:
+                candidates.append((red, green, blue))
+    if not candidates:
+        return _VARIANT_PAPER_RGB
+    candidates.sort(key=lambda color: (sum(color), color))
+    median = candidates[len(candidates) // 2]
+    # Keep generated cards in one stable family while respecting the actual
+    # paper tone, so a batch never alternates between white and old-paper yellow.
+    return tuple(
+        max(238, min(255, round(channel * 0.62 + preferred * 0.38)))
+        for channel, preferred in zip(median, _VARIANT_PAPER_RGB)
+    )
+
+
+def _soft_clear_variant_text_region(
+    canvas: object,
+    *,
+    top_region: int,
+    paper_rgb: tuple[int, int, int],
+) -> object:
+    """Clear model artifacts without introducing a horizontal color seam."""
+
+    from PIL import Image, ImageDraw
+
+    width, height = canvas.size
+    overlay = Image.new("RGB", (width, height), paper_rgb)
+    mask = Image.new("L", (width, height), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    feather = max(120, int(height * 0.115))
+    solid_end = max(0, top_region - feather)
+    fade_end = min(height - 1, top_region + feather)
+    mask_draw.rectangle((0, 0, width, solid_end), fill=255)
+    span = max(1, fade_end - solid_end)
+    for y in range(solid_end, fade_end + 1):
+        progress = (y - solid_end) / span
+        # Smoothstep gives a quiet watercolor-like transition instead of a band.
+        smooth = progress * progress * (3.0 - 2.0 * progress)
+        alpha = round(255 * (1.0 - smooth))
+        mask_draw.line((0, y, width, y), fill=alpha)
+    return Image.composite(overlay, canvas, mask)
+
+
+def _draw_cartoon_card_text(
+    canvas: object,
+    *,
+    lines: list[str],
+    font: object,
+    center_y: int,
+) -> None:
+    """Draw accurate Chinese copy with a restrained storybook/cartoon finish."""
+
+    from PIL import Image, ImageDraw
+
+    width, height = canvas.size
+    measure = ImageDraw.Draw(canvas)
+    line_gap = max(14, int(font.size * 0.38))
+    boxes = [measure.textbbox((0, 0), line, font=font, stroke_width=0) for line in lines]
+    line_heights = [box[3] - box[1] for box in boxes]
+    block_height = sum(line_heights) + line_gap * max(0, len(lines) - 1)
+    y = max(int(height * 0.055), center_y - block_height // 2)
+    for line_index, (line, box, line_height) in enumerate(zip(lines, boxes, line_heights)):
+        line_width = box[2] - box[0]
+        padding = max(24, int(font.size * 0.18))
+        layer_width = line_width + padding * 2
+        layer_height = line_height + padding * 2
+        layer = Image.new("RGBA", (layer_width, layer_height), (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        stroke = max(2, int(font.size * 0.022))
+        shadow_offset = max(3, int(font.size * 0.025))
+        origin = (padding - box[0], padding - box[1])
+        layer_draw.text(
+            (origin[0] + shadow_offset, origin[1] + shadow_offset),
+            line,
+            font=font,
+            fill=_VARIANT_TEXT_SHADOW_RGB,
+            stroke_width=0,
+        )
+        layer_draw.text(
+            origin,
+            line,
+            font=font,
+            fill=(*_VARIANT_INK_RGB, 255),
+            stroke_width=stroke,
+            stroke_fill=(*_VARIANT_INK_RGB, 255),
+        )
+        angle_seed = sum((index + 1) * ord(char) for index, char in enumerate(line))
+        angle = ((angle_seed % 7) - 3) * 0.22
+        if line_index % 2:
+            angle *= -1
+        rotated = layer.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+        x = (width - rotated.width) // 2
+        paste_y = y - (rotated.height - layer_height) // 2
+        canvas.paste(rotated, (x, paste_y), rotated)
+        y += line_height + line_gap
+
+
 def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
     """Typeset exact copy after illustration generation.
 
@@ -1184,17 +1316,27 @@ def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
     Re-running is idempotent because the text region is painted clean first.
     """
 
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
     if render_mode == "text_only" or not path.exists():
-        canvas = Image.new("RGB", (2450, 3500), (255, 253, 248))
+        canvas = Image.new("RGB", (2450, 3500), _VARIANT_PAPER_RGB)
+        paper_rgb = _VARIANT_PAPER_RGB
     else:
         with Image.open(path) as source:
             canvas = source.convert("RGB")
+        paper_rgb = _sample_variant_paper_color(canvas)
+        canvas = ImageEnhance.Color(canvas).enhance(1.20)
+        canvas = ImageEnhance.Contrast(canvas).enhance(1.035)
     width, height = canvas.size
     draw = ImageDraw.Draw(canvas)
     top_region = int(height * (0.47 if render_mode != "text_only" else 1.0))
-    draw.rectangle((0, 0, width, top_region), fill=(255, 253, 248))
+    if render_mode != "text_only":
+        canvas = _soft_clear_variant_text_region(
+            canvas,
+            top_region=top_region,
+            paper_rgb=paper_rgb,
+        )
+        draw = ImageDraw.Draw(canvas)
     font_path = _comic_cjk_font_path()
     max_width = int(width * 0.82)
     selected_font = None
@@ -1209,17 +1351,13 @@ def _typeset_variant_card(path: Path, text: str, *, render_mode: str) -> None:
     if selected_font is None:
         selected_font = ImageFont.truetype(str(font_path), size=max(32, int(width * 0.035)))
         selected_lines = _wrap_card_text(draw, text, selected_font, max_width)[:3]
-    line_gap = max(12, int(selected_font.size * 0.42))
-    boxes = [draw.textbbox((0, 0), line, font=selected_font) for line in selected_lines]
-    heights = [box[3] - box[1] for box in boxes]
-    block_height = sum(heights) + line_gap * max(0, len(selected_lines) - 1)
     center_y = int(height * (0.47 if render_mode == "text_only" else 0.22))
-    y = max(int(height * 0.06), center_y - block_height // 2)
-    for line, box, line_height in zip(selected_lines, boxes, heights):
-        line_width = box[2] - box[0]
-        x = (width - line_width) // 2
-        draw.text((x, y), line, font=selected_font, fill=(24, 24, 22))
-        y += line_height + line_gap
+    _draw_cartoon_card_text(
+        canvas,
+        lines=selected_lines,
+        font=selected_font,
+        center_y=center_y,
+    )
     canvas.save(path, format="PNG", optimize=True)
 
 

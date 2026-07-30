@@ -266,11 +266,35 @@ def test_image_prompt_requests_one_card_and_forbids_model_text() -> None:
     assert "不是三格或四格" in prompt
     assert "绝对不要生成任何文字" in prompt
     assert "上半部至少 47%" in prompt
+    assert "严禁上下分色" in prompt
+    assert "至少自然出现三种" in prompt
+    assert "禁止泥灰" in prompt
     cover_prompt = comic_variants.build_variant_cover_prompt(
         "story_comic", title="给你讲个故事", intro="一件小事。", panels=[panel], series_meta={}
     )
     assert "后端程序会把书名" in cover_prompt
     assert "绝对不要生成任何文字" in cover_prompt
+    assert "封面必须是一张连续完整的画面" in cover_prompt
+    assert "统一棕黄滤镜" in cover_prompt
+
+
+def test_variant_typesetter_has_no_hard_horizontal_color_seam(tmp_path: Path) -> None:
+    card = tmp_path / "soft-transition.png"
+    canvas = Image.new("RGB", (2450, 3500), (246, 239, 228))
+    canvas.save(card)
+
+    comic_variants._typeset_variant_card(
+        card,
+        "今天也有一件好笑的事。",
+        render_mode="text_with_doodle",
+    )
+
+    with Image.open(card).convert("RGB") as rendered:
+        boundary = int(rendered.height * 0.47)
+        above = rendered.getpixel((96, boundary - 2))
+        below = rendered.getpixel((96, boundary + 2))
+        assert max(abs(left - right) for left, right in zip(above, below)) <= 3
+        assert rendered.getbbox() == (0, 0, 2450, 3500)
 
 
 def test_text_only_card_is_typeset_locally_without_paid_image_call(monkeypatch, tmp_path: Path) -> None:
