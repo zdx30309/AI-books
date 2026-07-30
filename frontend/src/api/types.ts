@@ -389,6 +389,20 @@ export interface PublicDomainRewriteSource {
   rights_evidence_url?: string | null;
 }
 
+export interface ClassicalVernacularProfile {
+  work_type?: string;
+  era_background?: string;
+  narrative_perspective?: string;
+  target_audience?: string;
+  vernacular_level?: string;
+  adaptation_intensity?: string;
+  web_fiction_ratio?: string;
+  language_tendency?: string;
+  must_preserve?: string;
+  focus_issues?: string;
+  special_requirements?: string;
+}
+
 export interface PublicDomainRewriteRequest {
   sources: PublicDomainRewriteSource[];
   target_title?: string | null;
@@ -397,8 +411,9 @@ export interface PublicDomainRewriteRequest {
   target_chapters?: number;
   output_style?: string | null;
   public_domain_confirmed: boolean;
-  generation_mode?: "legacy_simple" | "full" | "research_preview";
+  generation_mode?: "legacy_simple" | "full" | "research_preview" | "classical_vernacular";
   research_use_confirmed?: boolean;
+  adaptation_profile?: ClassicalVernacularProfile | null;
 }
 
 export interface AigcQualityReport {

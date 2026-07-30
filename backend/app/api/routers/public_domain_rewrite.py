@@ -28,8 +28,12 @@ from app.services.image_ocr import (
     ocr_image_bytes,
 )
 from app.services.public_domain_longform import (
+    CLASSICAL_VERNACULAR_MODE,
     FULL_MODE,
     PublicDomainValidationError,
+)
+from app.services.public_domain_classical_vernacular import (
+    POLICY_VERSION as CLASSICAL_VERNACULAR_POLICY_VERSION,
 )
 from app.services.public_domain_longform import (
     POLICY_VERSION as LONGFORM_POLICY_VERSION,
@@ -62,6 +66,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/public-domain-rewrite", tags=["Public Domain Rewrite"])
 
 PUBLIC_DOMAIN_BOOKSHELF = "公版融合长篇"
+PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF = "公版古文白话"
 
 
 class PublicDomainSourcePayload(BaseModel):
@@ -77,6 +82,31 @@ class PublicDomainSourcePayload(BaseModel):
     rights_evidence_url: str | None = Field(default=None, max_length=2048)
 
 
+class ClassicalVernacularProfilePayload(BaseModel):
+    work_type: str = Field(default="古典小说", max_length=200)
+    era_background: str = Field(default="保持原文时代背景，不擅自现代化", max_length=500)
+    narrative_perspective: str = Field(default="保持原文叙事视角", max_length=200)
+    target_audience: str = Field(default="普通大众读者、手机阅读用户", max_length=300)
+    vernacular_level: str = Field(default="通俗易读，但不过度口语化", max_length=300)
+    adaptation_intensity: str = Field(default="中度改编", max_length=100)
+    web_fiction_ratio: str = Field(default="约15%", max_length=100)
+    language_tendency: str = Field(
+        default="通俗自然，兼具叙事感和适度文学质感", max_length=500
+    )
+    must_preserve: str = Field(
+        default="全部主要人物、人物关系、时代背景、关键事件、因果、线索、结果与原有章节顺序",
+        max_length=3000,
+    )
+    focus_issues: str = Field(
+        default="翻译腔、对白生硬、叙述拖沓、人物扁平、场景不足、AI腔、说明腔",
+        max_length=3000,
+    )
+    special_requirements: str = Field(
+        default="不得提前续写后续剧情；不得新增重要人物、事件、感情线、反派或支线",
+        max_length=3000,
+    )
+
+
 class PublicDomainRewriteRequest(BaseModel):
     sources: list[PublicDomainSourcePayload] = Field(
         ..., min_length=1, max_length=MAX_SOURCES
@@ -84,13 +114,14 @@ class PublicDomainRewriteRequest(BaseModel):
     target_title: str | None = Field(default=None, max_length=200)
     target_direction: str | None = Field(default=None, max_length=3000)
     target_length: int | None = Field(default=None, ge=800, le=220_000)
-    target_chapters: int | None = Field(default=None, ge=1, le=36)
+    target_chapters: int | None = Field(default=None, ge=1, le=200)
     output_style: str | None = Field(default=None, max_length=1000)
     public_domain_confirmed: bool = False
     # ``full`` is the resumable serial long-book flow.  ``legacy_simple`` is
     # retained only for old short-preview clients.
     generation_mode: str = FULL_MODE
     research_use_confirmed: bool = False
+    adaptation_profile: ClassicalVernacularProfilePayload | None = None
 
 
 @router.post(
@@ -103,7 +134,7 @@ async def generate_public_domain_rewrite(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CreateTaskResponse:
-    if req.generation_mode == FULL_MODE:
+    if req.generation_mode in {FULL_MODE, CLASSICAL_VERNACULAR_MODE}:
         return _create_longform_task(db, user, req)
     if req.generation_mode != "legacy_simple":
         raise HTTPException(status_code=400, detail=f"不支持的公版生成模式：{req.generation_mode}")
@@ -179,6 +210,8 @@ async def generate_public_domain_rewrite_from_files(
         output_style=metadata.get("output_style"),
         public_domain_confirmed=bool(metadata.get("public_domain_confirmed")),
         generation_mode=str(metadata.get("generation_mode") or FULL_MODE),
+        research_use_confirmed=bool(metadata.get("research_use_confirmed")),
+        adaptation_profile=metadata.get("adaptation_profile"),
     )
     return await generate_public_domain_rewrite(request, user, db)
 
@@ -188,18 +221,22 @@ def _create_longform_task(
     user: User,
     req: PublicDomainRewriteRequest,
 ) -> CreateTaskResponse:
+    generation_mode = req.generation_mode
+    if generation_mode not in {FULL_MODE, CLASSICAL_VERNACULAR_MODE}:
+        raise HTTPException(status_code=400, detail=f"不支持的公版长篇模式：{generation_mode}")
+    classical = generation_mode == CLASSICAL_VERNACULAR_MODE
     raw_sources = [_to_longform_source(item) for item in req.sources]
     try:
         sources = validate_longform_sources(
             raw_sources,
             public_domain_confirmed=req.public_domain_confirmed,
-            generation_mode=FULL_MODE,
+            generation_mode=generation_mode,
         )
         dimensions = derive_longform_dimensions(
             sources,
             requested_chars=req.target_length,
             requested_chapters=req.target_chapters,
-            generation_mode=FULL_MODE,
+            generation_mode=generation_mode,
         )
         reports = build_longform_source_reports(sources)
     except PublicDomainValidationError as exc:
@@ -231,21 +268,39 @@ def _create_longform_task(
     ]
     task = Task(
         id=task_id,
-        source_url="manual://public-domain-serial-longform",
+        source_url=(
+            "manual://public-domain-classical-vernacular"
+            if classical
+            else "manual://public-domain-serial-longform"
+        ),
         owner_id=user.id,
         status=TaskStatus.PENDING,
         progress=0,
-        current_step=f"已接收 {len(sources)} 本来源，等待整书规划",
+        current_step=(
+            f"已接收 {len(sources)} 份公版古典原文，等待按原章节顺序进行两轮白话改编"
+            if classical
+            else f"已接收 {len(sources)} 本来源，等待整书规划"
+        ),
         config={
-            "title": (req.target_title or "公版融合长篇")[:120],
-            "bookshelf": PUBLIC_DOMAIN_BOOKSHELF,
+            "title": (
+                req.target_title
+                or (sources[0].title if classical else "公版融合长篇")
+            )[:120],
+            "bookshelf": (
+                PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF if classical else PUBLIC_DOMAIN_BOOKSHELF
+            ),
             "category": "public_domain_rewrite",
-            "category_label": PUBLIC_DOMAIN_BOOKSHELF,
+            "category_label": (
+                PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF if classical else PUBLIC_DOMAIN_BOOKSHELF
+            ),
             "public_domain_rewrite": True,
             "public_domain_longform_v2": True,
-            "public_domain_serial_story": True,
-            "public_domain_policy_version": LONGFORM_POLICY_VERSION,
-            "generation_mode": FULL_MODE,
+            "public_domain_serial_story": not classical,
+            "public_domain_classical_vernacular": classical,
+            "public_domain_policy_version": (
+                CLASSICAL_VERNACULAR_POLICY_VERSION if classical else LONGFORM_POLICY_VERSION
+            ),
+            "generation_mode": generation_mode,
             "source_snapshot": str(snapshot_path),
             "source_count": len(sources),
             "source_reports": source_reports,
@@ -256,6 +311,9 @@ def _create_longform_task(
             "median_source_chars": dimensions.median_source_chars,
             "median_source_chapters": dimensions.median_source_chapters,
             "output_style": req.output_style,
+            "adaptation_profile": (
+                req.adaptation_profile.model_dump() if req.adaptation_profile else None
+            ),
             "public_domain_confirmed": True,
             "generation_complete": False,
             "cover_disabled": True,

@@ -1643,6 +1643,7 @@ def _clear_public_domain_failure_state(config: dict[str, Any]) -> dict[str, Any]
 def process_public_domain_longform(_self, task_id: str) -> dict:
     """Serial, resumable 8–10-source public-domain long-form pipeline."""
     from app.services.public_domain_longform import (
+        CLASSICAL_VERNACULAR_MODE,
         FULL_MODE,
         NARRATIVE_SYNTHESIS_VERSION,
         POLICY_VERSION,
@@ -1749,6 +1750,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             "正在隔离现代材料并建立匿名叙事参数；佛教事实只允许使用古代原典证据"
             if generation_mode == "research_preview"
+            else "正在按原作章节顺序执行古文白话两轮改编，并逐章保存断点"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE
             else "正在验证 5–10 本来源并建立逐章串行检查点"
         )
         db.commit()
@@ -1767,6 +1770,11 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             target_length=int(cfg.get("target_length") or 0) or None,
             target_chapters=int(cfg.get("target_chapters") or 0) or None,
             output_style=str(cfg.get("output_style") or "").strip() or None,
+            adaptation_profile=(
+                dict(cfg.get("adaptation_profile") or {})
+                if isinstance(cfg.get("adaptation_profile"), dict)
+                else None
+            ),
             public_domain_confirmed=bool(cfg.get("public_domain_confirmed")),
             generation_mode=generation_mode,
             research_use_confirmed=bool(cfg.get("research_use_confirmed")),
@@ -1791,6 +1799,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             quality_report_summary=(
                 "现代材料已隔离；叙事化非虚构、古代原典事实、来源重合与全稿终审通过"
                 if generation_mode == "research_preview"
+                else "原文章节顺序、两轮白话改编、数字篇名锚点与现代套路词本地检查通过"
+                if generation_mode == CLASSICAL_VERNACULAR_MODE
                 else "逐章串行、来源重合、现代材料、语言结构与破折号终审通过"
             ),
             source_reports=[
@@ -1816,7 +1826,12 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         pre_aigc_markdown = result.markdown
         final_markdown = pre_aigc_markdown
         final_chapters = list(result.chapters)
-        update(94, "长篇质量终审通过，正在执行最终交付闸门")
+        update(
+            94,
+            "古文白话两轮改编完成，正在写入最终书稿"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE
+            else "长篇质量终审通过，正在执行最终交付闸门",
+        )
 
         if bool(cfg.get("aigc_required")):
             try:
@@ -1888,6 +1903,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             f"叙事化非虚构新书完成：{len(final_chapters)} 章，人物、事件与观点仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
+            else f"公版古文白话改编完成：{len(final_chapters)} 个原文章节已按顺序完成两轮改编"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE
             else f"全部完成：{len(final_chapters)} 章已串行落盘并通过整书质量终检"
         )
         task.error_message = None
@@ -1957,7 +1974,11 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             task.config = cfg
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
-            task.current_step = "公版长篇本地质量终检未通过，已保留规划和合格章节断点"
+            task.current_step = (
+                "古文白话本地检查未通过，已保留原稿、第一轮稿和合格章节断点"
+                if str(cfg.get("generation_mode")) == CLASSICAL_VERNACULAR_MODE
+                else "公版长篇本地质量终检未通过，已保留规划和合格章节断点"
+            )
             task.error_message = str(exc)[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}

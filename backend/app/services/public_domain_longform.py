@@ -39,8 +39,13 @@ CHAPTER_AUDIT_CACHE_VERSION = "chapter-audit-cache-v1"
 PUBLIC_DOMAIN_STYLE_PROFILE_ENABLED = False
 FULL_MODE = "full"
 RESEARCH_PREVIEW_MODE = "research_preview"
+CLASSICAL_VERNACULAR_MODE = "classical_vernacular"
 MIN_SOURCES = 5
 MAX_SOURCES = 10
+CLASSICAL_MIN_SOURCES = 1
+CLASSICAL_MAX_SOURCES = 10
+CLASSICAL_MIN_SOURCE_CHARS = 500
+CLASSICAL_MAX_CHAPTERS = 200
 PREVIEW_MIN_SOURCES = 5
 PREVIEW_MAX_SOURCES = 7
 MIN_SOURCE_CHARS = 5_000
@@ -297,12 +302,25 @@ def validate_sources(
 ) -> list[PublicDomainSource]:
     items = list(sources)
     preview = generation_mode == RESEARCH_PREVIEW_MODE
-    if generation_mode not in {FULL_MODE, RESEARCH_PREVIEW_MODE}:
+    classical = generation_mode == CLASSICAL_VERNACULAR_MODE
+    if generation_mode not in {FULL_MODE, RESEARCH_PREVIEW_MODE, CLASSICAL_VERNACULAR_MODE}:
         raise PublicDomainValidationError(f"不支持的公版生成模式：{generation_mode}")
-    min_sources = PREVIEW_MIN_SOURCES if preview else MIN_SOURCES
-    max_sources = PREVIEW_MAX_SOURCES if preview else MAX_SOURCES
+    min_sources = (
+        PREVIEW_MIN_SOURCES
+        if preview
+        else CLASSICAL_MIN_SOURCES
+        if classical
+        else MIN_SOURCES
+    )
+    max_sources = (
+        PREVIEW_MAX_SOURCES
+        if preview
+        else CLASSICAL_MAX_SOURCES
+        if classical
+        else MAX_SOURCES
+    )
     if not min_sources <= len(items) <= max_sources:
-        label = "研究试稿来源" if preview else "公版来源"
+        label = "研究试稿来源" if preview else "公版古典原文/分卷" if classical else "公版来源"
         raise PublicDomainValidationError(f"必须提供 {min_sources} 到 {max_sources} 本{label}。")
     if preview:
         if not research_use_confirmed:
@@ -324,9 +342,10 @@ def validate_sources(
         if not title:
             raise PublicDomainValidationError(f"第 {index} 本来源缺少书名。")
         chars = count_text_chars(text)
-        if chars < MIN_SOURCE_CHARS:
+        minimum_chars = CLASSICAL_MIN_SOURCE_CHARS if classical else MIN_SOURCE_CHARS
+        if chars < minimum_chars:
             raise PublicDomainValidationError(
-                f"《{title}》有效正文只有 {chars} 字；长篇融合要求每本至少 {MIN_SOURCE_CHARS} 字。"
+                f"《{title}》有效正文只有 {chars} 字；当前模式要求每份至少 {minimum_chars} 字。"
             )
         if chars > MAX_SOURCE_CHARS:
             raise PublicDomainValidationError(
@@ -386,6 +405,19 @@ def derive_dimensions(
     items = list(sources)
     lengths = [count_text_chars(item.text) for item in items]
     median_chars = int(statistics.median(lengths))
+    if generation_mode == CLASSICAL_VERNACULAR_MODE:
+        total_chars = sum(lengths)
+        target_chars = int(requested_chars or round(total_chars * 1.18 / 1000) * 1000)
+        target_chars = max(800, min(MAX_TARGET_CHARS, target_chars))
+        detected = sum(max(1, count_source_chapters(item.text)) for item in items)
+        target_chapters = int(requested_chapters or detected)
+        target_chapters = max(1, min(CLASSICAL_MAX_CHAPTERS, target_chapters))
+        return BookDimensions(
+            target_chars=target_chars,
+            target_chapters=target_chapters,
+            median_source_chars=median_chars,
+            median_source_chapters=detected,
+        )
     if generation_mode == RESEARCH_PREVIEW_MODE:
         target_chars = int(requested_chars or PREVIEW_DEFAULT_TARGET_CHARS)
         target_chars = max(PREVIEW_MIN_TARGET_CHARS, min(PREVIEW_MAX_TARGET_CHARS, target_chars))
@@ -545,6 +577,7 @@ def run_public_domain_longform(
     target_length: int | None = None,
     target_chapters: int | None = None,
     output_style: str | None = None,
+    adaptation_profile: dict[str, Any] | None = None,
     public_domain_confirmed: bool = False,
     generation_mode: str = FULL_MODE,
     research_use_confirmed: bool = False,
@@ -571,6 +604,21 @@ def run_public_domain_longform(
     )
     reports = build_source_reports(clean_sources)
     _write_rights_manifest(work_dir, reports, clean_sources, dimensions, generation_mode=generation_mode)
+    if generation_mode == CLASSICAL_VERNACULAR_MODE:
+        from app.services.public_domain_classical_vernacular import (
+            run_classical_vernacular_longform,
+        )
+
+        return run_classical_vernacular_longform(
+            sources=clean_sources,
+            reports=reports,
+            dimensions=dimensions,
+            work_dir=work_dir,
+            target_title=target_title,
+            adaptation_profile=adaptation_profile,
+            on_progress=on_progress,
+            on_chapter_completed=on_chapter_completed,
+        )
     if generation_mode == FULL_MODE:
         # The formal bookshelf flow uses the lightweight serial writer.  It
         # keeps the proven story prompt, one durable checkpoint per chapter,
@@ -4122,6 +4170,9 @@ def _optional_int(value: object) -> int | None:
 
 __all__ = [
     "BookDimensions",
+    "CLASSICAL_MAX_SOURCES",
+    "CLASSICAL_MIN_SOURCES",
+    "CLASSICAL_VERNACULAR_MODE",
     "ChapterResult",
     "FULL_MODE",
     "MAX_SOURCES",
