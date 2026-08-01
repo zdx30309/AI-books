@@ -43,10 +43,12 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
+    ZHOULI_EDITORIAL_POLISH_PROMPT,
     ZHOULI_OUTLINE_PROMPT,
     ZHOULI_QUALITY_CHECK_PROMPT,
     ZHOULI_REPAIR_PROMPT,
     ZHOULI_STATE_EXTRACT_PROMPT,
+    ZHOULI_TYPOGRAPHY_REPAIR_PROMPT,
     render_prompt,
 )
 from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
@@ -63,6 +65,12 @@ from app.services.aigc_quality_gate import (
     AigcTechnicalError,
     aigc_category_eligible,
     enforce_aigc_quality_gate,
+)
+from app.services.family_long_novel_prose_quality import (
+    compact_issue_payload,
+    inspect_editorial_candidate,
+    inspect_family_novel_prose,
+    normalize_family_novel_prose,
 )
 
 logger = logging.getLogger(__name__)
@@ -2990,7 +2998,9 @@ def generate_family_chapter(
     chapter.title = title
     chapter.content = content
     chapter.raw_model_output = content
-    chapter.pre_aigc_content = content
+    # The immutable writer draft is preserved here.  pre_aigc_content is only
+    # populated after the ordinary long-novel editorial gate has passed.
+    chapter.pre_aigc_content = None
     chapter.aigc_policy_version = (
         AIGC_POLICY_VERSION
         if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
@@ -3279,6 +3289,184 @@ def _apply_family_aigc_gate(
     return result.text
 
 
+_EDITORIAL_ISSUE_TYPES = {
+    "empty_chapter",
+    "encoding_damage",
+    "model_process_noise",
+    "ascii_dialogue_quote",
+    "punctuation_pair_misordered",
+    "punctuation_pair_unclosed",
+    "quote_run",
+    "punctuation_run",
+    "punctuation_order",
+    "dialogue_punctuation_outside_quote",
+    "stray_punctuation",
+    "overlong_unpunctuated_sentence",
+    "editorial_length_drift",
+    "critical_anchor_changed",
+}
+
+
+def _save_editorial_quality_issues(
+    db: Session,
+    chapter: LongNovelChapter,
+    issues: list[dict[str, str]],
+) -> None:
+    db.query(LongNovelContinuityIssue).filter(
+        LongNovelContinuityIssue.project_id == chapter.project_id,
+        LongNovelContinuityIssue.chapter_number == chapter.chapter_number,
+        LongNovelContinuityIssue.issue_type.in_(sorted(_EDITORIAL_ISSUE_TYPES)),
+    ).delete(synchronize_session=False)
+    for item in issues:
+        description = str(item.get("description") or "").strip()
+        if not description:
+            continue
+        db.add(
+            LongNovelContinuityIssue(
+                project_id=chapter.project_id,
+                chapter_number=chapter.chapter_number,
+                severity=str(item.get("severity") or "high")[:16],
+                issue_type=str(item.get("issueType") or "prose_quality")[:128],
+                description=description[:2000],
+                evidence=str(item.get("evidence") or "")[:2000] or None,
+                suggested_fix=str(item.get("suggestedFix") or "")[:2000] or None,
+                status="open",
+            )
+        )
+
+
+def _set_editorial_report(
+    chapter: LongNovelChapter,
+    *,
+    status: str,
+    source: str,
+    candidate: str,
+    issues: list[dict[str, str]],
+) -> None:
+    report = dict(chapter.aigc_report or {})
+    report["editorialQuality"] = {
+        "policyVersion": "family-prose-v1",
+        "status": status,
+        "sourceSha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "candidateSha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "issues": compact_issue_payload(issues),
+    }
+    chapter.aigc_report = report
+
+
+def _editorial_polish_family_chapter(
+    db: Session,
+    project: LongNovelProject,
+    chapter: LongNovelChapter,
+    context: dict[str, Any],
+) -> LongNovelChapter:
+    """Run one bounded editorial pass before any state/AIGC acceptance work."""
+
+    source = normalize_family_novel_prose(chapter.raw_model_output or chapter.content or "")
+    metadata = _as_dict((chapter.aigc_report or {}).get("editorialQuality"))
+    existing = normalize_family_novel_prose(chapter.pre_aigc_content or "")
+    if metadata.get("status") == "passed" and existing:
+        chapter.content = existing
+        chapter.word_count = _word_count(existing)
+        return chapter
+    if metadata.get("status") == "failed" and existing:
+        raise FamilyLongNovelError("本章终稿校对仍有机械硬伤，已保留候选且停止自动重试，请从章节修复入口处理。")
+
+    # Legacy chapters used to copy the raw draft into pre_aigc_content.  A
+    # genuinely edited legacy candidate can be reused only when it differs
+    # from the immutable writer draft and passes every local check.
+    if existing and existing != source:
+        existing_issues = inspect_editorial_candidate(source, existing)
+        if not existing_issues:
+            chapter.content = existing
+            chapter.word_count = _word_count(existing)
+            _set_editorial_report(
+                chapter,
+                status="passed",
+                source=source,
+                candidate=existing,
+                issues=[],
+            )
+            db.add(chapter)
+            db.commit()
+            return chapter
+
+    prompt = render_prompt(
+        ZHOULI_EDITORIAL_POLISH_PROMPT,
+        chapter_context=_context_prompt_json(context, "editorial_polish"),
+        chapter_text=source,
+    )
+    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
+    prompt = _with_project_cache_prefix(context, prompt)
+    candidate = normalize_family_novel_prose(
+        _call_text(
+            db,
+            project_id=project.id,
+            chapter_number=chapter.chapter_number,
+            action="editorial_polish_chapter",
+            tier="default",
+            prompt=prompt,
+            max_output_tokens=_chapter_write_max_output_tokens(project),
+            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter.chapter_number),
+            reasoning_effort="high",
+        )
+    )
+    issues = inspect_editorial_candidate(source, candidate)
+    if issues:
+        repair_prompt = render_prompt(
+            ZHOULI_TYPOGRAPHY_REPAIR_PROMPT,
+            issues_json=_json_dumps(compact_issue_payload(issues)),
+            original_text=source,
+            chapter_text=candidate,
+        )
+        repair_prompt = _with_project_cache_prefix(context, repair_prompt)
+        candidate = normalize_family_novel_prose(
+            _call_text(
+                db,
+                project_id=project.id,
+                chapter_number=chapter.chapter_number,
+                action="repair_chapter_typography",
+                tier="default",
+                prompt=repair_prompt,
+                max_output_tokens=_chapter_write_max_output_tokens(project),
+                prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter.chapter_number),
+                reasoning_effort="high",
+            )
+        )
+        issues = inspect_editorial_candidate(source, candidate)
+
+    chapter.content = candidate
+    chapter.pre_aigc_content = candidate
+    chapter.word_count = _word_count(candidate)
+    chapter.version = (chapter.version or 1) + 1
+    if issues:
+        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+        _set_editorial_report(
+            chapter,
+            status="failed",
+            source=source,
+            candidate=candidate,
+            issues=issues,
+        )
+        _save_editorial_quality_issues(db, chapter, issues)
+        db.add(chapter)
+        db.commit()
+        raise FamilyLongNovelError("本章终稿校对未通过错别字、标点或事实锚点硬门槛，候选已保留且未写入状态账本。")
+
+    _save_editorial_quality_issues(db, chapter, [])
+    _set_editorial_report(
+        chapter,
+        status="passed",
+        source=source,
+        candidate=candidate,
+        issues=[],
+    )
+    db.add(chapter)
+    db.commit()
+    db.refresh(chapter)
+    return chapter
+
+
 def _postprocess_family_chapter(
     db: Session,
     project: LongNovelProject,
@@ -3289,6 +3477,7 @@ def _postprocess_family_chapter(
     *,
     auto_repair: bool,
 ) -> LongNovelChapter:
+    chapter = _editorial_polish_family_chapter(db, project, chapter, context)
     gated_content = _apply_family_aigc_gate(
         db,
         chapter.content,
@@ -3317,8 +3506,18 @@ def _postprocess_family_chapter(
         extracted_state=extracted_state,
     )
     severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
-    if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
-        chapter = repair_family_chapter(db, project.id, chapter.chapter_number, user)
+    if severe:
+        if auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
+            chapter = repair_family_chapter(db, project.id, chapter.chapter_number, user)
+        else:
+            chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+            plan.status = LongNovelChapterStatus.NEEDS_REPAIR
+            project.status = LongNovelProjectStatus.PAUSED
+            db.add(chapter)
+            db.add(plan)
+            db.add(project)
+            db.commit()
+            raise FamilyLongNovelError("本章仍有 high/severe 连续性、人物刻画或文字校对问题，未进入完成状态。")
     chapter.status = LongNovelChapterStatus.COMPLETED
     plan.status = LongNovelChapterStatus.COMPLETED
     project.status = LongNovelProjectStatus.ACTIVE
@@ -3568,6 +3767,7 @@ def _rule_continuity_issues(
     issues: list[dict[str, str]] = []
     content = chapter.content or ""
     context_pack = context_pack or {}
+    issues.extend(inspect_family_novel_prose(content))
     previous = _as_dict(context_pack.get("previousChapter"))
     if chapter.chapter_number > 1 and previous:
         opening = content[:1800]
@@ -3841,7 +4041,8 @@ def repair_family_chapter(
         )
         .all()
     )
-    if not issues:
+    local_issues = inspect_family_novel_prose(chapter.content or "")
+    if not issues and not local_issues:
         return chapter
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
@@ -3855,6 +4056,7 @@ def repair_family_chapter(
         }
         for item in issues
     ]
+    issues_payload.extend(compact_issue_payload(local_issues))
     prompt = render_prompt(
         ZHOULI_REPAIR_PROMPT,
         chapter_context=_context_prompt_json(context, "repair"),
@@ -3873,7 +4075,33 @@ def repair_family_chapter(
         max_output_tokens=24000,
         prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
     )
+    repaired = normalize_family_novel_prose(repaired)
+    repair_gate_issues = inspect_editorial_candidate(chapter.content or "", repaired)
+    chapter.content = repaired
     chapter.pre_aigc_content = repaired
+    chapter.word_count = _word_count(repaired)
+    chapter.version = (chapter.version or 1) + 1
+    if repair_gate_issues:
+        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+        _set_editorial_report(
+            chapter,
+            status="failed",
+            source=normalize_family_novel_prose(chapter.raw_model_output or chapter.content or ""),
+            candidate=repaired,
+            issues=repair_gate_issues,
+        )
+        _save_editorial_quality_issues(db, chapter, repair_gate_issues)
+        db.add(chapter)
+        db.commit()
+        raise FamilyLongNovelError("修复稿仍有可定位的错别字、标点或锚点硬伤，已停止验收并保留候选。")
+
+    _set_editorial_report(
+        chapter,
+        status="passed",
+        source=normalize_family_novel_prose(chapter.raw_model_output or chapter.content or ""),
+        candidate=repaired,
+        issues=[],
+    )
     chapter.aigc_policy_version = (
         AIGC_POLICY_VERSION
         if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
@@ -3890,14 +4118,18 @@ def repair_family_chapter(
         chapter_number=chapter_number,
     )
     chapter.content = repaired
-    chapter.raw_model_output = repaired
     chapter.word_count = _word_count(repaired)
-    chapter.version = (chapter.version or 1) + 1
     chapter.status = LongNovelChapterStatus.COMPLETED
     db.add(chapter)
     db.commit()
     extract_family_chapter_state(db, project.id, chapter_number, user)
-    check_family_continuity(db, project.id, chapter_number, user)
+    remaining = check_family_continuity(db, project.id, chapter_number, user)
+    blocking = [item for item in remaining if item.status == "open" and item.severity in {"high", "severe"}]
+    if blocking:
+        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
+        db.add(chapter)
+        db.commit()
+        raise FamilyLongNovelError("修复稿复检仍有 high/severe 问题，未标记完成。")
     db.refresh(chapter)
     return chapter
 
@@ -4033,6 +4265,16 @@ def export_family_novel(db: Session, project_id: UUID, fmt: str, user: User | No
             or item.aigc_status == "passed"
         )
     ]
+    export_blockers: list[str] = []
+    for item in chapters:
+        prose_issues = inspect_family_novel_prose(item.content or "")
+        if prose_issues:
+            labels = "、".join(str(issue.get("description") or "文字硬伤") for issue in prose_issues[:3])
+            export_blockers.append(f"第{item.chapter_number}章：{labels}")
+    if export_blockers:
+        raise FamilyLongNovelError(
+            "普通长篇终稿校对未通过，已阻止导出：" + "；".join(export_blockers[:10])
+        )
     if fmt == "json":
         payload = {
             "project": _project_payload(project),
