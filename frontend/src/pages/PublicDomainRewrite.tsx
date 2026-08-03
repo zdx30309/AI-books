@@ -82,11 +82,6 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
   const [targetDirection, setTargetDirection] = useState("");
   const [targetLength, setTargetLength] = useState("");
   const [targetChapters, setTargetChapters] = useState("");
-  const [workType, setWorkType] = useState("古典小说");
-  const [eraBackground, setEraBackground] = useState("保持原文时代背景，不擅自现代化");
-  const [narrativePerspective, setNarrativePerspective] = useState("保持原文叙事视角");
-  const [mustPreserve, setMustPreserve] = useState("全部主要人物、人物关系、时代背景、关键事件、因果、线索、结果与原有章节顺序");
-  const [specialRequirements, setSpecialRequirements] = useState("不得提前续写后续剧情；不得新增重要人物、事件、感情线、反派或支线");
   const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -170,23 +165,9 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
       target_length: classical ? undefined : optionalNumber(targetLength) ?? undefined,
       target_chapters: classical ? undefined : optionalNumber(targetChapters) ?? undefined,
       output_style: classical
-        ? "严格执行古典小说现代白话两轮改编模板"
+        ? "只把全部古文忠实、完整地翻译成现代白话；不得改写、增删、润色、重组、评论、总结或续写"
         : "通俗、叙事有起伏；不模仿任何单一来源，不写论文或经典导读",
-      adaptation_profile: classical
-        ? {
-            work_type: workType.trim() || "古典小说",
-            era_background: eraBackground.trim() || "保持原文时代背景，不擅自现代化",
-            narrative_perspective: narrativePerspective.trim() || "保持原文叙事视角",
-            target_audience: "普通大众读者、手机阅读用户",
-            vernacular_level: "通俗易读，但不过度口语化",
-            adaptation_intensity: "中度改编",
-            web_fiction_ratio: "约15%",
-            language_tendency: "通俗自然，兼具叙事感和适度文学质感",
-            must_preserve: mustPreserve.trim(),
-            focus_issues: "翻译腔、对白生硬、叙述拖沓、人物扁平、场景不足、AI腔、说明腔",
-            special_requirements: specialRequirements.trim(),
-          }
-        : undefined,
+      adaptation_profile: undefined,
     };
     try {
       const response = fileMode
@@ -218,12 +199,12 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 px-4 py-2 text-xs text-emerald-100">
             <ShieldCheck className="h-4 w-4" />
-            {classical ? "1–10 份公版古典原文 · 原章节顺序 · 两轮白话改编" : "5–10 本来源 · 逐章串行长篇"}
+            {classical ? "1–10 份公版古典原文 · 百万字分块 · 逐段完整翻译" : "5–10 本来源 · 逐章串行长篇"}
           </div>
           <h1 className="font-serif text-4xl text-warm-50">{classical ? "公版古文白话" : "公版融合长篇"}</h1>
           <p className="mt-3 max-w-4xl text-sm leading-7 text-warm-300">
             {classical
-              ? "按你上传的公版古典原文和分卷顺序识别原有章节。每一章先执行完整的现代白话改编 Prompt，再执行完整的深度编辑 Prompt；保留人物、关系、时代、关键事件、因果、线索、结果和原有章节顺序，不做多书故事融合，也不提前续写。"
+              ? "只做一件事：把你上传的全部古文按原书、原章、原段顺序完整翻译成现代白话。百万字或数百万字正文会自动分成安全窗口串行处理，每段完成立即保存；不改写、不增删、不润色、不重组、不评论、不总结、不续写。"
               : "系统按来源中位篇幅规划十几万字长篇，只做一次整书规划，随后逐章串行创作并立即落盘。每章执行免费的字数、重复、现代材料和破折号检查，不启动反复付费审稿循环。"}
           </p>
         </div>
@@ -234,7 +215,7 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
           className="btn-gold inline-flex min-w-[210px] items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          {loading ? "正在创建任务" : classical ? "开始古文白话改编" : "开始长篇融合"}
+          {loading ? "正在创建任务" : classical ? "开始完整翻译" : "开始长篇融合"}
         </button>
       </section>
 
@@ -265,28 +246,9 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
           <input value={targetTitle} onChange={(event) => setTargetTitle(event.target.value)} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
         </label>
         {classical ? (
-          <>
-            <label className="text-sm text-warm-300">
-              作品类型
-              <input value={workType} onChange={(event) => setWorkType(event.target.value)} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
-            </label>
-            <label className="text-sm text-warm-300">
-              时代背景
-              <input value={eraBackground} onChange={(event) => setEraBackground(event.target.value)} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
-            </label>
-            <label className="text-sm text-warm-300">
-              叙事视角
-              <input value={narrativePerspective} onChange={(event) => setNarrativePerspective(event.target.value)} className="mt-2 w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
-            </label>
-            <label className="text-sm text-warm-300 md:col-span-2">
-              必须保留的内容
-              <textarea value={mustPreserve} onChange={(event) => setMustPreserve(event.target.value)} className="mt-2 min-h-[96px] w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
-            </label>
-            <label className="text-sm text-warm-300 md:col-span-2">
-              特殊要求
-              <textarea value={specialRequirements} onChange={(event) => setSpecialRequirements(event.target.value)} className="mt-2 min-h-[96px] w-full rounded-lg border border-gold-500/15 bg-base-900/70 px-4 py-3 text-warm-100 outline-none" />
-            </label>
-          </>
+          <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/5 px-4 py-3 text-sm leading-6 text-emerald-100 md:col-span-1 xl:col-span-3">
+            翻译规则固定，不提供风格、改编强度或扩写参数。系统逐段编号核对，任何漏段、乱序或空段都会停止交付，并保留已完成断点。
+          </div>
         ) : (
           <>
             <label className="text-sm text-warm-300">
@@ -355,16 +317,16 @@ export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-1.5 h-4 w-4 accent-amber-500" />
           <span>
             {classical
-              ? "我已逐份核对权利依据，确认 1–10 份输入均为可用于改编的公版古典原文或同一作品的分卷，并已按原作阅读顺序排列。系统保留原有章节顺序，只处理已提供正文，不续写后文。"
+              ? "我已逐份核对权利依据，确认 1–10 份输入均为可用于翻译的公版古典原文或同一作品的分卷，并已按原作阅读顺序排列。系统只完整翻译已提供正文。"
               : "我已逐本核对权利依据，确认 5–10 个输入均可用于本次公版融合。系统会保存来源哈希和权利清单；正文带版权限制标记时，不会调用模型。"}
           </span>
         </label>
         <div className="mt-5 grid gap-3 text-xs leading-6 text-warm-400 md:grid-cols-3">
           {classical ? (
             <>
-              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />不重新设计整书结构，不合并或改排原文章节，不提前续写后续剧情。</div>
-              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />每个处理段严格执行第一轮完整改编 Prompt，再执行第二轮完整编辑 Prompt。</div>
-              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />每章和每轮即时落盘；本地检查不通过即停，不启动第三轮或自动付费重试。</div>
+              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />只翻译，不改写、不润色、不增删、不重排，也不提前续写。</div>
+              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />数百万字自动切成安全窗口串行翻译，上一段和下一段仅作为指代上下文。</div>
+              <div className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-300" />每段编号校验后立即落盘；任务中断后从最近断点继续，不重复已完成调用。</div>
             </>
           ) : (
             <>

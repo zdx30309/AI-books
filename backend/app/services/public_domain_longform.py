@@ -45,7 +45,9 @@ MAX_SOURCES = 10
 CLASSICAL_MIN_SOURCES = 1
 CLASSICAL_MAX_SOURCES = 10
 CLASSICAL_MIN_SOURCE_CHARS = 500
-CLASSICAL_MAX_CHAPTERS = 200
+CLASSICAL_MAX_SOURCE_CHARS = 8_000_000
+CLASSICAL_MAX_TOTAL_SOURCE_CHARS = 10_000_000
+CLASSICAL_MAX_CHAPTERS = 5_000
 PREVIEW_MIN_SOURCES = 5
 PREVIEW_MAX_SOURCES = 7
 MIN_SOURCE_CHARS = 5_000
@@ -347,14 +349,18 @@ def validate_sources(
             raise PublicDomainValidationError(
                 f"《{title}》有效正文只有 {chars} 字；当前模式要求每份至少 {minimum_chars} 字。"
             )
-        if chars > MAX_SOURCE_CHARS:
+        source_max_chars = CLASSICAL_MAX_SOURCE_CHARS if classical else MAX_SOURCE_CHARS
+        if chars > source_max_chars:
             raise PublicDomainValidationError(
-                f"《{title}》超过单本 {MAX_SOURCE_CHARS} 字安全上限，请先拆除附录或无关资料。"
+                f"《{title}》超过单本 {source_max_chars} 字安全上限，请先拆除附录或无关资料。"
             )
         total_chars += chars
-        if total_chars > MAX_TOTAL_SOURCE_CHARS:
+        total_max_chars = (
+            CLASSICAL_MAX_TOTAL_SOURCE_CHARS if classical else MAX_TOTAL_SOURCE_CHARS
+        )
+        if total_chars > total_max_chars:
             raise PublicDomainValidationError(
-                f"全部来源合计超过 {MAX_TOTAL_SOURCE_CHARS} 字安全上限，请移除附录、索引或无关资料。"
+                f"全部来源合计超过 {total_max_chars} 字安全上限，请移除附录、索引或无关资料。"
             )
         lowered = text.lower()
         marker = next((value for value in _COPYRIGHT_MARKERS if value in lowered), None)
@@ -407,8 +413,9 @@ def derive_dimensions(
     median_chars = int(statistics.median(lengths))
     if generation_mode == CLASSICAL_VERNACULAR_MODE:
         total_chars = sum(lengths)
-        target_chars = int(requested_chars or round(total_chars * 1.18 / 1000) * 1000)
-        target_chars = max(800, min(MAX_TARGET_CHARS, target_chars))
+        # Translation length is an observed result, not a creative target.
+        # Do not clamp multi-million-character books to the fusion-book limit.
+        target_chars = max(800, int(requested_chars or total_chars))
         detected = sum(max(1, count_source_chapters(item.text)) for item in items)
         target_chapters = int(requested_chapters or detected)
         target_chapters = max(1, min(CLASSICAL_MAX_CHAPTERS, target_chapters))

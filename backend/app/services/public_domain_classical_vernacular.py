@@ -1,10 +1,11 @@
-"""Serial two-pass vernacular adaptation for public-domain classical fiction.
+"""Resumable, translation-only classical Chinese to modern Chinese pipeline.
 
 This route is intentionally isolated from public-domain multi-source fusion.
-It preserves source order and chapter boundaries, then executes the exact
-two-pass author/editor prompt supplied for classical-to-vernacular rewriting.
-Every segment is checkpointed, and no automatic paid retry or third model
-review is launched when deterministic checks fail.
+It never sends an entire long book into one context window.  Source chapters
+are processed strictly in order, divided into bounded segments, translated
+once, and checkpointed after every successful segment.  Paragraph IDs and
+deterministic anchors protect completeness without launching a second paid
+rewrite/review pass.
 """
 from __future__ import annotations
 
@@ -18,16 +19,16 @@ from typing import Any, Iterable
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-vernacular-v1"
-PROMPT_VERSION = "classical-vernacular-exact-two-pass-v1"
+POLICY_VERSION = "public-domain-classical-translation-v2"
+PROMPT_VERSION = "classical-complete-translation-only-v2"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
-ROUND1_PROMPT = PROMPT_DIR / "classical_vernacular_round1.md"
-ROUND2_PROMPT = PROMPT_DIR / "classical_vernacular_round2.md"
+TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
 
-MAX_SECTION_COUNT = 200
-SEGMENT_CHARS = 7_000
-MIN_OUTPUT_RATIO = 0.45
-MAX_OUTPUT_RATIO = 2.80
+MAX_SECTION_COUNT = 5_000
+SEGMENT_CHARS = 5_200
+CONTEXT_CHARS = 800
+MIN_OUTPUT_RATIO = 0.50
+MAX_OUTPUT_RATIO = 3.20
 
 _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
@@ -37,14 +38,14 @@ _CHAPTER_HEADING_RE = re.compile(
     r")[^\n]{0,100}$"
 )
 _META_RESIDUE = (
-    "以下是改编内容",
-    "以下为改编",
-    "改编说明",
+    "以下是翻译内容",
+    "以下为翻译",
+    "翻译说明",
     "修改说明",
     "作为一个AI",
     "作为AI",
     "根据您的要求",
-    "本次改编",
+    "本次翻译",
     "输出要求",
     "提示词",
 )
@@ -71,14 +72,14 @@ class ClassicalVernacularProfile:
     work_type: str = "古典小说"
     era_background: str = "保持原文时代背景，不擅自现代化"
     narrative_perspective: str = "保持原文叙事视角"
-    target_audience: str = "普通大众读者、手机阅读用户"
-    vernacular_level: str = "通俗易读，但不过度口语化"
-    adaptation_intensity: str = "中度改编"
-    web_fiction_ratio: str = "约15%"
-    language_tendency: str = "通俗自然，兼具叙事感和适度文学质感"
-    must_preserve: str = "全部主要人物、人物关系、时代背景、关键事件、因果、线索、结果与原有章节顺序"
-    focus_issues: str = "翻译腔、对白生硬、叙述拖沓、人物扁平、场景不足、AI腔、说明腔"
-    special_requirements: str = "不得提前续写后续剧情；不得新增重要人物、事件、感情线、反派或支线"
+    target_audience: str = "现代汉语读者"
+    vernacular_level: str = "准确、清楚、完整的现代白话"
+    adaptation_intensity: str = "仅完整翻译"
+    web_fiction_ratio: str = "0%"
+    language_tendency: str = "忠实原意，不做文学改写或风格润色"
+    must_preserve: str = "原文全部信息、顺序、人物、称谓、专名、数字、事件、因果与语气"
+    focus_issues: str = "漏译、错译、增译、缩写、扩写、重排、解释和续写"
+    special_requirements: str = "只做完整翻译；不得改写、润色、扩写、缩写、重组、评论、总结或续写"
 
 
 @dataclass(frozen=True)
@@ -90,14 +91,10 @@ class SourceSection:
 
 
 def normalize_profile(value: dict[str, Any] | None) -> ClassicalVernacularProfile:
-    raw = dict(value or {})
-    defaults = ClassicalVernacularProfile()
-    allowed = set(asdict(defaults))
-    cleaned: dict[str, str] = {}
-    for key in allowed:
-        candidate = str(raw.get(key) or getattr(defaults, key)).strip()
-        cleaned[key] = candidate[:3000]
-    return ClassicalVernacularProfile(**cleaned)
+    # Older clients still send adaptation fields.  They are intentionally
+    # ignored: this route has one immutable operation, complete translation.
+    del value
+    return ClassicalVernacularProfile()
 
 
 def run_classical_vernacular_longform(
@@ -111,17 +108,17 @@ def run_classical_vernacular_longform(
     on_progress: legacy.ProgressCallback | None,
     on_chapter_completed: legacy.ChapterCompletedCallback | None,
 ) -> legacy.PublicDomainLongformResult:
-    """Adapt all supplied public-domain classical text in source order."""
+    """Translate all supplied public-domain classical text in source order."""
 
     items = list(sources)
     profile = normalize_profile(adaptation_profile)
     prompt_hash = _prompt_hash()
     sections = extract_source_sections(items)
     if not sections:
-        raise legacy.PublicDomainValidationError("没有识别到可改编的公版古文正文。")
+        raise legacy.PublicDomainValidationError("没有识别到可翻译的公版古文正文。")
     if len(sections) > MAX_SECTION_COUNT:
         raise legacy.PublicDomainValidationError(
-            f"识别到 {len(sections)} 个原文章节，超过单任务 {MAX_SECTION_COUNT} 章上限；请按卷拆分任务。"
+            f"识别到 {len(sections)} 个原文章节，超过单任务 {MAX_SECTION_COUNT} 章上限。"
         )
 
     plan = {
@@ -144,11 +141,15 @@ def run_classical_vernacular_longform(
         ],
     }
     _atomic_write_json(work_dir / "01_classical_vernacular_plan.json", plan)
-    _notify(on_progress, 8, f"已按原文顺序识别 {len(sections)} 个章节，开始两轮白话改编")
+    _notify(
+        on_progress,
+        8,
+        f"已按原文顺序识别 {len(sections)} 个章节，开始逐段完整翻译；每段完成即保存断点",
+    )
 
     chapters: list[legacy.ChapterResult] = []
     for index, section in enumerate(sections, start=1):
-        chapter = _adapt_section(
+        chapter = _translate_section(
             number=index,
             section=section,
             total_sections=len(sections),
@@ -156,12 +157,13 @@ def run_classical_vernacular_longform(
             work_title=plan["title"],
             profile=profile,
             prompt_hash=prompt_hash,
+            on_progress=on_progress,
         )
         chapters.append(chapter)
         if on_chapter_completed is not None:
             on_chapter_completed(chapter)
         progress = 8 + int(84 * index / len(sections))
-        _notify(on_progress, progress, f"古文白话改编 {index}/{len(sections)} 章已完成并落盘")
+        _notify(on_progress, progress, f"古文完整翻译 {index}/{len(sections)} 章已完成并落盘")
 
     body_chars = sum(legacy.count_text_chars(item.text) for item in chapters)
     source_chars = sum(legacy.count_text_chars(item.text) for item in items)
@@ -170,19 +172,19 @@ def run_classical_vernacular_longform(
         blocking.append("最终章节数量与原文章节数量不一致")
     if body_chars < int(source_chars * MIN_OUTPUT_RATIO):
         blocking.append(
-            f"全稿白话正文仅 {body_chars} 字，低于原文 {source_chars} 字的安全下限"
+            f"全稿白话译文仅 {body_chars} 字，低于原文 {source_chars} 字的完整性下限"
         )
     quality_report = {
         "status": "needs_review" if blocking else "ok",
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
-        "pipeline": "source_order -> round1_adaptation -> round2_editorial_rewrite -> local_qa -> bookshelf",
+        "pipeline": "source_order -> bounded_segments -> paragraph_ids -> complete_translation -> local_completeness_gate -> bookshelf",
         "source_chapters": len(sections),
         "output_chapters": len(chapters),
         "source_chars": source_chars,
         "output_chars": body_chars,
-        "paid_calls_per_segment": 2,
+        "paid_calls_per_segment": 1,
         "automatic_retry_calls": 0,
         "blocking_issues": blocking,
         "chapter_audits": [item.audit for item in chapters],
@@ -193,12 +195,12 @@ def run_classical_vernacular_longform(
 
     title = str(plan["title"] or items[0].title).strip()
     summary = (
-        f"按公版原作的章节顺序，对《{items[0].title}》进行现代白话改编。"
-        "保留主要人物、关系、关键事件、因果、时代背景与故事结局。"
+        f"按公版原作的章节与段落顺序，对《{items[0].title}》逐段完整翻译为现代白话。"
+        "译文不增删原文信息，不改写、不润色、不重组、不评论、不总结，也不续写。"
     )
     markdown = legacy.render_final_markdown(title=title, summary=summary, chapters=chapters)
     _atomic_write_text(work_dir / "04_final.md", markdown)
-    _notify(on_progress, 94, "两轮改编与整书本地检查完成，正在写入书架")
+    _notify(on_progress, 94, "完整翻译与整书完整性检查完成，正在写入书架")
     return legacy.PublicDomainLongformResult(
         title=title,
         summary=summary,
@@ -257,7 +259,7 @@ def extract_source_sections(sources: Iterable[legacy.PublicDomainSource]) -> lis
     return sections
 
 
-def _adapt_section(
+def _translate_section(
     *,
     number: int,
     section: SourceSection,
@@ -266,6 +268,7 @@ def _adapt_section(
     work_title: str,
     profile: ClassicalVernacularProfile,
     prompt_hash: str,
+    on_progress: legacy.ProgressCallback | None,
 ) -> legacy.ChapterResult:
     chapter_dir = work_dir / "classical_chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
@@ -304,68 +307,72 @@ def _adapt_section(
             "|".join((artifact_key, str(segment_index), legacy.text_sha256(source_text)))
         )
         segment_label = (
-            f"第 {segment_index}/{len(segments)} 段（同属原文章节《{section.title}》，不得重复标题）"
+            f"第 {segment_index}/{len(segments)} 段（同属原文章节《{section.title}》）"
             if len(segments) > 1
             else "本章完整内容"
         )
         source_chars = legacy.count_text_chars(source_text)
-        target_chars = max(500, int(source_chars * 1.18))
-        common = {
-            **asdict(profile),
-            "work_title": work_title,
-            "chapter_title": section.title,
-            "segment_label": segment_label,
-            "target_chars": target_chars,
-            "source_text": source_text,
-        }
-        round1_path = chapter_dir / f"{number:03d}_{segment_index:02d}_round1.md"
-        round1_meta_path = chapter_dir / f"{number:03d}_{segment_index:02d}_round1.json"
-        round1_meta = _load_json(round1_meta_path)
+        target_chars = max(800, int(source_chars * 1.75))
+        marked_source, expected_markers = _mark_source_units(source_text)
+        previous_context = segments[segment_index - 2][-CONTEXT_CHARS:] if segment_index > 1 else "无"
+        next_context = segments[segment_index][:CONTEXT_CHARS] if segment_index < len(segments) else "无"
+        prompt = _render(
+            TRANSLATION_PROMPT,
+            work_title=work_title,
+            chapter_title=section.title,
+            segment_label=segment_label,
+            target_chars=target_chars,
+            previous_context=previous_context,
+            next_context=next_context,
+            source_text=marked_source,
+        )
+        translation_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.md"
+        translation_meta_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.json"
+        translation_meta = _load_json(translation_meta_path)
         if (
-            round1_meta
-            and round1_meta.get("segment_key") == segment_key
-            and round1_path.exists()
+            translation_meta
+            and translation_meta.get("segment_key") == segment_key
+            and translation_path.exists()
         ):
-            round1 = round1_path.read_text(encoding="utf-8").strip()
+            final = translation_path.read_text(encoding="utf-8").strip()
+            translated_units = int(translation_meta.get("translated_units") or 0)
         else:
-            round1_prompt = _render(ROUND1_PROMPT, **common)
-            round1 = legacy._call_llm(  # noqa: SLF001
+            raw_translation = legacy._call_llm(  # noqa: SLF001
                 work_dir,
-                action=f"classical_vernacular_round1:{number:03d}:{segment_index:02d}",
-                prompt=round1_prompt,
-                temperature=0.50,
+                action=f"classical_complete_translation:{number:04d}:{segment_index:04d}",
+                prompt=prompt,
+                temperature=0.10,
                 max_output_tokens=_output_tokens(target_chars),
             )
-            round1 = _clean_model_text(round1, section.title)
-            if not round1:
+            final, translated_units = _parse_marked_translation(
+                raw_translation,
+                expected_markers=expected_markers,
+                chapter_title=section.title,
+            )
+            issues = _segment_issues(source_text=source_text, candidate=final)
+            if issues:
                 raise legacy.PublicDomainQualityError(
-                    f"《{section.title}》第 {segment_index} 段第一轮返回空正文"
+                    f"《{section.title}》第 {segment_index} 段未通过完整翻译检查：{'；'.join(issues)}"
                 )
-            _atomic_write_text(round1_path, round1)
+            _atomic_write_text(translation_path, final)
             _atomic_write_json(
-                round1_meta_path,
+                translation_meta_path,
                 {
                     "segment_key": segment_key,
                     "prompt_hash": prompt_hash,
-                    "round": 1,
+                    "translated_units": translated_units,
+                    "source_units": len(expected_markers),
+                    "operation": "complete_translation_only",
                 },
             )
 
-        round2_prompt = _render(ROUND2_PROMPT, **common, round1_text=round1)
-        round2 = legacy._call_llm(  # noqa: SLF001
-            work_dir,
-            action=f"classical_vernacular_round2:{number:03d}:{segment_index:02d}",
-            prompt=round2_prompt,
-            temperature=0.34,
-            max_output_tokens=_output_tokens(target_chars),
-        )
-        final = _clean_model_text(round2, section.title)
         issues = _segment_issues(source_text=source_text, candidate=final)
         audit = {
             "segment": segment_index,
             "source_chars": source_chars,
-            "round1_chars": legacy.count_text_chars(round1),
-            "final_chars": legacy.count_text_chars(final),
+            "translation_chars": legacy.count_text_chars(final),
+            "source_units": len(expected_markers),
+            "translated_units": translated_units,
             "issues": issues,
         }
         segment_audits.append(audit)
@@ -374,12 +381,17 @@ def _adapt_section(
         )
         if issues:
             raise legacy.PublicDomainQualityError(
-                f"《{section.title}》第 {segment_index} 段未通过古文白话本地检查：{'；'.join(issues)}"
+                f"《{section.title}》第 {segment_index} 段未通过完整翻译检查：{'；'.join(issues)}"
             )
-        _atomic_write_text(
-            chapter_dir / f"{number:03d}_{segment_index:02d}_round2.md", final
-        )
         outputs.append(final)
+        chapter_fraction = ((number - 1) + (segment_index / max(1, len(segments)))) / max(
+            1, total_sections
+        )
+        _notify(
+            on_progress,
+            8 + int(84 * chapter_fraction),
+            f"完整翻译第 {number}/{total_sections} 章，第 {segment_index}/{len(segments)} 段已保存",
+        )
 
     text = "\n\n".join(value.strip() for value in outputs if value.strip()).strip()
     chapter_audit = {
@@ -392,7 +404,8 @@ def _adapt_section(
         "output_chars": legacy.count_text_chars(text),
         "segments": len(segments),
         "segment_audits": segment_audits,
-        "rounds": 2,
+        "rounds": 1,
+        "operation": "complete_translation_only",
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
         "pass": True,
@@ -470,6 +483,54 @@ def _split_long_paragraph(text: str, limit: int) -> list[str]:
     return chunks
 
 
+def _mark_source_units(text: str) -> tuple[str, tuple[str, ...]]:
+    """Attach deterministic paragraph IDs so omissions/reordering are visible."""
+
+    units = [value.strip() for value in re.split(r"\n+", text) if value.strip()]
+    if not units:
+        raise legacy.PublicDomainQualityError("待翻译分段为空")
+    markers = tuple(f"[[P{index:04d}]]" for index in range(1, len(units) + 1))
+    marked = "\n\n".join(
+        f"{marker}\n{unit}" for marker, unit in zip(markers, units, strict=True)
+    )
+    return marked, markers
+
+
+def _parse_marked_translation(
+    text: str,
+    *,
+    expected_markers: tuple[str, ...],
+    chapter_title: str,
+) -> tuple[str, int]:
+    """Remove paragraph IDs only after proving every source unit survived in order."""
+
+    value = re.sub(r"^```(?:markdown|md|text)?\s*", "", (text or "").strip(), flags=re.I)
+    value = re.sub(r"\s*```$", "", value).strip()
+    pattern = re.compile(r"\[\[P\d{4}\]\]")
+    matches = list(pattern.finditer(value))
+    received = tuple(match.group(0) for match in matches)
+    if received != expected_markers:
+        raise legacy.PublicDomainQualityError(
+            f"《{chapter_title}》译文段落编号不完整或顺序变化："
+            f"应有 {len(expected_markers)} 段，实际识别 {len(received)} 段"
+        )
+    if not matches:
+        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文没有段落编号")
+    if value[: matches[0].start()].strip():
+        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文在首段前新增了说明文字")
+
+    translated: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        block = value[match.end() : end].strip()
+        if not block:
+            raise legacy.PublicDomainQualityError(
+                f"《{chapter_title}》译文第 {index + 1} 个原文段落为空，疑似漏译"
+            )
+        translated.append(block)
+    return legacy.normalize_source_text("\n\n".join(translated)), len(translated)
+
+
 def _segment_issues(*, source_text: str, candidate: str) -> list[str]:
     issues: list[str] = []
     source_chars = legacy.count_text_chars(source_text)
@@ -522,7 +583,7 @@ def _render(path: Path, **values: object) -> str:
 
 
 def _output_tokens(target_chars: int) -> int:
-    return max(5_000, min(14_000, int(target_chars * 2.0)))
+    return max(5_000, min(18_000, int(target_chars * 1.8)))
 
 
 def _notify(callback: legacy.ProgressCallback | None, progress: int, step: str) -> None:
@@ -553,11 +614,7 @@ def _sha(value: str) -> str:
 
 
 def _prompt_hash() -> str:
-    return _sha(
-        ROUND1_PROMPT.read_text(encoding="utf-8")
-        + "\n---ROUND-BOUNDARY---\n"
-        + ROUND2_PROMPT.read_text(encoding="utf-8")
-    )
+    return _sha(TRANSLATION_PROMPT.read_text(encoding="utf-8"))
 
 
 __all__ = [

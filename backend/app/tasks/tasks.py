@@ -842,8 +842,20 @@ def _dispatch_task_ids(task_ids: list[str], *, label: str) -> None:
                 is_public_longform = bool(
                     dispatch_task and (dispatch_task.config or {}).get("public_domain_longform_v2")
                 )
+                is_classical_translation = bool(
+                    dispatch_task
+                    and (dispatch_task.config or {}).get("generation_mode")
+                    == "classical_vernacular"
+                )
             if is_public_longform:
-                process_public_domain_longform.delay(task_id)
+                if is_classical_translation:
+                    process_public_domain_longform.apply_async(
+                        args=[task_id],
+                        time_limit=7 * 24 * 60 * 60,
+                        soft_time_limit=7 * 24 * 60 * 60 - 300,
+                    )
+                else:
+                    process_public_domain_longform.delay(task_id)
             else:
                 process_video.delay(task_id)
         except Exception:
@@ -1750,7 +1762,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             "正在隔离现代材料并建立匿名叙事参数；佛教事实只允许使用古代原典证据"
             if generation_mode == "research_preview"
-            else "正在按原作章节顺序执行古文白话两轮改编，并逐章保存断点"
+            else "正在按原作章节顺序逐段完整翻译，每段完成即保存断点"
             if generation_mode == CLASSICAL_VERNACULAR_MODE
             else "正在验证 5–10 本来源并建立逐章串行检查点"
         )
@@ -1799,7 +1811,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             quality_report_summary=(
                 "现代材料已隔离；叙事化非虚构、古代原典事实、来源重合与全稿终审通过"
                 if generation_mode == "research_preview"
-                else "原文章节顺序、两轮白话改编、数字篇名锚点与现代套路词本地检查通过"
+                else "原文章节顺序、逐段编号完整翻译、数字篇名锚点与现代内容检查通过"
                 if generation_mode == CLASSICAL_VERNACULAR_MODE
                 else "逐章串行、来源重合、现代材料、语言结构与破折号终审通过"
             ),
@@ -1828,7 +1840,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         final_chapters = list(result.chapters)
         update(
             94,
-            "古文白话两轮改编完成，正在写入最终书稿"
+            "古文逐段完整翻译完成，正在写入最终书稿"
             if generation_mode == CLASSICAL_VERNACULAR_MODE
             else "长篇质量终审通过，正在执行最终交付闸门",
         )
@@ -1903,7 +1915,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             f"叙事化非虚构新书完成：{len(final_chapters)} 章，人物、事件与观点仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
-            else f"公版古文白话改编完成：{len(final_chapters)} 个原文章节已按顺序完成两轮改编"
+            else f"公版古文完整翻译完成：{len(final_chapters)} 个原文章节已按顺序完整翻译"
             if generation_mode == CLASSICAL_VERNACULAR_MODE
             else f"全部完成：{len(final_chapters)} 章已串行落盘并通过整书质量终检"
         )
@@ -1975,7 +1987,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
             task.current_step = (
-                "古文白话本地检查未通过，已保留原稿、第一轮稿和合格章节断点"
+                "古文完整翻译检查未通过，已保留原稿和所有合格分段断点"
                 if str(cfg.get("generation_mode")) == CLASSICAL_VERNACULAR_MODE
                 else "公版长篇本地质量终检未通过，已保留规划和合格章节断点"
             )

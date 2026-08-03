@@ -86,23 +86,23 @@ class ClassicalVernacularProfilePayload(BaseModel):
     work_type: str = Field(default="古典小说", max_length=200)
     era_background: str = Field(default="保持原文时代背景，不擅自现代化", max_length=500)
     narrative_perspective: str = Field(default="保持原文叙事视角", max_length=200)
-    target_audience: str = Field(default="普通大众读者、手机阅读用户", max_length=300)
-    vernacular_level: str = Field(default="通俗易读，但不过度口语化", max_length=300)
-    adaptation_intensity: str = Field(default="中度改编", max_length=100)
-    web_fiction_ratio: str = Field(default="约15%", max_length=100)
+    target_audience: str = Field(default="现代汉语读者", max_length=300)
+    vernacular_level: str = Field(default="准确、清楚、完整的现代白话", max_length=300)
+    adaptation_intensity: str = Field(default="仅完整翻译", max_length=100)
+    web_fiction_ratio: str = Field(default="0%", max_length=100)
     language_tendency: str = Field(
-        default="通俗自然，兼具叙事感和适度文学质感", max_length=500
+        default="忠实原意，不做文学改写或风格润色", max_length=500
     )
     must_preserve: str = Field(
-        default="全部主要人物、人物关系、时代背景、关键事件、因果、线索、结果与原有章节顺序",
+        default="原文全部信息、顺序、人物、称谓、专名、数字、事件、因果与语气",
         max_length=3000,
     )
     focus_issues: str = Field(
-        default="翻译腔、对白生硬、叙述拖沓、人物扁平、场景不足、AI腔、说明腔",
+        default="漏译、错译、增译、缩写、扩写、重排、解释和续写",
         max_length=3000,
     )
     special_requirements: str = Field(
-        default="不得提前续写后续剧情；不得新增重要人物、事件、感情线、反派或支线",
+        default="只做完整翻译；不得改写、润色、扩写、缩写、重组、评论、总结或续写",
         max_length=3000,
     )
 
@@ -277,7 +277,7 @@ def _create_longform_task(
         status=TaskStatus.PENDING,
         progress=0,
         current_step=(
-            f"已接收 {len(sources)} 份公版古典原文，等待按原章节顺序进行两轮白话改编"
+            f"已接收 {len(sources)} 份公版古典原文，等待按原章节顺序逐段完整翻译"
             if classical
             else f"已接收 {len(sources)} 本来源，等待整书规划"
         ),
@@ -329,7 +329,17 @@ def _create_longform_task(
         db.commit()
         from app.tasks.tasks import process_public_domain_longform
 
-        process_public_domain_longform.delay(str(task.id))
+        if classical:
+            # A multi-million-character book may legitimately run for days.
+            # Every successful segment is checkpointed, so worker loss resumes
+            # from disk rather than resending completed paid model calls.
+            process_public_domain_longform.apply_async(
+                args=[str(task.id)],
+                time_limit=7 * 24 * 60 * 60,
+                soft_time_limit=7 * 24 * 60 * 60 - 300,
+            )
+        else:
+            process_public_domain_longform.delay(str(task.id))
     except Exception as exc:
         db.rollback()
         persisted = db.get(Task, task_id)
