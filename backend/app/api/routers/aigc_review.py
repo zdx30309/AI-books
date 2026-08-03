@@ -35,6 +35,7 @@ from app.services.aigc_report_review import (
     repair_external_green_manuscript,
     sha256_text,
 )
+from app.services.zhuque_detector_profile import get_zhuque_detector_profile
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/aigc-review", tags=["AIGC Report Review"])
@@ -135,9 +136,19 @@ class CalibrationResultRequest(BaseModel):
     report_sha256: str | None = Field(None, min_length=64, max_length=64)
 
 
+@router.get("/detector-profile", summary="读取朱雀公开模型代际元数据")
+async def get_aigc_detector_profile(
+    refresh: bool = False,
+    user: User = Depends(get_current_user),
+) -> dict:
+    _ = user
+    return await asyncio.to_thread(get_zhuque_detector_profile, force_refresh=refresh)
+
+
 @router.get("/strategy", summary="查看最低成本的当前模型路由")
-def get_aigc_review_strategy(user: User = Depends(get_current_user)) -> dict:
-    return model_strategy(user_id=str(user.id))
+async def get_aigc_review_strategy(user: User = Depends(get_current_user)) -> dict:
+    detector_profile = await asyncio.to_thread(get_zhuque_detector_profile)
+    return model_strategy(user_id=str(user.id), detector_profile=detector_profile)
 
 
 @router.post("/report", summary="本地 OCR 解析真实朱雀 PDF 并映射原稿片段")
@@ -153,13 +164,18 @@ async def parse_aigc_report(
         raise HTTPException(status_code=400, detail="请上传朱雀打印导出的 PDF 文件。")
     pdf_bytes = await file.read()
     try:
+        detector_profile = await asyncio.to_thread(get_zhuque_detector_profile)
         parsed = await asyncio.to_thread(
             parse_zhuque_report,
             pdf_bytes,
             original_text,
             filename=filename,
+            detector_profile=detector_profile,
         )
-        parsed["model_strategy"] = model_strategy(user_id=str(user.id))
+        parsed["model_strategy"] = model_strategy(
+            user_id=str(user.id),
+            detector_profile=detector_profile,
+        )
         parsed["report_storage_id"] = _store_report_pdf(user.id, pdf_bytes)
         return parsed
     except ZhuqueReportError as exc:
@@ -316,11 +332,13 @@ async def upload_aigc_calibration_report(
             sample_id=sample_id,
         )
         pdf_bytes = await file.read()
+        detector_profile = await asyncio.to_thread(get_zhuque_detector_profile)
         parsed = await asyncio.to_thread(
             parse_zhuque_report,
             pdf_bytes,
             str(sample.get("text") or ""),
             filename=filename,
+            detector_profile=detector_profile,
         )
         result = await asyncio.to_thread(
             record_calibration_report_result,
@@ -354,18 +372,26 @@ async def paired_aigc_analysis(
         modified_file.read(),
     )
     try:
+        detector_profile = await asyncio.to_thread(get_zhuque_detector_profile)
         baseline_report = await asyncio.to_thread(
             parse_zhuque_report,
             baseline_pdf,
             baseline_text,
             filename=baseline_file.filename or "baseline.pdf",
+            detector_profile=detector_profile,
         )
         modified_report = await asyncio.to_thread(
             parse_zhuque_report,
             modified_pdf,
             modified_text,
             filename=modified_file.filename or "modified.pdf",
+            detector_profile=detector_profile,
         )
+        baseline_report["model_strategy"] = model_strategy(
+            user_id=str(user.id),
+            detector_profile=detector_profile,
+        )
+        modified_report["model_strategy"] = baseline_report["model_strategy"]
         baseline_report["report_storage_id"] = _store_report_pdf(user.id, baseline_pdf)
         modified_report["report_storage_id"] = _store_report_pdf(user.id, modified_pdf)
         result = await asyncio.to_thread(
@@ -379,9 +405,7 @@ async def paired_aigc_analysis(
         )
         result["baseline_report"] = baseline_report
         result["modified_report"] = modified_report
-        result["detector_efficacy"] = model_strategy(user_id=str(user.id)).get(
-            "detector_efficacy"
-        )
+        result["detector_efficacy"] = baseline_report["model_strategy"].get("detector_efficacy")
         return result
     except ZhuqueReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

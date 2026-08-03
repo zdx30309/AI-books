@@ -450,6 +450,36 @@ export type AigcReviewContentType = "article" | "classical" | "public_domain";
 export type AigcReviewRewriteProvider = "grok" | "deepseek";
 export type AigcReviewExperimentType = "layout_only" | "syntax_constrained" | "combined" | "positive_transfer" | "detector_probe" | "human_rate_first";
 
+export interface ZhuqueDetectorProfile {
+  profile_version: string;
+  provider: "tencent_zhuque";
+  status: "available" | "stale_cache" | "unavailable";
+  model_update_at: string | null;
+  model_generation: string | null;
+  fetched_at: string;
+  detector_url: string;
+  model_update_url: string;
+  minimum_text_chars: number;
+  submission_mode: "manual_captcha_gated";
+  transport_observation: "captcha_gated_websocket";
+  scope_note: string;
+  error?: string | null;
+}
+
+export interface ZhuqueDetectorSnapshot {
+  profile_version: string;
+  provider: "tencent_zhuque";
+  status: "available" | "stale_cache" | "unavailable";
+  model_update_at: string | null;
+  model_generation: string | null;
+  fetched_at: string;
+  detector_url: string;
+  model_update_url: string;
+  scope_note: string;
+  captured_at: string;
+  provenance_basis: string;
+}
+
 export interface AigcReviewRewriteProviderStatus {
   id: AigcReviewRewriteProvider;
   label: string;
@@ -508,13 +538,18 @@ export interface AigcReviewStrategy {
   proportional_report_learning: boolean;
   style_feature_version: string;
   feature_learning_min_real_samples: number;
+  detector_profile: ZhuqueDetectorProfile | null;
   detector_efficacy: {
     status: "unproven" | "directional" | "validated";
     verified_pair_count: number;
     claim: string;
     promotion_rule: string;
+    detector_generation?: string | null;
+    excluded_cross_generation_pair_count?: number;
+    excluded_unknown_generation_sample_count?: number;
     strategies: Array<{
       experiment_type: AigcReviewExperimentType;
+      detector_generation?: string;
       status: "unproven" | "directional" | "validated";
       verified_pair_count: number;
       positive_count: number;
@@ -563,6 +598,8 @@ export interface AigcReviewReport {
   recommended_segment_ids: number[];
   segments: AigcReviewSegment[];
   warnings: string[];
+  detector_snapshot?: ZhuqueDetectorSnapshot | null;
+  detector_generation?: string | null;
   model_strategy: AigcReviewStrategy;
 }
 
@@ -878,6 +915,10 @@ export interface AigcReviewComparison {
   detector_pass: boolean;
   probe_success?: boolean | null;
   quality_pass: boolean;
+  baseline_detector_generation?: string | null;
+  recheck_detector_generation?: string | null;
+  detector_version_comparable?: boolean;
+  detector_version_reason?: string;
   segment_deltas: Array<{
     segment_id: number;
     selected: boolean;

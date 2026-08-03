@@ -40,6 +40,7 @@ from app.services.aigc_style_probe import (
 from app.services.deepseek import get_deepseek_client
 from app.services.gemini import GeminiMaxTokensError
 from app.services.gemini import generate_text as generate_gemini_text
+from app.services.zhuque_detector_profile import report_detector_snapshot
 from app.utils.distributed_limiter import distributed_semaphore
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ def parse_zhuque_report(
     *,
     filename: str = "zhuque-report.pdf",
     target_human_percent: float | None = None,
+    detector_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     original = normalize_manuscript_text(original_text)
     if not original:
@@ -288,6 +290,14 @@ def parse_zhuque_report(
     if min((item.mapping_confidence for item in segments), default=0.0) < 0.7:
         warnings.append("片段映射置信度偏低，执行前请逐块核对片段预览。")
 
+    detector_snapshot = report_detector_snapshot(detector_profile)
+    if detector_snapshot and detector_snapshot.get("model_generation"):
+        warnings.append(
+            "已记录报告上传时朱雀公开模型代际；跨代报告只可验收各自结果，不可合并为同一策略证据。"
+        )
+    else:
+        warnings.append("未取得朱雀公开模型代际；本报告可用于单稿验收，但不进入跨报告策略学习。")
+
     return {
         "policy_version": "report-driven-v5",
         "prompt_version": PROMPT_VERSION,
@@ -322,6 +332,10 @@ def parse_zhuque_report(
         "recommended_segment_ids": selected_ids,
         "segments": [item.to_dict() for item in segments],
         "warnings": warnings,
+        "detector_snapshot": detector_snapshot,
+        "detector_generation": (
+            detector_snapshot.get("model_generation") if detector_snapshot else None
+        ),
         "model_strategy": model_strategy(),
     }
 
@@ -775,6 +789,23 @@ def compare_zhuque_reports(
     if baseline_length <= 0 or recheck_length <= 0:
         raise ZhuqueReportError("报告片段坐标无效，无法比较。")
 
+    baseline_generation = str(baseline_report.get("detector_generation") or "").strip()
+    recheck_generation = str(recheck_report.get("detector_generation") or "").strip()
+    detector_version_comparable = bool(
+        baseline_generation
+        and recheck_generation
+        and baseline_generation == recheck_generation
+    )
+    detector_version_reason = (
+        "两份报告在同一朱雀公开模型代际下上传，可进行黑盒方向比较。"
+        if detector_version_comparable
+        else (
+            "两份报告记录的朱雀公开模型代际不同，只保留各自官方结果，不进行跨代效果归因。"
+            if baseline_generation and recheck_generation
+            else "至少一份报告缺少朱雀公开模型代际，只保留各自官方结果，不进入策略学习。"
+        )
+    )
+
     selected = {int(value) for value in optimize_result.get("selected_segment_ids") or []}
     result_by_segment = {
         int(item.get("segment_id")): item
@@ -922,6 +953,9 @@ def compare_zhuque_reports(
                 "停止自动追加费用，不把本轮结果冒充已证实规律。"
             )
 
+    if not detector_version_comparable:
+        recommendation_reason = f"{recommendation_reason} {detector_version_reason}"
+
     selected_rows = [row for row in rows if row["selected"]]
     comparison_id = str(uuid4())
     result = {
@@ -962,6 +996,10 @@ def compare_zhuque_reports(
         "probe_success": detector_pass if probe_mode else None,
         "quality_pass": quality_pass,
         "strict_pass": strict_pass,
+        "baseline_detector_generation": baseline_generation or None,
+        "recheck_detector_generation": recheck_generation or None,
+        "detector_version_comparable": detector_version_comparable,
+        "detector_version_reason": detector_version_reason,
         "segment_deltas": rows,
         "strategy_effectiveness": effectiveness,
         "recommended_next_strategy": recommended_next_strategy,
@@ -3166,6 +3204,7 @@ def calibration_evidence_status(
     *,
     user_id: str | None = None,
     content_type: str | None = None,
+    detector_generation: str | None = None,
 ) -> dict[str, Any]:
     """Report detector efficacy only from quality-safe, exact-hash PDF pairs."""
     promotion_rule = (
@@ -3179,17 +3218,26 @@ def calibration_evidence_status(
             "claim": "尚无当前用户的精确哈希真实复检对照，不能声称可显著提高人工特征。",
             "strategies": [],
             "promotion_rule": promotion_rule,
+            "detector_generation": detector_generation,
+            "excluded_cross_generation_pair_count": 0,
+            "excluded_unknown_generation_sample_count": 0,
         }
     samples = list_calibration_samples(user_id=user_id, limit=500)
     originals = {
-        str(item.get("text_sha256") or ""): item
+        (
+            str(item.get("text_sha256") or ""),
+            str(item.get("detector_generation") or ""),
+        ): item
         for item in samples
         if item.get("variant_type") in {"original", "human_control"}
         and item.get("learning_eligible") is True
         and item.get("verification_mode") == "pdf_exact_hash"
+        and item.get("detector_generation")
     }
-    grouped: dict[str, list[float]] = {}
-    pass_grouped: dict[str, int] = {}
+    grouped: dict[tuple[str, str], list[float]] = {}
+    pass_grouped: dict[tuple[str, str], int] = {}
+    excluded_cross_generation_pair_count = 0
+    excluded_unknown_generation_sample_count = 0
     for item in samples:
         variant = str(item.get("variant_type") or "")
         if variant not in {
@@ -3205,20 +3253,31 @@ def calibration_evidence_status(
             continue
         if content_type and item.get("content_type") != content_type:
             continue
-        baseline = originals.get(str(item.get("parent_sha256") or ""))
+        item_generation = str(item.get("detector_generation") or "")
+        if not item_generation:
+            excluded_unknown_generation_sample_count += 1
+            continue
+        if detector_generation and item_generation != detector_generation:
+            excluded_cross_generation_pair_count += 1
+            continue
+        parent_hash = str(item.get("parent_sha256") or "")
+        baseline = originals.get((parent_hash, item_generation))
         if baseline is None:
+            if any(key[0] == parent_hash for key in originals):
+                excluded_cross_generation_pair_count += 1
             continue
         before = _optional_float(baseline.get("human_percent"))
         after = _optional_float(item.get("human_percent"))
         if before is None or after is None:
             continue
-        grouped.setdefault(variant, []).append(after - before)
-        pass_grouped[variant] = pass_grouped.get(variant, 0) + int(bool(item.get("green")))
+        group_key = (variant, item_generation)
+        grouped.setdefault(group_key, []).append(after - before)
+        pass_grouped[group_key] = pass_grouped.get(group_key, 0) + int(bool(item.get("green")))
 
     rank = {"unproven": 0, "directional": 1, "validated": 2}
     best_status = "unproven"
     summaries: list[dict[str, Any]] = []
-    for variant, deltas in grouped.items():
+    for (variant, generation), deltas in grouped.items():
         positive_count = sum(value > 0 for value in deltas)
         win_rate = positive_count / len(deltas)
         median_delta = statistics.median(deltas)
@@ -3232,12 +3291,13 @@ def calibration_evidence_status(
         summaries.append(
             {
                 "experiment_type": variant,
+                "detector_generation": generation,
                 "status": status,
                 "verified_pair_count": len(deltas),
                 "positive_count": positive_count,
                 "win_rate": round(win_rate, 4),
                 "median_human_percent_delta": round(median_delta, 2),
-                "final_pass_count": pass_grouped.get(variant, 0),
+                "final_pass_count": pass_grouped.get((variant, generation), 0),
             }
         )
     claim = {
@@ -3257,6 +3317,9 @@ def calibration_evidence_status(
             ),
         ),
         "promotion_rule": promotion_rule,
+        "detector_generation": detector_generation,
+        "excluded_cross_generation_pair_count": excluded_cross_generation_pair_count,
+        "excluded_unknown_generation_sample_count": excluded_unknown_generation_sample_count,
     }
 
 
@@ -3337,10 +3400,13 @@ def record_calibration_report_result(
         "original",
         "human_control",
     }
+    detector_snapshot = parsed_report.get("detector_snapshot")
+    detector_generation = str(parsed_report.get("detector_generation") or "").strip() or None
     learning_eligible = bool(
         official_verified
         and quality_gate
         and variant_type != "external_saas"
+        and detector_generation
     )
     payload.update(
         {
@@ -3356,6 +3422,8 @@ def record_calibration_report_result(
             "learning_eligible": learning_eligible,
             "verification_mode": "pdf_exact_hash",
             "report_sha256": parsed_report.get("report_sha256"),
+            "detector_snapshot": detector_snapshot,
+            "detector_generation": detector_generation,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     )
@@ -7598,8 +7666,17 @@ def quality_audit_passed(payload: dict[str, Any] | None) -> bool:
     )
 
 
-def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
+def model_strategy(
+    *,
+    user_id: str | None = None,
+    detector_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     default_provider = "deepseek"
+    detector_generation = (
+        str(detector_profile.get("model_generation") or "").strip()
+        if isinstance(detector_profile, dict)
+        else ""
+    )
     return {
         "default_rewrite_provider": default_provider,
         "rewrite_model": _rewrite_model_for_provider(default_provider),
@@ -7647,7 +7724,11 @@ def model_strategy(*, user_id: str | None = None) -> dict[str, Any]:
         "default_calibration_budget_cny": float(settings.AIGC_REVIEW_CALIBRATION_BUDGET_CNY),
         "style_feature_version": STYLE_FEATURE_VERSION,
         "feature_learning_min_real_samples": 5,
-        "detector_efficacy": calibration_evidence_status(user_id=user_id),
+        "detector_profile": detector_profile,
+        "detector_efficacy": calibration_evidence_status(
+            user_id=user_id,
+            detector_generation=detector_generation or None,
+        ),
         "audit_scope": "bounded_editorial_units_issue_first",
         "proportional_report_learning": False,
         "ocr": "local_only_zero_api_cost",
@@ -7683,7 +7764,7 @@ def _normalize_rewrite_provider(provider: str | None) -> str:
 def _rewrite_model_for_provider(provider: str) -> str:
     if provider == "grok":
         return (settings.AIGC_REVIEW_GROK_MODEL or "grok-4.5").strip()
-    return (settings.AIGC_REVIEW_REWRITE_MODEL or "deepseek-v4-pro").strip()
+    return (settings.AIGC_REVIEW_REWRITE_MODEL or "deepseek-v4-flash").strip()
 
 
 def _rewrite_reasoning_for_provider(provider: str) -> str:

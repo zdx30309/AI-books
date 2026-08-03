@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import inspect
 
+from app.core.config import Settings
 from app.prompts.family_long_novel_prompts import (
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
+    ZHOULI_DEEPSEEK_COPYEDIT_PROMPT,
     ZHOULI_EDITORIAL_POLISH_PROMPT,
+    ZHOULI_NARRATIVE_AUDIT_PROMPT,
+    ZHOULI_NARRATIVE_REPAIR_PROMPT,
     ZHOULI_REPAIR_PROMPT,
     ZHOULI_TYPOGRAPHY_REPAIR_PROMPT,
 )
-from app.services import family_long_novel
+from app.services import deepseek, family_long_novel, gemini
 from app.services.family_long_novel_prose_quality import (
     inspect_editorial_candidate,
     inspect_family_novel_prose,
@@ -75,6 +79,52 @@ def test_family_prompts_cover_character_depth_typos_and_punctuation() -> None:
     assert "不机械替换同义词" in ZHOULI_TYPOGRAPHY_REPAIR_PROMPT
     assert "错别字、同音字误用" in ZHOULI_CONTINUITY_CHECK_PROMPT
     assert "人物刻画、错别字、病句和标点问题" in ZHOULI_REPAIR_PROMPT
+    assert "居委会" in ZHOULI_NARRATIVE_AUDIT_PROMPT
+    assert "核心利益" in ZHOULI_NARRATIVE_REPAIR_PROMPT
+    assert "不得新增新闻" in ZHOULI_DEEPSEEK_COPYEDIT_PROMPT
+
+
+def test_fabricated_files_and_media_sources_are_blocked() -> None:
+    text = "她把proof_03.png发进群里。据《中国青年报》报道，这笔钱已经有了结论。"
+    issue_types = {item["issueType"] for item in inspect_family_novel_prose(text)}
+
+    assert "unsupported_external_artifact" in issue_types
+
+
+def test_repeated_model_cues_and_negative_parallelism_are_blocked() -> None:
+    text = "\n".join(
+        [
+            "她声音不大，却让桌边的人都停了筷子。",
+            "周建国声音不大，只问存折去了哪里。",
+            "陈玉兰声音不大，把门重新关好。",
+            "不是她不肯给，是小儿子一直拖着。",
+            "不是钱没到，是名字还没改。",
+            "不是老人偏心，是儿子会哄。",
+            "不是没人养老，是谁都不肯先开口。",
+            "不是账算不清，是有人不想算清。",
+        ]
+    )
+    issue_types = {item["issueType"] for item in inspect_family_novel_prose(text)}
+
+    assert "repeated_model_cue" in issue_types
+    assert "repeated_negative_parallelism" in issue_types
+
+
+def test_duplicate_sentences_and_repeated_accounting_are_blocked() -> None:
+    sentence = "陈玉兰把借条压在碗底，等所有人坐齐后才推到桌子中央。"
+    text = f"{sentence}\n{sentence}\n" + "40800元。" * 5
+    issue_types = {item["issueType"] for item in inspect_family_novel_prose(text)}
+
+    assert "duplicate_sentence" in issue_types
+    assert "repeated_accounting_anchor" in issue_types
+
+
+def test_editorial_candidate_cannot_add_external_evidence() -> None:
+    original = "陈玉兰把原来的借条放在桌上，问两个儿子谁来偿还。"
+    candidate = "陈玉兰把原来的借条放在桌上，又把recording.mp3发进群里，问两个儿子谁来偿还。"
+    issue_types = {item["issueType"] for item in inspect_editorial_candidate(original, candidate)}
+
+    assert "fabricated_external_evidence" in issue_types
 
 
 def test_editorial_gate_runs_before_aigc_and_state_extraction() -> None:
@@ -82,6 +132,16 @@ def test_editorial_gate_runs_before_aigc_and_state_extraction() -> None:
 
     assert source.index("_editorial_polish_family_chapter") < source.index("_apply_family_aigc_gate")
     assert source.index("_editorial_polish_family_chapter") < source.index("extract_family_chapter_state")
+
+
+def test_editorial_pipeline_uses_three_models_in_bounded_order() -> None:
+    source = inspect.getsource(family_long_novel._editorial_polish_family_chapter)
+
+    assert source.index("gemini_audit_family_chapter_draft") < source.index("gpt56_repair_family_narrative")
+    assert source.index("gpt56_repair_family_narrative") < source.index("deepseek_copyedit_family_chapter")
+    assert source.index("deepseek_copyedit_family_chapter") < source.index("gemini_verify_family_chapter_final")
+    assert source.count("gpt56_repair_family_narrative") == 1
+    assert source.count("deepseek_copyedit_family_chapter") == 1
 
 
 def test_writer_draft_is_preserved_until_editorial_gate() -> None:
@@ -96,3 +156,27 @@ def test_export_has_last_mechanical_prose_gate() -> None:
 
     assert "inspect_family_novel_prose" in source
     assert "已阻止导出" in source
+
+
+def test_requested_writer_and_specialist_model_defaults() -> None:
+    fields = Settings.model_fields
+
+    assert fields["OPENAI_WRITER_MODEL"].default == "gpt-5.6-sol"
+    assert fields["OPENAI_WRITER_REASONING_EFFORT"].default == "xhigh"
+    assert fields["GEMINI_MODEL"].default == "gemini-3.6-flash"
+    assert fields["DEEPSEEK_MODEL"].default == "deepseek-v4-flash"
+
+
+def test_gemini_36_does_not_send_deprecated_temperature() -> None:
+    source = inspect.getsource(gemini.generate_text)
+
+    assert "if temperature is not None and not uses_new_controls" in source
+    assert "thinkingLevel=types.ThinkingLevel" in source
+
+
+def test_family_copyedit_disables_deepseek_v4_thinking_mode() -> None:
+    specialist_source = inspect.getsource(family_long_novel._call_specialist_text)
+    client_source = inspect.getsource(deepseek.generate_text)
+
+    assert "thinking=False" in specialist_source
+    assert '"thinking": {"type": "enabled" if thinking else "disabled"}' in client_source

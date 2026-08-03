@@ -4458,7 +4458,7 @@ def _openai_finance_web_search_call(prompt: str) -> str:
     if not _resolve_openai_api_key():
         raise RuntimeError("财经科技联网检索需要 OPENAI_API_KEY，不能在没有联网检索的情况下生成财经科技稿件")
 
-    model = (settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
+    model = (settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.6-sol").strip()
     context_size = (settings.FINANCE_WEB_SEARCH_CONTEXT_SIZE or "medium").strip().lower()
     if context_size not in {"low", "medium", "high"}:
         context_size = "medium"

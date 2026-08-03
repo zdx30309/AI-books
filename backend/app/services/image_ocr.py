@@ -32,7 +32,7 @@ def ocr_image_bytes(content: bytes, *, filename: str = "") -> str:
         raise ImageOcrError("图片文件为空。")
     image_bytes, mime_type = _normalize_image(content)
     encoded = base64.b64encode(image_bytes).decode("ascii")
-    model = (settings.OPENAI_OCR_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
+    model = (settings.OPENAI_OCR_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.6-sol").strip()
     client = _openai_ocr_client()
     prompt = (
         "请对这张图片做高精度中文 OCR，只提取图片里的正文文字。\n"

@@ -1,4 +1,4 @@
-# AI 审稿降率：报告驱动 v5.6
+# AI 审稿降率：报告驱动 v5.7
 
 本文档只描述独立“AI 审稿降率”页面的 `report-driven-v5` 链路。
 
@@ -6,6 +6,19 @@
 - 不处理小说、家长里短长篇或 Epic Novel Engine。
 - 不重检、不改写、不回填任何历史已完成任务。
 - 不声称逆向朱雀内部算法；只做真实报告支持的黑盒差分实验。
+
+## 检测器版本漂移隔离
+
+朱雀公开 `/model/update_time` 在 2026-07-30 返回 `2026-07-21T12:22:05.000Z`，晚于本文件中 7 月 17–18 日的大多数真实实验。旧报告继续作为历史结果保留，但不自动进入当前代际策略晋级。
+
+- 报告上传时记录公开模型代际快照；这只是上传时公开元数据，不冒充 PDF 内嵌模型版本。
+- 校准证据按 `实验类型 + detector_generation` 分组。
+- 跨代或未知代际样本不合并为 `directional / validated`。
+- 两份报告代际不同时仍可分别用于单稿验收，但差值不用于效果归因。
+- 公开元数据接口不可用时，PDF 解析与单稿验收继续；跨报告策略学习暂停合并。
+- 页面显示当前公开更新时间与代际 ID。
+
+完整审计见 `docs/AIGC_ZHUQUE_BLACK_BOX_AUDIT_2026-07-30.md`。
 
 ## 自动通过标准
 
@@ -219,6 +232,9 @@ AIGC_REVIEW_MAX_REWRITE_ATTEMPTS=1
 AIGC_REVIEW_AUDIT_BATCH_UNITS=1
 AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS=6000
 AIGC_REVIEW_RUN_BUDGET_CNY=0.30
+AIGC_REVIEW_ZHUQUE_BASE_URL=https://matrix.tencent.com
+AIGC_REVIEW_ZHUQUE_PROFILE_TIMEOUT_SECONDS=12
+AIGC_REVIEW_ZHUQUE_PROFILE_CACHE_SECONDS=3600
 ```
 
 `positive_transfer` 的历史 `¥20` 默认上限不再用于生产调用；绿色稿全稿质量修复由请求显式提供 `0.05–20` 元上限，前端默认 `¥2.00`。

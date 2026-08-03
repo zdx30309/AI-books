@@ -61,7 +61,7 @@ PREVIEW_DEFAULT_TARGET_CHARS = 10_000
 PREVIEW_MIN_CHAPTERS = 2
 PREVIEW_MAX_CHAPTERS = 4
 PREVIEW_DEFAULT_CHAPTERS = 3
-PREVIEW_DEEPSEEK_MODEL = "deepseek-chat"
+PREVIEW_DEEPSEEK_MODEL = "deepseek-v4-flash"
 PREVIEW_PRIMARY_BATCH_SIZE = 8
 PREVIEW_MAX_DISCOVERY_CANDIDATES = 96
 PREVIEW_MIN_VERIFIED_CLAIMS = 18
@@ -1947,7 +1947,7 @@ def _call_openai_primary_verifier(
 
     if not _resolve_openai_api_key():
         raise PublicDomainQualityError("古代原典联网核验需要 OPENAI_API_KEY；没有核验结果时禁止生成。")
-    model = str(settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
+    model = str(settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.6-sol").strip()
     started = time.monotonic()
     log: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),

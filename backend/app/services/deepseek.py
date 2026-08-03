@@ -57,6 +57,7 @@ def generate_text(
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     system_instruction: str | None = None,
+    thinking: bool | None = None,
     fail_on_max_tokens: bool = False,
     on_progress: Callable[[int], None] | None = None,
 ) -> str:
@@ -73,8 +74,13 @@ def generate_text(
     }
     if max_output_tokens is not None and int(max_output_tokens) > 0:
         kwargs["max_tokens"] = int(max_output_tokens)
+    if thinking is not None:
+        kwargs["extra_body"] = {
+            "thinking": {"type": "enabled" if thinking else "disabled"}
+        }
 
     chunks: list[str] = []
+    reasoning_chars = 0
     generated_chars = 0
     stopped_by_max_tokens = False
     try:
@@ -87,6 +93,9 @@ def generate_text(
                 if not event.choices:
                     continue
                 delta = event.choices[0].delta
+                reasoning_piece = getattr(delta, "reasoning_content", None)
+                if reasoning_piece:
+                    reasoning_chars += len(reasoning_piece)
                 piece = getattr(delta, "content", None)
                 if piece:
                     chunks.append(piece)
@@ -111,7 +120,11 @@ def generate_text(
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
     if not content:
-        raise ValueError("DeepSeek 返回空响应")
+        raise ValueError(
+            "DeepSeek 返回空正文"
+            f"（thinking={'default' if thinking is None else thinking}, "
+            f"reasoning_chars={reasoning_chars}, max_tokens={max_output_tokens}）"
+        )
     if stopped_by_max_tokens and fail_on_max_tokens:
         raise DeepSeekMaxTokensError(content, max_output_tokens)
     return content

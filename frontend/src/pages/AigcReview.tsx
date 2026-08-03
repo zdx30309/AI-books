@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BookMarked,
@@ -21,6 +21,7 @@ import type {
   AigcReviewPairedAnalysis,
   AigcReviewReport,
   AigcReviewRewriteProvider,
+  AigcReviewStrategy,
   ExternalGreenRepairResult,
 } from "@/api/types";
 
@@ -92,6 +93,15 @@ export function AigcReview() {
   const [optimizing, setOptimizing] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [error, setError] = useState("");
+  const [pageStrategy, setPageStrategy] = useState<AigcReviewStrategy | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getAigcReviewStrategy()
+      .then((value) => { if (active) setPageStrategy(value); })
+      .catch(() => { if (active) setPageStrategy(null); });
+    return () => { active = false; };
+  }, []);
 
   const selectedShare = useMemo(
     () =>
@@ -124,6 +134,10 @@ export function AigcReview() {
     && greenRecheck.source_match_verified
     && (greenRecheck.official_human_percent ?? 0) >= 25,
   );
+  const detectorProfile = report?.model_strategy.detector_profile
+    ?? pairAnalysis?.modified_report.model_strategy.detector_profile
+    ?? pageStrategy?.detector_profile
+    ?? null;
 
   const analyzeGreenPair = async () => {
     if (!originalPairFile || !greenPairFile || !originalText.trim() || !greenText.trim()) {
@@ -346,6 +360,24 @@ export function AigcReview() {
           <Link to="/aigc-review/bookshelf" className="btn-ghost inline-flex items-center justify-center gap-2">
             <BookMarked className="h-4 w-4" />进入 AI 审稿书架
           </Link>
+        </div>
+      </section>
+
+      <section className={`rounded-xl border p-4 text-sm leading-6 ${detectorProfile?.model_generation ? "border-sky-400/25 bg-sky-500/8 text-sky-100" : "border-amber-400/25 bg-amber-500/8 text-amber-100"}`}>
+        <div className="flex items-start gap-3">
+          <RefreshCw className="mt-1 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">朱雀检测器代际隔离</div>
+            {detectorProfile?.model_generation ? (
+              <>
+                <div>公开模型更新时间：{detectorProfile.model_update_at ? new Date(detectorProfile.model_update_at).toLocaleString("zh-CN", { hour12: false }) : "未知"}</div>
+                <div className="break-all text-xs opacity-80">代际：{detectorProfile.model_generation}</div>
+                <div className="mt-1 text-xs opacity-80">旧代际、未知代际和当前代际的 A/B 报告分别统计；旧结论不会自动晋升为当前有效策略。</div>
+              </>
+            ) : (
+              <div>当前未取得朱雀公开模型更新时间。单稿 PDF 仍可验收，但跨报告策略证据暂停合并。</div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -908,6 +940,11 @@ export function AigcReview() {
                     <div className="mt-2 text-sm text-warm-300">首页官方人工特征 {recheck.official_human_percent == null ? "未可靠识别" : `${recheck.official_human_percent.toFixed(2)}%`} · 要求 ≥25%</div>
                     {resultIsProbe && comparison && <div className="mt-1 text-xs text-warm-400">相比基线 {comparison.human_percent_delta >= 0 ? "+" : ""}{comparison.human_percent_delta.toFixed(2)} 个百分点 · 质量验收 {comparison.quality_pass ? "已通过" : "未通过"}</div>}
                     <div className="mt-1 text-xs text-warm-400">报告正文与候选匹配 {Math.round(recheck.source_match_confidence * 100)}% · {recheck.source_match_verified ? "已确认同稿" : "未确认同稿，禁止下载"}</div>
+                    {comparison && comparison.detector_version_comparable === false && (
+                      <div className="mt-2 rounded-md border border-amber-400/20 bg-amber-500/8 px-3 py-2 text-xs leading-5 text-amber-100">
+                        {comparison.detector_version_reason || "两份报告缺少同代际证明，本次差值不进入策略学习。"}
+                      </div>
+                    )}
                   </div>}
                   {comparison && !resultIsProbe && !comparison.strict_pass && comparison.recommended_next_strategy && (
                     <button type="button" onClick={() => optimize(comparison.recommended_next_strategy, true)} disabled={optimizing} className="btn-ghost mt-4 inline-flex w-full items-center justify-center gap-2 disabled:opacity-45">

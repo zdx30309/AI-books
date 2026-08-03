@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_HTTPS_PROXY: str = ""
-    OPENAI_WRITER_MODEL: str = "gpt-5.5"
+    OPENAI_WRITER_MODEL: str = "gpt-5.6-sol"
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 0
@@ -103,12 +103,12 @@ class Settings(BaseSettings):
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
-    OPENAI_AUDITOR_MODEL: str = "gpt-5.5"
+    OPENAI_AUDITOR_MODEL: str = "gpt-5.6-sol"
 
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
@@ -130,12 +130,13 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_LOCATION: str = "global"
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_HTTPS_PROXY: str = ""
-    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
     GEMINI_MAX_RETRIES: int = 5
     GEMINI_THINKING_BUDGET: int = 0
+    GEMINI_THINKING_LEVEL: str = "medium"
     GEMINI_MAX_CONCURRENT_CALLS: int = 8
     GEMINI_POLISH_CONCURRENCY: int = 1
     GEMINI_POLISH_CALL_TIMEOUT: int = 0
@@ -164,7 +165,7 @@ class Settings(BaseSettings):
 
     # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
     AIGC_REVIEW_REWRITE_PROVIDER: str = "deepseek"
-    AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-pro"
+    AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-flash"
     AIGC_REVIEW_GROK_MODEL: str = "grok-4.5"
     AIGC_REVIEW_GROK_REASONING_EFFORT: str = "low"
     AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS: int = 12_000
@@ -172,7 +173,7 @@ class Settings(BaseSettings):
     AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M: float = 0.5
     AIGC_REVIEW_GROK_OUTPUT_USD_PER_M: float = 6.0
     AIGC_REVIEW_USD_CNY_RATE: float = 7.2
-    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
+    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.6-flash"
     AIGC_REVIEW_MAX_REWRITE_ATTEMPTS: int = 1
     AIGC_REVIEW_HUMAN_TARGET: float = 25.0
     AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS: int = 600
@@ -189,6 +190,9 @@ class Settings(BaseSettings):
     AIGC_REVIEW_OCR_SCALE: float = 1.5
     AIGC_REVIEW_OCR_RETRY_SCALE: float = 2.2
     AIGC_REVIEW_OCR_MAX_SCAN_PAGES: int = 6
+    AIGC_REVIEW_ZHUQUE_BASE_URL: str = "https://matrix.tencent.com"
+    AIGC_REVIEW_ZHUQUE_PROFILE_TIMEOUT_SECONDS: float = 12.0
+    AIGC_REVIEW_ZHUQUE_PROFILE_CACHE_SECONDS: int = 3_600
 
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
@@ -305,9 +309,13 @@ class Settings(BaseSettings):
     LONG_NOVEL_CHEAP_MODEL: str = ""
     LONG_NOVEL_MAX_PROJECT_COST: float = 0.0
     LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT: int = 1
-    LONG_NOVEL_INPUT_COST_PER_1M: float = 0.0
-    LONG_NOVEL_CACHED_INPUT_COST_PER_1M: float = 0.0
-    LONG_NOVEL_OUTPUT_COST_PER_1M: float = 0.0
+    LONG_NOVEL_INPUT_COST_PER_1M: float = 5.0
+    LONG_NOVEL_CACHED_INPUT_COST_PER_1M: float = 0.5
+    LONG_NOVEL_OUTPUT_COST_PER_1M: float = 30.0
+    LONG_NOVEL_GEMINI_INPUT_COST_PER_1M: float = 1.5
+    LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M: float = 7.5
+    LONG_NOVEL_DEEPSEEK_INPUT_COST_PER_1M: float = 0.14
+    LONG_NOVEL_DEEPSEEK_OUTPUT_COST_PER_1M: float = 0.28
     LONG_NOVEL_PROCESSING_MODE: str = "flex"
     LONG_NOVEL_FLEX_BACKGROUND: bool = True
     LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD: bool = True

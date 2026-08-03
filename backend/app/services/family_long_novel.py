@@ -14,6 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from tenacity import stop_after_attempt
 
 from app.core.config import PROJECT_ROOT, settings
 from app.models import (
@@ -43,12 +44,13 @@ from app.prompts.family_long_novel_prompts import (
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
-    ZHOULI_EDITORIAL_POLISH_PROMPT,
+    ZHOULI_DEEPSEEK_COPYEDIT_PROMPT,
+    ZHOULI_NARRATIVE_AUDIT_PROMPT,
+    ZHOULI_NARRATIVE_REPAIR_PROMPT,
     ZHOULI_OUTLINE_PROMPT,
     ZHOULI_QUALITY_CHECK_PROMPT,
     ZHOULI_REPAIR_PROMPT,
     ZHOULI_STATE_EXTRACT_PROMPT,
-    ZHOULI_TYPOGRAPHY_REPAIR_PROMPT,
     render_prompt,
 )
 from app.prompts.novel_quality_prompts import GENERAL_NOVEL_PROSE_GUARDRAILS
@@ -58,7 +60,7 @@ from app.schemas.long_novel import (
     LongNovelAssistRequest,
     LongNovelAssistResponse,
 )
-from app.services import content_engine
+from app.services import content_engine, deepseek, gemini
 from app.services.aigc_quality_gate import (
     AIGC_POLICY_VERSION,
     AigcManualReviewRequired,
@@ -320,7 +322,15 @@ def _chapter_prompt_cache_key(project_id: UUID, chapter_number: int) -> str:
 
 def _long_novel_processing_policy() -> tuple[str | None, bool, str | None]:
     mode = str(settings.LONG_NOVEL_PROCESSING_MODE or "standard").strip().lower()
-    if mode != "flex" or (settings.WRITER_PROVIDER or "openai").lower() != "openai":
+    if (settings.WRITER_PROVIDER or "openai").lower() != "openai":
+        return None, False, None
+    # Standard-background keeps normal-priority processing while avoiding one
+    # long-lived HTTP connection through the deployment proxy.  The Responses
+    # API returns an id quickly and is then polled, so a three-minute proxy idle
+    # timeout cannot discard an otherwise valid long-form result.
+    if mode in {"background", "standard_background", "standard-background"}:
+        return None, True, None
+    if mode != "flex":
         return None, False, None
     fallback = "auto" if settings.LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD else None
     return "flex", bool(settings.LONG_NOVEL_FLEX_BACKGROUND), fallback
@@ -456,7 +466,11 @@ def _chapter_word_tolerance(project: LongNovelProject) -> int:
 
 def _outline_max_output_tokens(project: LongNovelProject) -> int:
     target = max(1, min(80, int(project.target_chapters or 50)))
-    return min(32000, max(10000, 5000 + target * 900))
+    # GPT-5.6 Sol xhigh counts internal reasoning against max_output_tokens.
+    # A 50-chapter JSON outline needs enough room for both that reasoning and
+    # the complete structured payload; otherwise the API can return a useful
+    # but truncated object that must never be persisted or paid for twice.
+    return min(80000, max(32000, 16000 + target * 1100))
 
 
 def _chapter_write_max_output_tokens(project: LongNovelProject) -> int:
@@ -659,6 +673,103 @@ def _call_text(
         prompt_cache_key=prompt_cache_key,
         reasoning_effort=reasoning_effort,
     ).strip()
+
+
+def _specialist_cost(
+    *,
+    provider: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> float:
+    if provider == "gemini":
+        input_rate = float(settings.LONG_NOVEL_GEMINI_INPUT_COST_PER_1M or 0.0)
+        output_rate = float(settings.LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M or 0.0)
+    elif provider == "deepseek":
+        input_rate = float(settings.LONG_NOVEL_DEEPSEEK_INPUT_COST_PER_1M or 0.0)
+        output_rate = float(settings.LONG_NOVEL_DEEPSEEK_OUTPUT_COST_PER_1M or 0.0)
+    else:
+        return 0.0
+    return round(
+        ((max(0, prompt_tokens) * input_rate) + (max(0, completion_tokens) * output_rate))
+        / 1_000_000,
+        8,
+    )
+
+
+def _call_specialist_text(
+    db: Session,
+    *,
+    project_id: UUID,
+    chapter_number: int,
+    action: str,
+    provider: str,
+    model: str,
+    prompt: str,
+    max_output_tokens: int,
+) -> str:
+    """Call one bounded specialist pass and keep it in the normal cost ledger."""
+
+    log = LongNovelGenerationLog(
+        project_id=project_id,
+        chapter_number=chapter_number,
+        action=action,
+        provider=provider,
+        model=model,
+        prompt_tokens=max(1, len(prompt) // 4),
+        prompt_prefix_hash=_prompt_prefix_hash(prompt),
+        status="started",
+    )
+    db.add(log)
+    db.commit()
+    try:
+        if provider == "gemini":
+            output = gemini.generate_text(
+                prompt,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                retries=1,
+            )
+        elif provider == "deepseek":
+            # Copy editing is intentionally single-shot. A model-side content
+            # retry could charge twice while producing two different books.
+            generator = deepseek.generate_text.retry_with(stop=stop_after_attempt(1))
+            output = generator(
+                prompt,
+                model=model,
+                temperature=0.0,
+                max_output_tokens=max_output_tokens,
+                # V4 Flash defaults to thinking mode.  A deterministic copy
+                # edit needs the final prose, not a reasoning trace that can
+                # consume the whole output budget before content begins.
+                thinking=False,
+                fail_on_max_tokens=True,
+            )
+        else:
+            raise FamilyLongNovelError(f"不支持的长篇专项模型提供方：{provider}")
+    except Exception as exc:
+        log.status = "failed"
+        log.error = str(exc)[:2000]
+        db.add(log)
+        db.commit()
+        raise
+    output = str(output or "").strip()
+    if not output:
+        log.status = "failed"
+        log.error = "specialist model returned empty text"
+        db.add(log)
+        db.commit()
+        raise FamilyLongNovelError(f"{provider} 专项模型返回空文本")
+    completion_tokens = max(1, len(output) // 4)
+    log.status = "completed"
+    log.completion_tokens = completion_tokens
+    log.estimated_cost = _specialist_cost(
+        provider=provider,
+        prompt_tokens=log.prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    db.add(log)
+    db.commit()
+    return output
 
 
 def _mark_project_generating(db: Session, project: LongNovelProject) -> None:
@@ -900,7 +1011,10 @@ def generate_family_novel_bible(
             action="generate_bible",
             tier="strong",
             prompt=prompt,
-            max_output_tokens=24000,
+            # The xhigh planner can spend 10k+ output tokens on reasoning before
+            # emitting the family graph.  Keep one bounded call, but size it so the
+            # JSON finishes instead of triggering a second paid attempt.
+            max_output_tokens=48000,
             prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except Exception:
@@ -3302,6 +3416,13 @@ _EDITORIAL_ISSUE_TYPES = {
     "dialogue_punctuation_outside_quote",
     "stray_punctuation",
     "overlong_unpunctuated_sentence",
+    "unsupported_external_artifact",
+    "fabricated_external_evidence",
+    "repeated_model_cue",
+    "repeated_negative_parallelism",
+    "duplicate_sentence",
+    "repeated_accounting_anchor",
+    "narrative_quality_gate",
     "editorial_length_drift",
     "critical_anchor_changed",
 }
@@ -3342,16 +3463,118 @@ def _set_editorial_report(
     source: str,
     candidate: str,
     issues: list[dict[str, str]],
+    initial_audit: dict[str, Any] | None = None,
+    final_audit: dict[str, Any] | None = None,
+    copyedit_fallback: bool = False,
 ) -> None:
     report = dict(chapter.aigc_report or {})
     report["editorialQuality"] = {
-        "policyVersion": "family-prose-v1",
+        "policyVersion": "family-prose-v2-three-model",
         "status": status,
         "sourceSha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "candidateSha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
         "issues": compact_issue_payload(issues),
+        "models": {
+            "writer": settings.OPENAI_WRITER_MODEL,
+            "writerReasoningEffort": "xhigh",
+            "narrativeAuditor": settings.GEMINI_MODEL,
+            "copyEditor": settings.DEEPSEEK_MODEL,
+        },
+        "initialNarrativeAudit": _compact_narrative_audit(initial_audit),
+        "finalNarrativeAudit": _compact_narrative_audit(final_audit),
+        "copyeditFallback": copyedit_fallback,
     }
     chapter.aigc_report = report
+
+
+def _compact_narrative_audit(audit: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not audit:
+        return None
+    issues: list[dict[str, str]] = []
+    for item in _as_list(audit.get("issues"))[:12]:
+        payload = _as_dict(item)
+        issues.append(
+            {
+                "severity": str(payload.get("severity") or "medium")[:16],
+                "issueType": str(payload.get("issueType") or "narrative")[:80],
+                "evidence": str(payload.get("evidence") or "")[:500],
+                "requiredFix": str(payload.get("requiredFix") or "")[:500],
+            }
+        )
+    return {
+        "approved": audit.get("approved") is True,
+        "issues": issues,
+        "coreStakeStatus": str(audit.get("coreStakeStatus") or "")[:40],
+        "distinctCharacterVoices": audit.get("distinctCharacterVoices") is True,
+        "unsupportedAdditions": [str(item)[:300] for item in _as_list(audit.get("unsupportedAdditions"))[:12]],
+    }
+
+
+def _narrative_audit_issues(audit: dict[str, Any] | None) -> list[dict[str, str]]:
+    if not audit:
+        return [
+            {
+                "severity": "severe",
+                "issueType": "narrative_quality_gate",
+                "description": "剧情审稿结果为空。",
+                "evidence": "",
+                "suggestedFix": "重新执行本章剧情审稿。",
+            }
+        ]
+    result: list[dict[str, str]] = []
+    for item in _as_list(audit.get("issues"))[:12]:
+        payload = _as_dict(item)
+        severity = str(payload.get("severity") or "medium").lower()
+        if severity not in {"medium", "high", "severe"}:
+            continue
+        result.append(
+            {
+                "severity": severity,
+                "issueType": "narrative_quality_gate",
+                "description": str(payload.get("issueType") or "剧情与人物质量未通过")[:400],
+                "evidence": str(payload.get("evidence") or "")[:1200],
+                "suggestedFix": str(payload.get("requiredFix") or "")[:1200],
+            }
+        )
+    if audit.get("approved") is not True and not result:
+        result.append(
+            {
+                "severity": "high",
+                "issueType": "narrative_quality_gate",
+                "description": "Gemini 终审未批准本章剧情与人物质量。",
+                "evidence": str(audit.get("coreStakeStatus") or "")[:200],
+                "suggestedFix": "从章节修复入口处理，不自动重复付费生成。",
+            }
+        )
+    return result
+
+
+def _run_family_narrative_audit(
+    db: Session,
+    project: LongNovelProject,
+    chapter: LongNovelChapter,
+    *,
+    chapter_context: str,
+    chapter_text: str,
+    action: str,
+) -> dict[str, Any]:
+    prompt = render_prompt(
+        ZHOULI_NARRATIVE_AUDIT_PROMPT,
+        chapter_context=chapter_context,
+        chapter_text=chapter_text,
+    )
+    return _json_loads(
+        _call_specialist_text(
+            db,
+            project_id=project.id,
+            chapter_number=chapter.chapter_number,
+            action=action,
+            provider="gemini",
+            model=settings.GEMINI_MODEL,
+            prompt=prompt,
+            max_output_tokens=8000,
+        )
+    )
 
 
 def _editorial_polish_family_chapter(
@@ -3391,33 +3614,25 @@ def _editorial_polish_family_chapter(
             db.commit()
             return chapter
 
-    prompt = render_prompt(
-        ZHOULI_EDITORIAL_POLISH_PROMPT,
-        chapter_context=_context_prompt_json(context, "editorial_polish"),
+    chapter_context = _context_prompt_json(context, "editorial_polish")
+    initial_audit = _run_family_narrative_audit(
+        db,
+        project,
+        chapter,
+        chapter_context=chapter_context,
         chapter_text=source,
+        action="gemini_audit_family_chapter_draft",
     )
-    prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
-    candidate = normalize_family_novel_prose(
-        _call_text(
-            db,
-            project_id=project.id,
-            chapter_number=chapter.chapter_number,
-            action="editorial_polish_chapter",
-            tier="default",
-            prompt=prompt,
-            max_output_tokens=_chapter_write_max_output_tokens(project),
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter.chapter_number),
-            reasoning_effort="high",
-        )
-    )
-    issues = inspect_editorial_candidate(source, candidate)
-    if issues:
+    candidate = source
+    if initial_audit.get("approved") is not True or _as_list(initial_audit.get("issues")):
         repair_prompt = render_prompt(
-            ZHOULI_TYPOGRAPHY_REPAIR_PROMPT,
-            issues_json=_json_dumps(compact_issue_payload(issues)),
-            original_text=source,
-            chapter_text=candidate,
+            ZHOULI_NARRATIVE_REPAIR_PROMPT,
+            chapter_context=chapter_context,
+            audit_json=_json_dumps(_compact_narrative_audit(initial_audit)),
+            chapter_text=source,
+        )
+        repair_prompt = (
+            f"{repair_prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
         )
         repair_prompt = _with_project_cache_prefix(context, repair_prompt)
         candidate = normalize_family_novel_prose(
@@ -3425,15 +3640,55 @@ def _editorial_polish_family_chapter(
                 db,
                 project_id=project.id,
                 chapter_number=chapter.chapter_number,
-                action="repair_chapter_typography",
-                tier="default",
+                action="gpt56_repair_family_narrative",
+                tier="strong",
                 prompt=repair_prompt,
                 max_output_tokens=_chapter_write_max_output_tokens(project),
                 prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter.chapter_number),
-                reasoning_effort="high",
+                reasoning_effort="xhigh",
             )
         )
-        issues = inspect_editorial_candidate(source, candidate)
+
+    before_copyedit = candidate
+    copyedit_prompt = render_prompt(
+        ZHOULI_DEEPSEEK_COPYEDIT_PROMPT,
+        chapter_context=chapter_context,
+        chapter_text=before_copyedit,
+    )
+    deepseek_candidate = normalize_family_novel_prose(
+        _call_specialist_text(
+            db,
+            project_id=project.id,
+            chapter_number=chapter.chapter_number,
+            action="deepseek_copyedit_family_chapter",
+            provider="deepseek",
+            model=settings.DEEPSEEK_MODEL,
+            prompt=copyedit_prompt,
+            max_output_tokens=_chapter_write_max_output_tokens(project),
+        )
+    )
+    before_copyedit_issues = inspect_editorial_candidate(source, before_copyedit)
+    issues = inspect_editorial_candidate(source, deepseek_candidate)
+    copyedit_fallback = False
+    if issues and not before_copyedit_issues:
+        # DeepSeek is a copy editor, never a license to damage a safe draft.
+        candidate = before_copyedit
+        issues = []
+        copyedit_fallback = True
+    else:
+        candidate = deepseek_candidate
+
+    final_audit: dict[str, Any] | None = None
+    if not issues:
+        final_audit = _run_family_narrative_audit(
+            db,
+            project,
+            chapter,
+            chapter_context=chapter_context,
+            chapter_text=candidate,
+            action="gemini_verify_family_chapter_final",
+        )
+        issues.extend(_narrative_audit_issues(final_audit))
 
     chapter.content = candidate
     chapter.pre_aigc_content = candidate
@@ -3447,6 +3702,9 @@ def _editorial_polish_family_chapter(
             source=source,
             candidate=candidate,
             issues=issues,
+            initial_audit=initial_audit,
+            final_audit=final_audit,
+            copyedit_fallback=copyedit_fallback,
         )
         _save_editorial_quality_issues(db, chapter, issues)
         db.add(chapter)
@@ -3460,6 +3718,9 @@ def _editorial_polish_family_chapter(
         source=source,
         candidate=candidate,
         issues=[],
+        initial_audit=initial_audit,
+        final_audit=final_audit,
+        copyedit_fallback=copyedit_fallback,
     )
     db.add(chapter)
     db.commit()

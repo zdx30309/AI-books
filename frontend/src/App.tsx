@@ -154,7 +154,17 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <AppShell>
-                  <PublicDomainRewrite />
+                  <PublicDomainRewrite fixedMode="full" />
+                </AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/public-domain-classical-vernacular"
+            element={
+              <ProtectedRoute>
+                <AppShell>
+                  <PublicDomainRewrite fixedMode="classical_vernacular" />
                 </AppShell>
               </ProtectedRoute>
             }

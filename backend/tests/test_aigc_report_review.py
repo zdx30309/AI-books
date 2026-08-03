@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -118,7 +119,7 @@ def test_model_strategy_exposes_grok_45_without_leaking_key(
     strategy = review.model_strategy()
 
     assert strategy["default_rewrite_provider"] == "deepseek"
-    assert strategy["rewrite_model"] == "deepseek-v4-pro"
+    assert strategy["rewrite_model"] == "deepseek-v4-flash"
     assert strategy["detector_efficacy"]["status"] == "unproven"
     grok = next(item for item in strategy["rewrite_providers"] if item["id"] == "grok")
     assert grok["configured"] is True
@@ -172,6 +173,7 @@ def test_grok_rewrite_uses_high_reasoning_store_false_and_reports_usage(
             )
 
     monkeypatch.setattr(review, "_get_xai_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    monkeypatch.setattr(review, "distributed_semaphore", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(review.settings, "AIGC_REVIEW_GROK_REASONING_EFFORT", "high")
     segment = ZhuqueSegment(1, 100, 20, 0.99, "ai", 0, 20, "甲" * 20, 1.0, True)
 
@@ -1423,6 +1425,8 @@ def test_calibration_result_requires_exact_hash(
             "ai_percent": 0.0,
             "official_overview_verified": True,
             "report_sha256": "report-hash",
+            "detector_generation": "zhuque-generation-a",
+            "detector_snapshot": {"model_generation": "zhuque-generation-a"},
             "segments": [
                 {"share_percent": 100.0, "aigc_value": 0.4},
             ],
@@ -2315,6 +2319,8 @@ def test_detector_efficacy_stays_unproven_until_two_consistent_real_pairs(
                 "suspected_percent": 100 - human_percent,
                 "ai_percent": 0,
                 "report_sha256": f"report-{sample['sample_id']}",
+                "detector_generation": "zhuque-generation-a",
+                "detector_snapshot": {"model_generation": "zhuque-generation-a"},
                 "segments": [{"share_percent": 100, "aigc_value": 0.7}],
             },
         )
@@ -2345,6 +2351,60 @@ def test_detector_efficacy_stays_unproven_until_two_consistent_real_pairs(
     evidence = review.calibration_evidence_status(user_id="evidence-user")
     assert evidence["status"] == "directional"
     assert evidence["verified_pair_count"] == 2
+
+
+def test_detector_efficacy_never_combines_cross_generation_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(review, "_CALIBRATION_DIR", tmp_path)
+    original = "同一原稿用于验证检测器升级后证据必须隔离。" * 24
+    baseline = review.create_calibration_sample(
+        user_id="drift-user",
+        text=original,
+        content_type="article",
+        source_group="drift-group",
+        variant_type="original",
+    )
+
+    def verify(sample: dict, human_percent: float, generation: str) -> None:
+        review.record_calibration_report_result(
+            user_id="drift-user",
+            sample_id=sample["sample_id"],
+            parsed_report={
+                "original_sha256": sample["text_sha256"],
+                "source_match_verified": True,
+                "official_overview_verified": True,
+                "human_percent": human_percent,
+                "suspected_percent": 100 - human_percent,
+                "ai_percent": 0,
+                "report_sha256": f"report-{sample['sample_id']}",
+                "detector_generation": generation,
+                "detector_snapshot": {"model_generation": generation},
+                "segments": [{"share_percent": 100, "aigc_value": 0.7}],
+            },
+        )
+
+    verify(baseline, 0, "generation-old")
+    candidate = review.create_calibration_sample(
+        user_id="drift-user",
+        text=original.replace("同一", "这份", 1),
+        content_type="article",
+        source_group="drift-group",
+        variant_type="syntax_constrained",
+        parent_sha256=baseline["text_sha256"],
+        quality_gate_passed=True,
+    )
+    verify(candidate, 30, "generation-new")
+
+    evidence = review.calibration_evidence_status(
+        user_id="drift-user",
+        detector_generation="generation-new",
+    )
+
+    assert evidence["status"] == "unproven"
+    assert evidence["verified_pair_count"] == 0
+    assert evidence["excluded_cross_generation_pair_count"] == 1
 
 
 def _verified_green_report(text: str, human_percent: float = 67.64) -> dict:

@@ -210,10 +210,13 @@ def test_long_novel_assist_is_short_explicit_openai_form_help(monkeypatch) -> No
 
 def test_outline_budget_scales_with_chapter_count() -> None:
     project = LongNovelProject(premise="大嫂照顾婆婆多年", target_chapters=10)
-    assert _outline_max_output_tokens(project) == 14000
+    assert _outline_max_output_tokens(project) == 32000
 
     project.target_chapters = 50
-    assert _outline_max_output_tokens(project) == 32000
+    assert _outline_max_output_tokens(project) == 71000
+
+    project.target_chapters = 100
+    assert _outline_max_output_tokens(project) == 80000
 
 
 def test_chapter_word_targets_are_uniform() -> None:

@@ -23,6 +23,21 @@ _BAD_PUNCTUATION_ORDER_RE = re.compile(r"(?:，[。；：、]|。[，；：、]|
 _QUOTE_END_PUNCTUATION_RE = re.compile(r"[”’」』][。！？]")
 _BAD_PARAGRAPH_START_RE = re.compile(r"^[\s]*[，。；：、！？”’》」』）)]")
 _LONG_SENTENCE_RE = re.compile(r"[^。！？\n]{181,}(?:[。！？]|$)")
+_EXTERNAL_ARTIFACT_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_])[\w\-一-龥]+\.(?:png|jpe?g|gif|webp|pdf|docx?|xlsx?|mp3|mp4)(?![A-Za-z0-9_])|"
+    r"据《[^》]{2,40}》(?:报道|消息|披露)|(?:新闻|网页|媒体|报告|截图|录音|监控)(?:显示|证明|称)|"
+    r"(?:来源|数据来源)\s*[：:])",
+    re.IGNORECASE,
+)
+_AI_CUE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("声音不大/很稳", re.compile(r"声音(?:不大|很(?:轻|低|平|稳)|发(?:紧|沉))")),
+    ("压低声音", re.compile(r"压低(?:了)?声音")),
+    ("小声说", re.compile(r"小声(?:地)?说")),
+    ("指尖发白", re.compile(r"指尖(?:微微)?发白")),
+    ("喉咙发紧", re.compile(r"喉咙(?:一阵)?发紧")),
+)
+_NEGATIVE_PARALLEL_RE = re.compile(r"(?:不是[^。！？\n]{0,30}(?:而)?是|没有[^。！？\n]{0,24}没有[^。！？\n]{0,24}(?:也)?没有)")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？])\s*")
 _CRITICAL_ANCHOR_RE = re.compile(
     r"(?:人民币\s*)?\d+(?:\.\d+)?\s*(?:亿元|万元|元|块钱|块|岁|年|个月|月|日|号|天|小时|分钟|次|章|页|%|％)?"
 )
@@ -155,6 +170,71 @@ def inspect_family_novel_prose(text: str) -> list[dict[str, str]]:
                 "按动作、说话人和语义边界拆句，不删减事实。",
             )
         )
+
+    artifact = _EXTERNAL_ARTIFACT_RE.search(value)
+    if artifact:
+        start = max(0, artifact.start() - 45)
+        issues.append(
+            _issue(
+                "unsupported_external_artifact",
+                "正文出现文件名、媒体引述或外部材料痕迹；现实家庭小说不得把未在章节上下文中出现的材料写成证据。",
+                value[start : artifact.end() + 70],
+                "删除来源包装；若确为既有剧情证据，改回上下文已明确存在的人物、物件和行动。",
+                severity="severe",
+            )
+        )
+
+    cue_hits: list[str] = []
+    for label, pattern in _AI_CUE_PATTERNS:
+        count = len(pattern.findall(value))
+        if count >= 3:
+            cue_hits.append(f"{label}×{count}")
+    if cue_hits:
+        issues.append(
+            _issue(
+                "repeated_model_cue",
+                "同一章反复套用通用声音或身体反应模板，人物反应被模型套话替代。",
+                "；".join(cue_hits),
+                "保留最有必要的一处，其余改由当下利益、物件、选择或对白差异承载反应。",
+            )
+        )
+
+    negative_parallel_count = len(_NEGATIVE_PARALLEL_RE.findall(value))
+    if negative_parallel_count >= 5:
+        issues.append(
+            _issue(
+                "repeated_negative_parallelism",
+                "同章高频使用否定排比或“不是……是……”句式制造力度，形成明显模型腔。",
+                f"matched={negative_parallel_count}",
+                "保留必要对照，其他位置直接写动作、事实或人物判断。",
+            )
+        )
+
+    sentences = [item.strip() for item in _SENTENCE_SPLIT_RE.split(value) if len(item.strip()) >= 22]
+    duplicates = [(sentence, count) for sentence, count in Counter(sentences).items() if count >= 2]
+    if duplicates:
+        sentence, count = sorted(duplicates, key=lambda item: (-item[1], -len(item[0])))[0]
+        issues.append(
+            _issue(
+                "duplicate_sentence",
+                "同一有效句在本章重复出现，属于机械复述而不是剧情推进。",
+                f"×{count}：{sentence}",
+                "保留第一次有效表达，后续位置必须推进新信息、选择或后果。",
+            )
+        )
+
+    anchors = Counter(_CRITICAL_ANCHOR_RE.findall(value))
+    repeated_anchors = [(anchor, count) for anchor, count in anchors.items() if count >= 5]
+    if repeated_anchors:
+        anchor, count = sorted(repeated_anchors, key=lambda item: -item[1])[0]
+        issues.append(
+            _issue(
+                "repeated_accounting_anchor",
+                "同一金额、日期或数量被反复复述，信息密度过低且剧情停滞。",
+                f"{anchor}×{count}",
+                "金额事实只在需要改变筹码或决定时重提，其余位置推进人物行动与后果。",
+            )
+        )
     return issues
 
 
@@ -177,15 +257,32 @@ def inspect_editorial_candidate(original: str, candidate: str) -> list[dict[str,
             )
         original_anchors = Counter(_CRITICAL_ANCHOR_RE.findall(original_value))
         candidate_anchors = Counter(_CRITICAL_ANCHOR_RE.findall(candidate_value))
-        if original_anchors != candidate_anchors:
-            missing = list((original_anchors - candidate_anchors).elements())[:8]
-            added = list((candidate_anchors - original_anchors).elements())[:8]
+        # Editing may remove a mechanically repeated accounting sentence, but
+        # it may never drop a distinct value or introduce a new one.
+        original_anchor_values = set(original_anchors)
+        candidate_anchor_values = set(candidate_anchors)
+        if original_anchor_values != candidate_anchor_values:
+            missing = sorted(original_anchor_values - candidate_anchor_values)[:8]
+            added = sorted(candidate_anchor_values - original_anchor_values)[:8]
             issues.append(
                 _issue(
                     "critical_anchor_changed",
                     "校对稿改变了数字、金额、日期或数量锚点。",
                     f"missing={missing}; added={added}",
                     "逐项恢复原稿中的数字、金额、日期和数量表达。",
+                    severity="severe",
+                )
+            )
+        original_artifacts = Counter(match.group(0) for match in _EXTERNAL_ARTIFACT_RE.finditer(original_value))
+        candidate_artifacts = Counter(match.group(0) for match in _EXTERNAL_ARTIFACT_RE.finditer(candidate_value))
+        added_artifacts = list((candidate_artifacts - original_artifacts).elements())[:8]
+        if added_artifacts:
+            issues.append(
+                _issue(
+                    "fabricated_external_evidence",
+                    "终稿校改新增了原稿不存在的文件、媒体、报告、截图或录音证据。",
+                    f"added={added_artifacts}",
+                    "撤回全部新增外部证据，只保留原稿和章节上下文已有事实。",
                     severity="severe",
                 )
             )

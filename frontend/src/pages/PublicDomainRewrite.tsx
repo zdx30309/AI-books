@@ -28,10 +28,14 @@ interface SourceDraft {
 const MIN_SOURCES = 5;
 const CLASSICAL_MIN_SOURCES = 1;
 const MAX_SOURCES = 10;
-type GenerationMode = "full" | "classical_vernacular";
+export type PublicDomainGenerationMode = "full" | "classical_vernacular";
 
-const emptySource = (index: number): SourceDraft => ({
-  title: `公版图书 ${index}`,
+interface PublicDomainRewriteProps {
+  fixedMode?: PublicDomainGenerationMode;
+}
+
+const emptySource = (index: number, mode: PublicDomainGenerationMode = "full"): SourceDraft => ({
+  title: `${mode === "classical_vernacular" ? "公版古典原文" : "公版图书"} ${index}`,
   text: "",
   file: null,
   author: "",
@@ -41,7 +45,11 @@ const emptySource = (index: number): SourceDraft => ({
   rightsEvidenceUrl: "",
 });
 
-const initialSources = () => Array.from({ length: MIN_SOURCES }, (_, index) => emptySource(index + 1));
+const initialSources = (mode: PublicDomainGenerationMode) =>
+  Array.from(
+    { length: mode === "classical_vernacular" ? CLASSICAL_MIN_SOURCES : MIN_SOURCES },
+    (_, index) => emptySource(index + 1, mode),
+  );
 
 function optionalNumber(value: string) {
   const parsed = Number.parseInt(value.trim(), 10);
@@ -64,10 +72,12 @@ function formatChars(value: string) {
   return value.replace(/\s+/g, "").length.toLocaleString("zh-CN");
 }
 
-export function PublicDomainRewrite() {
+export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
   const navigate = useNavigate();
-  const [sources, setSources] = useState<SourceDraft[]>(initialSources);
-  const [generationMode, setGenerationMode] = useState<GenerationMode>("full");
+  const initialMode = fixedMode ?? "full";
+  const [sources, setSources] = useState<SourceDraft[]>(() => initialSources(initialMode));
+  const [selectedMode, setSelectedMode] = useState<PublicDomainGenerationMode>(initialMode);
+  const generationMode = fixedMode ?? selectedMode;
   const [targetTitle, setTargetTitle] = useState("");
   const [targetDirection, setTargetDirection] = useState("");
   const [targetLength, setTargetLength] = useState("");
@@ -104,26 +114,30 @@ export function PublicDomainRewrite() {
   };
 
   const addSource = () => {
-    setSources((items) => (items.length >= maxSources ? items : [...items, emptySource(items.length + 1)]));
+    setSources((items) => (items.length >= maxSources ? items : [...items, emptySource(items.length + 1, generationMode)]));
   };
 
   const removeSource = (index: number) => {
     setSources((items) => (items.length <= minSources ? items : items.filter((_, idx) => idx !== index)));
   };
 
-  const selectMode = (mode: GenerationMode) => {
-    setGenerationMode(mode);
+  const selectMode = (mode: PublicDomainGenerationMode) => {
+    if (fixedMode) return;
+    setSelectedMode(mode);
     setError("");
     setConfirmed(false);
     setSources((items) => {
       const hasEnteredContent = items.some((item) => item.text.trim() || item.file);
       if (mode === "classical_vernacular" && !hasEnteredContent) {
-        return [emptySource(1)];
+        return [emptySource(1, mode)];
       }
       if (mode === "full" && items.length < MIN_SOURCES) {
         return [
           ...items,
-          ...Array.from({ length: MIN_SOURCES - items.length }, (_, index) => emptySource(items.length + index + 1)),
+          ...Array.from(
+            { length: MIN_SOURCES - items.length },
+            (_, index) => emptySource(items.length + index + 1, mode),
+          ),
         ];
       }
       return items;
@@ -193,7 +207,7 @@ export function PublicDomainRewrite() {
           });
       navigate(`/book/${response.task_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "公版融合长篇任务创建失败");
+      setError(err instanceof Error ? err.message : classical ? "公版古文白话任务创建失败" : "公版融合长篇任务创建失败");
       setLoading(false);
     }
   };
@@ -224,14 +238,16 @@ export function PublicDomainRewrite() {
         </button>
       </section>
 
-      <section className="card-warm flex flex-wrap gap-3 p-4">
-        <button type="button" onClick={() => selectMode("full")} className={classical ? "btn-ghost" : "btn-gold"}>
-          正式长书（5–10 本）
-        </button>
-        <button type="button" onClick={() => selectMode("classical_vernacular")} className={classical ? "btn-gold" : "btn-ghost"}>
-          古文白话专用（1–10 份原文/分卷）
-        </button>
-      </section>
+      {!fixedMode && (
+        <section className="card-warm flex flex-wrap gap-3 p-4">
+          <button type="button" onClick={() => selectMode("full")} className={classical ? "btn-ghost" : "btn-gold"}>
+            正式长书（5–10 本）
+          </button>
+          <button type="button" onClick={() => selectMode("classical_vernacular")} className={classical ? "btn-gold" : "btn-ghost"}>
+            古文白话专用（1–10 份原文/分卷）
+          </button>
+        </section>
+      )}
 
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-500/10 p-4 text-sm leading-6 text-red-100">

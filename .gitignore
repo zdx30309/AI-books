@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.zip
+*.tar.gz
 
 .env
 .env.*
@@ -18,6 +19,10 @@ models/
 !backend/app/models/
 !backend/app/models/*.py
 tmp_ytdlp/
+/output/
+/tmp/
+frontend/pnpm-lock.yaml
+frontend/pnpm-workspace.yaml
 
 .claude/worktrees/
 deployment.local.json
