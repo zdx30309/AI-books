@@ -47,3 +47,34 @@ def test_independent_category_markdown_download_uses_generic_normalizer() -> Non
 
     assert "@最终书名" in result
     assert "正文内容。" in result
+
+
+def test_completed_public_domain_task_downloads_real_utf8_txt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    task = Task(
+        id=uuid4(),
+        source_url="manual://public-domain-classical-vernacular",
+        status=TaskStatus.COMPLETED,
+        config={
+            "title": "古文白话测试稿",
+            "category": "public_domain_rewrite",
+            "public_domain_classical_vernacular": True,
+            "markdown": "@最终书名\n古文白话测试稿\n@正文\n第一章\n这是真正的纯文本译稿。",
+        },
+    )
+    monkeypatch.setattr(task_router, "_task_output_dir", lambda _task_id: tmp_path)
+
+    response = task_router._build_single_download_response(  # noqa: SLF001
+        None,
+        task,
+        "txt",
+    )
+
+    path = Path(response.path)
+    assert path == tmp_path / "downloads" / "final.txt"
+    assert path.exists()
+    assert not zipfile.is_zipfile(path)
+    assert "这是真正的纯文本译稿" in path.read_text(encoding="utf-8-sig")
+    assert response.media_type == "text/plain; charset=utf-8"

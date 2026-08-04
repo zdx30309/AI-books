@@ -616,9 +616,9 @@ export const api = {
   getStage: (id: string, stage: StageName) =>
     request<StageContentResponse>(`/tasks/${id}/stages/${stage}`),
   getStats: () => request<StatsResponse>("/stats"),
-  downloadUrl: (id: string, fmt: "md" | "docx" = "md", preview = false) =>
+  downloadUrl: (id: string, fmt: "md" | "docx" | "txt" = "md", preview = false) =>
     `${BASE}/tasks/${id}/download?fmt=${fmt}${preview ? "&preview=true" : ""}`,
-  downloadFile: async (id: string, fmt: "md" | "docx" = "md", preview = false) => {
+  downloadFile: async (id: string, fmt: "md" | "docx" | "txt" = "md", preview = false) => {
     const token = tokenStore.get();
     if (!token) throw new ApiError(401, "请先登录");
     const params = new URLSearchParams({ fmt, token, _: String(Date.now()) });

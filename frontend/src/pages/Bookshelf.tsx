@@ -145,7 +145,7 @@ export function Bookshelf({
   const [modalOpen, setModalOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
-  const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | null>(null);
+  const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | "txt" | null>(null);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
   const [batchRegenerating, setBatchRegenerating] = useState(false);
@@ -341,7 +341,7 @@ export function Bookshelf({
     setCategoryOrder(next);
   };
 
-  const handleBatchDownload = async (fmt: "md" | "docx") => {
+  const handleBatchDownload = async (fmt: "md" | "docx" | "txt") => {
     if (selectedCompletedTaskIds.length === 0) {
       alert("请先选择已完成的书稿");
       return;
@@ -705,6 +705,19 @@ export function Bookshelf({
                 <FileText className="h-3.5 w-3.5" strokeWidth={1.7} />
               )}
               下载 Markdown
+            </button>
+            <button
+              type="button"
+              onClick={() => handleBatchDownload("txt")}
+              disabled={selectedCompletedTaskIds.length === 0 || batchBusy}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchDownloading === "txt" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
+              ) : (
+                <FileText className="h-3.5 w-3.5" strokeWidth={1.7} />
+              )}
+              下载 TXT
             </button>
             <button
               type="button"

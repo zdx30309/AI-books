@@ -75,6 +75,15 @@ router = APIRouter(prefix="/api/v1/public-domain-rewrite", tags=["Public Domain 
 
 PUBLIC_DOMAIN_BOOKSHELF = "公版融合长篇"
 PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF = "公版古文白话"
+PUBLIC_DOMAIN_CLASSICAL_PREVIEW_BOOKSHELF = "公版古文白话试译"
+
+
+def _classical_bookshelf_for_scope(scope_mode: str) -> str:
+    return (
+        PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF
+        if str(scope_mode or "complete") == "complete"
+        else PUBLIC_DOMAIN_CLASSICAL_PREVIEW_BOOKSHELF
+    )
 
 
 class PublicDomainSourcePayload(BaseModel):
@@ -347,6 +356,7 @@ def _create_longform_task(
         else {}
     )
     classical_scope = str(classical_profile.get("scope_mode") or "complete")
+    classical_is_preview = classical and classical_scope != "complete"
     classical_preview_chars = int(classical_profile.get("preview_target_chars") or 0)
     classical_preview_chapters = int(classical_profile.get("preview_chapters") or 0)
     raw_sources = [_to_longform_source(item) for item in req.sources]
@@ -415,16 +425,22 @@ def _create_longform_task(
                 or (sources[0].title if classical else "公版融合长篇")
             )[:120],
             "bookshelf": (
-                PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF if classical else PUBLIC_DOMAIN_BOOKSHELF
+                _classical_bookshelf_for_scope(classical_scope)
+                if classical
+                else PUBLIC_DOMAIN_BOOKSHELF
             ),
             "category": "public_domain_rewrite",
             "category_label": (
-                PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF if classical else PUBLIC_DOMAIN_BOOKSHELF
+                _classical_bookshelf_for_scope(classical_scope)
+                if classical
+                else PUBLIC_DOMAIN_BOOKSHELF
             ),
             "public_domain_rewrite": True,
             "public_domain_longform_v2": True,
             "public_domain_serial_story": not classical,
             "public_domain_classical_vernacular": classical,
+            "public_domain_classical_preview": classical_is_preview,
+            "public_domain_classical_scope": classical_scope if classical else None,
             "public_domain_policy_version": (
                 CLASSICAL_VERNACULAR_POLICY_VERSION if classical else LONGFORM_POLICY_VERSION
             ),

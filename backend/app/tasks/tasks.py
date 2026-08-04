@@ -1845,6 +1845,26 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             verified_primary_claim_count=int(
                 result.quality_report.get("verified_primary_claim_count") or 0
             ),
+            classical_prompt_version=(
+                result.quality_report.get("prompt_version")
+                if generation_mode == CLASSICAL_VERNACULAR_MODE
+                else None
+            ),
+            classical_prompt_hash=(
+                result.quality_report.get("prompt_hash")
+                if generation_mode == CLASSICAL_VERNACULAR_MODE
+                else None
+            ),
+            classical_prompt_injection_segments=(
+                int(result.quality_report.get("prompt_injection_segments") or 0)
+                if generation_mode == CLASSICAL_VERNACULAR_MODE
+                else 0
+            ),
+            classical_translated_segments=(
+                int(result.quality_report.get("translated_segments") or 0)
+                if generation_mode == CLASSICAL_VERNACULAR_MODE
+                else 0
+            ),
         )
         task.config = cfg
         pre_aigc_markdown = result.markdown

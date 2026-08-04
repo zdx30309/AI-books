@@ -87,7 +87,7 @@ export interface BatchRegenerateTaskResponse {
 
 export interface BatchDownloadRequest {
   task_ids: string[];
-  fmt: "md" | "docx";
+  fmt: "md" | "docx" | "txt";
 }
 
 export interface CoverJobItem {

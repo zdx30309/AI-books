@@ -108,7 +108,7 @@ class BatchRegenerateTaskResponse(BaseModel):
 
 class BatchDownloadRequest(BaseModel):
     task_ids: list[UUID] = Field(..., min_length=1, max_length=500, description="要打包下载的任务 ID")
-    fmt: str = Field(default="docx", pattern="^(md|docx)$", description="下载格式")
+    fmt: str = Field(default="docx", pattern="^(md|docx|txt)$", description="下载格式")
 
 
 class TaskCategoryOption(BaseModel):

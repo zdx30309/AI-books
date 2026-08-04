@@ -5,6 +5,7 @@ import {
   BookOpenText,
   CheckCircle2,
   ChevronRight,
+  Download,
   FileText,
   Loader2,
   Plus,
@@ -228,6 +229,15 @@ export function ClassicalTranslationWorkspace() {
     }
   };
 
+  const downloadResult = async (format: "docx" | "txt" | "md") => {
+    if (!taskId) return;
+    try {
+      await api.downloadFile(taskId, format);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "译稿下载失败");
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className="border-b border-gold-500/10 pb-5">
@@ -414,6 +424,34 @@ export function ClassicalTranslationWorkspace() {
               </button>
             )}
           </div>
+
+          {task?.status === "completed" && (
+            <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-500/5 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-emerald-100">
+                    {task.bookshelf === "公版古文白话"
+                      ? "完整译稿已加入“公版古文白话”书架"
+                      : "试译结果已保存到“公版古文白话试译”书架"}
+                  </div>
+                  <div className="mt-1 text-xs text-warm-500">可直接下载 Word、TXT 或 Markdown。</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(["docx", "txt", "md"] as const).map((format) => (
+                    <button
+                      key={format}
+                      type="button"
+                      onClick={() => void downloadResult(format)}
+                      className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-xs"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {format === "docx" ? "Word" : format === "txt" ? "TXT" : "Markdown"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {task && (
             <div className="mt-4">

@@ -2802,6 +2802,9 @@ def _build_batch_download_response(
                     category=category,
                 )
                 filename = _safe_download_name(task, "docx")
+            elif fmt == "txt":
+                content = _normalize_download_markdown(md, category=category)
+                filename = _safe_download_name(task, "txt")
             else:
                 content = _normalize_download_markdown(md, category=category)
                 filename = _safe_download_name(task, "md")
@@ -2870,7 +2873,7 @@ def _get_current_user_from_download_token(
 )
 def download_batch_direct(
     task_ids: str = Query(..., min_length=1),
-    fmt: str = Query("docx", pattern="^(md|docx)$"),
+    fmt: str = Query("docx", pattern="^(md|docx|txt)$"),
     token: str | None = Query(None),
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
@@ -2912,7 +2915,7 @@ def _build_single_download_response(
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
-    if fmt == "docx" or fmt == "txt":
+    if fmt == "docx":
         content = _markdown_to_docx(
             md,
             image_base_dir=output_dir,
@@ -2923,6 +2926,14 @@ def _build_single_download_response(
         filename = _safe_download_name(task, "docx", suffix="预览") if use_preview_docx else _safe_download_name(task, "docx")
         file_path = download_dir / ("final_preview.docx" if use_preview_docx else "final.docx")
         file_path.write_bytes(content)
+    elif fmt == "txt":
+        content = _normalize_download_markdown(md, category=category)
+        media_type = "text/plain; charset=utf-8"
+        filename = _safe_download_name(task, "txt")
+        file_path = download_dir / "final.txt"
+        # UTF-8 BOM keeps Chinese text readable in Windows Notepad and older
+        # publishing tools while remaining valid UTF-8 everywhere else.
+        file_path.write_text(content, encoding="utf-8-sig")
     else:
         content = _normalize_download_markdown(md, category=category)
         media_type = "text/markdown; charset=utf-8"
@@ -2942,7 +2953,7 @@ def _build_single_download_response(
 
 @router.get(
     "/{task_id}/download",
-    summary="下载最终稿 (md/docx)",
+    summary="下载最终稿 (md/docx/txt)",
 )
 def download_markdown(
     task_id: UUID,
@@ -2959,7 +2970,7 @@ def download_markdown(
 
 @router.get(
     "/{task_id}/download/direct",
-    summary="下载最终稿 (md/docx, browser-native)",
+    summary="下载最终稿 (md/docx/txt, browser-native)",
 )
 def download_markdown_direct(
     task_id: UUID,

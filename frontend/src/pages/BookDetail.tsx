@@ -536,7 +536,7 @@ export function BookDetail() {
   }, [id, task, refresh, restartPolling]);
 
   const handleDownload = useCallback(
-    async (fmt: "md" | "docx", preview = false) => {
+    async (fmt: "md" | "docx" | "txt", preview = false) => {
       if (!id) return;
       try {
         await api.downloadFile(id, fmt, preview);
@@ -854,6 +854,22 @@ export function BookDetail() {
                 >
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Word
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownload("txt")}
+                  className="btn-ghost"
+                >
+                  <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  TXT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownload("md")}
+                  className="btn-ghost"
+                >
+                  <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  Markdown
                 </button>
                 {isHealingComic && (
                   <button

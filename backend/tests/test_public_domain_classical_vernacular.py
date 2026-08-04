@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.services import public_domain_classical_vernacular as classical
 from app.services import public_domain_longform as longform
+from app.api.routers import public_domain_rewrite as public_domain_router
 
 
 def _source(*, with_headings: bool = True, repeats: int = 24) -> longform.PublicDomainSource:
@@ -26,6 +27,12 @@ def _source(*, with_headings: bool = True, repeats: int = 24) -> longform.Public
         author="佚名",
         rights_note="公版文本，保护期届满",
     )
+
+
+def test_complete_and_preview_tasks_use_separate_bookshelves() -> None:
+    assert public_domain_router._classical_bookshelf_for_scope("complete") == "公版古文白话"  # noqa: SLF001
+    assert public_domain_router._classical_bookshelf_for_scope("characters") == "公版古文白话试译"  # noqa: SLF001
+    assert public_domain_router._classical_bookshelf_for_scope("chapters") == "公版古文白话试译"  # noqa: SLF001
 
 
 def _echo_marked_source(prompt: str) -> str:
@@ -191,16 +198,86 @@ def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
         return _echo_marked_source(prompt)
 
     monkeypatch.setattr(longform, "_call_llm", fake_call)
-    longform.run_public_domain_longform(
+    custom_prompt = "对白用简洁现代汉语，叙述保持沉稳；字面占位 {work_title} 不得被系统改写。"
+    result = longform.run_public_domain_longform(
+        sources=[_source(repeats=100)],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={"custom_prompt": custom_prompt},
+    )
+    assert len(prompts) > 1
+    assert all(custom_prompt in prompt for prompt in prompts)
+    assert all("如果二者冲突，以固定规则为准" in prompt for prompt in prompts)
+    assert all("不得改编、重写、润色、仿写、扩写、缩写" in prompt for prompt in prompts)
+    assert (tmp_path / "00_classical_user_prompt.md").read_text(encoding="utf-8") == custom_prompt
+    assert result.quality_report["prompt_injection_segments"] == len(prompts)
+    assert result.quality_report["translated_segments"] == len(prompts)
+
+
+def test_changing_custom_prompt_invalidates_segment_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_call(_work_dir: Path, *, prompt: str, **_kwargs) -> str:
+        calls.append(prompt)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    common = dict(
         sources=[_source()],
         work_dir=tmp_path,
         generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
         public_domain_confirmed=True,
-        adaptation_profile={"custom_prompt": "对白用简洁现代汉语，叙述保持沉稳。"},
     )
-    assert "对白用简洁现代汉语，叙述保持沉稳。" in prompts[0]
-    assert "如果二者冲突，以固定规则为准" in prompts[0]
-    assert "不得改编、重写、润色、仿写、扩写、缩写" in prompts[0]
+    longform.run_public_domain_longform(
+        **common,
+        adaptation_profile={"custom_prompt": "第一版译法要求。"},
+    )
+    first_count = len(calls)
+    calls.clear()
+
+    longform.run_public_domain_longform(
+        **common,
+        adaptation_profile={"custom_prompt": "第二版译法要求。"},
+    )
+
+    assert first_count > 0
+    assert calls
+    assert all("第二版译法要求。" in prompt for prompt in calls)
+
+
+def test_character_preview_can_end_before_all_available_source_chapters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _source(repeats=80).text.split("\n", 1)[1]
+    source = longform.PublicDomainSource(
+        title="旧城多卷",
+        text=f"第一回 城门领命\n{body}\n第二回 守宅待信\n{body}",
+        author="佚名",
+        rights_note="公版文本，保护期届满",
+    )
+    monkeypatch.setattr(
+        longform,
+        "_call_llm",
+        lambda _work_dir, *, prompt, **_kwargs: _echo_marked_source(prompt),
+    )
+
+    result = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={"scope_mode": "characters", "preview_target_chars": 1_000},
+    )
+
+    assert result.quality_report["status"] == "ok"
+    assert result.quality_report["is_preview"] is True
+    assert len(result.chapters) == 1
+    assert result.quality_report["available_source_chapters"] == 2
 
 
 def test_character_preview_stops_after_selected_output_budget(

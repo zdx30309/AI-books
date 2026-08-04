@@ -19,8 +19,8 @@ from typing import Any, Iterable
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v2"
-PROMPT_VERSION = "classical-complete-translation-only-v2"
+POLICY_VERSION = "public-domain-classical-translation-v3"
+PROMPT_VERSION = "classical-complete-translation-only-v3"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
 DEFAULT_USER_PROMPT = PROMPT_DIR / "classical_vernacular_user_default.md"
@@ -34,7 +34,7 @@ SCOPE_COMPLETE = "complete"
 SCOPE_CHARACTERS = "characters"
 SCOPE_CHAPTERS = "chapters"
 VALID_SCOPE_MODES = {SCOPE_COMPLETE, SCOPE_CHARACTERS, SCOPE_CHAPTERS}
-MIN_OUTPUT_RATIO = 0.50
+MIN_OUTPUT_RATIO = 0.70
 MAX_OUTPUT_RATIO = 3.20
 
 _CHAPTER_HEADING_RE = re.compile(
@@ -193,6 +193,11 @@ def run_classical_vernacular_longform(
             for index, section in enumerate(sections, start=1)
         ],
     }
+    # Keep the exact editable instruction beside the source/checkpoints.  This
+    # makes every long-running task reproducible and proves which prompt was
+    # applied after a worker restart without placing the text in application
+    # logs.
+    _atomic_write_text(work_dir / "00_classical_user_prompt.md", user_prompt)
     _atomic_write_json(work_dir / "01_classical_vernacular_plan.json", plan)
     _notify(
         on_progress,
@@ -221,6 +226,9 @@ def run_classical_vernacular_longform(
             profile=profile,
             prompt_hash=prompt_hash,
             user_prompt=user_prompt,
+            previous_section_context=(sections[index - 2].text[-CONTEXT_CHARS:] if index > 1 else "无"),
+            previous_chapter_translation_context=(chapters[-1].text[-CONTEXT_CHARS:] if chapters else "无"),
+            next_section_context=(sections[index].text[:CONTEXT_CHARS] if index < len(sections) else "无"),
             preview_output_chars=remaining_chars if preview_target_chars else 0,
             on_progress=on_progress,
         )
@@ -234,8 +242,13 @@ def run_classical_vernacular_longform(
     body_chars = sum(legacy.count_text_chars(item.text) for item in chapters)
     source_chars = sum(int(item.audit.get("processed_source_chars") or 0) for item in chapters)
     blocking: list[str] = []
-    if len(chapters) != len(sections):
+    if profile.scope_mode != SCOPE_CHARACTERS and len(chapters) != len(sections):
         blocking.append("最终章节数量与原文章节数量不一致")
+    expected_source_chars = sum(legacy.count_text_chars(item.text) for item in sections)
+    if profile.scope_mode == SCOPE_COMPLETE and source_chars != expected_source_chars:
+        blocking.append(
+            f"全书原文覆盖 {source_chars}/{expected_source_chars} 字，存在未处理原文"
+        )
     if body_chars < int(source_chars * MIN_OUTPUT_RATIO):
         blocking.append(
             f"全稿白话译文仅 {body_chars} 字，低于原文 {source_chars} 字的完整性下限"
@@ -245,6 +258,11 @@ def run_classical_vernacular_longform(
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
+        "prompt_injection_mode": "exact_user_prompt_on_every_paid_segment",
+        "prompt_injection_segments": sum(
+            int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
+        ),
+        "translated_segments": sum(int(item.audit.get("segments") or 0) for item in chapters),
         "pipeline": "source_order -> bounded_segments -> paragraph_ids -> complete_translation -> local_completeness_gate -> bookshelf",
         "source_chapters": len(chapters),
         "requested_source_chapters": len(sections),
@@ -342,6 +360,9 @@ def _translate_section(
     profile: ClassicalVernacularProfile,
     prompt_hash: str,
     user_prompt: str,
+    previous_section_context: str,
+    previous_chapter_translation_context: str,
+    next_section_context: str,
     preview_output_chars: int,
     on_progress: legacy.ProgressCallback | None,
 ) -> legacy.ChapterResult:
@@ -395,8 +416,21 @@ def _translate_section(
         source_chars = legacy.count_text_chars(source_text)
         target_chars = max(800, int(source_chars * 1.75))
         marked_source, expected_markers = _mark_source_units(source_text)
-        previous_context = segments[segment_index - 2][-CONTEXT_CHARS:] if segment_index > 1 else "无"
-        next_context = segments[segment_index][:CONTEXT_CHARS] if segment_index < len(segments) else "无"
+        previous_context = (
+            segments[segment_index - 2][-CONTEXT_CHARS:]
+            if segment_index > 1
+            else previous_section_context
+        )
+        previous_translation_context = (
+            outputs[-1][-CONTEXT_CHARS:]
+            if outputs
+            else previous_chapter_translation_context
+        )
+        next_context = (
+            segments[segment_index][:CONTEXT_CHARS]
+            if segment_index < len(segments)
+            else next_section_context
+        )
         prompt = _render(
             TRANSLATION_PROMPT,
             user_prompt=user_prompt,
@@ -405,9 +439,15 @@ def _translate_section(
             segment_label=segment_label,
             target_chars=target_chars,
             previous_context=previous_context,
+            previous_translation_context=previous_translation_context,
             next_context=next_context,
             source_text=marked_source,
         )
+        if user_prompt not in prompt:
+            raise legacy.PublicDomainValidationError(
+                f"《{section.title}》第 {segment_index} 段未完整注入用户 Prompt"
+            )
+        rendered_prompt_hash = _sha(prompt)
         translation_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.md"
         translation_meta_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.json"
         translation_meta = _load_json(translation_meta_path)
@@ -442,6 +482,8 @@ def _translate_section(
                 {
                     "segment_key": segment_key,
                     "prompt_hash": prompt_hash,
+                    "rendered_prompt_hash": rendered_prompt_hash,
+                    "user_prompt_injected": True,
                     "translated_units": translated_units,
                     "source_units": len(expected_markers),
                     "operation": "complete_translation_only",
@@ -455,6 +497,9 @@ def _translate_section(
             "translation_chars": legacy.count_text_chars(final),
             "source_units": len(expected_markers),
             "translated_units": translated_units,
+            "prompt_hash": prompt_hash,
+            "rendered_prompt_hash": rendered_prompt_hash,
+            "user_prompt_injected": True,
             "issues": issues,
         }
         segment_audits.append(audit)
@@ -496,6 +541,9 @@ def _translate_section(
         "operation": "complete_translation_only",
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
+        "prompt_injection_segments": sum(
+            1 for item in segment_audits if item.get("user_prompt_injected") is True
+        ),
         "pass": True,
     }
     chapter = legacy.ChapterResult(
@@ -660,14 +708,20 @@ def _clean_model_text(text: str, chapter_title: str) -> str:
 
 def _render(path: Path, **values: object) -> str:
     template = path.read_text(encoding="utf-8")
-    for key, value in values.items():
-        template = template.replace("{" + key + "}", str(value))
-    unresolved = sorted(set(re.findall(r"\{[a-z_]+\}", template)))
-    if unresolved:
+    placeholders = sorted(set(re.findall(r"\{([a-z_]+)\}", template)))
+    missing = [key for key in placeholders if key not in values]
+    if missing:
         raise legacy.PublicDomainValidationError(
-            f"古文白话 Prompt 仍有未填字段：{', '.join(unresolved)}"
+            f"古文白话 Prompt 仍有未填字段：{', '.join('{' + key + '}' for key in missing)}"
         )
-    return template.strip()
+    # Replace template fields in one pass.  A user prompt containing literal
+    # braces or names such as {work_title} must remain byte-for-byte intact and
+    # must never be interpreted as another system placeholder.
+    return re.sub(
+        r"\{([a-z_]+)\}",
+        lambda match: str(values[match.group(1)]),
+        template,
+    ).strip()
 
 
 def _output_tokens(target_chars: int) -> int:
