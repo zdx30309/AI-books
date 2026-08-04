@@ -143,6 +143,47 @@ def test_classical_mode_uses_source_title_when_original_has_no_heading() -> None
     assert sections[0].title == "旧城记"
 
 
+def test_classical_extractor_removes_contents_and_keeps_real_preface_and_chapters() -> None:
+    source = longform.PublicDomainSource(
+        title="旧城三卷",
+        author="佚名",
+        rights_note="公版文本，保护期届满",
+        text=(
+            "Cover\n\nContents\n\n目录\n"
+            "第一回 城门领命\n"
+            "第二回 守宅待信\n"
+            "第三回 河边送行\n\n"
+            "编辑说明\n这段现代编辑说明不属于古文正文。\n\n"
+            "序\n尝闻忠义之士，临难不改其节。\n\n"
+            "第一回 城门领命\n县令命张三到城门候命。\n\n"
+            "第二回 守宅待信\n李四仍守在旧宅，不敢擅离。\n\n"
+            "第三回 河边送行\n二人相别，各自珍重。"
+        ),
+    )
+
+    sections = classical.extract_source_sections([source])
+
+    assert [item.title for item in sections] == [
+        "序",
+        "第一回 城门领命",
+        "第二回 守宅待信",
+        "第三回 河边送行",
+    ]
+    combined = "\n".join(item.text for item in sections)
+    assert "Cover" not in combined
+    assert "目录" not in combined
+    assert "现代编辑说明" not in combined
+    assert "忠义之士" in combined
+
+
+def test_short_complete_translation_is_not_forced_to_120_characters() -> None:
+    issues = classical._segment_issues(  # noqa: SLF001
+        source_text="闻鼓而进，闻金而退，不避水火。",
+        candidate="听见鼓声就前进，听见鸣金便后退，水火也不躲避。",
+    )
+    assert issues == []
+
+
 def test_classical_validation_allows_one_source_but_keeps_rights_gate() -> None:
     source = _source()
     cleaned = longform.validate_sources(

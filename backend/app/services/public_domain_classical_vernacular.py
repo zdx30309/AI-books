@@ -19,8 +19,8 @@ from typing import Any, Iterable
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v3"
-PROMPT_VERSION = "classical-complete-translation-only-v3"
+POLICY_VERSION = "public-domain-classical-translation-v4"
+PROMPT_VERSION = "classical-complete-translation-only-v4"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
 DEFAULT_USER_PROMPT = PROMPT_DIR / "classical_vernacular_user_default.md"
@@ -41,7 +41,7 @@ _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
     r"第\s*[一二三四五六七八九十百千零〇两\d]+\s*[回章节篇部卷折出]"
     r"|[卷部篇]\s*[一二三四五六七八九十百千零〇两\d]+"
-    r"|楔子|引子|序章|序言|前言|后记|尾声"
+    r"|楔子|引子|序|序文|序章|序言|前言|后记|尾声"
     r")[^\n]{0,100}$"
 )
 _META_RESIDUE = (
@@ -249,7 +249,7 @@ def run_classical_vernacular_longform(
         blocking.append(
             f"全书原文覆盖 {source_chars}/{expected_source_chars} 字，存在未处理原文"
         )
-    if body_chars < int(source_chars * MIN_OUTPUT_RATIO):
+    if body_chars < _minimum_output_chars(source_chars):
         blocking.append(
             f"全稿白话译文仅 {body_chars} 字，低于原文 {source_chars} 字的完整性下限"
         )
@@ -316,9 +316,13 @@ def extract_source_sections(sources: Iterable[legacy.PublicDomainSource]) -> lis
     for source_index, source in enumerate(sources, start=1):
         text = legacy.normalize_source_text(source.text)
         lines = text.splitlines()
-        heading_indexes = [
+        detected_heading_indexes = [
             index for index, line in enumerate(lines) if _CHAPTER_HEADING_RE.fullmatch(line.strip())
         ]
+        heading_indexes, catalog_removed = _body_heading_indexes(
+            lines,
+            detected_heading_indexes,
+        )
         source_id = f"S{source_index:02d}"
         if not heading_indexes:
             if text.strip():
@@ -331,7 +335,11 @@ def extract_source_sections(sources: Iterable[legacy.PublicDomainSource]) -> lis
                     )
                 )
             continue
-        preface = "\n".join(lines[: heading_indexes[0]]).strip()
+        # A genuine unlabelled preface can remain attached to the first
+        # chapter.  Once a catalogue block has been identified, however,
+        # everything before the first real body heading is navigation or
+        # editorial front matter and must never be translated as chapter 1.
+        preface = "" if catalog_removed else "\n".join(lines[: heading_indexes[0]]).strip()
         for position, heading_index in enumerate(heading_indexes):
             end = heading_indexes[position + 1] if position + 1 < len(heading_indexes) else len(lines)
             body = "\n".join(lines[heading_index + 1 : end]).strip()
@@ -348,6 +356,58 @@ def extract_source_sections(sources: Iterable[legacy.PublicDomainSource]) -> lis
                 )
             )
     return sections
+
+
+def _body_heading_indexes(
+    lines: list[str],
+    heading_indexes: list[int],
+) -> tuple[list[int], bool]:
+    """Remove a front-matter table of contents from chapter boundaries.
+
+    EPUB/PDF/Word extraction commonly places a dense list of every chapter
+    title before the actual book.  Treating that list as body text creates a
+    fake first chapter containing only a few catalogue words and makes the
+    completeness gate report errors such as ``原文 20 字，成稿 11 字``.  A
+    catalogue is recognised only when at least three headings are adjacent
+    and real headings occur later, so normal short works keep their original
+    boundaries.
+    """
+
+    if len(heading_indexes) < 4:
+        return heading_indexes, False
+
+    runs: list[list[int]] = []
+    current: list[int] = [heading_indexes[0]]
+    for index in heading_indexes[1:]:
+        if index - current[-1] <= 2:
+            current.append(index)
+        else:
+            runs.append(current)
+            current = [index]
+    runs.append(current)
+
+    for run in runs:
+        if len(run) < 3 or run[-1] == heading_indexes[-1]:
+            continue
+        later = [value for value in heading_indexes if value > run[-1]]
+        if not later:
+            continue
+
+        # Prefer direct duplicate evidence, while still handling catalogues
+        # whose extracted entries contain page numbers or spacing changes.
+        later_keys = {_heading_key(lines[value]) for value in later}
+        duplicate_count = sum(_heading_key(lines[value]) in later_keys for value in run)
+        front_matter_limit = max(80, int(len(lines) * 0.20))
+        looks_like_front_catalog = run[0] <= front_matter_limit
+        repeated_in_body = duplicate_count >= min(3, len(run))
+        if looks_like_front_catalog and repeated_in_body:
+            return later, True
+
+    return heading_indexes, False
+
+
+def _heading_key(value: str) -> str:
+    return re.sub(r"[\s·•.。…—_-]+", "", value or "").strip()
 
 
 def _translate_section(
@@ -673,7 +733,12 @@ def _segment_issues(*, source_text: str, candidate: str) -> list[str]:
     output_chars = legacy.count_text_chars(candidate)
     if not candidate.strip():
         return ["模型返回空正文"]
-    if output_chars < max(120, int(source_chars * MIN_OUTPUT_RATIO)):
+    # Do not impose a 120-character absolute floor on a short source line.
+    # Short classical headings, verse lines and terse dialogue can be fully
+    # translated into fewer characters.  Paragraph IDs plus explicit
+    # number/title anchors remain the primary completeness evidence there.
+    minimum_output_chars = _minimum_output_chars(source_chars)
+    if output_chars < minimum_output_chars:
         issues.append(f"正文过短（原文 {source_chars} 字，成稿 {output_chars} 字）")
     if output_chars > max(600, int(source_chars * MAX_OUTPUT_RATIO)):
         issues.append(f"正文异常扩写（原文 {source_chars} 字，成稿 {output_chars} 字）")
@@ -693,6 +758,14 @@ def _segment_issues(*, source_text: str, candidate: str) -> list[str]:
     if missing_titles:
         issues.append(f"遗漏原文书名或篇名：{'、'.join(missing_titles[:5])}")
     return issues
+
+
+def _minimum_output_chars(source_chars: int) -> int:
+    if source_chars < 40:
+        return max(2, int(source_chars * 0.35))
+    if source_chars < 160:
+        return max(12, int(source_chars * 0.50))
+    return int(source_chars * MIN_OUTPUT_RATIO)
 
 
 def _clean_model_text(text: str, chapter_title: str) -> str:
