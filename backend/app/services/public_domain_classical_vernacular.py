@@ -23,10 +23,17 @@ POLICY_VERSION = "public-domain-classical-translation-v2"
 PROMPT_VERSION = "classical-complete-translation-only-v2"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
+DEFAULT_USER_PROMPT = PROMPT_DIR / "classical_vernacular_user_default.md"
 
 MAX_SECTION_COUNT = 5_000
 SEGMENT_CHARS = 5_200
 CONTEXT_CHARS = 800
+MIN_PREVIEW_CHARS = 500
+MAX_PREVIEW_CHARS = 200_000
+SCOPE_COMPLETE = "complete"
+SCOPE_CHARACTERS = "characters"
+SCOPE_CHAPTERS = "chapters"
+VALID_SCOPE_MODES = {SCOPE_COMPLETE, SCOPE_CHARACTERS, SCOPE_CHAPTERS}
 MIN_OUTPUT_RATIO = 0.50
 MAX_OUTPUT_RATIO = 3.20
 
@@ -80,6 +87,10 @@ class ClassicalVernacularProfile:
     must_preserve: str = "原文全部信息、顺序、人物、称谓、专名、数字、事件、因果与语气"
     focus_issues: str = "漏译、错译、增译、缩写、扩写、重排、解释和续写"
     special_requirements: str = "只做完整翻译；不得改写、润色、扩写、缩写、重组、评论、总结或续写"
+    custom_prompt: str = ""
+    scope_mode: str = SCOPE_COMPLETE
+    preview_target_chars: int = 0
+    preview_chapters: int = 0
 
 
 @dataclass(frozen=True)
@@ -91,10 +102,40 @@ class SourceSection:
 
 
 def normalize_profile(value: dict[str, Any] | None) -> ClassicalVernacularProfile:
-    # Older clients still send adaptation fields.  They are intentionally
-    # ignored: this route has one immutable operation, complete translation.
-    del value
-    return ClassicalVernacularProfile()
+    # Older adaptation/style fields remain ignored.  Only the editable
+    # translation instruction and bounded execution scope are accepted.
+    raw = dict(value or {})
+    scope_mode = str(raw.get("scope_mode") or SCOPE_COMPLETE).strip().lower()
+    if scope_mode not in VALID_SCOPE_MODES:
+        raise legacy.PublicDomainValidationError("古文翻译范围必须是完整翻译、按字数试译或按章节试译。")
+    custom_prompt = str(raw.get("custom_prompt") or "").strip()
+    if len(custom_prompt) > 30_000:
+        raise legacy.PublicDomainValidationError("自定义翻译 Prompt 不能超过 30000 字。")
+    try:
+        preview_target_chars = int(raw.get("preview_target_chars") or 0)
+        preview_chapters = int(raw.get("preview_chapters") or 0)
+    except (TypeError, ValueError) as exc:
+        raise legacy.PublicDomainValidationError("试译字数或章节数格式不正确。") from exc
+    if scope_mode == SCOPE_CHARACTERS and not (
+        MIN_PREVIEW_CHARS <= preview_target_chars <= MAX_PREVIEW_CHARS
+    ):
+        raise legacy.PublicDomainValidationError(
+            f"按字数试译请输入 {MIN_PREVIEW_CHARS}–{MAX_PREVIEW_CHARS} 字。"
+        )
+    if scope_mode == SCOPE_CHAPTERS and not (1 <= preview_chapters <= MAX_SECTION_COUNT):
+        raise legacy.PublicDomainValidationError(
+            f"按章节试译请输入 1–{MAX_SECTION_COUNT} 章。"
+        )
+    return ClassicalVernacularProfile(
+        custom_prompt=custom_prompt,
+        scope_mode=scope_mode,
+        preview_target_chars=preview_target_chars,
+        preview_chapters=preview_chapters,
+    )
+
+
+def get_default_user_prompt() -> str:
+    return DEFAULT_USER_PROMPT.read_text(encoding="utf-8").strip()
 
 
 def run_classical_vernacular_longform(
@@ -112,14 +153,21 @@ def run_classical_vernacular_longform(
 
     items = list(sources)
     profile = normalize_profile(adaptation_profile)
-    prompt_hash = _prompt_hash()
-    sections = extract_source_sections(items)
-    if not sections:
+    user_prompt = profile.custom_prompt or get_default_user_prompt()
+    prompt_hash = _prompt_hash(user_prompt)
+    all_sections = extract_source_sections(items)
+    if not all_sections:
         raise legacy.PublicDomainValidationError("没有识别到可翻译的公版古文正文。")
-    if len(sections) > MAX_SECTION_COUNT:
+    if len(all_sections) > MAX_SECTION_COUNT:
         raise legacy.PublicDomainValidationError(
-            f"识别到 {len(sections)} 个原文章节，超过单任务 {MAX_SECTION_COUNT} 章上限。"
+            f"识别到 {len(all_sections)} 个原文章节，超过单任务 {MAX_SECTION_COUNT} 章上限。"
         )
+    sections = all_sections
+    if profile.scope_mode == SCOPE_CHAPTERS:
+        sections = all_sections[: profile.preview_chapters]
+    preview_target_chars = (
+        profile.preview_target_chars if profile.scope_mode == SCOPE_CHARACTERS else 0
+    )
 
     plan = {
         "policy_version": POLICY_VERSION,
@@ -127,6 +175,11 @@ def run_classical_vernacular_longform(
         "prompt_hash": prompt_hash,
         "title": (target_title or items[0].title).strip(),
         "chapter_count": len(sections),
+        "available_chapter_count": len(all_sections),
+        "scope_mode": profile.scope_mode,
+        "preview_target_chars": preview_target_chars,
+        "preview_chapters": profile.preview_chapters,
+        "user_prompt": user_prompt,
         "profile": asdict(profile),
         "chapters": [
             {
@@ -144,11 +197,21 @@ def run_classical_vernacular_longform(
     _notify(
         on_progress,
         8,
-        f"已按原文顺序识别 {len(sections)} 个章节，开始逐段完整翻译；每段完成即保存断点",
+        (
+            f"已识别 {len(all_sections)} 个原文章节，本次按字数试译约 {preview_target_chars} 字"
+            if profile.scope_mode == SCOPE_CHARACTERS
+            else f"已识别 {len(all_sections)} 个原文章节，本次试译前 {len(sections)} 章"
+            if profile.scope_mode == SCOPE_CHAPTERS
+            else f"已按原文顺序识别 {len(sections)} 个章节，开始逐段完整翻译；每段完成即保存断点"
+        ),
     )
 
     chapters: list[legacy.ChapterResult] = []
+    translated_chars = 0
     for index, section in enumerate(sections, start=1):
+        remaining_chars = max(0, preview_target_chars - translated_chars)
+        if preview_target_chars and chapters and remaining_chars <= 0:
+            break
         chapter = _translate_section(
             number=index,
             section=section,
@@ -157,16 +220,19 @@ def run_classical_vernacular_longform(
             work_title=plan["title"],
             profile=profile,
             prompt_hash=prompt_hash,
+            user_prompt=user_prompt,
+            preview_output_chars=remaining_chars if preview_target_chars else 0,
             on_progress=on_progress,
         )
         chapters.append(chapter)
+        translated_chars += legacy.count_text_chars(chapter.text)
         if on_chapter_completed is not None:
             on_chapter_completed(chapter)
         progress = 8 + int(84 * index / len(sections))
         _notify(on_progress, progress, f"古文完整翻译 {index}/{len(sections)} 章已完成并落盘")
 
     body_chars = sum(legacy.count_text_chars(item.text) for item in chapters)
-    source_chars = sum(legacy.count_text_chars(item.text) for item in items)
+    source_chars = sum(int(item.audit.get("processed_source_chars") or 0) for item in chapters)
     blocking: list[str] = []
     if len(chapters) != len(sections):
         blocking.append("最终章节数量与原文章节数量不一致")
@@ -180,12 +246,18 @@ def run_classical_vernacular_longform(
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
         "pipeline": "source_order -> bounded_segments -> paragraph_ids -> complete_translation -> local_completeness_gate -> bookshelf",
-        "source_chapters": len(sections),
+        "source_chapters": len(chapters),
+        "requested_source_chapters": len(sections),
+        "available_source_chapters": len(all_sections),
         "output_chapters": len(chapters),
         "source_chars": source_chars,
         "output_chars": body_chars,
         "paid_calls_per_segment": 1,
         "automatic_retry_calls": 0,
+        "scope_mode": profile.scope_mode,
+        "preview_target_chars": preview_target_chars,
+        "preview_target_chapters": profile.preview_chapters,
+        "is_preview": profile.scope_mode != SCOPE_COMPLETE,
         "blocking_issues": blocking,
         "chapter_audits": [item.audit for item in chapters],
     }
@@ -195,9 +267,10 @@ def run_classical_vernacular_longform(
 
     title = str(plan["title"] or items[0].title).strip()
     summary = (
-        f"按公版原作的章节与段落顺序，对《{items[0].title}》逐段完整翻译为现代白话。"
-        "译文不增删原文信息，不改写、不润色、不重组、不评论、不总结，也不续写。"
-    )
+        f"《{items[0].title}》古文白话试译稿；仅包含本次选定范围。"
+        if profile.scope_mode != SCOPE_COMPLETE
+        else f"按公版原作的章节与段落顺序，对《{items[0].title}》逐段完整翻译为现代白话。"
+    ) + "译文不增删原文信息，不改写、不重组、不评论、不总结，也不续写。"
     markdown = legacy.render_final_markdown(title=title, summary=summary, chapters=chapters)
     _atomic_write_text(work_dir / "04_final.md", markdown)
     _notify(on_progress, 94, "完整翻译与整书完整性检查完成，正在写入书架")
@@ -268,6 +341,8 @@ def _translate_section(
     work_title: str,
     profile: ClassicalVernacularProfile,
     prompt_hash: str,
+    user_prompt: str,
+    preview_output_chars: int,
     on_progress: legacy.ProgressCallback | None,
 ) -> legacy.ChapterResult:
     chapter_dir = work_dir / "classical_chapters"
@@ -299,9 +374,15 @@ def _translate_section(
             audit=dict(payload.get("audit") or {}),
         )
 
-    segments = _split_for_context(section.text)
+    segment_limit = SEGMENT_CHARS
+    if preview_output_chars:
+        # Smaller semantic segments keep a paid preview close to the selected
+        # output size without truncating a model response mid-sentence.
+        segment_limit = min(SEGMENT_CHARS, max(600, int(preview_output_chars / 1.35)))
+    segments = _split_for_context(section.text, limit=segment_limit)
     outputs: list[str] = []
     segment_audits: list[dict[str, Any]] = []
+    processed_source_chars = 0
     for segment_index, source_text in enumerate(segments, start=1):
         segment_key = _sha(
             "|".join((artifact_key, str(segment_index), legacy.text_sha256(source_text)))
@@ -318,6 +399,7 @@ def _translate_section(
         next_context = segments[segment_index][:CONTEXT_CHARS] if segment_index < len(segments) else "无"
         prompt = _render(
             TRANSLATION_PROMPT,
+            user_prompt=user_prompt,
             work_title=work_title,
             chapter_title=section.title,
             segment_label=segment_label,
@@ -384,6 +466,7 @@ def _translate_section(
                 f"《{section.title}》第 {segment_index} 段未通过完整翻译检查：{'；'.join(issues)}"
             )
         outputs.append(final)
+        processed_source_chars += source_chars
         chapter_fraction = ((number - 1) + (segment_index / max(1, len(segments)))) / max(
             1, total_sections
         )
@@ -392,6 +475,8 @@ def _translate_section(
             8 + int(84 * chapter_fraction),
             f"完整翻译第 {number}/{total_sections} 章，第 {segment_index}/{len(segments)} 段已保存",
         )
+        if preview_output_chars and sum(legacy.count_text_chars(value) for value in outputs) >= preview_output_chars:
+            break
 
     text = "\n\n".join(value.strip() for value in outputs if value.strip()).strip()
     chapter_audit = {
@@ -401,8 +486,11 @@ def _translate_section(
         "source_title": section.source_title,
         "source_sha256": source_hash,
         "source_chars": legacy.count_text_chars(section.text),
+        "processed_source_chars": processed_source_chars,
         "output_chars": legacy.count_text_chars(text),
-        "segments": len(segments),
+        "segments": len(segment_audits),
+        "available_segments": len(segments),
+        "partial_section": len(segment_audits) < len(segments),
         "segment_audits": segment_audits,
         "rounds": 1,
         "operation": "complete_translation_only",
@@ -613,8 +701,12 @@ def _sha(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
-def _prompt_hash() -> str:
-    return _sha(TRANSLATION_PROMPT.read_text(encoding="utf-8"))
+def _prompt_hash(user_prompt: str) -> str:
+    return _sha(
+        TRANSLATION_PROMPT.read_text(encoding="utf-8")
+        + "\n---USER---\n"
+        + user_prompt
+    )
 
 
 __all__ = [
@@ -622,6 +714,7 @@ __all__ = [
     "POLICY_VERSION",
     "PROMPT_VERSION",
     "extract_source_sections",
+    "get_default_user_prompt",
     "normalize_profile",
     "run_classical_vernacular_longform",
 ]

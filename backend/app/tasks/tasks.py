@@ -1759,9 +1759,19 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         owns_run = True
         task.error_message = None
         generation_mode = str(cfg.get("generation_mode") or FULL_MODE)
+        classical_profile = (
+            dict(cfg.get("adaptation_profile") or {})
+            if isinstance(cfg.get("adaptation_profile"), dict)
+            else {}
+        )
+        classical_scope_mode = str(classical_profile.get("scope_mode") or "complete")
         task.current_step = (
             "正在隔离现代材料并建立匿名叙事参数；佛教事实只允许使用古代原典证据"
             if generation_mode == "research_preview"
+            else "正在按选定字数试译，每个完整语义段完成即保存"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE and classical_scope_mode == "characters"
+            else "正在按原文章节边界试译，每章完成即保存"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE and classical_scope_mode == "chapters"
             else "正在按原作章节顺序逐段完整翻译，每段完成即保存断点"
             if generation_mode == CLASSICAL_VERNACULAR_MODE
             else "正在验证 5–10 本来源并建立逐章串行检查点"
@@ -1811,6 +1821,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             quality_report_summary=(
                 "现代材料已隔离；叙事化非虚构、古代原典事实、来源重合与全稿终审通过"
                 if generation_mode == "research_preview"
+                else "选定试译范围、逐段编号、数字篇名锚点与现代内容检查通过"
+                if generation_mode == CLASSICAL_VERNACULAR_MODE and classical_scope_mode != "complete"
                 else "原文章节顺序、逐段编号完整翻译、数字篇名锚点与现代内容检查通过"
                 if generation_mode == CLASSICAL_VERNACULAR_MODE
                 else "逐章串行、来源重合、现代材料、语言结构与破折号终审通过"
@@ -1915,6 +1927,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.current_step = (
             f"叙事化非虚构新书完成：{len(final_chapters)} 章，人物、事件与观点仅使用已核验古代原典证据"
             if generation_mode == "research_preview"
+            else f"公版古文试译完成：已按选定范围生成 {len(final_chapters)} 个结果章节"
+            if generation_mode == CLASSICAL_VERNACULAR_MODE and classical_scope_mode != "complete"
             else f"公版古文完整翻译完成：{len(final_chapters)} 个原文章节已按顺序完整翻译"
             if generation_mode == CLASSICAL_VERNACULAR_MODE
             else f"全部完成：{len(final_chapters)} 章已串行落盘并通过整书质量终检"

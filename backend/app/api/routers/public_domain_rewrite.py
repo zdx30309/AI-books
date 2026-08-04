@@ -11,9 +11,10 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import re
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,12 @@ from app.services.public_domain_longform import (
 from app.services.public_domain_classical_vernacular import (
     POLICY_VERSION as CLASSICAL_VERNACULAR_POLICY_VERSION,
 )
+from app.services.public_domain_classical_vernacular import (
+    MAX_PREVIEW_CHARS,
+    MIN_PREVIEW_CHARS,
+    extract_source_sections as extract_classical_source_sections,
+    get_default_user_prompt,
+)
 from app.services.public_domain_longform import (
     POLICY_VERSION as LONGFORM_POLICY_VERSION,
 )
@@ -50,6 +57,7 @@ from app.services.public_domain_longform import (
 from app.services.public_domain_longform import (
     source_to_dict as longform_source_to_dict,
 )
+from app.services.public_domain_longform import source_from_dict as longform_source_from_dict
 from app.services.public_domain_longform import (
     validate_sources as validate_longform_sources,
 )
@@ -105,6 +113,38 @@ class ClassicalVernacularProfilePayload(BaseModel):
         default="只做完整翻译；不得改写、润色、扩写、缩写、重组、评论、总结或续写",
         max_length=3000,
     )
+    custom_prompt: str = Field(default="", max_length=30_000)
+    scope_mode: str = Field(default="complete", pattern="^(complete|characters|chapters)$")
+    preview_target_chars: int = Field(default=0, ge=0, le=MAX_PREVIEW_CHARS)
+    preview_chapters: int = Field(default=0, ge=0, le=5_000)
+
+
+class ClassicalTranslationSettingsResponse(BaseModel):
+    default_prompt: str
+    min_preview_chars: int
+    max_preview_chars: int
+    max_chapters: int
+
+
+class ClassicalSourceSectionItem(BaseModel):
+    number: int
+    title: str
+    source_title: str
+    char_count: int
+
+
+class ClassicalSourceResponse(BaseModel):
+    task_id: UUID
+    total: int
+    selected_number: int
+    selected_title: str
+    selected_source_title: str
+    selected_text: str
+    selected_char_count: int
+    offset: int
+    next_offset: int | None
+    has_more: bool
+    sections: list[ClassicalSourceSectionItem]
 
 
 class PublicDomainRewriteRequest(BaseModel):
@@ -122,6 +162,82 @@ class PublicDomainRewriteRequest(BaseModel):
     generation_mode: str = FULL_MODE
     research_use_confirmed: bool = False
     adaptation_profile: ClassicalVernacularProfilePayload | None = None
+
+
+@router.get(
+    "/classical-translation/settings",
+    response_model=ClassicalTranslationSettingsResponse,
+    summary="获取古文白话默认可编辑 Prompt 与试译范围",
+)
+async def get_classical_translation_settings(
+    _user: User = Depends(get_current_user),
+) -> ClassicalTranslationSettingsResponse:
+    return ClassicalTranslationSettingsResponse(
+        default_prompt=get_default_user_prompt(),
+        min_preview_chars=MIN_PREVIEW_CHARS,
+        max_preview_chars=MAX_PREVIEW_CHARS,
+        max_chapters=5_000,
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/classical-source",
+    response_model=ClassicalSourceResponse,
+    summary="读取古文白话任务的原文章节",
+)
+async def get_classical_task_source(
+    task_id: UUID,
+    chapter_num: int = Query(default=1, ge=1),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50_000, ge=1_000, le=100_000),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassicalSourceResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    cfg = dict(task.config or {})
+    if not bool(cfg.get("public_domain_classical_vernacular")):
+        raise HTTPException(status_code=400, detail="该任务不是公版古文白话任务")
+    snapshot = Path(str(cfg.get("source_snapshot") or ""))
+    try:
+        payload = json.loads(snapshot.read_text(encoding="utf-8"))
+        sources = [
+            longform_source_from_dict(item)
+            for item in payload
+            if isinstance(item, dict)
+        ]
+        sections = extract_classical_source_sections(sources)
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=409, detail=f"原文快照暂不可读：{exc}") from exc
+    if not sections:
+        raise HTTPException(status_code=409, detail="原文快照中没有可显示章节")
+    selected_index = min(chapter_num, len(sections)) - 1
+    selected = sections[selected_index]
+    selected_slice = selected.text[offset : offset + limit]
+    next_offset = offset + len(selected_slice)
+    has_more = next_offset < len(selected.text)
+    return ClassicalSourceResponse(
+        task_id=task.id,
+        total=len(sections),
+        selected_number=selected_index + 1,
+        selected_title=selected.title,
+        selected_source_title=selected.source_title,
+        selected_text=selected_slice,
+        selected_char_count=len(re.sub(r"\s+", "", selected.text)),
+        offset=offset,
+        next_offset=next_offset if has_more else None,
+        has_more=has_more,
+        sections=[
+            ClassicalSourceSectionItem(
+                number=index,
+                title=item.title,
+                source_title=item.source_title,
+                char_count=len(re.sub(r"\s+", "", item.text)),
+            )
+            for index, item in enumerate(sections, start=1)
+        ],
+    )
 
 
 @router.post(
@@ -225,6 +341,14 @@ def _create_longform_task(
     if generation_mode not in {FULL_MODE, CLASSICAL_VERNACULAR_MODE}:
         raise HTTPException(status_code=400, detail=f"不支持的公版长篇模式：{generation_mode}")
     classical = generation_mode == CLASSICAL_VERNACULAR_MODE
+    classical_profile = (
+        req.adaptation_profile.model_dump()
+        if classical and req.adaptation_profile
+        else {}
+    )
+    classical_scope = str(classical_profile.get("scope_mode") or "complete")
+    classical_preview_chars = int(classical_profile.get("preview_target_chars") or 0)
+    classical_preview_chapters = int(classical_profile.get("preview_chapters") or 0)
     raw_sources = [_to_longform_source(item) for item in req.sources]
     try:
         sources = validate_longform_sources(
@@ -277,7 +401,11 @@ def _create_longform_task(
         status=TaskStatus.PENDING,
         progress=0,
         current_step=(
-            f"已接收 {len(sources)} 份公版古典原文，等待按原章节顺序逐段完整翻译"
+            f"已接收 {len(sources)} 份公版古典原文，等待按约 {classical_preview_chars} 字试译"
+            if classical and classical_scope == "characters"
+            else f"已接收 {len(sources)} 份公版古典原文，等待试译前 {classical_preview_chapters} 章"
+            if classical and classical_scope == "chapters"
+            else f"已接收 {len(sources)} 份公版古典原文，等待按原章节顺序逐段完整翻译"
             if classical
             else f"已接收 {len(sources)} 本来源，等待整书规划"
         ),
@@ -306,14 +434,20 @@ def _create_longform_task(
             "source_reports": source_reports,
             "target_title": req.target_title,
             "target_direction": req.target_direction,
-            "target_length": dimensions.target_chars,
-            "target_chapters": dimensions.target_chapters,
+            "target_length": (
+                classical_preview_chars
+                if classical and classical_scope == "characters"
+                else dimensions.target_chars
+            ),
+            "target_chapters": (
+                classical_preview_chapters
+                if classical and classical_scope == "chapters"
+                else dimensions.target_chapters
+            ),
             "median_source_chars": dimensions.median_source_chars,
             "median_source_chapters": dimensions.median_source_chapters,
             "output_style": req.output_style,
-            "adaptation_profile": (
-                req.adaptation_profile.model_dump() if req.adaptation_profile else None
-            ),
+            "adaptation_profile": classical_profile or None,
             "public_domain_confirmed": True,
             "generation_complete": False,
             "cover_disabled": True,

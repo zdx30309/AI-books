@@ -178,3 +178,86 @@ def test_classical_local_gate_rejects_dropped_numeric_anchor(
             generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
             public_domain_confirmed=True,
         )
+
+
+def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def fake_call(_work_dir: Path, *, prompt: str, **_kwargs) -> str:
+        prompts.append(prompt)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    longform.run_public_domain_longform(
+        sources=[_source()],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={"custom_prompt": "对白用简洁现代汉语，叙述保持沉稳。"},
+    )
+    assert "对白用简洁现代汉语，叙述保持沉稳。" in prompts[0]
+    assert "如果二者冲突，以固定规则为准" in prompts[0]
+    assert "不得改编、重写、润色、仿写、扩写、缩写" in prompts[0]
+
+
+def test_character_preview_stops_after_selected_output_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
+        calls.append(action)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    source = _source(repeats=100)
+    result = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={
+            "scope_mode": "characters",
+            "preview_target_chars": 1_000,
+        },
+    )
+    output_chars = longform.count_text_chars(result.chapters[0].text)
+    assert output_chars >= 1_000
+    assert output_chars < longform.count_text_chars(source.text)
+    assert result.quality_report["is_preview"] is True
+    assert result.quality_report["scope_mode"] == "characters"
+    assert result.chapters[0].audit["partial_section"] is True
+    assert 1 < len(calls) < 10
+
+
+def test_chapter_preview_uses_original_chapter_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _source().text.split("\n", 1)[1]
+    source = longform.PublicDomainSource(
+        title="旧城两卷",
+        text=f"第一回 城门领命\n{body}\n第二回 守宅待信\n{body}",
+        author="佚名",
+        rights_note="公版文本，保护期届满",
+    )
+    monkeypatch.setattr(
+        longform,
+        "_call_llm",
+        lambda _work_dir, *, prompt, **_kwargs: _echo_marked_source(prompt),
+    )
+    result = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={"scope_mode": "chapters", "preview_chapters": 1},
+    )
+    assert len(result.chapters) == 1
+    assert result.chapters[0].title == "第一回 城门领命"
+    assert result.quality_report["available_source_chapters"] == 2
+    assert result.quality_report["preview_target_chapters"] == 1

@@ -71,6 +71,8 @@ import type {
   PolishParagraphRequest,
   PolishParagraphResponse,
   PublicDomainRewriteRequest,
+  ClassicalSourceResponse,
+  ClassicalTranslationSettingsResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
@@ -733,6 +735,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getClassicalTranslationSettings: () =>
+    request<ClassicalTranslationSettingsResponse>(
+      "/public-domain-rewrite/classical-translation/settings",
+    ),
+  getClassicalTaskSource: (id: string, chapterNum = 1, offset = 0) =>
+    request<ClassicalSourceResponse>(
+      `/public-domain-rewrite/tasks/${id}/classical-source?chapter_num=${chapterNum}&offset=${offset}`,
+    ),
   generatePublicDomainRewriteFromFiles: (
     files: File[],
     metadata: Omit<PublicDomainRewriteRequest, "sources"> & {

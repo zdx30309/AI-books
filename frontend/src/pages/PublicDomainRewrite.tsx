@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api } from "@/api/client";
 import type { PublicDomainRewriteSource } from "@/api/types";
+import { ClassicalTranslationWorkspace } from "@/pages/ClassicalTranslationWorkspace";
 
 interface SourceDraft {
   title: string;
@@ -72,7 +73,14 @@ function formatChars(value: string) {
   return value.replace(/\s+/g, "").length.toLocaleString("zh-CN");
 }
 
-export function PublicDomainRewrite({ fixedMode }: PublicDomainRewriteProps) {
+export function PublicDomainRewrite(props: PublicDomainRewriteProps) {
+  if (props.fixedMode === "classical_vernacular") {
+    return <ClassicalTranslationWorkspace />;
+  }
+  return <PublicDomainRewriteForm {...props} />;
+}
+
+function PublicDomainRewriteForm({ fixedMode }: PublicDomainRewriteProps) {
   const navigate = useNavigate();
   const initialMode = fixedMode ?? "full";
   const [sources, setSources] = useState<SourceDraft[]>(() => initialSources(initialMode));

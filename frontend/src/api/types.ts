@@ -401,6 +401,38 @@ export interface ClassicalVernacularProfile {
   must_preserve?: string;
   focus_issues?: string;
   special_requirements?: string;
+  custom_prompt?: string;
+  scope_mode?: "complete" | "characters" | "chapters";
+  preview_target_chars?: number;
+  preview_chapters?: number;
+}
+
+export interface ClassicalTranslationSettingsResponse {
+  default_prompt: string;
+  min_preview_chars: number;
+  max_preview_chars: number;
+  max_chapters: number;
+}
+
+export interface ClassicalSourceSectionItem {
+  number: number;
+  title: string;
+  source_title: string;
+  char_count: number;
+}
+
+export interface ClassicalSourceResponse {
+  task_id: string;
+  total: number;
+  selected_number: number;
+  selected_title: string;
+  selected_source_title: string;
+  selected_text: string;
+  selected_char_count: number;
+  offset: number;
+  next_offset: number | null;
+  has_more: boolean;
+  sections: ClassicalSourceSectionItem[];
 }
 
 export interface PublicDomainRewriteRequest {
