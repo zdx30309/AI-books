@@ -43,10 +43,10 @@ def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, dict[str, object]]] = []
 
-    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
-        calls.append((action, prompt))
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **kwargs) -> str:
+        calls.append((action, prompt, kwargs))
         return _echo_marked_source(prompt)
 
     monkeypatch.setattr(longform, "_call_llm", fake_call)
@@ -63,6 +63,8 @@ def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter
     assert "只做翻译" in calls[0][1]
     assert "不得改编、重写、润色、仿写、扩写、缩写" in calls[0][1]
     assert "[[P0001]]" in calls[0][1]
+    assert calls[0][2]["thinking"] is False
+    assert calls[0][2]["retries"] == 1
     assert result.title == "旧城记"
     assert [item.title for item in result.chapters] == ["第一回 城门领命"]
     assert "四十二" in result.chapters[0].text

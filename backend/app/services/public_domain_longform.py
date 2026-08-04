@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
+from tenacity import stop_after_attempt
 
 from app.core.config import settings
 from app.services.deepseek import generate_text as deepseek_generate_text
@@ -3787,6 +3788,8 @@ def _call_llm(
     temperature: float,
     max_output_tokens: int,
     model: str | None = None,
+    thinking: bool | None = None,
+    retries: int | None = None,
 ) -> str:
     selected_model = model or settings.DEEPSEEK_MODEL
     started = time.monotonic()
@@ -3797,14 +3800,22 @@ def _call_llm(
         "model": selected_model,
         "input_chars": len(prompt),
         "max_output_tokens": max_output_tokens,
+        "thinking": thinking,
+        "retries": retries,
         "status": "started",
     }
     try:
-        output = deepseek_generate_text(
+        generator = deepseek_generate_text
+        if retries is not None:
+            generator = deepseek_generate_text.retry_with(
+                stop=stop_after_attempt(max(1, int(retries)))
+            )
+        output = generator(
             prompt,
             model=selected_model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            thinking=thinking,
             fail_on_max_tokens=True,
         ).strip()
         log.update(

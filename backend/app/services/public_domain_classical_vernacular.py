@@ -525,6 +525,13 @@ def _translate_section(
                 prompt=prompt,
                 temperature=0.10,
                 max_output_tokens=_output_tokens(target_chars),
+                # Translation is a constrained transformation rather than a
+                # reasoning task.  Disabling hidden thinking prevents the
+                # model from spending the whole output budget on reasoning
+                # and returning an empty visible answer.  One provider call
+                # per segment also preserves the advertised cost contract.
+                thinking=False,
+                retries=1,
             )
             final, translated_units = _parse_marked_translation(
                 raw_translation,
