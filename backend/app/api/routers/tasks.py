@@ -697,6 +697,12 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("paused_at", None)
     cfg.pop("paused_run_id", None)
     cfg.pop("last_pause_message", None)
+    if cfg.get("public_domain_longform_v2"):
+        # A retry starts a new validation run.  Do not keep rendering the
+        # previous manual-review reason while the corrected pipeline is
+        # already processing from its checkpoints.
+        cfg["public_domain_quality_blocked"] = False
+        cfg.pop("public_domain_quality_reason", None)
     if cfg.get("aigc_required"):
         cfg["aigc_status"] = "pending"
         cfg["aigc_passed"] = False

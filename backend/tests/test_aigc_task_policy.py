@@ -50,6 +50,26 @@ def test_historical_task_retry_is_not_retroactively_stamped(monkeypatch: pytest.
     assert historical.status == TaskStatus.PENDING
 
 
+def test_public_domain_retry_clears_stale_quality_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(task_router, "_retry_resume_state", lambda _task_id: (8, "从断点继续"))
+    task = Task(
+        id=uuid4(),
+        source_url="manual://public-domain-retry",
+        status=TaskStatus.MANUAL_REVIEW,
+        config={
+            "public_domain_longform_v2": True,
+            "public_domain_quality_blocked": True,
+            "public_domain_quality_reason": "旧目录被误识别成了正文",
+        },
+    )
+
+    task_router._prepare_task_for_retry(task)  # noqa: SLF001
+
+    assert task.config["public_domain_quality_blocked"] is False
+    assert "public_domain_quality_reason" not in task.config
+    assert task.status == TaskStatus.PENDING
+
+
 def test_manual_review_task_cannot_be_downloaded() -> None:
     task = Task(
         id=uuid4(),
