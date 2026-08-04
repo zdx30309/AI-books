@@ -605,3 +605,62 @@ def test_continue_complete_keeps_same_task_and_original_checkpoint_profile() -> 
     assert profile["_checkpoint_profile"]["scope_mode"] == "characters"
     assert profile["_checkpoint_profile"]["preview_target_chars"] == 3_000
     assert 600 <= profile["_checkpoint_segment_limit"] <= classical.SEGMENT_CHARS
+
+
+def test_continue_uses_current_scope_and_exact_edited_prompt() -> None:
+    task = Task(
+        id=uuid4(),
+        source_url="manual://public-domain-classical-vernacular",
+        status=TaskStatus.COMPLETED,
+        progress=100,
+        current_step="试译完成",
+        config={
+            "public_domain_classical_vernacular": True,
+            "public_domain_classical_scope": "characters",
+            "generation_complete": True,
+            "source_snapshot": "saved-source.json",
+            "source_reports": [{"chars": 50_000, "detected_chapters": 12}],
+            "adaptation_profile": {
+                "custom_prompt": "旧 Prompt。",
+                "scope_mode": "characters",
+                "preview_target_chars": 3_000,
+                "preview_chapters": 0,
+            },
+        },
+    )
+
+    public_domain_router._prepare_classical_continuation(  # noqa: SLF001
+        task,
+        scope_mode="chapters",
+        preview_chapters=3,
+        custom_prompt="逐段完整翻译；每个付费分段必须原样注入本指令。",
+    )
+
+    profile = task.config["adaptation_profile"]
+    assert task.status == TaskStatus.PENDING
+    assert profile["scope_mode"] == "chapters"
+    assert profile["preview_chapters"] == 3
+    assert profile["custom_prompt"] == "逐段完整翻译；每个付费分段必须原样注入本指令。"
+    assert task.config["source_snapshot"] == "saved-source.json"
+
+
+def test_pause_request_stops_before_next_paid_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
+        calls.append(action)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    with pytest.raises(classical.ClassicalTranslationPaused):
+        longform.run_public_domain_longform(
+            sources=[_source(repeats=100)],
+            work_dir=tmp_path,
+            generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+            public_domain_confirmed=True,
+            should_pause=lambda: True,
+        )
+    assert calls == []

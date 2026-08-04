@@ -14,7 +14,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from app.services import public_domain_longform as legacy
 
@@ -94,6 +94,10 @@ class ClassicalVernacularProfile:
     preview_chapters: int = 0
 
 
+class ClassicalTranslationPaused(RuntimeError):
+    """Raised only at a durable segment boundary after a pause request."""
+
+
 @dataclass(frozen=True)
 class SourceSection:
     source_id: str
@@ -149,6 +153,7 @@ def run_classical_vernacular_longform(
     adaptation_profile: dict[str, Any] | None,
     on_progress: legacy.ProgressCallback | None,
     on_chapter_completed: legacy.ChapterCompletedCallback | None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> legacy.PublicDomainLongformResult:
     """Translate all supplied public-domain classical text in source order."""
 
@@ -179,6 +184,11 @@ def run_classical_vernacular_longform(
         segment_limit_override = None
     user_prompt = profile.custom_prompt or get_default_user_prompt()
     prompt_hash = _prompt_hash(user_prompt)
+    stored_local_overrides = (
+        raw_profile.get("_local_prompt_overrides")
+        if isinstance(raw_profile.get("_local_prompt_overrides"), dict)
+        else {}
+    )
     all_sections = extract_source_sections(items)
     if not all_sections:
         raise legacy.PublicDomainValidationError("没有识别到可翻译的公版古文正文。")
@@ -238,9 +248,22 @@ def run_classical_vernacular_longform(
     chapters: list[legacy.ChapterResult] = []
     translated_chars = 0
     for index, section in enumerate(sections, start=1):
+        if should_pause is not None and should_pause():
+            raise ClassicalTranslationPaused("古文白话翻译已暂停，已完成分段均已保存")
         remaining_chars = max(0, preview_target_chars - translated_chars)
         if preview_target_chars and chapters and remaining_chars <= 0:
             break
+        chapter_segment_limit = segment_limit_override
+        if profile.scope_mode != SCOPE_CHARACTERS and segment_limit_override is not None:
+            chapter_dir = work_dir / "classical_chapters"
+            has_paid_checkpoint = any(
+                chapter_dir.glob(f"{index:03d}_*_translation.json")
+            ) if chapter_dir.exists() else False
+            # Preserve the smaller preview boundary only for chapters that
+            # actually have paid preview segments.  New chapters return to the
+            # normal bounded context size instead of multiplying API calls.
+            if not has_paid_checkpoint:
+                chapter_segment_limit = None
         chapter = _translate_section(
             number=index,
             section=section,
@@ -249,7 +272,7 @@ def run_classical_vernacular_longform(
             work_title=plan["title"],
             profile=profile,
             artifact_profile_hash=artifact_profile_hash,
-            segment_limit_override=segment_limit_override,
+            segment_limit_override=chapter_segment_limit,
             prompt_hash=prompt_hash,
             user_prompt=user_prompt,
             previous_section_context=(sections[index - 2].text[-CONTEXT_CHARS:] if index > 1 else "无"),
@@ -257,6 +280,12 @@ def run_classical_vernacular_longform(
             next_section_context=(sections[index].text[:CONTEXT_CHARS] if index < len(sections) else "无"),
             preview_output_chars=remaining_chars if preview_target_chars else 0,
             on_progress=on_progress,
+            should_pause=should_pause,
+            prompt_overrides=(
+                dict(stored_local_overrides.get(str(index)) or {})
+                if isinstance(stored_local_overrides.get(str(index)), dict)
+                else None
+            ),
         )
         chapters.append(chapter)
         translated_chars += legacy.count_text_chars(chapter.text)
@@ -457,11 +486,14 @@ def _translate_section(
     next_section_context: str,
     preview_output_chars: int,
     on_progress: legacy.ProgressCallback | None,
+    should_pause: Callable[[], bool] | None = None,
+    prompt_overrides: dict[int, str] | None = None,
+    only_segment: int | None = None,
 ) -> legacy.ChapterResult:
     chapter_dir = work_dir / "classical_chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
     source_hash = legacy.text_sha256(section.text)
-    artifact_key = _sha(
+    base_artifact_key = _sha(
         "|".join(
             (
                 POLICY_VERSION,
@@ -481,10 +513,54 @@ def _translate_section(
         and isinstance(cached["chapter"].get("audit"), dict)
         and cached["chapter"]["audit"].get("partial_section")
     )
+    normalized_overrides: dict[int, str] = {}
+    for raw_key, raw_value in dict(prompt_overrides or {}).items():
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if str(raw_key).strip().lower() == "all":
+            normalized_overrides[0] = value
+            continue
+        try:
+            key = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+        if key >= 1:
+            normalized_overrides[key] = value
+    override_hash = _sha(
+        json.dumps(normalized_overrides, ensure_ascii=False, sort_keys=True)
+    ) if normalized_overrides else ""
+    artifact_key = (
+        _sha("|".join((base_artifact_key, "LOCAL_OVERRIDE", override_hash)))
+        if normalized_overrides
+        else base_artifact_key
+    )
+    cached_output_chars = int(
+        ((cached or {}).get("chapter") or {}).get("audit", {}).get("output_chars") or 0
+    ) if isinstance(cached, dict) else 0
+    cached_audit = (
+        dict(((cached or {}).get("chapter") or {}).get("audit") or {})
+        if isinstance(cached, dict)
+        else {}
+    )
+    cached_complete = (
+        int(cached_audit.get("processed_source_chars") or 0)
+        == legacy.count_text_chars(section.text)
+        and int(cached_audit.get("segments") or 0)
+        == int(cached_audit.get("available_segments") or -1)
+        and int(cached_audit.get("prompt_injection_segments") or 0)
+        == int(cached_audit.get("segments") or -1)
+    )
+    reusable_partial = (
+        profile.scope_mode == SCOPE_CHARACTERS
+        and preview_output_chars > 0
+        and cached_output_chars >= preview_output_chars
+    )
     if (
         cached
         and cached.get("artifact_key") == artifact_key
-        and not (profile.scope_mode == SCOPE_COMPLETE and cached_is_partial)
+        and not normalized_overrides
+        and ((not cached_is_partial and cached_complete) or reusable_partial)
     ):
         payload = dict(cached.get("chapter") or {})
         return legacy.ChapterResult(
@@ -506,8 +582,20 @@ def _translate_section(
     segment_audits: list[dict[str, Any]] = []
     processed_source_chars = 0
     for segment_index, source_text in enumerate(segments, start=1):
-        segment_key = _sha(
-            "|".join((artifact_key, str(segment_index), legacy.text_sha256(source_text)))
+        if should_pause is not None and should_pause():
+            raise ClassicalTranslationPaused("古文白话翻译已暂停，已完成分段均已保存")
+        effective_user_prompt = normalized_overrides.get(
+            segment_index,
+            normalized_overrides.get(0, user_prompt),
+        )
+        has_local_override = segment_index in normalized_overrides or 0 in normalized_overrides
+        base_segment_key = _sha(
+            "|".join((base_artifact_key, str(segment_index), legacy.text_sha256(source_text)))
+        )
+        segment_key = (
+            _sha("|".join((base_segment_key, "LOCAL_OVERRIDE", _prompt_hash(effective_user_prompt))))
+            if has_local_override
+            else base_segment_key
         )
         segment_label = (
             f"第 {segment_index}/{len(segments)} 段（同属原文章节《{section.title}》）"
@@ -535,7 +623,7 @@ def _translate_section(
         )
         prompt = _render(
             TRANSLATION_PROMPT,
-            user_prompt=user_prompt,
+            user_prompt=effective_user_prompt,
             work_title=work_title,
             chapter_title=section.title,
             segment_label=segment_label,
@@ -546,7 +634,7 @@ def _translate_section(
             anchor_manifest=anchor_manifest,
             source_text=marked_source,
         )
-        if user_prompt not in prompt:
+        if effective_user_prompt not in prompt:
             raise legacy.PublicDomainValidationError(
                 f"《{section.title}》第 {segment_index} 段未完整注入用户 Prompt"
             )
@@ -565,6 +653,10 @@ def _translate_section(
             translated_units = int(translation_meta.get("translated_units") or 0)
             targeted_repair_calls = int(translation_meta.get("targeted_repair_calls") or 0)
             repair_prompt_hash = str(translation_meta.get("repair_prompt_hash") or "") or None
+        elif only_segment is not None and segment_index != only_segment:
+            raise legacy.PublicDomainValidationError(
+                f"《{section.title}》第 {segment_index} 段尚无可复用译文，不能只重译第 {only_segment} 段"
+            )
         else:
             raw_translation = legacy._call_llm(  # noqa: SLF001
                 work_dir,
@@ -599,7 +691,7 @@ def _translate_section(
                 # anchor checklist.  Successful earlier segments remain cached.
                 repair_prompt = _render(
                     TARGETED_REPAIR_PROMPT,
-                    user_prompt=user_prompt,
+                    user_prompt=effective_user_prompt,
                     work_title=work_title,
                     chapter_title=section.title,
                     segment_label=segment_label,
@@ -639,8 +731,10 @@ def _translate_section(
                 {
                     "segment_key": segment_key,
                     "prompt_hash": prompt_hash,
+                    "effective_prompt_hash": _prompt_hash(effective_user_prompt),
                     "rendered_prompt_hash": rendered_prompt_hash,
                     "user_prompt_injected": True,
+                    "local_override": has_local_override,
                     "translated_units": translated_units,
                     "source_units": len(expected_markers),
                     "operation": "complete_translation_only",
@@ -658,9 +752,11 @@ def _translate_section(
             "source_units": len(expected_markers),
             "translated_units": translated_units,
             "prompt_hash": prompt_hash,
+            "effective_prompt_hash": _prompt_hash(effective_user_prompt),
             "rendered_prompt_hash": rendered_prompt_hash,
             "repair_prompt_hash": repair_prompt_hash,
             "user_prompt_injected": True,
+            "local_override": has_local_override,
             "targeted_repair_calls": targeted_repair_calls,
             "issues": issues,
         }
@@ -682,10 +778,28 @@ def _translate_section(
             8 + int(84 * chapter_fraction),
             f"完整翻译第 {number}/{total_sections} 章，第 {segment_index}/{len(segments)} 段已保存",
         )
+        if should_pause is not None and should_pause():
+            raise ClassicalTranslationPaused("古文白话翻译已暂停，当前完整分段已保存")
         if preview_output_chars and sum(legacy.count_text_chars(value) for value in outputs) >= preview_output_chars:
             break
 
     text = "\n\n".join(value.strip() for value in outputs if value.strip()).strip()
+    full_source_chars = legacy.count_text_chars(section.text)
+    if profile.scope_mode != SCOPE_CHARACTERS:
+        if len(segment_audits) != len(segments) or processed_source_chars != full_source_chars:
+            raise legacy.PublicDomainQualityError(
+                f"《{section.title}》章节翻译不完整："
+                f"原文分段覆盖 {len(segment_audits)}/{len(segments)}，"
+                f"原文字符覆盖 {processed_source_chars}/{full_source_chars}"
+            )
+        injected_segments = sum(
+            1 for item in segment_audits if item.get("user_prompt_injected") is True
+        )
+        if injected_segments != len(segments):
+            raise legacy.PublicDomainQualityError(
+                f"《{section.title}》自定义 Prompt 注入不完整："
+                f"{injected_segments}/{len(segments)} 个付费分段"
+            )
     chapter_audit = {
         "number": number,
         "title": section.title,
@@ -697,6 +811,7 @@ def _translate_section(
         "output_chars": legacy.count_text_chars(text),
         "segments": len(segment_audits),
         "available_segments": len(segments),
+        "segment_limit": segment_limit,
         "partial_section": len(segment_audits) < len(segments),
         "segment_audits": segment_audits,
         "rounds": 1,
@@ -732,6 +847,79 @@ def _translate_section(
         },
     )
     return chapter
+
+
+def split_source_segments(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
+    """Public, deterministic segment view used by the workbench."""
+
+    return _split_for_context(text, limit=max(600, min(SEGMENT_CHARS, int(limit))))
+
+
+def retranslate_classical_selection(
+    *,
+    sources: Iterable[legacy.PublicDomainSource],
+    work_dir: Path,
+    target_title: str | None,
+    adaptation_profile: dict[str, Any] | None,
+    chapter_num: int,
+    segment_num: int | None,
+    custom_prompt: str,
+    on_progress: legacy.ProgressCallback | None = None,
+) -> legacy.ChapterResult:
+    """Retranslate one completed chapter or one durable segment, preserving all others."""
+
+    items = list(sources)
+    sections = extract_source_sections(items)
+    if chapter_num < 1 or chapter_num > len(sections):
+        raise legacy.PublicDomainValidationError("要重译的章节不存在")
+    local_prompt = str(custom_prompt or "").strip()
+    if not local_prompt or len(local_prompt) > 30_000:
+        raise legacy.PublicDomainValidationError("局部翻译 Prompt 必须为 1–30000 字")
+    raw_profile = dict(adaptation_profile or {})
+    profile = normalize_profile(raw_profile)
+    checkpoint_profile_raw = raw_profile.get("_checkpoint_profile")
+    checkpoint_profile = (
+        normalize_profile(checkpoint_profile_raw)
+        if isinstance(checkpoint_profile_raw, dict)
+        else profile
+    )
+    artifact_profile_hash = _sha(
+        json.dumps(asdict(checkpoint_profile), ensure_ascii=False, sort_keys=True)
+    )
+    segment_limit = int(raw_profile.get("_checkpoint_segment_limit") or SEGMENT_CHARS)
+    saved_chapter = _load_json(work_dir / "classical_chapters" / f"{chapter_num:03d}.json")
+    if isinstance(saved_chapter, dict):
+        saved_audit = dict(((saved_chapter.get("chapter") or {}).get("audit") or {}))
+        segment_limit = int(saved_audit.get("segment_limit") or segment_limit)
+    section = sections[chapter_num - 1]
+    segments = split_source_segments(section.text, segment_limit)
+    if segment_num is not None and (segment_num < 1 or segment_num > len(segments)):
+        raise legacy.PublicDomainValidationError("要重译的分段不存在")
+    overrides = (
+        {segment_num: local_prompt}
+        if segment_num is not None
+        else {0: local_prompt}
+    )
+    global_prompt = profile.custom_prompt or get_default_user_prompt()
+    return _translate_section(
+        number=chapter_num,
+        section=section,
+        total_sections=len(sections),
+        work_dir=work_dir,
+        work_title=(target_title or items[0].title).strip(),
+        profile=profile,
+        artifact_profile_hash=artifact_profile_hash,
+        segment_limit_override=max(600, min(SEGMENT_CHARS, segment_limit)),
+        prompt_hash=_prompt_hash(global_prompt),
+        user_prompt=global_prompt,
+        previous_section_context=(sections[chapter_num - 2].text[-CONTEXT_CHARS:] if chapter_num > 1 else "无"),
+        previous_chapter_translation_context="无",
+        next_section_context=(sections[chapter_num].text[:CONTEXT_CHARS] if chapter_num < len(sections) else "无"),
+        preview_output_chars=0,
+        on_progress=on_progress,
+        prompt_overrides=overrides,
+        only_segment=segment_num,
+    )
 
 
 def _split_for_context(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
@@ -964,6 +1152,7 @@ def _prompt_hash(user_prompt: str) -> str:
 
 
 __all__ = [
+    "ClassicalTranslationPaused",
     "ClassicalVernacularProfile",
     "POLICY_VERSION",
     "PROMPT_VERSION",
@@ -971,4 +1160,6 @@ __all__ = [
     "get_default_user_prompt",
     "normalize_profile",
     "run_classical_vernacular_longform",
+    "retranslate_classical_selection",
+    "split_source_segments",
 ]

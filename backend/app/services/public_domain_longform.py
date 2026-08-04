@@ -591,6 +591,7 @@ def run_public_domain_longform(
     research_use_confirmed: bool = False,
     on_progress: ProgressCallback | None = None,
     on_chapter_completed: ChapterCompletedCallback | None = None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> PublicDomainLongformResult:
     """Build or resume a long-form public-domain synthesis.
 
@@ -626,6 +627,7 @@ def run_public_domain_longform(
             adaptation_profile=adaptation_profile,
             on_progress=on_progress,
             on_chapter_completed=on_chapter_completed,
+            should_pause=should_pause,
         )
     if generation_mode == FULL_MODE:
         # The formal bookshelf flow uses the lightweight serial writer.  It

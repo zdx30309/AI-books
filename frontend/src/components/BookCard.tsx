@@ -70,7 +70,12 @@ function formatBookDate(value: string) {
 }
 
 function taskWorkspaceHref(task: TaskListItem): string {
-  return task.source_url === "manual://public-domain-classical-vernacular"
+  const shelf = normalizeCategoryLabel(task.bookshelf || task.category_label);
+  const isClassicalTranslation =
+    task.source_url.startsWith("manual://public-domain-classical-vernacular") ||
+    shelf === "公版古文白话" ||
+    shelf === "公版古文白话试译";
+  return isClassicalTranslation
     ? `/public-domain-classical-vernacular/${task.id}`
     : `/book/${task.id}`;
 }

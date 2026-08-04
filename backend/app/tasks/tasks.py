@@ -1654,6 +1654,7 @@ def _clear_public_domain_failure_state(config: dict[str, Any]) -> dict[str, Any]
 )
 def process_public_domain_longform(_self, task_id: str) -> dict:
     """Serial, resumable 8–10-source public-domain long-form pipeline."""
+    from app.services.public_domain_classical_vernacular import ClassicalTranslationPaused
     from app.services.public_domain_longform import (
         CLASSICAL_VERNACULAR_MODE,
         FULL_MODE,
@@ -1673,6 +1674,17 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
     owns_run = False
     run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+
+    def classical_pause_requested() -> bool:
+        pause_db: Session = SessionLocal()
+        try:
+            latest = pause_db.get(Task, uuid.UUID(task_id))
+            if latest is None:
+                return True
+            latest_cfg = dict(latest.config or {})
+            return latest.status == TaskStatus.PAUSED or bool(latest_cfg.get("pause_requested"))
+        finally:
+            pause_db.close()
 
     def update(progress: int, step: str, *, status: str | None = None) -> None:
         if task is None:
@@ -1746,6 +1758,9 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         if task.status == TaskStatus.COMPLETED:
             clear_task_dispatch_guard(task_id)
             return {"task_id": task_id, "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
+        if task.status == TaskStatus.PAUSED:
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": TaskStatus.PAUSED, "chapters": len(task.chapters)}
         active_run = str(cfg.get("active_run_id") or "")
         if active_run and active_run != run_id and task.status == TaskStatus.PROCESSING:
             return {"task_id": task_id, "status": "already_running"}
@@ -1802,6 +1817,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             research_use_confirmed=bool(cfg.get("research_use_confirmed")),
             on_progress=lambda progress, step: update(progress, step, status=TaskStatus.PROCESSING),
             on_chapter_completed=persist_chapter_checkpoint,
+            should_pause=(classical_pause_requested if generation_mode == CLASSICAL_VERNACULAR_MODE else None),
         )
         cfg = dict(task.config or {})
         cfg.update(
@@ -1956,6 +1972,21 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task.error_message = None
         db.commit()
         return {"task_id": task_id, "status": TaskStatus.COMPLETED, "chapters": len(final_chapters)}
+    except ClassicalTranslationPaused as exc:
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            cfg = dict(task.config or {})
+            for key in ("active_run_id", "active_run_started_at", "active_run_heartbeat_at"):
+                cfg.pop(key, None)
+            cfg["pause_requested"] = False
+            cfg["paused_at"] = datetime.now(timezone.utc).isoformat()
+            task.config = cfg
+            task.status = TaskStatus.PAUSED
+            task.current_step = "已暂停；当前完整分段与全部历史断点均已保存"
+            task.error_message = None
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.PAUSED}
     except AigcManualReviewRequired as exc:
         db.rollback()
         task = db.get(Task, uuid.UUID(task_id))
@@ -2042,6 +2073,131 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
     finally:
         if owns_run:
             clear_task_dispatch_guard(task_id)
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.retranslate_public_domain_classical_selection",
+    max_retries=0,
+)
+def retranslate_public_domain_classical_selection(_self, task_id: str) -> dict:
+    """Replace only one completed classical chapter/segment and preserve the book."""
+
+    from app.services import public_domain_longform as public_domain_legacy
+    from app.services.public_domain_classical_vernacular import (
+        retranslate_classical_selection,
+    )
+    from app.services.public_domain_longform import source_from_dict
+
+    db: Session = SessionLocal()
+    task: Task | None = None
+    try:
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is None:
+            return {"task_id": task_id, "status": "missing"}
+        cfg = dict(task.config or {})
+        request = cfg.get("classical_local_retranslation")
+        if not isinstance(request, dict):
+            raise RuntimeError("缺少局部重译请求")
+        chapter_num = int(request.get("chapter_num") or 0)
+        segment_num = int(request.get("segment_num") or 0) or None
+        local_prompt = str(request.get("custom_prompt") or "").strip()
+        output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+        payload = json.loads((output_dir / "00_public_domain_sources.json").read_text(encoding="utf-8"))
+        sources = [source_from_dict(item) for item in payload if isinstance(item, dict)]
+        chapter = retranslate_classical_selection(
+            sources=sources,
+            work_dir=output_dir,
+            target_title=str(cfg.get("target_title") or "").strip() or None,
+            adaptation_profile=(dict(cfg.get("adaptation_profile") or {})),
+            chapter_num=chapter_num,
+            segment_num=segment_num,
+            custom_prompt=local_prompt,
+            on_progress=lambda progress, step: None,
+        )
+        row = db.query(Chapter).filter(
+            Chapter.task_id == task.id,
+            Chapter.chapter_num == chapter_num,
+        ).one()
+        row.title = chapter.title[:512]
+        row.content = chapter.text
+        row.word_count = len(chapter.text)
+        db.flush()
+
+        rows = db.query(Chapter).filter(Chapter.task_id == task.id).order_by(Chapter.chapter_num).all()
+        rendered = [
+            public_domain_legacy.ChapterResult(
+                number=int(item.chapter_num),
+                title=str(item.title or f"第{item.chapter_num}章"),
+                text=str(item.content or ""),
+                summary=public_domain_legacy._fallback_summary(str(item.content or "")),  # noqa: SLF001
+                used_claim_ids=(),
+                audit={},
+            )
+            for item in rows
+        ]
+        title = str(cfg.get("title") or cfg.get("target_title") or sources[0].title)
+        summary = str(cfg.get("summary") or "按原文顺序逐段完整翻译为现代白话。")
+        markdown = public_domain_legacy.render_final_markdown(
+            title=title,
+            summary=summary,
+            chapters=rendered,
+        )
+        (output_dir / "04_final.md").write_text(markdown, encoding="utf-8")
+        request.update(
+            status="completed",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            output_chars=len(chapter.text),
+        )
+        cfg["classical_local_retranslation"] = request
+        cfg["markdown"] = markdown
+        cfg["markdown_chars"] = len(markdown)
+        previous_status = str(cfg.pop("classical_local_previous_status", TaskStatus.COMPLETED))
+        task.config = cfg
+        task.status = previous_status if previous_status in {TaskStatus.PAUSED, TaskStatus.COMPLETED} else TaskStatus.COMPLETED
+        task.current_step = (
+            f"第 {chapter_num} 章第 {segment_num} 段局部重译完成；其他内容保持不变"
+            if segment_num
+            else f"第 {chapter_num} 章局部重译完成；其他章节保持不变"
+        )
+        task.error_message = None
+        db.commit()
+        return {"task_id": task_id, "status": task.status, "chapter": chapter_num, "segment": segment_num}
+    except Exception as exc:
+        logger.exception("[task %s] local classical retranslation failed", task_id)
+        db.rollback()
+        task = db.get(Task, uuid.UUID(task_id))
+        if task is not None:
+            cfg = dict(task.config or {})
+            request = cfg.get("classical_local_retranslation")
+            if isinstance(request, dict):
+                request["status"] = "failed"
+                request["error"] = str(exc)[:2000]
+                profile = dict(cfg.get("adaptation_profile") or {})
+                stored_overrides = (
+                    dict(profile.get("_local_prompt_overrides") or {})
+                    if isinstance(profile.get("_local_prompt_overrides"), dict)
+                    else {}
+                )
+                chapter_key = str(request.get("chapter_num") or "")
+                previous = request.get("previous_chapter_overrides")
+                if chapter_key:
+                    if isinstance(previous, dict):
+                        stored_overrides[chapter_key] = previous
+                    else:
+                        stored_overrides.pop(chapter_key, None)
+                profile["_local_prompt_overrides"] = stored_overrides
+                cfg["adaptation_profile"] = profile
+                cfg["classical_local_retranslation"] = request
+            previous_status = str(cfg.pop("classical_local_previous_status", TaskStatus.COMPLETED))
+            task.config = cfg
+            task.status = previous_status if previous_status in {TaskStatus.PAUSED, TaskStatus.COMPLETED} else TaskStatus.COMPLETED
+            task.current_step = "局部重译失败，旧译文保持不变"
+            task.error_message = str(exc)[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": "failed", "error": str(exc)}
+    finally:
         db.close()
 
 

@@ -433,6 +433,24 @@ export interface ClassicalSourceResponse {
   next_offset: number | null;
   has_more: boolean;
   sections: ClassicalSourceSectionItem[];
+  segments: Array<{
+    number: number;
+    char_count: number;
+    preview: string;
+  }>;
+}
+
+export interface ClassicalContinueRequest {
+  scope_mode: "complete" | "characters" | "chapters";
+  preview_target_chars: number;
+  preview_chapters: number;
+  custom_prompt?: string | null;
+}
+
+export interface ClassicalLocalRetranslateRequest {
+  chapter_num: number;
+  segment_num?: number | null;
+  custom_prompt: string;
 }
 
 export interface ClassicalWorkspaceSourceItem {
