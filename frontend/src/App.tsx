@@ -170,6 +170,16 @@ export default function App() {
             }
           />
           <Route
+            path="/public-domain-classical-vernacular/:taskId"
+            element={
+              <ProtectedRoute>
+                <AppShell>
+                  <PublicDomainRewrite fixedMode="classical_vernacular" />
+                </AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/long-novel"
             element={
               <ProtectedRoute>

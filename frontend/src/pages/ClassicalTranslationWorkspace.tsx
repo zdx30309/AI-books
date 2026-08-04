@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   BookOpenText,
@@ -18,6 +18,7 @@ import { api } from "@/api/client";
 import type {
   ChapterResponse,
   ClassicalSourceResponse,
+  ClassicalWorkspaceStateResponse,
   PublicDomainRewriteSource,
   TaskStatusResponse,
 } from "@/api/types";
@@ -58,6 +59,7 @@ function isActive(status?: string) {
 
 export function ClassicalTranslationWorkspace() {
   const navigate = useNavigate();
+  const { taskId: routeTaskId } = useParams<{ taskId: string }>();
   const [sources, setSources] = useState<SourceDraft[]>([emptySource()]);
   const [targetTitle, setTargetTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -68,7 +70,10 @@ export function ClassicalTranslationWorkspace() {
   const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [taskId, setTaskId] = useState<string | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(routeTaskId ?? null);
+  const [workspaceState, setWorkspaceState] = useState<ClassicalWorkspaceStateResponse | null>(null);
+  const [restoring, setRestoring] = useState(Boolean(routeTaskId));
+  const [continuing, setContinuing] = useState(false);
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [chapters, setChapters] = useState<ChapterResponse[]>([]);
   const [selectedChapter, setSelectedChapter] = useState(1);
@@ -86,6 +91,32 @@ export function ClassicalTranslationWorkspace() {
       .catch((reason) => setError(reason instanceof Error ? reason.message : "默认翻译 Prompt 加载失败"));
   }, []);
 
+  useEffect(() => {
+    if (!routeTaskId) return;
+    setRestoring(true);
+    setError("");
+    api.getClassicalWorkspaceState(routeTaskId)
+      .then((state) => {
+        setWorkspaceState(state);
+        setTaskId(state.task_id);
+        setTargetTitle(state.target_title);
+        setPrompt(state.custom_prompt);
+        setScopeMode(state.scope_mode);
+        setPreviewChars(String(state.preview_target_chars || 3000));
+        setPreviewChapters(String(state.preview_chapters || 1));
+        setConfirmed(state.public_domain_confirmed);
+        setSources(state.sources.map((item) => ({
+          title: item.title,
+          text: "",
+          file: null,
+          author: item.author || "",
+          rightsNote: item.rights_note || DEFAULT_RIGHTS_NOTE,
+        })));
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "工作台状态恢复失败"))
+      .finally(() => setRestoring(false));
+  }, [routeTaskId]);
+
   const preparedSources = useMemo(
     () => sources.filter((item) => item.title.trim() && (item.text.trim() || item.file)),
     [sources],
@@ -97,6 +128,7 @@ export function ClassicalTranslationWorkspace() {
     (scopeMode === "characters" && Number(previewChars) >= 500 && Number(previewChars) <= 200000) ||
     (scopeMode === "chapters" && Number(previewChapters) >= 1 && Number(previewChapters) <= 5000);
   const canSubmit =
+    !routeTaskId &&
     preparedSources.length >= 1 &&
     preparedSources.length <= 10 &&
     !mixedMode &&
@@ -238,6 +270,26 @@ export function ClassicalTranslationWorkspace() {
     }
   };
 
+  const continueComplete = async () => {
+    if (!taskId || continuing) return;
+    setContinuing(true);
+    setError("");
+    try {
+      await api.continueClassicalComplete(taskId);
+      const [state, taskResult] = await Promise.all([
+        api.getClassicalWorkspaceState(taskId),
+        api.getTask(taskId),
+      ]);
+      setWorkspaceState(state);
+      setTask(taskResult);
+      setScopeMode("complete");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "断点续译启动失败");
+    } finally {
+      setContinuing(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className="border-b border-gold-500/10 pb-5">
@@ -258,6 +310,12 @@ export function ClassicalTranslationWorkspace() {
         </div>
       )}
 
+      {restoring && (
+        <div className="flex items-center gap-2 rounded-xl border border-gold-500/15 bg-base-900/60 p-4 text-sm text-warm-300">
+          <Loader2 className="h-4 w-4 animate-spin text-gold-300" />正在恢复这本书的原文快照、Prompt、翻译范围和断点状态
+        </div>
+      )}
+
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <section className="space-y-4">
           <div className="card-warm p-5">
@@ -269,6 +327,27 @@ export function ClassicalTranslationWorkspace() {
               <span className="text-xs text-warm-500">{preparedSources.length}/10 份</span>
             </div>
 
+            {workspaceState ? (
+              <div className="space-y-3">
+                {workspaceState.sources.map((source, index) => (
+                  <div key={`${source.sha256}-${index}`} className="rounded-xl border border-emerald-400/20 bg-emerald-500/5 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="font-medium text-warm-100">{source.title}</div>
+                        <div className="mt-1 text-xs text-warm-500">
+                          {source.author || "作者未填"} · {source.char_count.toLocaleString("zh-CN")} 字 · {source.detected_chapters} 个原文章节
+                        </div>
+                      </div>
+                      <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" />
+                    </div>
+                    <div className="mt-2 text-xs leading-6 text-warm-400">{source.rights_note || DEFAULT_RIGHTS_NOTE}</div>
+                  </div>
+                ))}
+                <div className="rounded-xl border border-gold-500/15 bg-base-900/45 p-4 text-xs leading-6 text-warm-400">
+                  原文快照、来源哈希、Prompt、翻译范围和分段断点均已随此任务保存。继续操作仍使用同一任务，不会重新上传或另建书稿。
+                </div>
+              </div>
+            ) : (
             <div className="space-y-4">
               {sources.map((source, index) => (
                 <div key={index} className="rounded-xl border border-gold-500/15 bg-base-900/45 p-4">
@@ -330,9 +409,12 @@ export function ClassicalTranslationWorkspace() {
                 </div>
               ))}
             </div>
-            <button type="button" onClick={() => setSources((items) => items.length < 10 ? [...items, emptySource()] : items)} disabled={sources.length >= 10} className="btn-ghost mt-3 inline-flex items-center gap-2 text-sm disabled:opacity-40">
-              <Plus className="h-4 w-4" />添加分卷
-            </button>
+            )}
+            {!workspaceState && (
+              <button type="button" onClick={() => setSources((items) => items.length < 10 ? [...items, emptySource()] : items)} disabled={sources.length >= 10} className="btn-ghost mt-3 inline-flex items-center gap-2 text-sm disabled:opacity-40">
+                <Plus className="h-4 w-4" />添加分卷
+              </button>
+            )}
           </div>
 
           <div className="card-warm p-5">
@@ -341,13 +423,14 @@ export function ClassicalTranslationWorkspace() {
                 <h2 className="text-lg font-medium text-warm-100">2. 调整翻译 Prompt</h2>
                 <p className="mt-1 text-xs text-warm-500">修改这里即可对比不同翻译效果；完整性与断点规则由系统固定保护</p>
               </div>
-              <button type="button" onClick={() => setPrompt(defaultPrompt)} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-xs">
+              {!workspaceState && <button type="button" onClick={() => setPrompt(defaultPrompt)} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-xs">
                 <RotateCcw className="h-3.5 w-3.5" />恢复默认
-              </button>
+              </button>}
             </div>
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
+              readOnly={Boolean(workspaceState)}
               className="min-h-[210px] w-full resize-y rounded-xl border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm leading-7 text-warm-100 outline-none"
             />
             <div className="mt-2 text-right text-xs text-warm-500">{prompt.length.toLocaleString("zh-CN")} / 30,000 字</div>
@@ -365,6 +448,7 @@ export function ClassicalTranslationWorkspace() {
                   type="button"
                   key={value}
                   onClick={() => setScopeMode(value)}
+                  disabled={Boolean(workspaceState)}
                   className={`rounded-xl border p-4 text-left transition ${scopeMode === value ? "border-gold-300/50 bg-gold-500/10" : "border-gold-500/15 bg-base-900/45 hover:border-gold-300/30"}`}
                 >
                   <div className="font-medium text-warm-100">{label}</div>
@@ -376,19 +460,20 @@ export function ClassicalTranslationWorkspace() {
               <input
                 value={targetTitle}
                 onChange={(event) => setTargetTitle(event.target.value)}
+                readOnly={Boolean(workspaceState)}
                 placeholder="译稿名称（可空）"
                 className="rounded-lg border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm text-warm-100 outline-none"
               />
               {scopeMode === "characters" && (
                 <label className="text-xs text-warm-400">
                   期望译文字数（500–200,000）
-                  <input type="number" min={500} max={200000} value={previewChars} onChange={(event) => setPreviewChars(event.target.value)} className="mt-1 w-full rounded-lg border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm text-warm-100 outline-none" />
+                  <input type="number" min={500} max={200000} value={previewChars} readOnly={Boolean(workspaceState)} onChange={(event) => setPreviewChars(event.target.value)} className="mt-1 w-full rounded-lg border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm text-warm-100 outline-none" />
                 </label>
               )}
               {scopeMode === "chapters" && (
                 <label className="text-xs text-warm-400">
                   从开头试译多少章
-                  <input type="number" min={1} max={5000} value={previewChapters} onChange={(event) => setPreviewChapters(event.target.value)} className="mt-1 w-full rounded-lg border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm text-warm-100 outline-none" />
+                  <input type="number" min={1} max={5000} value={previewChapters} readOnly={Boolean(workspaceState)} onChange={(event) => setPreviewChapters(event.target.value)} className="mt-1 w-full rounded-lg border border-gold-500/15 bg-base-900/80 px-4 py-3 text-sm text-warm-100 outline-none" />
                 </label>
               )}
               {scopeMode === "complete" && (
@@ -399,14 +484,19 @@ export function ClassicalTranslationWorkspace() {
             </div>
             {scopeMode === "characters" && <p className="mt-2 text-xs text-warm-500">系统按完整语义段收尾，实际译文字数可能略高于选择值。</p>}
 
-            <label className="mt-4 flex items-start gap-3 text-xs leading-6 text-warm-300">
+            {!workspaceState && <label className="mt-4 flex items-start gap-3 text-xs leading-6 text-warm-300">
               <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-1 h-4 w-4 accent-amber-500" />
               我已确认上传内容属于公版或公共领域，可以用于本次翻译。
-            </label>
-            <button type="button" onClick={submit} disabled={!canSubmit} className="btn-gold mt-4 flex w-full items-center justify-center gap-2 py-3 disabled:cursor-not-allowed disabled:opacity-45">
+            </label>}
+            {!workspaceState && <button type="button" onClick={submit} disabled={!canSubmit} className="btn-gold mt-4 flex w-full items-center justify-center gap-2 py-3 disabled:cursor-not-allowed disabled:opacity-45">
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {loading ? "正在创建任务" : scopeMode === "complete" ? "开始完整翻译" : "开始试译"}
-            </button>
+            </button>}
+            {workspaceState && (
+              <div className="mt-4 rounded-xl border border-gold-500/15 bg-base-900/45 p-4 text-xs leading-6 text-warm-400">
+                已恢复：{workspaceState.checkpoint_chapters} 个章节断点，{workspaceState.checkpoint_chars.toLocaleString("zh-CN")} 字译文，{workspaceState.translated_segments} 个已记录分段。
+              </div>
+            )}
           </div>
         </section>
 
@@ -419,8 +509,8 @@ export function ClassicalTranslationWorkspace() {
               </p>
             </div>
             {taskId && (
-              <button type="button" onClick={() => navigate(`/book/${taskId}`)} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-xs">
-                进入书架稿件<ChevronRight className="h-3.5 w-3.5" />
+              <button type="button" onClick={() => navigate("/bookshelf")} className="btn-ghost inline-flex items-center gap-2 px-3 py-2 text-xs">
+                返回书架<ChevronRight className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
@@ -459,6 +549,25 @@ export function ClassicalTranslationWorkspace() {
                 <div className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-400 transition-all" style={{ width: `${Math.max(2, task.progress)}%` }} />
               </div>
               {task.error_message && <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 p-3 text-xs leading-6 text-red-100">{task.error_message}</div>}
+            </div>
+          )}
+
+          {workspaceState?.can_resume && !isActive(task?.status) && (
+            <div className="mt-4 rounded-xl border border-gold-400/25 bg-gold-500/5 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-warm-100">
+                    {workspaceState.is_preview ? "试译可在同一项目中继续翻完整本" : "任务可从已保存断点继续"}
+                  </div>
+                  <div className="mt-1 text-xs leading-6 text-warm-500">
+                    原文快照、用户 Prompt、章节顺序和已完成分段全部复用，不另建任务。
+                  </div>
+                </div>
+                <button type="button" onClick={() => void continueComplete()} disabled={continuing} className="btn-gold inline-flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-50">
+                  {continuing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                  {continuing ? "正在恢复" : workspaceState.is_preview ? "继续翻完整本" : "从断点继续翻译"}
+                </button>
+              </div>
             </div>
           )}
 

@@ -435,6 +435,45 @@ export interface ClassicalSourceResponse {
   sections: ClassicalSourceSectionItem[];
 }
 
+export interface ClassicalWorkspaceSourceItem {
+  title: string;
+  author: string | null;
+  rights_note: string | null;
+  char_count: number;
+  detected_chapters: number;
+  sha256: string;
+}
+
+export interface ClassicalWorkspaceStateResponse {
+  task_id: string;
+  status: TaskStatus;
+  progress: number;
+  current_step: string;
+  error_message: string | null;
+  target_title: string;
+  bookshelf: string;
+  custom_prompt: string;
+  scope_mode: "complete" | "characters" | "chapters";
+  preview_target_chars: number;
+  preview_chapters: number;
+  public_domain_confirmed: boolean;
+  is_preview: boolean;
+  generation_complete: boolean;
+  source_count: number;
+  sources: ClassicalWorkspaceSourceItem[];
+  available_chapters: number;
+  completed_chapters: number;
+  translated_chars: number;
+  checkpoint_chapters: number;
+  checkpoint_chars: number;
+  translated_segments: number;
+  policy_version: string;
+  prompt_version: string;
+  prompt_hash: string | null;
+  can_resume: boolean;
+  can_continue_complete: boolean;
+}
+
 export interface PublicDomainRewriteRequest {
   sources: PublicDomainRewriteSource[];
   target_title?: string | null;

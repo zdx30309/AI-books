@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Download,
@@ -98,6 +98,7 @@ interface PolishTrigger {
 
 export function BookDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [chapters, setChapters] = useState<ChapterResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +135,12 @@ export function BookDetail() {
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (id && task?.source_url === "manual://public-domain-classical-vernacular") {
+      navigate(`/public-domain-classical-vernacular/${id}`, { replace: true });
+    }
+  }, [id, navigate, task?.source_url]);
 
   // 拉任务状态 + 章节
   const refresh = useCallback(async () => {

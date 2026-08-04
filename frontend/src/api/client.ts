@@ -73,6 +73,7 @@ import type {
   PublicDomainRewriteRequest,
   ClassicalSourceResponse,
   ClassicalTranslationSettingsResponse,
+  ClassicalWorkspaceStateResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
@@ -742,6 +743,15 @@ export const api = {
   getClassicalTaskSource: (id: string, chapterNum = 1, offset = 0) =>
     request<ClassicalSourceResponse>(
       `/public-domain-rewrite/tasks/${id}/classical-source?chapter_num=${chapterNum}&offset=${offset}`,
+    ),
+  getClassicalWorkspaceState: (id: string) =>
+    request<ClassicalWorkspaceStateResponse>(
+      `/public-domain-rewrite/tasks/${id}/classical-workspace`,
+    ),
+  continueClassicalComplete: (id: string) =>
+    request<CreateTaskResponse>(
+      `/public-domain-rewrite/tasks/${id}/continue-complete`,
+      { method: "POST" },
     ),
   generatePublicDomainRewriteFromFiles: (
     files: File[],

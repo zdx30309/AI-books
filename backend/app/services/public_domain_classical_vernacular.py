@@ -152,7 +152,30 @@ def run_classical_vernacular_longform(
     """Translate all supplied public-domain classical text in source order."""
 
     items = list(sources)
-    profile = normalize_profile(adaptation_profile)
+    raw_profile = dict(adaptation_profile or {})
+    profile = normalize_profile(raw_profile)
+    # A preview may later be upgraded to a complete translation on the same
+    # task.  Scope is an execution concern, not a translation-style change.
+    # Keep the original profile fingerprint and segment boundary so already
+    # paid preview checkpoints remain reusable after the scope changes.
+    checkpoint_profile_raw = raw_profile.get("_checkpoint_profile")
+    checkpoint_profile = (
+        normalize_profile(checkpoint_profile_raw)
+        if isinstance(checkpoint_profile_raw, dict)
+        else profile
+    )
+    artifact_profile_hash = _sha(
+        json.dumps(asdict(checkpoint_profile), ensure_ascii=False, sort_keys=True)
+    )
+    checkpoint_segment_limit = raw_profile.get("_checkpoint_segment_limit")
+    try:
+        segment_limit_override = (
+            max(600, min(SEGMENT_CHARS, int(checkpoint_segment_limit)))
+            if checkpoint_segment_limit
+            else None
+        )
+    except (TypeError, ValueError):
+        segment_limit_override = None
     user_prompt = profile.custom_prompt or get_default_user_prompt()
     prompt_hash = _prompt_hash(user_prompt)
     all_sections = extract_source_sections(items)
@@ -224,6 +247,8 @@ def run_classical_vernacular_longform(
             work_dir=work_dir,
             work_title=plan["title"],
             profile=profile,
+            artifact_profile_hash=artifact_profile_hash,
+            segment_limit_override=segment_limit_override,
             prompt_hash=prompt_hash,
             user_prompt=user_prompt,
             previous_section_context=(sections[index - 2].text[-CONTEXT_CHARS:] if index > 1 else "无"),
@@ -418,6 +443,8 @@ def _translate_section(
     work_dir: Path,
     work_title: str,
     profile: ClassicalVernacularProfile,
+    artifact_profile_hash: str,
+    segment_limit_override: int | None,
     prompt_hash: str,
     user_prompt: str,
     previous_section_context: str,
@@ -428,7 +455,6 @@ def _translate_section(
 ) -> legacy.ChapterResult:
     chapter_dir = work_dir / "classical_chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
-    profile_hash = _sha(json.dumps(asdict(profile), ensure_ascii=False, sort_keys=True))
     source_hash = legacy.text_sha256(section.text)
     artifact_key = _sha(
         "|".join(
@@ -436,7 +462,7 @@ def _translate_section(
                 POLICY_VERSION,
                 PROMPT_VERSION,
                 prompt_hash,
-                profile_hash,
+                artifact_profile_hash,
                 source_hash,
                 section.title,
             )
@@ -444,7 +470,17 @@ def _translate_section(
     )
     final_path = chapter_dir / f"{number:03d}.json"
     cached = _load_json(final_path)
-    if cached and cached.get("artifact_key") == artifact_key:
+    cached_is_partial = bool(
+        isinstance(cached, dict)
+        and isinstance(cached.get("chapter"), dict)
+        and isinstance(cached["chapter"].get("audit"), dict)
+        and cached["chapter"]["audit"].get("partial_section")
+    )
+    if (
+        cached
+        and cached.get("artifact_key") == artifact_key
+        and not (profile.scope_mode == SCOPE_COMPLETE and cached_is_partial)
+    ):
         payload = dict(cached.get("chapter") or {})
         return legacy.ChapterResult(
             number=number,
@@ -455,8 +491,8 @@ def _translate_section(
             audit=dict(payload.get("audit") or {}),
         )
 
-    segment_limit = SEGMENT_CHARS
-    if preview_output_chars:
+    segment_limit = segment_limit_override or SEGMENT_CHARS
+    if preview_output_chars and segment_limit_override is None:
         # Smaller semantic segments keep a paid preview close to the selected
         # output size without truncating a model response mid-sentence.
         segment_limit = min(SEGMENT_CHARS, max(600, int(preview_output_chars / 1.35)))

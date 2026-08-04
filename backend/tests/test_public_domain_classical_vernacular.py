@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -13,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.services import public_domain_classical_vernacular as classical
 from app.services import public_domain_longform as longform
 from app.api.routers import public_domain_rewrite as public_domain_router
+from app.models import Chapter, Task, TaskStatus
 
 
 def _source(*, with_headings: bool = True, repeats: int = 24) -> longform.PublicDomainSource:
@@ -381,3 +383,152 @@ def test_chapter_preview_uses_original_chapter_boundaries(
     assert result.chapters[0].title == "第一回 城门领命"
     assert result.quality_report["available_source_chapters"] == 2
     assert result.quality_report["preview_target_chapters"] == 1
+
+
+def test_character_preview_upgrade_reuses_paid_segment_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
+        calls.append(action)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    source = _source(repeats=100)
+    preview_profile = {
+        "scope_mode": "characters",
+        "preview_target_chars": 1_000,
+        "preview_chapters": 0,
+    }
+    preview = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile=preview_profile,
+    )
+    preview_calls = list(calls)
+    assert preview.chapters[0].audit["partial_section"] is True
+    assert len(preview_calls) >= 1
+
+    calls.clear()
+    continued_profile = {
+        **preview_profile,
+        "scope_mode": "complete",
+        "preview_target_chars": 0,
+        "_checkpoint_profile": preview_profile,
+        "_checkpoint_segment_limit": min(
+            classical.SEGMENT_CHARS,
+            max(600, int(1_000 / 1.35)),
+        ),
+    }
+    complete = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile=continued_profile,
+    )
+
+    assert complete.chapters[0].audit["partial_section"] is False
+    assert calls
+    reused_indexes = {value.rsplit(":", 1)[-1] for value in preview_calls}
+    assert all(value.rsplit(":", 1)[-1] not in reused_indexes for value in calls)
+
+
+def test_classical_bookshelf_workspace_restores_saved_task_state() -> None:
+    task = Task(
+        id=uuid4(),
+        source_url="manual://public-domain-classical-vernacular",
+        status=TaskStatus.COMPLETED,
+        progress=100,
+        current_step="试译完成",
+        config={
+            "title": "旧城记试译",
+            "bookshelf": "公版古文白话试译",
+            "public_domain_classical_vernacular": True,
+            "public_domain_classical_scope": "characters",
+            "public_domain_confirmed": True,
+            "generation_complete": True,
+            "source_count": 1,
+            "source_reports": [
+                {
+                    "title": "旧城记",
+                    "author": "佚名",
+                    "chars": 12_345,
+                    "detected_chapters": 8,
+                    "rights_basis": "公版文本",
+                    "sha256": "abc123",
+                }
+            ],
+            "adaptation_profile": {
+                "custom_prompt": "逐句完整翻译。",
+                "scope_mode": "characters",
+                "preview_target_chars": 3_000,
+                "preview_chapters": 0,
+            },
+            "checkpoint_chapters": 1,
+            "checkpoint_chars": 3_100,
+            "classical_translated_segments": 3,
+        },
+    )
+    task.chapters.append(
+        Chapter(chapter_num=1, title="第一回", content="白话译文" * 20, word_count=80)
+    )
+
+    state = public_domain_router._classical_workspace_state(task)  # noqa: SLF001
+
+    assert state.task_id == task.id
+    assert state.custom_prompt == "逐句完整翻译。"
+    assert state.scope_mode == "characters"
+    assert state.preview_target_chars == 3_000
+    assert state.sources[0].title == "旧城记"
+    assert state.available_chapters == 8
+    assert state.can_continue_complete is True
+    assert state.can_resume is True
+
+
+def test_continue_complete_keeps_same_task_and_original_checkpoint_profile() -> None:
+    task_id = uuid4()
+    task = Task(
+        id=task_id,
+        source_url="manual://public-domain-classical-vernacular",
+        status=TaskStatus.COMPLETED,
+        progress=100,
+        current_step="试译完成",
+        config={
+            "title": "旧城记试译",
+            "bookshelf": "公版古文白话试译",
+            "category_label": "公版古文白话试译",
+            "public_domain_classical_vernacular": True,
+            "public_domain_classical_preview": True,
+            "public_domain_classical_scope": "characters",
+            "generation_complete": True,
+            "source_snapshot": "saved-source.json",
+            "source_reports": [{"chars": 50_000, "detected_chapters": 12}],
+            "adaptation_profile": {
+                "custom_prompt": "忠实翻译。",
+                "scope_mode": "characters",
+                "preview_target_chars": 3_000,
+                "preview_chapters": 0,
+            },
+        },
+    )
+    task.chapters.append(
+        Chapter(chapter_num=1, title="第一回", content="译文" * 1_000, word_count=2_000)
+    )
+
+    public_domain_router._prepare_classical_complete_continuation(task)  # noqa: SLF001
+
+    assert task.id == task_id
+    assert task.status == TaskStatus.PENDING
+    assert task.config["source_snapshot"] == "saved-source.json"
+    assert task.config["bookshelf"] == "公版古文白话"
+    assert task.config["generation_complete"] is False
+    profile = task.config["adaptation_profile"]
+    assert profile["scope_mode"] == "complete"
+    assert profile["_checkpoint_profile"]["scope_mode"] == "characters"
+    assert profile["_checkpoint_profile"]["preview_target_chars"] == 3_000
+    assert 600 <= profile["_checkpoint_segment_limit"] <= classical.SEGMENT_CHARS

@@ -39,6 +39,8 @@ from app.services.public_domain_classical_vernacular import (
 from app.services.public_domain_classical_vernacular import (
     MAX_PREVIEW_CHARS,
     MIN_PREVIEW_CHARS,
+    PROMPT_VERSION as CLASSICAL_VERNACULAR_PROMPT_VERSION,
+    SEGMENT_CHARS as CLASSICAL_SEGMENT_CHARS,
     extract_source_sections as extract_classical_source_sections,
     get_default_user_prompt,
 )
@@ -156,6 +158,45 @@ class ClassicalSourceResponse(BaseModel):
     sections: list[ClassicalSourceSectionItem]
 
 
+class ClassicalWorkspaceSourceItem(BaseModel):
+    title: str
+    author: str | None = None
+    rights_note: str | None = None
+    char_count: int
+    detected_chapters: int
+    sha256: str
+
+
+class ClassicalWorkspaceStateResponse(BaseModel):
+    task_id: UUID
+    status: str
+    progress: int
+    current_step: str
+    error_message: str | None = None
+    target_title: str
+    bookshelf: str
+    custom_prompt: str
+    scope_mode: str
+    preview_target_chars: int
+    preview_chapters: int
+    public_domain_confirmed: bool
+    is_preview: bool
+    generation_complete: bool
+    source_count: int
+    sources: list[ClassicalWorkspaceSourceItem]
+    available_chapters: int
+    completed_chapters: int
+    translated_chars: int
+    checkpoint_chapters: int
+    checkpoint_chars: int
+    translated_segments: int
+    policy_version: str
+    prompt_version: str
+    prompt_hash: str | None = None
+    can_resume: bool
+    can_continue_complete: bool
+
+
 class PublicDomainRewriteRequest(BaseModel):
     sources: list[PublicDomainSourcePayload] = Field(
         ..., min_length=1, max_length=MAX_SOURCES
@@ -247,6 +288,217 @@ async def get_classical_task_source(
             for index, item in enumerate(sections, start=1)
         ],
     )
+
+
+def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
+    """Rebuild the dedicated workbench state from the task's durable config."""
+
+    cfg = dict(task.config or {})
+    if not bool(cfg.get("public_domain_classical_vernacular")):
+        raise ValueError("该任务不是公版古文白话任务")
+    profile = (
+        dict(cfg.get("adaptation_profile") or {})
+        if isinstance(cfg.get("adaptation_profile"), dict)
+        else {}
+    )
+    reports = cfg.get("source_reports") if isinstance(cfg.get("source_reports"), list) else []
+    sources: list[ClassicalWorkspaceSourceItem] = []
+    for item in reports:
+        if not isinstance(item, dict):
+            continue
+        sources.append(
+            ClassicalWorkspaceSourceItem(
+                title=str(item.get("title") or "未命名原文"),
+                author=str(item.get("author") or "").strip() or None,
+                rights_note=str(item.get("rights_basis") or "").strip() or None,
+                char_count=int(item.get("chars") or 0),
+                detected_chapters=int(item.get("detected_chapters") or 0),
+                sha256=str(item.get("sha256") or ""),
+            )
+        )
+    chapters = sorted(list(task.chapters or []), key=lambda item: int(item.chapter_num))
+    completed_chapters = len(chapters)
+    translated_chars = sum(len(re.sub(r"\s+", "", str(item.content or ""))) for item in chapters)
+    scope_mode = str(profile.get("scope_mode") or cfg.get("public_domain_classical_scope") or "complete")
+    generation_complete = bool(cfg.get("generation_complete"))
+    active = task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.WRITING_CHAPTERS}
+    full_complete = scope_mode == "complete" and generation_complete and task.status == TaskStatus.COMPLETED
+    return ClassicalWorkspaceStateResponse(
+        task_id=task.id,
+        status=task.status,
+        progress=int(task.progress or 0),
+        current_step=str(task.current_step or ""),
+        error_message=task.error_message,
+        target_title=str(cfg.get("target_title") or cfg.get("title") or "公版古文白话"),
+        bookshelf=str(cfg.get("bookshelf") or _classical_bookshelf_for_scope(scope_mode)),
+        custom_prompt=str(profile.get("custom_prompt") or get_default_user_prompt()),
+        scope_mode=scope_mode,
+        preview_target_chars=int(profile.get("preview_target_chars") or 0),
+        preview_chapters=int(profile.get("preview_chapters") or 0),
+        public_domain_confirmed=bool(cfg.get("public_domain_confirmed")),
+        is_preview=scope_mode != "complete",
+        generation_complete=generation_complete,
+        source_count=int(cfg.get("source_count") or len(sources)),
+        sources=sources,
+        available_chapters=sum(int(item.detected_chapters or 0) for item in sources),
+        completed_chapters=completed_chapters,
+        translated_chars=translated_chars,
+        checkpoint_chapters=max(completed_chapters, int(cfg.get("checkpoint_chapters") or 0)),
+        checkpoint_chars=max(translated_chars, int(cfg.get("checkpoint_chars") or 0)),
+        translated_segments=int(cfg.get("classical_translated_segments") or 0),
+        policy_version=str(cfg.get("public_domain_policy_version") or CLASSICAL_VERNACULAR_POLICY_VERSION),
+        prompt_version=str(cfg.get("classical_prompt_version") or CLASSICAL_VERNACULAR_PROMPT_VERSION),
+        prompt_hash=str(cfg.get("classical_prompt_hash") or "").strip() or None,
+        can_resume=(not active and not full_complete),
+        can_continue_complete=(not active and scope_mode != "complete"),
+    )
+
+
+def _prepare_classical_complete_continuation(task: Task) -> None:
+    """Upgrade/resume a classical task in place without discarding checkpoints."""
+
+    cfg = dict(task.config or {})
+    if not bool(cfg.get("public_domain_classical_vernacular")):
+        raise ValueError("该任务不是公版古文白话任务")
+    profile = (
+        dict(cfg.get("adaptation_profile") or {})
+        if isinstance(cfg.get("adaptation_profile"), dict)
+        else {}
+    )
+    old_scope = str(profile.get("scope_mode") or cfg.get("public_domain_classical_scope") or "complete")
+    if "_checkpoint_profile" not in profile:
+        profile["_checkpoint_profile"] = {
+            key: value
+            for key, value in profile.items()
+            if not str(key).startswith("_")
+        }
+
+    if old_scope == "characters" and "_checkpoint_segment_limit" not in profile:
+        target = int(profile.get("preview_target_chars") or 0)
+        ordered = sorted(list(task.chapters or []), key=lambda item: int(item.chapter_num))
+        translated_before_last = sum(
+            len(re.sub(r"\s+", "", str(item.content or "")))
+            for item in ordered[:-1]
+        )
+        remaining_at_partial_chapter = max(1, target - translated_before_last)
+        profile["_checkpoint_segment_limit"] = min(
+            CLASSICAL_SEGMENT_CHARS,
+            max(600, int(remaining_at_partial_chapter / 1.35)),
+        )
+    elif "_checkpoint_segment_limit" not in profile:
+        profile["_checkpoint_segment_limit"] = CLASSICAL_SEGMENT_CHARS
+
+    cfg.setdefault(
+        "classical_preview_history",
+        {
+            "scope_mode": old_scope,
+            "preview_target_chars": int(profile.get("preview_target_chars") or 0),
+            "preview_chapters": int(profile.get("preview_chapters") or 0),
+            "completed_chapters": len(task.chapters or []),
+        },
+    )
+    profile.update(
+        scope_mode="complete",
+        preview_target_chars=0,
+        preview_chapters=0,
+    )
+    reports = cfg.get("source_reports") if isinstance(cfg.get("source_reports"), list) else []
+    cfg.update(
+        adaptation_profile=profile,
+        public_domain_classical_preview=False,
+        public_domain_classical_scope="complete",
+        bookshelf=PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF,
+        category_label=PUBLIC_DOMAIN_CLASSICAL_BOOKSHELF,
+        generation_complete=False,
+        target_length=sum(int(item.get("chars") or 0) for item in reports if isinstance(item, dict)),
+        target_chapters=sum(
+            int(item.get("detected_chapters") or 0)
+            for item in reports
+            if isinstance(item, dict)
+        ),
+        public_domain_quality_blocked=False,
+    )
+    for key in (
+        "public_domain_quality_reason",
+        "active_run_id",
+        "active_run_started_at",
+        "active_run_heartbeat_at",
+        "auto_requeue_reason",
+        "auto_requeued_at",
+    ):
+        cfg.pop(key, None)
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.progress = min(92, max(1, int(task.progress or 0)))
+    task.current_step = "已恢复公版古文白话完整状态，正在从已保存分段断点继续完整翻译"
+    task.error_message = None
+
+
+@router.get(
+    "/tasks/{task_id}/classical-workspace",
+    response_model=ClassicalWorkspaceStateResponse,
+    summary="恢复公版古文白话专属工作台完整状态",
+)
+async def get_classical_workspace_state(
+    task_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassicalWorkspaceStateResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        return _classical_workspace_state(task)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/tasks/{task_id}/continue-complete",
+    response_model=CreateTaskResponse,
+    summary="在同一任务内从试译或故障断点继续完整翻译",
+)
+async def continue_classical_complete_translation(
+    task_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CreateTaskResponse:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    cfg = dict(task.config or {})
+    if not bool(cfg.get("public_domain_classical_vernacular")):
+        raise HTTPException(status_code=400, detail="该任务不是公版古文白话任务")
+    profile = dict(cfg.get("adaptation_profile") or {}) if isinstance(cfg.get("adaptation_profile"), dict) else {}
+    scope_mode = str(profile.get("scope_mode") or cfg.get("public_domain_classical_scope") or "complete")
+    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.WRITING_CHAPTERS}:
+        raise HTTPException(status_code=409, detail="任务正在持续翻译中，请勿重复投递")
+    if scope_mode == "complete" and bool(cfg.get("generation_complete")) and task.status == TaskStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="该书已经完整翻译完成")
+    try:
+        _prepare_classical_complete_continuation(task)
+        db.commit()
+        db.refresh(task)
+        from app.tasks.tasks import process_public_domain_longform
+
+        process_public_domain_longform.apply_async(
+            args=[str(task.id)],
+            time_limit=7 * 24 * 60 * 60,
+            soft_time_limit=7 * 24 * 60 * 60 - 300,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        persisted = db.get(Task, task_id)
+        if persisted is not None:
+            persisted.status = TaskStatus.FAILED
+            persisted.current_step = "续译任务已保存，但后台投递失败，可再次从断点继续"
+            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            db.commit()
+        raise HTTPException(status_code=503, detail=f"续译投递失败：{exc}") from exc
+    return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
 @router.post(

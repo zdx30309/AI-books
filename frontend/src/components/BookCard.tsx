@@ -69,6 +69,12 @@ function formatBookDate(value: string) {
   }).format(date);
 }
 
+function taskWorkspaceHref(task: TaskListItem): string {
+  return task.source_url === "manual://public-domain-classical-vernacular"
+    ? `/public-domain-classical-vernacular/${task.id}`
+    : `/book/${task.id}`;
+}
+
 export function BookCard({
   task,
   categories = [],
@@ -104,6 +110,7 @@ export function BookCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const canSelect = selectionMode && !selectionDisabled;
+  const workspaceHref = taskWorkspaceHref(task);
 
   useEffect(() => {
     setLocalTitle(task.title);
@@ -253,7 +260,7 @@ export function BookCard({
         </button>
       ) : (
         <Link
-          to={`/book/${task.id}`}
+          to={workspaceHref}
           className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
           aria-label={`查看《${title}》`}
         >
@@ -335,7 +342,7 @@ export function BookCard({
               </button>
             )}
             <Link
-              to={`/book/${task.id}`}
+              to={workspaceHref}
               className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
             >
               <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
