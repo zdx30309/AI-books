@@ -41,6 +41,79 @@ def _echo_marked_source(prompt: str) -> str:
     return prompt.split("【本次必须完整翻译的带编号原文】", 1)[1].strip()
 
 
+def test_anchor_manifest_is_injected_for_titles_and_numbers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def fake_call(_work_dir: Path, *, prompt: str, **_kwargs) -> str:
+        prompts.append(prompt)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    body = "张三读《楚些》3章，又把《兵法》交给李四。" * 30
+    source = longform.PublicDomainSource(
+        title="旧城记",
+        text=f"第一回 城门领命\n{body}",
+        author="佚名",
+        rights_note="公版文本，保护期届满",
+    )
+
+    longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+    )
+
+    assert len(prompts) == 1
+    assert "【逐段显式锚点清单】" in prompts[0]
+    assert "[[P0001]]：数字 3；书名/篇名 《楚些》、《兵法》" in prompts[0]
+    assert "不得改名、改写、概括或移动到其他段落" in prompts[0]
+
+
+def test_classical_mode_targeted_repair_fixes_missing_title_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
+        calls.append((action, prompt))
+        if action.startswith("classical_complete_translation"):
+            return "[[P0001]]\n张三读楚辞三章，又把兵书交给李四。"
+        return prompt.split("【必须完整翻译的带编号原文】", 1)[1].split(
+            "【第一版带编号候选译文】", 1
+        )[0].strip()
+
+    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    body = "张三读《楚些》3章，又把《兵法》交给李四。" * 30
+    source = longform.PublicDomainSource(
+        title="旧城记",
+        text=f"第一回 城门领命\n{body}",
+        author="佚名",
+        rights_note="公版文本，保护期届满",
+    )
+
+    result = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+    )
+
+    assert [item[0] for item in calls] == [
+        "classical_complete_translation:0001:0001",
+        "classical_targeted_repair:0001:0001",
+    ]
+    assert "遗漏原文书名或篇名" in calls[1][1]
+    assert "《楚些》" in result.chapters[0].text
+    assert result.quality_report["targeted_repair_calls"] == 1
+    assert result.quality_report["chapter_audits"][0]["targeted_repair_calls"] == 1
+    assert result.quality_report["chapter_audits"][0]["segment_audits"][0]["targeted_repair_calls"] == 1
+
+
 def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

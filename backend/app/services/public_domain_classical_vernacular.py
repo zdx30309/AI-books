@@ -2,10 +2,10 @@
 
 This route is intentionally isolated from public-domain multi-source fusion.
 It never sends an entire long book into one context window.  Source chapters
-are processed strictly in order, divided into bounded segments, translated
-once, and checkpointed after every successful segment.  Paragraph IDs and
-deterministic anchors protect completeness without launching a second paid
-rewrite/review pass.
+are processed strictly in order, divided into bounded segments, translated,
+and checkpointed after every successful segment.  Paragraph IDs, explicit
+anchor manifests and a single bounded repair for failed segments protect
+completeness without launching blind retries.
 """
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ from typing import Any, Iterable
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v4"
-PROMPT_VERSION = "classical-complete-translation-only-v4"
+POLICY_VERSION = "public-domain-classical-translation-v5"
+PROMPT_VERSION = "classical-complete-translation-only-v5"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
+TARGETED_REPAIR_PROMPT = PROMPT_DIR / "classical_vernacular_targeted_repair.md"
 DEFAULT_USER_PROMPT = PROMPT_DIR / "classical_vernacular_user_default.md"
 
 MAX_SECTION_COUNT = 5_000
@@ -288,7 +289,11 @@ def run_classical_vernacular_longform(
             int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
         ),
         "translated_segments": sum(int(item.audit.get("segments") or 0) for item in chapters),
-        "pipeline": "source_order -> bounded_segments -> paragraph_ids -> complete_translation -> local_completeness_gate -> bookshelf",
+        "targeted_repair_calls": sum(
+            int(item.audit.get("targeted_repair_calls") or 0) for item in chapters
+        ),
+        "max_targeted_repairs_per_segment": 1,
+        "pipeline": "source_order -> bounded_segments -> paragraph_ids -> anchor_manifest -> complete_translation -> one_targeted_repair_if_needed -> local_completeness_gate -> bookshelf",
         "source_chapters": len(chapters),
         "requested_source_chapters": len(sections),
         "available_source_chapters": len(all_sections),
@@ -512,6 +517,7 @@ def _translate_section(
         source_chars = legacy.count_text_chars(source_text)
         target_chars = max(800, int(source_chars * 1.75))
         marked_source, expected_markers = _mark_source_units(source_text)
+        anchor_manifest = _build_anchor_manifest(marked_source)
         previous_context = (
             segments[segment_index - 2][-CONTEXT_CHARS:]
             if segment_index > 1
@@ -537,6 +543,7 @@ def _translate_section(
             previous_context=previous_context,
             previous_translation_context=previous_translation_context,
             next_context=next_context,
+            anchor_manifest=anchor_manifest,
             source_text=marked_source,
         )
         if user_prompt not in prompt:
@@ -547,6 +554,8 @@ def _translate_section(
         translation_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.md"
         translation_meta_path = chapter_dir / f"{number:03d}_{segment_index:04d}_translation.json"
         translation_meta = _load_json(translation_meta_path)
+        targeted_repair_calls = 0
+        repair_prompt_hash: str | None = None
         if (
             translation_meta
             and translation_meta.get("segment_key") == segment_key
@@ -554,6 +563,8 @@ def _translate_section(
         ):
             final = translation_path.read_text(encoding="utf-8").strip()
             translated_units = int(translation_meta.get("translated_units") or 0)
+            targeted_repair_calls = int(translation_meta.get("targeted_repair_calls") or 0)
+            repair_prompt_hash = str(translation_meta.get("repair_prompt_hash") or "") or None
         else:
             raw_translation = legacy._call_llm(  # noqa: SLF001
                 work_dir,
@@ -564,20 +575,63 @@ def _translate_section(
                 # Translation is a constrained transformation rather than a
                 # reasoning task.  Disabling hidden thinking prevents the
                 # model from spending the whole output budget on reasoning
-                # and returning an empty visible answer.  One provider call
-                # per segment also preserves the advertised cost contract.
+                # and returning an empty visible answer.  This is the base
+                # call; a second call is made only when local anchors fail.
                 thinking=False,
                 retries=1,
             )
-            final, translated_units = _parse_marked_translation(
-                raw_translation,
-                expected_markers=expected_markers,
-                chapter_title=section.title,
-            )
-            issues = _segment_issues(source_text=source_text, candidate=final)
+            final = ""
+            translated_units = 0
+            try:
+                final, translated_units = _parse_marked_translation(
+                    raw_translation,
+                    expected_markers=expected_markers,
+                    chapter_title=section.title,
+                )
+                issues = _segment_issues(source_text=source_text, candidate=final)
+            except legacy.PublicDomainQualityError as exc:
+                issues = [str(exc)]
+
+            if issues:
+                # This is a bounded, evidence-driven repair rather than a
+                # blind retry.  Only the failed segment is sent once more,
+                # together with its first candidate and an exact per-paragraph
+                # anchor checklist.  Successful earlier segments remain cached.
+                repair_prompt = _render(
+                    TARGETED_REPAIR_PROMPT,
+                    user_prompt=user_prompt,
+                    work_title=work_title,
+                    chapter_title=section.title,
+                    segment_label=segment_label,
+                    target_chars=target_chars,
+                    anchor_manifest=anchor_manifest,
+                    validation_issues="\n".join(f"- {item}" for item in issues),
+                    source_text=marked_source,
+                    candidate_text=raw_translation,
+                )
+                repair_prompt_hash = _sha(repair_prompt)
+                repaired_translation = legacy._call_llm(  # noqa: SLF001
+                    work_dir,
+                    action=f"classical_targeted_repair:{number:04d}:{segment_index:04d}",
+                    prompt=repair_prompt,
+                    temperature=0.05,
+                    max_output_tokens=_output_tokens(target_chars),
+                    thinking=False,
+                    retries=1,
+                )
+                targeted_repair_calls = 1
+                try:
+                    final, translated_units = _parse_marked_translation(
+                        repaired_translation,
+                        expected_markers=expected_markers,
+                        chapter_title=section.title,
+                    )
+                    issues = _segment_issues(source_text=source_text, candidate=final)
+                except legacy.PublicDomainQualityError as exc:
+                    issues = [str(exc)]
             if issues:
                 raise legacy.PublicDomainQualityError(
-                    f"《{section.title}》第 {segment_index} 段未通过完整翻译检查：{'；'.join(issues)}"
+                    f"《{section.title}》第 {segment_index} 段定向修复后仍未通过完整翻译检查：{'；'.join(issues)}"
                 )
             _atomic_write_text(translation_path, final)
             _atomic_write_json(
@@ -590,6 +644,9 @@ def _translate_section(
                     "translated_units": translated_units,
                     "source_units": len(expected_markers),
                     "operation": "complete_translation_only",
+                    "anchor_manifest": anchor_manifest,
+                    "targeted_repair_calls": targeted_repair_calls,
+                    "repair_prompt_hash": repair_prompt_hash,
                 },
             )
 
@@ -602,7 +659,9 @@ def _translate_section(
             "translated_units": translated_units,
             "prompt_hash": prompt_hash,
             "rendered_prompt_hash": rendered_prompt_hash,
+            "repair_prompt_hash": repair_prompt_hash,
             "user_prompt_injected": True,
+            "targeted_repair_calls": targeted_repair_calls,
             "issues": issues,
         }
         segment_audits.append(audit)
@@ -646,6 +705,9 @@ def _translate_section(
         "prompt_hash": prompt_hash,
         "prompt_injection_segments": sum(
             1 for item in segment_audits if item.get("user_prompt_injected") is True
+        ),
+        "targeted_repair_calls": sum(
+            int(item.get("targeted_repair_calls") or 0) for item in segment_audits
         ),
         "pass": True,
     }
@@ -733,6 +795,28 @@ def _mark_source_units(text: str) -> tuple[str, tuple[str, ...]]:
         f"{marker}\n{unit}" for marker, unit in zip(markers, units, strict=True)
     )
     return marked, markers
+
+
+def _build_anchor_manifest(marked_source: str) -> str:
+    """Extract per-paragraph hard anchors that models commonly omit."""
+
+    pattern = re.compile(r"(\[\[P\d{4}\]\])\s*(.*?)(?=\n\s*\[\[P\d{4}\]\]|\Z)", re.S)
+    lines: list[str] = []
+    for marker, body in pattern.findall(marked_source):
+        number_matches = re.findall(r"\d+(?:[./:-]\d+)*", body)
+        title_matches = re.findall(r"《[^》]{1,40}》", body)
+        numbers = list(dict.fromkeys(number_matches))
+        titles = list(dict.fromkeys(title_matches))
+        parts: list[str] = []
+        if numbers:
+            parts.append("数字 " + "、".join(numbers[:24]))
+        if titles:
+            parts.append("书名/篇名 " + "、".join(titles[:24]))
+        if parts:
+            lines.append(f"{marker}：" + "；".join(parts))
+    if not lines:
+        return "无显式数字、书名或篇名锚点；仍须完整翻译全部信息。"
+    return "\n".join(lines)
 
 
 def _parse_marked_translation(
