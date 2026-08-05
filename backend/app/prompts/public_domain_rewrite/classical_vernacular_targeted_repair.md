@@ -14,8 +14,6 @@
 【作品】{work_title}
 【原文章节】{chapter_title}
 【本次范围】{segment_label}
-【输出空间】最多约 {target_chars} 字。该数字只是防止截断，不是扩写目标。
-
 【本地检查发现的问题】
 {validation_issues}
 

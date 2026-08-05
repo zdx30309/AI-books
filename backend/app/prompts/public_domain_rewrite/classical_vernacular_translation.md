@@ -30,8 +30,6 @@
 【作品】{work_title}
 【原文章节】{chapter_title}
 【本次范围】{segment_label}
-【输出空间】最多约 {target_chars} 字。该数字仅是防止截断的空间，不是扩写目标。
-
 【逐段显式锚点清单】
 {anchor_manifest}
 

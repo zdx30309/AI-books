@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import re
 import time
@@ -22,16 +23,20 @@ from app.core.config import settings
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v6"
-PROMPT_VERSION = "classical-complete-translation-only-v6"
+POLICY_VERSION = "public-domain-classical-translation-v7"
+PROMPT_VERSION = "classical-complete-translation-only-v7"
 COVERAGE_POLICY_VERSION = "sentence-unit-coverage-v1"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
 TARGETED_REPAIR_PROMPT = PROMPT_DIR / "classical_vernacular_targeted_repair.md"
 DEFAULT_USER_PROMPT = PROMPT_DIR / "classical_vernacular_user_default.md"
 
-MAX_SECTION_COUNT = 5_000
-SEGMENT_CHARS = 5_200
+MAX_SECTION_COUNT = 100_000
+# This is an internal per-request context ceiling, not a book-size limit.
+# Short chapters are sent whole; only chapters larger than the model-safe
+# semantic window are paged at paragraph/sentence boundaries.  A task may
+# contain any number of these serial, resumable pages.
+SEGMENT_CHARS = 12_000
 CONTEXT_CHARS = 800
 MIN_PREVIEW_CHARS = 500
 MAX_PREVIEW_CHARS = 200_000
@@ -45,8 +50,9 @@ SOURCE_UNIT_TARGET_CHARS = 48
 SOURCE_UNIT_MAX_CHARS = 96
 TRANSLATION_WRITER_PROVIDER = "openai"
 TRANSLATION_WRITER_MODEL = "gpt-5.6-sol"
-TRANSLATION_WRITER_REASONING_EFFORT = "low"
+TRANSLATION_WRITER_REASONING_EFFORT = "xhigh"
 TRANSLATION_WRITER_VERBOSITY = "low"
+TRANSLATION_WRITER_MAX_OUTPUT_TOKENS = 0
 
 _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
@@ -230,6 +236,8 @@ def run_classical_vernacular_longform(
         "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
         "translation_writer_model": TRANSLATION_WRITER_MODEL,
         "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+        "translation_writer_max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
+        "segment_strategy": "whole_chapter_then_adaptive_semantic_pages",
         "prompt_hash": prompt_hash,
         "title": (target_title or items[0].title).strip(),
         "chapter_count": len(sections),
@@ -257,6 +265,26 @@ def run_classical_vernacular_longform(
     # logs.
     _atomic_write_text(work_dir / "00_classical_user_prompt.md", user_prompt)
     _atomic_write_json(work_dir / "01_classical_vernacular_plan.json", plan)
+    source_manifest = {
+        "policy_version": POLICY_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "prompt_hash": prompt_hash,
+        "scope_mode": profile.scope_mode,
+        "source_count": len(items),
+        "available_chapter_count": len(all_sections),
+        "selected_chapter_count": len(sections),
+        "selected_source_chars": sum(
+            legacy.count_text_chars(section.text) for section in sections
+        ),
+        "chapters": plan["chapters"],
+        "source_order_digest": _sha(
+            "|".join(
+                f"{section.source_id}:{legacy.text_sha256(section.text)}"
+                for section in sections
+            )
+        ),
+    }
+    _atomic_write_json(work_dir / "02_classical_source_manifest.json", source_manifest)
     _notify(
         on_progress,
         8,
@@ -326,7 +354,7 @@ def run_classical_vernacular_longform(
     if profile.scope_mode != SCOPE_CHARACTERS and len(chapters) != len(sections):
         blocking.append("最终章节数量与原文章节数量不一致")
     expected_source_chars = sum(legacy.count_text_chars(item.text) for item in sections)
-    if profile.scope_mode == SCOPE_COMPLETE and source_chars != expected_source_chars:
+    if profile.scope_mode != SCOPE_CHARACTERS and source_chars != expected_source_chars:
         blocking.append(
             f"全书原文覆盖 {source_chars}/{expected_source_chars} 字，存在未处理原文"
         )
@@ -338,27 +366,35 @@ def run_classical_vernacular_longform(
         blocking.append(
             f"全稿白话译文仅 {body_chars} 字，低于原文 {source_chars} 字的完整性下限"
         )
+    translated_segments = sum(int(item.audit.get("segments") or 0) for item in chapters)
+    prompt_injection_segments = sum(
+        int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
+    )
+    if prompt_injection_segments != translated_segments:
+        blocking.append(
+            f"自定义 Prompt 注入覆盖 {prompt_injection_segments}/{translated_segments}，存在未注入分段"
+        )
     quality_report = {
         "status": "needs_review" if blocking else "ok",
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
         "prompt_hash": prompt_hash,
         "prompt_injection_mode": "exact_user_prompt_on_every_paid_segment",
-        "prompt_injection_segments": sum(
-            int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
-        ),
-        "translated_segments": sum(int(item.audit.get("segments") or 0) for item in chapters),
+        "prompt_injection_segments": prompt_injection_segments,
+        "translated_segments": translated_segments,
         "source_units": source_units,
         "translated_units": translated_units,
         "coverage_policy_version": COVERAGE_POLICY_VERSION,
         "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
         "translation_writer_model": TRANSLATION_WRITER_MODEL,
         "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+        "translation_writer_max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
+        "output_cap_mode": "model_default",
         "targeted_repair_calls": sum(
             int(item.audit.get("targeted_repair_calls") or 0) for item in chapters
         ),
         "max_targeted_repairs_per_segment": 1,
-        "pipeline": "source_order -> bounded_segments -> sentence_unit_ids -> per_unit_length_and_anchor_gate -> complete_translation -> one_targeted_repair_if_needed -> chapter_and_book_coverage_gate -> bookshelf",
+        "pipeline": "source_order -> whole_chapter_or_adaptive_semantic_pages -> sentence_unit_ids -> per_unit_length_and_anchor_gate -> complete_translation -> one_targeted_repair_if_needed -> chapter_and_book_coverage_gate -> bookshelf",
         "source_chapters": len(chapters),
         "requested_source_chapters": len(sections),
         "available_source_chapters": len(all_sections),
@@ -377,6 +413,51 @@ def run_classical_vernacular_longform(
     _atomic_write_json(work_dir / "quality_report.json", quality_report)
     if blocking:
         raise legacy.PublicDomainQualityError("；".join(blocking))
+
+    required_source_chars = (
+        source_chars if profile.scope_mode == SCOPE_CHARACTERS else expected_source_chars
+    )
+    coverage_manifest = {
+        "status": "complete",
+        "policy_version": POLICY_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "coverage_policy_version": COVERAGE_POLICY_VERSION,
+        "scope_mode": profile.scope_mode,
+        "whole_book_complete": profile.scope_mode == SCOPE_COMPLETE,
+        "selected_scope_complete": True,
+        "prompt_hash": prompt_hash,
+        "source_order_digest": source_manifest["source_order_digest"],
+        "expected_chapters": len(sections),
+        "translated_chapters": len(chapters),
+        "available_selected_source_chars": expected_source_chars,
+        "required_source_chars": required_source_chars,
+        "processed_source_chars": source_chars,
+        "source_units": source_units,
+        "translated_units": translated_units,
+        "translated_segments": translated_segments,
+        "prompt_injection_segments": prompt_injection_segments,
+        "writer": {
+            "provider": TRANSLATION_WRITER_PROVIDER,
+            "model": TRANSLATION_WRITER_MODEL,
+            "reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+            "max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
+        },
+        "chapters": [
+            {
+                "number": item.number,
+                "title": item.title,
+                "source_sha256": item.audit.get("source_sha256"),
+                "processed_source_chars": item.audit.get("processed_source_chars"),
+                "source_units": item.audit.get("source_units"),
+                "translated_units": item.audit.get("translated_units"),
+                "segments": item.audit.get("segments"),
+                "prompt_injection_segments": item.audit.get("prompt_injection_segments"),
+                "pass": item.audit.get("pass") is True,
+            }
+            for item in chapters
+        ],
+    }
+    _atomic_write_json(work_dir / "05_classical_coverage_manifest.json", coverage_manifest)
 
     title = str(plan["title"] or items[0].title).strip()
     summary = (
@@ -518,12 +599,14 @@ def _call_translation_writer(
 ) -> str:
     """Call GPT-5.6 Sol as the isolated classical translation writer.
 
-    The model is intentionally run with low hidden reasoning and low verbosity:
-    translating marked source units is a constrained transformation, and the
-    visible output budget must be reserved for the complete translation.  The
-    deterministic coverage gate, rather than extra hidden thought, decides
-    whether the result is accepted.  There is no transport-level paid retry;
-    at most one separately logged targeted repair is allowed by the caller.
+    The model is intentionally run with xhigh reasoning and low verbosity.
+    This route does not impose an artificial max_output_tokens cap: the source
+    remains in broad bounded semantic windows, leaving context for names,
+    pronouns and tone while the model has room for both hidden reasoning and
+    the complete visible translation.  The deterministic sentence-unit gate
+    still decides whether every source span was translated.
+    There is no transport-level paid retry; at most one separately logged
+    targeted repair is allowed by the caller.
     """
 
     from app.services.content_engine import _openai_writer_call_result
@@ -547,6 +630,7 @@ def _call_translation_writer(
         "verbosity": TRANSLATION_WRITER_VERBOSITY,
         "input_chars": len(prompt),
         "max_output_tokens": max_output_tokens,
+        "output_cap_mode": "model_default" if max_output_tokens <= 0 else "explicit",
         "temperature_compat": temperature,
         "thinking_compat": thinking,
         "requested_retries_compat": retries,
@@ -697,7 +781,7 @@ def _translate_section(
             audit=dict(payload.get("audit") or {}),
         )
 
-    segment_limit = segment_limit_override or SEGMENT_CHARS
+    segment_limit = segment_limit_override or _adaptive_segment_limit(section.text)
     if preview_output_chars and segment_limit_override is None:
         # Smaller semantic segments keep a paid preview close to the selected
         # output size without truncating a model response mid-sentence.
@@ -728,7 +812,6 @@ def _translate_section(
             else "本章完整内容"
         )
         source_chars = legacy.count_text_chars(source_text)
-        target_chars = max(800, int(source_chars * 1.75))
         marked_source, source_units = _build_marked_source(source_text)
         expected_markers = tuple(unit.marker for unit in source_units)
         source_units_digest = _source_units_digest(source_units)
@@ -754,7 +837,6 @@ def _translate_section(
             work_title=work_title,
             chapter_title=section.title,
             segment_label=segment_label,
-            target_chars=target_chars,
             previous_context=previous_context,
             previous_translation_context=previous_translation_context,
             next_context=next_context,
@@ -801,13 +883,11 @@ def _translate_section(
                 action=f"classical_complete_translation:{number:04d}:{segment_index:04d}",
                 prompt=prompt,
                 temperature=0.10,
-                max_output_tokens=_output_tokens(target_chars),
-                # Translation is a constrained transformation rather than a
-                # reasoning task.  Disabling hidden thinking prevents the
-                # model from spending the whole output budget on reasoning
-                # and returning an empty visible answer.  This is the base
-                # call; a second call is made only when local anchors fail.
-                thinking=False,
+                max_output_tokens=_output_tokens(source_chars),
+                # xhigh reasoning is fixed by this route.  There is no
+                # artificial output cap; broad semantic windows preserve
+                # context while sentence-unit markers protect completeness.
+                thinking=True,
                 retries=1,
             )
             final = ""
@@ -834,7 +914,6 @@ def _translate_section(
                     work_title=work_title,
                     chapter_title=section.title,
                     segment_label=segment_label,
-                    target_chars=target_chars,
                     anchor_manifest=anchor_manifest,
                     validation_issues="\n".join(f"- {item}" for item in issues),
                     source_text=marked_source,
@@ -846,8 +925,8 @@ def _translate_section(
                     action=f"classical_targeted_repair:{number:04d}:{segment_index:04d}",
                     prompt=repair_prompt,
                     temperature=0.05,
-                    max_output_tokens=_output_tokens(target_chars),
-                    thinking=False,
+                    max_output_tokens=_output_tokens(source_chars),
+                    thinking=True,
                     retries=1,
                 )
                 targeted_repair_calls = 1
@@ -1012,6 +1091,21 @@ def split_source_segments(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
     """Public, deterministic segment view used by the workbench."""
 
     return _split_for_context(text, limit=max(600, min(SEGMENT_CHARS, int(limit))))
+
+
+def _adaptive_segment_limit(text: str) -> int:
+    """Keep ordinary chapters whole and page only genuinely long chapters.
+
+    ``SEGMENT_CHARS`` is a model-request safety ceiling, never a source/book
+    truncation limit.  Balancing long chapters avoids a tiny tail page while
+    preserving paragraph and sentence boundaries in ``_split_for_context``.
+    """
+
+    source_chars = legacy.count_text_chars(text)
+    if source_chars <= SEGMENT_CHARS:
+        return max(600, source_chars)
+    page_count = max(2, math.ceil(source_chars / SEGMENT_CHARS))
+    return max(600, min(SEGMENT_CHARS, math.ceil(source_chars / page_count)))
 
 
 def retranslate_classical_selection(
@@ -1449,7 +1543,13 @@ def _render(path: Path, **values: object) -> str:
 
 
 def _output_tokens(target_chars: int) -> int:
-    return max(5_000, min(18_000, int(target_chars * 1.8)))
+    # Zero is normalized to ``None`` by the shared OpenAI adapter, so the API
+    # uses the model's own maximum rather than an application cap.  This is
+    # essential for xhigh: reasoning tokens and visible translation tokens
+    # share max_output_tokens.  Completeness is bounded by SEGMENT_CHARS and
+    # enforced after the call by exact sentence-unit coverage checks.
+    _ = target_chars
+    return TRANSLATION_WRITER_MAX_OUTPUT_TOKENS
 
 
 def _notify(callback: legacy.ProgressCallback | None, progress: int, step: str) -> None:

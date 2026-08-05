@@ -140,7 +140,10 @@ def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter
     assert "只做翻译" in calls[0][1]
     assert "不得改编、重写、润色、仿写、扩写、缩写" in calls[0][1]
     assert "[[P0001]]" in calls[0][1]
-    assert calls[0][2]["thinking"] is False
+    assert "输出空间" not in calls[0][1]
+    assert "最多约" not in calls[0][1]
+    assert calls[0][2]["thinking"] is True
+    assert calls[0][2]["max_output_tokens"] == 0
     assert calls[0][2]["retries"] == 1
     assert result.title == "旧城记"
     assert [item.title for item in result.chapters] == ["第一回 城门领命"]
@@ -192,7 +195,7 @@ def test_classical_mode_reuses_each_completed_segment_after_later_failure(
 
     monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     kwargs = dict(
-        sources=[_source(repeats=100)],
+        sources=[_source(repeats=300)],
         work_dir=tmp_path,
         generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
         public_domain_confirmed=True,
@@ -326,7 +329,7 @@ def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
     monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     custom_prompt = "对白用简洁现代汉语，叙述保持沉稳；字面占位 {work_title} 不得被系统改写。"
     result = longform.run_public_domain_longform(
-        sources=[_source(repeats=100)],
+        sources=[_source(repeats=300)],
         work_dir=tmp_path,
         generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
         public_domain_confirmed=True,
@@ -737,7 +740,7 @@ def test_valid_sentence_units_reassemble_original_paragraph_boundaries() -> None
     assert translated == source
 
 
-def test_translation_writer_is_openai_gpt_56_sol_without_hidden_paid_retry(
+def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -769,7 +772,7 @@ def test_translation_writer_is_openai_gpt_56_sol_without_hidden_paid_retry(
     )
 
     assert output == "完整白话译文"
-    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == "xhigh"
     assert captured["verbosity"] == "low"
     assert captured["retry_on_failure"] is False
     events = [
@@ -780,3 +783,69 @@ def test_translation_writer_is_openai_gpt_56_sol_without_hidden_paid_retry(
     assert events[-1]["model"] == "gpt-5.6-sol"
     assert events[-1]["status"] == "ok"
     assert events[-1]["usage_tokens"]["total_tokens"] == 200
+
+
+def test_xhigh_translation_uses_adaptive_semantic_pages_without_output_cap() -> None:
+    assert classical.TRANSLATION_WRITER_REASONING_EFFORT == "xhigh"
+    assert classical.SEGMENT_CHARS == 12_000
+    assert classical._output_tokens(4_200) == 0  # noqa: SLF001
+
+    short_chapter = "甲曰今日当行。乙曰尚可再议。"
+    assert classical._adaptive_segment_limit(short_chapter) == 600  # noqa: SLF001
+    assert classical.split_source_segments(short_chapter) == [short_chapter]
+
+    long_chapter = "甲曰今日当行。乙曰尚可再议。" * 1_200
+    adaptive_limit = classical._adaptive_segment_limit(long_chapter)  # noqa: SLF001
+    assert 600 <= adaptive_limit <= classical.SEGMENT_CHARS
+    pages = classical._split_for_context(long_chapter, adaptive_limit)  # noqa: SLF001
+    assert "".join(pages) == long_chapter
+    assert len(pages) > 1
+
+
+def test_unheaded_full_book_is_paged_serially_and_publishes_only_after_full_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
+        calls.append(action)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
+    source = _source(with_headings=False, repeats=400)
+    result = longform.run_public_domain_longform(
+        sources=[source],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={
+            "scope_mode": "complete",
+            "custom_prompt": "逐句完整翻译，保留人名、数字与先后顺序。",
+        },
+    )
+
+    assert len(result.chapters) == 1
+    assert len(calls) > 1
+    assert calls == [
+        f"classical_complete_translation:0001:{index:04d}"
+        for index in range(1, len(calls) + 1)
+    ]
+    assert result.chapters[0].audit["processed_source_chars"] == longform.count_text_chars(
+        source.text
+    )
+    assert result.chapters[0].audit["segments"] == len(calls)
+    assert result.chapters[0].audit["prompt_injection_segments"] == len(calls)
+    manifest = json.loads(
+        (tmp_path / "05_classical_coverage_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "complete"
+    assert manifest["whole_book_complete"] is True
+    assert manifest["processed_source_chars"] == manifest["required_source_chars"]
+    assert manifest["translated_segments"] == manifest["prompt_injection_segments"]
+    assert manifest["writer"] == {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "xhigh",
+        "max_output_tokens": 0,
+    }
