@@ -3071,8 +3071,20 @@ def _create_openai_writer_response(
     background: bool = False,
     background_timeout_seconds: int | None = None,
     background_poll_interval_seconds: float | None = None,
+    background_response_id: str | None = None,
+    on_background_response_id: Callable[[str], None] | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
+    persisted_response_id = str(background_response_id or "").strip()
+    if background and persisted_response_id:
+        response = client.responses.retrieve(persisted_response_id)
+        return _wait_for_openai_background_response(
+            client,
+            response,
+            timeout_seconds=background_timeout_seconds,
+            poll_interval_seconds=background_poll_interval_seconds,
+        )
+
     kwargs: dict[str, Any] = {
         "model": settings.OPENAI_WRITER_MODEL,
         "input": rendered_prompt,
@@ -3091,6 +3103,9 @@ def _create_openai_writer_response(
     response = client.responses.create(**kwargs)
     if not background:
         return response
+    response_id = str(_response_attr(response, "id", "") or "").strip()
+    if response_id and on_background_response_id is not None:
+        on_background_response_id(response_id)
     return _wait_for_openai_background_response(
         client,
         response,
@@ -3177,6 +3192,8 @@ def _openai_writer_call_result(
     background: bool = False,
     background_timeout_seconds: int | None = None,
     background_poll_interval_seconds: float | None = None,
+    background_response_id: str | None = None,
+    on_background_response_id: Callable[[str], None] | None = None,
     fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
@@ -3253,6 +3270,8 @@ def _openai_writer_call_result(
                             background=background,
                             background_timeout_seconds=background_timeout_seconds,
                             background_poll_interval_seconds=background_poll_interval_seconds,
+                            background_response_id=background_response_id,
+                            on_background_response_id=on_background_response_id,
                         )
                         _merge_openai_usage(total_usage, response)
                         text = _extract_openai_response_text(response)
@@ -3313,6 +3332,8 @@ def _openai_writer_call_result(
                         background=background,
                         background_timeout_seconds=background_timeout_seconds,
                         background_poll_interval_seconds=background_poll_interval_seconds,
+                        background_response_id=background_response_id,
+                        on_background_response_id=on_background_response_id,
                     )
                     _merge_openai_usage(total_usage, response)
                 except Exception as exc:

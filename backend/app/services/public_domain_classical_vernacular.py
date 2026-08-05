@@ -53,6 +53,8 @@ TRANSLATION_WRITER_MODEL = "gpt-5.6-sol"
 TRANSLATION_WRITER_REASONING_EFFORT = "xhigh"
 TRANSLATION_WRITER_VERBOSITY = "low"
 TRANSLATION_WRITER_MAX_OUTPUT_TOKENS = 0
+OPENAI_BACKGROUND_TIMEOUT_SECONDS = 7_200
+OPENAI_BACKGROUND_STATE_FILE = "classical_openai_background_responses.json"
 
 
 def _translation_writer_config() -> tuple[str, str, str]:
@@ -659,11 +661,35 @@ def _call_translation_writer(
         "thinking_compat": thinking,
         "requested_retries_compat": retries,
         "transport_retries": 0,
+        "delivery_mode": "background_persisted" if provider == "openai" else "synchronous",
         "status": "started",
     }
     try:
         usage: dict[str, Any] = {}
         if provider == "openai":
+            prompt_digest = _sha(prompt)
+            response_state_path = work_dir / OPENAI_BACKGROUND_STATE_FILE
+            response_state = _load_json(response_state_path) or {}
+            previous = response_state.get(action) if isinstance(response_state, dict) else None
+            resume_response_id = ""
+            if (
+                isinstance(previous, dict)
+                and previous.get("prompt_sha256") == prompt_digest
+                and previous.get("status") in {"created", "polling"}
+            ):
+                resume_response_id = str(previous.get("response_id") or "").strip()
+
+            def persist_background_response(response_id: str) -> None:
+                latest = _load_json(response_state_path) or {}
+                latest[action] = {
+                    "action": action,
+                    "prompt_sha256": prompt_digest,
+                    "response_id": response_id,
+                    "status": "polling",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                _atomic_write_json(response_state_path, latest)
+
             output, usage = _openai_writer_call_result(
                 prompt,
                 reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
@@ -671,8 +697,23 @@ def _call_translation_writer(
                 max_output_tokens=max_output_tokens,
                 prompt_cache_key=f"classical:{PROMPT_VERSION}:{_sha(prompt)}",
                 service_tier="default",
+                background=True,
+                background_timeout_seconds=OPENAI_BACKGROUND_TIMEOUT_SECONDS,
+                background_poll_interval_seconds=5,
+                background_response_id=resume_response_id or None,
+                on_background_response_id=persist_background_response,
                 retry_on_failure=False,
             )
+            completed_response_id = str(usage.get("response_id") or resume_response_id or "").strip()
+            completed_state = _load_json(response_state_path) or {}
+            completed_state[action] = {
+                "action": action,
+                "prompt_sha256": prompt_digest,
+                "response_id": completed_response_id,
+                "status": "completed",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _atomic_write_json(response_state_path, completed_state)
         else:
             # The shared DeepSeek helper normally retries formatting jobs.
             # Translation uses exactly one paid call; its existing targeted

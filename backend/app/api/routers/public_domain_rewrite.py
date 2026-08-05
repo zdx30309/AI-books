@@ -492,6 +492,9 @@ def _prepare_classical_continuation(
         "pause_requested",
         "auto_requeue_reason",
         "auto_requeued_at",
+        "paid_call_delivery_uncertain",
+        "paid_call_manual_resume_required",
+        "failed_auto_recovery_suppressed_at",
     ):
         cfg.pop(key, None)
     task.config = cfg

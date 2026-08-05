@@ -769,6 +769,18 @@ def _is_retryable_error_message(message: str | None) -> bool:
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
 
 
+def _is_classical_paid_delivery_uncertain(
+    config: dict[str, Any], message: str | None
+) -> bool:
+    """Return true when watchdog replay could duplicate an already billed call."""
+
+    return bool(
+        config.get("public_domain_classical_vernacular")
+        and str(config.get("generation_mode") or "") == "classical_vernacular"
+        and _is_retryable_error_message(message)
+    )
+
+
 def _is_auth_error_message(normalized: str) -> bool:
     return "api key" in normalized or "unauthorized" in normalized or bool(_AUTH_ERROR_RE.search(normalized))
 
@@ -941,6 +953,19 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 continue
             message = task.error_message or cfg.get("last_auto_retry_error")
             if not _is_retryable_error_message(str(message or "")):
+                continue
+            is_classical_paid_delivery = _is_classical_paid_delivery_uncertain(
+                cfg, str(message or "")
+            )
+            if is_classical_paid_delivery or cfg.get("paid_call_delivery_uncertain"):
+                # A connection error may happen after OpenAI has accepted and
+                # billed the background response.  Never create a second paid
+                # response from the watchdog; the user continuation route
+                # resumes the persisted response id/checkpoint instead.
+                cfg["paid_call_delivery_uncertain"] = True
+                cfg["paid_call_manual_resume_required"] = True
+                cfg["failed_auto_recovery_suppressed_at"] = datetime.now(timezone.utc).isoformat()
+                task.config = cfg
                 continue
             cfg["failed_auto_recovery_attempts"] = attempts + 1
             cfg["failed_auto_recovered_at"] = datetime.now(timezone.utc).isoformat()
@@ -1644,6 +1669,9 @@ def _clear_public_domain_failure_state(config: dict[str, Any]) -> dict[str, Any]
     cleaned.pop("public_domain_quality_reason", None)
     cleaned.pop("auto_requeue_reason", None)
     cleaned.pop("auto_requeued_at", None)
+    cleaned.pop("paid_call_delivery_uncertain", None)
+    cleaned.pop("paid_call_manual_resume_required", None)
+    cleaned.pop("failed_auto_recovery_suppressed_at", None)
     return cleaned
 
 
@@ -2064,9 +2092,26 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         db.rollback()
         task = db.get(Task, uuid.UUID(task_id))
         if task is not None:
+            cfg = dict(task.config or {})
+            classical_paid_delivery_uncertain = bool(
+                cfg.get("public_domain_classical_vernacular")
+                and str(cfg.get("generation_mode") or "") == CLASSICAL_VERNACULAR_MODE
+                and _is_retryable_generation_error(exc)
+            )
+            if classical_paid_delivery_uncertain:
+                cfg.update(
+                    paid_call_delivery_uncertain=True,
+                    paid_call_manual_resume_required=True,
+                    failed_auto_recovery_suppressed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                task.config = cfg
             clear_run()
             task.status = TaskStatus.FAILED
-            task.current_step = "技术故障；已保存证据、规划和合格章节断点，可继续生成"
+            task.current_step = (
+                "上游回传中断；已禁止自动重复付费，可按当前范围继续并复用已保存响应"
+                if classical_paid_delivery_uncertain
+                else "技术故障；已保存证据、规划和合格章节断点，可继续生成"
+            )
             task.error_message = f"{type(exc).__name__}: {exc}"[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.FAILED}

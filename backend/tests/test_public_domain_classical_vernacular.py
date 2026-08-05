@@ -17,6 +17,7 @@ from app.services import content_engine
 from app.services import public_domain_longform as longform
 from app.api.routers import public_domain_rewrite as public_domain_router
 from app.models import Chapter, Task, TaskStatus
+from app.tasks import tasks as task_jobs
 
 
 def _source(*, with_headings: bool = True, repeats: int = 24) -> longform.PublicDomainSource:
@@ -748,6 +749,9 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
 
     def fake_openai_call(prompt: str, **kwargs):
         captured.update(prompt=prompt, **kwargs)
+        callback = kwargs.get("on_background_response_id")
+        if callback:
+            callback("resp_fixture")
         return "完整白话译文", {
             "input_tokens": 120,
             "output_tokens": 80,
@@ -778,6 +782,14 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert captured["reasoning_effort"] == "xhigh"
     assert captured["verbosity"] == "low"
     assert captured["retry_on_failure"] is False
+    assert captured["background"] is True
+    assert captured["background_timeout_seconds"] == 7200
+    assert captured["background_response_id"] is None
+    response_state = json.loads(
+        (tmp_path / classical.OPENAI_BACKGROUND_STATE_FILE).read_text(encoding="utf-8")
+    )
+    assert response_state["classical_complete_translation:0001:0001"]["status"] == "completed"
+    assert response_state["classical_complete_translation:0001:0001"]["response_id"] == "resp_fixture"
     events = [
         json.loads(line)
         for line in (tmp_path / "llm_calls.jsonl").read_text(encoding="utf-8").splitlines()
@@ -786,6 +798,68 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert events[-1]["model"] == "gpt-5.6-sol"
     assert events[-1]["status"] == "ok"
     assert events[-1]["usage_tokens"]["total_tokens"] == 200
+
+
+def test_translation_writer_resumes_persisted_background_response_without_new_paid_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action = "classical_complete_translation:0001:0002"
+    prompt = "继续完整翻译"
+    state_path = tmp_path / classical.OPENAI_BACKGROUND_STATE_FILE
+    state_path.write_text(
+        json.dumps(
+            {
+                action: {
+                    "action": action,
+                    "prompt_sha256": classical._sha(prompt),  # noqa: SLF001
+                    "response_id": "resp_already_billed",
+                    "status": "polling",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_openai_call(_prompt: str, **kwargs):
+        captured.update(kwargs)
+        return "已恢复的完整译文", {"response_id": "resp_already_billed", "total_tokens": 9}
+
+    monkeypatch.setattr(content_engine, "_openai_writer_call_result", fake_openai_call)
+    monkeypatch.setattr(classical.settings, "OPENAI_WRITER_MODEL", "gpt-5.6-sol")
+    monkeypatch.setattr(
+        classical.settings, "CLASSICAL_TRANSLATION_WRITER_PROVIDER", "openai"
+    )
+
+    output = classical._call_translation_writer(  # noqa: SLF001
+        tmp_path,
+        action=action,
+        prompt=prompt,
+        temperature=0.1,
+        max_output_tokens=0,
+    )
+
+    assert output == "已恢复的完整译文"
+    assert captured["background_response_id"] == "resp_already_billed"
+
+
+def test_classical_connection_failure_is_never_watchdog_replayed() -> None:
+    config = {
+        "public_domain_classical_vernacular": True,
+        "generation_mode": "classical_vernacular",
+    }
+    assert task_jobs._is_classical_paid_delivery_uncertain(  # noqa: SLF001
+        config, "OpenAI APIConnectionError: Connection error"
+    )
+    assert not task_jobs._is_classical_paid_delivery_uncertain(  # noqa: SLF001
+        config, "译文缺失原文锚点"
+    )
+    assert not task_jobs._is_classical_paid_delivery_uncertain(  # noqa: SLF001
+        {"generation_mode": "research_preview"},
+        "OpenAI APIConnectionError: Connection error",
+    )
 
 
 def test_translation_writer_can_switch_only_the_model_call_to_deepseek_v4_flash(
