@@ -54,6 +54,27 @@ TRANSLATION_WRITER_REASONING_EFFORT = "xhigh"
 TRANSLATION_WRITER_VERBOSITY = "low"
 TRANSLATION_WRITER_MAX_OUTPUT_TOKENS = 0
 
+
+def _translation_writer_config() -> tuple[str, str, str]:
+    provider = str(settings.CLASSICAL_TRANSLATION_WRITER_PROVIDER or "openai").strip().lower()
+    if provider == "openai":
+        model = str(settings.OPENAI_WRITER_MODEL or "").strip()
+        if model != TRANSLATION_WRITER_MODEL:
+            raise legacy.PublicDomainValidationError(
+                "公版古文白话 OpenAI 主笔必须使用 gpt-5.6-sol"
+            )
+        return provider, model, TRANSLATION_WRITER_REASONING_EFFORT
+    if provider == "deepseek":
+        model = str(settings.DEEPSEEK_MODEL or "").strip()
+        if model != "deepseek-v4-flash":
+            raise legacy.PublicDomainValidationError(
+                "公版古文白话 DeepSeek 主笔必须使用 deepseek-v4-flash 正式版"
+            )
+        return provider, model, "provider_default"
+    raise legacy.PublicDomainValidationError(
+        "公版古文白话主笔只能配置为 openai 或 deepseek"
+    )
+
 _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
     r"第\s*[一二三四五六七八九十百千零〇两\d]+\s*[回章节篇部卷折出]"
@@ -187,6 +208,7 @@ def run_classical_vernacular_longform(
     items = list(sources)
     raw_profile = dict(adaptation_profile or {})
     profile = normalize_profile(raw_profile)
+    writer_provider, writer_model, writer_reasoning_effort = _translation_writer_config()
     # A preview may later be upgraded to a complete translation on the same
     # task.  Scope is an execution concern, not a translation-style change.
     # Keep the original profile fingerprint and segment boundary so already
@@ -233,9 +255,9 @@ def run_classical_vernacular_longform(
     plan = {
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
-        "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
-        "translation_writer_model": TRANSLATION_WRITER_MODEL,
-        "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+        "translation_writer_provider": writer_provider,
+        "translation_writer_model": writer_model,
+        "translation_writer_reasoning_effort": writer_reasoning_effort,
         "translation_writer_max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
         "segment_strategy": "whole_chapter_then_adaptive_semantic_pages",
         "prompt_hash": prompt_hash,
@@ -385,9 +407,9 @@ def run_classical_vernacular_longform(
         "source_units": source_units,
         "translated_units": translated_units,
         "coverage_policy_version": COVERAGE_POLICY_VERSION,
-        "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
-        "translation_writer_model": TRANSLATION_WRITER_MODEL,
-        "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+        "translation_writer_provider": writer_provider,
+        "translation_writer_model": writer_model,
+        "translation_writer_reasoning_effort": writer_reasoning_effort,
         "translation_writer_max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
         "output_cap_mode": "model_default",
         "targeted_repair_calls": sum(
@@ -437,9 +459,9 @@ def run_classical_vernacular_longform(
         "translated_segments": translated_segments,
         "prompt_injection_segments": prompt_injection_segments,
         "writer": {
-            "provider": TRANSLATION_WRITER_PROVIDER,
-            "model": TRANSLATION_WRITER_MODEL,
-            "reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+            "provider": writer_provider,
+            "model": writer_model,
+            "reasoning_effort": writer_reasoning_effort,
             "max_output_tokens": TRANSLATION_WRITER_MAX_OUTPUT_TOKENS,
         },
         "chapters": [
@@ -597,9 +619,12 @@ def _call_translation_writer(
     thinking: bool | None = None,
     retries: int | None = None,
 ) -> str:
-    """Call GPT-5.6 Sol as the isolated classical translation writer.
+    """Call the configured writer without changing the translation pipeline.
 
-    The model is intentionally run with xhigh reasoning and low verbosity.
+    OpenAI GPT-5.6 Sol xhigh and DeepSeek V4 Flash receive the exact same
+    rendered prompt and return plain text to the same deterministic coverage,
+    anchor, checkpoint, repair and merge stages.  Selecting DeepSeek therefore
+    changes only the paid model call, not the engineering chain.
     This route does not impose an artificial max_output_tokens cap: the source
     remains in broad bounded semantic windows, leaving context for names,
     pronouns and tone while the model has room for both hidden reasoning and
@@ -609,14 +634,13 @@ def _call_translation_writer(
     targeted repair is allowed by the caller.
     """
 
+    from app.services import deepseek
     from app.services.content_engine import _openai_writer_call_result
 
-    configured_model = str(settings.OPENAI_WRITER_MODEL or "").strip()
+    provider, configured_model, reasoning_effort = _translation_writer_config()
     selected_model = str(model or configured_model).strip()
-    if selected_model != TRANSLATION_WRITER_MODEL or configured_model != TRANSLATION_WRITER_MODEL:
-        raise legacy.PublicDomainValidationError(
-            "公版古文白话翻译主笔配置错误：必须使用 OpenAI gpt-5.6-sol"
-        )
+    if selected_model != configured_model:
+        raise legacy.PublicDomainValidationError("公版古文白话主笔模型与当前配置不一致")
 
     started = time.monotonic()
     log: dict[str, Any] = {
@@ -624,10 +648,10 @@ def _call_translation_writer(
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
         "action": action,
-        "provider": TRANSLATION_WRITER_PROVIDER,
+        "provider": provider,
         "model": selected_model,
-        "reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
-        "verbosity": TRANSLATION_WRITER_VERBOSITY,
+        "reasoning_effort": reasoning_effort,
+        "verbosity": TRANSLATION_WRITER_VERBOSITY if provider == "openai" else "provider_default",
         "input_chars": len(prompt),
         "max_output_tokens": max_output_tokens,
         "output_cap_mode": "model_default" if max_output_tokens <= 0 else "explicit",
@@ -638,18 +662,34 @@ def _call_translation_writer(
         "status": "started",
     }
     try:
-        output, usage = _openai_writer_call_result(
-            prompt,
-            reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
-            verbosity=TRANSLATION_WRITER_VERBOSITY,
-            max_output_tokens=max_output_tokens,
-            prompt_cache_key=f"classical:{PROMPT_VERSION}:{_sha(prompt)}",
-            service_tier="default",
-            retry_on_failure=False,
-        )
+        usage: dict[str, Any] = {}
+        if provider == "openai":
+            output, usage = _openai_writer_call_result(
+                prompt,
+                reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
+                verbosity=TRANSLATION_WRITER_VERBOSITY,
+                max_output_tokens=max_output_tokens,
+                prompt_cache_key=f"classical:{PROMPT_VERSION}:{_sha(prompt)}",
+                service_tier="default",
+                retry_on_failure=False,
+            )
+        else:
+            # The shared DeepSeek helper normally retries formatting jobs.
+            # Translation uses exactly one paid call; its existing targeted
+            # repair stage remains the only possible second model call.
+            single_call = getattr(deepseek.generate_text, "__wrapped__", deepseek.generate_text)
+            output = single_call(
+                prompt,
+                model=selected_model,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                system_instruction=None,
+                thinking=thinking,
+                fail_on_max_tokens=False,
+            )
         output = output.strip()
         if not output:
-            raise legacy.PublicDomainQualityError("OpenAI gpt-5.6-sol 返回空译文")
+            raise legacy.PublicDomainQualityError(f"{provider}/{selected_model} 返回空译文")
         log.update(
             status="ok",
             output_chars=len(output),
@@ -658,7 +698,7 @@ def _call_translation_writer(
             response_id=str(usage.get("response_id") or ""),
             service_tier=str(usage.get("service_tier") or "default"),
             cost=None,
-            currency="USD",
+            currency="USD" if provider == "openai" else "CNY",
         )
         legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
         return output
@@ -668,7 +708,7 @@ def _call_translation_writer(
             duration_ms=int((time.monotonic() - started) * 1000),
             error=f"{type(exc).__name__}: {exc}"[:2000],
             cost=None,
-            currency="USD",
+            currency="USD" if provider == "openai" else "CNY",
         )
         legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
         raise
@@ -695,6 +735,7 @@ def _translate_section(
     prompt_overrides: dict[int, str] | None = None,
     only_segment: int | None = None,
 ) -> legacy.ChapterResult:
+    writer_provider, writer_model, writer_reasoning_effort = _translation_writer_config()
     chapter_dir = work_dir / "classical_chapters"
     chapter_dir.mkdir(parents=True, exist_ok=True)
     source_hash = legacy.text_sha256(section.text)
@@ -963,9 +1004,9 @@ def _translate_section(
                     "targeted_repair_calls": targeted_repair_calls,
                     "repair_prompt_hash": repair_prompt_hash,
                     "translation_sha256": legacy.text_sha256(final),
-                    "writer_provider": TRANSLATION_WRITER_PROVIDER,
-                    "writer_model": TRANSLATION_WRITER_MODEL,
-                    "writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+                    "writer_provider": writer_provider,
+                    "writer_model": writer_model,
+                    "writer_reasoning_effort": writer_reasoning_effort,
                 },
             )
 
@@ -982,9 +1023,9 @@ def _translate_section(
             "translated_units": translated_units,
             "source_units_digest": source_units_digest,
             "coverage_policy_version": COVERAGE_POLICY_VERSION,
-            "writer_provider": TRANSLATION_WRITER_PROVIDER,
-            "writer_model": TRANSLATION_WRITER_MODEL,
-            "writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+            "writer_provider": writer_provider,
+            "writer_model": writer_model,
+            "writer_reasoning_effort": writer_reasoning_effort,
             "translation_sha256": legacy.text_sha256(final),
             "prompt_hash": prompt_hash,
             "effective_prompt_hash": _prompt_hash(effective_user_prompt),

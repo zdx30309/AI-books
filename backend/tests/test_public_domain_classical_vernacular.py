@@ -760,6 +760,9 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
 
     monkeypatch.setattr(content_engine, "_openai_writer_call_result", fake_openai_call)
     monkeypatch.setattr(classical.settings, "OPENAI_WRITER_MODEL", "gpt-5.6-sol")
+    monkeypatch.setattr(
+        classical.settings, "CLASSICAL_TRANSLATION_WRITER_PROVIDER", "openai"
+    )
 
     output = classical._call_translation_writer(  # noqa: SLF001
         tmp_path,
@@ -783,6 +786,49 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert events[-1]["model"] == "gpt-5.6-sol"
     assert events[-1]["status"] == "ok"
     assert events[-1]["usage_tokens"]["total_tokens"] == 200
+
+
+def test_translation_writer_can_switch_only_the_model_call_to_deepseek_v4_flash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import deepseek
+
+    captured: dict[str, object] = {}
+
+    def fake_deepseek_call(prompt: str, **kwargs):
+        captured.update(prompt=prompt, **kwargs)
+        return "完整白话译文"
+
+    monkeypatch.setattr(deepseek, "generate_text", fake_deepseek_call)
+    monkeypatch.setattr(
+        classical.settings, "CLASSICAL_TRANSLATION_WRITER_PROVIDER", "deepseek"
+    )
+    monkeypatch.setattr(classical.settings, "DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+    output = classical._call_translation_writer(  # noqa: SLF001
+        tmp_path,
+        action="classical_complete_translation:0001:0001",
+        prompt="逐句完整翻译，同一份已渲染 Prompt",
+        temperature=0.1,
+        max_output_tokens=0,
+        thinking=True,
+        retries=1,
+    )
+
+    assert output == "完整白话译文"
+    assert captured["prompt"] == "逐句完整翻译，同一份已渲染 Prompt"
+    assert captured["model"] == "deepseek-v4-flash"
+    assert captured["max_output_tokens"] == 0
+    assert captured["thinking"] is True
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "llm_calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(events) == 1
+    assert events[0]["provider"] == "deepseek"
+    assert events[0]["model"] == "deepseek-v4-flash"
+    assert events[0]["transport_retries"] == 0
 
 
 def test_xhigh_translation_uses_adaptive_semantic_pages_without_output_cap() -> None:
