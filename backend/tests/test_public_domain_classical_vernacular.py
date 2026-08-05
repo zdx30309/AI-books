@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.services import public_domain_classical_vernacular as classical
+from app.services import content_engine
 from app.services import public_domain_longform as longform
 from app.api.routers import public_domain_rewrite as public_domain_router
 from app.models import Chapter, Task, TaskStatus
@@ -51,7 +53,7 @@ def test_anchor_manifest_is_injected_for_titles_and_numbers(
         prompts.append(prompt)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     body = "张三读《楚些》3章，又把《兵法》交给李四。" * 30
     source = longform.PublicDomainSource(
         title="旧城记",
@@ -70,7 +72,7 @@ def test_anchor_manifest_is_injected_for_titles_and_numbers(
     assert len(prompts) == 1
     assert "【逐段显式锚点清单】" in prompts[0]
     assert "[[P0001]]：数字 3；书名/篇名 《楚些》、《兵法》" in prompts[0]
-    assert "不得改名、改写、概括或移动到其他段落" in prompts[0]
+    assert "不得改名、改写、概括或移动到其他句群" in prompts[0]
 
 
 def test_classical_mode_targeted_repair_fixes_missing_title_anchor(
@@ -82,12 +84,12 @@ def test_classical_mode_targeted_repair_fixes_missing_title_anchor(
     def fake_call(_work_dir: Path, *, action: str, prompt: str, **_kwargs) -> str:
         calls.append((action, prompt))
         if action.startswith("classical_complete_translation"):
-            return "[[P0001]]\n张三读楚辞三章，又把兵书交给李四。"
+            return _echo_marked_source(prompt).replace("《楚些》", "楚辞").replace("《兵法》", "兵书")
         return prompt.split("【必须完整翻译的带编号原文】", 1)[1].split(
             "【第一版带编号候选译文】", 1
         )[0].strip()
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     body = "张三读《楚些》3章，又把《兵法》交给李四。" * 30
     source = longform.PublicDomainSource(
         title="旧城记",
@@ -107,7 +109,7 @@ def test_classical_mode_targeted_repair_fixes_missing_title_anchor(
         "classical_complete_translation:0001:0001",
         "classical_targeted_repair:0001:0001",
     ]
-    assert "遗漏原文书名或篇名" in calls[1][1]
+    assert "遗漏篇名" in calls[1][1]
     assert "《楚些》" in result.chapters[0].text
     assert result.quality_report["targeted_repair_calls"] == 1
     assert result.quality_report["chapter_audits"][0]["targeted_repair_calls"] == 1
@@ -124,7 +126,7 @@ def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter
         calls.append((action, prompt, kwargs))
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     result = longform.run_public_domain_longform(
         sources=[_source()],
         work_dir=tmp_path,
@@ -158,7 +160,7 @@ def test_classical_mode_resumes_completed_chapter_without_new_paid_calls(
         calls.append(action)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     kwargs = dict(
         sources=[_source()],
         work_dir=tmp_path,
@@ -188,7 +190,7 @@ def test_classical_mode_reuses_each_completed_segment_after_later_failure(
             raise RuntimeError("temporary model failure")
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     kwargs = dict(
         sources=[_source(repeats=100)],
         work_dir=tmp_path,
@@ -206,7 +208,7 @@ def test_classical_mode_reuses_each_completed_segment_after_later_failure(
 
 
 def test_translation_gate_rejects_missing_or_reordered_paragraph_ids() -> None:
-    with pytest.raises(longform.PublicDomainQualityError, match="段落编号不完整或顺序变化"):
+    with pytest.raises(longform.PublicDomainQualityError, match="句群编号不完整或顺序变化"):
         classical._parse_marked_translation(  # noqa: SLF001
             "[[P0002]]\n第二段\n\n[[P0001]]\n第一段",
             expected_markers=("[[P0001]]", "[[P0002]]"),
@@ -292,10 +294,16 @@ def test_classical_local_gate_rejects_dropped_numeric_anchor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    candidate = "[[P0001]]\n" + (
-        "县令叫来张三，又把《兵法》交给李四。两人都照吩咐办事。" * 50
-    )
-    monkeypatch.setattr(longform, "_call_llm", lambda *_args, **_kwargs: candidate)
+    def omit_numeric_anchor(_work_dir: Path, *, prompt: str, **_kwargs) -> str:
+        if "【本次必须完整翻译的带编号原文】" in prompt:
+            value = _echo_marked_source(prompt)
+        else:
+            value = prompt.split("【必须完整翻译的带编号原文】", 1)[1].split(
+                "【第一版带编号候选译文】", 1
+            )[0].strip()
+        return value.replace("42", "若干")
+
+    monkeypatch.setattr(classical, "_call_translation_writer", omit_numeric_anchor)
     with pytest.raises(longform.PublicDomainQualityError, match="数字"):
         longform.run_public_domain_longform(
             sources=[_source()],
@@ -315,7 +323,7 @@ def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
         prompts.append(prompt)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     custom_prompt = "对白用简洁现代汉语，叙述保持沉稳；字面占位 {work_title} 不得被系统改写。"
     result = longform.run_public_domain_longform(
         sources=[_source(repeats=100)],
@@ -343,7 +351,7 @@ def test_changing_custom_prompt_invalidates_segment_checkpoints(
         calls.append(prompt)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     common = dict(
         sources=[_source()],
         work_dir=tmp_path,
@@ -379,8 +387,8 @@ def test_character_preview_can_end_before_all_available_source_chapters(
         rights_note="公版文本，保护期届满",
     )
     monkeypatch.setattr(
-        longform,
-        "_call_llm",
+        classical,
+        "_call_translation_writer",
         lambda _work_dir, *, prompt, **_kwargs: _echo_marked_source(prompt),
     )
 
@@ -408,7 +416,7 @@ def test_character_preview_stops_after_selected_output_budget(
         calls.append(action)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     source = _source(repeats=100)
     result = longform.run_public_domain_longform(
         sources=[source],
@@ -441,8 +449,8 @@ def test_chapter_preview_uses_original_chapter_boundaries(
         rights_note="公版文本，保护期届满",
     )
     monkeypatch.setattr(
-        longform,
-        "_call_llm",
+        classical,
+        "_call_translation_writer",
         lambda _work_dir, *, prompt, **_kwargs: _echo_marked_source(prompt),
     )
     result = longform.run_public_domain_longform(
@@ -468,7 +476,7 @@ def test_character_preview_upgrade_reuses_paid_segment_checkpoints(
         calls.append(action)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     source = _source(repeats=100)
     preview_profile = {
         "scope_mode": "characters",
@@ -506,6 +514,9 @@ def test_character_preview_upgrade_reuses_paid_segment_checkpoints(
     )
 
     assert complete.chapters[0].audit["partial_section"] is False
+    assert complete.chapters[0].audit["source_units"] > 1
+    assert complete.chapters[0].audit["translated_units"] == complete.chapters[0].audit["source_units"]
+    assert complete.quality_report["translated_units"] == complete.quality_report["source_units"]
     assert calls
     reused_indexes = {value.rsplit(":", 1)[-1] for value in preview_calls}
     assert all(value.rsplit(":", 1)[-1] not in reused_indexes for value in calls)
@@ -654,7 +665,7 @@ def test_pause_request_stops_before_next_paid_segment(
         calls.append(action)
         return _echo_marked_source(prompt)
 
-    monkeypatch.setattr(longform, "_call_llm", fake_call)
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
     with pytest.raises(classical.ClassicalTranslationPaused):
         longform.run_public_domain_longform(
             sources=[_source(repeats=100)],
@@ -664,3 +675,108 @@ def test_pause_request_stops_before_next_paid_segment(
             should_pause=lambda: True,
         )
     assert calls == []
+
+
+def test_single_physical_paragraph_is_split_into_bounded_sentence_units() -> None:
+    source = (
+        "县令命张三到城门候命，李四仍守旧宅，不敢擅离。"
+        "俄而鼓声大作，众人皆起，张三却仍立在原处。"
+        "县令再问其故，张三把前因后果一一说了。"
+    ) * 18
+
+    marked, units = classical._build_marked_source(source)  # noqa: SLF001
+
+    assert len(units) > 8
+    assert all(unit.source_chars <= classical.SOURCE_UNIT_MAX_CHARS for unit in units)
+    assert "[[P0002]]" in marked
+    assert "".join(unit.text for unit in units) == source
+
+
+def test_unpunctuated_long_source_is_fully_partitioned_without_data_loss() -> None:
+    source = "忠孝节义礼智信" * 90
+
+    _marked, units = classical._build_marked_source(source)  # noqa: SLF001
+
+    assert len(units) >= 3
+    assert all(unit.source_chars <= classical.SOURCE_UNIT_MAX_CHARS for unit in units)
+    assert "".join(unit.text for unit in units) == source
+
+
+def test_sentence_unit_gate_rejects_tail_omission_even_when_all_markers_exist() -> None:
+    source = (
+        "县令命张三带四十二名乡勇到城门候命，又把《兵法》交给李四保管。"
+        "张三不敢迟延，当日便依吩咐行事；李四仍守在旧宅，没有另作主张。"
+    ) * 8
+    _marked, units = classical._build_marked_source(source)  # noqa: SLF001
+    candidate = "\n\n".join(
+        f"{unit.marker}\n{unit.text if index < len(units) else '略'}"
+        for index, unit in enumerate(units, start=1)
+    )
+
+    with pytest.raises(longform.PublicDomainQualityError, match="句群级完整性检查未通过"):
+        classical._parse_marked_translation(  # noqa: SLF001
+            candidate,
+            expected_markers=tuple(unit.marker for unit in units),
+            chapter_title="第一回",
+            source_units=units,
+        )
+
+
+def test_valid_sentence_units_reassemble_original_paragraph_boundaries() -> None:
+    source = "甲曰：今日当行。乙曰：尚可再议。\n\n众人闻之，各自散去。"
+    marked, units = classical._build_marked_source(source)  # noqa: SLF001
+
+    translated, count = classical._parse_marked_translation(  # noqa: SLF001
+        marked,
+        expected_markers=tuple(unit.marker for unit in units),
+        chapter_title="第一回",
+        source_units=units,
+    )
+
+    assert count == len(units)
+    assert translated == source
+
+
+def test_translation_writer_is_openai_gpt_56_sol_without_hidden_paid_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_openai_call(prompt: str, **kwargs):
+        captured.update(prompt=prompt, **kwargs)
+        return "完整白话译文", {
+            "input_tokens": 120,
+            "output_tokens": 80,
+            "total_tokens": 200,
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 0,
+            "service_tier": "default",
+            "response_id": "resp_fixture",
+        }
+
+    monkeypatch.setattr(content_engine, "_openai_writer_call_result", fake_openai_call)
+    monkeypatch.setattr(classical.settings, "OPENAI_WRITER_MODEL", "gpt-5.6-sol")
+
+    output = classical._call_translation_writer(  # noqa: SLF001
+        tmp_path,
+        action="classical_complete_translation:0001:0001",
+        prompt="逐句完整翻译",
+        temperature=0.1,
+        max_output_tokens=5000,
+        thinking=False,
+        retries=1,
+    )
+
+    assert output == "完整白话译文"
+    assert captured["reasoning_effort"] == "low"
+    assert captured["verbosity"] == "low"
+    assert captured["retry_on_failure"] is False
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "llm_calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["provider"] == "openai"
+    assert events[-1]["model"] == "gpt-5.6-sol"
+    assert events[-1]["status"] == "ok"
+    assert events[-1]["usage_tokens"]["total_tokens"] == 200

@@ -3,24 +3,28 @@
 This route is intentionally isolated from public-domain multi-source fusion.
 It never sends an entire long book into one context window.  Source chapters
 are processed strictly in order, divided into bounded segments, translated,
-and checkpointed after every successful segment.  Paragraph IDs, explicit
-anchor manifests and a single bounded repair for failed segments protect
+and checkpointed after every successful segment.  Bounded sentence-unit IDs,
+explicit anchor manifests and a single bounded repair for failed segments protect
 completeness without launching blind retries.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable, Iterable
 
+from app.core.config import settings
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v5"
-PROMPT_VERSION = "classical-complete-translation-only-v5"
+POLICY_VERSION = "public-domain-classical-translation-v6"
+PROMPT_VERSION = "classical-complete-translation-only-v6"
+COVERAGE_POLICY_VERSION = "sentence-unit-coverage-v1"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
 TARGETED_REPAIR_PROMPT = PROMPT_DIR / "classical_vernacular_targeted_repair.md"
@@ -37,6 +41,12 @@ SCOPE_CHAPTERS = "chapters"
 VALID_SCOPE_MODES = {SCOPE_COMPLETE, SCOPE_CHARACTERS, SCOPE_CHAPTERS}
 MIN_OUTPUT_RATIO = 0.70
 MAX_OUTPUT_RATIO = 3.20
+SOURCE_UNIT_TARGET_CHARS = 48
+SOURCE_UNIT_MAX_CHARS = 96
+TRANSLATION_WRITER_PROVIDER = "openai"
+TRANSLATION_WRITER_MODEL = "gpt-5.6-sol"
+TRANSLATION_WRITER_REASONING_EFFORT = "low"
+TRANSLATION_WRITER_VERBOSITY = "low"
 
 _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
@@ -92,6 +102,17 @@ class ClassicalVernacularProfile:
     scope_mode: str = SCOPE_COMPLETE
     preview_target_chars: int = 0
     preview_chapters: int = 0
+
+
+@dataclass(frozen=True)
+class TranslationSourceUnit:
+    """A bounded source span that must have one independently checked translation."""
+
+    marker: str
+    text: str
+    paragraph_index: int
+    source_chars: int
+    source_sha256: str
 
 
 class ClassicalTranslationPaused(RuntimeError):
@@ -206,6 +227,9 @@ def run_classical_vernacular_longform(
     plan = {
         "policy_version": POLICY_VERSION,
         "prompt_version": PROMPT_VERSION,
+        "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
+        "translation_writer_model": TRANSLATION_WRITER_MODEL,
+        "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
         "prompt_hash": prompt_hash,
         "title": (target_title or items[0].title).strip(),
         "chapter_count": len(sections),
@@ -296,6 +320,8 @@ def run_classical_vernacular_longform(
 
     body_chars = sum(legacy.count_text_chars(item.text) for item in chapters)
     source_chars = sum(int(item.audit.get("processed_source_chars") or 0) for item in chapters)
+    source_units = sum(int(item.audit.get("source_units") or 0) for item in chapters)
+    translated_units = sum(int(item.audit.get("translated_units") or 0) for item in chapters)
     blocking: list[str] = []
     if profile.scope_mode != SCOPE_CHARACTERS and len(chapters) != len(sections):
         blocking.append("最终章节数量与原文章节数量不一致")
@@ -303,6 +329,10 @@ def run_classical_vernacular_longform(
     if profile.scope_mode == SCOPE_COMPLETE and source_chars != expected_source_chars:
         blocking.append(
             f"全书原文覆盖 {source_chars}/{expected_source_chars} 字，存在未处理原文"
+        )
+    if source_units <= 0 or translated_units != source_units:
+        blocking.append(
+            f"全书句群翻译覆盖 {translated_units}/{source_units}，存在漏译或未验证内容"
         )
     if body_chars < _minimum_output_chars(source_chars):
         blocking.append(
@@ -318,11 +348,17 @@ def run_classical_vernacular_longform(
             int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
         ),
         "translated_segments": sum(int(item.audit.get("segments") or 0) for item in chapters),
+        "source_units": source_units,
+        "translated_units": translated_units,
+        "coverage_policy_version": COVERAGE_POLICY_VERSION,
+        "translation_writer_provider": TRANSLATION_WRITER_PROVIDER,
+        "translation_writer_model": TRANSLATION_WRITER_MODEL,
+        "translation_writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
         "targeted_repair_calls": sum(
             int(item.audit.get("targeted_repair_calls") or 0) for item in chapters
         ),
         "max_targeted_repairs_per_segment": 1,
-        "pipeline": "source_order -> bounded_segments -> paragraph_ids -> anchor_manifest -> complete_translation -> one_targeted_repair_if_needed -> local_completeness_gate -> bookshelf",
+        "pipeline": "source_order -> bounded_segments -> sentence_unit_ids -> per_unit_length_and_anchor_gate -> complete_translation -> one_targeted_repair_if_needed -> chapter_and_book_coverage_gate -> bookshelf",
         "source_chapters": len(chapters),
         "requested_source_chapters": len(sections),
         "available_source_chapters": len(all_sections),
@@ -469,6 +505,91 @@ def _heading_key(value: str) -> str:
     return re.sub(r"[\s·•.。…—_-]+", "", value or "").strip()
 
 
+def _call_translation_writer(
+    work_dir: Path,
+    *,
+    action: str,
+    prompt: str,
+    temperature: float,
+    max_output_tokens: int,
+    model: str | None = None,
+    thinking: bool | None = None,
+    retries: int | None = None,
+) -> str:
+    """Call GPT-5.6 Sol as the isolated classical translation writer.
+
+    The model is intentionally run with low hidden reasoning and low verbosity:
+    translating marked source units is a constrained transformation, and the
+    visible output budget must be reserved for the complete translation.  The
+    deterministic coverage gate, rather than extra hidden thought, decides
+    whether the result is accepted.  There is no transport-level paid retry;
+    at most one separately logged targeted repair is allowed by the caller.
+    """
+
+    from app.services.content_engine import _openai_writer_call_result
+
+    configured_model = str(settings.OPENAI_WRITER_MODEL or "").strip()
+    selected_model = str(model or configured_model).strip()
+    if selected_model != TRANSLATION_WRITER_MODEL or configured_model != TRANSLATION_WRITER_MODEL:
+        raise legacy.PublicDomainValidationError(
+            "公版古文白话翻译主笔配置错误：必须使用 OpenAI gpt-5.6-sol"
+        )
+
+    started = time.monotonic()
+    log: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "policy_version": POLICY_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "action": action,
+        "provider": TRANSLATION_WRITER_PROVIDER,
+        "model": selected_model,
+        "reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+        "verbosity": TRANSLATION_WRITER_VERBOSITY,
+        "input_chars": len(prompt),
+        "max_output_tokens": max_output_tokens,
+        "temperature_compat": temperature,
+        "thinking_compat": thinking,
+        "requested_retries_compat": retries,
+        "transport_retries": 0,
+        "status": "started",
+    }
+    try:
+        output, usage = _openai_writer_call_result(
+            prompt,
+            reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
+            verbosity=TRANSLATION_WRITER_VERBOSITY,
+            max_output_tokens=max_output_tokens,
+            prompt_cache_key=f"classical:{PROMPT_VERSION}:{_sha(prompt)}",
+            service_tier="default",
+            retry_on_failure=False,
+        )
+        output = output.strip()
+        if not output:
+            raise legacy.PublicDomainQualityError("OpenAI gpt-5.6-sol 返回空译文")
+        log.update(
+            status="ok",
+            output_chars=len(output),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage_tokens=usage,
+            response_id=str(usage.get("response_id") or ""),
+            service_tier=str(usage.get("service_tier") or "default"),
+            cost=None,
+            currency="USD",
+        )
+        legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
+        return output
+    except Exception as exc:
+        log.update(
+            status="failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=f"{type(exc).__name__}: {exc}"[:2000],
+            cost=None,
+            currency="USD",
+        )
+        legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
+        raise
+
+
 def _translate_section(
     *,
     number: int,
@@ -550,6 +671,10 @@ def _translate_section(
         == int(cached_audit.get("available_segments") or -1)
         and int(cached_audit.get("prompt_injection_segments") or 0)
         == int(cached_audit.get("segments") or -1)
+        and cached_audit.get("coverage_policy_version") == COVERAGE_POLICY_VERSION
+        and int(cached_audit.get("source_units") or 0) > 0
+        and int(cached_audit.get("translated_units") or 0)
+        == int(cached_audit.get("source_units") or -1)
     )
     reusable_partial = (
         profile.scope_mode == SCOPE_CHARACTERS
@@ -604,7 +729,9 @@ def _translate_section(
         )
         source_chars = legacy.count_text_chars(source_text)
         target_chars = max(800, int(source_chars * 1.75))
-        marked_source, expected_markers = _mark_source_units(source_text)
+        marked_source, source_units = _build_marked_source(source_text)
+        expected_markers = tuple(unit.marker for unit in source_units)
+        source_units_digest = _source_units_digest(source_units)
         anchor_manifest = _build_anchor_manifest(marked_source)
         previous_context = (
             segments[segment_index - 2][-CONTEXT_CHARS:]
@@ -644,12 +771,23 @@ def _translate_section(
         translation_meta = _load_json(translation_meta_path)
         targeted_repair_calls = 0
         repair_prompt_hash: str | None = None
+        cached_translation = (
+            translation_path.read_text(encoding="utf-8").strip()
+            if translation_path.exists()
+            else ""
+        )
         if (
             translation_meta
             and translation_meta.get("segment_key") == segment_key
-            and translation_path.exists()
+            and translation_meta.get("coverage_policy_version") == COVERAGE_POLICY_VERSION
+            and translation_meta.get("source_units_digest") == source_units_digest
+            and int(translation_meta.get("source_units") or 0) == len(source_units)
+            and int(translation_meta.get("translated_units") or 0) == len(source_units)
+            and bool(cached_translation)
+            and translation_meta.get("translation_sha256")
+            == legacy.text_sha256(cached_translation)
         ):
-            final = translation_path.read_text(encoding="utf-8").strip()
+            final = cached_translation
             translated_units = int(translation_meta.get("translated_units") or 0)
             targeted_repair_calls = int(translation_meta.get("targeted_repair_calls") or 0)
             repair_prompt_hash = str(translation_meta.get("repair_prompt_hash") or "") or None
@@ -658,7 +796,7 @@ def _translate_section(
                 f"《{section.title}》第 {segment_index} 段尚无可复用译文，不能只重译第 {only_segment} 段"
             )
         else:
-            raw_translation = legacy._call_llm(  # noqa: SLF001
+            raw_translation = _call_translation_writer(
                 work_dir,
                 action=f"classical_complete_translation:{number:04d}:{segment_index:04d}",
                 prompt=prompt,
@@ -679,6 +817,7 @@ def _translate_section(
                     raw_translation,
                     expected_markers=expected_markers,
                     chapter_title=section.title,
+                    source_units=source_units,
                 )
                 issues = _segment_issues(source_text=source_text, candidate=final)
             except legacy.PublicDomainQualityError as exc:
@@ -687,7 +826,7 @@ def _translate_section(
             if issues:
                 # This is a bounded, evidence-driven repair rather than a
                 # blind retry.  Only the failed segment is sent once more,
-                # together with its first candidate and an exact per-paragraph
+                # together with its first candidate and an exact per-source-unit
                 # anchor checklist.  Successful earlier segments remain cached.
                 repair_prompt = _render(
                     TARGETED_REPAIR_PROMPT,
@@ -702,7 +841,7 @@ def _translate_section(
                     candidate_text=raw_translation,
                 )
                 repair_prompt_hash = _sha(repair_prompt)
-                repaired_translation = legacy._call_llm(  # noqa: SLF001
+                repaired_translation = _call_translation_writer(
                     work_dir,
                     action=f"classical_targeted_repair:{number:04d}:{segment_index:04d}",
                     prompt=repair_prompt,
@@ -717,6 +856,7 @@ def _translate_section(
                         repaired_translation,
                         expected_markers=expected_markers,
                         chapter_title=section.title,
+                        source_units=source_units,
                     )
                     issues = _segment_issues(source_text=source_text, candidate=final)
                 except legacy.PublicDomainQualityError as exc:
@@ -737,20 +877,36 @@ def _translate_section(
                     "local_override": has_local_override,
                     "translated_units": translated_units,
                     "source_units": len(expected_markers),
+                    "source_units_digest": source_units_digest,
+                    "coverage_policy_version": COVERAGE_POLICY_VERSION,
                     "operation": "complete_translation_only",
                     "anchor_manifest": anchor_manifest,
                     "targeted_repair_calls": targeted_repair_calls,
                     "repair_prompt_hash": repair_prompt_hash,
+                    "translation_sha256": legacy.text_sha256(final),
+                    "writer_provider": TRANSLATION_WRITER_PROVIDER,
+                    "writer_model": TRANSLATION_WRITER_MODEL,
+                    "writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
                 },
             )
 
         issues = _segment_issues(source_text=source_text, candidate=final)
+        if translated_units != len(source_units):
+            issues.append(
+                f"句群翻译覆盖不完整（原文 {len(source_units)} 单元，译文 {translated_units} 单元）"
+            )
         audit = {
             "segment": segment_index,
             "source_chars": source_chars,
             "translation_chars": legacy.count_text_chars(final),
             "source_units": len(expected_markers),
             "translated_units": translated_units,
+            "source_units_digest": source_units_digest,
+            "coverage_policy_version": COVERAGE_POLICY_VERSION,
+            "writer_provider": TRANSLATION_WRITER_PROVIDER,
+            "writer_model": TRANSLATION_WRITER_MODEL,
+            "writer_reasoning_effort": TRANSLATION_WRITER_REASONING_EFFORT,
+            "translation_sha256": legacy.text_sha256(final),
             "prompt_hash": prompt_hash,
             "effective_prompt_hash": _prompt_hash(effective_user_prompt),
             "rendered_prompt_hash": rendered_prompt_hash,
@@ -817,6 +973,9 @@ def _translate_section(
         "rounds": 1,
         "operation": "complete_translation_only",
         "prompt_version": PROMPT_VERSION,
+        "coverage_policy_version": COVERAGE_POLICY_VERSION,
+        "source_units": sum(int(item.get("source_units") or 0) for item in segment_audits),
+        "translated_units": sum(int(item.get("translated_units") or 0) for item in segment_audits),
         "prompt_hash": prompt_hash,
         "prompt_injection_segments": sum(
             1 for item in segment_audits if item.get("user_prompt_injected") is True
@@ -973,20 +1132,133 @@ def _split_long_paragraph(text: str, limit: int) -> list[str]:
 
 
 def _mark_source_units(text: str) -> tuple[str, tuple[str, ...]]:
-    """Attach deterministic paragraph IDs so omissions/reordering are visible."""
+    """Compatibility wrapper returning the sentence-unit marked source."""
 
-    units = [value.strip() for value in re.split(r"\n+", text) if value.strip()]
-    if not units:
+    marked, units = _build_marked_source(text)
+    return marked, tuple(unit.marker for unit in units)
+
+
+def _build_marked_source(text: str) -> tuple[str, tuple[TranslationSourceUnit, ...]]:
+    """Mark bounded sentence groups, not only paragraphs.
+
+    Classical books are commonly extracted as one enormous physical paragraph.
+    Paragraph-only IDs therefore allowed a model to translate the beginning,
+    keep the sole ID and pass a coarse whole-segment length check.  Every source
+    sentence group now has its own durable ID and its own minimum-output gate.
+    """
+
+    raw_units: list[tuple[int, str]] = []
+    paragraphs = [value.strip() for value in re.split(r"\n+", text) if value.strip()]
+    for paragraph_index, paragraph in enumerate(paragraphs, start=1):
+        for unit in _split_source_paragraph_units(paragraph):
+            if unit.strip():
+                raw_units.append((paragraph_index, unit.strip()))
+    if not raw_units:
         raise legacy.PublicDomainQualityError("待翻译分段为空")
-    markers = tuple(f"[[P{index:04d}]]" for index in range(1, len(units) + 1))
-    marked = "\n\n".join(
-        f"{marker}\n{unit}" for marker, unit in zip(markers, units, strict=True)
+
+    units = tuple(
+        TranslationSourceUnit(
+            marker=f"[[P{index:04d}]]",
+            text=unit_text,
+            paragraph_index=paragraph_index,
+            source_chars=legacy.count_text_chars(unit_text),
+            source_sha256=legacy.text_sha256(unit_text),
+        )
+        for index, (paragraph_index, unit_text) in enumerate(raw_units, start=1)
     )
-    return marked, markers
+    marked = "\n\n".join(f"{unit.marker}\n{unit.text}" for unit in units)
+    return marked, units
+
+
+def _split_source_paragraph_units(text: str) -> list[str]:
+    """Split one source paragraph into complete, bounded sentence groups."""
+
+    primary = [value for value in re.split(r"(?<=[。！？；!?;])", text) if value]
+    atomic: list[str] = []
+    for sentence in primary:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if legacy.count_text_chars(sentence) <= SOURCE_UNIT_MAX_CHARS:
+            atomic.append(sentence)
+            continue
+        atomic.extend(_split_oversized_source_unit(sentence))
+
+    grouped: list[str] = []
+    current = ""
+    for item in atomic:
+        combined = current + item
+        if current and legacy.count_text_chars(combined) > SOURCE_UNIT_MAX_CHARS:
+            grouped.append(current.strip())
+            current = item
+            continue
+        current = combined
+        if legacy.count_text_chars(current) >= SOURCE_UNIT_TARGET_CHARS:
+            grouped.append(current.strip())
+            current = ""
+    if current.strip():
+        if grouped and (
+            legacy.count_text_chars(current) < 24
+            and legacy.count_text_chars(grouped[-1] + current) <= SOURCE_UNIT_MAX_CHARS
+        ):
+            grouped[-1] = (grouped[-1] + current).strip()
+        else:
+            grouped.append(current.strip())
+    return grouped
+
+
+def _split_oversized_source_unit(text: str) -> list[str]:
+    """Prefer clause boundaries, then hard-split only pathological unpunctuated text."""
+
+    clauses = [value for value in re.split(r"(?<=[，、：,:])", text) if value]
+    pieces: list[str] = []
+    current = ""
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if legacy.count_text_chars(clause) > SOURCE_UNIT_MAX_CHARS:
+            if current:
+                pieces.append(current.strip())
+                current = ""
+            pieces.extend(_hard_split_by_text_chars(clause, SOURCE_UNIT_MAX_CHARS))
+            continue
+        if current and legacy.count_text_chars(current + clause) > SOURCE_UNIT_MAX_CHARS:
+            pieces.append(current.strip())
+            current = ""
+        current += clause
+    if current.strip():
+        pieces.append(current.strip())
+    return pieces
+
+
+def _hard_split_by_text_chars(text: str, limit: int) -> list[str]:
+    pieces: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    for char in text:
+        char_chars = legacy.count_text_chars(char)
+        if current and current_chars + char_chars > limit:
+            pieces.append("".join(current).strip())
+            current = []
+            current_chars = 0
+        current.append(char)
+        current_chars += char_chars
+    if current:
+        pieces.append("".join(current).strip())
+    return [piece for piece in pieces if piece]
+
+
+def _source_units_digest(units: tuple[TranslationSourceUnit, ...]) -> str:
+    return _sha(
+        "|".join(
+            f"{unit.marker}:{unit.paragraph_index}:{unit.source_sha256}" for unit in units
+        )
+    )
 
 
 def _build_anchor_manifest(marked_source: str) -> str:
-    """Extract per-paragraph hard anchors that models commonly omit."""
+    """Extract per-source-unit hard anchors that models commonly omit."""
 
     pattern = re.compile(r"(\[\[P\d{4}\]\])\s*(.*?)(?=\n\s*\[\[P\d{4}\]\]|\Z)", re.S)
     lines: list[str] = []
@@ -1012,8 +1284,9 @@ def _parse_marked_translation(
     *,
     expected_markers: tuple[str, ...],
     chapter_title: str,
+    source_units: tuple[TranslationSourceUnit, ...] | None = None,
 ) -> tuple[str, int]:
-    """Remove paragraph IDs only after proving every source unit survived in order."""
+    """Remove IDs only after proving every bounded source unit survived in order."""
 
     value = re.sub(r"^```(?:markdown|md|text)?\s*", "", (text or "").strip(), flags=re.I)
     value = re.sub(r"\s*```$", "", value).strip()
@@ -1022,13 +1295,13 @@ def _parse_marked_translation(
     received = tuple(match.group(0) for match in matches)
     if received != expected_markers:
         raise legacy.PublicDomainQualityError(
-            f"《{chapter_title}》译文段落编号不完整或顺序变化："
-            f"应有 {len(expected_markers)} 段，实际识别 {len(received)} 段"
+            f"《{chapter_title}》译文句群编号不完整或顺序变化："
+            f"应有 {len(expected_markers)} 个句群，实际识别 {len(received)} 个句群"
         )
     if not matches:
-        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文没有段落编号")
+        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文没有句群编号")
     if value[: matches[0].start()].strip():
-        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文在首段前新增了说明文字")
+        raise legacy.PublicDomainQualityError(f"《{chapter_title}》译文在首个句群前新增了说明文字")
 
     translated: list[str] = []
     for index, match in enumerate(matches):
@@ -1036,10 +1309,73 @@ def _parse_marked_translation(
         block = value[match.end() : end].strip()
         if not block:
             raise legacy.PublicDomainQualityError(
-                f"《{chapter_title}》译文第 {index + 1} 个原文段落为空，疑似漏译"
+                f"《{chapter_title}》译文第 {index + 1} 个原文句群为空，疑似漏译"
             )
         translated.append(block)
-    return legacy.normalize_source_text("\n\n".join(translated)), len(translated)
+    if source_units is not None:
+        if len(source_units) != len(translated):
+            raise legacy.PublicDomainQualityError(
+                f"《{chapter_title}》句群覆盖数量不一致："
+                f"原文 {len(source_units)} 单元，译文 {len(translated)} 单元"
+            )
+        unit_issues = _translation_unit_issues(source_units, translated)
+        if unit_issues:
+            raise legacy.PublicDomainQualityError(
+                f"《{chapter_title}》句群级完整性检查未通过：{'；'.join(unit_issues[:8])}"
+            )
+        paragraphs: list[str] = []
+        current_paragraph = source_units[0].paragraph_index
+        current_blocks: list[str] = []
+        for unit, block in zip(source_units, translated, strict=True):
+            if unit.paragraph_index != current_paragraph:
+                paragraphs.append("".join(current_blocks).strip())
+                current_blocks = []
+                current_paragraph = unit.paragraph_index
+            current_blocks.append(block.strip())
+        if current_blocks:
+            paragraphs.append("".join(current_blocks).strip())
+        normalized = legacy.normalize_source_text("\n\n".join(paragraphs))
+    else:
+        normalized = legacy.normalize_source_text("\n\n".join(translated))
+    return normalized, len(translated)
+
+
+def _translation_unit_issues(
+    source_units: tuple[TranslationSourceUnit, ...],
+    translated: list[str],
+) -> list[str]:
+    issues: list[str] = []
+    for index, (source, candidate) in enumerate(zip(source_units, translated, strict=True), start=1):
+        output_chars = legacy.count_text_chars(candidate)
+        minimum_chars = _minimum_unit_output_chars(source.source_chars)
+        if output_chars < minimum_chars:
+            issues.append(
+                f"P{index:04d} 译文过短（原文 {source.source_chars} 字，译文 {output_chars} 字，至少 {minimum_chars} 字）"
+            )
+            continue
+        if output_chars > max(180, int(source.source_chars * 4.5)):
+            issues.append(
+                f"P{index:04d} 异常扩写（原文 {source.source_chars} 字，译文 {output_chars} 字）"
+            )
+        numbers = re.findall(r"\d+(?:[./:-]\d+)*", source.text)
+        missing_numbers = [value for value in sorted(set(numbers)) if value not in candidate]
+        if missing_numbers:
+            issues.append(f"P{index:04d} 遗漏数字 {'、'.join(missing_numbers[:5])}")
+        titles = re.findall(r"《[^》]{1,40}》", source.text)
+        missing_titles = [value for value in sorted(set(titles)) if value not in candidate]
+        if missing_titles:
+            issues.append(f"P{index:04d} 遗漏篇名 {'、'.join(missing_titles[:3])}")
+    return issues
+
+
+def _minimum_unit_output_chars(source_chars: int) -> int:
+    if source_chars <= 12:
+        return max(2, int(source_chars * 0.35))
+    if source_chars <= 40:
+        return max(5, int(source_chars * 0.50))
+    if source_chars <= 100:
+        return max(18, int(source_chars * 0.62))
+    return max(40, int(source_chars * 0.68))
 
 
 def _segment_issues(*, source_text: str, candidate: str) -> list[str]:
@@ -1050,7 +1386,7 @@ def _segment_issues(*, source_text: str, candidate: str) -> list[str]:
         return ["模型返回空正文"]
     # Do not impose a 120-character absolute floor on a short source line.
     # Short classical headings, verse lines and terse dialogue can be fully
-    # translated into fewer characters.  Paragraph IDs plus explicit
+    # translated into fewer characters.  Sentence-unit IDs plus explicit
     # number/title anchors remain the primary completeness evidence there.
     minimum_output_chars = _minimum_output_chars(source_chars)
     if output_chars < minimum_output_chars:
