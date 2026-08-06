@@ -59,23 +59,16 @@ OPENAI_BACKGROUND_STATE_FILE = "classical_openai_background_responses.json"
 
 def _translation_writer_config() -> tuple[str, str, str]:
     provider = str(settings.CLASSICAL_TRANSLATION_WRITER_PROVIDER or "openai").strip().lower()
-    if provider == "openai":
-        model = str(settings.OPENAI_WRITER_MODEL or "").strip()
-        if model != TRANSLATION_WRITER_MODEL:
-            raise legacy.PublicDomainValidationError(
-                "公版古文白话 OpenAI 主笔必须使用 gpt-5.6-sol"
-            )
-        return provider, model, TRANSLATION_WRITER_REASONING_EFFORT
-    if provider == "deepseek":
-        model = str(settings.DEEPSEEK_MODEL or "").strip()
-        if model != "deepseek-v4-flash":
-            raise legacy.PublicDomainValidationError(
-                "公版古文白话 DeepSeek 主笔必须使用 deepseek-v4-flash 正式版"
-            )
-        return provider, model, "provider_default"
-    raise legacy.PublicDomainValidationError(
-        "公版古文白话主笔只能配置为 openai 或 deepseek"
-    )
+    if provider != TRANSLATION_WRITER_PROVIDER:
+        raise legacy.PublicDomainValidationError(
+            "公版古文白话主笔固定使用 OpenAI gpt-5.6-sol"
+        )
+    model = str(settings.OPENAI_WRITER_MODEL or "").strip()
+    if model != TRANSLATION_WRITER_MODEL:
+        raise legacy.PublicDomainValidationError(
+            "公版古文白话 OpenAI 主笔必须使用 gpt-5.6-sol"
+        )
+    return provider, model, TRANSLATION_WRITER_REASONING_EFFORT
 
 _CHAPTER_HEADING_RE = re.compile(
     r"^(?:"
@@ -623,10 +616,9 @@ def _call_translation_writer(
 ) -> str:
     """Call the configured writer without changing the translation pipeline.
 
-    OpenAI GPT-5.6 Sol xhigh and DeepSeek V4 Flash receive the exact same
-    rendered prompt and return plain text to the same deterministic coverage,
-    anchor, checkpoint, repair and merge stages.  Selecting DeepSeek therefore
-    changes only the paid model call, not the engineering chain.
+    OpenAI GPT-5.6 Sol xhigh receives the exact rendered prompt and returns
+    plain text to the deterministic coverage, anchor, checkpoint, repair and
+    merge stages.
     This route does not impose an artificial max_output_tokens cap: the source
     remains in broad bounded semantic windows, leaving context for names,
     pronouns and tone while the model has room for both hidden reasoning and
@@ -636,7 +628,6 @@ def _call_translation_writer(
     targeted repair is allowed by the caller.
     """
 
-    from app.services import deepseek
     from app.services.content_engine import _openai_writer_call_result
 
     provider, configured_model, reasoning_effort = _translation_writer_config()
@@ -653,81 +644,66 @@ def _call_translation_writer(
         "provider": provider,
         "model": selected_model,
         "reasoning_effort": reasoning_effort,
-        "verbosity": TRANSLATION_WRITER_VERBOSITY if provider == "openai" else "provider_default",
+        "verbosity": TRANSLATION_WRITER_VERBOSITY,
         "input_chars": len(prompt),
+        "prompt_sha256": _sha(prompt),
         "max_output_tokens": max_output_tokens,
         "output_cap_mode": "model_default" if max_output_tokens <= 0 else "explicit",
         "temperature_compat": temperature,
         "thinking_compat": thinking,
         "requested_retries_compat": retries,
         "transport_retries": 0,
-        "delivery_mode": "background_persisted" if provider == "openai" else "synchronous",
+        "delivery_mode": "background_persisted",
         "status": "started",
     }
     try:
-        usage: dict[str, Any] = {}
-        if provider == "openai":
-            prompt_digest = _sha(prompt)
-            response_state_path = work_dir / OPENAI_BACKGROUND_STATE_FILE
-            response_state = _load_json(response_state_path) or {}
-            previous = response_state.get(action) if isinstance(response_state, dict) else None
-            resume_response_id = ""
-            if (
-                isinstance(previous, dict)
-                and previous.get("prompt_sha256") == prompt_digest
-                and previous.get("status") in {"created", "polling"}
-            ):
-                resume_response_id = str(previous.get("response_id") or "").strip()
+        prompt_digest = _sha(prompt)
+        response_state_path = work_dir / OPENAI_BACKGROUND_STATE_FILE
+        response_state = _load_json(response_state_path) or {}
+        previous = response_state.get(action) if isinstance(response_state, dict) else None
+        resume_response_id = ""
+        if (
+            isinstance(previous, dict)
+            and previous.get("prompt_sha256") == prompt_digest
+            and previous.get("status") in {"created", "polling"}
+        ):
+            resume_response_id = str(previous.get("response_id") or "").strip()
 
-            def persist_background_response(response_id: str) -> None:
-                latest = _load_json(response_state_path) or {}
-                latest[action] = {
-                    "action": action,
-                    "prompt_sha256": prompt_digest,
-                    "response_id": response_id,
-                    "status": "polling",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-                _atomic_write_json(response_state_path, latest)
-
-            output, usage = _openai_writer_call_result(
-                prompt,
-                reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
-                verbosity=TRANSLATION_WRITER_VERBOSITY,
-                max_output_tokens=max_output_tokens,
-                prompt_cache_key=f"classical:{PROMPT_VERSION}:{_sha(prompt)}",
-                service_tier="default",
-                background=True,
-                background_timeout_seconds=OPENAI_BACKGROUND_TIMEOUT_SECONDS,
-                background_poll_interval_seconds=5,
-                background_response_id=resume_response_id or None,
-                on_background_response_id=persist_background_response,
-                retry_on_failure=False,
-            )
-            completed_response_id = str(usage.get("response_id") or resume_response_id or "").strip()
-            completed_state = _load_json(response_state_path) or {}
-            completed_state[action] = {
+        def persist_background_response(response_id: str) -> None:
+            latest = _load_json(response_state_path) or {}
+            latest[action] = {
                 "action": action,
                 "prompt_sha256": prompt_digest,
-                "response_id": completed_response_id,
-                "status": "completed",
+                "response_id": response_id,
+                "status": "polling",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            _atomic_write_json(response_state_path, completed_state)
-        else:
-            # The shared DeepSeek helper normally retries formatting jobs.
-            # Translation uses exactly one paid call; its existing targeted
-            # repair stage remains the only possible second model call.
-            single_call = getattr(deepseek.generate_text, "__wrapped__", deepseek.generate_text)
-            output = single_call(
-                prompt,
-                model=selected_model,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                system_instruction=None,
-                thinking=thinking,
-                fail_on_max_tokens=False,
-            )
+            _atomic_write_json(response_state_path, latest)
+
+        output, usage = _openai_writer_call_result(
+            prompt,
+            reasoning_effort=TRANSLATION_WRITER_REASONING_EFFORT,
+            verbosity=TRANSLATION_WRITER_VERBOSITY,
+            max_output_tokens=max_output_tokens,
+            prompt_cache_key=f"classical:{PROMPT_VERSION}:{prompt_digest}",
+            service_tier="default",
+            background=True,
+            background_timeout_seconds=OPENAI_BACKGROUND_TIMEOUT_SECONDS,
+            background_poll_interval_seconds=5,
+            background_response_id=resume_response_id or None,
+            on_background_response_id=persist_background_response,
+            retry_on_failure=False,
+        )
+        completed_response_id = str(usage.get("response_id") or resume_response_id or "").strip()
+        completed_state = _load_json(response_state_path) or {}
+        completed_state[action] = {
+            "action": action,
+            "prompt_sha256": prompt_digest,
+            "response_id": completed_response_id,
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _atomic_write_json(response_state_path, completed_state)
         output = output.strip()
         if not output:
             raise legacy.PublicDomainQualityError(f"{provider}/{selected_model} 返回空译文")
@@ -739,7 +715,7 @@ def _call_translation_writer(
             response_id=str(usage.get("response_id") or ""),
             service_tier=str(usage.get("service_tier") or "default"),
             cost=None,
-            currency="USD" if provider == "openai" else "CNY",
+            currency="USD",
         )
         legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
         return output
@@ -749,7 +725,7 @@ def _call_translation_writer(
             duration_ms=int((time.monotonic() - started) * 1000),
             error=f"{type(exc).__name__}: {exc}"[:2000],
             cost=None,
-            currency="USD" if provider == "openai" else "CNY",
+            currency="USD",
         )
         legacy._append_jsonl(work_dir / "llm_calls.jsonl", log)  # noqa: SLF001
         raise

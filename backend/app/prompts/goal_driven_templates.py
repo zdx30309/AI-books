@@ -245,6 +245,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "prompt_status": "ready",
     },
     {
+        "id": "finance_technology_ai_optimized",
+        "label": "财经科技（优化AI味版）",
+        "core_feature": "把钱、产业、公司、技术、政策和周期讲清楚",
+        "directions": "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人机会误判",
+        "prompt_status": "ready",
+    },
+    {
         "id": "finance_technology_recommendation",
         "label": "财经科技（建议版）",
         "core_feature": "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
@@ -622,6 +629,24 @@ FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构�
 {raw_text}
 
 请直接输出完整书稿。"""
+
+
+FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT = """【财经科技优化AI味专项要求】
+1. 避免反复使用“不是……而是……”“真正的问题是”“核心是”“关键在于”“本质上”等模板句式；能直接说结论，就不要先铺设抽象框架。
+2. 每句话都要提供新的事实、对象、动作、原因或结果，不要换用同义词反复解释同一个观点；少用“大脑、情绪、系统、机制”等抽象概念互相解释。
+3. 不要把段落统一写成“场景引入—概念解释—排比举例—提出建议—金句收尾”；减少三连排比、口号式短句和整齐对称结构，让段落长短、句式和收尾方式自然变化。"""
+
+
+_FINANCE_TECHNOLOGY_INPUT_MARKER = "\n输入：\n[参考资料全文]"
+_finance_ai_prompt_prefix, _finance_ai_prompt_marker, _finance_ai_prompt_suffix = (
+    FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT.rpartition(
+        _FINANCE_TECHNOLOGY_INPUT_MARKER
+    )
+)
+FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT = (
+    f"{_finance_ai_prompt_prefix}\n\n{FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT}"
+    f"{_finance_ai_prompt_marker}{_finance_ai_prompt_suffix}"
+)
 
 
 FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT = """你是一名成熟的非虚构长文写作者。
@@ -2048,6 +2073,9 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "finance_technology": _prompt_set(
         FINANCE_TECHNOLOGY_FULL_BOOK_WRITER_PROMPT,
     ),
+    "finance_technology_ai_optimized": _prompt_set(
+        FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT,
+    ),
     "finance_technology_recommendation": _prompt_set(
         FINANCE_TECHNOLOGY_RECOMMENDATION_FULL_BOOK_WRITER_PROMPT,
     ),
@@ -2163,6 +2191,11 @@ CATEGORY_ALIASES: dict[str, str] = {
     "财经": "finance_technology",
     "财经科技": "finance_technology",
     "财经·科技": "finance_technology",
+    "finance_technology_ai_optimized": "finance_technology_ai_optimized",
+    "finance_tech_ai_optimized": "finance_technology_ai_optimized",
+    "财经科技优化AI味版": "finance_technology_ai_optimized",
+    "财经科技（优化AI味版）": "finance_technology_ai_optimized",
+    "财经科技(优化AI味版)": "finance_technology_ai_optimized",
     "finance_technology_recommendation": "finance_technology_recommendation",
     "finance_tech_recommendation": "finance_technology_recommendation",
     "finance_technology_suggestion": "finance_technology_recommendation",

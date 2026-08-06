@@ -124,13 +124,17 @@ FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
 FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
-FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology"})
+FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY = "finance_technology_ai_optimized"
+FINANCE_LONGFORM_CATEGORIES = frozenset(
+    {"finance_technology", FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY}
+)
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
 FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY = "finance_technology_recommendation"
 FINANCE_SOURCE_GUARDED_CATEGORIES = frozenset(
     {
         "finance_technology",
+        FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY,
         FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY,
     }
 )
@@ -4401,8 +4405,11 @@ def _finance_web_search_excerpt(raw_text: str, *, max_chars: int = 12_000) -> st
 
 def _finance_latest_research_prompt(raw_text: str, *, category: str) -> str:
     excerpt = _finance_web_search_excerpt(raw_text)
+    normalized_category = normalize_category(category)
     if _is_finance_recommendation_category(category):
         category_label = "财经科技（建议版）"
+    elif normalized_category == FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY:
+        category_label = "财经科技（优化AI味版）"
     else:
         category_label = "财经·科技"
     recommendation_guard = ""

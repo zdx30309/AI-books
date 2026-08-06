@@ -19,6 +19,7 @@ from app.prompts.goal_driven_templates import (
     CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
     CLASSICAL_REFERENCE_REWRITE_PROFILE,
     CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT,
+    FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT,
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     POLISH_FIXED_PHRASE_GUARD_PROMPT,
@@ -117,6 +118,7 @@ WRITER_ROUTING_CATEGORIES = [
         "story_comic",
         "homophone_comic",
         "finance_technology",
+        "finance_technology_ai_optimized",
         "finance_technology_recommendation",
     }
 ]
@@ -900,6 +902,32 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "测试参考资料" in rendered
 
 
+def test_finance_technology_ai_optimized_only_adds_requested_style_rules() -> None:
+    base_prompt = get_prompts("finance_technology")["full_book_writer"]
+    optimized_prompt = get_prompts("finance_technology_ai_optimized")["full_book_writer"]
+    meta = get_category_meta("finance_technology_ai_optimized")
+
+    assert meta["label"] == "财经科技（优化AI味版）"
+    assert optimized_prompt.replace(
+        f"\n\n{FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT}", "", 1
+    ) == base_prompt
+    assert "避免反复使用“不是……而是……”" in optimized_prompt
+    assert "每句话都要提供新的事实、对象、动作、原因或结果" in optimized_prompt
+    assert "减少三连排比、口号式短句和整齐对称结构" in optimized_prompt
+    rendered_prompt = content_engine._finance_whole_book_prompt(  # noqa: SLF001
+        optimized_prompt.format(raw_text="测试参考资料"),
+        "测试参考资料",
+        target_words=12_000,
+        duration_seconds=600,
+        latest_research="已检索到当前资料。",
+        category="finance_technology_ai_optimized",
+    )
+    assert rendered_prompt.count(FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT) == 1
+    assert "财经科技（优化AI味版）" in content_engine._finance_latest_research_prompt(  # noqa: SLF001
+        "测试参考资料", category="finance_technology_ai_optimized"
+    )
+
+
 def test_finance_technology_advice_category_is_removed() -> None:
     assert "finance_technology_advice" not in SUPPORTED_CATEGORIES
     assert all(item["id"] != "finance_technology_advice" for item in list_categories())
@@ -937,6 +965,8 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("财经科技") == "finance_technology"
     assert normalize_category("财经·科技") == "finance_technology"
     assert normalize_category("finance_tech") == "finance_technology"
+    assert normalize_category("财经科技（优化AI味版）") == "finance_technology_ai_optimized"
+    assert normalize_category("finance_tech_ai_optimized") == "finance_technology_ai_optimized"
     assert normalize_category("财经科技（建议版）") == "finance_technology_recommendation"
     assert normalize_category("财经科技建议版") == "finance_technology_recommendation"
     assert normalize_category("财经·科技（建议版）") == "finance_technology_recommendation"
@@ -970,6 +1000,11 @@ def test_finance_dynamic_target_words_by_duration() -> None:
 def test_finance_technology_category_uses_finance_workflow() -> None:
     assert content_engine._should_use_finance_longform(
         "finance_technology",
+        "很短的财经科技资料。",
+        source_duration_seconds=60,
+    )
+    assert content_engine._should_use_finance_longform(
+        "finance_technology_ai_optimized",
         "很短的财经科技资料。",
         source_duration_seconds=60,
     )

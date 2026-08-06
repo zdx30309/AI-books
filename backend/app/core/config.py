@@ -115,8 +115,8 @@ class Settings(BaseSettings):
     DEEPSEEK_MAX_RETRIES: int = 4
     DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800
     DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS: int = 16
-    # 公版古文白话只切主笔，不改变 Prompt、分片、校验、断点或合并链路。
-    CLASSICAL_TRANSLATION_WRITER_PROVIDER: str = "openai"  # openai / deepseek
+    # 公版古文白话固定由 OpenAI gpt-5.6-sol 原生执行渲染后的完整 Prompt。
+    CLASSICAL_TRANSLATION_WRITER_PROVIDER: str = "openai"
 
     # --- xAI / Grok (only used by the dedicated report-review page) ---
     XAI_API_KEY: str = ""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -779,6 +780,7 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     )
 
     assert output == "完整白话译文"
+    assert captured["prompt"] == "逐句完整翻译"
     assert captured["reasoning_effort"] == "xhigh"
     assert captured["verbosity"] == "low"
     assert captured["retry_on_failure"] is False
@@ -797,6 +799,7 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert events[-1]["provider"] == "openai"
     assert events[-1]["model"] == "gpt-5.6-sol"
     assert events[-1]["status"] == "ok"
+    assert events[-1]["prompt_sha256"] == classical._sha("逐句完整翻译")  # noqa: SLF001
     assert events[-1]["usage_tokens"]["total_tokens"] == 200
 
 
@@ -862,47 +865,55 @@ def test_classical_connection_failure_is_never_watchdog_replayed() -> None:
     )
 
 
-def test_translation_writer_can_switch_only_the_model_call_to_deepseek_v4_flash(
+def test_translation_writer_rejects_non_openai_provider_before_paid_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import deepseek
-
-    captured: dict[str, object] = {}
-
-    def fake_deepseek_call(prompt: str, **kwargs):
-        captured.update(prompt=prompt, **kwargs)
-        return "完整白话译文"
-
-    monkeypatch.setattr(deepseek, "generate_text", fake_deepseek_call)
     monkeypatch.setattr(
         classical.settings, "CLASSICAL_TRANSLATION_WRITER_PROVIDER", "deepseek"
     )
-    monkeypatch.setattr(classical.settings, "DEEPSEEK_MODEL", "deepseek-v4-flash")
+    with pytest.raises(longform.PublicDomainValidationError, match="固定使用 OpenAI gpt-5.6-sol"):
+        classical._call_translation_writer(  # noqa: SLF001
+            tmp_path,
+            action="classical_complete_translation:0001:0001",
+            prompt="逐句完整翻译，同一份已渲染 Prompt",
+            temperature=0.1,
+            max_output_tokens=0,
+        )
+    assert not (tmp_path / "llm_calls.jsonl").exists()
 
-    output = classical._call_translation_writer(  # noqa: SLF001
-        tmp_path,
-        action="classical_complete_translation:0001:0001",
-        prompt="逐句完整翻译，同一份已渲染 Prompt",
-        temperature=0.1,
-        max_output_tokens=0,
-        thinking=True,
-        retries=1,
+
+def test_openai_responses_request_receives_exact_rendered_classical_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(id="resp_native", status="completed")
+
+    fake_client = SimpleNamespace(responses=FakeResponses())
+    monkeypatch.setattr(content_engine, "_get_openai_writer_client", lambda: fake_client)
+    monkeypatch.setattr(content_engine.settings, "OPENAI_WRITER_MODEL", "gpt-5.6-sol")
+    rendered_prompt = "固定翻译契约\n【用户本次可编辑的翻译要求】\n逐句翻译，不增不减。"
+
+    content_engine._create_openai_writer_response(  # noqa: SLF001
+        rendered_prompt,
+        effort="xhigh",
+        verb="low",
+        max_tok=None,
+        service_tier="default",
+        background=True,
     )
 
-    assert output == "完整白话译文"
-    assert captured["prompt"] == "逐句完整翻译，同一份已渲染 Prompt"
-    assert captured["model"] == "deepseek-v4-flash"
-    assert captured["max_output_tokens"] == 0
-    assert captured["thinking"] is True
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "llm_calls.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert len(events) == 1
-    assert events[0]["provider"] == "deepseek"
-    assert events[0]["model"] == "deepseek-v4-flash"
-    assert events[0]["transport_retries"] == 0
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["input"] == rendered_prompt
+    assert captured["reasoning"] == {"effort": "xhigh"}
+    assert captured["text"] == {"verbosity": "low"}
+    assert captured["background"] is True
+    assert captured["store"] is True
+    assert "instructions" not in captured
 
 
 def test_xhigh_translation_uses_adaptive_semantic_pages_without_output_cap() -> None:
