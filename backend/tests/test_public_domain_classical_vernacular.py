@@ -74,7 +74,7 @@ def test_anchor_manifest_is_injected_for_titles_and_numbers(
     assert len(prompts) == 1
     assert "【逐段显式锚点清单】" in prompts[0]
     assert "[[P0001]]：数字 3；书名/篇名 《楚些》、《兵法》" in prompts[0]
-    assert "不得改名、改写、概括或移动到其他句群" in prompts[0]
+    assert "清单只用于防漏" in prompts[0]
 
 
 def test_classical_mode_targeted_repair_fixes_missing_title_anchor(
@@ -139,8 +139,8 @@ def test_classical_mode_executes_one_translation_only_call_and_preserves_chapter
 
     assert len(calls) == 1
     assert calls[0][0].startswith("classical_complete_translation")
-    assert "只做翻译" in calls[0][1]
-    assert "不得改编、重写、润色、仿写、扩写、缩写" in calls[0][1]
+    assert "本分片最高优先级的用户指令" in calls[0][1]
+    assert "不得自行缩写、改写、降级" in calls[0][1]
     assert "[[P0001]]" in calls[0][1]
     assert "输出空间" not in calls[0][1]
     assert "最多约" not in calls[0][1]
@@ -318,7 +318,7 @@ def test_classical_local_gate_rejects_dropped_numeric_anchor(
         )
 
 
-def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
+def test_custom_prompt_is_exact_highest_priority_contract_on_every_segment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -338,12 +338,45 @@ def test_custom_prompt_is_injected_without_removing_fixed_translation_contract(
         adaptation_profile={"custom_prompt": custom_prompt},
     )
     assert len(prompts) > 1
-    assert all(custom_prompt in prompt for prompt in prompts)
-    assert all("如果二者冲突，以固定规则为准" in prompt for prompt in prompts)
-    assert all("不得改编、重写、润色、仿写、扩写、缩写" in prompt for prompt in prompts)
+    assert all(prompt.count(custom_prompt) == 1 for prompt in prompts)
+    assert all("完整编辑合同，不是参考意见" in prompt for prompt in prompts)
+    assert all("如果二者冲突，以固定规则为准" not in prompt for prompt in prompts)
+    assert all("不得改编、重写、润色、仿写、扩写、缩写" not in prompt for prompt in prompts)
     assert (tmp_path / "00_classical_user_prompt.md").read_text(encoding="utf-8") == custom_prompt
     assert result.quality_report["prompt_injection_segments"] == len(prompts)
     assert result.quality_report["translated_segments"] == len(prompts)
+
+
+def test_prompt_requested_web_lookup_is_exposed_to_every_paid_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flags: list[bool] = []
+
+    def fake_call(
+        _work_dir: Path,
+        *,
+        prompt: str,
+        enable_web_search: bool = False,
+        **_kwargs,
+    ) -> str:
+        flags.append(enable_web_search)
+        return _echo_marked_source(prompt)
+
+    monkeypatch.setattr(classical, "_call_translation_writer", fake_call)
+    custom_prompt = "必要时必须联网考证官名和典章制度，再按原文语气完成白话改写。"
+
+    longform.run_public_domain_longform(
+        sources=[_source(repeats=300)],
+        work_dir=tmp_path,
+        generation_mode=longform.CLASSICAL_VERNACULAR_MODE,
+        public_domain_confirmed=True,
+        adaptation_profile={"custom_prompt": custom_prompt},
+    )
+
+    assert len(flags) > 1
+    assert all(flags)
+    assert classical._prompt_requests_web_search("不要联网，只按原文处理") is False  # noqa: SLF001
 
 
 def test_changing_custom_prompt_invalidates_segment_checkpoints(
@@ -777,6 +810,7 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
         max_output_tokens=5000,
         thinking=False,
         retries=1,
+        enable_web_search=True,
     )
 
     assert output == "完整白话译文"
@@ -787,6 +821,9 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert captured["background"] is True
     assert captured["background_timeout_seconds"] == 7200
     assert captured["background_response_id"] is None
+    assert captured["tools"] == [
+        {"type": "web_search", "search_context_size": "medium"}
+    ]
     response_state = json.loads(
         (tmp_path / classical.OPENAI_BACKGROUND_STATE_FILE).read_text(encoding="utf-8")
     )
@@ -799,6 +836,7 @@ def test_translation_writer_is_openai_gpt_56_sol_xhigh_without_hidden_paid_retry
     assert events[-1]["provider"] == "openai"
     assert events[-1]["model"] == "gpt-5.6-sol"
     assert events[-1]["status"] == "ok"
+    assert events[-1]["web_search_tool_enabled"] is True
     assert events[-1]["prompt_sha256"] == classical._sha("逐句完整翻译")  # noqa: SLF001
     assert events[-1]["usage_tokens"]["total_tokens"] == 200
 

@@ -573,7 +573,13 @@ def _looks_like_inline_pseudo_subheading_title(title: str) -> bool:
     title = title.strip().lstrip("@").strip()
     if not title or _cjk_ratio(title) < 0.55:
         return False
-    if not any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS):
+    # A pseudo-heading is a compact noun label ("扎堆竞争的代价，正文……")
+    # and therefore normally ends on the heading noun.  Merely containing a
+    # risk/logic keyword is not enough: ordinary finance topic sentences such
+    # as “平台对高风险账户实施干预后，继续……” contain those words inside a
+    # complete time/action clause.  Treating those clauses as headings caused
+    # a false hard failure after all paid writing stages had already finished.
+    if not any(title.endswith(keyword) for keyword in _INLINE_SUBHEADING_KEYWORDS):
         return False
     if title.startswith(("这个", "这则", "这一", "这种", "这类", "这次", "这些", "那则", "那个")):
         return False

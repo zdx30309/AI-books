@@ -23,8 +23,8 @@ from app.core.config import settings
 from app.services import public_domain_longform as legacy
 
 
-POLICY_VERSION = "public-domain-classical-translation-v7"
-PROMPT_VERSION = "classical-complete-translation-only-v7"
+POLICY_VERSION = "public-domain-classical-custom-prompt-v8"
+PROMPT_VERSION = "classical-exact-user-contract-per-segment-v8"
 COVERAGE_POLICY_VERSION = "sentence-unit-coverage-v1"
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts" / "public_domain_rewrite"
 TRANSLATION_PROMPT = PROMPT_DIR / "classical_vernacular_translation.md"
@@ -55,6 +55,11 @@ TRANSLATION_WRITER_VERBOSITY = "low"
 TRANSLATION_WRITER_MAX_OUTPUT_TOKENS = 0
 OPENAI_BACKGROUND_TIMEOUT_SECONDS = 7_200
 OPENAI_BACKGROUND_STATE_FILE = "classical_openai_background_responses.json"
+_WEB_SEARCH_REQUEST_RE = re.compile(
+    r"(?:联网|上网|网络)(?:检索|搜索|查证|核实|考证|查询|资料)|"
+    r"(?:检索|搜索|查证|核实|考证|查询)(?:网络|网上|在线|可靠资料)"
+)
+_WEB_SEARCH_NEGATION_RE = re.compile(r"(?:不要|不得|禁止|无需|不必|不能).{0,8}(?:联网|上网|网络搜索)")
 
 
 def _translation_writer_config() -> tuple[str, str, str]:
@@ -387,6 +392,14 @@ def run_classical_vernacular_longform(
     prompt_injection_segments = sum(
         int(item.audit.get("prompt_injection_segments") or 0) for item in chapters
     )
+    web_search_tool_segments = sum(
+        sum(
+            1
+            for segment in list(item.audit.get("segment_audits") or [])
+            if segment.get("web_search_tool_enabled") is True
+        )
+        for item in chapters
+    )
     if prompt_injection_segments != translated_segments:
         blocking.append(
             f"自定义 Prompt 注入覆盖 {prompt_injection_segments}/{translated_segments}，存在未注入分段"
@@ -398,6 +411,7 @@ def run_classical_vernacular_longform(
         "prompt_hash": prompt_hash,
         "prompt_injection_mode": "exact_user_prompt_on_every_paid_segment",
         "prompt_injection_segments": prompt_injection_segments,
+        "web_search_tool_segments": web_search_tool_segments,
         "translated_segments": translated_segments,
         "source_units": source_units,
         "translated_units": translated_units,
@@ -603,6 +617,21 @@ def _heading_key(value: str) -> str:
     return re.sub(r"[\s·•.。…—_-]+", "", value or "").strip()
 
 
+def _prompt_requests_web_search(user_prompt: str) -> bool:
+    """Expose web lookup only when the exact editable prompt asks for it.
+
+    ChatGPT's web UI may browse automatically, while an API request only has
+    that capability when a hosted tool is supplied.  This small gate closes
+    that product/API gap without adding web-search cost to ordinary translation
+    prompts or silently overriding an explicit "不要联网" instruction.
+    """
+
+    value = str(user_prompt or "").strip()
+    if not value or _WEB_SEARCH_NEGATION_RE.search(value):
+        return False
+    return bool(_WEB_SEARCH_REQUEST_RE.search(value))
+
+
 def _call_translation_writer(
     work_dir: Path,
     *,
@@ -613,6 +642,7 @@ def _call_translation_writer(
     model: str | None = None,
     thinking: bool | None = None,
     retries: int | None = None,
+    enable_web_search: bool = False,
 ) -> str:
     """Call the configured writer without changing the translation pipeline.
 
@@ -654,6 +684,7 @@ def _call_translation_writer(
         "requested_retries_compat": retries,
         "transport_retries": 0,
         "delivery_mode": "background_persisted",
+        "web_search_tool_enabled": bool(enable_web_search),
         "status": "started",
     }
     try:
@@ -693,6 +724,11 @@ def _call_translation_writer(
             background_response_id=resume_response_id or None,
             on_background_response_id=persist_background_response,
             retry_on_failure=False,
+            tools=(
+                [{"type": "web_search", "search_context_size": "medium"}]
+                if enable_web_search
+                else None
+            ),
         )
         completed_response_id = str(usage.get("response_id") or resume_response_id or "").strip()
         completed_state = _load_json(response_state_path) or {}
@@ -856,6 +892,7 @@ def _translate_section(
             normalized_overrides.get(0, user_prompt),
         )
         has_local_override = segment_index in normalized_overrides or 0 in normalized_overrides
+        web_search_enabled = _prompt_requests_web_search(effective_user_prompt)
         base_segment_key = _sha(
             "|".join((base_artifact_key, str(segment_index), legacy.text_sha256(source_text)))
         )
@@ -901,7 +938,7 @@ def _translate_section(
             anchor_manifest=anchor_manifest,
             source_text=marked_source,
         )
-        if effective_user_prompt not in prompt:
+        if prompt.count(effective_user_prompt) != 1:
             raise legacy.PublicDomainValidationError(
                 f"《{section.title}》第 {segment_index} 段未完整注入用户 Prompt"
             )
@@ -947,6 +984,7 @@ def _translate_section(
                 # context while sentence-unit markers protect completeness.
                 thinking=True,
                 retries=1,
+                enable_web_search=web_search_enabled,
             )
             final = ""
             translated_units = 0
@@ -986,6 +1024,7 @@ def _translate_section(
                     max_output_tokens=_output_tokens(source_chars),
                     thinking=True,
                     retries=1,
+                    enable_web_search=web_search_enabled,
                 )
                 targeted_repair_calls = 1
                 try:
@@ -1011,6 +1050,8 @@ def _translate_section(
                     "effective_prompt_hash": _prompt_hash(effective_user_prompt),
                     "rendered_prompt_hash": rendered_prompt_hash,
                     "user_prompt_injected": True,
+                    "user_prompt_chars": len(effective_user_prompt),
+                    "web_search_tool_enabled": web_search_enabled,
                     "local_override": has_local_override,
                     "translated_units": translated_units,
                     "source_units": len(expected_markers),
@@ -1049,6 +1090,8 @@ def _translate_section(
             "rendered_prompt_hash": rendered_prompt_hash,
             "repair_prompt_hash": repair_prompt_hash,
             "user_prompt_injected": True,
+            "user_prompt_chars": len(effective_user_prompt),
+            "web_search_tool_enabled": web_search_enabled,
             "local_override": has_local_override,
             "targeted_repair_calls": targeted_repair_calls,
             "issues": issues,

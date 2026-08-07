@@ -218,6 +218,22 @@ def test_final_hard_error_gate_allows_finance_explanatory_sentences_with_keyword
     assert "正文内小标题未标准化为 ###" not in hits
 
 
+def test_final_hard_error_gate_allows_finance_action_clause_containing_risk_keyword() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 平台风控
+平台对高风险账户实施干预后，继续发送存款奖励会削弱保护效果。营销与风险控制因此需要共享账户状态。若两个部门分别追求转化率和合规数量，用户可能同时收到停止提示与限时优惠。
+"""
+
+    hits = detect_final_hard_errors(
+        markdown,
+        category="finance_technology_ai_optimized",
+    )
+
+    assert "正文内小标题未标准化为 ###" not in hits
+
+
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
     markdown = """@最终书名
 盐铁论（白话版）

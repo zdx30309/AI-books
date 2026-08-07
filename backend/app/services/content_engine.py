@@ -3077,6 +3077,7 @@ def _create_openai_writer_response(
     background_poll_interval_seconds: float | None = None,
     background_response_id: str | None = None,
     on_background_response_id: Callable[[str], None] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
     persisted_response_id = str(background_response_id or "").strip()
@@ -3104,6 +3105,12 @@ def _create_openai_writer_response(
         kwargs["store"] = True
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
+    if tools:
+        # Hosted Responses API tools are opt-in per request.  Keep this
+        # argument absent for every existing writing route, and expose it only
+        # to the classical custom-prompt route when the user's exact prompt
+        # explicitly asks for online lookup/verification.
+        kwargs["tools"] = [dict(tool) for tool in tools]
     response = client.responses.create(**kwargs)
     if not background:
         return response
@@ -3201,6 +3208,7 @@ def _openai_writer_call_result(
     fallback_service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
+    tools: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
@@ -3235,7 +3243,7 @@ def _openai_writer_call_result(
                     "openai-writer",
                     limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
                 ):
-                    if settings.OPENAI_WRITER_STREAM and not background:
+                    if settings.OPENAI_WRITER_STREAM and not background and not tools:
                         try:
                             text, response = _stream_openai_writer(
                                 rendered_prompt,
@@ -3260,6 +3268,7 @@ def _openai_writer_call_result(
                                 max_tok=max_tok,
                                 prompt_cache_key=prompt_cache_key,
                                 service_tier=current_tier,
+                                tools=tools,
                             )
                             _merge_openai_usage(total_usage, response)
                             text = _extract_openai_response_text(response)
@@ -3276,6 +3285,7 @@ def _openai_writer_call_result(
                             background_poll_interval_seconds=background_poll_interval_seconds,
                             background_response_id=background_response_id,
                             on_background_response_id=on_background_response_id,
+                            tools=tools,
                         )
                         _merge_openai_usage(total_usage, response)
                         text = _extract_openai_response_text(response)
@@ -3338,6 +3348,7 @@ def _openai_writer_call_result(
                         background_poll_interval_seconds=background_poll_interval_seconds,
                         background_response_id=background_response_id,
                         on_background_response_id=on_background_response_id,
+                        tools=tools,
                     )
                     _merge_openai_usage(total_usage, response)
                 except Exception as exc:
