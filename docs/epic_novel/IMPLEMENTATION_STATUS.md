@@ -1,6 +1,6 @@
 # Epic Novel Engine Implementation Status
 
-Updated: 2026-06-13
+Updated: 2026-08-10
 
 ## Current Status
 
@@ -650,3 +650,17 @@ Gate 2B is not full PASS because 57 imported books / estimated 106,914 sections 
 - Continue full DeepSeek LLM section analysis if the user wants every estimated section in the 57-file corpus processed by the expensive extraction pipeline.
 - Continue scanning/importing SoNovel downloads if new files become available; unavailable/failed titles remain skipped per user instruction.
 - Continue full Reference Intelligence extraction and real long-run generation only when cost/time is approved; do not claim `PRODUCTION_READY` or 300万字-ready from the current evidence.
+
+## SoNovel Adapter Hardening (2026-08-10)
+
+- Added the `ExternalDownloaderAdapter` contract for trusted local reference-download providers; `SoNovelAdapter` now implements it.
+- Installation detection no longer requires both `sonovel.exe` and `app.jar`: a local runtime marker, `config.ini`, or configured downloads directory is enough to expose a safe `manual_required` workflow. WebUI invocation remains opt-in and is enabled only after the local WebUI responds.
+- Download scanning now includes nested folders under `SONOVEL_DOWNLOAD_PATH`, so date- or source-organized exports are discoverable by the existing importer.
+- Output validation now exposes inferred title/author and optional duplicate-book detection when a database session is supplied; unsupported, empty, unnamed, or duplicate files are not marked valid.
+
+Validation on 2026-08-10:
+
+- `PYTHONPATH=backend python -m pytest backend/tests/test_epic_reference.py -q` -> `19 passed`
+- `PYTHONPATH=backend python -m compileall -q backend/app/services/epic_reference.py` -> passed
+
+This hardening does not run SoNovel, import new reference books, or invoke DeepSeek. The overall production-readiness verdict remains `PARTIAL_IMPLEMENTATION`; full-corpus extraction still requires explicit cost/time approval.

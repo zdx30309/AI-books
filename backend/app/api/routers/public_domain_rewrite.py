@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
-from app.core.config import PROJECT_ROOT
+from app.core.config import PROJECT_ROOT, settings
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
 from app.schemas.task import CreateTaskResponse
@@ -43,8 +43,6 @@ from app.services.public_domain_classical_vernacular import (
     PROMPT_VERSION as CLASSICAL_VERNACULAR_PROMPT_VERSION,
     SEGMENT_CHARS as CLASSICAL_SEGMENT_CHARS,
     extract_source_sections as extract_classical_source_sections,
-    get_default_user_prompt,
-    split_source_segments,
 )
 from app.services.public_domain_longform import (
     POLICY_VERSION as LONGFORM_POLICY_VERSION,
@@ -104,39 +102,13 @@ class PublicDomainSourcePayload(BaseModel):
 
 
 class ClassicalVernacularProfilePayload(BaseModel):
-    work_type: str = Field(default="古典小说", max_length=200)
-    era_background: str = Field(default="保持原文时代背景，不擅自现代化", max_length=500)
-    narrative_perspective: str = Field(default="保持原文叙事视角", max_length=200)
-    target_audience: str = Field(default="现代汉语读者", max_length=300)
-    vernacular_level: str = Field(default="准确、清楚、完整的现代白话", max_length=300)
-    adaptation_intensity: str = Field(default="仅完整翻译", max_length=100)
-    web_fiction_ratio: str = Field(default="0%", max_length=100)
-    language_tendency: str = Field(
-        default="忠实原意，不做文学改写或风格润色", max_length=500
-    )
-    must_preserve: str = Field(
-        default="原文全部信息、顺序、人物、称谓、专名、数字、事件、因果与语气",
-        max_length=3000,
-    )
-    focus_issues: str = Field(
-        default="漏译、错译、增译、缩写、扩写、重排、解释和续写",
-        max_length=3000,
-    )
-    special_requirements: str = Field(
-        default="只做完整翻译；不得改写、润色、扩写、缩写、重组、评论、总结或续写",
-        max_length=3000,
-    )
-    custom_prompt: str = Field(default="", max_length=30_000)
+    custom_prompt: str = Field(..., min_length=1, max_length=30_000)
     scope_mode: str = Field(default="complete", pattern="^(complete|characters|chapters)$")
     preview_target_chars: int = Field(default=0, ge=0, le=MAX_PREVIEW_CHARS)
     preview_chapters: int = Field(default=0, ge=0, le=5_000)
-
-
-class ClassicalTranslationSettingsResponse(BaseModel):
-    default_prompt: str
-    min_preview_chars: int
-    max_preview_chars: int
-    max_chapters: int
+    scope_mode: str = Field(default="complete", pattern="^(complete|characters|chapters)$")
+    preview_target_chars: int = Field(default=0, ge=0, le=MAX_PREVIEW_CHARS)
+    preview_chapters: int = Field(default=0, ge=0, le=5_000)
 
 
 class ClassicalSourceSectionItem(BaseModel):
@@ -202,6 +174,7 @@ class ClassicalWorkspaceStateResponse(BaseModel):
     policy_version: str
     prompt_version: str
     prompt_hash: str | None = None
+    processing_model: str
     can_resume: bool
     can_continue_complete: bool
 
@@ -234,22 +207,6 @@ class PublicDomainRewriteRequest(BaseModel):
     generation_mode: str = FULL_MODE
     research_use_confirmed: bool = False
     adaptation_profile: ClassicalVernacularProfilePayload | None = None
-
-
-@router.get(
-    "/classical-translation/settings",
-    response_model=ClassicalTranslationSettingsResponse,
-    summary="获取古文白话默认可编辑 Prompt 与试译范围",
-)
-async def get_classical_translation_settings(
-    _user: User = Depends(get_current_user),
-) -> ClassicalTranslationSettingsResponse:
-    return ClassicalTranslationSettingsResponse(
-        default_prompt=get_default_user_prompt(),
-        min_preview_chars=MIN_PREVIEW_CHARS,
-        max_preview_chars=MAX_PREVIEW_CHARS,
-        max_chapters=5_000,
-    )
 
 
 @router.get(
@@ -299,7 +256,7 @@ async def get_classical_task_source(
             segment_limit = int(chapter_audit.get("segment_limit") or segment_limit)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
-    source_segments = split_source_segments(selected.text, segment_limit)
+    source_segments = [selected.text]
     return ClassicalSourceResponse(
         task_id=task.id,
         total=len(sections),
@@ -375,7 +332,7 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         error_message=task.error_message,
         target_title=str(cfg.get("target_title") or cfg.get("title") or "公版古文白话"),
         bookshelf=str(cfg.get("bookshelf") or _classical_bookshelf_for_scope(scope_mode)),
-        custom_prompt=str(profile.get("custom_prompt") or get_default_user_prompt()),
+        custom_prompt=str(profile.get("custom_prompt") or ""),
         scope_mode=scope_mode,
         preview_target_chars=int(profile.get("preview_target_chars") or 0),
         preview_chapters=int(profile.get("preview_chapters") or 0),
@@ -393,6 +350,7 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         policy_version=str(cfg.get("public_domain_policy_version") or CLASSICAL_VERNACULAR_POLICY_VERSION),
         prompt_version=str(cfg.get("classical_prompt_version") or CLASSICAL_VERNACULAR_PROMPT_VERSION),
         prompt_hash=str(cfg.get("classical_prompt_hash") or "").strip() or None,
+        processing_model=str(cfg.get("classical_processing_model") or settings.DEEPSEEK_MODEL),
         can_resume=(not active and not full_complete),
         can_continue_complete=(not active and scope_mode != "complete"),
     )
@@ -417,7 +375,7 @@ def _prepare_classical_continuation(
         else {}
     )
     normalized = ClassicalVernacularProfilePayload(
-        custom_prompt=str(custom_prompt or profile.get("custom_prompt") or get_default_user_prompt()),
+        custom_prompt=str(custom_prompt or profile.get("custom_prompt") or ""),
         scope_mode=scope_mode,
         preview_target_chars=preview_target_chars,
         preview_chapters=preview_chapters,
@@ -687,7 +645,7 @@ async def resume_classical_translation(
             scope_mode=str(profile.get("scope_mode") or "complete"),
             preview_target_chars=int(profile.get("preview_target_chars") or 0),
             preview_chapters=int(profile.get("preview_chapters") or 0),
-            custom_prompt=str(profile.get("custom_prompt") or get_default_user_prompt()),
+            custom_prompt=str(profile.get("custom_prompt") or ""),
         )
         db.commit()
         db.refresh(task)
@@ -752,7 +710,7 @@ async def restart_classical_translation(
         for key in ("_checkpoint_profile", "_checkpoint_segment_limit", "_local_prompt_overrides"):
             profile.pop(key, None)
         profile.update(
-            custom_prompt=str(req.custom_prompt or profile.get("custom_prompt") or get_default_user_prompt()),
+            custom_prompt=str(req.custom_prompt or profile.get("custom_prompt") or ""),
             scope_mode=req.scope_mode,
             preview_target_chars=req.preview_target_chars,
             preview_chapters=req.preview_chapters,
@@ -1078,6 +1036,7 @@ def _create_longform_task(
             "median_source_chapters": dimensions.median_source_chapters,
             "output_style": req.output_style,
             "adaptation_profile": classical_profile or None,
+            "classical_processing_model": settings.DEEPSEEK_MODEL if classical else None,
             "public_domain_confirmed": True,
             "generation_complete": False,
             "cover_disabled": True,

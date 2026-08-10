@@ -478,7 +478,37 @@ def _write_normalized_booklist(items: list[ReferenceBooklistItem]) -> None:
         writer.writerows(data)
 
 
-class SoNovelAdapter:
+class ExternalDownloaderAdapter:
+    """Common contract for trusted local reference download providers."""
+
+    provider_name = "external"
+
+    def detect_installation(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_config(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def search_book(self, title: str, author: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def download_result(self, selected_result: dict[str, Any], *, format: str | None = None, timeout: int = 1800) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def list_downloaded_files(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def import_downloaded_file(self, db: Session, file_path: str | Path) -> ReferenceBook:
+        return import_reference_file(db, file_path=file_path)
+
+    def get_logs(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def validate_output(self, path: str | Path, db: Session | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class SoNovelAdapter(ExternalDownloaderAdapter):
     provider_name = "sonovel"
 
     def __init__(self, home: str | None = None, download_path: str | None = None, web_base_url: str | None = None) -> None:
@@ -559,8 +589,11 @@ class SoNovelAdapter:
 
     def detect_installation(self) -> dict[str, Any]:
         home_exists = self.home.exists()
-        files = {name: self.home / name for name in ["sonovel.exe", "app.jar", "config.ini", "readme.txt"]}
+        files = {name: self.home / name for name in ["sonovel.exe", "sonovel", "app.jar", "config.ini", "readme.txt", "readme.md"]}
         dirs = {name: self.home / name for name in ["downloads", "logs", "rules", "runtime"]}
+        executable_paths = [path for path in files.values() if path.name in {"sonovel.exe", "sonovel"} and path.exists()]
+        jar_paths = [path for path in files.values() if path.suffix == ".jar" and path.exists()]
+        runtime_markers = executable_paths + jar_paths
         detected = {
             "provider": self.provider_name,
             "home": str(self.home),
@@ -572,11 +605,12 @@ class SoNovelAdapter:
             "outputFormat": settings.SONOVEL_OUTPUT_FORMAT,
             "files": {name: {"path": str(path), "exists": path.exists()} for name, path in files.items()},
             "directories": {name: {"path": str(path), "exists": path.exists()} for name, path in dirs.items()},
+            "runtimeCandidates": [str(path) for path in runtime_markers],
             "canInvokeSafely": False,
             "manualRequired": True,
             "manualCommandSuggestion": r".\sonovel.exe -h",
         }
-        if home_exists and files["sonovel.exe"].exists() and files["app.jar"].exists():
+        if home_exists and (runtime_markers or self.download_path.exists() or files["config.ini"].exists()):
             detected["status"] = "detected_manual_required"
             if detected["webUiAvailable"]:
                 detected["status"] = "detected_webui_ready"
@@ -647,7 +681,7 @@ class SoNovelAdapter:
         if not self.download_path.exists():
             return []
         files: list[dict[str, Any]] = []
-        for path in sorted(self.download_path.glob("*")):
+        for path in sorted(self.download_path.rglob("*")):
             if path.is_file() and path.suffix.lower() in {".epub", ".txt", ".md", ".html", ".json"}:
                 title, author = _split_title_author(path.stem)
                 files.append(
@@ -673,16 +707,26 @@ class SoNovelAdapter:
             if path.is_file()
         ]
 
-    def validate_output(self, path: str | Path) -> dict[str, Any]:
+    def validate_output(self, path: str | Path, db: Session | None = None) -> dict[str, Any]:
         file_path = Path(path)
-        valid = file_path.exists() and file_path.is_file() and file_path.stat().st_size > 0 and file_path.suffix.lower() in {".epub", ".txt", ".md", ".html", ".json"}
+        supported = {".epub", ".txt", ".md", ".html", ".json"}
+        exists = file_path.exists() and file_path.is_file()
+        title, author = _split_title_author(file_path.stem) if exists else ("", None)
+        file_hash = compute_file_hash(file_path) if exists and file_path.stat().st_size > 0 and file_path.suffix.lower() in supported else None
+        duplicate_book = db.query(ReferenceBook).filter(ReferenceBook.file_hash == file_hash).first() if db is not None and file_hash else None
+        valid = bool(file_hash and title and duplicate_book is None)
         return {
             "path": str(file_path),
-            "exists": file_path.exists(),
-            "size": file_path.stat().st_size if file_path.exists() else 0,
+            "exists": exists,
+            "size": file_path.stat().st_size if exists else 0,
             "extension": file_path.suffix.lower(),
+            "title": title or None,
+            "author": author,
+            "titleInferred": bool(title),
+            "duplicate": duplicate_book is not None,
+            "duplicateBookId": str(duplicate_book.id) if duplicate_book is not None else None,
             "valid": valid,
-            "fileHash": compute_file_hash(file_path) if valid else None,
+            "fileHash": file_hash,
         }
 
 

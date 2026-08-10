@@ -68,6 +68,47 @@ def test_sonovel_candidate_selection_accepts_exact_title_without_author() -> Non
     assert candidates[0]["url"] == "https://example.invalid/right"
 
 
+def test_sonovel_detects_a_safe_manual_installation_from_any_runtime_marker(tmp_path) -> None:
+    home = tmp_path / "SoNovel"
+    home.mkdir()
+    (home / "app.jar").write_bytes(b"jar")
+    adapter = SoNovelAdapter(home=str(home), download_path=str(home / "downloads"), web_base_url="http://127.0.0.1:1")
+
+    detected = adapter.detect_installation()
+
+    assert detected["status"] == "detected_manual_required"
+    assert detected["manualRequired"] is True
+    assert detected["runtimeCandidates"] == [str(home / "app.jar")]
+
+
+def test_sonovel_lists_nested_downloaded_files(tmp_path) -> None:
+    downloads = tmp_path / "downloads"
+    nested = downloads / "2026-08"
+    nested.mkdir(parents=True)
+    source = nested / "测试书 - 测试作者.epub"
+    source.write_bytes(b"epub")
+    adapter = SoNovelAdapter(home=str(tmp_path), download_path=str(downloads), web_base_url="http://127.0.0.1:1")
+
+    files = adapter.list_downloaded_files()
+
+    assert len(files) == 1
+    assert files[0]["path"] == str(source)
+    assert files[0]["title"] == "测试书"
+    assert files[0]["author"] == "测试作者"
+
+
+def test_sonovel_validate_output_requires_supported_non_empty_inferred_title(tmp_path) -> None:
+    source = tmp_path / "测试书.txt"
+    source.write_text("参考文本", encoding="utf-8")
+    adapter = SoNovelAdapter(home=str(tmp_path), download_path=str(tmp_path), web_base_url="http://127.0.0.1:1")
+
+    result = adapter.validate_output(source)
+
+    assert result["valid"] is True
+    assert result["title"] == "测试书"
+    assert result["duplicate"] is False
+
+
 def test_reference_role_defaults_to_deepseek_v4_pro() -> None:
     selection = resolve_model("reference")
 

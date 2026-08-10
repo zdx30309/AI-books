@@ -407,13 +407,6 @@ export interface ClassicalVernacularProfile {
   preview_chapters?: number;
 }
 
-export interface ClassicalTranslationSettingsResponse {
-  default_prompt: string;
-  min_preview_chars: number;
-  max_preview_chars: number;
-  max_chapters: number;
-}
-
 export interface ClassicalSourceSectionItem {
   number: number;
   title: string;
@@ -488,6 +481,7 @@ export interface ClassicalWorkspaceStateResponse {
   policy_version: string;
   prompt_version: string;
   prompt_hash: string | null;
+  processing_model: string;
   can_resume: boolean;
   can_continue_complete: boolean;
 }
