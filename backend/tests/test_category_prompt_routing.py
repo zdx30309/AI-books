@@ -19,7 +19,7 @@ from app.prompts.goal_driven_templates import (
     CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
     CLASSICAL_REFERENCE_REWRITE_PROFILE,
     CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT,
-    FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT,
+    FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT,
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     POLISH_FIXED_PHRASE_GUARD_PROMPT,
@@ -902,18 +902,28 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "测试参考资料" in rendered
 
 
-def test_finance_technology_ai_optimized_only_adds_requested_style_rules() -> None:
-    base_prompt = get_prompts("finance_technology")["full_book_writer"]
+def test_finance_technology_ai_optimized_uses_complete_ai_style_prompt() -> None:
     optimized_prompt = get_prompts("finance_technology_ai_optimized")["full_book_writer"]
     meta = get_category_meta("finance_technology_ai_optimized")
+    source_prefix, source_marker, source_suffix = (
+        FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT.rpartition(
+            "\n输入：\n"
+        )
+    )
 
     assert meta["label"] == "财经科技（优化AI味版）"
-    assert optimized_prompt.replace(
-        f"\n\n{FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT}", "", 1
-    ) == base_prompt
-    assert "避免反复使用“不是……而是……”" in optimized_prompt
-    assert "每句话都要提供新的事实、对象、动作、原因或结果" in optimized_prompt
-    assert "减少三连排比、口号式短句和整齐对称结构" in optimized_prompt
+    assert optimized_prompt.startswith(source_prefix)
+    assert optimized_prompt.endswith(f"{source_marker}{source_suffix}")
+    assert "平台AI味五维控制" in optimized_prompt
+    assert "句式套路化 25%" in optimized_prompt
+    assert "节奏机械 25%" in optimized_prompt
+    assert "生成完成后的内部AI味自检" in optimized_prompt
+    assert "财经科技专项要求" in optimized_prompt
+    assert "2026年、今年、最新、近期" in optimized_prompt
+    assert "如果具备联网能力，可以检索当当网" in optimized_prompt
+    assert "不得沿用其：" in optimized_prompt
+    assert "财经科技来源表述专项要求" not in optimized_prompt
+    assert "财经科技联网检索与最新例子硬性要求" not in optimized_prompt
     rendered_prompt = content_engine._finance_whole_book_prompt(  # noqa: SLF001
         optimized_prompt.format(raw_text="测试参考资料"),
         "测试参考资料",
@@ -922,7 +932,8 @@ def test_finance_technology_ai_optimized_only_adds_requested_style_rules() -> No
         latest_research="已检索到当前资料。",
         category="finance_technology_ai_optimized",
     )
-    assert rendered_prompt.count(FINANCE_TECHNOLOGY_AI_STYLE_GUARD_PROMPT) == 1
+    assert "测试参考资料" in rendered_prompt
+    assert "平台AI味五维控制" in rendered_prompt
     assert "财经科技（优化AI味版）" in content_engine._finance_latest_research_prompt(  # noqa: SLF001
         "测试参考资料", category="finance_technology_ai_optimized"
     )
