@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
-from app.core.config import PROJECT_ROOT, settings
+from app.core.config import PROJECT_ROOT
 from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
 from app.schemas.task import CreateTaskResponse
@@ -43,6 +43,7 @@ from app.services.public_domain_classical_vernacular import (
     PROMPT_VERSION as CLASSICAL_VERNACULAR_PROMPT_VERSION,
     SEGMENT_CHARS as CLASSICAL_SEGMENT_CHARS,
     extract_source_sections as extract_classical_source_sections,
+    split_source_segments,
 )
 from app.services.public_domain_longform import (
     POLICY_VERSION as LONGFORM_POLICY_VERSION,
@@ -102,13 +103,17 @@ class PublicDomainSourcePayload(BaseModel):
 
 
 class ClassicalVernacularProfilePayload(BaseModel):
-    custom_prompt: str = Field(..., min_length=1, max_length=30_000)
+    custom_prompt: str = Field(default="", max_length=30_000)
     scope_mode: str = Field(default="complete", pattern="^(complete|characters|chapters)$")
     preview_target_chars: int = Field(default=0, ge=0, le=MAX_PREVIEW_CHARS)
     preview_chapters: int = Field(default=0, ge=0, le=5_000)
-    scope_mode: str = Field(default="complete", pattern="^(complete|characters|chapters)$")
-    preview_target_chars: int = Field(default=0, ge=0, le=MAX_PREVIEW_CHARS)
-    preview_chapters: int = Field(default=0, ge=0, le=5_000)
+
+
+class ClassicalTranslationSettingsResponse(BaseModel):
+    default_prompt: str
+    min_preview_chars: int
+    max_preview_chars: int
+    max_chapters: int
 
 
 class ClassicalSourceSectionItem(BaseModel):
@@ -174,7 +179,6 @@ class ClassicalWorkspaceStateResponse(BaseModel):
     policy_version: str
     prompt_version: str
     prompt_hash: str | None = None
-    processing_model: str
     can_resume: bool
     can_continue_complete: bool
 
@@ -207,6 +211,22 @@ class PublicDomainRewriteRequest(BaseModel):
     generation_mode: str = FULL_MODE
     research_use_confirmed: bool = False
     adaptation_profile: ClassicalVernacularProfilePayload | None = None
+
+
+@router.get(
+    "/classical-translation/settings",
+    response_model=ClassicalTranslationSettingsResponse,
+    summary="获取古文白话试译范围（无内置 Prompt）",
+)
+async def get_classical_translation_settings(
+    _user: User = Depends(get_current_user),
+) -> ClassicalTranslationSettingsResponse:
+    return ClassicalTranslationSettingsResponse(
+        default_prompt="",
+        min_preview_chars=MIN_PREVIEW_CHARS,
+        max_preview_chars=MAX_PREVIEW_CHARS,
+        max_chapters=5_000,
+    )
 
 
 @router.get(
@@ -256,7 +276,7 @@ async def get_classical_task_source(
             segment_limit = int(chapter_audit.get("segment_limit") or segment_limit)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
-    source_segments = [selected.text]
+    source_segments = split_source_segments(selected.text, segment_limit)
     return ClassicalSourceResponse(
         task_id=task.id,
         total=len(sections),
@@ -324,6 +344,7 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         or bool(str(cfg.get("active_run_id") or "").strip())
     )
     full_complete = scope_mode == "complete" and generation_complete and task.status == TaskStatus.COMPLETED
+    saved_prompt = str(profile.get("custom_prompt") or "").strip()
     return ClassicalWorkspaceStateResponse(
         task_id=task.id,
         status=task.status,
@@ -332,7 +353,7 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         error_message=task.error_message,
         target_title=str(cfg.get("target_title") or cfg.get("title") or "公版古文白话"),
         bookshelf=str(cfg.get("bookshelf") or _classical_bookshelf_for_scope(scope_mode)),
-        custom_prompt=str(profile.get("custom_prompt") or ""),
+        custom_prompt=saved_prompt,
         scope_mode=scope_mode,
         preview_target_chars=int(profile.get("preview_target_chars") or 0),
         preview_chapters=int(profile.get("preview_chapters") or 0),
@@ -350,8 +371,7 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         policy_version=str(cfg.get("public_domain_policy_version") or CLASSICAL_VERNACULAR_POLICY_VERSION),
         prompt_version=str(cfg.get("classical_prompt_version") or CLASSICAL_VERNACULAR_PROMPT_VERSION),
         prompt_hash=str(cfg.get("classical_prompt_hash") or "").strip() or None,
-        processing_model=str(cfg.get("classical_processing_model") or settings.DEEPSEEK_MODEL),
-        can_resume=(not active and not full_complete),
+        can_resume=(not active and not full_complete and bool(saved_prompt)),
         can_continue_complete=(not active and scope_mode != "complete"),
     )
 
@@ -374,8 +394,11 @@ def _prepare_classical_continuation(
         if isinstance(cfg.get("adaptation_profile"), dict)
         else {}
     )
+    effective_prompt = str(custom_prompt or profile.get("custom_prompt") or "").strip()
+    if not effective_prompt:
+        raise ValueError("请输入翻译 Prompt；公版古文白话链路没有内置 Prompt")
     normalized = ClassicalVernacularProfilePayload(
-        custom_prompt=str(custom_prompt or profile.get("custom_prompt") or ""),
+        custom_prompt=effective_prompt,
         scope_mode=scope_mode,
         preview_target_chars=preview_target_chars,
         preview_chapters=preview_chapters,
@@ -927,6 +950,11 @@ def _create_longform_task(
         if classical and req.adaptation_profile
         else {}
     )
+    if classical and not str(classical_profile.get("custom_prompt") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="请输入翻译 Prompt；公版古文白话链路没有内置 Prompt",
+        )
     classical_scope = str(classical_profile.get("scope_mode") or "complete")
     classical_is_preview = classical and classical_scope != "complete"
     classical_preview_chars = int(classical_profile.get("preview_target_chars") or 0)
@@ -1036,7 +1064,6 @@ def _create_longform_task(
             "median_source_chapters": dimensions.median_source_chapters,
             "output_style": req.output_style,
             "adaptation_profile": classical_profile or None,
-            "classical_processing_model": settings.DEEPSEEK_MODEL if classical else None,
             "public_domain_confirmed": True,
             "generation_complete": False,
             "cover_disabled": True,

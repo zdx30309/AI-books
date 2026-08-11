@@ -390,21 +390,17 @@ export interface PublicDomainRewriteSource {
 }
 
 export interface ClassicalVernacularProfile {
-  work_type?: string;
-  era_background?: string;
-  narrative_perspective?: string;
-  target_audience?: string;
-  vernacular_level?: string;
-  adaptation_intensity?: string;
-  web_fiction_ratio?: string;
-  language_tendency?: string;
-  must_preserve?: string;
-  focus_issues?: string;
-  special_requirements?: string;
   custom_prompt?: string;
   scope_mode?: "complete" | "characters" | "chapters";
   preview_target_chars?: number;
   preview_chapters?: number;
+}
+
+export interface ClassicalTranslationSettingsResponse {
+  default_prompt: string;
+  min_preview_chars: number;
+  max_preview_chars: number;
+  max_chapters: number;
 }
 
 export interface ClassicalSourceSectionItem {
@@ -481,7 +477,6 @@ export interface ClassicalWorkspaceStateResponse {
   policy_version: string;
   prompt_version: string;
   prompt_hash: string | null;
-  processing_model: string;
   can_resume: boolean;
   can_continue_complete: boolean;
 }

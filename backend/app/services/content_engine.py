@@ -3078,6 +3078,7 @@ def _create_openai_writer_response(
     background_response_id: str | None = None,
     on_background_response_id: Callable[[str], None] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    text_format: dict[str, Any] | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
     persisted_response_id = str(background_response_id or "").strip()
@@ -3090,11 +3091,17 @@ def _create_openai_writer_response(
             poll_interval_seconds=background_poll_interval_seconds,
         )
 
+    text_config: dict[str, Any] = {"verbosity": verb}
+    if text_format:
+        # Optional structured output is used by callers that need a durable
+        # transport contract.  It is deliberately absent for every existing
+        # writing route, so their request/response behavior is unchanged.
+        text_config["format"] = dict(text_format)
     kwargs: dict[str, Any] = {
         "model": settings.OPENAI_WRITER_MODEL,
         "input": rendered_prompt,
         "reasoning": {"effort": effort},
-        "text": {"verbosity": verb},
+        "text": text_config,
     }
     _apply_prompt_cache_options(kwargs, prompt_cache_key)
     normalized_tier = str(service_tier or "").strip().lower()
@@ -3209,6 +3216,7 @@ def _openai_writer_call_result(
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
     tools: list[dict[str, Any]] | None = None,
+    text_format: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
     verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
@@ -3243,7 +3251,7 @@ def _openai_writer_call_result(
                     "openai-writer",
                     limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
                 ):
-                    if settings.OPENAI_WRITER_STREAM and not background and not tools:
+                    if settings.OPENAI_WRITER_STREAM and not background and not tools and not text_format:
                         try:
                             text, response = _stream_openai_writer(
                                 rendered_prompt,
@@ -3269,6 +3277,7 @@ def _openai_writer_call_result(
                                 prompt_cache_key=prompt_cache_key,
                                 service_tier=current_tier,
                                 tools=tools,
+                                text_format=text_format,
                             )
                             _merge_openai_usage(total_usage, response)
                             text = _extract_openai_response_text(response)
@@ -3286,6 +3295,7 @@ def _openai_writer_call_result(
                             background_response_id=background_response_id,
                             on_background_response_id=on_background_response_id,
                             tools=tools,
+                            text_format=text_format,
                         )
                         _merge_openai_usage(total_usage, response)
                         text = _extract_openai_response_text(response)

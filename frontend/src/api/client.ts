@@ -72,6 +72,9 @@ import type {
   PolishParagraphResponse,
   PublicDomainRewriteRequest,
   ClassicalSourceResponse,
+  ClassicalContinueRequest,
+  ClassicalLocalRetranslateRequest,
+  ClassicalTranslationSettingsResponse,
   ClassicalWorkspaceStateResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
@@ -735,6 +738,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getClassicalTranslationSettings: () =>
+    request<ClassicalTranslationSettingsResponse>(
+      "/public-domain-rewrite/classical-translation/settings",
+    ),
   getClassicalTaskSource: (id: string, chapterNum = 1, offset = 0) =>
     request<ClassicalSourceResponse>(
       `/public-domain-rewrite/tasks/${id}/classical-source?chapter_num=${chapterNum}&offset=${offset}`,
@@ -748,6 +755,25 @@ export const api = {
       `/public-domain-rewrite/tasks/${id}/continue-complete`,
       { method: "POST" },
     ),
+  continueClassical: (id: string, body: ClassicalContinueRequest) =>
+    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/continue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  pauseClassical: (id: string) =>
+    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/pause`, { method: "POST" }),
+  resumeClassical: (id: string) =>
+    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/resume`, { method: "POST" }),
+  restartClassical: (id: string, body: ClassicalContinueRequest) =>
+    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/restart`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  retranslateClassicalSelection: (id: string, body: ClassicalLocalRetranslateRequest) =>
+    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/local-retranslate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   generatePublicDomainRewriteFromFiles: (
     files: File[],
     metadata: Omit<PublicDomainRewriteRequest, "sources"> & {
