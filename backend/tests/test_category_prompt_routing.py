@@ -905,23 +905,22 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
 def test_finance_technology_ai_optimized_uses_complete_ai_style_prompt() -> None:
     optimized_prompt = get_prompts("finance_technology_ai_optimized")["full_book_writer"]
     meta = get_category_meta("finance_technology_ai_optimized")
-    source_prefix, source_marker, source_suffix = (
-        FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT.rpartition(
-            "\n输入：\n"
-        )
-    )
 
     assert meta["label"] == "财经科技（优化AI味版）"
-    assert optimized_prompt.startswith(source_prefix)
-    assert optimized_prompt.endswith(f"{source_marker}{source_suffix}")
+    assert optimized_prompt.startswith(
+        FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT
+    )
     assert "平台AI味五维控制" in optimized_prompt
     assert "句式套路化 25%" in optimized_prompt
     assert "节奏机械 25%" in optimized_prompt
-    assert "生成完成后的内部AI味自检" in optimized_prompt
+    assert "小标题去公式化" in optimized_prompt
+    assert "生成完成后的平台五维自检" in optimized_prompt
+    assert "最终自然度" in optimized_prompt
     assert "财经科技专项要求" in optimized_prompt
-    assert "2026年、今年、最新、近期" in optimized_prompt
-    assert "如果具备联网能力，可以检索当当网" in optimized_prompt
-    assert "不得沿用其：" in optimized_prompt
+    assert "当前；\n今年；\n最新；\n近期" in optimized_prompt
+    assert "如果具备联网能力，可以检索同类型畅销书" in optimized_prompt
+    assert "不得机械沿用原资料的：" in optimized_prompt
+    assert "多数句子宜保持在约15—40个汉字" in optimized_prompt
     assert "财经科技来源表述专项要求" not in optimized_prompt
     assert "财经科技联网检索与最新例子硬性要求" not in optimized_prompt
     rendered_prompt = content_engine._finance_whole_book_prompt(  # noqa: SLF001
