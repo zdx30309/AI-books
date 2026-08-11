@@ -920,7 +920,8 @@ def test_finance_technology_ai_optimized_uses_complete_ai_style_prompt() -> None
     assert "生成后的高人工特征自检" in optimized_prompt
     assert "最终状态" in optimized_prompt
     assert "财经科技联网与事实要求" in optimized_prompt
-    assert "当前；今年；最新；近期；趋势；前景" in optimized_prompt
+    for reality_term in ("当前；", "今年；", "最新；", "近期；", "趋势；", "前景；"):
+        assert reality_term in optimized_prompt
     assert "如果具备联网能力，可以检索同类型畅销书" in optimized_prompt
     assert "选择比覆盖更重要" in optimized_prompt
     assert "多数句子宜控制在约15—40个汉字" in optimized_prompt
