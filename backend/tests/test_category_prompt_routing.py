@@ -913,14 +913,17 @@ def test_finance_technology_ai_optimized_uses_complete_ai_style_prompt() -> None
     assert "平台AI味五维控制" in optimized_prompt
     assert "句式套路化 25%" in optimized_prompt
     assert "节奏机械 25%" in optimized_prompt
-    assert "小标题去公式化" in optimized_prompt
-    assert "生成完成后的平台五维自检" in optimized_prompt
-    assert "最终自然度" in optimized_prompt
-    assert "财经科技专项要求" in optimized_prompt
-    assert "当前；\n今年；\n最新；\n近期" in optimized_prompt
+    assert "最高原则：像作者一样选择，而不是像模型一样解释" in optimized_prompt
+    assert "不要强迫段落闭环" in optimized_prompt
+    assert "信息不平均" in optimized_prompt
+    assert "主动取舍" in optimized_prompt
+    assert "生成后的高人工特征自检" in optimized_prompt
+    assert "最终状态" in optimized_prompt
+    assert "财经科技联网与事实要求" in optimized_prompt
+    assert "当前；今年；最新；近期；趋势；前景" in optimized_prompt
     assert "如果具备联网能力，可以检索同类型畅销书" in optimized_prompt
-    assert "不得机械沿用原资料的：" in optimized_prompt
-    assert "多数句子宜保持在约15—40个汉字" in optimized_prompt
+    assert "选择比覆盖更重要" in optimized_prompt
+    assert "多数句子宜控制在约15—40个汉字" in optimized_prompt
     assert "财经科技来源表述专项要求" not in optimized_prompt
     assert "财经科技联网检索与最新例子硬性要求" not in optimized_prompt
     rendered_prompt = content_engine._finance_whole_book_prompt(  # noqa: SLF001
