@@ -93,9 +93,10 @@ def _qingdou_serial_lock(*, ttl_seconds: int):
         try:
             acquired = bool(client.set(_LOCK_KEY, token, nx=True, ex=max(30, ttl_seconds)))
         except Exception as exc:
-            logger.warning("轻抖串行锁获取失败，退回本次直接调用: %s", exc)
-            yield
-            return
+            # Never bypass this lock: Qingdou rejects concurrent submissions
+            # for the same account with status code 4001.
+            logger.error("轻抖串行锁不可用，已阻止本次提交以避免上游并发: %s", exc)
+            raise QingdouTimeoutError("轻抖串行锁不可用，任务将自动重试") from exc
         if acquired:
             logger.info("轻抖串行锁已获取")
             break
@@ -153,9 +154,8 @@ def _qingdou_concurrency_slot(*, ttl_seconds: int):
             time.sleep(0.2)
             continue
         except Exception as exc:
-            logger.warning("轻抖并发槽获取失败，退回本次直接调用: %s", exc)
-            yield
-            return
+            logger.error("轻抖并发槽不可用，已阻止本次提交以避免上游并发: %s", exc)
+            raise QingdouTimeoutError("轻抖并发槽不可用，任务将自动重试") from exc
         time.sleep(2)
 
     if not acquired:

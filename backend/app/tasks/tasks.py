@@ -49,7 +49,9 @@ from app.services.aigc_quality_gate import (
     enforce_aigc_quality_gate,
 )
 from app.services.qingdou import (
+    QingdouBusyError,
     QingdouDurationExceededError,
+    QingdouTimeoutError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
 )
 from app.services.video_sources import (
@@ -155,6 +157,12 @@ _RETRYABLE_ERROR_TOKENS = (
     "server error",
     "temporar",
     "qingdouerror",
+    "qingdoubusyerror",
+    "qingdoutimeouterror",
+    "返回繁忙",
+    "轻抖串行锁不可用",
+    "轻抖并发槽不可用",
+    "等待轻抖解析锁超时",
     "轻抖任务失败",
     "未返回 videocontent",
     "youtubetranscripterror",
@@ -414,6 +422,10 @@ def extract_video_text_with_qingdou(
                 max_video_duration=max_video_duration,
             )
         except QingdouDurationExceededError:
+            raise
+        except (QingdouBusyError, QingdouTimeoutError):
+            # A busy/lock timeout is account-wide. Trying another URL would
+            # submit another Qingdou task and amplify status 4001 failures.
             raise
         except Exception as exc:
             errors.append(f"{candidate_url}: {type(exc).__name__}: {exc}")

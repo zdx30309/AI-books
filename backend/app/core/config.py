@@ -246,7 +246,9 @@ class Settings(BaseSettings):
     QINGDOU_POLL_INTERVAL_SECONDS: float = 3.0
     QINGDOU_POLL_TIMEOUT_SECONDS: int = 300
     QINGDOU_MAX_CONCURRENT_TASKS: int = 30
-    QINGDOU_SERIAL_LOCK_ENABLED: bool = False
+    # Qingdou only permits one in-flight extraction per account. Keep the
+    # distributed lock enabled by default across all Celery worker threads.
+    QINGDOU_SERIAL_LOCK_ENABLED: bool = True
     QINGDOU_LOCK_WAIT_TIMEOUT_SECONDS: int = 1800
     QINGDOU_LOCK_TTL_SECONDS: int = 900
     QINGDOU_BUSY_RETRY_SECONDS: float = 10.0
