@@ -821,26 +821,22 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
-    # A provider may encode exhausted credit as HTTP 429.  Check this before
-    # the generic technical-error and rate-limit branches so it can never be
-    # amplified by Celery or the recovery watchdog.
-    if is_quota_exhausted(exc) or _is_qingdou_quota_exhausted(exc) or isinstance(
-        exc,
-        (
-            OpenAIDeliveryUncertainError,
-            QingdouDeliveryUncertainError,
-            ClaudeDeliveryUncertainError,
-            ClaudeRequestRejectedError,
-        ),
-    ):
+    if isinstance(exc, ClaudeRequestRejectedError):
         return False
-    if isinstance(exc, AigcTechnicalError):
-        return True
     normalized = f"{type(exc).__name__}: {exc}".lower()
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
     if _is_auth_error_message(normalized):
         return False
+    if (
+        is_quota_exhausted(exc)
+        or _is_qingdou_quota_exhausted(exc)
+        or isinstance(exc, (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError, ClaudeDeliveryUncertainError))
+        or any(marker in normalized for marker in ("paid_call_delivery_uncertain", "delivery uncertain"))
+    ):
+        return True
+    if isinstance(exc, AigcTechnicalError):
+        return True
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
         return False
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
@@ -855,12 +851,12 @@ def _is_retryable_error_message(message: str | None) -> bool:
     normalized = (message or "").lower()
     if not normalized:
         return False
-    if is_quota_exhausted(normalized):
-        return False
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
     if _is_auth_error_message(normalized):
         return False
+    if is_quota_exhausted(normalized) or any(marker in normalized for marker in ("paid_call_delivery_uncertain", "delivery uncertain")):
+        return True
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
         return False
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
@@ -1136,32 +1132,69 @@ def _patch_config(task: Task, **kv: Any) -> None:
 
 
 def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
-    """Operator disabled cost-protection holds; never pause redispatch for quota text."""
+    """Record paid-provider backoff metadata without pausing the book.
 
-    return None
+    Cost protection now means: keep a provider breaker/backoff so the system
+    does not hammer the same paid API in a tight loop, but leave the Task in
+    the normal automatic retry queue.  Do not set generation_hold and do not
+    expose a front-end "费用保护暂停" state.
+    """
+
+    normalized = f"{type(exc).__name__}: {exc}".lower()
+    qingdou_quota_exhausted = _is_qingdou_quota_exhausted(exc)
+    quota_exhausted = is_quota_exhausted(exc) or qingdou_quota_exhausted
+    delivery_uncertain = isinstance(
+        exc,
+        (
+            OpenAIDeliveryUncertainError,
+            QingdouDeliveryUncertainError,
+            ClaudeDeliveryUncertainError,
+        ),
+    ) or any(
+        marker in normalized
+        for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
+    )
+    if not quota_exhausted and not delivery_uncertain:
+        return
+    cfg = dict(task.config or {})
+    cfg.update(
+        paid_api_backoff=True,
+        paid_api_backoff_reason=(
+            "qingdou_quota" if qingdou_quota_exhausted else "paid_delivery_uncertain" if delivery_uncertain else "provider_quota"
+        ),
+        paid_api_backoff_at=datetime.now(timezone.utc).isoformat(),
+        paid_api_backoff_error=f"{type(exc).__name__}: {exc}"[:1000],
+    )
+    cfg.pop("generation_hold", None)
+    cfg.pop("generation_hold_reason", None)
+    cfg.pop("generation_hold_step", None)
+    cfg.pop("generation_hold_at", None)
+    cfg.pop("paid_call_delivery_uncertain", None)
+    cfg.pop("paid_call_manual_resume_required", None)
+    task.config = cfg
 
 
 def _user_facing_generation_error(exc: Exception) -> str:
     raw = f"{type(exc).__name__}: {exc}"
     normalized = raw.lower()
     if _is_qingdou_quota_exhausted(exc):
-        return "轻抖可用次数或资源已用完，任务已暂停保护；恢复轻抖账户后再继续，不会重复提交解析任务。"
+        return "轻抖可用次数或资源暂不可用，后台会自动退避后继续排队。"
     if isinstance(exc, QingdouDeliveryUncertainError):
-        return "轻抖创建任务响应未知，任务已暂停以避免重复计费；核对轻抖任务记录后再手动继续。"
+        return "轻抖创建任务响应暂不确定，后台会自动退避后继续排队。"
     if _is_terminal_qingdou_parse_error_message(normalized):
         return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
     if is_quota_exhausted(exc):
         if any(token in normalized for token in ("gemini", "dunning", "permission_denied", "permission denied")):
-            return "Gemini 额度或账单不可用，任务已暂停保护；不会切换到 OpenAI，请恢复 Gemini 账单后再继续。"
+            return "Gemini 额度或账单暂不可用，后台会自动退避后继续排队；不会切换到 OpenAI。"
         if "claude" in normalized or "anyrouter" in normalized:
-            return "Claude 中转站额度或路由不可用，任务已暂停保护；恢复 Claude 中转站后再手动继续，不会切换到 OpenAI。"
+            return "Claude 中转站额度或路由暂不可用，后台会自动退避后继续排队；不会切换到 OpenAI。"
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
     if isinstance(exc, ClaudeRequestRejectedError):
         return "Claude 中转站拒绝了当前请求，任务已停止；请修正模型/协议配置后再手动继续。"
     if isinstance(exc, ClaudeDeliveryUncertainError):
         return "Claude 中转站请求结果未知，任务已暂停以避免重复计费；核对中转站日志后再手动继续。"
     if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in normalized:
-        return "付费模型请求可能已经提交但结果未知，任务已暂停以避免重复计费；请核对提供方响应后再手动继续。"
+        return "付费模型请求结果暂不确定，后台会自动退避后从断点继续排队。"
     if "rate_limit" in normalized or "429" in normalized:
         return "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
     if any(token in normalized for token in ("connection", "connecterror", "apiconnectionerror", "ssl", "eof", "remoteprotocol", "readerror")):
@@ -1744,7 +1777,7 @@ def process_video(_self, task_id: str) -> dict:
                     task.config = cfg
                     task.status = TaskStatus.PENDING
                     task.error_message = message[:2000]
-                    task.current_step = f"自动重试中（{current_retries + 1}/{max_retries}）：{message}"[:255]
+                    task.current_step = f"上游暂不可用，自动退避排队中（{current_retries + 1}/{max_retries}）：{message}"[:255]
                     task.progress = max(0, int(task.progress or 0))
                 else:
                     if _is_retryable_generation_error(e):
