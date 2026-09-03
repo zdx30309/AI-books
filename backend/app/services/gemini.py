@@ -17,6 +17,7 @@ from app.prompts.goal_driven_templates import (
     GEMINI_FAST_REFINE_PROMPT,
 )
 from app.utils.distributed_limiter import distributed_semaphore
+from app.utils import paid_api_guard
 from app.utils.official_api import official_proxy
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 class GeminiMaxTokensError(RuntimeError):
     """Raised when Gemini returns no text because the output hit MAX_TOKENS."""
+
+
+class GeminiDeliveryUncertainError(RuntimeError):
+    """The Gemini request may have been accepted but its result is unknown."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"paid_call_delivery_uncertain: Gemini {message}")
 
 
 _vertex_clients: dict[int, genai.Client] = {}
@@ -198,12 +206,43 @@ _RETRYABLE_SIGNATURES = _PROXY_CANCEL_SIGNATURES + (
 
 def _is_retryable_error(exc: Exception) -> bool:
     """识别 Gemini/网络瞬时错误。"""
+    if isinstance(exc, GeminiDeliveryUncertainError):
+        return False
     msg = (str(exc) or "").lower()
     cls = exc.__class__.__name__.lower()
+    if paid_api_guard.is_quota_exhausted(f"{cls}: {msg}"):
+        return False
     for sig in _RETRYABLE_SIGNATURES:
         if sig in msg or sig in cls:
             return True
     return False
+
+
+def _gemini_status_code(exc: BaseException) -> int | None:
+    for candidate in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        try:
+            if candidate is not None:
+                return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _gemini_preflight_error(exc: BaseException) -> bool:
+    """Recognize an explicit client-side rejection before model execution."""
+
+    return _gemini_status_code(exc) in {400, 401, 403, 404, 409, 422}
+
+
+def _gemini_delivery_uncertain(exc: BaseException, *, phase: str) -> GeminiDeliveryUncertainError:
+    return GeminiDeliveryUncertainError(
+        f"{phase} failed after the request may have been accepted; automatic replacement is disabled "
+        f"({type(exc).__name__}: {exc})"
+    )
 
 
 def generate_text(
@@ -270,9 +309,12 @@ def generate_text(
     for backend in backends:
         client = _get_vertex_client(timeout) if backend == "vertex" else _get_api_key_client(timeout)
         for attempt in range(1, attempts + 1):
+            request_started = False
             try:
                 with _gemini_call_gate():
                     with _google_proxy_env():
+                        paid_api_guard.guard("gemini")
+                        request_started = True
                         response = client.models.generate_content(
                             model=model_name,
                             contents=contents,
@@ -301,6 +343,18 @@ def generate_text(
                 raise ValueError(message)
             except Exception as exc:
                 last_exc = exc
+                if paid_api_guard.trip_if_quota("gemini", exc):
+                    raise paid_api_guard.PaidApiQuotaExhausted(
+                        f"Gemini quota exhausted; request blocked from retry: {exc}"
+                    ) from exc
+                # Once ``generate_content`` has been entered, a timeout or
+                # connection failure may mean Google accepted and billed the
+                # request.  Do not retry it or switch Vertex/API-key channels.
+                # The only exceptions left retryable are failures proven to be
+                # local gate/setup errors, or explicit client-side 4xx
+                # preflight rejections.
+                if request_started and not isinstance(exc, GeminiMaxTokensError) and not _gemini_preflight_error(exc):
+                    raise _gemini_delivery_uncertain(exc, phase="request delivery") from exc
                 retryable = _is_retryable_error(exc)
                 logger.warning(
                     "Gemini 调用失败 backend=%s attempt=%d/%d retryable=%s error=%s: %s",

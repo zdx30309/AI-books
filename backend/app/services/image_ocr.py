@@ -11,6 +11,7 @@ from openai import OpenAI
 from PIL import Image, ImageOps
 
 from app.core.config import settings
+from app.utils import paid_api_guard
 from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ def ocr_image_bytes(content: bytes, *, filename: str = "") -> str:
         "4. 输出纯文本。"
     )
     try:
+        paid_api_guard.guard("openai")
         response = client.responses.create(
             model=model,
             input=[
@@ -57,6 +59,7 @@ def ocr_image_bytes(content: bytes, *, filename: str = "") -> str:
             max_output_tokens=max(800, int(settings.OPENAI_OCR_MAX_OUTPUT_TOKENS or 5000)),
         )
     except Exception as exc:  # pragma: no cover - exercised through API error path in production
+        paid_api_guard.trip_if_quota("openai", exc)
         logger.exception("OpenAI image OCR failed for %s", filename or "<uploaded image>")
         raise ImageOcrError(f"图片 OCR 失败: {exc}") from exc
     text = _extract_response_text(response).strip()
@@ -70,6 +73,7 @@ def _openai_ocr_client() -> OpenAI:
     kwargs: dict[str, Any] = {
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": request_timeout,
+        "max_retries": 0,
     }
     proxy = official_proxy("openai-ocr", settings.OPENAI_HTTPS_PROXY)
     if proxy:

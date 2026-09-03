@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.services.wechat_video_crypto import decrypt_wechat_channels_video
+from app.utils import paid_api_guard
 from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,7 @@ def _transcribe_audio(audio_path: Path, *, timeout: int, model: str) -> str:
         "api_key": settings.OPENAI_API_KEY,
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": max(30, int(timeout or 30)),
+        "max_retries": 0,
     }
     if proxy:
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, int(timeout or 30)))
@@ -220,6 +222,7 @@ def _transcribe_audio_segment(
     for index, selected_model in enumerate(models):
         try:
             with audio_path.open("rb") as audio_file:
+                paid_api_guard.guard("openai")
                 response = client.audio.transcriptions.create(
                     model=selected_model,
                     file=audio_file,
@@ -229,6 +232,7 @@ def _transcribe_audio_segment(
                 return response.strip(), selected_model
             return str(getattr(response, "text", "") or response or "").strip(), selected_model
         except Exception as exc:
+            paid_api_guard.trip_if_quota("openai", exc)
             if index >= len(models) - 1 or not _is_transcription_model_fallback_error(exc):
                 raise MediaTranscriptionError(
                     f"OpenAI audio transcription failed on segment {segment_index}/{segment_total}: {exc}"

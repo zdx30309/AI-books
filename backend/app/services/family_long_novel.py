@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from tenacity import stop_after_attempt
 
 from app.core.config import PROJECT_ROOT, settings
+from app.db.session import SessionLocal
 from app.models import (
     LongNovelBible,
     LongNovelCanonFact,
@@ -260,6 +261,7 @@ def _run_writer(
     service_tier: str | None = None,
     background: bool = False,
     fallback_service_tier: str | None = None,
+    on_background_response_id: Any | None = None,
 ) -> str:
     try:
         asyncio.get_running_loop()
@@ -276,6 +278,7 @@ def _run_writer(
                 background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
                 background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
                 fallback_service_tier=fallback_service_tier,
+                on_background_response_id=on_background_response_id,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
@@ -291,6 +294,7 @@ def _run_writer_with_usage(
     service_tier: str | None = None,
     background: bool = False,
     fallback_service_tier: str | None = None,
+    on_background_response_id: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
     try:
         asyncio.get_running_loop()
@@ -307,6 +311,7 @@ def _run_writer_with_usage(
                 background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
                 background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
                 fallback_service_tier=fallback_service_tier,
+                on_background_response_id=on_background_response_id,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
@@ -584,6 +589,31 @@ def _log_llm_call(
     )
     db.add(log)
     db.commit()
+
+    def _persist_background_response_id(response_id: str) -> None:
+        """Persist the id from the request thread before polling can fail."""
+
+        value = str(response_id or "").strip()
+        if not value or log.id is None:
+            return
+        try:
+            # _route_writer_call_with_usage executes in a worker thread; use a
+            # short-lived independent session instead of crossing SQLAlchemy
+            # sessions between threads.
+            with SessionLocal() as callback_db:
+                callback_log = callback_db.get(LongNovelGenerationLog, log.id)
+                if callback_log is not None:
+                    callback_log.response_id = value
+                    callback_db.add(callback_log)
+                    callback_db.commit()
+        except Exception:
+            logger.warning(
+                "failed to persist background OpenAI response id project=%s chapter=%s",
+                project_id,
+                chapter_number,
+                exc_info=True,
+            )
+
     try:
         output, usage = _run_writer_with_usage(
             prompt,
@@ -594,6 +624,7 @@ def _log_llm_call(
             service_tier=requested_service_tier,
             background=use_background,
             fallback_service_tier=fallback_service_tier,
+            on_background_response_id=_persist_background_response_id,
         )
     except Exception as exc:
         log.status = "failed"
@@ -4421,7 +4452,7 @@ def generate_family_batch(
     end = max(req.from_chapter, req.to_chapter)
     for chapter_number in range(start, end + 1):
         db.refresh(project)
-        if project.status == LongNovelProjectStatus.PAUSED:
+        if project.status in {LongNovelProjectStatus.PAUSED, LongNovelProjectStatus.FAILED}:
             break
         existing = (
             db.query(LongNovelChapter)
@@ -4433,7 +4464,12 @@ def generate_family_batch(
             continue
         if existing and existing.status == LongNovelChapterStatus.FAILED and not req.retry_failed:
             skipped.append(chapter_number)
-            continue
+            # Strict serial production: a later chapter must never be billed
+            # while an earlier failed chapter is being left unresolved.
+            project.status = LongNovelProjectStatus.PAUSED
+            db.add(project)
+            db.commit()
+            break
         try:
             generate_family_chapter(db, project.id, chapter_number, user)
             generated.append(chapter_number)
@@ -4474,7 +4510,13 @@ def generate_family_batch(
             )
             failed_chapter.status = LongNovelChapterStatus.FAILED
             db.add(failed_chapter)
+            # Any chapter failure (including quota and delivery-uncertain
+            # errors) pauses the batch before the next paid request. Resume is
+            # an explicit operator action after the failed chapter is fixed.
+            project.status = LongNovelProjectStatus.PAUSED
+            db.add(project)
             db.commit()
+            break
     db.refresh(project)
     if project.status != LongNovelProjectStatus.PAUSED:
         project.status = LongNovelProjectStatus.FAILED if failed and not generated else LongNovelProjectStatus.ACTIVE

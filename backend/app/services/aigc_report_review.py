@@ -42,6 +42,7 @@ from app.services.gemini import GeminiMaxTokensError
 from app.services.gemini import generate_text as generate_gemini_text
 from app.services.zhuque_detector_profile import report_detector_snapshot
 from app.utils.distributed_limiter import distributed_semaphore
+from app.utils import paid_api_guard
 
 logger = logging.getLogger(__name__)
 
@@ -7843,7 +7844,10 @@ def _get_xai_client() -> OpenAI:
         api_key=settings.XAI_API_KEY,
         base_url=settings.XAI_BASE_URL.rstrip("/"),
         timeout=timeout,
-        max_retries=max(0, int(settings.XAI_MAX_RETRIES)),
+        # The surrounding review workflow owns retry decisions.  Letting the
+        # OpenAI-compatible SDK retry a transport failure can replay a Grok
+        # request after the provider has already accepted and billed it.
+        max_retries=0,
         http_client=http_client,
     )
 
@@ -7881,14 +7885,19 @@ def _grok_rewrite(
         "aigc-report-review-grok",
         limit=max(1, int(settings.AIGC_GATE_REWRITE_CONCURRENCY)),
     ):
-        response = _get_xai_client().responses.create(
-            model=model,
-            input=[{"role": "user", "content": prompt}],
-            reasoning={"effort": reasoning_effort},
-            max_output_tokens=max_tokens,
-            prompt_cache_key=f"aigc-review:{PROMPT_VERSION}:{request_id}",
-            store=False,
-        )
+        try:
+            paid_api_guard.guard("xai")
+            response = _get_xai_client().responses.create(
+                model=model,
+                input=[{"role": "user", "content": prompt}],
+                reasoning={"effort": reasoning_effort},
+                max_output_tokens=max_tokens,
+                prompt_cache_key=f"aigc-review:{PROMPT_VERSION}:{request_id}",
+                store=False,
+            )
+        except Exception as exc:
+            paid_api_guard.trip_if_quota("xai", exc)
+            raise
     if getattr(response, "status", None) == "incomplete":
         details = getattr(response, "incomplete_details", None)
         reason = getattr(details, "reason", "unknown")
@@ -7969,13 +7978,21 @@ def _deepseek_rewrite(
         "aigc-report-review",
         limit=max(1, int(settings.AIGC_GATE_REWRITE_CONCURRENCY)),
     ):
-        response = get_deepseek_client().chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=effective_temperature,
-            max_tokens=max_tokens,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        try:
+            paid_api_guard.guard("deepseek")
+            response = get_deepseek_client().chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=effective_temperature,
+                max_tokens=max_tokens,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+        except Exception as exc:
+            if paid_api_guard.trip_if_quota("deepseek", exc):
+                raise paid_api_guard.PaidApiQuotaExhausted(
+                    f"DeepSeek quota exhausted; request blocked from retry: {exc}"
+                ) from exc
+            raise
     content = (response.choices[0].message.content or "").strip()
     if not content:
         raise ValueError("DeepSeek 返回空候选")

@@ -42,7 +42,11 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
 )
 from app.services.comic_variants import is_healing_comic_family
-from app.services.content_engine import generate_full_book, normalize_final_markdown
+from app.services.content_engine import (
+    OpenAIDeliveryUncertainError,
+    generate_full_book,
+    normalize_final_markdown,
+)
 from app.services.aigc_quality_gate import (
     AigcManualReviewRequired,
     AigcTechnicalError,
@@ -65,6 +69,10 @@ from app.services.wechat_channels import WeChatChannelsError, extract_wechat_cha
 from app.services.xiaohongshu import XiaohongshuPageTextError, extract_xiaohongshu_page_text
 from app.services.youtube import YouTubeTranscriptError, extract_youtube_text, is_youtube_url
 from app.utils.distributed_limiter import DistributedLimitError
+from app.utils.paid_api_guard import (
+    QUOTA_EXHAUSTED_MARKERS,
+    is_quota_exhausted,
+)
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
 from celery_app import celery_app
 
@@ -171,13 +179,16 @@ _RETRYABLE_ERROR_TOKENS = (
 )
 _NON_RETRYABLE_ERROR_TOKENS = (
     "imageapiuncertainerror",
+    "openaideliveryuncertainerror",
+    "paid_call_delivery_uncertain",
+    "delivery uncertain",
     "automatic retry stopped to avoid duplicate billing",
     "duplicate billing",
     "insufficient_quota",
     "exceeded your current quota",
     "duration exceeded",
     "超过限制",
-)
+) + QUOTA_EXHAUSTED_MARKERS
 
 _QINGDOU_TERMINAL_BATCH_TOKENS = (
     "batchstatus=2",
@@ -751,6 +762,11 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
+    # A provider may encode exhausted credit as HTTP 429.  Check this before
+    # the generic technical-error and rate-limit branches so it can never be
+    # amplified by Celery or the recovery watchdog.
+    if is_quota_exhausted(exc) or isinstance(exc, OpenAIDeliveryUncertainError):
+        return False
     if isinstance(exc, AigcTechnicalError):
         return True
     normalized = f"{type(exc).__name__}: {exc}".lower()
@@ -771,6 +787,8 @@ def _retry_delay_seconds(retries: int) -> int:
 def _is_retryable_error_message(message: str | None) -> bool:
     normalized = (message or "").lower()
     if not normalized:
+        return False
+    if is_quota_exhausted(normalized):
         return False
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
@@ -1048,13 +1066,47 @@ def _patch_config(task: Task, **kv: Any) -> None:
     task.config = cfg
 
 
+def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
+    """Persist a paid-call hold so watchdogs cannot redispatch it.
+
+    A transport failure after a provider accepted a request is as dangerous as
+    an exhausted quota: replaying it can charge the same work twice. Both
+    states therefore require an explicit operator resume.
+    """
+
+    normalized = f"{type(exc).__name__}: {exc}".lower()
+    quota_exhausted = is_quota_exhausted(exc)
+    delivery_uncertain = isinstance(exc, OpenAIDeliveryUncertainError) or any(
+        marker in normalized
+        for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
+    )
+    if not quota_exhausted and not delivery_uncertain:
+        return
+    cfg = dict(task.config or {})
+    reason = (
+        "付费模型请求已提交但结果未知，已阻止自动重试；核对提供方账单/响应后再继续生成"
+        if delivery_uncertain and not quota_exhausted
+        else "付费模型额度耗尽，已阻止自动重试；确认余额恢复后再继续生成"
+    )
+    cfg.update(
+        generation_hold=True,
+        generation_hold_reason=reason,
+        generation_hold_step="费用保护暂停，未再次投递模型调用",
+        generation_hold_at=datetime.now(timezone.utc).isoformat(),
+        paid_call_delivery_uncertain=delivery_uncertain,
+    )
+    task.config = cfg
+
+
 def _user_facing_generation_error(exc: Exception) -> str:
     raw = f"{type(exc).__name__}: {exc}"
     normalized = raw.lower()
     if _is_terminal_qingdou_parse_error_message(normalized):
         return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
-    if "insufficient_quota" in normalized or "exceeded your current quota" in normalized:
+    if is_quota_exhausted(exc):
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
+    if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in normalized:
+        return "付费模型请求可能已经提交但结果未知，任务已暂停以避免重复计费；请核对提供方响应后再手动继续。"
     if "rate_limit" in normalized or "429" in normalized:
         return "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
     if any(token in normalized for token in ("connection", "connecterror", "apiconnectionerror", "ssl", "eof", "remoteprotocol", "readerror")):
@@ -1583,6 +1635,7 @@ def process_video(_self, task_id: str) -> dict:
             if task is not None:
                 message = _user_facing_generation_error(e)
                 _clear_task_run(task, run_id)
+                _mark_generation_hold_for_quota(task, e)
                 if isinstance(e, AigcTechnicalError):
                     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
                     report_path = output_dir / "aigc_quality_report.json"
@@ -2061,6 +2114,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         task = db.get(Task, uuid.UUID(task_id))
         if task is not None:
             cfg = dict(task.config or {})
+            _mark_generation_hold_for_quota(task, exc)
+            cfg = dict(task.config or {})
             cfg.update(
                 generation_complete=True,
                 aigc_status="technical_failed",
@@ -2104,6 +2159,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         db.rollback()
         task = db.get(Task, uuid.UUID(task_id))
         if task is not None:
+            cfg = dict(task.config or {})
+            _mark_generation_hold_for_quota(task, exc)
             cfg = dict(task.config or {})
             classical_paid_delivery_uncertain = bool(
                 cfg.get("public_domain_classical_vernacular")

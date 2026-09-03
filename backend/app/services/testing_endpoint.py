@@ -21,11 +21,13 @@ from app.core.config import PROJECT_ROOT, settings
 from app.models import Task, TaskStatus, User
 from app.services.aigc_report_review import normalize_manuscript_text
 from app.services.content_engine import (
+    OpenAIDeliveryUncertainError,
     _extract_openai_response_text,
     _openai_response_debug_summary,
     _openai_usage_payload,
 )
 from app.tasks.tasks import _fetch_video_text
+from app.utils import paid_api_guard
 from app.utils.docx_text import DocxTextError, extract_docx_text, extract_pdf_text
 from app.utils.official_api import official_openai_base_url, official_proxy
 
@@ -520,7 +522,10 @@ def _call_openai_testing(
     effort = initial_effort
     output_budget = initial_max_tokens
 
-    for attempt_number in (1, 2):
+    # A completed/empty Responses API result is still a billable interaction.
+    # Never submit a second prompt with a lower reasoning effort or a larger
+    # budget just because the first result was empty.
+    for attempt_number in (1,):
         kwargs: dict[str, Any] = {
             "model": model,
             "input": prompt,
@@ -540,7 +545,12 @@ def _call_openai_testing(
             attempt_number,
             output_budget or "model_default",
         )
-        response = client.responses.create(**kwargs)
+        try:
+            paid_api_guard.guard("openai")
+            response = client.responses.create(**kwargs)
+        except Exception as exc:
+            paid_api_guard.trip_if_quota("openai", exc)
+            raise
         response_usage = _openai_usage_payload(response)
         for key in total_usage:
             total_usage[key] += int(response_usage.get(key) or 0)
@@ -576,24 +586,17 @@ def _call_openai_testing(
         )
         if text:
             break
-        if attempt_number == 1:
-            logger.warning(
-                "OpenAI Testing Endpoint empty response; retrying once with a lower reasoning effort "
-                "and a safer output budget: action=%s %s",
-                action,
-                _openai_response_debug_summary(response),
-            )
-            effort = _fallback_reasoning_effort(effort)
-            output_budget = _empty_response_retry_budget(action, output_budget)
+        raise OpenAIDeliveryUncertainError(
+            "OpenAI Testing Endpoint returned no usable text; "
+            f"{_openai_response_debug_summary(response)}; automatic reasoning downgrade "
+            "and replacement request are disabled to prevent duplicate billing",
+            response_id=str(getattr(response, "id", "") or "") or None,
+        )
 
     if not text:
-        last_attempt = attempts[-1]
-        reason = str(last_attempt.get("incomplete_reason") or last_attempt.get("response_status") or "unknown")
-        reasoning_tokens = int((last_attempt.get("usage") or {}).get("reasoning_tokens") or 0)
-        raise TestingEndpointError(
-            "OpenAI 未生成可用正文；系统已自动降低推理强度并重试一次仍为空。"
-            f"状态原因：{reason}，末次推理 token：{reasoning_tokens}。请稍后重试；若持续出现，请检查模型配额。",
-            status_code=502,
+        raise OpenAIDeliveryUncertainError(
+            "OpenAI Testing Endpoint returned no usable text; replacement request is disabled",
+            response_id=str(getattr(response, "id", "") or "") or None,
         )
 
     return text, {
@@ -617,6 +620,7 @@ def _testing_openai_client() -> OpenAI:
         "api_key": _require_openai_credentials(),
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": request_timeout,
+        "max_retries": 0,
     }
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     if proxy:
@@ -921,18 +925,6 @@ def _output_budget_for_action(action: str, requested: int | None) -> int | None:
     return effective if effective > 0 else None
 
 
-def _empty_response_retry_budget(action: str, current: int | None) -> int | None:
-    minimums = {
-        "testing_reference_chunk_compression": 8000,
-        "testing_reference_compression_synthesis": 10000,
-    }
-    minimum = minimums.get(action, 0)
-    parsed = max(0, int(current or 0))
-    if not parsed and not minimum:
-        return None
-    return min(16_000, max(minimum, parsed * 2))
-
-
 def _verbosity() -> str:
     return (settings.TESTING_ENDPOINT_OPENAI_VERBOSITY or settings.OPENAI_WRITER_VERBOSITY).strip()
 
@@ -964,6 +956,11 @@ def _testing_issue_message(exc: Exception) -> tuple[str, int]:
         return str(exc), exc.status_code
     message = f"{type(exc).__name__}: {exc}"
     lower = message.lower()
+    if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in lower:
+        return (
+            "OpenAI 请求结果不确定，任务已停止且未自动重发，以避免重复计费；请核对该响应后再手动继续。",
+            502,
+        )
     if "api key" in lower or "authentication" in lower or "unauthorized" in lower or "401" in lower:
         return "OpenAI API 认证失败：请检查 OPENAI_API_KEY 是否有效，或账号是否需要重新授权。", 401
     if "billing" in lower or "quota" in lower or "insufficient" in lower or "429" in lower:

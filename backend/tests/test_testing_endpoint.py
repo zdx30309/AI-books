@@ -7,6 +7,7 @@ import pytest
 
 from app.models import Task, TaskStatus
 from app.services import testing_endpoint
+from app.services.content_engine import OpenAIDeliveryUncertainError
 
 
 class _FakeUsage:
@@ -72,7 +73,7 @@ def test_openai_testing_call_uses_configured_openai_model(monkeypatch: pytest.Mo
     ]
 
 
-def test_openai_call_retries_empty_response_once_without_hidden_truncation(
+def test_openai_call_does_not_retry_or_lower_reasoning_on_empty_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -83,13 +84,6 @@ def test_openai_call_retries_empty_response_once_without_hidden_truncation(
         input_tokens_details=SimpleNamespace(cached_tokens=0),
         output_tokens_details=SimpleNamespace(reasoning_tokens=6000),
     )
-    success_usage = SimpleNamespace(
-        input_tokens=100,
-        output_tokens=120,
-        total_tokens=220,
-        input_tokens_details=SimpleNamespace(cached_tokens=100),
-        output_tokens_details=SimpleNamespace(reasoning_tokens=20),
-    )
     responses = [
         SimpleNamespace(
             output_text="",
@@ -98,14 +92,7 @@ def test_openai_call_retries_empty_response_once_without_hidden_truncation(
             incomplete_details=SimpleNamespace(reason="max_output_tokens"),
             usage=empty_usage,
             output=[],
-        ),
-        SimpleNamespace(
-            output_text="style note",
-            id="resp_success",
-            status="completed",
-            incomplete_details=None,
-            usage=success_usage,
-        ),
+        )
     ]
     monkeypatch.setattr(testing_endpoint.settings, "TESTING_ENDPOINT_OPENAI_MODEL", "gpt-test-endpoint")
     monkeypatch.setattr(testing_endpoint.settings, "TESTING_ENDPOINT_OPENAI_REASONING_EFFORT", "xhigh")
@@ -116,25 +103,20 @@ def test_openai_call_retries_empty_response_once_without_hidden_truncation(
         lambda: SimpleNamespace(responses=_SequentialFakeResponses(calls, responses)),
     )
 
-    text, usage = testing_endpoint._call_openai_testing(
-        "prompt",
-        action="testing_reference_chunk_compression",
-        max_output_tokens=2500,
-    )
+    with pytest.raises(OpenAIDeliveryUncertainError):
+        testing_endpoint._call_openai_testing(
+            "prompt",
+            action="testing_reference_chunk_compression",
+            max_output_tokens=2500,
+        )
 
-    assert text == "style note"
+    assert len(calls) == 1
     assert calls[0]["reasoning"] == {"effort": "medium"}
     assert calls[0]["max_output_tokens"] == 6000
     assert calls[0]["truncation"] == "disabled"
-    assert calls[1]["reasoning"] == {"effort": "low"}
-    assert calls[1]["max_output_tokens"] == 12000
-    assert usage["attempt_count"] == 2
-    assert usage["attempts"][0]["incomplete_reason"] == "max_output_tokens"
-    assert usage["usage"]["input_tokens"] == 200
-    assert usage["usage"]["reasoning_tokens"] == 6020
 
 
-def test_empty_openai_response_reports_actual_incomplete_reason_after_one_retry(
+def test_empty_openai_response_stops_without_a_second_paid_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -164,17 +146,16 @@ def test_empty_openai_response_reports_actual_incomplete_reason_after_one_retry(
         lambda: SimpleNamespace(responses=_SequentialFakeResponses(calls, responses)),
     )
 
-    with pytest.raises(testing_endpoint.TestingEndpointError) as exc_info:
+    with pytest.raises(OpenAIDeliveryUncertainError) as exc_info:
         testing_endpoint._call_openai_testing(
             "prompt",
             action="testing_reference_chunk_compression",
             max_output_tokens=2500,
         )
 
-    assert exc_info.value.status_code == 502
     assert "max_output_tokens" in str(exc_info.value)
-    assert "自动降低推理强度并重试一次" in str(exc_info.value)
-    assert len(calls) == 2
+    assert "replacement request are disabled" in str(exc_info.value)
+    assert len(calls) == 1
 
 
 def test_testing_payload_does_not_expose_internal_style_profile() -> None:

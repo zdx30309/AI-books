@@ -28,6 +28,7 @@ from app.services.cover_categories import (
     normalize_cover_category_id,
 )
 from app.services.dangdang_crawler import collect_dangdang_reference_covers
+from app.utils import paid_api_guard
 from app.utils.distributed_limiter import DistributedLimitError, distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
 
@@ -2433,6 +2434,7 @@ def _post_image_request(
     for attempt in range(1, max_attempts + 1):
         started = time.monotonic()
         try:
+            paid_api_guard.guard("openai-image")
             response = http.post(
                 endpoint,
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -2453,6 +2455,11 @@ def _post_image_request(
             body = exc.response.text[:1000]
             status_code = exc.response.status_code
             message = f"图像 API 请求失败 {status_code}: {body}"
+            if paid_api_guard.is_quota_exhausted(message):
+                paid_api_guard.trip("openai-image", message)
+                raise ImageApiPermanentError(
+                    f"{message}；额度耗尽，已阻止自动重试"
+                ) from exc
             if status_code != 429 and status_code < 500:
                 raise ImageApiPermanentError(message) from exc
             last_error = ImageApiTransientError(message)

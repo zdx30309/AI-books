@@ -55,6 +55,7 @@ from app.services.aigc_quality_gate import (
 )
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
+from app.utils import paid_api_guard
 
 # 进度上报回调：(stage_name, info_dict)
 # stage_name 取值：
@@ -68,6 +69,22 @@ StageCallback = Callable[[str, dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
 _openai_writer_client: OpenAI | None = None
+
+
+class OpenAIDeliveryUncertainError(RuntimeError):
+    """A paid OpenAI request may have been accepted but its result is unknown.
+
+    Transport failures after ``responses.create`` (including a stream that
+    closes before ``response.completed``) cannot safely be replayed: the
+    provider may already have charged the request. Callers must persist the
+    failure and require an operator/resume flow instead of submitting a new
+    prompt with different parameters.
+    """
+
+    def __init__(self, message: str, *, response_id: str | None = None) -> None:
+        self.response_id = str(response_id or "").strip() or None
+        suffix = f" response_id={self.response_id}" if self.response_id else ""
+        super().__init__(f"paid_call_delivery_uncertain: {message}{suffix}")
 
 
 def _prompt_cache_digest(*parts: object) -> str:
@@ -2796,46 +2813,133 @@ def _reset_openai_writer_client() -> None:
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
+    """Return whether a fresh paid POST can be retried without duplication."""
+
+    if isinstance(exc, OpenAIDeliveryUncertainError):
+        return False
     msg = f"{exc.__class__.__name__}: {exc}".lower()
-    retryable_signatures = (
-        "apiconnectionerror",
-        "connecterror",
-        "connection error",
-        "connection refused",
-        "remoteprotocolerror",
-        "incomplete chunked read",
-        "peer closed connection",
-        "ssl",
-        "ssleoferror",
-        "wrong version number",
-        "tls",
-        "certificate verify failed",
-        "readtimeout",
-        "read timeout",
-        "timeout",
-        "模型调用超时",
-        "上游接口连接中断",
-        "openai 初稿生成连接失败",
-        "distributedlimiterror",
-        "paid api concurrency limiter",
-        "concurrency limiter",
-        "temporarily unavailable",
-        "service unavailable",
-        "gateway timeout",
-        "rate limit",
-        "ratelimit",
-        "internalservererror",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "520",
-        "521",
-        "522",
-        "524",
+    # HTTP 429 is also used for an exhausted account.  Never retry that case
+    # or fall back to another service tier: the request cannot succeed until
+    # the account is funded again.
+    if paid_api_guard.is_quota_exhausted(msg):
+        return False
+    # Only a failed connection establishment is provably non-billable.
+    # Generic transport/status errors are intentionally not included.
+    return _is_flex_preflight_rejection(exc) or paid_api_guard.is_safe_preflight_error(exc) or any(
+        signature in msg
+        for signature in (
+            "distributedlimiterror",
+            "paid api concurrency limiter",
+            "concurrency limiter",
+        )
     )
-    return any(signature in msg for signature in retryable_signatures)
+
+
+def _is_retryable_openai_poll_error(exc: Exception) -> bool:
+    """Retry a GET/poll against an existing response ID.
+
+    Polling never creates another generation, so transient read/HTTP failures
+    may be retried even though the same failures are unsafe for a fresh POST.
+    """
+
+    if isinstance(exc, OpenAIDeliveryUncertainError):
+        return False
+    msg = f"{exc.__class__.__name__}: {exc}".lower()
+    if paid_api_guard.is_quota_exhausted(msg):
+        return False
+    return paid_api_guard.is_safe_preflight_error(exc) or any(
+        signature in msg
+        for signature in (
+            "apiconnectionerror",
+            "connecterror",
+            "connection error",
+            "connection refused",
+            "remoteprotocolerror",
+            "incomplete chunked read",
+            "peer closed connection",
+            "ssl",
+            "ssleoferror",
+            "wrong version number",
+            "tls",
+            "certificate verify failed",
+            "readtimeout",
+            "read timeout",
+            "timeout",
+            "temporarily unavailable",
+            "service unavailable",
+            "gateway timeout",
+            "rate limit",
+            "ratelimit",
+            "internalservererror",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "520",
+            "521",
+            "522",
+            "524",
+        )
+    )
+
+
+def _is_flex_preflight_rejection(exc: Exception) -> bool:
+    """Recognize a provider response that explicitly rejected Flex preflight.
+
+    Only this narrow class of errors may switch to another service tier. A
+    generic timeout/429/connection error is delivery-uncertain once the
+    request has been submitted and must never be replayed with a new tier.
+    """
+
+    message = f"{type(exc).__name__}: {exc}".lower()
+    if paid_api_guard.is_quota_exhausted(message):
+        return False
+    if any(
+        marker in message
+        for marker in (
+            "resource unavailable for flex",
+            "flex resource unavailable",
+            "flex resource_unavailable",
+        )
+    ):
+        return True
+    has_tier_marker = "service_tier" in message or "service tier" in message
+    return has_tier_marker and any(
+        marker in message
+        for marker in ("unsupported", "invalid", "not available", "unavailable")
+    )
+
+
+def _is_openai_explicit_preflight_rejection(exc: BaseException) -> bool:
+    """Provider rejected request validation/auth before model execution."""
+
+    for candidate in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        try:
+            if candidate is not None and int(candidate) in {400, 401, 403, 404, 409, 422}:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _openai_delivery_uncertain(
+    exc: Exception,
+    *,
+    phase: str,
+    response_id: str | None = None,
+) -> OpenAIDeliveryUncertainError:
+    """Build a stable non-retryable error for an uncertain paid delivery."""
+
+    return OpenAIDeliveryUncertainError(
+        f"OpenAI {phase} failed after the request may have been accepted; "
+        f"do not submit an automatic replacement ({type(exc).__name__}: {exc})",
+        response_id=response_id,
+    )
 
 
 def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
@@ -3039,26 +3143,54 @@ def _stream_openai_writer(
         kwargs["service_tier"] = normalized_tier
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
-    stream = client.responses.create(**kwargs)
+    paid_api_guard.guard("openai")
+    try:
+        stream = client.responses.create(**kwargs)
+    except Exception as exc:
+        if paid_api_guard.trip_if_quota("openai", exc):
+            raise paid_api_guard.PaidApiQuotaExhausted(
+                f"OpenAI quota exhausted while starting stream: {exc}"
+            ) from exc
+        # A narrow Flex preflight rejection is safe for the caller to handle;
+        # all transport failures may mean the request was already accepted.
+        if _is_flex_preflight_rejection(exc):
+            raise
+        raise _openai_delivery_uncertain(exc, phase="stream request") from exc
     chunks: list[str] = []
     final_response: Any | None = None
+    stream_completed = False
     generated_chars = 0
     last_progress_chars = 0
     last_progress_at = time.monotonic()
-    for event in stream:
-        if (getattr(event, "type", "") or "").endswith("output_text.delta"):
-            delta = getattr(event, "delta", None)
-            if delta:
-                chunks.append(delta)
-                generated_chars += len(delta)
-                if on_progress is not None:
-                    now = time.monotonic()
-                    if generated_chars - last_progress_chars >= 2000 or now - last_progress_at >= 15:
-                        on_progress(generated_chars)
-                        last_progress_chars = generated_chars
-                        last_progress_at = now
-        elif (getattr(event, "type", "") or "").endswith("response.completed"):
-            final_response = getattr(event, "response", None) or final_response
+    try:
+        for event in stream:
+            event_type = str(_response_attr(event, "type", "") or "")
+            if event_type.endswith("output_text.delta"):
+                delta = _response_attr(event, "delta", None)
+                if delta:
+                    chunks.append(delta)
+                    generated_chars += len(delta)
+                    if on_progress is not None:
+                        now = time.monotonic()
+                        if generated_chars - last_progress_chars >= 2000 or now - last_progress_at >= 15:
+                            on_progress(generated_chars)
+                            last_progress_chars = generated_chars
+                            last_progress_at = now
+            elif event_type.endswith("response.completed"):
+                stream_completed = True
+                final_response = _response_attr(event, "response", None) or final_response
+    except Exception as exc:
+        if paid_api_guard.trip_if_quota("openai", exc):
+            raise paid_api_guard.PaidApiQuotaExhausted(
+                f"OpenAI quota exhausted while reading stream: {exc}"
+            ) from exc
+        raise _openai_delivery_uncertain(exc, phase="stream delivery") from exc
+    if not stream_completed:
+        raise _openai_delivery_uncertain(
+            RuntimeError("stream ended before response.completed"),
+            phase="stream delivery",
+            response_id=str(_response_attr(final_response, "id", "") or "") or None,
+        )
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
     return "".join(chunks).strip(), final_response
@@ -3082,8 +3214,28 @@ def _create_openai_writer_response(
 ) -> Any:
     client = _get_openai_writer_client()
     persisted_response_id = str(background_response_id or "").strip()
-    if background and persisted_response_id:
-        response = client.responses.retrieve(persisted_response_id)
+    # A persisted response id is an idempotency checkpoint. Honour it even if
+    # a caller lost the original background flag; creating a fresh response
+    # here could charge the same prompt twice.
+    if persisted_response_id:
+        retrieve_failures = 0
+        while True:
+            try:
+                response = client.responses.retrieve(persisted_response_id)
+                break
+            except Exception as exc:
+                if paid_api_guard.trip_if_quota("openai", exc):
+                    raise paid_api_guard.PaidApiQuotaExhausted(
+                        f"OpenAI quota exhausted while resuming response {persisted_response_id}: {exc}"
+                    ) from exc
+                retrieve_failures += 1
+                if not _is_retryable_openai_poll_error(exc) or retrieve_failures >= 8:
+                    raise _openai_delivery_uncertain(
+                        exc,
+                        phase="background response resume",
+                        response_id=persisted_response_id,
+                    ) from exc
+                time.sleep(min(float(retrieve_failures) * 2.0, 30.0))
         return _wait_for_openai_background_response(
             client,
             response,
@@ -3118,12 +3270,36 @@ def _create_openai_writer_response(
         # to the classical custom-prompt route when the user's exact prompt
         # explicitly asks for online lookup/verification.
         kwargs["tools"] = [dict(tool) for tool in tools]
-    response = client.responses.create(**kwargs)
+    paid_api_guard.guard("openai")
+    try:
+        response = client.responses.create(**kwargs)
+    except Exception as exc:
+        if paid_api_guard.trip_if_quota("openai", exc):
+            raise paid_api_guard.PaidApiQuotaExhausted(
+                f"OpenAI quota exhausted while creating response: {exc}"
+            ) from exc
+        if (
+            not _is_flex_preflight_rejection(exc)
+            and not paid_api_guard.is_safe_preflight_error(exc)
+            and not _is_openai_explicit_preflight_rejection(exc)
+        ):
+            raise _openai_delivery_uncertain(exc, phase="response creation") from exc
+        raise
     if not background:
         return response
     response_id = str(_response_attr(response, "id", "") or "").strip()
     if response_id and on_background_response_id is not None:
-        on_background_response_id(response_id)
+        # Recording the id is telemetry/checkpoint work.  A database or file
+        # hiccup must never make the caller submit a second paid request after
+        # the provider has already accepted the first one.
+        try:
+            on_background_response_id(response_id)
+        except Exception:
+            logger.warning(
+                "failed to persist OpenAI background response id=%s; continuing to poll the same response",
+                response_id,
+                exc_info=True,
+            )
     return _wait_for_openai_background_response(
         client,
         response,
@@ -3143,7 +3319,10 @@ def _wait_for_openai_background_response(
 
     response_id = str(_response_attr(response, "id", "") or "").strip()
     if not response_id:
-        raise RuntimeError("OpenAI background response did not return an id")
+        raise _openai_delivery_uncertain(
+            RuntimeError("background response did not return an id"),
+            phase="background response delivery",
+        )
     timeout = max(60, int(timeout_seconds or 3600))
     poll_interval = max(1.0, float(poll_interval_seconds or 5.0))
     deadline = time.monotonic() + timeout
@@ -3156,15 +3335,29 @@ def _wait_for_openai_background_response(
                 client.responses.cancel(response_id)
             except Exception:
                 logger.warning("Failed to cancel timed-out OpenAI background response %s", response_id)
-            raise TimeoutError(f"OpenAI background response timed out after {timeout}s: {response_id}")
+            raise _openai_delivery_uncertain(
+                TimeoutError(f"background response timed out after {timeout}s"),
+                phase="background response delivery",
+                response_id=response_id,
+            )
         time.sleep(poll_interval)
         try:
             current = client.responses.retrieve(response_id)
             retrieve_failures = 0
         except Exception as exc:
+            if paid_api_guard.trip_if_quota("openai", exc):
+                raise paid_api_guard.PaidApiQuotaExhausted(
+                    f"OpenAI quota exhausted while polling response {response_id}: {exc}"
+                ) from exc
             retrieve_failures += 1
-            if not _is_retryable_openai_error(exc) or retrieve_failures >= 8:
+            if not _is_retryable_openai_poll_error(exc):
                 raise
+            if retrieve_failures >= 8:
+                raise _openai_delivery_uncertain(
+                    exc,
+                    phase="background response retrieval",
+                    response_id=response_id,
+                ) from exc
             sleep_for = min(poll_interval * retrieve_failures, 30.0)
             logger.warning(
                 "OpenAI background response poll failed; retrying same response id=%s attempt=%d sleep=%.1fs error=%s",
@@ -3177,26 +3370,19 @@ def _wait_for_openai_background_response(
 
     status = str(_response_attr(current, "status", "") or "").lower()
     if status != "completed":
-        raise RuntimeError(
-            f"OpenAI background response ended with status={status or 'unknown'} id={response_id}; "
-            f"{_openai_response_debug_summary(current)}"
+        raise _openai_delivery_uncertain(
+            RuntimeError(
+                f"background response ended with status={status or 'unknown'}; "
+                f"{_openai_response_debug_summary(current)}"
+            ),
+            phase="background response delivery",
+            response_id=response_id,
         )
     return current
 
 
 def _can_fallback_from_flex(exc: Exception) -> bool:
-    if _is_retryable_openai_error(exc):
-        return True
-    message = f"{type(exc).__name__}: {exc}".lower()
-    return any(
-        marker in message
-        for marker in (
-            "service_tier",
-            "service tier",
-            "flex",
-            "resource unavailable",
-        )
-    )
+    return _is_flex_preflight_rejection(exc)
 
 
 def _openai_writer_call_result(
@@ -3243,6 +3429,19 @@ def _openai_writer_call_result(
         service_tiers.append(fallback_tier)
     used_tier = requested_tier
     last_exc: Exception | None = None
+    active_background_response_id = str(background_response_id or "").strip() or None
+    if active_background_response_id and not background:
+        # A checkpoint always wins over the caller's stale mode flag. Never
+        # turn a known response into a new paid POST after a worker restart.
+        background = True
+
+    def _remember_background_response_id(response_id: str) -> None:
+        """Keep retries/polling bound to the already-created paid response."""
+
+        nonlocal active_background_response_id
+        active_background_response_id = str(response_id or "").strip() or active_background_response_id
+        if on_background_response_id is not None:
+            on_background_response_id(response_id)
 
     for tier_index, current_tier in enumerate(service_tiers):
         for attempt in range(1, attempts + 1):
@@ -3264,23 +3463,21 @@ def _openai_writer_call_result(
                             )
                             _merge_openai_usage(total_usage, response)
                         except Exception as stream_exc:
-                            if not retry_on_failure:
-                                raise
+                            if paid_api_guard.trip_if_quota("openai", stream_exc):
+                                raise paid_api_guard.PaidApiQuotaExhausted(
+                                    f"OpenAI quota exhausted during stream: {stream_exc}"
+                                ) from stream_exc
                             if first_stream_exc is None:
                                 first_stream_exc = stream_exc
-                            _reset_openai_writer_client()
-                            response = _create_openai_writer_response(
-                                rendered_prompt,
-                                effort=effort,
-                                verb=verb,
-                                max_tok=max_tok,
-                                prompt_cache_key=prompt_cache_key,
-                                service_tier=current_tier,
-                                tools=tools,
-                                text_format=text_format,
-                            )
-                            _merge_openai_usage(total_usage, response)
-                            text = _extract_openai_response_text(response)
+                            # The stream POST may already have been billed. Do
+                            # not switch to non-streaming or submit a second
+                            # request with another tier/effort.
+                            if isinstance(stream_exc, OpenAIDeliveryUncertainError):
+                                raise
+                            raise _openai_delivery_uncertain(
+                                stream_exc,
+                                phase="stream delivery",
+                            ) from stream_exc
                     else:
                         response = _create_openai_writer_response(
                             rendered_prompt,
@@ -3292,8 +3489,10 @@ def _openai_writer_call_result(
                             background=background,
                             background_timeout_seconds=background_timeout_seconds,
                             background_poll_interval_seconds=background_poll_interval_seconds,
-                            background_response_id=background_response_id,
-                            on_background_response_id=on_background_response_id,
+                            background_response_id=active_background_response_id,
+                            on_background_response_id=(
+                                _remember_background_response_id if background else None
+                            ),
                             tools=tools,
                             text_format=text_format,
                         )
@@ -3304,6 +3503,25 @@ def _openai_writer_call_result(
             except Exception as exc:
                 last_exc = exc
                 _reset_openai_writer_client()
+                if paid_api_guard.trip_if_quota("openai", exc):
+                    raise paid_api_guard.PaidApiQuotaExhausted(
+                        f"OpenAI quota exhausted during writer call: {exc}"
+                    ) from exc
+                if isinstance(exc, OpenAIDeliveryUncertainError):
+                    raise
+                if active_background_response_id and _is_retryable_openai_poll_error(exc):
+                    # A background response already has a durable provider
+                    # ID. Retry only the GET/poll, never a fresh POST.
+                    if attempt < attempts:
+                        sleep_for = min(backoff_seconds * attempt, 30.0)
+                        if sleep_for > 0:
+                            time.sleep(sleep_for)
+                        continue
+                    raise _openai_delivery_uncertain(
+                        exc,
+                        phase="background response resume",
+                        response_id=active_background_response_id,
+                    ) from exc
                 retryable = _is_retryable_openai_error(exc)
                 if attempt < attempts and retryable:
                     sleep_for = min(backoff_seconds * attempt, 30.0)
@@ -3342,37 +3560,14 @@ def _openai_writer_call_result(
 
     if not text or not text.strip():
         logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
-        if retry_on_failure:
-            for retry_effort in _openai_writer_retry_efforts(effort):
-                logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
-                try:
-                    response = _create_openai_writer_response(
-                        rendered_prompt,
-                        effort=retry_effort,
-                        verb=verb,
-                        max_tok=max_tok,
-                        prompt_cache_key=prompt_cache_key,
-                        service_tier=used_tier,
-                        background=background,
-                        background_timeout_seconds=background_timeout_seconds,
-                        background_poll_interval_seconds=background_poll_interval_seconds,
-                        background_response_id=background_response_id,
-                        on_background_response_id=on_background_response_id,
-                        tools=tools,
-                    )
-                    _merge_openai_usage(total_usage, response)
-                except Exception as exc:
-                    _reset_openai_writer_client()
-                    raise RuntimeError(
-                        _openai_writer_connection_error_message(exc, first_stream_exc)
-                    ) from exc
-                text = _extract_openai_response_text(response)
-                if text.strip():
-                    break
-                logger.warning(
-                    "OpenAI Writer retry returned empty response: %s",
-                    _openai_response_debug_summary(response),
-                )
+        # An empty response is still a completed provider interaction (or an
+        # interrupted stream). Retrying with a new reasoning effort would
+        # create a second billable request, so require an explicit resume or
+        # operator decision instead.
+        raise OpenAIDeliveryUncertainError(
+            "OpenAI returned no usable text; automatic reasoning/fallback retry is disabled",
+            response_id=str(_response_attr(response, "id", "") or "") or active_background_response_id,
+        )
 
     if not text or not text.strip():
         raise ValueError("OpenAI Writer 返回空响应")
@@ -3395,6 +3590,7 @@ def _openai_writer_call(
     background_timeout_seconds: int | None = None,
     background_poll_interval_seconds: float | None = None,
     fallback_service_tier: str | None = None,
+    on_background_response_id: Callable[[str], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3409,6 +3605,7 @@ def _openai_writer_call(
         background_timeout_seconds=background_timeout_seconds,
         background_poll_interval_seconds=background_poll_interval_seconds,
         fallback_service_tier=fallback_service_tier,
+        on_background_response_id=on_background_response_id,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3427,6 +3624,7 @@ async def _route_writer_call(
     background_timeout_seconds: int | None = None,
     background_poll_interval_seconds: float | None = None,
     fallback_service_tier: str | None = None,
+    on_background_response_id: Callable[[str], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3442,6 +3640,7 @@ async def _route_writer_call(
         background_timeout_seconds=background_timeout_seconds,
         background_poll_interval_seconds=background_poll_interval_seconds,
         fallback_service_tier=fallback_service_tier,
+        on_background_response_id=on_background_response_id,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3459,6 +3658,7 @@ async def _route_writer_call_with_usage(
     background_timeout_seconds: int | None = None,
     background_poll_interval_seconds: float | None = None,
     fallback_service_tier: str | None = None,
+    on_background_response_id: Callable[[str], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> tuple[str, dict[str, Any]]:
@@ -3474,6 +3674,7 @@ async def _route_writer_call_with_usage(
         background_timeout_seconds=background_timeout_seconds,
         background_poll_interval_seconds=background_poll_interval_seconds,
         fallback_service_tier=fallback_service_tier,
+        on_background_response_id=on_background_response_id,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -4512,19 +4713,24 @@ def _openai_finance_web_search_call(prompt: str) -> str:
     if context_size not in {"low", "medium", "high"}:
         context_size = "medium"
 
-    response = _get_openai_writer_client().responses.create(
-        model=model,
-        input=prompt,
-        reasoning={"effort": "low"},
-        tools=[
-            {
-                "type": "web_search",
-                "search_context_size": context_size,
-            }
-        ],
-        tool_choice="required",
-        include=["web_search_call.action.sources"],
-    )
+    try:
+        paid_api_guard.guard("openai")
+        response = _get_openai_writer_client().responses.create(
+            model=model,
+            input=prompt,
+            reasoning={"effort": "low"},
+            tools=[
+                {
+                    "type": "web_search",
+                    "search_context_size": context_size,
+                }
+            ],
+            tool_choice="required",
+            include=["web_search_call.action.sources"],
+        )
+    except Exception as exc:
+        paid_api_guard.trip_if_quota("openai", exc)
+        raise
     text = _extract_openai_response_text(response)
     if not text.strip():
         raise RuntimeError(f"财经科技联网检索无返回内容: {_openai_response_debug_summary(response)}")

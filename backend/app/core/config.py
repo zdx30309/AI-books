@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     CELERY_REDIS_HEALTH_CHECK_INTERVAL: int = 10
     CELERY_REDIS_MAX_RETRIES: int = 20
     CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS: bool = False
-    CELERY_WORKER_CONCURRENCY: int = 200
+    # Queue many jobs, but keep worker threads bounded; paid-call concurrency
+    # is controlled separately by the distributed provider gates.
+    CELERY_WORKER_CONCURRENCY: int = 12
     CELERY_TASK_TIME_LIMIT_SECONDS: int = 14400
     CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = 13800
     MAX_ACTIVE_GENERATION_TASKS: int = 250
@@ -64,6 +66,10 @@ class Settings(BaseSettings):
     FAILED_TASK_AUTO_RECOVERY_MAX_ATTEMPTS: int = 24
     PAID_API_GATE_WAIT_TIMEOUT_SECONDS: int = 14400
     PAID_API_GATE_TTL_SECONDS: int = 600
+    # In production, block paid calls if the shared breaker cannot be read.
+    # Development/test environments may leave this unset to avoid requiring
+    # a Redis instance for local pure-function tests.
+    PAID_API_GUARD_FAIL_CLOSED: bool | None = None
 
     # --- 主笔模型路由 ---
     WRITER_PROVIDER: str = "openai"  # 可选 "openai" / "deepseek" / "gemini"
@@ -325,7 +331,9 @@ class Settings(BaseSettings):
     LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD: bool = True
     LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS: float = 5.0
     LONG_NOVEL_FLEX_TIMEOUT_SECONDS: int = 3600
-    LONG_NOVEL_PROMPT_CACHE_WARMUP: bool = True
+    # Cache warmup is an extra paid request whose result is discarded.  Keep it
+    # opt-in so normal production runs never spend tokens before real work.
+    LONG_NOVEL_PROMPT_CACHE_WARMUP: bool = False
     LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS: int = 14000
     LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS: int = 10000
     LONG_NOVEL_STATE_REASONING_EFFORT: str = "high"

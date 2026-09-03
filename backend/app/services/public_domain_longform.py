@@ -26,6 +26,7 @@ from tenacity import stop_after_attempt
 from app.core.config import settings
 from app.services.deepseek import generate_text as deepseek_generate_text
 from app.services.gemini import generate_text as gemini_generate_text
+from app.utils import paid_api_guard
 from app.utils.official_api import official_proxy
 
 
@@ -1969,6 +1970,7 @@ def _call_openai_primary_verifier(
         "status": "started",
     }
     try:
+        paid_api_guard.guard("openai")
         response = _get_openai_writer_client().responses.create(
             model=model,
             input=prompt,
@@ -1995,6 +1997,7 @@ def _call_openai_primary_verifier(
     except PublicDomainQualityError:
         raise
     except Exception as exc:
+        paid_api_guard.trip_if_quota("openai", exc)
         log.update(
             status="failed",
             duration_ms=int((time.monotonic() - started) * 1000),

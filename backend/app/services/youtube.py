@@ -21,6 +21,7 @@ from openai import OpenAI
 
 from app.core.config import PROJECT_ROOT, settings
 from app.services.video_sources import canonical_source_url
+from app.utils import paid_api_guard
 from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
@@ -782,18 +783,21 @@ def _transcribe_audio_with_openai(audio_path: Path, *, timeout: int) -> str:
         "api_key": settings.OPENAI_API_KEY,
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": max(30, timeout),
+        "max_retries": 0,
     }
     if proxy:
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, timeout))
     client = OpenAI(**client_kwargs)
     try:
         with audio_path.open("rb") as audio_file:
+            paid_api_guard.guard("openai")
             response = client.audio.transcriptions.create(
                 model=settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL,
                 file=audio_file,
                 response_format="text",
             )
     except Exception as exc:
+        paid_api_guard.trip_if_quota("openai", exc)
         raise YouTubeTranscriptError(f"OpenAI audio transcription failed: {exc}") from exc
     finally:
         http_client = client_kwargs.get("http_client")
