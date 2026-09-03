@@ -1725,6 +1725,7 @@ def process_video(_self, task_id: str) -> dict:
                 _clear_task_run(task, run_id)
                 _mark_generation_hold_for_quota(task, e)
                 generation_hold = bool((task.config or {}).get("generation_hold"))
+                paid_api_backoff = bool((task.config or {}).get("paid_api_backoff"))
                 if isinstance(e, AigcTechnicalError):
                     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
                     report_path = output_dir / "aigc_quality_report.json"
@@ -1765,6 +1766,28 @@ def process_video(_self, task_id: str) -> dict:
                         (task.config or {}).get("generation_hold_step")
                         or "费用保护暂停，未再次投递模型调用"
                     )[:255]
+                elif paid_api_backoff and _is_retryable_generation_error(e):
+                    # Provider-side quota/backoff must not consume a finite Celery retry budget.
+                    # Keep the book in the normal pending queue and let the watchdog redispatch
+                    # from saved artifacts after the breaker TTL expires, instead of surfacing
+                    # a terminal failed state that requires manual clicks.
+                    backoff_attempt = int((task.config or {}).get("paid_api_backoff_attempts") or 0) + 1
+                    delay_seconds = max(300, min(1800, _retry_delay_seconds(min(current_retries, max_retries))))
+                    cfg = dict(task.config or {})
+                    cfg["last_auto_retry_error"] = message[:1000]
+                    cfg["paid_api_backoff_attempts"] = backoff_attempt
+                    cfg["auto_retry_attempts"] = current_retries + 1
+                    cfg["auto_retry_not_before"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+                    ).isoformat()
+                    cfg["auto_retry_scheduled_by"] = run_id
+                    task.config = cfg
+                    task.status = TaskStatus.PENDING
+                    task.error_message = message[:2000]
+                    task.current_step = f"上游暂不可用，自动退避排队中：{message}"[:255]
+                    task.progress = max(0, int(task.progress or 0))
+                    db.commit()
+                    return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters) if task is not None else 0}
                 elif _is_retryable_generation_error(e) and current_retries < max_retries:
                     retry_countdown = _retry_delay_seconds(current_retries)
                     cfg = dict(task.config or {})
