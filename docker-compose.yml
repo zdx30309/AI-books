@@ -19,6 +19,7 @@ services:
     volumes:
       - backend_output:/app/backend/output
       - ./external_reference_assets:/app/backend/external_reference_assets:ro
+      - ${GOOGLE_ADC_HOST_DIR:-./.local/google}:/root/.config/gcloud:ro
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
@@ -28,6 +29,7 @@ services:
       # missing production .env entry remains fail-closed.
       PAID_API_GUARD_FAIL_CLOSED: ${PAID_API_GUARD_FAIL_CLOSED:-True}
       LONG_NOVEL_PROMPT_CACHE_WARMUP: ${LONG_NOVEL_PROMPT_CACHE_WARMUP:-False}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/root/.config/gcloud/application_default_credentials.json}
       CELERY_BROKER_URL: redis://redis-gate:6379/1
       CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:
@@ -45,12 +47,14 @@ services:
     volumes:
       - backend_output:/app/backend/output
       - ./external_reference_assets:/app/backend/external_reference_assets:ro
+      - ${GOOGLE_ADC_HOST_DIR:-./.local/google}:/root/.config/gcloud:ro
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
       PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
       PAID_API_GUARD_FAIL_CLOSED: ${PAID_API_GUARD_FAIL_CLOSED:-True}
       LONG_NOVEL_PROMPT_CACHE_WARMUP: ${LONG_NOVEL_PROMPT_CACHE_WARMUP:-False}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/root/.config/gcloud/application_default_credentials.json}
       CELERY_BROKER_URL: redis://redis-gate:6379/1
       CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:
@@ -82,12 +86,14 @@ services:
     volumes:
       - backend_output:/app/backend/output
       - ./external_reference_assets:/app/backend/external_reference_assets:ro
+      - ${GOOGLE_ADC_HOST_DIR:-./.local/google}:/root/.config/gcloud:ro
     environment:
       COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
       WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
       PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
       PAID_API_GUARD_FAIL_CLOSED: ${PAID_API_GUARD_FAIL_CLOSED:-True}
       LONG_NOVEL_PROMPT_CACHE_WARMUP: ${LONG_NOVEL_PROMPT_CACHE_WARMUP:-False}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/root/.config/gcloud/application_default_credentials.json}
       CELERY_BROKER_URL: redis://redis-gate:6379/1
       CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
     depends_on:

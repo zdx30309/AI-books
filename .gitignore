@@ -9,6 +9,10 @@ __pycache__/
 .env.*
 !.env.example
 !.env.production.example
+**/*service-account*.json
+**/*credentials*.json
+backend/video-plan2-0d509b4cd163.json
+video-plan2-0d509b4cd163.json
 frontend/*.tsbuildinfo
 backend/output/
 .local/
