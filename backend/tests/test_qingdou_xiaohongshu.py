@@ -61,8 +61,8 @@ def test_xiaohongshu_share_token_is_not_reported_as_model_api_key_error() -> Non
     message = task_tasks._user_facing_generation_error(exc)  # noqa: SLF001
 
     assert "模型 API Key" not in message
-    assert "QingdouError" in message
-    assert task_tasks._is_retryable_generation_error(exc) is True  # noqa: SLF001
+    assert "轻抖" in message
+    assert task_tasks._is_retryable_generation_error(exc) is False  # account-level Qingdou resource hold
 
 
 def test_terminal_qingdou_empty_content_failure_is_not_retried() -> None:

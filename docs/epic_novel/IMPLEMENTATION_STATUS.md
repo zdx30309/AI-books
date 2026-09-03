@@ -664,3 +664,18 @@ Validation on 2026-08-10:
 - `PYTHONPATH=backend python -m compileall -q backend/app/services/epic_reference.py` -> passed
 
 This hardening does not run SoNovel, import new reference books, or invoke DeepSeek. The overall production-readiness verdict remains `PARTIAL_IMPLEMENTATION`; full-corpus extraction still requires explicit cost/time approval.
+
+## Qingdou Duplicate-Billing Protection (2026-09-03)
+
+- Added account-level handling for Qingdou `batchStatus=-2` / item `status=1113`; these failures now pause generation, skip alternate URLs, and never invoke the OpenAI audio fallback.
+- Qingdou task creation POSTs are single-shot. Transport interruption, HTTP 408/5xx, or post-submit cache failure becomes an explicit delivery-uncertain hold instead of an automatic replay.
+- Added Redis batch-id checkpointing so polling timeouts resume the accepted Qingdou batch rather than creating a second paid task.
+- Added regression coverage for account quota holds, candidate URL short-circuiting, OpenAI fallback suppression, and single-shot creation on a lost response.
+
+Validation on 2026-09-03:
+
+- `python -m pytest -q tests/test_qingdou_concurrency.py tests/test_qingdou_xiaohongshu.py tests/test_youtube_transcript.py` from `backend/` -> `31 passed, 1 warning`
+- `python -m compileall -q backend/app scripts` -> passed
+- `git diff --check` -> passed
+
+Deployment and task recovery remain pending until the protected code is pushed and the Beijing ECS work queue is inspected.

@@ -54,7 +54,9 @@ from app.services.aigc_quality_gate import (
 )
 from app.services.qingdou import (
     QingdouBusyError,
+    QingdouDeliveryUncertainError,
     QingdouDurationExceededError,
+    QingdouQuotaExhaustedError,
     QingdouTimeoutError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
 )
@@ -188,6 +190,9 @@ _NON_RETRYABLE_ERROR_TOKENS = (
     "exceeded your current quota",
     "duration exceeded",
     "超过限制",
+    "qingdouquotaexhaustederror",
+    "轻抖可用次数或资源已用完",
+    "轻抖资源不足",
 ) + QUOTA_EXHAUSTED_MARKERS
 
 _QINGDOU_TERMINAL_BATCH_TOKENS = (
@@ -438,9 +443,15 @@ def extract_video_text_with_qingdou(
             )
         except QingdouDurationExceededError:
             raise
-        except (QingdouBusyError, QingdouTimeoutError):
+        except (
+            QingdouBusyError,
+            QingdouTimeoutError,
+            QingdouQuotaExhaustedError,
+            QingdouDeliveryUncertainError,
+        ):
             # A busy/lock timeout is account-wide. Trying another URL would
-            # submit another Qingdou task and amplify status 4001 failures.
+            # submit another Qingdou task and amplify status 4001/resource or
+            # duplicate-billing failures.
             raise
         except Exception as exc:
             errors.append(f"{candidate_url}: {type(exc).__name__}: {exc}")
@@ -593,7 +604,7 @@ def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> 
                 ) from fallback_exc
         if (
             source_platform == "bilibili"
-            and not isinstance(exc, QingdouDurationExceededError)
+            and not isinstance(exc, (QingdouDurationExceededError, QingdouQuotaExhaustedError))
             and _should_try_bilibili_fallback(exc)
         ):
             try:
@@ -708,8 +719,33 @@ def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
     return text
 
 
+def _is_qingdou_quota_exhausted(value: object) -> bool:
+    """Recognize Qingdou account-level resource exhaustion after wrapping."""
+
+    normalized = f"{type(value).__name__}: {value}".lower()
+    return isinstance(value, QingdouQuotaExhaustedError) or any(
+        token in normalized
+        for token in (
+            "qingdouquotaexhaustederror",
+            "轻抖可用次数或资源已用完",
+            "轻抖资源不足",
+            "batchstatus=-2",
+            "batchstatus': -2",
+            '"batchstatus": -2',
+            "status=1113",
+            "'status': 1113",
+            '"status": 1113',
+        )
+    )
+
+
 def _should_try_bilibili_fallback(exc: Exception) -> bool:
     text = str(exc).lower()
+    # Qingdou status 1113 / batchStatus -2 means the account has no
+    # extraction resources left. Do not spend another provider call (or
+    # invoke the OpenAI audio fallback) while the account is exhausted.
+    if _is_qingdou_quota_exhausted(exc):
+        return False
     failed_batch = (
         "batchstatus=2" in text
         or "batchstatus': 2" in text
@@ -769,7 +805,9 @@ def _is_retryable_generation_error(exc: Exception) -> bool:
     # A provider may encode exhausted credit as HTTP 429.  Check this before
     # the generic technical-error and rate-limit branches so it can never be
     # amplified by Celery or the recovery watchdog.
-    if is_quota_exhausted(exc) or isinstance(exc, OpenAIDeliveryUncertainError):
+    if is_quota_exhausted(exc) or _is_qingdou_quota_exhausted(exc) or isinstance(
+        exc, (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError)
+    ):
         return False
     if isinstance(exc, AigcTechnicalError):
         return True
@@ -821,7 +859,9 @@ def _is_auth_error_message(normalized: str) -> bool:
 
 def _is_terminal_qingdou_parse_error_message(normalized: str) -> bool:
     if "qingdouerror" not in normalized and "轻抖任务失败" not in normalized:
-        return False
+        return _is_qingdou_quota_exhausted(normalized)
+    if _is_qingdou_quota_exhausted(normalized):
+        return True
     batch_failed = any(token in normalized for token in _QINGDOU_TERMINAL_BATCH_TOKENS)
     empty_content = any(token in normalized for token in _QINGDOU_EMPTY_CONTENT_TOKENS)
     return batch_failed and empty_content
@@ -1079,8 +1119,12 @@ def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
     """
 
     normalized = f"{type(exc).__name__}: {exc}".lower()
-    quota_exhausted = is_quota_exhausted(exc)
-    delivery_uncertain = isinstance(exc, OpenAIDeliveryUncertainError) or any(
+    qingdou_quota_exhausted = _is_qingdou_quota_exhausted(exc)
+    quota_exhausted = is_quota_exhausted(exc) or qingdou_quota_exhausted
+    delivery_uncertain = isinstance(
+        exc,
+        (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError),
+    ) or any(
         marker in normalized
         for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
     )
@@ -1088,14 +1132,20 @@ def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
         return
     cfg = dict(task.config or {})
     reason = (
-        "付费模型请求已提交但结果未知，已阻止自动重试；核对提供方账单/响应后再继续生成"
+        "轻抖可用次数或资源已用完，任务已暂停；充值/恢复轻抖账户后再继续生成"
+        if qingdou_quota_exhausted
+        else "付费模型请求已提交但结果未知，已阻止自动重试；核对提供方账单/响应后再继续生成"
         if delivery_uncertain and not quota_exhausted
         else "付费模型额度耗尽，已阻止自动重试；确认余额恢复后再继续生成"
     )
     cfg.update(
         generation_hold=True,
         generation_hold_reason=reason,
-        generation_hold_step="费用保护暂停，未再次投递模型调用",
+        generation_hold_step=(
+            "轻抖资源/次数不足，已暂停且未再次提交解析任务"
+            if qingdou_quota_exhausted
+            else "费用保护暂停，未再次投递模型调用"
+        ),
         generation_hold_at=datetime.now(timezone.utc).isoformat(),
         paid_call_delivery_uncertain=delivery_uncertain,
     )
@@ -1105,6 +1155,10 @@ def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
 def _user_facing_generation_error(exc: Exception) -> str:
     raw = f"{type(exc).__name__}: {exc}"
     normalized = raw.lower()
+    if _is_qingdou_quota_exhausted(exc):
+        return "轻抖可用次数或资源已用完，任务已暂停保护；恢复轻抖账户后再继续，不会重复提交解析任务。"
+    if isinstance(exc, QingdouDeliveryUncertainError):
+        return "轻抖创建任务响应未知，任务已暂停以避免重复计费；核对轻抖任务记录后再手动继续。"
     if _is_terminal_qingdou_parse_error_message(normalized):
         return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
     if is_quota_exhausted(exc):

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import re
 import time
 import uuid
@@ -49,6 +50,14 @@ class QingdouBusyError(QingdouError):
     pass
 
 
+class QingdouQuotaExhaustedError(QingdouError):
+    """Qingdou account resources/available extraction count are exhausted."""
+
+
+class QingdouDeliveryUncertainError(QingdouError):
+    """A commit request may have been accepted but its response was lost."""
+
+
 class QingdouTimeoutError(QingdouError):
     pass
 
@@ -59,6 +68,7 @@ class QingdouDurationExceededError(QingdouError):
 
 _LOCK_KEY = "video-plan:qingdou:extract-lock"
 _SLOTS_KEY = "video-plan:qingdou:extract-slots"
+_BATCH_CACHE_PREFIX = "video-plan:qingdou:batch:"
 
 
 def _redis_url() -> str:
@@ -202,8 +212,17 @@ class QingdouClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def _request_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        allow_retry: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
         max_attempts = max(1, int(settings.QINGDOU_HTTP_MAX_RETRIES or 1))
+        if not allow_retry:
+            max_attempts = 1
         backoff = max(0.1, float(settings.QINGDOU_HTTP_RETRY_BACKOFF_SECONDS or 0.1))
         retry_statuses = {408, 429, 500, 502, 503, 504}
         last_exc: Exception | None = None
@@ -244,7 +263,27 @@ class QingdouClient:
                 }
             ]
         }
-        resp = self._request_with_retry("POST", self.base_url, json=payload)
+        # A lost POST response is not safe to replay: Qingdou may have
+        # accepted and billed the extraction even when the client saw a
+        # timeout/5xx. GET polling is retried; task creation is single-shot.
+        try:
+            resp = self._request_with_retry(
+                "POST",
+                self.base_url,
+                allow_retry=False,
+                json=payload,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise QingdouDeliveryUncertainError(
+                "轻抖创建任务响应中断，任务状态未知；已阻止再次提交以避免重复计费"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = int(exc.response.status_code)
+            if status_code >= 500 or status_code == 408:
+                raise QingdouDeliveryUncertainError(
+                    f"轻抖创建任务返回 HTTP {status_code}，任务状态未知；已阻止再次提交"
+                ) from exc
+            raise QingdouError(f"轻抖创建任务返回 HTTP {status_code}") from exc
         data = resp.json()
         self._assert_ok(data, endpoint="commitGetTextTask")
         batch_id = self._extract_batch_id(data)
@@ -318,6 +357,16 @@ class QingdouClient:
                 )
                 return result
 
+            # The Qingdou web client maps batchStatus=-2 to
+            # INSUFFICIENT_RESOURCES and item status 1113 to
+            # "available extraction count used up". This is an account-level
+            # billing/resource condition, never a URL retry condition.
+            if batch_status == -2 or item_status == 1113:
+                raise QingdouQuotaExhaustedError(
+                    f"轻抖可用次数或资源已用完 batchId={batch_id}, "
+                    f"batchStatus={batch_status}, status={item_status}"
+                )
+
             if item_status == 1000 or batch_status == 1000:
                 if not result.video_content:
                     raise QingdouError(f"轻抖任务完成但未返回 videoContent: {result.raw}")
@@ -343,13 +392,99 @@ class QingdouClient:
         poll_interval_seconds: float = 3.0,
         max_video_duration: int | None = None,
     ) -> QingdouTaskResult:
+        cache_key = self._batch_cache_key(source_url)
+        cached_batch_id = self._load_cached_batch_id(cache_key)
+        if cached_batch_id is not None:
+            logger.info("轻抖复用未完成批次 batchId=%s，避免重复提交", cached_batch_id)
+            try:
+                result = self.poll_text_result(
+                    cached_batch_id,
+                    timeout_seconds=timeout_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    max_video_duration=max_video_duration,
+                )
+            except QingdouQuotaExhaustedError:
+                self._clear_cached_batch_id(cache_key)
+                raise
+            except QingdouTimeoutError:
+                # Keep the batch id. A timeout only says polling ended before
+                # the provider answered; submitting another task could charge
+                # the same URL twice while the original batch is still alive.
+                raise
+            except QingdouError:
+                # poll_text_result only raises QingdouError for a terminal
+                # provider result; a subsequent manual retry may submit a
+                # fresh task after the operator fixes the source/account.
+                self._clear_cached_batch_id(cache_key)
+                raise
+            else:
+                self._clear_cached_batch_id(cache_key)
+                return result
+
         batch_id = self._commit_with_busy_retry(source_url)
-        return self.poll_text_result(
+        self._store_cached_batch_id(
+            cache_key,
             batch_id,
             timeout_seconds=timeout_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            max_video_duration=max_video_duration,
         )
+        try:
+            result = self.poll_text_result(
+                batch_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                max_video_duration=max_video_duration,
+            )
+        except QingdouQuotaExhaustedError:
+            self._clear_cached_batch_id(cache_key)
+            raise
+        except QingdouTimeoutError:
+            # Preserve the accepted batch for the next checkpoint retry.
+            raise
+        except QingdouError:
+            self._clear_cached_batch_id(cache_key)
+            raise
+        else:
+            self._clear_cached_batch_id(cache_key)
+            return result
+
+    @staticmethod
+    def _batch_cache_key(source_url: str) -> str:
+        normalized = (source_url or "").strip()
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return f"{_BATCH_CACHE_PREFIX}{digest}"
+
+    @staticmethod
+    def _load_cached_batch_id(cache_key: str) -> int | None:
+        try:
+            value = _redis_client().get(cache_key)
+        except Exception as exc:
+            raise QingdouTimeoutError("轻抖结果缓存不可用，已阻止再次提交") from exc
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            QingdouClient._clear_cached_batch_id(cache_key)
+            return None
+
+    @staticmethod
+    def _store_cached_batch_id(cache_key: str, batch_id: int, *, timeout_seconds: int | None) -> None:
+        ttl = max(3600, min(86400, int(timeout_seconds or settings.QINGDOU_POLL_TIMEOUT_SECONDS) + 3600))
+        try:
+            _redis_client().set(cache_key, str(batch_id), ex=ttl)
+        except Exception as exc:
+            # The POST may already have been accepted. Do not let a cache
+            # outage turn into a second paid POST on the next task retry.
+            raise QingdouDeliveryUncertainError(
+                "轻抖创建任务后结果缓存不可用，任务状态未知；已阻止再次提交以避免重复计费"
+            ) from exc
+
+    @staticmethod
+    def _clear_cached_batch_id(cache_key: str) -> None:
+        try:
+            _redis_client().delete(cache_key)
+        except Exception:
+            logger.warning("清理轻抖批次缓存失败 key=%s", cache_key, exc_info=True)
 
     def _commit_with_busy_retry(self, source_url: str) -> int:
         max_attempts = max(1, settings.QINGDOU_BUSY_MAX_ATTEMPTS)
