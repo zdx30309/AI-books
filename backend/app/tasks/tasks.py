@@ -1642,6 +1642,7 @@ def process_video(_self, task_id: str) -> dict:
                 message = _user_facing_generation_error(e)
                 _clear_task_run(task, run_id)
                 _mark_generation_hold_for_quota(task, e)
+                generation_hold = bool((task.config or {}).get("generation_hold"))
                 if isinstance(e, AigcTechnicalError):
                     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
                     report_path = output_dir / "aigc_quality_report.json"
@@ -1671,7 +1672,18 @@ def process_video(_self, task_id: str) -> dict:
                     task.config = cfg
                 current_retries = int(getattr(getattr(_self, "request", None), "retries", 0) or 0)
                 max_retries = max(0, int(settings.GENERATION_TASK_MAX_RETRIES or 0))
-                if _is_retryable_generation_error(e) and current_retries < max_retries:
+                if generation_hold:
+                    # A quota or paid-delivery hold is an operator boundary,
+                    # not a transient generation failure. Do not enqueue a
+                    # Celery retry that can only spin on the same provider
+                    # block; the task remains explicitly held for resume.
+                    task.status = TaskStatus.FAILED
+                    task.error_message = message[:2000]
+                    task.current_step = str(
+                        (task.config or {}).get("generation_hold_step")
+                        or "费用保护暂停，未再次投递模型调用"
+                    )[:255]
+                elif _is_retryable_generation_error(e) and current_retries < max_retries:
                     retry_countdown = _retry_delay_seconds(current_retries)
                     cfg = dict(task.config or {})
                     cfg["last_auto_retry_error"] = message[:1000]
