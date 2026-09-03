@@ -139,7 +139,12 @@ def generate_text(
 
     text = _message_text(response)
     if not text:
-        raise ValueError("Claude 返回空响应")
+        # A successful HTTP response can still be empty because of an upstream
+        # relay truncation. Treat it as uncertain delivery so callers cannot
+        # replay the same paid prompt or silently fall back to another model.
+        raise ClaudeDeliveryUncertainError(
+            "returned an empty response after the request may have been accepted; automatic replacement is disabled"
+        )
     logger.info(
         "Claude relay call completed provider=claude model=%s input_chars=%d output_chars=%d",
         model_name,
