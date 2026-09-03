@@ -29,6 +29,10 @@ class ClaudeDeliveryUncertainError(RuntimeError):
         super().__init__(f"paid_call_delivery_uncertain: Claude {message}")
 
 
+class ClaudeRequestRejectedError(RuntimeError):
+    """The relay rejected the request before model execution."""
+
+
 _clients: dict[tuple[str, int], OpenAI] = {}
 _clients_lock = threading.RLock()
 
@@ -90,6 +94,26 @@ def _message_text(response: Any) -> str:
     return str(content or "").strip()
 
 
+def _status_code(exc: BaseException) -> int | None:
+    for candidate in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        try:
+            if candidate is not None:
+                return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _request_rejected(exc: BaseException) -> bool:
+    """Return true for explicit pre-execution relay rejections."""
+
+    return _status_code(exc) in {400, 401, 403, 404, 409, 422}
+
+
 def generate_text(
     prompt: str,
     *,
@@ -103,7 +127,7 @@ def generate_text(
     """Generate one Claude response through the configured relay."""
 
     del retries  # Deliberately no paid request replay.
-    model_name = str(model or getattr(settings, "CLAUDE_MODEL", "claude-5-opus") or "claude-5-opus").strip()
+    model_name = str(model or getattr(settings, "CLAUDE_MODEL", "claude-opus-5") or "claude-opus-5").strip()
     timeout = max(30, int(request_timeout_seconds or getattr(settings, "CLAUDE_REQUEST_TIMEOUT", 1800) or 1800))
     messages: list[dict[str, str]] = []
     instruction = str(system_instruction or "").strip()
@@ -129,6 +153,11 @@ def generate_text(
         if paid_api_guard.trip_if_quota("claude", exc):
             raise paid_api_guard.PaidApiQuotaExhausted(
                 f"Claude quota exhausted; request blocked from retry: {exc}"
+            ) from exc
+        if _request_rejected(exc):
+            raise ClaudeRequestRejectedError(
+                f"relay rejected model={model_name} before execution; check model name, account access, and request settings "
+                f"({type(exc).__name__}: {exc})"
             ) from exc
         if request_started:
             raise ClaudeDeliveryUncertainError(
@@ -157,7 +186,7 @@ def generate_text(
 def polish_book_text(text: str, **kwargs: Any) -> str:
     return generate_text(
         text,
-        model=getattr(settings, "CLAUDE_MODEL", "claude-5-opus"),
+        model=getattr(settings, "CLAUDE_MODEL", "claude-opus-5"),
         temperature=0.3,
         **kwargs,
     )
@@ -166,7 +195,7 @@ def polish_book_text(text: str, **kwargs: Any) -> str:
 def refine_book_text(text: str, **kwargs: Any) -> str:
     return generate_text(
         text,
-        model=getattr(settings, "CLAUDE_MODEL", "claude-5-opus"),
+        model=getattr(settings, "CLAUDE_MODEL", "claude-opus-5"),
         temperature=0.2,
         **kwargs,
     )
@@ -174,6 +203,7 @@ def refine_book_text(text: str, **kwargs: Any) -> str:
 
 __all__ = [
     "ClaudeDeliveryUncertainError",
+    "ClaudeRequestRejectedError",
     "generate_text",
     "polish_book_text",
     "refine_book_text",

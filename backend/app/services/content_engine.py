@@ -53,7 +53,7 @@ from app.services.gemini import (
     GeminiDeliveryUncertainError,
     GeminiMaxTokensError,
 )
-from app.services.claude import ClaudeDeliveryUncertainError
+from app.services.claude import ClaudeDeliveryUncertainError, ClaudeRequestRejectedError
 from app.services.aigc_quality_gate import (
     AIGC_POLICY_VERSION,
     AigcManualReviewRequired,
@@ -3793,6 +3793,7 @@ def _is_paid_polish_blocking_failure(exc: BaseException) -> bool:
             paid_api_guard.PaidApiQuotaExhausted,
             GeminiDeliveryUncertainError,
             ClaudeDeliveryUncertainError,
+            ClaudeRequestRejectedError,
         ),
     ):
         return True

@@ -131,7 +131,10 @@ class Settings(BaseSettings):
     BACKEND_REFINE_PROVIDER: str = "gemini"
     CLAUDE_API_KEY: str = ""
     CLAUDE_BASE_URL: str = "https://anyrouter.top/v1"
-    CLAUDE_MODEL: str = "claude-5-opus"
+    # AnyRouter exposes this account's Opus model under ``claude-opus-5``.
+    # Keep the value configurable so a relay-side model rename never requires
+    # changing business logic.
+    CLAUDE_MODEL: str = "claude-opus-5"
     CLAUDE_HTTPS_PROXY: str = ""
     CLAUDE_REQUEST_TIMEOUT: int = 1800
     CLAUDE_MAX_OUTPUT_TOKENS: int = 0

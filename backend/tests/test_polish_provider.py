@@ -45,7 +45,7 @@ def test_claude_relay_submits_once_and_preserves_system_instruction(monkeypatch:
     monkeypatch.setattr(claude, "distributed_semaphore", lambda *_a, **_k: nullcontext())
     monkeypatch.setattr(claude.paid_api_guard, "guard", lambda _provider: None)
     monkeypatch.setattr(claude.paid_api_guard, "trip_if_quota", lambda *_a: False)
-    monkeypatch.setattr(settings, "CLAUDE_MODEL", "claude-5-opus")
+    monkeypatch.setattr(settings, "CLAUDE_MODEL", "claude-opus-5")
 
     result = claude.generate_text(
         "正文",
@@ -55,7 +55,7 @@ def test_claude_relay_submits_once_and_preserves_system_instruction(monkeypatch:
 
     assert result == "处理后的正文"
     assert len(captured) == 1
-    assert captured[0]["model"] == "claude-5-opus"
+    assert captured[0]["model"] == "claude-opus-5"
     assert captured[0]["messages"] == [
         {"role": "system", "content": "只做轻微润色"},
         {"role": "user", "content": "正文"},
@@ -81,3 +81,28 @@ def test_claude_delivery_failure_is_not_retried_or_switched(monkeypatch: pytest.
         claude.generate_text("正文", retries=5)
 
     assert calls == 1
+
+
+def test_claude_explicit_permission_rejection_is_not_marked_delivery_uncertain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PermissionError(Exception):
+        status_code = 403
+
+        def __str__(self) -> str:
+            return "PermissionDenied: model is not enabled"
+
+    class Completions:
+        def create(self, **_kwargs: object):
+            raise PermissionError()
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    monkeypatch.setattr(claude, "_get_client", lambda _timeout: fake_client)
+    monkeypatch.setattr(claude, "distributed_semaphore", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(claude.paid_api_guard, "guard", lambda _provider: None)
+    monkeypatch.setattr(claude.paid_api_guard, "trip_if_quota", lambda *_a: False)
+
+    with pytest.raises(claude.ClaudeRequestRejectedError) as exc_info:
+        claude.generate_text("正文")
+
+    assert "paid_call_delivery_uncertain" not in str(exc_info.value)
