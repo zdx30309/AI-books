@@ -1108,6 +1108,8 @@ def _user_facing_generation_error(exc: Exception) -> str:
     if _is_terminal_qingdou_parse_error_message(normalized):
         return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
     if is_quota_exhausted(exc):
+        if any(token in normalized for token in ("gemini", "dunning", "permission_denied", "permission denied")):
+            return "Gemini 额度或账单不可用，任务已暂停保护；不会切换到 OpenAI，请恢复 Gemini 账单后再继续。"
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
     if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in normalized:
         return "付费模型请求可能已经提交但结果未知，任务已暂停以避免重复计费；请核对提供方响应后再手动继续。"
