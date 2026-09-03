@@ -679,3 +679,12 @@ Validation on 2026-09-03:
 - `git diff --check` -> passed
 
 Deployment and task recovery remain pending until the protected code is pushed and the Beijing ECS work queue is inspected.
+
+Follow-up production finding on 2026-09-03:
+
+- A Qingdou-restored canary returned terminal provider status `batchStatus=2/status=1114` (no usable transcript). The old candidate loop submitted the same Bilibili BV once for the canonical URL and once for a tracking-query variant.
+- Fixed task-layer candidate identity filtering for Bilibili so equivalent BV URLs are submitted at most once; alternate endpoint shapes for WeChat remain available.
+- The canary failure was not an OpenAI call and did not enter a generation hold. It remains failed for manual/source review rather than being auto-redispatched.
+- Added regression coverage proving Bilibili tracking variants produce one Qingdou submission.
+
+Follow-up validation: `python -m pytest -q tests/test_qingdou_concurrency.py tests/test_qingdou_xiaohongshu.py tests/test_youtube_transcript.py tests/test_video_sources.py` -> `47 passed, 1 warning`.

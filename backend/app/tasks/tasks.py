@@ -424,7 +424,23 @@ def extract_video_text_with_qingdou(
     max_video_duration: int | None = None,
 ) -> tuple[str, int | None, Any]:
     platform = detect_video_source_platform(source_url)
-    candidates = source_url_candidates(source_url, platform)
+    raw_candidates = source_url_candidates(source_url, platform)
+    # Bilibili's canonical BV URL and its share/tracking variants identify the
+    # same Qingdou extraction job. Keep alternate shapes for providers such as
+    # WeChat that genuinely expose different parser endpoints, but never pay
+    # twice for the same Bilibili video after a terminal provider failure.
+    candidates: list[str] = []
+    seen_candidate_keys: set[str] = set()
+    for candidate_url in raw_candidates:
+        candidate_key = (
+            canonical_source_url(candidate_url)
+            if platform == "bilibili"
+            else (candidate_url or "").strip()
+        )
+        if not candidate_key or candidate_key in seen_candidate_keys:
+            continue
+        seen_candidate_keys.add(candidate_key)
+        candidates.append(candidate_url)
     errors: list[str] = []
     for idx, candidate_url in enumerate(candidates, start=1):
         try:

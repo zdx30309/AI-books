@@ -79,6 +79,34 @@ def test_quota_exhaustion_does_not_try_the_next_url(monkeypatch: pytest.MonkeyPa
     assert len(calls) == 1
 
 
+def test_bilibili_tracking_variants_are_not_submitted_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        task_tasks,
+        "source_url_candidates",
+        lambda source_url, platform: [
+            "https://www.bilibili.com/video/BV1xx411c7mD",
+            "https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web",
+        ],
+    )
+
+    def terminal_failure(source_url: str, **kwargs):
+        calls.append(source_url)
+        raise qingdou.QingdouError("轻抖任务失败 batchStatus=2 status=1114")
+
+    monkeypatch.setattr(task_tasks, "_extract_video_text_with_qingdou_once", terminal_failure)
+
+    with pytest.raises(RuntimeError, match="1 candidate URL"):
+        task_tasks.extract_video_text_with_qingdou(
+            "https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web",
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+
+    assert calls == ["https://www.bilibili.com/video/BV1xx411c7mD"]
+
+
 def test_qingdou_busy_and_lock_errors_are_retryable() -> None:
     assert task_tasks._is_retryable_generation_error(  # noqa: SLF001
         qingdou.QingdouBusyError("commitGetTextTask 返回繁忙")
