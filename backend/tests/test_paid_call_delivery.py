@@ -116,6 +116,38 @@ def test_delivery_uncertain_task_is_held_and_never_auto_retried() -> None:
     assert task.config["paid_call_delivery_uncertain"] is True
 
 
+def test_generation_hold_stays_pending_when_stale_queue_message_arrives(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tasks import tasks as task_module
+
+    task = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000001",
+        status=task_module.TaskStatus.PENDING,
+        config={"generation_hold": True, "generation_hold_reason": "operator hold"},
+        error_message=None,
+        current_step=None,
+    )
+
+    class FakeDb:
+        def execute(self, *_args: object, **_kwargs: object):
+            class Result:
+                def scalar_one_or_none(self):
+                    return task
+
+            return Result()
+
+        def commit(self) -> None:
+            return None
+
+        def refresh(self, _obj: object) -> None:
+            return None
+
+    with pytest.raises(task_module.StaleTaskRun):
+        task_module._claim_task_run(FakeDb(), str(task.id), "run-1")
+
+    assert task.status == task_module.TaskStatus.PENDING
+    assert task.config["generation_hold"] is True
+
+
 def test_family_batch_pauses_after_first_failed_chapter(monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = "00000000-0000-0000-0000-000000000001"
     project = SimpleNamespace(id=project_id, status=family_long_novel.LongNovelProjectStatus.ACTIVE)

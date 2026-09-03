@@ -281,7 +281,11 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         raise StaleTaskRun(f"task {task.id} paused before run")
 
     if cfg.get("generation_hold"):
-        task.status = TaskStatus.FAILED
+        # A stale queue message may arrive while an operator hold is active.
+        # Keep the task pending so the hold remains an intentional pause and
+        # the operator can release it later without a manual "retry failed"
+        # cycle.  Crucially, this path occurs before any provider call.
+        task.status = TaskStatus.PENDING
         task.error_message = str(
             cfg.get("generation_hold_reason") or "generation is held by cost protection"
         )[:2000]
