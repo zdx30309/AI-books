@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # Keep the value configurable so a relay-side model rename never requires
     # changing business logic.
     CLAUDE_MODEL: str = "claude-opus-5"
+    # AnyRouter requires the Anthropic 1M-context beta flag for the Opus 5
+    # route. Leave it configurable so an operator can disable the beta without
+    # changing business logic if the relay changes its header contract.
+    CLAUDE_ANTHROPIC_BETA: str = "context-1m-2025-08-07"
     CLAUDE_HTTPS_PROXY: str = ""
     CLAUDE_REQUEST_TIMEOUT: int = 1800
     CLAUDE_MAX_OUTPUT_TOKENS: int = 0

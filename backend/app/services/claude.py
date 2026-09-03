@@ -1,4 +1,4 @@
-"""Claude text generation through an OpenAI-compatible relay.
+"""Claude text generation through an Anthropic-compatible relay.
 
 This client is intentionally limited to the backend polish/refine stages. It
 does not participate in the main writer route, and it never retries a request
@@ -13,7 +13,6 @@ import threading
 from typing import Any
 
 import httpx
-from openai import OpenAI
 
 from app.core.config import settings
 from app.utils import paid_api_guard
@@ -33,8 +32,39 @@ class ClaudeRequestRejectedError(RuntimeError):
     """The relay rejected the request before model execution."""
 
 
-_clients: dict[tuple[str, int], OpenAI] = {}
+_clients: dict[tuple[str, int], httpx.Client] = {}
 _clients_lock = threading.RLock()
+
+
+def _validate_model_name(model_name: str) -> None:
+    """Never let the Claude relay receive an OpenAI or other provider model."""
+
+    if not model_name.lower().startswith("claude-"):
+        raise ClaudeRequestRejectedError(
+            f"Claude relay refuses non-Claude model={model_name!r}; "
+            "configure CLAUDE_MODEL with a claude-* model"
+        )
+
+
+def _relay_quota_error(value: object) -> bool:
+    """Recognize AnyRouter's account-level free-1m quota response."""
+
+    message = str(value or "").lower()
+    return any(
+        marker in message
+        for marker in (
+            "1m free quota",
+            "free quota has been used up",
+            "免费额度已经全部用完",
+            "免费额度已全部用完",
+            "请充值 1m 额度",
+        )
+    )
+
+
+def _anthropic_beta_header() -> str | None:
+    raw = str(getattr(settings, "CLAUDE_ANTHROPIC_BETA", "") or "").strip()
+    return raw or None
 
 
 def _base_url() -> str:
@@ -42,7 +72,7 @@ def _base_url() -> str:
     return raw if raw.endswith("/v1") else f"{raw}/v1"
 
 
-def _get_client(timeout_seconds: int) -> OpenAI:
+def _get_client(timeout_seconds: int) -> httpx.Client:
     api_key = str(getattr(settings, "CLAUDE_API_KEY", "") or "").strip()
     if not api_key:
         raise ValueError("CLAUDE_API_KEY 未配置，无法调用 Claude 中转站")
@@ -54,13 +84,7 @@ def _get_client(timeout_seconds: int) -> OpenAI:
         if cached is not None:
             return cached
         http_client = httpx.Client(proxy=proxy, timeout=timeout_seconds) if proxy else None
-        client = OpenAI(
-            api_key=api_key,
-            base_url=_base_url(),
-            http_client=http_client,
-            max_retries=0,
-            timeout=timeout_seconds,
-        )
+        client = http_client or httpx.Client(timeout=timeout_seconds)
         _clients[key] = client
         return client
 
@@ -75,6 +99,17 @@ def _max_tokens(prompt: str, configured: int | None) -> int:
 
 
 def _message_text(response: Any) -> str:
+    if isinstance(response, dict):
+        blocks = response.get("content") or []
+        if isinstance(blocks, list):
+            parts = [
+                str(block.get("text"))
+                for block in blocks
+                if isinstance(block, dict) and block.get("text")
+            ]
+            if parts:
+                return "".join(parts).strip()
+        return str(response.get("text") or "").strip()
     choices = getattr(response, "choices", None) or []
     if not choices:
         return ""
@@ -128,12 +163,16 @@ def generate_text(
 
     del retries  # Deliberately no paid request replay.
     model_name = str(model or getattr(settings, "CLAUDE_MODEL", "claude-opus-5") or "claude-opus-5").strip()
+    _validate_model_name(model_name)
     timeout = max(30, int(request_timeout_seconds or getattr(settings, "CLAUDE_REQUEST_TIMEOUT", 1800) or 1800))
-    messages: list[dict[str, str]] = []
     instruction = str(system_instruction or "").strip()
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "max_tokens": _max_tokens(str(prompt), max_output_tokens),
+        "messages": [{"role": "user", "content": str(prompt)}],
+    }
     if instruction:
-        messages.append({"role": "system", "content": instruction})
-    messages.append({"role": "user", "content": str(prompt)})
+        payload["system"] = instruction
     client = _get_client(timeout)
     request_started = False
     try:
@@ -143,16 +182,37 @@ def generate_text(
         ):
             paid_api_guard.guard("claude")
             request_started = True
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=_max_tokens(str(prompt), max_output_tokens),
+            # AnyRouter's Claude route implements Anthropic Messages. Sending
+            # Claude through OpenAI Chat Completions returns a misleading 404
+            # even when the account has access to the model. Keep this request
+            # single-shot because the relay may bill an accepted request.
+            if temperature is not None:
+                payload["temperature"] = temperature
+            response = client.post(
+                f"{_base_url()}/messages",
+                headers={
+                    "x-api-key": str(getattr(settings, "CLAUDE_API_KEY", "") or "").strip(),
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                    "accept": "application/json",
+                    **(
+                        {"anthropic-beta": beta}
+                        if (beta := _anthropic_beta_header())
+                        else {}
+                    ),
+                },
+                json=payload,
             )
+            response.raise_for_status()
+            response_data = response.json()
     except Exception as exc:
-        if paid_api_guard.trip_if_quota("claude", exc):
+        response_body = str(getattr(getattr(exc, "response", None), "text", "") or "")
+        quota_signal = f"{exc} {response_body}".strip()
+        if paid_api_guard.trip_if_quota("claude", quota_signal) or _relay_quota_error(quota_signal):
+            if _relay_quota_error(quota_signal):
+                paid_api_guard.trip("claude", quota_signal)
             raise paid_api_guard.PaidApiQuotaExhausted(
-                f"Claude quota exhausted; request blocked from retry: {exc}"
+                f"Claude quota exhausted; request blocked from retry: {quota_signal}"
             ) from exc
         if _request_rejected(exc):
             raise ClaudeRequestRejectedError(
@@ -166,7 +226,7 @@ def generate_text(
             ) from exc
         raise
 
-    text = _message_text(response)
+    text = _message_text(response_data)
     if not text:
         # A successful HTTP response can still be empty because of an upstream
         # relay truncation. Treat it as uncertain delivery so callers cannot
