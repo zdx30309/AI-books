@@ -37,6 +37,9 @@ class _FakeRedis:
 def test_quota_markers_do_not_confuse_normal_rate_limit() -> None:
     assert paid_api_guard.is_quota_exhausted("429 insufficient_quota")
     assert paid_api_guard.is_quota_exhausted("RESOURCE_EXHAUSTED: no credits remaining")
+    assert paid_api_guard.is_quota_exhausted(
+        "403 PERMISSION_DENIED: Lightning dunning decision is deny for project"
+    )
     assert not paid_api_guard.is_quota_exhausted("429 rate limit; retry after 2 seconds")
 
 

@@ -35,6 +35,14 @@ QUOTA_EXHAUSTED_MARKERS = (
     "billing_not_active",
     "billing unavailable",
     "billing hard limit",
+    # Google Vertex/GenAI returns this deterministic 403 while the project is
+    # in a billing dunning state.  It is not a transient permission failure:
+    # retrying the same paid request only burns another attempt and cannot
+    # change the project-level decision.
+    "lightning dunning decision is deny",
+    "dunning decision is deny",
+    "permission_denied",
+    "permission denied",
     "resource_exhausted",
     "resource exhausted",
     "余额不足",
