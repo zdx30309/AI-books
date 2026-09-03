@@ -124,6 +124,19 @@ class Settings(BaseSettings):
     # 公版古文白话固定由 OpenAI gpt-5.6-sol 原生执行渲染后的完整 Prompt。
     CLASSICAL_TRANSLATION_WRITER_PROVIDER: str = "openai"
 
+    # --- Backend polish/refine provider ---
+    # Keep the historical Gemini-named frontend stages while allowing the
+    # backend to route them through a dedicated Claude relay.
+    BACKEND_POLISH_PROVIDER: str = "gemini"
+    BACKEND_REFINE_PROVIDER: str = "gemini"
+    CLAUDE_API_KEY: str = ""
+    CLAUDE_BASE_URL: str = "https://anyrouter.top/v1"
+    CLAUDE_MODEL: str = "claude-5-opus"
+    CLAUDE_HTTPS_PROXY: str = ""
+    CLAUDE_REQUEST_TIMEOUT: int = 1800
+    CLAUDE_MAX_OUTPUT_TOKENS: int = 0
+    CLAUDE_MAX_CONCURRENT_CALLS: int = 1
+
     # --- xAI / Grok (only used by the dedicated report-review page) ---
     XAI_API_KEY: str = ""
     XAI_BASE_URL: str = "https://api.x.ai/v1"

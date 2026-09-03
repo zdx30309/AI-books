@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routers.auth import get_current_user
 from app.models import User
-from app.services.gemini import polish_book_text
+from app.services.polish_provider import polish_book_text
 
 logger = logging.getLogger(__name__)
 
