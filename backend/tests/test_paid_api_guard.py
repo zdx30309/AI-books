@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -260,3 +261,31 @@ def test_gemini_delivery_uncertain_does_not_switch_backend_or_retry(
         gemini.generate_text("prompt", retries=3)
 
     assert calls == 1
+
+
+def test_gemini_billing_hold_is_not_swallowed_by_chunk_fallback(
+    tmp_path,
+) -> None:
+    calls = 0
+
+    def blocked_gemini(_text: str, **_kwargs: object) -> str:
+        nonlocal calls
+        calls += 1
+        raise paid_api_guard.PaidApiQuotaExhausted(
+            "Gemini quota exhausted; Lightning dunning decision is deny"
+        )
+
+    with pytest.raises(paid_api_guard.PaidApiQuotaExhausted):
+        asyncio.run(
+            content_engine._polish_by_paragraph_chunks_strict(  # noqa: SLF001
+                "first chunk\n\nsecond chunk",
+                target_chars=20,
+                output_dir=tmp_path,
+                chunk_func=blocked_gemini,
+                allow_chunk_fallback=True,
+                call_timeout_seconds=0,
+            )
+        )
+
+    assert calls >= 1
+    assert not list((tmp_path / "02_polish_chunks").glob("*.md"))

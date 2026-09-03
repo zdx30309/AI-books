@@ -1443,6 +1443,44 @@ def test_finance_longform_deepseek_compression_keeps_refined_full_text(
     assert (tmp_path / "finance_deepseek_compression" / "04_format_rejected_compressed.md").exists()
 
 
+def test_finance_gemini_billing_failure_stops_without_provider_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_calls = 0
+
+    async def fake_route_writer_call(_prompt: str, **_kwargs: object) -> str:
+        nonlocal writer_calls
+        writer_calls += 1
+        return _long_finance_manuscript()
+
+    def blocked_gemini(_text: str, **_kwargs: object) -> str:
+        raise content_engine.paid_api_guard.PaidApiQuotaExhausted(
+            "Gemini quota exhausted; Lightning dunning decision is deny"
+        )
+
+    def forbidden_later_stage(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("Gemini billing failure must stop the pipeline")
+
+    _patch_finance_latest_research(monkeypatch)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", blocked_gemini)
+    monkeypatch.setattr(content_engine, "refine_book_text", forbidden_later_stage)
+    monkeypatch.setattr(content_engine, "format_book_text", forbidden_later_stage)
+
+    with pytest.raises(content_engine.paid_api_guard.PaidApiQuotaExhausted):
+        asyncio.run(
+            content_engine.generate_full_book(
+                "视频讲到算力价格、AI 服务器供应链、政策条件和企业投入节奏。",
+                category="finance_technology",
+                output_dir=tmp_path / "finance_gemini_billing_hold",
+                source_duration_seconds=30 * 60,
+            )
+        )
+
+    assert writer_calls == 1
+
+
 def test_finance_openai_writer_failure_is_non_retryable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -45,7 +45,12 @@ from app.services.classical_chinese import (
     strip_classical_paragraph_markers,
 )
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
-from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
+from app.services.gemini import (
+    GeminiDeliveryUncertainError,
+    GeminiMaxTokensError,
+    polish_book_text,
+    refine_book_text,
+)
 from app.services.aigc_quality_gate import (
     AIGC_POLICY_VERSION,
     AigcManualReviewRequired,
@@ -3771,6 +3776,23 @@ def _classical_gemini_chunk_request_timeout(
     return int(_effective_gemini_chunk_timeout(0, request_timeout))
 
 
+def _is_gemini_blocking_failure(exc: BaseException) -> bool:
+    """Return true when a Gemini failure must stop instead of degrading.
+
+    A quota/billing denial is an operator boundary, and an uncertain delivery
+    may already have been charged. Neither case may be converted to raw text or
+    sent through another provider.
+    """
+
+    if isinstance(exc, (paid_api_guard.PaidApiQuotaExhausted, GeminiDeliveryUncertainError)):
+        return True
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return "gemini" in message and (
+        paid_api_guard.is_quota_exhausted(exc)
+        or "paid_call_delivery_uncertain" in message
+    )
+
+
 def _polish_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
     return polish_book_text(
         text,
@@ -3945,8 +3967,8 @@ async def _polish_by_paragraph_chunks(
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
     （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
 
-    健壮性原则：一润是质量增强层，不是必经任务。任何单块失败都不应让整个任务挂掉。
-    每块独立 try：成功用润色稿；失败或超时则用原 chunk 兜底，继续往下走。
+    健壮性原则：一润是质量增强层，普通单块故障可用原 chunk 兜底；
+    但费用/账单拒绝和交付不确定异常必须停止，不能降级或换供应商。
     最后日志统计降级数量。
     """
     if not text or not text.strip():
@@ -3958,6 +3980,7 @@ async def _polish_by_paragraph_chunks(
     total = len(chunks)
     polished: list[str | None] = [None] * total
     fallback_count = 0
+    blocking_errors: list[BaseException] = []
     completed_count = 0
     concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
     semaphore = asyncio.Semaphore(concurrency)
@@ -4000,6 +4023,9 @@ async def _polish_by_paragraph_chunks(
             try:
                 polished[idx] = await _polish_once(chunk)
             except asyncio.TimeoutError as exc:
+                if _is_gemini_blocking_failure(exc):
+                    blocking_errors.append(exc)
+                    return
                 first_err = f"超时（{exc.__class__.__name__}）"
                 fallback_count += 1
                 logger.error(
@@ -4008,6 +4034,9 @@ async def _polish_by_paragraph_chunks(
                 )
                 polished[idx] = chunk
             except Exception as exc:
+                if _is_gemini_blocking_failure(exc):
+                    blocking_errors.append(exc)
+                    return
                 first_err = f"{exc.__class__.__name__}: {exc}"
                 fallback_count += 1
                 logger.error(
@@ -4018,6 +4047,9 @@ async def _polish_by_paragraph_chunks(
             await _mark_completed(idx + 1, chunk)
 
     await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
+
+    if blocking_errors:
+        raise blocking_errors[0]
 
     if fallback_count:
         logger.warning(
@@ -4068,6 +4100,7 @@ async def _polish_by_paragraph_chunks_strict(
     total = len(chunks)
     polished: list[str | None] = [None] * total
     errors: list[str] = []
+    blocking_errors: list[BaseException] = []
     fallback_count = 0
     completed_count = 0
     concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
@@ -4296,6 +4329,12 @@ async def _polish_by_paragraph_chunks_strict(
                 await _mark_completed(idx + 1, result)
             except GeminiMaxTokensError as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
+                if _is_gemini_blocking_failure(exc):
+                    async with error_lock:
+                        errors.append(f"chunk {idx + 1}/{total}: {message}")
+                        abort_event.set()
+                        blocking_errors.append(exc)
+                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4311,6 +4350,12 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except asyncio.TimeoutError as exc:
                 message = f"TimeoutError: {exc}"
+                if _is_gemini_blocking_failure(exc):
+                    async with error_lock:
+                        errors.append(f"chunk {idx + 1}/{total}: {message}")
+                        abort_event.set()
+                        blocking_errors.append(exc)
+                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4326,6 +4371,12 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except Exception as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
+                if _is_gemini_blocking_failure(exc):
+                    async with error_lock:
+                        errors.append(f"chunk {idx + 1}/{total}: {message}")
+                        abort_event.set()
+                        blocking_errors.append(exc)
+                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4341,6 +4392,9 @@ async def _polish_by_paragraph_chunks_strict(
                 )
 
     await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
+
+    if blocking_errors:
+        raise blocking_errors[0]
 
     if errors:
         first = errors[0][:500]
@@ -5467,8 +5521,10 @@ async def _generate_finance_longform_book(
                 timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
             )
         except Exception as exc:
+            if _is_gemini_blocking_failure(exc):
+                raise
             logger.warning(
-                "财经科技 Gemini 一润失败，保留 OpenAI 完整初稿继续后续链路: %s",
+                "财经科技 Gemini 一润失败，保留主稿继续后续链路: %s",
                 exc,
             )
             _dump_stage(output_dir, "02_polish_error.txt", f"{exc.__class__.__name__}: {exc}")
@@ -5476,7 +5532,7 @@ async def _generate_finance_longform_book(
         polished_markdown = normalize_final_markdown(polished_markdown, category=category)
         if _finance_stage_looks_compressed(generated_markdown, polished_markdown, category=category):
             logger.warning(
-                "财经科技 Gemini 一润疑似压缩，保留 OpenAI 完整初稿: source_body=%d candidate_body=%d",
+                "财经科技 Gemini 一润疑似压缩，保留主稿: source_body=%d candidate_body=%d",
                 _finance_body_chars(generated_markdown),
                 _finance_body_chars(polished_markdown),
             )
@@ -5519,6 +5575,8 @@ async def _generate_finance_longform_book(
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
         except Exception as exc:
+            if _is_gemini_blocking_failure(exc):
+                raise
             logger.warning(
                 "财经科技 Gemini 二润失败，保留上一阶段完整稿继续后续链路: %s",
                 exc,
