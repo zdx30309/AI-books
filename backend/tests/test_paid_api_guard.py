@@ -260,36 +260,3 @@ def test_gemini_delivery_uncertain_does_not_switch_backend_or_retry(
         gemini.generate_text("prompt", retries=3)
 
     assert calls == 1
-
-
-def test_gemini_billing_breaker_uses_openai_same_prompt_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    monkeypatch.setattr(
-        content_engine.paid_api_guard,
-        "reason",
-        lambda provider: "Lightning dunning decision is deny" if provider == "gemini" else None,
-    )
-    monkeypatch.setattr(
-        content_engine,
-        "polish_book_text",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gemini must be blocked")),
-    )
-
-    def fake_openai(prompt: str, **kwargs: object) -> str:
-        calls.append((prompt, kwargs))
-        return "processed"
-
-    monkeypatch.setattr(content_engine, "_openai_writer_call", fake_openai)
-
-    result = content_engine._polish_with_provider_fallback(  # noqa: SLF001
-        "source",
-        system_instruction="keep the meaning",
-    )
-
-    assert result == "processed"
-    assert len(calls) == 1
-    assert "keep the meaning" in calls[0][0]
-    assert calls[0][1]["retry_on_failure"] is False

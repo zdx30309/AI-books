@@ -3771,85 +3771,8 @@ def _classical_gemini_chunk_request_timeout(
     return int(_effective_gemini_chunk_timeout(0, request_timeout))
 
 
-def _gemini_provider_blocked() -> bool:
-    """Return whether Gemini is known unavailable before starting a request."""
-
-    try:
-        return bool(paid_api_guard.reason("gemini"))
-    except paid_api_guard.PaidApiGuardUnavailable:
-        # Production is fail-closed: an unverifiable breaker must not become a
-        # paid Gemini request. The OpenAI fallback has its own guard.
-        return True
-    except Exception:
-        logger.warning("读取 Gemini 费用熔断状态失败", exc_info=True)
-        return False
-
-
-def _openai_quality_transform(text: str, *, system_instruction: str | None = None) -> str:
-    """Run the same polish/refine instruction through the configured OpenAI writer.
-
-    This substitution is used only for a deterministic Gemini billing block.
-    The prompt, model, configured reasoning effort, and output policy remain
-    unchanged; the call is submitted once and uses the normal OpenAI guard.
-    """
-
-    instruction = (system_instruction or "").strip()
-    rendered = "\n\n".join(
-        part
-        for part in (
-            instruction,
-            "请只输出处理后的完整正文，不要解释、不要列清单。",
-            text.strip(),
-        )
-        if part
-    )
-    cache_key = f"gemini-fallback:{_prompt_cache_digest(instruction, text)}"
-    return _openai_writer_call(
-        rendered,
-        max_output_tokens=0,
-        prompt_cache_key=cache_key,
-        retry_on_failure=False,
-    )
-
-
-def _polish_with_provider_fallback(
-    text: str,
-    *,
-    system_instruction: str | None = None,
-    **kwargs: Any,
-) -> str:
-    if _gemini_provider_blocked():
-        logger.warning("Gemini 费用熔断生效，使用 OpenAI 同提示单次一润替代")
-        return _openai_quality_transform(text, system_instruction=system_instruction)
-    try:
-        return polish_book_text(text, system_instruction=system_instruction, **kwargs)
-    except paid_api_guard.PaidApiQuotaExhausted:
-        if _gemini_provider_blocked():
-            logger.warning("Gemini 费用拒绝后切换 OpenAI 同提示单次一润替代")
-            return _openai_quality_transform(text, system_instruction=system_instruction)
-        raise
-
-
-def _refine_with_provider_fallback(
-    text: str,
-    *,
-    system_instruction: str | None = None,
-    **kwargs: Any,
-) -> str:
-    if _gemini_provider_blocked():
-        logger.warning("Gemini 费用熔断生效，使用 OpenAI 同提示单次二润替代")
-        return _openai_quality_transform(text, system_instruction=system_instruction)
-    try:
-        return refine_book_text(text, system_instruction=system_instruction, **kwargs)
-    except paid_api_guard.PaidApiQuotaExhausted:
-        if _gemini_provider_blocked():
-            logger.warning("Gemini 费用拒绝后切换 OpenAI 同提示单次二润替代")
-            return _openai_quality_transform(text, system_instruction=system_instruction)
-        raise
-
-
 def _polish_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
-    return _polish_with_provider_fallback(
+    return polish_book_text(
         text,
         system_instruction=system_instruction,
         disable_max_output_tokens=True,
@@ -3861,7 +3784,7 @@ def _polish_book_text_without_output_cap(text: str, *, system_instruction: str |
 
 
 def _refine_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
-    return _refine_with_provider_fallback(
+    return refine_book_text(
         text,
         system_instruction=system_instruction,
         disable_max_output_tokens=True,
@@ -4042,7 +3965,7 @@ async def _polish_by_paragraph_chunks(
 
     async def _polish_once(chunk: str) -> str:
         return await _to_thread_with_optional_timeout(
-            _polish_with_provider_fallback,
+            polish_book_text,
             chunk,
             system_instruction=system_instruction,
             timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
@@ -4455,7 +4378,7 @@ async def _refine_by_paragraph_chunks_strict(
         system_instruction=system_instruction,
         on_stage=on_stage,
         output_dir=output_dir,
-        chunk_func=chunk_func or _refine_with_provider_fallback,
+        chunk_func=chunk_func or refine_book_text,
         call_timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
         cache_subdir="03_refine_chunks",
         progress_stage="refine_chunk",
@@ -5531,7 +5454,7 @@ async def _generate_finance_longform_book(
         logger.info("财经科技 Gemini 一润整稿输入: chars=%d body_chars=%d", len(generated_markdown), _finance_body_chars(generated_markdown))
         try:
             polished_markdown = await _to_thread_with_optional_timeout(
-                _polish_with_provider_fallback,
+                polish_book_text,
                 generated_markdown,
                 system_instruction=polish_instruction,
                 disable_max_output_tokens=True,
@@ -5583,7 +5506,7 @@ async def _generate_finance_longform_book(
         logger.info("财经科技 Gemini 二润整稿输入: chars=%d body_chars=%d", len(polished_markdown), _finance_body_chars(polished_markdown))
         try:
             refined_markdown = await _to_thread_with_optional_timeout(
-                _refine_with_provider_fallback,
+                refine_book_text,
                 polished_markdown,
                 system_instruction=refine_instruction,
                 disable_max_output_tokens=True,
@@ -7046,7 +6969,7 @@ async def generate_full_book(
         polish_chunk_func = (
             _polish_book_text_without_output_cap
             if is_classical_category
-            else _polish_with_provider_fallback
+            else polish_book_text
         )
         polished_markdown = await _polish_by_paragraph_chunks_strict(
             generated_markdown,
@@ -7139,7 +7062,7 @@ async def generate_full_book(
         refine_func = (
             _refine_book_text_without_output_cap
             if is_classical_category
-            else _refine_with_provider_fallback
+            else refine_book_text
         )
         if is_classical_category:
             logger.info("Classical Chinese refine uses chunked path to avoid whole-book Gemini stalls")
