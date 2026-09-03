@@ -158,7 +158,8 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_LOCATION: str = "global"
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_HTTPS_PROXY: str = ""
-    GEMINI_MODEL: str = "gemini-3.1-flash"
+    # Vertex AI publishes the requested Gemini 3.1 Flash tier as Flash-Lite.
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
@@ -201,7 +202,7 @@ class Settings(BaseSettings):
     AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M: float = 0.5
     AIGC_REVIEW_GROK_OUTPUT_USD_PER_M: float = 6.0
     AIGC_REVIEW_USD_CNY_RATE: float = 7.2
-    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash"
+    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
     AIGC_REVIEW_MAX_REWRITE_ATTEMPTS: int = 1
     AIGC_REVIEW_HUMAN_TARGET: float = 25.0
     AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS: int = 600

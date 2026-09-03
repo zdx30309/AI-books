@@ -5,7 +5,7 @@ Updated: 2026-08-10
 ## Gemini ADC Migration (2026-09-03)
 
 - Switched backend polish/refine routing back to Gemini; the main draft writer remains official OpenAI `gpt-5.6-sol`.
-- Switched the default Gemini model to `gemini-3.1-flash`.
+- Switched the default Gemini model to Vertex's `gemini-3.1-flash-lite` identifier (the published Gemini 3.1 Flash tier).
 - Replaced the committed service-account JSON path with user ADC mounted read-only at `/root/.config/gcloud/application_default_credentials.json` for backend, worker, and beat.
 - Disabled Gemini API-key fallback so an ADC failure pauses the paid call path instead of switching credentials or billing a second channel.
 - Removed the previously tracked service-account JSON keys from the repository and Docker build context.

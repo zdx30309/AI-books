@@ -263,8 +263,10 @@ def generate_text(
     - 关闭 AFC，避免无工具调用场景下多余的 automatic function calling 行为。
     """
     model_name = (model or settings.GEMINI_MODEL).strip()
-    uses_new_controls = model_name.startswith("gemini-3.6-") or model_name.startswith(
-        "gemini-3.5-flash-lite"
+    uses_new_controls = (
+        model_name.startswith("gemini-3.6-")
+        or model_name.startswith("gemini-3.5-flash-lite")
+        or model_name.startswith("gemini-3.1-flash-lite")
     )
     thinking_config = (
         types.ThinkingConfig(

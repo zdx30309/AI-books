@@ -163,7 +163,7 @@ def test_requested_writer_and_specialist_model_defaults() -> None:
 
     assert fields["OPENAI_WRITER_MODEL"].default == "gpt-5.6-sol"
     assert fields["OPENAI_WRITER_REASONING_EFFORT"].default == "xhigh"
-    assert fields["GEMINI_MODEL"].default == "gemini-3.1-flash"
+    assert fields["GEMINI_MODEL"].default == "gemini-3.1-flash-lite"
     assert fields["DEEPSEEK_MODEL"].default == "deepseek-v4-flash"
 
 
