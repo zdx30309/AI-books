@@ -47,6 +47,7 @@ from app.services.content_engine import (
     generate_full_book,
     normalize_final_markdown,
 )
+from app.services.claude import ClaudeDeliveryUncertainError, ClaudeRequestRejectedError
 from app.services.aigc_quality_gate import (
     AigcManualReviewRequired,
     AigcTechnicalError,
@@ -182,6 +183,8 @@ _RETRYABLE_ERROR_TOKENS = (
 _NON_RETRYABLE_ERROR_TOKENS = (
     "imageapiuncertainerror",
     "openaideliveryuncertainerror",
+    "clauderequestrejectederror",
+    "claudedeliveryuncertainerror",
     "paid_call_delivery_uncertain",
     "delivery uncertain",
     "automatic retry stopped to avoid duplicate billing",
@@ -822,7 +825,13 @@ def _is_retryable_generation_error(exc: Exception) -> bool:
     # the generic technical-error and rate-limit branches so it can never be
     # amplified by Celery or the recovery watchdog.
     if is_quota_exhausted(exc) or _is_qingdou_quota_exhausted(exc) or isinstance(
-        exc, (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError)
+        exc,
+        (
+            OpenAIDeliveryUncertainError,
+            QingdouDeliveryUncertainError,
+            ClaudeDeliveryUncertainError,
+            ClaudeRequestRejectedError,
+        ),
     ):
         return False
     if isinstance(exc, AigcTechnicalError):
@@ -1139,7 +1148,11 @@ def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
     quota_exhausted = is_quota_exhausted(exc) or qingdou_quota_exhausted
     delivery_uncertain = isinstance(
         exc,
-        (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError),
+        (
+            OpenAIDeliveryUncertainError,
+            QingdouDeliveryUncertainError,
+            ClaudeDeliveryUncertainError,
+        ),
     ) or any(
         marker in normalized
         for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
@@ -1180,7 +1193,13 @@ def _user_facing_generation_error(exc: Exception) -> str:
     if is_quota_exhausted(exc):
         if any(token in normalized for token in ("gemini", "dunning", "permission_denied", "permission denied")):
             return "Gemini 额度或账单不可用，任务已暂停保护；不会切换到 OpenAI，请恢复 Gemini 账单后再继续。"
+        if "claude" in normalized or "anyrouter" in normalized:
+            return "Claude 中转站额度或路由不可用，任务已暂停保护；恢复 Claude 中转站后再手动继续，不会切换到 OpenAI。"
         return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
+    if isinstance(exc, ClaudeRequestRejectedError):
+        return "Claude 中转站拒绝了当前请求，任务已停止；请修正模型/协议配置后再手动继续。"
+    if isinstance(exc, ClaudeDeliveryUncertainError):
+        return "Claude 中转站请求结果未知，任务已暂停以避免重复计费；核对中转站日志后再手动继续。"
     if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in normalized:
         return "付费模型请求可能已经提交但结果未知，任务已暂停以避免重复计费；请核对提供方响应后再手动继续。"
     if "rate_limit" in normalized or "429" in normalized:

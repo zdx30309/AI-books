@@ -9,6 +9,7 @@ import pytest
 from app.core.config import settings
 from app.services import content_engine
 from app.services import deepseek, gemini
+from app.services.claude import ClaudeDeliveryUncertainError, ClaudeRequestRejectedError
 from app.tasks import tasks
 from app.utils import paid_api_guard
 
@@ -289,3 +290,12 @@ def test_gemini_billing_hold_is_not_swallowed_by_chunk_fallback(
 
     assert calls >= 1
     assert not list((tmp_path / "02_polish_chunks").glob("*.md"))
+
+
+def test_claude_relay_failures_never_enter_task_auto_retry() -> None:
+    assert not tasks._is_retryable_generation_error(  # noqa: SLF001
+        ClaudeRequestRejectedError("relay rejected model")
+    )
+    assert not tasks._is_retryable_generation_error(  # noqa: SLF001
+        ClaudeDeliveryUncertainError("relay returned 503")
+    )
