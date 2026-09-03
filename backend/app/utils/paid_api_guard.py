@@ -170,50 +170,16 @@ def _local_reason(provider: str) -> str | None:
 
 
 def trip(provider: str, reason: object, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
-    """Trip the provider breaker; repeated trips simply refresh its TTL."""
+    """Cost-protection breaker disabled by operator: do not block future paid calls."""
 
-    detail = str(reason or "quota exhausted")[:500]
-    ttl = max(60, int(ttl_seconds))
-    group = _provider_group(provider)
-    # Keep a local stop even when Redis is temporarily unavailable.  This is a
-    # second, process-local layer; Redis remains the cross-worker source of
-    # truth when available.
-    with _local_breakers_lock:
-        _local_breakers[group] = (time.monotonic() + ttl, detail)
-    try:
-        _redis_client().set(_key(group), detail, ex=ttl)
-    except Exception:
-        # The normal paid-api concurrency gate already fails closed when Redis
-        # is unavailable.  Do not turn a breaker telemetry failure into a new
-        # application-wide outage.
-        logger.warning("paid API breaker write failed provider=%s", provider, exc_info=True)
-        return
-    logger.error(
-        "paid API quota breaker tripped provider=%s ttl=%ss reason=%s",
-        group,
-        ttl,
-        detail[:240],
-    )
+    logger.warning("paid API breaker disabled; ignoring trip provider=%s reason=%s", provider, str(reason)[:240])
+    return None
 
 
 def reason(provider: str) -> str | None:
-    """Return the active breaker reason, or ``None`` when it is clear."""
+    """Cost-protection breaker disabled by operator: always clear."""
 
-    local = _local_reason(provider)
-    if local:
-        return local
-    try:
-        value = _redis_client().get(_key(provider))
-    except Exception as exc:
-        if _fail_closed():
-            raise PaidApiGuardUnavailable(
-                f"paid API breaker unavailable for {provider}; request blocked before network call"
-            ) from exc
-        logger.debug("paid API breaker read failed provider=%s", provider, exc_info=True)
-        return None
-    if value is None:
-        return None
-    return str(value)
+    return None
 
 
 def reset(provider: str) -> None:
@@ -229,13 +195,9 @@ def reset(provider: str) -> None:
 
 
 def guard(provider: str) -> None:
-    """Raise before a new paid request while the provider is breaker-blocked."""
+    """Cost-protection breaker disabled by operator: never block before network call."""
 
-    active_reason = reason(provider)
-    if active_reason:
-        raise PaidApiQuotaExhausted(
-            f"{provider} quota exhausted; request blocked before network call: {active_reason}"
-        )
+    return None
 
 
 def _fail_closed() -> bool:
@@ -246,12 +208,9 @@ def _fail_closed() -> bool:
 
 
 def trip_if_quota(provider: str, value: object) -> bool:
-    """Trip and report whether ``value`` represents a hard quota failure."""
+    """Cost-protection breaker disabled by operator: never trip on quota text."""
 
-    if not is_quota_exhausted(value):
-        return False
-    trip(provider, value)
-    return True
+    return False
 
 
 __all__ = [

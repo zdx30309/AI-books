@@ -1136,49 +1136,9 @@ def _patch_config(task: Task, **kv: Any) -> None:
 
 
 def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
-    """Persist a paid-call hold so watchdogs cannot redispatch it.
+    """Operator disabled cost-protection holds; never pause redispatch for quota text."""
 
-    A transport failure after a provider accepted a request is as dangerous as
-    an exhausted quota: replaying it can charge the same work twice. Both
-    states therefore require an explicit operator resume.
-    """
-
-    normalized = f"{type(exc).__name__}: {exc}".lower()
-    qingdou_quota_exhausted = _is_qingdou_quota_exhausted(exc)
-    quota_exhausted = is_quota_exhausted(exc) or qingdou_quota_exhausted
-    delivery_uncertain = isinstance(
-        exc,
-        (
-            OpenAIDeliveryUncertainError,
-            QingdouDeliveryUncertainError,
-            ClaudeDeliveryUncertainError,
-        ),
-    ) or any(
-        marker in normalized
-        for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
-    )
-    if not quota_exhausted and not delivery_uncertain:
-        return
-    cfg = dict(task.config or {})
-    reason = (
-        "轻抖可用次数或资源已用完，任务已暂停；充值/恢复轻抖账户后再继续生成"
-        if qingdou_quota_exhausted
-        else "付费模型请求已提交但结果未知，已阻止自动重试；核对提供方账单/响应后再继续生成"
-        if delivery_uncertain and not quota_exhausted
-        else "付费模型额度耗尽，已阻止自动重试；确认余额恢复后再继续生成"
-    )
-    cfg.update(
-        generation_hold=True,
-        generation_hold_reason=reason,
-        generation_hold_step=(
-            "轻抖资源/次数不足，已暂停且未再次提交解析任务"
-            if qingdou_quota_exhausted
-            else "费用保护暂停，未再次投递模型调用"
-        ),
-        generation_hold_at=datetime.now(timezone.utc).isoformat(),
-        paid_call_delivery_uncertain=delivery_uncertain,
-    )
-    task.config = cfg
+    return None
 
 
 def _user_facing_generation_error(exc: Exception) -> str:
