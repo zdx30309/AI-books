@@ -102,7 +102,7 @@ def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None
     assert report.total_violations >= 6
 
 
-def test_format_noise_allows_standard_internal_subheading() -> None:
+def test_format_noise_rejects_internal_subheading() -> None:
     markdown = """@最终书名
 测试书
 @正文
@@ -113,8 +113,7 @@ def test_format_noise_allows_standard_internal_subheading() -> None:
 
     report = measure_quality(markdown)
 
-    assert "# 标题残留" not in report.format_noise_hits
-    assert "裸短小标题" not in report.format_noise_hits
+    assert "# 标题残留" in report.format_noise_hits
 
 
 def test_final_hard_error_gate_detects_semantic_collocation_errors() -> None:
@@ -162,7 +161,7 @@ def test_final_hard_error_gate_detects_illegal_at_pseudo_heading() -> None:
     assert hits["非法正文 @ 段首"]
 
 
-def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
+def test_final_hard_error_gate_rejects_internal_subheading() -> None:
     markdown = """@最终书名
 测试书
 @正文
@@ -173,7 +172,7 @@ def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
 
     hits = detect_final_hard_errors(markdown, category="finance_technology")
 
-    assert not hits
+    assert "# 标题残留" in hits
 
 
 def test_final_hard_error_gate_allows_normal_finance_topic_sentence_with_risk_keyword() -> None:
@@ -189,7 +188,7 @@ def test_final_hard_error_gate_allows_normal_finance_topic_sentence_with_risk_ke
     assert "正文内小标题未标准化为 ###" not in hits
 
 
-def test_final_hard_error_gate_detects_inline_noun_phrase_pseudo_subheading() -> None:
+def test_final_hard_error_gate_allows_inline_noun_phrase_body_sentences() -> None:
     markdown = """@最终书名
 测试书
 @正文
@@ -200,7 +199,7 @@ def test_final_hard_error_gate_detects_inline_noun_phrase_pseudo_subheading() ->
 
     hits = detect_final_hard_errors(markdown, category="finance_technology")
 
-    assert len(hits["正文内小标题未标准化为 ###"]) == 2
+    assert "正文内小标题未标准化为 ###" not in hits
 
 
 def test_final_hard_error_gate_allows_finance_explanatory_sentences_with_keyword_prefixes() -> None:

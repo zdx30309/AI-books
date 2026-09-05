@@ -3,7 +3,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from app.utils.task_status import public_task_error, public_task_step
 
 
 class CreateTaskRequest(BaseModel):
@@ -159,6 +161,20 @@ class TaskStatusResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
 
+    @field_validator("current_step", mode="before")
+    @classmethod
+    def _public_current_step(cls, value: object, info: ValidationInfo) -> str:
+        return public_task_step(
+            value,
+            status=info.data.get("status", ""),
+            progress=info.data.get("progress", 0),
+        )
+
+    @field_validator("error_message", mode="before")
+    @classmethod
+    def _public_error_message(cls, value: object, info: ValidationInfo) -> str | None:
+        return public_task_error(value, status=info.data.get("status", ""))
+
 
 class TaskListItem(BaseModel):
     """任务列表卡片视图。"""
@@ -177,6 +193,15 @@ class TaskListItem(BaseModel):
     category_label: str | None = None
     word_count: int = 0            # 全文字数 (config.markdown_chars 或章节累加)
     chapter_count: int = 0
+
+    @field_validator("current_step", mode="before")
+    @classmethod
+    def _public_current_step(cls, value: object, info: ValidationInfo) -> str:
+        return public_task_step(
+            value,
+            status=info.data.get("status", ""),
+            progress=info.data.get("progress", 0),
+        )
 
 
 class TaskListResponse(BaseModel):

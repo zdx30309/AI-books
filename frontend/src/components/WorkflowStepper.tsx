@@ -1,4 +1,5 @@
 import { Check, Circle, Loader2, Pause } from "lucide-react";
+import { publicTaskStep } from "@/utils/taskStatus";
 
 interface Step {
   key: string;
@@ -10,10 +11,10 @@ interface Step {
 const BASE_STEPS: Step[] = [
   { key: "queue", label: "排队建库", start: 0 },
   { key: "fetch", label: "解析视频文案", start: 8 },
-  { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
-  { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
-  { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
-  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
+  { key: "writer", label: "生成初稿", start: 25 },
+  { key: "polish", label: "第一轮润色", start: 50 },
+  { key: "refine", label: "第二轮润色", start: 72 },
+  { key: "format", label: "整理终稿", start: 87 },
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
@@ -28,8 +29,8 @@ const COMIC_STEPS: Step[] = [
 const DIRECT_WRITER_STEPS: Step[] = [
   { key: "queue", label: "排队建库", start: 0 },
   { key: "fetch", label: "解析原文", start: 8 },
-  { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
-  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
+  { key: "writer", label: "生成初稿", start: 25 },
+  { key: "format", label: "整理终稿", start: 87 },
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
@@ -66,6 +67,7 @@ export function WorkflowStepper({ progress, currentStep, status, category, aigcR
     : isDirectWriterWorkflow
       ? withAigcStep(DIRECT_WRITER_STEPS, aigcRequired)
       : withAigcStep(BASE_STEPS, aigcRequired);
+  const displayStep = publicTaskStep(currentStep, status, progress);
 
   return (
     <ol className="space-y-3">
@@ -122,9 +124,9 @@ export function WorkflowStepper({ progress, currentStep, status, category, aigcR
               >
                 {step.label}
               </div>
-              {(active || paused) && currentStep && (
+              {(active || paused) && displayStep && (
                 <div className="mt-1 text-[11px] tracking-wide text-warm-400">
-                  {failed ? "已停止" : isManualReview ? "等待人工复核" : paused ? "已暂停" : currentStep}
+                  {failed ? "已停止" : isManualReview ? "正在处理" : paused ? "已暂停" : displayStep}
                 </div>
               )}
             </div>

@@ -100,7 +100,7 @@ from app.services.classical_reference_templates import (
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
 from app.utils.docx_text import DocxTextError, extract_classical_document_text
-from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
+from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
 
 _STAGE_FILES = {
     "writer": "01_writer.md",
@@ -152,6 +152,9 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "auto_retry_exhausted_at",
     "auto_requeued_at",
     "auto_requeue_reason",
+    "terminal_input_failure",
+    "terminal_input_manual_review_at",
+    "terminal_input_manual_review_reason",
     "failed_auto_recovery_attempts",
     "failed_auto_recovered_at",
     "markdown",
@@ -401,8 +404,7 @@ def _create_and_dispatch_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"Celery dispatch failed: {e}"[:2000]
+        _mark_dispatch_failure_pending(task, e)
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -471,8 +473,7 @@ def _create_classical_text_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"Celery dispatch failed: {e}"[:2000]
+        _mark_dispatch_failure_pending(task, e)
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -523,12 +524,45 @@ def _dispatch_task(task: Task) -> None:
         if bool((task.config or {}).get("public_domain_longform_v2")):
             from app.tasks.tasks import process_public_domain_longform
 
-            process_public_domain_longform.delay(str(task.id))
+            cfg = task.config or {}
+            if (
+                cfg.get("generation_mode") == "classical_vernacular"
+                or cfg.get("public_domain_classical_vernacular")
+            ):
+                # A complete classical translation can legitimately run for
+                # days.  Preserve the long task limit on every manual retry,
+                # not only on the original public-domain endpoint.
+                process_public_domain_longform.apply_async(
+                    args=[str(task.id)],
+                    time_limit=7 * 24 * 60 * 60,
+                    soft_time_limit=7 * 24 * 60 * 60 - 300,
+                )
+            else:
+                process_public_domain_longform.delay(str(task.id))
         else:
             process_video.delay(str(task.id))
     except Exception as e:
+        # A broker outage must never leave a newly-created task hidden behind
+        # the Redis dispatch lease.  The caller keeps the row pending and the
+        # maintenance worker can safely publish it again later.
+        clear_task_dispatch_guard(str(task.id))
         logger.exception("[task %s] Celery 投递失败", task.id)
         raise RuntimeError(f"Celery dispatch failed: {e}") from e
+
+
+def _mark_dispatch_failure_pending(task: Task, exc: Exception, *, prefix: str = "Celery dispatch failed") -> None:
+    """Record a publish failure without converting a runnable task to terminal failure."""
+
+    clear_task_dispatch_guard(str(task.id))
+    cfg = dict(task.config or {})
+    cfg.update(
+        dispatch_last_error=f"{prefix}: {exc}"[:1000],
+        dispatch_last_failed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.error_message = f"{prefix}: {exc}"[:2000]
+    task.current_step = "任务已保存，后台队列投递失败，维护队列将自动重试"[:255]
 
 
 def _task_output_dir(task_id: UUID) -> Path:
@@ -697,6 +731,34 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("paused_at", None)
     cfg.pop("paused_run_id", None)
     cfg.pop("last_pause_message", None)
+    # A deliberate user retry is the only automatic-safety boundary that may
+    # clear a paid-call hold/uncertainty.  Keep ``paid_call_response_id`` so a
+    # provider response that did arrive can still be resumed rather than
+    # submitted again.
+    for key in (
+        "generation_hold",
+        "generation_hold_reason",
+        "generation_hold_step",
+        "generation_hold_at",
+        "paid_call_delivery_uncertain",
+        "paid_call_manual_resume_required",
+        "paid_api_backoff",
+        "paid_api_backoff_reason",
+        "paid_api_backoff_at",
+        "paid_api_backoff_error",
+        "paid_api_backoff_until",
+        "paid_api_backoff_attempts",
+        "paid_api_backoff_last_due_at",
+        "failed_auto_recovery_attempts",
+        "failed_auto_recovered_at",
+        "failed_auto_recovery_suppressed_at",
+        "terminal_input_failure",
+        "terminal_input_manual_review_at",
+        "terminal_input_manual_review_reason",
+        "dispatch_last_error",
+        "dispatch_last_failed_at",
+    ):
+        cfg.pop(key, None)
     if cfg.get("public_domain_longform_v2"):
         # A retry starts a new validation run.  Do not keep rendering the
         # previous manual-review reason while the corrected pipeline is
@@ -983,8 +1045,7 @@ def create_emotion_reference_article_task(
         _dispatch_task(task)
     except Exception as exc:
         logger.exception("[task %s] 微信文章落盘或 Celery 投递失败", response.task_id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"WeChat article dispatch failed: {exc}"[:2000]
+        _mark_dispatch_failure_pending(task, exc, prefix="WeChat article dispatch failed")
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -1083,12 +1144,11 @@ def create_emotion_reference_article_task_batch(
         try:
             _dispatch_task(task)
         except Exception as exc:
-            task.status = TaskStatus.FAILED
-            task.error_message = f"WeChat article batch dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(task, exc, prefix="WeChat article batch dispatch failed")
             db.commit()
             for item in created:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.FAILED
+                    item.status = TaskStatus.PENDING
                     item.reason = str(exc)[:300]
                     break
 
@@ -1208,8 +1268,7 @@ async def create_classical_chinese_from_docx(
         _dispatch_task(task)
     except Exception as exc:
         logger.exception("[task %s] Word 正文落盘或 Celery 投递失败", response.task_id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"Word upload dispatch failed: {exc}"[:2000]
+        _mark_dispatch_failure_pending(task, exc, prefix="Word upload dispatch failed")
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -1316,12 +1375,11 @@ def create_task_batch(
         try:
             _dispatch_task(task)
         except Exception as exc:
-            task.status = TaskStatus.FAILED
-            task.error_message = str(exc)[:2000]
+            _mark_dispatch_failure_pending(task, exc, prefix="Batch dispatch failed")
             db.commit()
             for item in created:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.FAILED
+                    item.status = TaskStatus.PENDING
                     item.reason = str(exc)[:300]
                     break
 
@@ -1434,12 +1492,11 @@ def retry_failed_tasks(
             _dispatch_task(task)
         except Exception as exc:
             logger.exception("[task %s] Celery 批量重试投递失败", task.id)
-            task.status = TaskStatus.FAILED
-            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(task, exc)
             db.commit()
             for item in retried:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.FAILED
+                    item.status = TaskStatus.PENDING
                     item.reason = str(exc)[:300]
                     break
 
@@ -1537,12 +1594,11 @@ def regenerate_tasks(
             _dispatch_task(task)
         except Exception as exc:
             logger.exception("[task %s] 批量重新生成投递失败", task.id)
-            task.status = TaskStatus.FAILED
-            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(task, exc)
             db.commit()
             for item in regenerated:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.FAILED
+                    item.status = TaskStatus.PENDING
                     item.reason = str(exc)[:300]
                     break
 
@@ -1649,6 +1705,29 @@ def retry_task(
         raise HTTPException(status_code=409, detail="任务正在生成中，系统会自动续跑，请勿重复投递。")
     not_before = _auto_retry_not_before(task)
     if task.status == TaskStatus.PENDING:
+        cfg = dict(task.config or {})
+        # A user clicking retry on a held pending row explicitly releases the
+        # hold.  Without this branch such rows were returned unchanged forever
+        # because the endpoint treated every pending task as already queued.
+        if any(
+            cfg.get(key)
+            for key in (
+                "generation_hold",
+                "paid_call_delivery_uncertain",
+                "paid_call_manual_resume_required",
+                "paid_api_backoff",
+            )
+        ):
+            _prepare_task_for_retry(task)
+            db.commit()
+            db.refresh(task)
+            try:
+                _dispatch_task(task)
+            except Exception as exc:
+                _mark_dispatch_failure_pending(task, exc)
+                db.commit()
+                raise HTTPException(status_code=503, detail=f"重试投递失败 (task_id={task.id}): {exc}") from exc
+            return CreateTaskResponse(task_id=task.id, status=task.status)
         if not_before and not_before > datetime.now(timezone.utc):
             return CreateTaskResponse(task_id=task.id, status=task.status)
         return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -1669,8 +1748,7 @@ def retry_task(
         try:
             _dispatch_task(task)
         except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error_message = f"Celery dispatch failed: {e}"[:2000]
+            _mark_dispatch_failure_pending(task, e, prefix="Public-domain dispatch failed")
             db.commit()
             raise HTTPException(status_code=503, detail=f"公版长篇重试投递失败: {e}") from e
         return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -1688,8 +1766,7 @@ def retry_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 重新投递失败", task.id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"Celery dispatch failed: {e}"[:2000]
+        _mark_dispatch_failure_pending(task, e)
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -1739,8 +1816,7 @@ def retry_task_aigc(
         _dispatch_task(task)
     except Exception as exc:
         logger.exception("[task %s] AIGC-only dispatch failed", task.id)
-        task.status = TaskStatus.FAILED
-        task.error_message = f"AIGC-only dispatch failed: {exc}"[:2000]
+        _mark_dispatch_failure_pending(task, exc, prefix="AIGC-only dispatch failed")
         db.commit()
         raise HTTPException(status_code=503, detail=f"朱雀阶段重试投递失败: {exc}") from exc
     return CreateTaskResponse(task_id=task.id, status=task.status)

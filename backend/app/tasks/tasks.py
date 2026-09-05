@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
+import shutil
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -44,10 +46,16 @@ from app.services.comic_series import (
 from app.services.comic_variants import is_healing_comic_family
 from app.services.content_engine import (
     OpenAIDeliveryUncertainError,
+    _finance_chapter_parts,
+    _finance_chapter_titles,
+    _finance_chapter_structure_issue,
+    _finance_self_chapter_structure_issue,
     generate_full_book,
     normalize_final_markdown,
 )
 from app.services.claude import ClaudeDeliveryUncertainError, ClaudeRequestRejectedError
+from app.services.deepseek import DeepSeekDeliveryUncertainError
+from app.services.gemini import GeminiDeliveryUncertainError
 from app.services.aigc_quality_gate import (
     AigcManualReviewRequired,
     AigcTechnicalError,
@@ -75,13 +83,18 @@ from app.utils.distributed_limiter import DistributedLimitError
 from app.utils.paid_api_guard import (
     QUOTA_EXHAUSTED_MARKERS,
     is_quota_exhausted,
+    is_transient_rate_limit,
 )
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
+from app.utils.task_status import public_task_step
 from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_CHAPTER_HEADING_RE = re.compile(r"^(?:！！！@?|@)\s*(\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+_CHAPTER_HEADING_RE = re.compile(
+    r"^(?:！！！@?|@)\s*(\d+)[.．、]\s*(.+?)\s*$",
+    re.MULTILINE,
+)
 _BODY_SECTION_RE = re.compile(r"^(?:！！！)?@?\s*正文\s*$", re.MULTILINE)
 _BOOK_TITLE_SECTION_RE = re.compile(
     r"^(?:！！！)?@?\s*(?:最终书名|三个备选书名)\s*$([\s\S]*?)(?=^(?:！！！)?@?\s*(?:最终简介|三个备选简介|目录)\s*$|^(?:！！！)?@|\Z)",
@@ -129,11 +142,26 @@ _ACTIVE_RUN_STATUSES = {
     TaskStatus.FACT_CHECKING,
     TaskStatus.PROCESSING,
 }
+_FINANCE_INTEGRITY_CATEGORIES = frozenset(
+    {
+        "finance_technology",
+        "finance_technology_ai_optimized",
+        "finance_technology_recommendation",
+    }
+)
+_FINANCE_INTEGRITY_MAX_ATTEMPTS = 3
 _RESUME_STAGE_FILES = (
     "04_format.md",
     "03_refine.md",
     "02_polish.md",
     "01_writer.md",
+)
+_PAID_DELIVERY_UNCERTAIN_TYPES = (
+    OpenAIDeliveryUncertainError,
+    GeminiDeliveryUncertainError,
+    DeepSeekDeliveryUncertainError,
+    ClaudeDeliveryUncertainError,
+    QingdouDeliveryUncertainError,
 )
 _RETRYABLE_ERROR_TOKENS = (
     "connection",
@@ -208,6 +236,26 @@ _QINGDOU_EMPTY_CONTENT_TOKENS = (
     '"videocontent": none',
     "videocontent=none",
     "未返回 videocontent",
+)
+
+# A task with this evidence cannot be made runnable by replaying the same
+# message.  In particular, Qingdou's terminal ``batchStatus=2`` response with
+# no ``videoContent`` means that the source itself was not transcribed; an
+# automatic loop would only spend queue time and repeatedly surface the same
+# failure.  Keep this separate from transport errors, which are safe to resume
+# from a durable stage artifact.
+_TERMINAL_INPUT_FAILURE_TOKENS = (
+    "视频解析失败",
+    "video parsing failed",
+    "未返回可用文稿",
+    "未返回 videocontent",
+    "videocontent': none",
+    '"videocontent": none',
+    "batchstatus=2",
+    "batchstatus': 2",
+    '"batchstatus": 2',
+    "qingdouquotaexhaustederror",
+    "轻抖可用次数或资源已用完",
 )
 _AUTH_ERROR_RE = re.compile(
     r"(?:http|status(?:_code| code)?|error code|code)\s*[:= ]+\s*(?:401|403)\b"
@@ -288,7 +336,11 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         db.commit()
         raise StaleTaskRun(f"task {task.id} paused before run")
 
-    if cfg.get("generation_hold"):
+    if (
+        cfg.get("generation_hold")
+        or cfg.get("paid_call_delivery_uncertain")
+        or cfg.get("paid_call_manual_resume_required")
+    ):
         # A stale queue message may arrive while an operator hold is active.
         # Keep the task pending so the hold remains an intentional pause and
         # the operator can release it later without a manual "retry failed"
@@ -300,6 +352,23 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         task.current_step = str(cfg.get("generation_hold_step") or "费用保护暂停，未投递模型调用")[:255]
         db.commit()
         raise StaleTaskRun(f"task {task.id} held by cost protection")
+
+    now = datetime.now(timezone.utc)
+    not_before = _parse_iso_datetime(cfg.get("auto_retry_not_before"))
+    backoff_until = _parse_iso_datetime(cfg.get("paid_api_backoff_until"))
+    wait_until = max(
+        (value for value in (not_before, backoff_until) if value is not None),
+        default=None,
+    )
+    if wait_until is not None and wait_until > now:
+        task.status = TaskStatus.PENDING
+        task.current_step = "等待上游退避窗口结束，系统将自动续跑"
+        task.error_message = str(
+            cfg.get("last_auto_retry_error") or "上游暂不可用，正在等待自动退避窗口"
+        )[:2000]
+        db.commit()
+        clear_task_dispatch_guard(str(task.id))
+        raise StaleTaskRun(f"task {task.id} is inside a retry backoff window")
 
     if task.status not in _ACTIVE_RUN_STATUSES:
         raise StaleTaskRun(f"task {task.id} status={task.status} is not runnable")
@@ -315,6 +384,19 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
     cfg["active_run_heartbeat_at"] = cfg["active_run_started_at"]
     cfg.pop("auto_retry_not_before", None)
     cfg.pop("auto_retry_scheduled_by", None)
+    # The task is now consuming a fresh provider attempt.  Remove stale
+    # quota/backoff markers so a later ordinary transport failure is not
+    # misclassified as another quota event.  Keep the attempt counter as
+    # audit history.
+    for key in (
+        "paid_api_backoff",
+        "paid_api_backoff_reason",
+        "paid_api_backoff_at",
+        "paid_api_backoff_error",
+        "paid_api_backoff_until",
+        "paid_api_backoff_last_due_at",
+    ):
+        cfg.pop(key, None)
     task.config = cfg
     task.status = TaskStatus.PROCESSING
     task.error_message = None
@@ -702,6 +784,36 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
     return text
 
 
+def _has_usable_cached_source_text(task: Task) -> bool:
+    """Return whether a task already has a durable source for generation.
+
+    A Qingdou parse failure can remain in historical config after an operator
+    or a fallback resolver has written usable ``raw_text``.  Recovery must use
+    the current durable source, not let that stale evidence quarantine the
+    task again.
+    """
+
+    config = dict(task.config or {})
+    for key in ("raw_text", "video_text", "transcript"):
+        value = config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if _is_legacy_wechat_preview_metadata(config, value):
+            continue
+        return True
+
+    source_text_path = str(config.get("source_text_path") or "").strip()
+    if not source_text_path:
+        return False
+    path = Path(source_text_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
     inline_notes = str(config.get("style_notes") or "").strip()
     style_notes_path = str(config.get("style_notes_path") or "").strip()
@@ -770,10 +882,21 @@ def _should_try_bilibili_fallback(exc: Exception) -> bool:
         or "batchstatus': 2" in text
         or '"batchstatus": 2' in text
     )
-    failed_item = (
-        "status=1100" in text
-        or "'status': 1100" in text
-        or '"status": 1100' in text
+    # Qingdou has returned both 1100 and 1114 for a terminal Bilibili
+    # platform parse with no usable ``videoContent``.  1114 is the status
+    # seen in production for older/unsupported BVs; it is still safe to use
+    # the native Bilibili subtitle/audio fallback because the Qingdou task
+    # has already reached a terminal result and will not be replayed.
+    failed_item = any(
+        token in text
+        for token in (
+            "status=1100",
+            "'status': 1100",
+            '"status": 1100',
+            "status=1114",
+            "'status': 1114",
+            '"status": 1114',
+        )
     )
     no_content = (
         "videocontent: none" in text
@@ -782,9 +905,9 @@ def _should_try_bilibili_fallback(exc: Exception) -> bool:
         or "未返回 videocontent" in text
         or "未返回videocontent" in text
     )
-    # Qingdou uses batchStatus=2 + item status=1100 for a completed platform
-    # parse failure.  It is not an in-progress/busy result, so the native
-    # Bilibili subtitle/audio fallback must be allowed to run.
+    # Qingdou uses batchStatus=2 + item status=1100/1114 for a completed
+    # platform parse failure.  It is not an in-progress/busy result, so the
+    # native Bilibili subtitle/audio fallback must be allowed to run.
     if failed_batch and failed_item and no_content:
         return True
     transient_or_uncertain = (
@@ -820,21 +943,46 @@ def _is_legacy_wechat_preview_metadata(config: dict[str, Any], text: str) -> boo
     )
 
 
+def _is_paid_delivery_uncertain(value: object) -> bool:
+    """Return true when replaying a provider call could charge it twice."""
+
+    if isinstance(value, _PAID_DELIVERY_UNCERTAIN_TYPES):
+        return True
+    normalized = f"{type(value).__name__}: {value}".lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "paid_call_delivery_uncertain",
+            "delivery uncertain",
+            "duplicate billing",
+            "automatic retry stopped to avoid duplicate billing",
+        )
+    )
+
+
+def _is_paid_quota_backoff_error(value: object) -> bool:
+    """Return true for a hard quota/resource block, but not an uncertain call."""
+
+    if _is_paid_delivery_uncertain(value) or isinstance(value, ClaudeRequestRejectedError):
+        return False
+    return is_quota_exhausted(value) or _is_qingdou_quota_exhausted(value)
+
+
 def _is_retryable_generation_error(exc: Exception) -> bool:
-    if isinstance(exc, ClaudeRequestRejectedError):
+    # A hard quota and an uncertain paid delivery are not ordinary retries.
+    # The former enters a provider backoff queue; the latter requires an
+    # explicit operator/persisted-response resume.
+    if (
+        isinstance(exc, ClaudeRequestRejectedError)
+        or _is_paid_delivery_uncertain(exc)
+        or _is_paid_quota_backoff_error(exc)
+    ):
         return False
     normalized = f"{type(exc).__name__}: {exc}".lower()
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
     if _is_auth_error_message(normalized):
         return False
-    if (
-        is_quota_exhausted(exc)
-        or _is_qingdou_quota_exhausted(exc)
-        or isinstance(exc, (OpenAIDeliveryUncertainError, QingdouDeliveryUncertainError, ClaudeDeliveryUncertainError))
-        or any(marker in normalized for marker in ("paid_call_delivery_uncertain", "delivery uncertain"))
-    ):
-        return True
     if isinstance(exc, AigcTechnicalError):
         return True
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
@@ -847,16 +995,108 @@ def _retry_delay_seconds(retries: int) -> int:
     return min(900, base * (2 ** max(0, retries)))
 
 
+def _paid_backoff_delay_seconds(retries: int = 0, *, transient_rate_limit: bool = False) -> int:
+    """Return a bounded delay for provider quota/resource recovery.
+
+    Quota failures are acknowledged by Celery and resumed by the maintenance
+    queue.  Keeping the delay separate from Celery's finite retry countdown
+    prevents a book from becoming permanently failed merely because a provider
+    was briefly out of capacity.
+    """
+
+    if transient_rate_limit:
+        configured = int(
+            getattr(settings, "PAID_API_RATE_LIMIT_TTL_SECONDS", 60)
+            or 60
+        )
+        return max(60, min(180, configured + 10))
+    return max(300, min(1800, _retry_delay_seconds(max(0, int(retries or 0)))))
+
+
+def _mark_task_pending_after_paid_backoff(
+    task: Task,
+    *,
+    message: str,
+    retries: int = 0,
+    run_id: str | None = None,
+    transient_rate_limit: bool = False,
+) -> int:
+    """Put a task into a resumable, time-gated pending state.
+
+    This helper deliberately does not clear an uncertainty/hold flag.  Callers
+    must classify the exception first; an uncertain paid delivery must remain a
+    failed operator hold and can never enter this path.
+    """
+
+    cfg = dict(task.config or {})
+    if run_id:
+        _clear_task_run(task, run_id)
+    attempt = int(cfg.get("paid_api_backoff_attempts") or 0) + 1
+    delay = _paid_backoff_delay_seconds(
+        retries,
+        transient_rate_limit=transient_rate_limit or is_transient_rate_limit(message),
+    )
+    now = datetime.now(timezone.utc)
+    cfg.update(
+        paid_api_backoff=True,
+        paid_api_backoff_attempts=attempt,
+        paid_api_backoff_until=(now + timedelta(seconds=delay)).isoformat(),
+        last_auto_retry_error=str(message or "")[:1000],
+        auto_retry_attempts=int(cfg.get("auto_retry_attempts") or 0) + 1,
+        auto_retry_not_before=(now + timedelta(seconds=delay)).isoformat(),
+    )
+    cfg.pop("auto_retry_scheduled_by", None)
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.current_step = public_task_step(
+        "正在继续生成",
+        status=TaskStatus.PENDING,
+        progress=task.progress,
+    )
+    # Provider/account details stay in config and logs for recovery/audit.  Do
+    # not expose them through the normal task status API.
+    task.error_message = None
+    return delay
+
+
+def _mark_task_pending_for_transient_retry(
+    task: Task,
+    *,
+    message: str,
+    retries: int = 0,
+) -> int:
+    """Persist a non-billing transient retry without relying on Celery ETA."""
+
+    cfg = dict(task.config or {})
+    delay = max(60, min(900, _retry_delay_seconds(max(0, int(retries or 0)))))
+    now = datetime.now(timezone.utc)
+    cfg.update(
+        last_auto_retry_error=str(message or "")[:1000],
+        auto_retry_attempts=int(cfg.get("auto_retry_attempts") or 0) + 1,
+        auto_retry_not_before=(now + timedelta(seconds=delay)).isoformat(),
+    )
+    cfg.pop("auto_retry_scheduled_by", None)
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.current_step = public_task_step(
+        "正在继续生成",
+        status=TaskStatus.PENDING,
+        progress=task.progress,
+    )
+    task.error_message = None
+    return delay
+
+
 def _is_retryable_error_message(message: str | None) -> bool:
     normalized = (message or "").lower()
     if not normalized:
+        return False
+    if _is_paid_delivery_uncertain(message) or _is_paid_quota_backoff_error(message):
         return False
     if _is_terminal_qingdou_parse_error_message(normalized):
         return False
     if _is_auth_error_message(normalized):
         return False
-    if is_quota_exhausted(normalized) or any(marker in normalized for marker in ("paid_call_delivery_uncertain", "delivery uncertain")):
-        return True
     if any(token in normalized for token in _NON_RETRYABLE_ERROR_TOKENS):
         return False
     return any(token in normalized for token in _RETRYABLE_ERROR_TOKENS)
@@ -867,10 +1107,28 @@ def _is_classical_paid_delivery_uncertain(
 ) -> bool:
     """Return true when watchdog replay could duplicate an already billed call."""
 
-    return bool(
+    if not (
         config.get("public_domain_classical_vernacular")
         and str(config.get("generation_mode") or "") == "classical_vernacular"
-        and _is_retryable_error_message(message)
+    ):
+        return False
+    if _is_paid_delivery_uncertain(message):
+        return True
+    if _is_paid_quota_backoff_error(message):
+        return False
+    normalized = (message or "").lower()
+    return _is_retryable_error_message(message) or any(
+        token in normalized
+        for token in (
+            "connection",
+            "connecterror",
+            "timeout",
+            "timed out",
+            "remoteprotocol",
+            "readerror",
+            "ssl",
+            "eof",
+        )
     )
 
 
@@ -888,8 +1146,142 @@ def _is_terminal_qingdou_parse_error_message(normalized: str) -> bool:
     return batch_failed and empty_content
 
 
+def _task_failure_evidence(task: Task) -> str:
+    """Return a bounded, searchable description of historical task failures.
+
+    Older workers sometimes cleared ``error_message`` when claiming a task,
+    leaving only the previous failure inside ``config``. Recovery decisions
+    must still see that evidence, but must not stringify a potentially huge
+    cached transcript into every watchdog query.
+    """
+
+    cfg = dict(task.config or {})
+    values: list[str] = [str(task.error_message or ""), str(task.current_step or "")]
+    for key in (
+        "last_auto_retry_error",
+        "paid_api_backoff_error",
+        "qingdou_last_error",
+        "qingdou_error",
+        "qingdou_terminal_failure_reason",
+        "qingdou_terminal_failure_message",
+        "operator_force_restart_all_previous",
+        "operator_restart_from_checkpoint_previous",
+        "manual_resume_reason",
+    ):
+        value = cfg.get(key)
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                value = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                value = str(value)
+        values.append(str(value or ""))
+    return " ".join(values).lower()[:20_000]
+
+
+def _has_terminal_input_failure(task: Task) -> bool:
+    """Return true when automatic replay cannot repair the source input."""
+
+    # The original parser result may still be present in historical config,
+    # but a recovered/pasted source text is a valid new input.  Never let stale
+    # Qingdou evidence quarantine a task that already has usable text.
+    if _has_usable_cached_source_text(task):
+        return False
+
+    evidence = _task_failure_evidence(task)
+    if not evidence or not any(token in evidence for token in _TERMINAL_INPUT_FAILURE_TOKENS):
+        return False
+    explicit_no_content = any(
+        token in evidence
+        for token in (
+            "未返回可用文稿",
+            "未返回 videocontent",
+            "videocontent': none",
+            '"videocontent": none',
+            "batchstatus=2",
+            "batchstatus': 2",
+            '"batchstatus": 2',
+            "qingdouquotaexhaustederror",
+            "轻抖可用次数或资源已用完",
+        )
+    )
+    return explicit_no_content or bool((task.config or {}).get("qingdou_terminal_failure_at"))
+
+
+def _clear_terminal_input_failure_state(task: Task, *, reason: str) -> bool:
+    """Clear stale source-quarantine flags after a valid source is recovered."""
+
+    cfg = dict(task.config or {})
+    had_state = any(
+        cfg.get(key)
+        for key in (
+            "terminal_input_failure",
+            "terminal_input_manual_review_at",
+            "terminal_input_manual_review_reason",
+        )
+    )
+    if not had_state:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Keep the original Qingdou fields as audit evidence, but move the active
+    # quarantine markers out of the runnable-state decision.
+    cfg.update(
+        terminal_input_failure_recovered_at=now,
+        terminal_input_failure_recovery_reason=str(reason)[:500],
+    )
+    for key in (
+        "terminal_input_failure",
+        "terminal_input_manual_review_at",
+        "terminal_input_manual_review_reason",
+    ):
+        cfg.pop(key, None)
+    task.config = cfg
+    return True
+
+
+def _quarantine_terminal_input_task(task: Task) -> None:
+    """Move a permanently unparseable source out of the runnable states.
+
+    A terminal Qingdou response is not a worker outage and must not be
+    requeued forever.  Keeping it in ``processing`` was especially harmful:
+    the stale watchdog correctly refused to replay it, but no later pass could
+    explain why it was still active.  Manual review preserves the source and
+    the provider evidence while making the required operator action explicit.
+    """
+
+    if _has_usable_cached_source_text(task):
+        _clear_terminal_input_failure_state(
+            task,
+            reason="usable cached source text is available",
+        )
+        return
+
+    cfg = dict(task.config or {})
+    active_run_id = str(cfg.get("active_run_id") or "").strip()
+    if active_run_id:
+        _clear_task_run(task, active_run_id)
+        cfg = dict(task.config or {})
+    now = datetime.now(timezone.utc).isoformat()
+    evidence = str(
+        task.error_message
+        or cfg.get("qingdou_terminal_failure_message")
+        or cfg.get("qingdou_terminal_failure_reason")
+        or "视频源没有返回可用文稿"
+    )[:2000]
+    cfg.update(
+        terminal_input_failure=True,
+        terminal_input_manual_review_at=now,
+        terminal_input_manual_review_reason=evidence[:4000],
+    )
+    task.config = cfg
+    task.status = TaskStatus.MANUAL_REVIEW
+    task.progress = max(8, min(99, int(task.progress or 0)))
+    task.current_step = "视频源未返回可用文稿，已转人工处理；请粘贴文稿或更换链接"
+    task.error_message = evidence
+
+
 def _retry_exhausted_step(message: str) -> str:
-    return f"自动重试已用尽：{message}。后台会按恢复策略重排；也可稍后点击继续生成。"[:255]
+    return "暂时中断，已保留断点；系统会自动继续生成"[:255]
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -939,21 +1331,259 @@ def _mark_task_pending_for_resume(task: Task, *, reason: str) -> None:
     task.error_message = None
 
 
-def _dispatch_task_ids(task_ids: list[str], *, label: str) -> None:
-    for task_id in task_ids:
+def _task_output_dir(task_id: str | uuid.UUID) -> Path:
+    return PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+
+
+def _record_dispatch_metadata(task_id: str, **values: Any) -> None:
+    """Best-effort dispatch telemetry that never changes task ownership."""
+
+    try:
+        with SessionLocal() as db:
+            task = db.get(Task, uuid.UUID(str(task_id)))
+            if task is None:
+                return
+            cfg = dict(task.config or {})
+            cfg.update(values)
+            task.config = cfg
+            db.commit()
+    except Exception:
+        logger.warning("[task %s] dispatch telemetry write failed", task_id, exc_info=True)
+
+
+def _seconds_until(value: datetime, *, now: datetime | None = None) -> int:
+    current = now or datetime.now(timezone.utc)
+    return max(1, int(math.ceil((value - current).total_seconds())))
+
+
+def _schedule_pending_task_wakeup(
+    task_id: str,
+    delay_seconds: int,
+    *,
+    reason: str,
+) -> str | None:
+    """Publish a durable, lightweight wake-up for a pending task.
+
+    The maintenance beat remains the broad recovery net.  This per-task wakeup
+    is the second net: if beat/maintenance is restarted or briefly absent, the
+    task itself still wakes a normal worker and asks the database-backed
+    dispatcher to continue it.  The dispatcher guard and the worker run claim
+    make simultaneous wakeups idempotent.
+    """
+
+    delay = max(1, int(delay_seconds or 1))
+    try:
+        result = celery_app.send_task(
+            "tasks.resume_pending_task",
+            args=[str(task_id)],
+            countdown=delay,
+            expires=delay + 3600,
+            queue="celery",
+        )
+        wakeup_id = str(getattr(result, "id", "") or "") or None
+        _record_dispatch_metadata(
+            str(task_id),
+            pending_wakeup_task_id=wakeup_id,
+            pending_wakeup_scheduled_at=datetime.now(timezone.utc).isoformat(),
+            pending_wakeup_delay_seconds=delay,
+            pending_wakeup_reason=str(reason)[:200],
+            pending_wakeup_last_error=None,
+        )
+        logger.info(
+            "[task %s] durable pending wakeup scheduled in %ss reason=%s",
+            task_id,
+            delay,
+            reason,
+        )
+        return wakeup_id
+    except Exception as exc:
+        # The maintenance watchdog is still authoritative when available.  A
+        # broker failure here must not turn a resumable task into a terminal
+        # failure or hold.
+        _record_dispatch_metadata(
+            str(task_id),
+            pending_wakeup_last_error=f"{type(exc).__name__}: {exc}"[:1000],
+            pending_wakeup_last_failed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.warning(
+            "[task %s] durable pending wakeup publish failed; maintenance remains fallback",
+            task_id,
+            exc_info=True,
+        )
+        return None
+
+
+def dispatch_pending_task_if_due(task_id: str) -> dict[str, Any]:
+    """Wake one pending task and publish its real pipeline when it is due."""
+
+    db: Session = SessionLocal()
+    should_dispatch = False
+    response: dict[str, Any] = {"task_id": str(task_id), "status": "missing", "published": 0}
+    try:
+        task = db.execute(
+            select(Task).where(Task.id == uuid.UUID(str(task_id))).with_for_update()
+        ).scalar_one_or_none()
+        if task is None:
+            return response
+        response["status"] = str(task.status)
+        if task.status != TaskStatus.PENDING:
+            return response
+        cfg = dict(task.config or {})
+        if (
+            cfg.get("generation_hold")
+            or cfg.get("paid_call_delivery_uncertain")
+            or cfg.get("paid_call_manual_resume_required")
+            or cfg.get("pause_requested")
+            or str(cfg.get("aigc_status") or "") == "manual_review"
+            or bool(cfg.get("public_domain_quality_blocked"))
+            or str(cfg.get("category") or "") == "aigc_review"
+        ):
+            return response
+
+        now = datetime.now(timezone.utc)
+        waits = [
+            value
+            for value in (
+                _parse_iso_datetime(cfg.get("auto_retry_not_before")),
+                _parse_iso_datetime(cfg.get("paid_api_backoff_until")),
+            )
+            if value is not None
+        ]
+        wait_until = max(waits, default=None)
+        if wait_until is not None and wait_until > now:
+            db.commit()
+            _schedule_pending_task_wakeup(
+                str(task.id),
+                _seconds_until(wait_until, now=now),
+                reason="wake-up arrived before durable retry gate",
+            )
+            response["wait_until"] = wait_until.isoformat()
+            return response
+
+        cfg.pop("pending_wakeup_task_id", None)
+        cfg["pending_wakeup_consumed_at"] = now.isoformat()
+        task.config = cfg
+        db.commit()
+        should_dispatch = True
+    except Exception:
+        db.rollback()
+        logger.exception("[task %s] durable pending wakeup inspection failed", task_id)
+    finally:
+        db.close()
+
+    if should_dispatch:
+        response["published"] = _dispatch_task_ids(
+            [str(task_id)],
+            label="durable pending wakeup",
+            force=True,
+        )
+        response["status"] = "pending"
+    return response
+
+
+def _dispatch_task_ids(
+    task_ids: list[str],
+    *,
+    label: str,
+    force: bool = False,
+) -> int:
+    """Publish pending tasks with a status check and failure-safe lease.
+
+    Redis is only the duplicate-publish guard; the database run claim in the
+    worker remains authoritative.  ``force`` is reserved for recovery after a
+    stale/orphan decision and may reclaim an old lease, never a fresh one.
+    """
+
+    dispatched = 0
+    seen: set[str] = set()
+    for raw_task_id in task_ids:
+        task_id = str(raw_task_id)
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        is_public_longform = False
+        is_classical_translation = False
+        deferred_wakeup_delay: int | None = None
         try:
-            if not acquire_task_dispatch_guard(task_id):
-                continue
             with SessionLocal() as dispatch_db:
-                dispatch_task = dispatch_db.get(Task, uuid.UUID(task_id))
-                is_public_longform = bool(
-                    dispatch_task and (dispatch_task.config or {}).get("public_domain_longform_v2")
+                dispatch_task = dispatch_db.execute(
+                    select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
+                ).scalar_one_or_none()
+                if dispatch_task is None:
+                    clear_task_dispatch_guard(task_id)
+                    continue
+                cfg = dict(dispatch_task.config or {})
+                if dispatch_task.status != TaskStatus.PENDING:
+                    # A worker may have claimed it between recovery selection
+                    # and publication.  Never publish a second work item.
+                    clear_task_dispatch_guard(task_id)
+                    continue
+                if (
+                    cfg.get("generation_hold")
+                    or cfg.get("paid_call_delivery_uncertain")
+                    or cfg.get("paid_call_manual_resume_required")
+                    or cfg.get("pause_requested")
+                    or str(cfg.get("active_run_id") or "").strip()
+                    or str(cfg.get("aigc_status") or "") == "manual_review"
+                    or bool(cfg.get("public_domain_quality_blocked"))
+                    or str(cfg.get("category") or "") == "aigc_review"
+                ):
+                    clear_task_dispatch_guard(task_id)
+                    continue
+                if _has_terminal_input_failure(dispatch_task):
+                    _quarantine_terminal_input_task(dispatch_task)
+                    dispatch_db.commit()
+                    clear_task_dispatch_guard(task_id)
+                    continue
+                now_dt = datetime.now(timezone.utc)
+                future_gates = [
+                    value
+                    for value in (
+                        _parse_iso_datetime(cfg.get("auto_retry_not_before")),
+                        _parse_iso_datetime(cfg.get("paid_api_backoff_until")),
+                    )
+                    if value is not None and value > now_dt
+                ]
+                if future_gates:
+                    deferred_wakeup_delay = _seconds_until(max(future_gates), now=now_dt)
+                if deferred_wakeup_delay is not None:
+                    # Leave the DB lock/transaction before talking to the
+                    # broker; _record_dispatch_metadata opens its own session.
+                    dispatch_db.commit()
+                else:
+                    now = datetime.now(timezone.utc).isoformat()
+                    cfg.update(
+                        dispatch_last_attempt_at=now,
+                        dispatch_attempts=int(cfg.get("dispatch_attempts") or 0) + 1,
+                        dispatch_last_label=str(label)[:120],
+                    )
+                    cfg.pop("dispatch_last_error", None)
+                    dispatch_task.config = cfg
+                    is_public_longform = bool(cfg.get("public_domain_longform_v2"))
+                    is_classical_translation = bool(
+                        cfg.get("generation_mode") == "classical_vernacular"
+                    )
+                    dispatch_db.commit()
+
+            if deferred_wakeup_delay is not None:
+                _schedule_pending_task_wakeup(
+                    task_id,
+                    deferred_wakeup_delay,
+                    reason=f"{label}: retry gate not reached",
                 )
-                is_classical_translation = bool(
-                    dispatch_task
-                    and (dispatch_task.config or {}).get("generation_mode")
-                    == "classical_vernacular"
-                )
+                continue
+
+            acquired = acquire_task_dispatch_guard(
+                task_id,
+                force=force,
+                stale_after_seconds=max(
+                    60,
+                    int(getattr(settings, "DISPATCH_GUARD_STALE_SECONDS", 900) or 900),
+                ),
+            )
+            if not acquired:
+                continue
+
             if is_public_longform:
                 if is_classical_translation:
                     process_public_domain_longform.apply_async(
@@ -965,10 +1595,26 @@ def _dispatch_task_ids(task_ids: list[str], *, label: str) -> None:
                     process_public_domain_longform.delay(task_id)
             else:
                 process_video.delay(task_id)
-        except Exception:
+            dispatched += 1
+            _record_dispatch_metadata(
+                task_id,
+                dispatch_last_published_at=datetime.now(timezone.utc).isoformat(),
+                dispatch_last_error=None,
+            )
+        except Exception as exc:
+            # A failed publish must not leave the task hidden behind a long
+            # Redis lease.  It remains pending and can be picked up by the
+            # next maintenance pass.
+            clear_task_dispatch_guard(task_id)
+            _record_dispatch_metadata(
+                task_id,
+                dispatch_last_error=f"{type(exc).__name__}: {exc}"[:1000],
+                dispatch_last_failed_at=datetime.now(timezone.utc).isoformat(),
+            )
             logger.exception("[task %s] %s dispatch failed", task_id, label)
     if task_ids:
-        logger.warning("%s requeued %d tasks", label, len(task_ids))
+        logger.warning("%s selected=%d published=%d", label, len(seen), dispatched)
+    return dispatched
 
 
 def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
@@ -992,12 +1638,23 @@ def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
         )
         for task in rows:
             cfg = dict(task.config or {})
-            if cfg.get("generation_hold"):
+            if str(cfg.get("category") or "") == "aigc_review":
                 continue
             heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at")) or _parse_iso_datetime(
                 cfg.get("active_run_started_at")
             )
             if heartbeat is not None and heartbeat > cutoff:
+                continue
+            if _has_terminal_input_failure(task):
+                _quarantine_terminal_input_task(task)
+                clear_task_dispatch_guard(str(task.id))
+                continue
+            if (
+                cfg.get("generation_hold")
+                or cfg.get("paid_call_delivery_uncertain")
+                or cfg.get("paid_call_manual_resume_required")
+                or cfg.get("pause_requested")
+            ):
                 continue
             _mark_task_pending_for_resume(
                 task,
@@ -1012,8 +1669,7 @@ def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
     finally:
         db.close()
 
-    _dispatch_task_ids(tasks_to_dispatch, label="stale task watchdog")
-    return len(tasks_to_dispatch)
+    return _dispatch_task_ids(tasks_to_dispatch, label="stale task watchdog", force=True)
 
 
 def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
@@ -1038,7 +1694,15 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
         )
         for task in rows:
             cfg = dict(task.config or {})
-            if cfg.get("generation_hold"):
+            terminal_input_failure = _has_terminal_input_failure(task)
+            if str(cfg.get("category") or "") == "aigc_review":
+                continue
+            if (
+                cfg.get("generation_hold")
+                or cfg.get("paid_call_delivery_uncertain")
+                or cfg.get("paid_call_manual_resume_required")
+                or cfg.get("pause_requested")
+            ):
                 continue
             attempts = int(cfg.get("failed_auto_recovery_attempts") or 0)
             last_recovered_at = _parse_iso_datetime(cfg.get("failed_auto_recovered_at"))
@@ -1047,12 +1711,18 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
             if last_recovered_at is not None and last_recovered_at > cutoff:
                 continue
             message = task.error_message or cfg.get("last_auto_retry_error")
-            if not _is_retryable_error_message(str(message or "")):
+            message_text = str(message or "")
+            if terminal_input_failure:
+                _quarantine_terminal_input_task(task)
+                clear_task_dispatch_guard(str(task.id))
                 continue
             is_classical_paid_delivery = _is_classical_paid_delivery_uncertain(
-                cfg, str(message or "")
+                cfg, message_text
             )
-            if is_classical_paid_delivery or cfg.get("paid_call_delivery_uncertain"):
+            delivery_uncertain = _is_paid_delivery_uncertain(message_text) or bool(
+                cfg.get("paid_call_delivery_uncertain")
+            )
+            if is_classical_paid_delivery or delivery_uncertain:
                 # A connection error may happen after OpenAI has accepted and
                 # billed the background response.  Never create a second paid
                 # response from the watchdog; the user continuation route
@@ -1062,13 +1732,28 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 cfg["failed_auto_recovery_suppressed_at"] = datetime.now(timezone.utc).isoformat()
                 task.config = cfg
                 continue
+            quota_backoff = _is_paid_quota_backoff_error(message_text) or (
+                bool(cfg.get("paid_api_backoff"))
+                and str(cfg.get("paid_api_backoff_reason") or "")
+                in {"provider_quota", "qingdou_quota", "quota"}
+            )
+            if not quota_backoff and not _is_retryable_error_message(message_text):
+                continue
             cfg["failed_auto_recovery_attempts"] = attempts + 1
             cfg["failed_auto_recovered_at"] = datetime.now(timezone.utc).isoformat()
             task.config = cfg
-            _mark_task_pending_for_resume(
-                task,
-                reason=f"retryable failed auto recovery attempt={attempts + 1}/{max_attempts}",
-            )
+            if quota_backoff:
+                _mark_task_pending_after_paid_backoff(
+                    task,
+                    message=message_text,
+                    retries=attempts,
+                    transient_rate_limit=is_transient_rate_limit(message_text),
+                )
+            else:
+                _mark_task_pending_for_resume(
+                    task,
+                    reason=f"retryable failed auto recovery attempt={attempts + 1}/{max_attempts}",
+                )
             tasks_to_dispatch.append(str(task.id))
         db.commit()
     except Exception:
@@ -1078,8 +1763,127 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
     finally:
         db.close()
 
-    _dispatch_task_ids(tasks_to_dispatch, label="failed task auto recovery")
-    return len(tasks_to_dispatch)
+    return _dispatch_task_ids(tasks_to_dispatch, label="failed task auto recovery", force=True)
+
+
+def revive_recoverable_terminal_input_reviews(*, limit: int = 500) -> int:
+    """Return safely recovered source-text tasks to the normal queue.
+
+    Older watchdog runs could mark a task ``manual_review`` after seeing a
+    terminal Qingdou error that predated a successful transcript recovery.  A
+    task with an explicit durable recovery marker and usable cached text no
+    longer needs source review; it must not wait for a human click forever.
+    Genuine AIGC/paid-delivery/manual holds remain untouched.
+    """
+
+    if not settings.STALE_TASK_WATCHDOG_ENABLED:
+        return 0
+
+    db: Session = SessionLocal()
+    changed = 0
+    tasks_to_dispatch: list[str] = []
+    wakeups: list[tuple[str, int]] = []
+    now = datetime.now(timezone.utc)
+    try:
+        rows = (
+            db.execute(
+                select(Task)
+                .where(Task.status == TaskStatus.MANUAL_REVIEW)
+                .with_for_update(skip_locked=True)
+                .limit(max(1, limit))
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            cfg = dict(task.config or {})
+            if not cfg.get("terminal_input_failure"):
+                continue
+            if not _has_usable_cached_source_text(task):
+                continue
+            # Only auto-revive a task for which an operator/fallback explicitly
+            # recorded source recovery.  This prevents touching unrelated old
+            # manual-review books.
+            if not any(
+                str(cfg.get(key) or "").strip()
+                for key in (
+                    "source_text_recovered_at",
+                    "operator_transcript_recovery_reason",
+                    "operator_direct_dispatch_at",
+                )
+            ):
+                continue
+            if (
+                cfg.get("generation_hold")
+                or cfg.get("paid_call_delivery_uncertain")
+                or cfg.get("paid_call_manual_resume_required")
+                or cfg.get("pause_requested")
+                or str(cfg.get("aigc_status") or "") == "manual_review"
+                or str(cfg.get("category") or "") == "aigc_review"
+                or bool(cfg.get("public_domain_quality_blocked"))
+            ):
+                continue
+
+            _clear_terminal_input_failure_state(
+                task,
+                reason="durable recovered source text is available",
+            )
+            cfg = dict(task.config or {})
+            cfg.update(
+                auto_requeued_at=now.isoformat(),
+                auto_requeue_reason="recoverable terminal-input review with cached source",
+            )
+            task.config = cfg
+            task.status = TaskStatus.PENDING
+            task.progress = max(15, min(95, int(task.progress or 15)))
+            task.current_step = public_task_step(
+                "正在继续生成",
+                status=TaskStatus.PENDING,
+                progress=task.progress,
+            )
+            task.error_message = None
+            changed += 1
+
+            waits = [
+                value
+                for value in (
+                    _parse_iso_datetime(cfg.get("auto_retry_not_before")),
+                    _parse_iso_datetime(cfg.get("paid_api_backoff_until")),
+                )
+                if value is not None
+            ]
+            wait_until = max(waits, default=None)
+            if wait_until is not None and wait_until > now:
+                wakeups.append((str(task.id), _seconds_until(wait_until, now=now)))
+            else:
+                tasks_to_dispatch.append(str(task.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("recoverable terminal-input review pass failed")
+        return 0
+    finally:
+        db.close()
+
+    for task_id, delay in wakeups:
+        _schedule_pending_task_wakeup(
+            task_id,
+            delay,
+            reason="recoverable source review was automatically released",
+        )
+    dispatched = _dispatch_task_ids(
+        tasks_to_dispatch,
+        label="recoverable source review watchdog",
+        force=True,
+    )
+    if changed:
+        logger.warning(
+            "recoverable source review selected=%d published=%d delayed=%d",
+            changed,
+            dispatched,
+            len(wakeups),
+        )
+    return changed
 
 
 def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
@@ -1102,15 +1906,39 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
         )
         for task in rows:
             cfg = dict(task.config or {})
-            if cfg.get("generation_hold") or str(cfg.get("active_run_id") or "").strip():
+            terminal_input_failure = _has_terminal_input_failure(task)
+            if str(cfg.get("category") or "") == "aigc_review":
+                continue
+            if (
+                cfg.get("generation_hold")
+                or cfg.get("paid_call_delivery_uncertain")
+                or cfg.get("paid_call_manual_resume_required")
+                or cfg.get("pause_requested")
+                or str(cfg.get("active_run_id") or "").strip()
+            ):
                 continue
             not_before = _parse_iso_datetime(cfg.get("auto_retry_not_before"))
             if not_before is None or not_before > now:
                 continue
+            if terminal_input_failure:
+                _quarantine_terminal_input_task(task)
+                clear_task_dispatch_guard(str(task.id))
+                continue
             message = task.error_message or cfg.get("last_auto_retry_error")
-            if message and not _is_retryable_error_message(str(message)):
+            quota_backoff = _is_paid_quota_backoff_error(str(message or "")) or (
+                bool(cfg.get("paid_api_backoff"))
+                and str(cfg.get("paid_api_backoff_reason") or "")
+                in {"provider_quota", "qingdou_quota", "quota"}
+            )
+            # Quota/resource backoff is deliberately not classified as an
+            # ordinary retryable error. Once its durable time gate has elapsed,
+            # however, it must be dispatched; otherwise these books remain in
+            # pending forever after the provider recovers.
+            if not quota_backoff and message and not _is_retryable_error_message(str(message)):
                 continue
             cfg["auto_retry_redispatched_at"] = now.isoformat()
+            if quota_backoff:
+                cfg["paid_api_backoff_last_due_at"] = now.isoformat()
             task.config = cfg
             tasks_to_dispatch.append(str(task.id))
         db.commit()
@@ -1121,8 +1949,113 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
     finally:
         db.close()
 
-    _dispatch_task_ids(tasks_to_dispatch, label="pending retry watchdog")
-    return len(tasks_to_dispatch)
+    # The durable time gate is the evidence that the task is due.  Reclaim an
+    # old lease as well, otherwise a literal six-hour lease left by an older
+    # worker can keep an otherwise due task invisible until it expires.
+    return _dispatch_task_ids(tasks_to_dispatch, label="pending retry watchdog", force=True)
+
+
+def _pending_reference_time(task: Task, config: dict[str, Any]) -> datetime | None:
+    """Return the newest timestamp that can explain a legitimate pending wait."""
+
+    candidates = [
+        _parse_iso_datetime(config.get(key))
+        for key in (
+            "dispatch_last_attempt_at",
+            "dispatch_last_published_at",
+            "auto_requeued_at",
+            "auto_retry_redispatched_at",
+            "manual_resume_at",
+            "operator_released_at",
+        )
+    ]
+    created_at = getattr(task, "created_at", None)
+    if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        candidates.append(created_at.astimezone(timezone.utc))
+    usable = [value for value in candidates if value is not None]
+    return max(usable) if usable else None
+
+
+def requeue_orphan_pending_tasks(*, limit: int = 500) -> int:
+    """Redispatch old pending rows whose queue message or lease was lost.
+
+    This is deliberately broader than ``requeue_due_pending_retry_tasks``:
+    a broker publish can disappear without leaving retry metadata.  The grace
+    period avoids racing a newly published message, the Redis force lease only
+    replaces an old lease, and the worker's database run claim remains the
+    final duplicate-execution barrier.
+    """
+
+    if not settings.STALE_TASK_WATCHDOG_ENABLED:
+        return 0
+
+    grace = max(60, int(settings.PENDING_TASK_ORPHAN_REQUEUE_SECONDS or 180))
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=grace)
+    db: Session = SessionLocal()
+    tasks_to_dispatch: list[str] = []
+    try:
+        rows = (
+            db.execute(
+                select(Task)
+                .where(Task.status == TaskStatus.PENDING)
+                .with_for_update(skip_locked=True)
+                .limit(max(1, limit))
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            cfg = dict(task.config or {})
+            terminal_input_failure = _has_terminal_input_failure(task)
+            if (
+                cfg.get("generation_hold")
+                or cfg.get("paid_call_delivery_uncertain")
+                or cfg.get("paid_call_manual_resume_required")
+                or cfg.get("pause_requested")
+                or str(cfg.get("active_run_id") or "").strip()
+                or str(cfg.get("aigc_status") or "") == "manual_review"
+                or bool(cfg.get("public_domain_quality_blocked"))
+                or str(cfg.get("category") or "") == "aigc_review"
+            ):
+                continue
+            # A generated public-domain manuscript must be finalized by the
+            # artifact recovery path; never start the paid generator again.
+            if bool(cfg.get("public_domain_longform_v2")) and bool(cfg.get("generation_complete")):
+                continue
+            if terminal_input_failure:
+                _quarantine_terminal_input_task(task)
+                clear_task_dispatch_guard(str(task.id))
+                continue
+            not_before = _parse_iso_datetime(cfg.get("auto_retry_not_before"))
+            if not_before is not None and not_before > now:
+                continue
+            backoff_until = _parse_iso_datetime(cfg.get("paid_api_backoff_until"))
+            if backoff_until is not None and backoff_until > now:
+                continue
+            reference_time = _pending_reference_time(task, cfg)
+            if reference_time is not None and reference_time > cutoff:
+                continue
+            cfg.update(
+                orphan_requeue_selected_at=now.isoformat(),
+                orphan_requeue_reason=(
+                    f"pending without active run for at least {grace}s; "
+                    f"reference={reference_time.isoformat() if reference_time else 'missing'}"
+                ),
+            )
+            task.config = cfg
+            tasks_to_dispatch.append(str(task.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("orphan pending watchdog failed")
+        return 0
+    finally:
+        db.close()
+
+    return _dispatch_task_ids(tasks_to_dispatch, label="orphan pending watchdog", force=True)
 
 
 def _patch_config(task: Task, **kv: Any) -> None:
@@ -1132,45 +2065,59 @@ def _patch_config(task: Task, **kv: Any) -> None:
 
 
 def _mark_generation_hold_for_quota(task: Task, exc: object) -> None:
-    """Record paid-provider backoff metadata without pausing the book.
+    """Persist the correct safety state for a paid-provider failure.
 
-    Cost protection now means: keep a provider breaker/backoff so the system
-    does not hammer the same paid API in a tight loop, but leave the Task in
-    the normal automatic retry queue.  Do not set generation_hold and do not
-    expose a front-end "费用保护暂停" state.
+    A hard quota is resumable after the provider is verified healthy, so it is
+    represented as a pending backoff.  An uncertain delivery is different:
+    the provider may already have billed the request, therefore it remains an
+    explicit hold and the watchdog must never create a replacement request.
     """
 
-    normalized = f"{type(exc).__name__}: {exc}".lower()
-    qingdou_quota_exhausted = _is_qingdou_quota_exhausted(exc)
-    quota_exhausted = is_quota_exhausted(exc) or qingdou_quota_exhausted
-    delivery_uncertain = isinstance(
-        exc,
-        (
-            OpenAIDeliveryUncertainError,
-            QingdouDeliveryUncertainError,
-            ClaudeDeliveryUncertainError,
-        ),
-    ) or any(
-        marker in normalized
-        for marker in ("paid_call_delivery_uncertain", "delivery uncertain", "duplicate billing")
-    )
-    if not quota_exhausted and not delivery_uncertain:
+    delivery_uncertain = _is_paid_delivery_uncertain(exc)
+    quota_exhausted = _is_paid_quota_backoff_error(exc)
+    if not delivery_uncertain and not quota_exhausted:
         return
+
+    now = datetime.now(timezone.utc).isoformat()
     cfg = dict(task.config or {})
     cfg.update(
         paid_api_backoff=True,
         paid_api_backoff_reason=(
-            "qingdou_quota" if qingdou_quota_exhausted else "paid_delivery_uncertain" if delivery_uncertain else "provider_quota"
+            "paid_delivery_uncertain"
+            if delivery_uncertain
+            else "qingdou_quota"
+            if _is_qingdou_quota_exhausted(exc)
+            else "provider_quota"
         ),
-        paid_api_backoff_at=datetime.now(timezone.utc).isoformat(),
+        paid_api_backoff_at=now,
         paid_api_backoff_error=f"{type(exc).__name__}: {exc}"[:1000],
     )
-    cfg.pop("generation_hold", None)
-    cfg.pop("generation_hold_reason", None)
-    cfg.pop("generation_hold_step", None)
-    cfg.pop("generation_hold_at", None)
-    cfg.pop("paid_call_delivery_uncertain", None)
-    cfg.pop("paid_call_manual_resume_required", None)
+
+    if delivery_uncertain:
+        response_id = str(getattr(exc, "response_id", "") or "").strip()
+        cfg.update(
+            generation_hold=True,
+            generation_hold_reason=(
+                "付费模型请求可能已经提交但结果未知，已阻止自动重试；"
+                "请核对提供方响应后再继续生成"
+            ),
+            generation_hold_step="费用保护暂停，未再次投递模型调用",
+            generation_hold_at=now,
+            paid_call_delivery_uncertain=True,
+            paid_call_manual_resume_required=True,
+        )
+        if response_id:
+            cfg["paid_call_response_id"] = response_id
+    else:
+        # A quota denial is safe to retry only after the breaker/backoff has
+        # elapsed.  Do not leave a stale hold from the old implementation on
+        # otherwise resumable tasks.
+        cfg.pop("generation_hold", None)
+        cfg.pop("generation_hold_reason", None)
+        cfg.pop("generation_hold_step", None)
+        cfg.pop("generation_hold_at", None)
+        cfg.pop("paid_call_delivery_uncertain", None)
+        cfg.pop("paid_call_manual_resume_required", None)
     task.config = cfg
 
 
@@ -1178,31 +2125,27 @@ def _user_facing_generation_error(exc: Exception) -> str:
     raw = f"{type(exc).__name__}: {exc}"
     normalized = raw.lower()
     if _is_qingdou_quota_exhausted(exc):
-        return "轻抖可用次数或资源暂不可用，后台会自动退避后继续排队。"
+        return "正在继续生成"
     if isinstance(exc, QingdouDeliveryUncertainError):
-        return "轻抖创建任务响应暂不确定，后台会自动退避后继续排队。"
+        return "任务暂时中断，已保留断点"
     if _is_terminal_qingdou_parse_error_message(normalized):
         return "视频解析失败：轻抖未返回可用文稿，请粘贴文稿或更换可解析链接后重试。"
     if is_quota_exhausted(exc):
-        if any(token in normalized for token in ("gemini", "dunning", "permission_denied", "permission denied")):
-            return "Gemini 额度或账单暂不可用，后台会自动退避后继续排队；不会切换到 OpenAI。"
-        if "claude" in normalized or "anyrouter" in normalized:
-            return "Claude 中转站额度或路由暂不可用，后台会自动退避后继续排队；不会切换到 OpenAI。"
-        return "OpenAI 额度不足或账单不可用，请检查当前 API Key 的余额、账单状态或更换可用 Key 后重试。"
+        return "正在继续生成"
     if isinstance(exc, ClaudeRequestRejectedError):
-        return "Claude 中转站拒绝了当前请求，任务已停止；请修正模型/协议配置后再手动继续。"
+        return "任务暂时中断，已保留断点"
     if isinstance(exc, ClaudeDeliveryUncertainError):
-        return "Claude 中转站请求结果未知，任务已暂停以避免重复计费；核对中转站日志后再手动继续。"
+        return "任务暂时中断，已保留断点"
     if isinstance(exc, OpenAIDeliveryUncertainError) or "paid_call_delivery_uncertain" in normalized:
-        return "付费模型请求结果暂不确定，后台会自动退避后从断点继续排队。"
+        return "任务暂时中断，已保留断点"
     if "rate_limit" in normalized or "429" in normalized:
-        return "OpenAI 请求被限流，请稍后重试，或降低并发/更换可用模型配置。"
+        return "正在继续生成"
     if any(token in normalized for token in ("connection", "connecterror", "apiconnectionerror", "ssl", "eof", "remoteprotocol", "readerror")):
         return "上游接口连接中断，系统会自动断点重试；若重试耗尽仍失败，请稍后继续生成。"
     if "timeout" in normalized or "timed out" in normalized:
         return "模型调用超时，任务已停止。可以稍后点击继续生成重试。"
     if _is_auth_error_message(normalized):
-        return "模型 API Key 无效或未授权，请检查服务器环境变量后重试。"
+        return "任务暂时中断，请稍后继续生成"
     return raw[:2000]
 
 
@@ -1307,8 +2250,189 @@ def _cover_retry_countdown() -> int:
     return max(30, int(settings.COVER_TASK_RETRY_SECONDS or 60))
 
 
-def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> int:
+def _is_finance_integrity_category(category: str | None) -> bool:
+    try:
+        return normalize_category(category or "") in _FINANCE_INTEGRITY_CATEGORIES
+    except Exception:
+        return str(category or "").strip() in _FINANCE_INTEGRITY_CATEGORIES
+
+
+def _finance_completion_integrity_issue(
+    task: Task,
+    markdown: str,
+    output_dir: Path,
+    *,
+    category: str,
+) -> tuple[str | None, list[tuple[int, str, str]]]:
+    """Validate a finance manuscript immediately before completion is saved."""
+
+    if not _is_finance_integrity_category(category):
+        return None, []
+
+    writer_path = output_dir / "01_writer.md"
+    writer = ""
+    if writer_path.exists() and writer_path.stat().st_size > 0:
+        try:
+            writer = writer_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            writer = ""
+
+    writer_titles = _finance_chapter_titles(writer) if writer else []
+    writer_numbers = [number for number, _title in writer_titles]
+    if writer_titles and writer_numbers != list(range(1, len(writer_numbers) + 1)):
+        return (
+            f"01_writer.md chapter sequence is not contiguous: {writer_numbers[:16]}",
+            [],
+        )
+
+    issue = (
+        _finance_chapter_structure_issue(writer, markdown)
+        if writer_titles
+        else _finance_self_chapter_structure_issue(markdown)
+    )
+    parts = _finance_chapter_parts(markdown)
+    numbers = [number for number, _title, _content in parts]
+    if issue:
+        return issue, parts
+    if not parts:
+        if writer_titles:
+            return "final manuscript has no strict chapter sequence", []
+        # Preserve legacy non-chapter finance fixtures; the ordinary pipeline
+        # may legitimately deliver a single unheaded essay when no reliable
+        # chapter baseline exists.
+        return None, []
+    if numbers != list(range(1, len(numbers) + 1)):
+        return f"final chapter sequence is not contiguous: {numbers[:16]}", parts
+    short = [
+        number
+        for number, _title, content in parts
+        if len(re.sub(r"\s+", "", content or "")) < 20
+    ]
+    if short:
+        return f"final chapters are empty/truncated: {short[:12]}", parts
+    target_chapters = int((task.config or {}).get("target_chapters") or 0)
+    if target_chapters > 0 and writer_titles and len(parts) != target_chapters:
+        return (
+            f"final chapter count {len(parts)} does not match target {target_chapters}",
+            parts,
+        )
+    return None, parts
+
+
+def _reject_finance_completion_for_integrity(
+    db: Session,
+    task: Task,
+    run_id: str,
+    output_dir: Path,
+    markdown: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Keep an incomplete final as evidence and return the task to the queue."""
+
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rejected_path = output_dir / f"04_format_integrity_rejected_{stamp}.md"
+    suffix = 1
+    while rejected_path.exists():
+        rejected_path = output_dir / f"04_format_integrity_rejected_{stamp}_{suffix}.md"
+        suffix += 1
+    try:
+        rejected_path.write_text(markdown or "", encoding="utf-8")
+    except OSError:
+        logger.warning("[task %s] failed to save rejected final artifact", task.id, exc_info=True)
+
+    canonical = output_dir / "04_format.md"
+    if canonical.exists() and canonical.stat().st_size > 0:
+        backup = output_dir / f"04_format_pre_integrity_gate_{stamp}.md"
+        try:
+            shutil.copy2(canonical, backup)
+        except OSError:
+            logger.warning("[task %s] failed to backup final artifact", task.id, exc_info=True)
+
+    cfg = dict(task.config or {})
+    attempts = int(cfg.get("integrity_recovery_attempts") or 0) + 1
+    cfg.update(
+        integrity_recovery_version=1,
+        integrity_recovery_attempts=attempts,
+        integrity_recovery_reason=str(reason)[:4000],
+        integrity_recovery_rejected_at=now.isoformat(),
+        integrity_recovery_source_stage=(
+            "01_writer.md" if (output_dir / "01_writer.md").exists() else "available_stage"
+        ),
+    )
+    if attempts > _FINANCE_INTEGRITY_MAX_ATTEMPTS:
+        cfg["integrity_recovery_state"] = "manual_review"
+        task.status = TaskStatus.MANUAL_REVIEW
+        task.current_step = "财经稿完整性连续校验失败，已转人工审核"[:255]
+        task.progress = max(1, min(99, int(task.progress or 0)))
+    else:
+        cfg["integrity_recovery_state"] = "queued"
+        cfg["auto_requeued_at"] = now.isoformat()
+        cfg["auto_requeue_reason"] = "finance completion integrity gate"
+        task.status = TaskStatus.PENDING
+        task.progress = max(45, min(89, int(task.progress or 45)))
+        task.current_step = "财经稿完整性未通过，保留断点后重新排队"[:255]
+    task.config = cfg
+    task.error_message = str(reason)[:2000]
+    _clear_task_run(task, run_id)
+    try:
+        (output_dir / "integrity_completion_rejection.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "task_id": str(task.id),
+                    "reason": reason,
+                    "attempts": attempts,
+                    "state": cfg["integrity_recovery_state"],
+                    "rejected_artifact": rejected_path.name,
+                    "created_at": now.isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.warning("[task %s] failed to save integrity rejection report", task.id, exc_info=True)
+    db.commit()
+    clear_task_dispatch_guard(str(task.id))
+    return {
+        "task_id": str(task.id),
+        "status": task.status,
+        "chapters": len(task.chapters),
+        "integrity_reason": reason,
+    }
+
+
+def _persist_chapters_from_markdown(
+    db: Session,
+    task: Task,
+    markdown: str,
+    *,
+    category: str | None = None,
+) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
+    if _is_finance_integrity_category(category):
+        parts = _finance_chapter_parts(markdown)
+        numbers = [number for number, _title, _content in parts]
+        if not parts or numbers != list(range(1, len(numbers) + 1)):
+            raise ValueError("finance manuscript has no complete strict chapter sequence")
+        db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
+        db.flush()
+        for number, title, content in parts:
+            db.add(
+                Chapter(
+                    task_id=task.id,
+                    chapter_num=number,
+                    title=title[:512],
+                    content=content,
+                    word_count=len(content),
+                )
+            )
+        db.commit()
+        return len(parts)
+
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
     db.flush()
 
@@ -1560,6 +2684,26 @@ def process_video(_self, task_id: str) -> dict:
         )
         _ensure_active_run(db, task, run_id)
         markdown = normalize_final_markdown(markdown, category=category)
+        integrity_issue, integrity_parts = _finance_completion_integrity_issue(
+            task,
+            markdown,
+            output_dir,
+            category=category,
+        )
+        if integrity_issue:
+            logger.error(
+                "[task %s] completion blocked by finance manuscript integrity gate: %s",
+                task_id,
+                integrity_issue,
+            )
+            return _reject_finance_completion_for_integrity(
+                db,
+                task,
+                run_id,
+                output_dir,
+                markdown,
+                integrity_issue,
+            )
         _patch_config(task, markdown_chars=len(markdown))
         aigc_report_path = output_dir / "aigc_quality_report.json"
         if aigc_report_path.exists():
@@ -1597,8 +2741,40 @@ def process_video(_self, task_id: str) -> dict:
         else:
             book_title = _extract_book_title(markdown)
         _ensure_active_run(db, task, run_id)
-        chapter_count = _persist_chapters_from_markdown(db, task, markdown)
+        chapter_count = _persist_chapters_from_markdown(
+            db,
+            task,
+            markdown,
+            category=category,
+        )
+        if _is_finance_integrity_category(category) and integrity_parts:
+            persisted_numbers = [
+                int(row.chapter_num)
+                for row in db.query(Chapter)
+                .filter(Chapter.task_id == task.id)
+                .order_by(Chapter.chapter_num)
+                .all()
+            ]
+            expected_numbers = [number for number, _title, _content in integrity_parts]
+            if persisted_numbers != expected_numbers or chapter_count != len(expected_numbers):
+                return _reject_finance_completion_for_integrity(
+                    db,
+                    task,
+                    run_id,
+                    output_dir,
+                    markdown,
+                    "database chapter sequence does not match final artifact",
+                )
         _patch_config(task, markdown=markdown, title=book_title)
+        if _is_finance_integrity_category(category):
+            cfg = dict(task.config or {})
+            cfg.update(
+                integrity_recovery_version=1,
+                integrity_recovery_state="resolved",
+                integrity_recovery_resolved_at=datetime.now(timezone.utc).isoformat(),
+                integrity_final_chapters=chapter_count,
+            )
+            task.config = cfg
 
         _update_progress(
             db,
@@ -1721,11 +2897,13 @@ def process_video(_self, task_id: str) -> dict:
             if task is None:
                 task = db.get(Task, uuid.UUID(task_id))
             if task is not None:
+                internal_message = f"{type(e).__name__}: {e}"[:2000]
                 message = _user_facing_generation_error(e)
                 _clear_task_run(task, run_id)
                 _mark_generation_hold_for_quota(task, e)
                 generation_hold = bool((task.config or {}).get("generation_hold"))
                 paid_api_backoff = bool((task.config or {}).get("paid_api_backoff"))
+                quota_backoff = _is_paid_quota_backoff_error(e)
                 if isinstance(e, AigcTechnicalError):
                     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
                     report_path = output_dir / "aigc_quality_report.json"
@@ -1762,36 +2940,70 @@ def process_video(_self, task_id: str) -> dict:
                     # block; the task remains explicitly held for resume.
                     task.status = TaskStatus.FAILED
                     task.error_message = message[:2000]
-                    task.current_step = str(
-                        (task.config or {}).get("generation_hold_step")
-                        or "费用保护暂停，未再次投递模型调用"
-                    )[:255]
+                    task.current_step = "任务暂时中断，已保留断点"
+                elif quota_backoff:
+                    # A provider quota/resource denial is safe to resume after
+                    # the breaker window.  Do not consume Celery's finite retry
+                    # budget and do not surface a false terminal failure.
+                    delay_seconds = _mark_task_pending_after_paid_backoff(
+                        task,
+                        message=internal_message,
+                        retries=current_retries,
+                        transient_rate_limit=is_transient_rate_limit(e),
+                    )
+                    db.commit()
+                    _schedule_pending_task_wakeup(
+                        task_id,
+                        delay_seconds,
+                        reason="paid provider backoff",
+                    )
+                    return {
+                        "task_id": task_id,
+                        "status": TaskStatus.PENDING,
+                        "chapters": len(task.chapters) if task is not None else 0,
+                    }
                 elif paid_api_backoff and _is_retryable_generation_error(e):
                     # Provider-side quota/backoff must not consume a finite Celery retry budget.
                     # Keep the book in the normal pending queue and let the watchdog redispatch
                     # from saved artifacts after the breaker TTL expires, instead of surfacing
                     # a terminal failed state that requires manual clicks.
                     backoff_attempt = int((task.config or {}).get("paid_api_backoff_attempts") or 0) + 1
-                    delay_seconds = max(300, min(1800, _retry_delay_seconds(min(current_retries, max_retries))))
                     cfg = dict(task.config or {})
-                    cfg["last_auto_retry_error"] = message[:1000]
+                    cfg["last_auto_retry_error"] = internal_message[:1000]
                     cfg["paid_api_backoff_attempts"] = backoff_attempt
                     cfg["auto_retry_attempts"] = current_retries + 1
+                    delay_seconds = _paid_backoff_delay_seconds(
+                        min(current_retries, max_retries),
+                        transient_rate_limit=is_transient_rate_limit(e)
+                        or is_transient_rate_limit(message),
+                    )
+                    cfg["paid_api_backoff_until"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+                    ).isoformat()
                     cfg["auto_retry_not_before"] = (
                         datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
                     ).isoformat()
                     cfg["auto_retry_scheduled_by"] = run_id
                     task.config = cfg
                     task.status = TaskStatus.PENDING
-                    task.error_message = message[:2000]
-                    task.current_step = f"上游暂不可用，自动退避排队中：{message}"[:255]
+                    task.error_message = None
+                    task.current_step = public_task_step(
+                        "正在继续生成",
+                        status=TaskStatus.PENDING,
+                        progress=task.progress,
+                    )
                     task.progress = max(0, int(task.progress or 0))
                     db.commit()
+                    _schedule_pending_task_wakeup(
+                        task_id,
+                        delay_seconds,
+                        reason="provider backoff retry",
+                    )
                     return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters) if task is not None else 0}
                 elif _is_retryable_generation_error(e) and current_retries < max_retries:
                     retry_countdown = _retry_delay_seconds(current_retries)
                     cfg = dict(task.config or {})
-                    cfg["last_auto_retry_error"] = message[:1000]
+                    cfg["last_auto_retry_error"] = internal_message[:1000]
                     cfg["auto_retry_attempts"] = current_retries + 1
                     cfg["auto_retry_not_before"] = (
                         datetime.now(timezone.utc) + timedelta(seconds=retry_countdown)
@@ -1799,13 +3011,17 @@ def process_video(_self, task_id: str) -> dict:
                     cfg["auto_retry_scheduled_by"] = run_id
                     task.config = cfg
                     task.status = TaskStatus.PENDING
-                    task.error_message = message[:2000]
-                    task.current_step = f"上游暂不可用，自动退避排队中（{current_retries + 1}/{max_retries}）：{message}"[:255]
+                    task.error_message = None
+                    task.current_step = public_task_step(
+                        "正在继续生成",
+                        status=TaskStatus.PENDING,
+                        progress=task.progress,
+                    )
                     task.progress = max(0, int(task.progress or 0))
                 else:
                     if _is_retryable_generation_error(e):
                         cfg = dict(task.config or {})
-                        cfg["last_auto_retry_error"] = message[:1000]
+                        cfg["last_auto_retry_error"] = internal_message[:1000]
                         cfg["auto_retry_exhausted_at"] = datetime.now(timezone.utc).isoformat()
                         task.config = cfg
                     task.status = TaskStatus.FAILED
@@ -1857,6 +3073,19 @@ def _clear_public_domain_failure_state(config: dict[str, Any]) -> dict[str, Any]
     cleaned.pop("public_domain_quality_reason", None)
     cleaned.pop("auto_requeue_reason", None)
     cleaned.pop("auto_requeued_at", None)
+    for key in (
+        "generation_hold",
+        "generation_hold_reason",
+        "generation_hold_step",
+        "generation_hold_at",
+        "paid_api_backoff",
+        "paid_api_backoff_reason",
+        "paid_api_backoff_at",
+        "paid_api_backoff_error",
+        "paid_api_backoff_until",
+        "paid_api_backoff_last_due_at",
+    ):
+        cleaned.pop(key, None)
     cleaned.pop("paid_call_delivery_uncertain", None)
     cleaned.pop("paid_call_manual_resume_required", None)
     cleaned.pop("failed_auto_recovery_suppressed_at", None)
@@ -1890,6 +3119,8 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
     owns_run = False
     run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
     output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task_id}"
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
 
     def classical_pause_requested() -> bool:
         pause_db: Session = SessionLocal()
@@ -1977,6 +3208,42 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         if task.status == TaskStatus.PAUSED:
             clear_task_dispatch_guard(task_id)
             return {"task_id": task_id, "status": TaskStatus.PAUSED, "chapters": len(task.chapters)}
+        if (
+            cfg.get("generation_hold")
+            or cfg.get("paid_call_delivery_uncertain")
+            or cfg.get("paid_call_manual_resume_required")
+        ):
+            task.status = TaskStatus.PENDING
+            task.error_message = str(
+                cfg.get("generation_hold_reason") or "generation is held by cost protection"
+            )[:2000]
+            task.current_step = str(
+                cfg.get("generation_hold_step") or "费用保护暂停，未投递模型调用"
+            )[:255]
+            db.commit()
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters)}
+        not_before = _parse_iso_datetime(cfg.get("auto_retry_not_before"))
+        backoff_until = _parse_iso_datetime(cfg.get("paid_api_backoff_until"))
+        wait_until = max(
+            (value for value in (not_before, backoff_until) if value is not None),
+            default=None,
+        )
+        if wait_until is not None and wait_until > datetime.now(timezone.utc):
+            task.status = TaskStatus.PENDING
+            task.current_step = "等待上游退避窗口结束，系统将自动续跑"
+            db.commit()
+            clear_task_dispatch_guard(task_id)
+            return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters)}
+        for key in (
+            "paid_api_backoff",
+            "paid_api_backoff_reason",
+            "paid_api_backoff_at",
+            "paid_api_backoff_error",
+            "paid_api_backoff_until",
+            "paid_api_backoff_last_due_at",
+        ):
+            cfg.pop(key, None)
         active_run = str(cfg.get("active_run_id") or "")
         if active_run and active_run != run_id and task.status == TaskStatus.PROCESSING:
             return {"task_id": task_id, "status": "already_running"}
@@ -2008,6 +3275,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             else "正在验证 5–10 本来源并建立逐章串行检查点"
         )
         db.commit()
+        heartbeat_stop, heartbeat_thread = _start_active_run_heartbeat(task_id, run_id)
 
         snapshot_path = output_dir / "00_public_domain_sources.json"
         payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -2285,31 +3553,87 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             cfg = dict(task.config or {})
             _mark_generation_hold_for_quota(task, exc)
             cfg = dict(task.config or {})
-            classical_paid_delivery_uncertain = bool(
-                cfg.get("public_domain_classical_vernacular")
-                and str(cfg.get("generation_mode") or "") == CLASSICAL_VERNACULAR_MODE
-                and _is_retryable_generation_error(exc)
+            internal_message = f"{type(exc).__name__}: {exc}"[:2000]
+            message = _user_facing_generation_error(exc)
+            delivery_uncertain = _is_paid_delivery_uncertain(exc)
+            quota_backoff = _is_paid_quota_backoff_error(exc)
+            classical_paid_delivery_uncertain = _is_classical_paid_delivery_uncertain(
+                cfg,
+                message,
             )
-            if classical_paid_delivery_uncertain:
+            if delivery_uncertain or classical_paid_delivery_uncertain:
+                # A transport failure after a paid request was submitted is an
+                # operator boundary.  Keep the checkpoint and persisted
+                # response id, but never create a replacement request from the
+                # watchdog.
                 cfg.update(
+                    generation_hold=True,
+                    generation_hold_reason=(
+                        "付费模型请求可能已经提交但结果未知，已阻止自动重试；"
+                        "请核对提供方响应后再继续生成"
+                    ),
+                    generation_hold_step="费用保护暂停，未再次投递模型调用",
+                    generation_hold_at=datetime.now(timezone.utc).isoformat(),
                     paid_call_delivery_uncertain=True,
                     paid_call_manual_resume_required=True,
                     failed_auto_recovery_suppressed_at=datetime.now(timezone.utc).isoformat(),
                 )
+                response_id = str(getattr(exc, "response_id", "") or "").strip()
+                if response_id:
+                    cfg["paid_call_response_id"] = response_id
                 task.config = cfg
-            clear_run()
-            task.status = TaskStatus.FAILED
-            task.current_step = (
-                "上游回传中断；已禁止自动重复付费，可按当前范围继续并复用已保存响应"
-                if classical_paid_delivery_uncertain
-                else "技术故障；已保存证据、规划和合格章节断点，可继续生成"
-            )
-            task.error_message = f"{type(exc).__name__}: {exc}"[:2000]
+                clear_run()
+                task.status = TaskStatus.FAILED
+                task.current_step = "任务暂时中断，已保留断点"
+                task.error_message = message
+            elif quota_backoff:
+                # Quota/resource exhaustion is safe to retry after the
+                # provider breaker window, and must not consume max_retries.
+                delay_seconds = _mark_task_pending_after_paid_backoff(
+                    task,
+                    message=internal_message,
+                    retries=int(cfg.get("auto_retry_attempts") or 0),
+                    run_id=run_id,
+                    transient_rate_limit=is_transient_rate_limit(exc),
+                )
+                # The caller commits below; schedule after the commit so the
+                # wake-up cannot race an uncommitted pending state.
+            elif isinstance(exc, ClaudeRequestRejectedError):
+                clear_run()
+                task.status = TaskStatus.FAILED
+                task.current_step = "任务暂时中断，已保留断点"
+                task.error_message = message
+            elif _is_retryable_generation_error(exc):
+                # Public-domain tasks intentionally use max_retries=0.  Keep a
+                # transient failure in the durable pending queue instead of
+                # losing it when the Celery message is acknowledged.
+                _mark_task_pending_for_transient_retry(
+                    task,
+                    message=internal_message,
+                    retries=int(cfg.get("auto_retry_attempts") or 0),
+                )
+                _clear_task_run(task, run_id)
+            else:
+                clear_run()
+                task.status = TaskStatus.FAILED
+                task.current_step = "技术故障；已保存证据、规划和合格章节断点，可继续生成"
+                task.error_message = message
             db.commit()
+            if quota_backoff:
+                _schedule_pending_task_wakeup(
+                    task_id,
+                    delay_seconds,
+                    reason="public-domain paid provider backoff",
+                )
+            return {"task_id": task_id, "status": task.status, "chapters": len(task.chapters)}
         return {"task_id": task_id, "status": TaskStatus.FAILED}
     finally:
         if owns_run:
             clear_task_dispatch_guard(task_id)
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=2)
         db.close()
 
 

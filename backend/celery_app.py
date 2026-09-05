@@ -70,6 +70,15 @@ celery_app.conf.update(
     worker_cancel_long_running_tasks_on_connection_loss=settings.CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS,
     worker_enable_remote_control=False,          # Upstash 长连接下禁用 pidbox，减少 pub/sub 断连
     worker_send_task_events=False,
+    # Keep long-running generation work and the short recovery heartbeat on
+    # separate queues.  Otherwise a busy generation worker can starve the
+    # watchdog indefinitely.
+    task_default_queue="celery",
+    task_routes={
+        "tasks.requeue_stale_processing": {
+            "queue": settings.CELERY_MAINTENANCE_QUEUE,
+        },
+    },
     broker_connection_retry_on_startup=settings.CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP,
     broker_connection_retry=True,
     broker_connection_max_retries=None,
@@ -110,13 +119,16 @@ celery_app.conf.update(
     result_expires=60 * 60 * 24,    # 24h
 )
 
-if settings.STALE_TASK_WATCHDOG_ENABLED:
-    celery_app.conf.beat_schedule = {
-        "requeue-stale-processing-tasks": {
-            "task": "tasks.requeue_stale_processing",
-            "schedule": max(60, int(settings.STALE_TASK_WATCHDOG_INTERVAL_SECONDS or 120)),
-        },
-    }
+# Always register the schedule.  The task itself checks the feature flag so
+# toggling it in the environment does not require a beat-container rebuild or
+# leave an old beat process with a stale schedule.
+celery_app.conf.beat_schedule = {
+    "requeue-stale-processing-tasks": {
+        "task": "tasks.requeue_stale_processing",
+        "schedule": max(60, int(settings.STALE_TASK_WATCHDOG_INTERVAL_SECONDS or 120)),
+        "options": {"queue": settings.CELERY_MAINTENANCE_QUEUE},
+    },
+}
 
 # 让 `from celery_app import celery_app` 与 `celery -A celery_app worker` 都能识别
 __all__ = ["celery_app"]

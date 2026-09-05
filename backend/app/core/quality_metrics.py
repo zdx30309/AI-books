@@ -423,82 +423,6 @@ _CLASSICAL_LABEL_LINE_RE = re.compile(
     r"^(?:\u3010P\d{4}\u3011\s*)?"
     r"(?:\uff08\u539f\u6587\uff09|\uff08\u7ffb\u8bd1\uff09)"
 )
-_INLINE_SUBHEADING_KEYWORDS = (
-    "代价",
-    "难题",
-    "局限",
-    "风险",
-    "真相",
-    "困境",
-    "陷阱",
-    "选择",
-    "转折",
-    "退路",
-    "误判",
-    "成本",
-    "边界",
-    "启示",
-    "根源",
-    "答案",
-    "分水岭",
-    "账本",
-    "底气",
-    "诉求",
-    "策略",
-    "模式",
-    "路径",
-    "危机",
-    "余波",
-    "裂缝",
-    "规则",
-    "逻辑",
-    "竞争",
-    "转化",
-)
-_INLINE_SUBHEADING_SENTENCE_HINTS = (
-    "我们",
-    "你",
-    "他",
-    "她",
-    "它",
-    "大家",
-    "人们",
-    "如果",
-    "只要",
-    "当",
-    "因为",
-    "所以",
-    "可能",
-    "可以",
-    "能够",
-    "能",
-    "能不能",
-    "能否",
-    "应该",
-    "必须",
-    "需要",
-    "要",
-    "值得",
-    "并不是",
-    "不是",
-    "不会",
-    "不能",
-    "只会",
-    "才会",
-    "才可能",
-    "帮",
-    "让",
-    "把",
-    "被",
-    "没有",
-    "的是",
-    "在于",
-    "成为",
-    "变成",
-    "说明",
-    "意味着",
-    "取决于",
-)
 _SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
     "语义搭配硬伤：菜/饭菜不应写成好喝": (
         r"re:(?:菜|饭菜|菜肴|菜品|饭|米饭|面条|馒头|包子|点心|肉|鱼)"
@@ -565,30 +489,9 @@ def _looks_like_naked_subheading(line: str) -> bool:
 
 
 def _is_allowed_internal_subheading(line: str) -> bool:
-    match = re.match(r"^###\s*([^#].*?)\s*$", line.strip())
-    return bool(match and _looks_like_naked_subheading(match.group(1)))
+    """Internal Markdown subheadings are not part of the delivery format."""
 
-
-def _looks_like_inline_pseudo_subheading_title(title: str) -> bool:
-    title = title.strip().lstrip("@").strip()
-    if not title or _cjk_ratio(title) < 0.55:
-        return False
-    # A pseudo-heading is a compact noun label ("扎堆竞争的代价，正文……")
-    # and therefore normally ends on the heading noun.  Merely containing a
-    # risk/logic keyword is not enough: ordinary finance topic sentences such
-    # as “平台对高风险账户实施干预后，继续……” contain those words inside a
-    # complete time/action clause.  Treating those clauses as headings caused
-    # a false hard failure after all paid writing stages had already finished.
-    if not any(title.endswith(keyword) for keyword in _INLINE_SUBHEADING_KEYWORDS):
-        return False
-    if title.startswith(("这个", "这则", "这一", "这种", "这类", "这次", "这些", "那则", "那个")):
-        return False
-    # Inline pseudo-headings are usually short noun labels such as
-    # “扎堆竞争的代价，...”. Normal topic sentences can also contain words like
-    # “风险/规则”, so do not block long predicate-bearing sentences.
-    if len(title) > 12 and any(hint in title for hint in _INLINE_SUBHEADING_SENTENCE_HINTS):
-        return False
-    return True
+    return False
 
 
 def _is_classical_interleaved_label_line(line: str, *, category: str | None = None) -> bool:
@@ -631,32 +534,6 @@ def _detect_format_noise(text: str, *, category: str | None = None) -> dict[str,
             _add_noise_hit(results, "审稿批注式残留", line)
         if _looks_like_naked_subheading(line):
             _add_noise_hit(results, "裸短小标题", line)
-    return results
-
-
-def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) -> dict[str, list[str]]:
-    results: dict[str, list[str]] = {}
-    in_body = False
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.strip()
-        if not line:
-            continue
-        section = _FRONT_SECTION_RE.match(line)
-        if section:
-            in_body = section.group(1) == "正文"
-            continue
-        if not in_body:
-            continue
-        if _is_classical_interleaved_label_line(line, category=category):
-            continue
-        if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
-            continue
-        match = re.match(r"^([^。！？；，、,.!?;：:\n]{3,16})[，,：:](.{8,})$", line)
-        if not match:
-            continue
-        title = match.group(1)
-        if _looks_like_inline_pseudo_subheading_title(title):
-            _add_noise_hit(results, "正文内小标题未标准化为 ###", line)
     return results
 
 
@@ -1017,7 +894,6 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
             if hits:
                 results[name] = hits
     merge(_detect_format_noise(markdown, category=category_key))
-    merge(_detect_inline_pseudo_subheading(markdown, category=category_key))
     merge(_detect_empty_front_sections(markdown))
     merge(_detect_duplicate_body_headings(markdown))
     merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))

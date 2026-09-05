@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 class GeminiMaxTokensError(RuntimeError):
     """Raised when Gemini returns no text because the output hit MAX_TOKENS."""
 
+    def __init__(self, message: str, *, partial_text: str = "") -> None:
+        self.partial_text = (partial_text or "").strip()
+        super().__init__(message)
+
 
 class GeminiDeliveryUncertainError(RuntimeError):
     """The Gemini request may have been accepted but its result is unknown."""
@@ -238,6 +242,45 @@ def _gemini_preflight_error(exc: BaseException) -> bool:
     return _gemini_status_code(exc) in {400, 401, 403, 404, 409, 422}
 
 
+def _response_finish_reasons(response: Any) -> list[Any]:
+    """Return provider finish reasons without assuming a concrete SDK object."""
+
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        reasons: list[Any] = []
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                reasons.append(candidate.get("finish_reason") or candidate.get("finishReason"))
+            else:
+                reasons.append(
+                    getattr(candidate, "finish_reason", None)
+                    or getattr(candidate, "finishReason", None)
+                )
+        top_level = (
+            response.get("finish_reason")
+            if isinstance(response, dict)
+            else getattr(response, "finish_reason", None)
+        )
+        if top_level is not None:
+            reasons.append(top_level)
+        return reasons
+    except Exception:
+        return []
+
+
+def _is_max_tokens_finish_reason(reason: Any) -> bool:
+    """Recognize the SDK enum and string forms returned by Gemini."""
+
+    if reason is None:
+        return False
+    values = (
+        reason,
+        getattr(reason, "name", None),
+        getattr(reason, "value", None),
+    )
+    return any("MAX_TOKENS" in str(value or "").upper() for value in values)
+
+
 def _gemini_delivery_uncertain(exc: BaseException, *, phase: str) -> GeminiDeliveryUncertainError:
     return GeminiDeliveryUncertainError(
         f"{phase} failed after the request may have been accepted; automatic replacement is disabled "
@@ -322,16 +365,33 @@ def generate_text(
                             contents=contents,
                             config=config,
                         )
-                text = (response.text or "").strip()
+                finish_reasons = _response_finish_reasons(response)
+                finish_reason = finish_reasons[0] if finish_reasons else None
+                text_error: Exception | None = None
+                try:
+                    text = (response.text or "").strip()
+                except Exception as exc:
+                    text = ""
+                    text_error = exc
+                logger.info(
+                    "Gemini 响应 model=%s backend=%s chars=%d finish_reason=%s",
+                    model_name,
+                    backend,
+                    len(text),
+                    finish_reason,
+                )
+                if any(_is_max_tokens_finish_reason(reason) for reason in finish_reasons):
+                    raise GeminiMaxTokensError(
+                        "Gemini 输出触达 MAX_TOKENS"
+                        f" finish_reason={finish_reason} partial_chars={len(text)}",
+                        partial_text=text,
+                    )
                 if text:
                     if backend != primary_backend:
                         logger.info("Gemini 调用通过备用通道完成: %s", backend)
                     return text
-                finish_reason = None
                 thoughts_tokens = None
                 try:
-                    if response.candidates:
-                        finish_reason = response.candidates[0].finish_reason
                     usage = getattr(response, "usage_metadata", None)
                     thoughts_tokens = getattr(usage, "thoughts_token_count", None)
                 except Exception:
@@ -340,8 +400,8 @@ def generate_text(
                     "Gemini 返回空响应"
                     f" finish_reason={finish_reason} thoughts_tokens={thoughts_tokens}"
                 )
-                if "MAX_TOKENS" in str(finish_reason or "").upper():
-                    raise GeminiMaxTokensError(message)
+                if text_error is not None:
+                    message += f" text_error={type(text_error).__name__}: {text_error}"
                 raise ValueError(message)
             except Exception as exc:
                 last_exc = exc

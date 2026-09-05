@@ -232,7 +232,8 @@ def test_normalize_removes_bold_prefix_pseudo_heading_from_body() -> None:
     result = normalize_final_markdown(markdown, category="health_wellness")
 
     assert "**" not in result
-    assert "###年龄的真相" in result
+    assert "###年龄的真相" not in result
+    assert "年龄的真相30岁后的状态下滑" in result
     assert "30岁后的状态下滑" in result
     assert "这是重要的一点" in result
     assert "@1. 健康观察" in result
@@ -252,7 +253,8 @@ def test_normalize_removes_repeated_naked_pseudo_heading_without_gluing_text() -
     assert "财富自由的三种诉求财富自由背后" not in result
     assert "财富自由的三种诉求\n" not in result
     assert "财富自由背后藏着三种完全不同的诉求" in result
-    assert "###健康四件事\n每天记录四个关键点" in result
+    assert "###健康四件事" not in result
+    assert "健康四件事。\n每天记录四个关键点" in result
 
 
 def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> None:
@@ -269,7 +271,8 @@ def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> N
 
     assert "这几句话逻辑自洽" not in result
     assert "# 身体的能量账本" not in result
-    assert "###身体的能量账本" in result
+    assert "###身体的能量账本" not in result
+    assert "身体的能量账本。" in result
     assert "\n1. 起床之后\n" not in result
     assert "起床之后。\n起床之后先记录" not in result
     assert "起床之后先记录昨晚睡了几个小时" in result
@@ -277,7 +280,7 @@ def test_normalize_removes_illegal_at_editorial_comment_and_heading_noise() -> N
     assert "@普通段落" not in result
 
 
-def test_normalize_standardizes_inline_pseudo_subheading_for_all_categories() -> None:
+def test_normalize_keeps_inline_body_sentences_as_body_text() -> None:
     markdown = """@正文
 @1. 新药中国路
 扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
@@ -286,13 +289,14 @@ def test_normalize_standardizes_inline_pseudo_subheading_for_all_categories() ->
 
     result = normalize_final_markdown(markdown, category="finance_technology")
 
-    assert "###扎堆竞争的代价\n临床资源就那么多" in result
-    assert "###不过这种模式的局限性也摆在眼前\n如果只是慢半拍" in result
-    assert "扎堆竞争的代价，临床资源" not in result
+    assert "###扎堆竞争的代价" not in result
+    assert "扎堆竞争的代价，临床资源就那么多" in result
+    assert "###不过这种模式的局限性也摆在眼前" not in result
+    assert "不过这种模式的局限性也摆在眼前" in result
     assert "@不过这种模式" not in result
 
 
-def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories() -> None:
+def test_normalize_keeps_inline_body_sentences_across_text_categories() -> None:
     markdown = """@正文
 @1. 新药中国路
 扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
@@ -313,8 +317,93 @@ def test_normalize_standardizes_inline_pseudo_subheading_across_text_categories(
             continue
         result = normalize_final_markdown(markdown, category=category)
 
-        assert "###扎堆竞争的代价\n临床资源就那么多" in result, category
-        assert "扎堆竞争的代价，临床资源" not in result, category
+        assert "###扎堆竞争的代价" not in result, category
+        assert "扎堆竞争的代价，临床资源就那么多" in result, category
+
+
+def test_normalize_removes_internal_subheadings_from_each_chapter() -> None:
+    markdown = """@正文
+@1. 第一章
+###小标题一
+正文一。
+###小标题二
+正文二。
+###小标题三
+正文三。
+###小标题四
+正文四。
+@2. 第二章
+正文五。
+###第二章小标题
+正文六。
+"""
+
+    result = normalize_final_markdown(markdown, category="social_science")
+
+    assert "###" not in result
+    assert "小标题一。" in result
+    assert "小标题二。" in result
+    assert "小标题三。" in result
+    assert "小标题四。" in result
+    assert "第二章小标题。" in result
+
+
+def test_normalize_removes_internal_subheadings_in_body_only_delivery_text() -> None:
+    markdown = """第一章标题
+###小标题一
+正文一。
+###小标题二
+正文二。
+###小标题三
+正文三。
+###小标题四
+正文四。
+1,957 字
+
+第二章标题
+###第二章小标题一
+正文五。
+###第二章小标题二
+正文六。
+###第二章小标题三
+正文七。
+###第二章小标题四
+正文八。
+1,819 字
+"""
+
+    result = normalize_final_markdown(markdown, category="life_philosophy")
+
+    assert "###" not in result
+    assert "小标题一。" in result
+    assert "小标题二。" in result
+    assert "小标题三。" in result
+    assert "小标题四。" in result
+    assert "第二章小标题一。" in result
+    assert "第二章小标题二。" in result
+    assert "第二章小标题三。" in result
+    assert "第二章小标题四。" in result
+
+
+def test_normalize_removes_unstructured_body_subheadings() -> None:
+    markdown = """一段没有章节标记的正文。
+###小标题一
+正文一。
+###小标题二
+正文二。
+###小标题三
+正文三。
+###小标题四
+正文四。
+"""
+
+    result = normalize_final_markdown(markdown, category="life_philosophy")
+
+    assert "###" not in result
+    assert "小标题一。" in result
+    assert "小标题二。" in result
+    assert "小标题三。" in result
+    assert "小标题四。" in result
 
 
 def test_comic_normalize_keeps_image_markdown_unchanged() -> None:

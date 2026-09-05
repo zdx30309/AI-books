@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
 import { categoryIdForLabel, categoryLabelFor, normalizeCategoryLabel } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
+import { publicStatusLabel, publicTaskStep } from "@/utils/taskStatus";
 
 interface Props {
   task: TaskListItem;
@@ -25,12 +26,7 @@ interface Props {
 }
 
 function statusLabel(status: string, progress: number): string {
-  if (status === "completed") return "已完成";
-  if (status === "failed") return "失败";
-  if (status === "paused") return "已暂停";
-  if (status === "manual_review") return "人工复核";
-  if (progress === 0) return "排队中";
-  return `生成中 ${progress}%`;
+  return publicStatusLabel(status, progress);
 }
 
 function deriveTitle(task: TaskListItem): string {
@@ -56,7 +52,7 @@ function deriveSubtitle(task: TaskListItem): string {
     if (task.word_count) return `共 ${task.word_count.toLocaleString()} 字`;
     return "已完成";
   }
-  return task.current_step || statusLabel(task.status, task.progress);
+  return publicTaskStep(task.current_step, task.status, task.progress) || statusLabel(task.status, task.progress);
 }
 
 function formatBookDate(value: string) {
@@ -232,7 +228,7 @@ export function BookCard({
 
       {task.status === "manual_review" && (
         <div className="absolute inset-x-0 bottom-0 bg-gold-950/90 px-2 py-2 text-center text-[10px] tracking-widest text-gold-100">
-          原稿已保留 · 等待人工复核
+          当前稿件已保留 · 正在处理
         </div>
       )}
 

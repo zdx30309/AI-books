@@ -68,8 +68,49 @@ services:
         "-A",
         "celery_app.celery_app",
         "worker",
+        "--queues=celery",
         "--pool=threads",
         "--concurrency=${CELERY_WORKER_CONCURRENCY:-12}",
+        "--loglevel=info",
+        "--without-gossip",
+        "--without-mingle",
+        "--without-heartbeat"
+      ]
+
+  maintenance:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - backend_output:/app/backend/output
+      - ./external_reference_assets:/app/backend/external_reference_assets:ro
+      - ${GOOGLE_ADC_HOST_DIR:-./.local/google}:/root/.config/gcloud:ro
+    environment:
+      COVER_ORTHODOX_REFERENCE_ZIP_PATH: /app/backend/external_reference_assets/orthodox_publishing/reference_covers.zip
+      WEREAD_COMPANY_INDEX_PATH: /app/backend/output/weread_company_index.json
+      PAID_API_GATE_REDIS_URL: redis://redis-gate:6379/0
+      PAID_API_GUARD_FAIL_CLOSED: ${PAID_API_GUARD_FAIL_CLOSED:-True}
+      LONG_NOVEL_PROMPT_CACHE_WARMUP: ${LONG_NOVEL_PROMPT_CACHE_WARMUP:-False}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/root/.config/gcloud/application_default_credentials.json}
+      CELERY_BROKER_URL: redis://redis-gate:6379/1
+      CELERY_RESULT_BACKEND: redis://redis-gate:6379/2
+    depends_on:
+      redis-gate:
+        condition: service_healthy
+    command:
+      [
+        "python",
+        "-m",
+        "celery",
+        "-A",
+        "celery_app.celery_app",
+        "worker",
+        "--queues=${CELERY_MAINTENANCE_QUEUE:-maintenance}",
+        "--pool=solo",
+        "--concurrency=${CELERY_MAINTENANCE_WORKER_CONCURRENCY:-1}",
         "--loglevel=info",
         "--without-gossip",
         "--without-mingle",

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
@@ -70,6 +71,8 @@ from app.services.public_domain_rewrite import (
     PublicDomainSource,
     rewrite_public_domain_fusion,
 )
+from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
+from app.utils.task_status import public_task_error, public_task_step
 from app.utils.docx_text import DocxTextError, extract_docx_text, extract_pdf_text
 from app.utils.epub_text import EpubTextError, extract_epub_text
 
@@ -349,8 +352,12 @@ def _classical_workspace_state(task: Task) -> ClassicalWorkspaceStateResponse:
         task_id=task.id,
         status=task.status,
         progress=int(task.progress or 0),
-        current_step=str(task.current_step or ""),
-        error_message=task.error_message,
+        current_step=public_task_step(
+            task.current_step,
+            status=task.status,
+            progress=task.progress,
+        ),
+        error_message=public_task_error(task.error_message, status=task.status),
         target_title=str(cfg.get("target_title") or cfg.get("title") or "公版古文白话"),
         bookshelf=str(cfg.get("bookshelf") or _classical_bookshelf_for_scope(scope_mode)),
         custom_prompt=saved_prompt,
@@ -473,9 +480,22 @@ def _prepare_classical_continuation(
         "pause_requested",
         "auto_requeue_reason",
         "auto_requeued_at",
+        "generation_hold",
+        "generation_hold_reason",
+        "generation_hold_step",
+        "generation_hold_at",
         "paid_call_delivery_uncertain",
         "paid_call_manual_resume_required",
+        "paid_api_backoff",
+        "paid_api_backoff_reason",
+        "paid_api_backoff_at",
+        "paid_api_backoff_error",
+        "paid_api_backoff_until",
+        "paid_api_backoff_attempts",
+        "paid_api_backoff_last_due_at",
         "failed_auto_recovery_suppressed_at",
+        "dispatch_last_error",
+        "dispatch_last_failed_at",
     ):
         cfg.pop(key, None)
     task.config = cfg
@@ -489,14 +509,36 @@ def _prepare_classical_continuation(
     task.error_message = None
 
 
+def _mark_dispatch_failure_pending(task: Task, exc: Exception, *, step: str) -> None:
+    """Keep a saved public-domain task runnable when broker publish fails."""
+
+    clear_task_dispatch_guard(str(task.id))
+    cfg = dict(task.config or {})
+    cfg.update(
+        dispatch_last_error=f"Celery dispatch failed: {exc}"[:1000],
+        dispatch_last_failed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    task.config = cfg
+    task.status = TaskStatus.PENDING
+    task.error_message = f"Celery dispatch failed: {exc}"[:2000]
+    task.current_step = step[:255]
+
+
 def _dispatch_classical_task(task: Task) -> None:
     from app.tasks.tasks import process_public_domain_longform
 
-    process_public_domain_longform.apply_async(
-        args=[str(task.id)],
-        time_limit=7 * 24 * 60 * 60,
-        soft_time_limit=7 * 24 * 60 * 60 - 300,
-    )
+    task_id = str(task.id)
+    try:
+        if not acquire_task_dispatch_guard(task_id):
+            return
+        process_public_domain_longform.apply_async(
+            args=[task_id],
+            time_limit=7 * 24 * 60 * 60,
+            soft_time_limit=7 * 24 * 60 * 60 - 300,
+        )
+    except Exception:
+        clear_task_dispatch_guard(task_id)
+        raise
 
 
 def _prepare_classical_complete_continuation(task: Task) -> None:
@@ -561,9 +603,11 @@ async def continue_classical_translation(
         db.rollback()
         persisted = db.get(Task, task_id)
         if persisted is not None:
-            persisted.status = TaskStatus.FAILED
-            persisted.current_step = "续译状态已保存，但后台投递失败，可再次从断点继续"
-            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(
+                persisted,
+                exc,
+                step="续译状态已保存，但后台投递失败，维护队列将自动重试",
+            )
             db.commit()
         raise HTTPException(status_code=503, detail=f"续译投递失败：{exc}") from exc
     return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -603,9 +647,11 @@ async def continue_classical_complete_translation(
         db.rollback()
         persisted = db.get(Task, task_id)
         if persisted is not None:
-            persisted.status = TaskStatus.FAILED
-            persisted.current_step = "续译任务已保存，但后台投递失败，可再次从断点继续"
-            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(
+                persisted,
+                exc,
+                step="续译任务已保存，但后台投递失败，维护队列将自动重试",
+            )
             db.commit()
         raise HTTPException(status_code=503, detail=f"续译投递失败：{exc}") from exc
     return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -677,9 +723,11 @@ async def resume_classical_translation(
         db.rollback()
         persisted = db.get(Task, task_id)
         if persisted is not None and persisted.status == TaskStatus.PENDING:
-            persisted.status = TaskStatus.FAILED
-            persisted.current_step = "继续状态已保存，但后台投递失败，可再次从断点继续"
-            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+            _mark_dispatch_failure_pending(
+                persisted,
+                exc,
+                step="继续状态已保存，但后台投递失败，维护队列将自动重试",
+            )
             db.commit()
         raise HTTPException(status_code=503, detail=f"继续翻译投递失败：{exc}") from exc
     return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -759,9 +807,11 @@ async def restart_classical_translation(
         if state_committed:
             persisted = db.get(Task, task_id)
             if persisted is not None:
-                persisted.status = TaskStatus.FAILED
-                persisted.current_step = "旧译文已清除，但后台投递失败；点击重新开始即可再次投递"
-                persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
+                _mark_dispatch_failure_pending(
+                    persisted,
+                    exc,
+                    step="旧译文已清除，但后台投递失败，维护队列将自动重试",
+                )
                 db.commit()
         raise HTTPException(status_code=503, detail=f"重新开始失败：{exc}") from exc
     return CreateTaskResponse(task_id=task.id, status=task.status)
@@ -835,9 +885,22 @@ async def local_retranslate_classical_translation(
     try:
         from app.tasks.tasks import retranslate_public_domain_classical_selection
 
-        retranslate_public_domain_classical_selection.apply_async(args=[str(task.id)])
+        if not acquire_task_dispatch_guard(str(task.id)):
+            return CreateTaskResponse(task_id=task.id, status=task.status)
+        try:
+            retranslate_public_domain_classical_selection.apply_async(args=[str(task.id)])
+        except Exception:
+            clear_task_dispatch_guard(str(task.id))
+            raise
     except Exception as exc:
-        task.status = TaskStatus.FAILED
+        clear_task_dispatch_guard(str(task.id))
+        previous_status = str((task.config or {}).get("classical_local_previous_status") or TaskStatus.COMPLETED)
+        task.status = (
+            previous_status
+            if previous_status in {TaskStatus.PAUSED, TaskStatus.COMPLETED}
+            else TaskStatus.PENDING
+        )
+        task.current_step = "局部重译投递失败，原译文保持不变，可稍后重新提交"
         task.error_message = f"局部重译投递失败：{exc}"[:2000]
         db.commit()
         raise HTTPException(status_code=503, detail=str(task.error_message)) from exc
@@ -1077,26 +1140,19 @@ def _create_longform_task(
     try:
         db.add(task)
         db.commit()
-        from app.tasks.tasks import process_public_domain_longform
-
-        if classical:
-            # A multi-million-character book may legitimately run for days.
-            # Every successful segment is checkpointed, so worker loss resumes
-            # from disk rather than resending completed paid model calls.
-            process_public_domain_longform.apply_async(
-                args=[str(task.id)],
-                time_limit=7 * 24 * 60 * 60,
-                soft_time_limit=7 * 24 * 60 * 60 - 300,
-            )
-        else:
-            process_public_domain_longform.delay(str(task.id))
+        # A multi-million-character book may legitimately run for days.  The
+        # shared dispatcher gives both modes the same lease cleanup and safe
+        # pending-on-publish-failure semantics.
+        _dispatch_classical_task(task)
     except Exception as exc:
         db.rollback()
         persisted = db.get(Task, task_id)
         if persisted is not None:
-            persisted.status = TaskStatus.FAILED
-            persisted.error_message = f"Celery dispatch failed: {exc}"[:2000]
-            persisted.current_step = "任务已保存，但后台队列投递失败，可点击继续生成"
+            _mark_dispatch_failure_pending(
+                persisted,
+                exc,
+                step="任务已保存，但后台队列投递失败，维护队列将自动重试",
+            )
             db.commit()
         logger.exception("Failed to dispatch serial public-domain long-form task %s", task_id)
         raise HTTPException(

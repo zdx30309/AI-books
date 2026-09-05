@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -48,6 +49,7 @@ from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.polish_provider import (
     polish_book_text,
     refine_book_text,
+    refine_provider_name,
 )
 from app.services.gemini import (
     GeminiDeliveryUncertainError,
@@ -93,6 +95,10 @@ class OpenAIDeliveryUncertainError(RuntimeError):
         self.response_id = str(response_id or "").strip() or None
         suffix = f" response_id={self.response_id}" if self.response_id else ""
         super().__init__(f"paid_call_delivery_uncertain: {message}{suffix}")
+
+
+class GeminiRefineIncompleteError(RuntimeError):
+    """The refine provider returned a manuscript that cannot be a full stage."""
 
 
 def _prompt_cache_digest(*parts: object) -> str:
@@ -670,17 +676,16 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
     if _looks_like_editorial_comment(stripped):
         return None
 
+    if re.match(r"^###(?!#)\s*\S", stripped):
+        return [stripped]
+
     markdown_heading = re.match(r"^\s{0,3}#{1,6}\s*(.+?)\s*$", stripped)
     if markdown_heading:
-        title = _normalize_internal_subheading_title(markdown_heading.group(1))
-        return [_format_internal_subheading(title)] if title else None
+        return [markdown_heading.group(1).strip()]
 
     bold_prefix = re.match(r"^\*\*([^*\n]{1,32})\*\*\s*(.*?)\s*$", stripped)
     if bold_prefix:
-        title = _normalize_internal_subheading_title(bold_prefix.group(1), max_len=18)
-        rest = bold_prefix.group(2).strip()
-        if title and (not rest or len(rest) >= 4):
-            return [_format_internal_subheading(title), rest] if rest else [_format_internal_subheading(title)]
+        return [stripped]
 
     candidate = stripped
     has_marker = False
@@ -701,7 +706,7 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
         else None
     )
     if direct_title and _looks_like_pseudo_heading_text(direct_title):
-        return [_format_internal_subheading(direct_title)]
+        return [candidate]
 
     for separator in ("：", ":", "，", ","):
         index = candidate.find(separator)
@@ -718,7 +723,7 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
             continue
         if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
             continue
-        return [_format_internal_subheading(title), body]
+        return [candidate]
 
     return None
 
@@ -758,9 +763,7 @@ def _strip_body_noise_line(line: str) -> str | None:
     if bold_prefix:
         title = bold_prefix.group(1).strip()
         rest = bold_prefix.group(2).strip()
-        if _looks_like_bold_prefix_heading(title, rest):
-            stripped = rest
-        elif rest:
+        if rest:
             stripped = f"{title}{rest}"
         else:
             stripped = title
@@ -785,15 +788,22 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
             normalized = part.strip()
             if normalized.startswith("###"):
                 title = _normalize_internal_subheading_title(normalized[3:].strip())
-                pending.append(_format_internal_subheading(title) if title else None)
+                if title is None:
+                    title = normalized[3:].strip()
+                pending.append(title or None)
                 continue
             pending.append(_strip_body_noise_line(normalized))
 
+    chapter_subheading_count = 0
     for index, line in enumerate(pending):
         if line is None:
             continue
         stripped = line.strip()
         if not stripped:
+            continue
+        if _is_body_chapter_heading(stripped):
+            chapter_subheading_count = 0
+            cleaned.append(stripped)
             continue
         if stripped.startswith("###"):
             heading_text = stripped[3:].strip()
@@ -804,7 +814,10 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                     break
             if next_line and _line_repeats_heading(heading_text, next_line):
                 continue
-            cleaned.append(stripped)
+            body_text = heading_text or stripped
+            if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
+                body_text = f"{body_text}。"
+            cleaned.append(body_text)
             continue
         if _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
             cleaned.append(stripped)
@@ -820,12 +833,84 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                 continue
             title = _normalize_internal_subheading_title(stripped, max_len=16)
             if title:
-                cleaned.append(_format_internal_subheading(title))
+                if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
+                    stripped = f"{stripped}。"
+                cleaned.append(stripped)
                 continue
             if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
                 stripped = f"{stripped}。"
         cleaned.append(stripped)
     return cleaned
+
+
+def _limit_internal_subheadings_per_chapter(markdown: str, *, max_count: int = 0) -> str:
+    """Remove internal ``###`` markers while preserving their title text."""
+
+    if not markdown or max_count < 0:
+        return markdown
+
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    has_formal_body = any(
+        (section := _FRONT_SECTION_RE.match(line.strip())) and section.group(1) == "正文"
+        for line in lines
+    )
+    # Some delivery views contain only the body and retain a standalone
+    # ``1,957 字`` line between chapters. Treat that stable delimiter as a
+    # chapter boundary so the same heading cap still applies to body-only text.
+    body_only_fallback = not has_formal_body and any(
+        re.match(r"^\s*[\d,]+\s*字\s*$", line.strip()) for line in lines
+    )
+    global_fallback = not has_formal_body and not body_only_fallback
+    in_body = body_only_fallback or global_fallback
+    chapter_seen = False
+    chapter_subheading_count = 0
+    output: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        section = _FRONT_SECTION_RE.match(stripped)
+        if section:
+            in_body = section.group(1) == "正文"
+            chapter_seen = False
+            chapter_subheading_count = 0
+            output.append(raw_line)
+            continue
+        if not in_body:
+            output.append(raw_line)
+            continue
+        if body_only_fallback and re.match(r"^\s*[\d,]+\s*字\s*$", stripped):
+            chapter_seen = False
+            chapter_subheading_count = 0
+            output.append(raw_line)
+            continue
+        if body_only_fallback and stripped and not chapter_seen:
+            chapter_seen = True
+        if global_fallback and stripped.startswith("###"):
+            if chapter_subheading_count < max_count:
+                output.append(raw_line)
+                chapter_subheading_count += 1
+            else:
+                body_text = stripped[3:].strip()
+                if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
+                    body_text = f"{body_text}。"
+                output.append(body_text or raw_line)
+            continue
+        if _is_body_chapter_heading(stripped):
+            chapter_seen = True
+            chapter_subheading_count = 0
+            output.append(raw_line)
+            continue
+        if chapter_seen and stripped.startswith("###"):
+            if chapter_subheading_count < max_count:
+                output.append(raw_line)
+                chapter_subheading_count += 1
+                continue
+            body_text = stripped[3:].strip()
+            if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
+                body_text = f"{body_text}。"
+            output.append(body_text or raw_line)
+            continue
+        output.append(raw_line)
+    return "\n".join(output)
 
 
 def _looks_like_wisdom_story_subheading(line: str) -> bool:
@@ -2724,6 +2809,12 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     text = _repair_blank_catalog_titles(text)
     text = _remove_intro_duplicate_from_body(text)
     normalized = normalize_category(category or "")
+    # Gemini may legally return the same chapter boundaries with the ``@``
+    # marker omitted.  Restore only a complete sequence proven by @目录 before
+    # the generic numbered-list cleaner runs; otherwise real in-body lists
+    # would be mistaken for formal chapters or formal chapters would lose
+    # their numbers.
+    text = _restore_catalog_chapter_markers(text)
     match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", text)
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
@@ -2731,6 +2822,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = "\n".join(compact).strip()
         if normalized in FINANCE_SOURCE_GUARDED_CATEGORIES:
             result = _clean_finance_source_leaks(result).strip()
+        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
 
     front = text[: match.end()]
@@ -2745,10 +2837,12 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         if normalized == CLASSICAL_INTERLEAVED_CATEGORY:
             body_lines = _collapse_extra_classical_interleaved_translation_lines(body_lines)
         result = "\n".join(front_lines + body_lines).strip()
+        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
     if normalized in {"comic_series", "healing_comic", "story_comic", "homophone_comic"}:
         result = "\n".join(front_lines + body_lines).strip()
+        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     is_wisdom_story = normalized == "wisdom_stories"
     if is_wisdom_story:
@@ -2764,6 +2858,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = _clean_finance_source_leaks(result).strip()
     if normalized == "life_philosophy":
         result = _apply_life_philosophy_delivery_markers(result).strip()
+    result = _limit_internal_subheadings_per_chapter(result)
     return result + ("\n" if result else "")
 
 
@@ -3694,8 +3789,56 @@ _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES = {
 }
 
 
+_DETERMINISTIC_FINAL_FORMAT_ERROR_NAMES = frozenset(
+    {
+        "Markdown 粗体残留",
+        "# 标题残留",
+        "非法正文 @ 段首",
+        "正文内编号伪标题",
+        "裸短小标题",
+    }
+)
+
+
 def _has_non_repairable_final_hard_errors(issues: dict[str, list[str]]) -> bool:
     return any(name in issues for name in _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES)
+
+
+_REPAIR_FAILURE_NOTICE_MARKERS = (
+    "待修复终稿",
+    "无法在不新增内容的前提下",
+    "请补充缺失部分",
+    "provider returned an empty body",
+)
+
+
+def _repair_output_is_unusable(original: str, repaired: str, *, category: str) -> bool:
+    """Reject a repair-provider notice/short response as if it were a manuscript.
+
+    Older runs persisted a model's refusal/diagnostic sentence as
+    ``04_format.md``.  A repair response is only allowed to replace the
+    manuscript when it preserves the long-form structure and a reasonable
+    amount of content.
+    """
+
+    original_text = (original or "").strip()
+    repaired_text = (repaired or "").strip()
+    if not repaired_text:
+        return True
+    lowered = repaired_text.lower()
+    if len(repaired_text) < 2_000 and any(marker.lower() in lowered for marker in _REPAIR_FAILURE_NOTICE_MARKERS):
+        return True
+    original_compact = len(re.sub(r"\s+", "", original_text))
+    repaired_compact = len(re.sub(r"\s+", "", repaired_text))
+    if original_compact >= 2_000 and repaired_compact < max(1_000, int(original_compact * 0.5)):
+        return True
+    if _is_finance_longform_category(category) and _finance_stage_looks_compressed(
+        original_text,
+        repaired_text,
+        category=category,
+    ):
+        return True
+    return False
 
 
 async def _repair_final_hard_errors_once(
@@ -3709,13 +3852,49 @@ async def _repair_final_hard_errors_once(
     from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
 
     normalized_category = normalize_category(category or "")
-    issues = detect_final_hard_errors(markdown, category=normalized_category)
+    original_markdown = markdown or ""
+    issues = detect_final_hard_errors(original_markdown, category=normalized_category)
     if not issues:
         return markdown
 
     issue_text = format_final_hard_error_hits(issues)
     logger.warning("终稿硬伤闸门触发 stage=%s category=%s: %s", stage, normalized_category, issue_text)
     _dump_stage(output_dir, "final_hard_error_issues.txt", issue_text)
+
+    # Most format-only failures are deterministic artifacts of the final
+    # normalizer (a stray @, a numbered pseudo-heading, or a Markdown heading
+    # marker that should be removed). Repair those before spending a
+    # second paid model call.  This also lets a worker finish an already
+    # generated 04_format.md after a restart, instead of turning a harmless
+    # formatting false positive into a permanent failed task.
+    normalized_markdown = normalize_final_markdown(
+        original_markdown,
+        category=normalized_category,
+    )
+    if normalized_markdown != original_markdown:
+        format_only_before = set(issues).issubset(_DETERMINISTIC_FINAL_FORMAT_ERROR_NAMES)
+        normalized_issues = detect_final_hard_errors(
+            normalized_markdown,
+            category=normalized_category,
+        )
+        _dump_stage(
+            output_dir,
+            "final_hard_error_deterministic_repaired.md",
+            normalized_markdown,
+        )
+        if format_only_before and not normalized_issues:
+            logger.info(
+                "终稿硬伤闸门由确定性格式修复通过 stage=%s category=%s",
+                stage,
+                normalized_category,
+            )
+            return normalized_markdown
+        # Keep any semantic issue, but do not ask the repair model to fix
+        # format violations that normalization already removed.
+        markdown = normalized_markdown
+        issues = normalized_issues
+        issue_text = format_final_hard_error_hits(issues)
+
     if _has_non_repairable_final_hard_errors(issues):
         raise RuntimeError(f"终稿硬伤质检失败，需重跑完整生成链路: {issue_text}")
 
@@ -3731,7 +3910,7 @@ async def _repair_final_hard_errors_once(
 - 古文参照译写版如果命中“直译腔”或“意象处理不当”，不要只替换几个同义词。必须先保留权威译本锁定的意思，再保留古典比喻的核心意象和比喻方向：例如“精金美玉、烈火、如履薄冰”等意象应保留并补成清楚现代白话，而不是全部抹成抽象概念。不得改义、改轻重、改比喻方向。
 - 古文参照译写版如果命中“讲义解释腔”“教材总结腔”，只修对应（翻译）段：去掉“这句话的意思是、这说明、由此可见、我们可以看出、所谓”等讲义口吻，改成顺口、有气口、耐读的大白话；不得改动相邻（原文）段，不得新增注释或点评。
 - 古文白话小说风格版如果命中“只有翻译解释没有故事推进”或“抽象格言没有转成故事载体”，必须把正文改成小故事式白话叙事：叙事型古文保留原人物、事件、因果和顺序，只补动作、过渡、反应和短对白；格言/议论型古文要安排无名人物、普通处境、一次选择或心理转折，让道理从故事里显出来。不得只解释句义，不得改成另一件事。
-- 正文内部小标题只能使用“###短标题”单独占一行；不能保留“@短标题”、编号伪标题、裸短标题或“短标题，正文内容”这种混排。
+- 正文不设置内部小标题，不得输出任何 `###`；如输入中已有，只删除标记并保留必要文字。
 - 如果命中佛经白话章节过短、故事和寓意被拆章或《百喻经》章节数量异常，必须把同一则譬喻的“故事章”和“道理章/寓意章/启示章”合并为一个正式章节；每章内部先讲完整故事，再在同章末尾自然收束道理，不得保留只有一句道理的独立章节。
 - 如果是《百喻经》全本，正文正式章节应按九十八则譬喻组织，不能生成一百九十多章、二百章或二百零四章。
 - 删除任务说明、审稿批注、提示词残留和模型解释语。
@@ -3751,6 +3930,19 @@ async def _repair_final_hard_errors_once(
     )
     repaired = normalize_final_markdown(repaired, category=normalized_category)
     _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
+
+    if _repair_output_is_unusable(
+        original_markdown,
+        repaired,
+        category=normalized_category,
+    ):
+        _dump_stage(output_dir, "semantic_quality_repaired_rejected.md", repaired)
+        logger.error(
+            "终稿硬伤修复返回不可用短文本，保留原稿并交由上层完整性闸门处理 stage=%s category=%s",
+            stage,
+            normalized_category,
+        )
+        return original_markdown
 
     remaining = detect_final_hard_errors(repaired, category=normalized_category)
     if remaining:
@@ -4148,6 +4340,16 @@ async def _polish_by_paragraph_chunks_strict(
             content = path.read_text(encoding="utf-8").strip()
             if not content:
                 return None
+            if progress_stage == "refine_chunk":
+                refine_issue = _refine_chunk_output_issue(chunk, content)
+                if refine_issue:
+                    logger.warning(
+                        "%s cache invalid chunk=%d: %s",
+                        log_label,
+                        idx + 1,
+                        refine_issue,
+                    )
+                    return None
             if chunk_validator:
                 validation_issues = chunk_validator(chunk, content)
                 if validation_issues:
@@ -4169,7 +4371,9 @@ async def _polish_by_paragraph_chunks_strict(
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content.strip(), encoding="utf-8")
+            # A killed worker must never leave a half-written chunk that a
+            # later retry mistakes for a completed refinement.
+            _atomic_write_stage_text(path, content.strip())
         except Exception as exc:
             logger.warning("%s cache write failed chunk=%d: %s", log_label, idx + 1, exc)
 
@@ -4331,6 +4535,10 @@ async def _polish_by_paragraph_chunks_strict(
             await _mark_started(idx + 1, chunk)
             try:
                 result = await _polish_with_max_tokens_retry(chunk, idx=idx)
+                if progress_stage == "refine_chunk":
+                    refine_issue = _refine_chunk_output_issue(chunk, result)
+                    if refine_issue:
+                        raise RuntimeError(refine_issue)
                 if chunk_validator:
                     validation_issues = chunk_validator(chunk, result)
                     if validation_issues:
@@ -4592,9 +4800,9 @@ def _is_finance_recommendation_category(category: str | None) -> bool:
 
 def _finance_section_content(text: str, section: str) -> str:
     pattern = re.compile(
-        r"^@?\s*"
+        r"^(?:！{3})?@?\s*"
         + re.escape(section)
-        + r"\s*$([\s\S]*?)(?=^@?\s*(?:最终书名|最终简介|目录|导言|正文)\s*$|\Z)",
+        + r"\s*$([\s\S]*?)(?=^(?:！{3})?@?\s*(?:最终书名|最终简介|目录|导言|正文)\s*$|\Z)",
         re.MULTILINE,
     )
     match = pattern.search(text or "")
@@ -4602,7 +4810,18 @@ def _finance_section_content(text: str, section: str) -> str:
 
 
 def _finance_body_text(markdown: str) -> str:
-    return _finance_section_content(markdown, "正文") or (markdown or "")
+    text = markdown or ""
+    body = _finance_section_content(text, "正文")
+    if body:
+        return body
+    # A malformed cached artifact can omit @正文 while retaining an @目录
+    # list.  Never interpret that front-matter list as manuscript chapters.
+    if re.search(
+        r"(?m)^(?:！{3})?@?\s*(?:最终书名|最终简介|目录|导言|前言)\s*$",
+        text,
+    ):
+        return ""
+    return text
 
 
 def _finance_body_chars(markdown: str) -> int:
@@ -4893,6 +5112,7 @@ def _finance_stage_instruction(
 - 必须保留完整正文、完整章节、完整段落和全部参考资料信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
 - 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
 - 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
+- 章节结构标记是机器可读的边界：凡是与 @目录 完整对应的正式章节，即使输入中出现了裸的 `N. 章节名` 或 `N、章节名`，也必须保留并输出为 `@N. 章节名`；不属于目录章节序列的正文编号清单按普通正文保留。
 - 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
 """
 
@@ -4940,20 +5160,361 @@ def _finance_final_resume_reusable(
     )
 
 
-def _finance_chapter_titles_from_body(body: str) -> list[tuple[int, str]]:
+_FINANCE_FORMAL_CHAPTER_RE = re.compile(
+    r"^\s*(?:(?:！{3})?@|！{3})\s*(\d+)[.．、]\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+_FINANCE_PLAIN_CHAPTER_RE = re.compile(
+    r"^\s*(\d+)[.．、]\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+_FINANCE_CATALOG_ENTRY_RE = re.compile(
+    r"^\s*@?\s*(\d+)[.．、]\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _finance_clean_chapter_title(value: str) -> str:
+    return _strip_title_colons(re.sub(r"^\s*[*#]+\s*", "", value or "").strip())
+
+
+def _finance_title_key(value: str) -> str:
+    return re.sub(
+        r"[\s.,．、:：;；!?！？'\"“”‘’（）()【】\[\]《》<>#*_`]+",
+        "",
+        _finance_clean_chapter_title(value),
+    )
+
+
+def _finance_titles_compatible(left: str, right: str) -> bool:
+    """Match an ambiguous plain heading to its catalog entry conservatively."""
+
+    left_key = _finance_title_key(left)
+    right_key = _finance_title_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shared = min(len(left_key), len(right_key))
+    return shared >= 6 and (left_key.startswith(right_key) or right_key.startswith(left_key))
+
+
+def _finance_catalog_titles(markdown: str) -> list[tuple[int, str]]:
+    catalog = _finance_section_content(markdown or "", "目录")
+    if not catalog:
+        return []
     titles: list[tuple[int, str]] = []
-    for line in (body or "").splitlines():
-        match = re.match(r"^\s*@?\s*(\d+)\.\s*(.+?)\s*$", line)
-        if not match:
-            continue
-        title = _strip_title_colons(match.group(2).strip())
+    for match in _FINANCE_CATALOG_ENTRY_RE.finditer(catalog):
+        title = _finance_clean_chapter_title(match.group(2))
         if title:
             titles.append((int(match.group(1)), title))
     return titles
 
 
+def _finance_formal_chapter_matches(body: str) -> list[re.Match[str]]:
+    return list(_FINANCE_FORMAL_CHAPTER_RE.finditer(body or ""))
+
+
+def _finance_plain_chapter_matches(
+    body: str,
+    catalog_titles: list[tuple[int, str]],
+) -> list[re.Match[str]]:
+    """Return plain headings only when they form the complete catalog sequence."""
+
+    if not body or not catalog_titles:
+        return []
+    catalog_numbers = [number for number, _ in catalog_titles]
+    if catalog_numbers != list(range(1, len(catalog_numbers) + 1)):
+        return []
+    candidates = list(_FINANCE_PLAIN_CHAPTER_RE.finditer(body))
+    if not candidates:
+        return []
+
+    for start_index, _first in enumerate(candidates):
+        selected: list[re.Match[str]] = []
+        cursor = start_index
+        valid = True
+        for expected_number, expected_title in catalog_titles:
+            found = None
+            while cursor < len(candidates):
+                candidate = candidates[cursor]
+                cursor += 1
+                if int(candidate.group(1)) != expected_number:
+                    continue
+                if _finance_titles_compatible(candidate.group(2), expected_title):
+                    found = candidate
+                    break
+            if found is None:
+                valid = False
+                break
+            selected.append(found)
+        if valid and selected:
+            return selected
+    return []
+
+
+def _restore_catalog_chapter_markers(markdown: str) -> str:
+    """Restore formal chapter markers removed by a refinement provider.
+
+    A refinement provider may omit the ``@`` from a real chapter heading.
+    Use the complete ``@目录`` sequence as a narrow structural witness: only a
+    body sequence that accounts for every catalog chapter, in order, is
+    promoted back to ``@N. 标题``. Partial sequences and ordinary in-body lists
+    are left untouched so the refine integrity gate is not weakened.
+
+    This also repairs legacy checkpoints that were already normalized to
+    unmarked chapter titles before the chapter marker bug was fixed.
+    """
+
+    if not markdown or not markdown.strip():
+        return markdown
+
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    body_range = _front_section_ranges(lines).get("正文")
+    if not body_range:
+        return markdown
+
+    catalog_titles = _finance_catalog_titles(markdown)
+    if not catalog_titles:
+        return markdown
+    catalog_numbers = [number for number, _ in catalog_titles]
+    if catalog_numbers != list(range(1, len(catalog_numbers) + 1)):
+        return markdown
+
+    # (global line index, chapter number or None, title, is_formal_marker,
+    #  source kind).  A markdown heading without a number is considered only
+    # as a legacy normalized form after all explicitly numbered candidates.
+    candidates: list[tuple[int, int | None, str, bool, str]] = []
+    body_start, body_end = body_range
+    for line_index in range(body_start, body_end):
+        stripped = lines[line_index].strip()
+        if not stripped:
+            continue
+
+        formal = re.match(
+            r"^(?:(?:！！！)?@|！！！)\s*(\d+)[.．、]\s*(.+?)\s*$",
+            stripped,
+        )
+        if formal:
+            candidates.append(
+                (
+                    line_index,
+                    int(formal.group(1)),
+                    formal.group(2),
+                    True,
+                    "formal",
+                )
+            )
+            continue
+
+        plain = re.match(r"^(\d+)[.．、]\s*(.+?)\s*$", stripped)
+        if plain:
+            candidates.append(
+                (
+                    line_index,
+                    int(plain.group(1)),
+                    plain.group(2),
+                    False,
+                    "plain",
+                )
+            )
+            continue
+
+        heading = re.match(
+            r"^#{1,6}\s*(?:(\d+)[.．、]\s*)?(.+?)\s*$",
+            stripped,
+        )
+        if heading:
+            candidates.append(
+                (
+                    line_index,
+                    int(heading.group(1)) if heading.group(1) else None,
+                    heading.group(2),
+                    False,
+                    "markdown",
+                )
+            )
+
+    if not candidates:
+        return markdown
+
+    # Match the entire catalog, preferring explicit numbered candidates over
+    # unnumbered Markdown headings. Title matching is required for unmarked
+    # candidates; formal @ markers remain authoritative even if a provider
+    # shortened a title during refinement.
+    selected: list[tuple[int, int, str, bool, str]] = []
+    cursor = 0
+    for expected_number, expected_title in catalog_titles:
+        explicit_match: int | None = None
+        legacy_match: int | None = None
+        for candidate_index in range(cursor, len(candidates)):
+            _line_index, number, title, is_formal, _kind = candidates[candidate_index]
+            if number is not None:
+                if number != expected_number:
+                    continue
+                if is_formal or _finance_titles_compatible(title, expected_title):
+                    explicit_match = candidate_index
+                    break
+                continue
+            if legacy_match is None and _finance_titles_compatible(title, expected_title):
+                legacy_match = candidate_index
+
+        found = explicit_match if explicit_match is not None else legacy_match
+        if found is None:
+            # Do not partially rewrite a manuscript.  A complete sequence is
+            # the safety boundary that distinguishes chapters from lists.
+            return markdown
+        line_index, _number, title, is_formal, kind = candidates[found]
+        selected.append((line_index, expected_number, title, is_formal, kind))
+        cursor = found + 1
+
+    restored = 0
+    for line_index, expected_number, title, is_formal, _kind in reversed(selected):
+        if is_formal:
+            continue
+        clean_title = _finance_clean_chapter_title(title) or catalog_titles[
+            expected_number - 1
+        ][1]
+        lines[line_index] = f"@{expected_number}. {clean_title}"
+        restored += 1
+
+    if restored:
+        logger.info(
+            "恢复与目录完整匹配的正文章节标记 restored=%d total=%d",
+            restored,
+            len(catalog_titles),
+        )
+    return "\n".join(lines)
+
+
+def _finance_chapter_titles_from_body(
+    body: str,
+    *,
+    catalog_titles: list[tuple[int, str]] | None = None,
+) -> list[tuple[int, str]]:
+    """Parse formal markers, and plain markers only with a matching catalog.
+
+    The previous implementation counted every ``1. ...`` line, so a normal
+    numbered list inside prose could silently become a chapter.  Formal @
+    markers are authoritative; a plain format is accepted only when its full
+    sequence matches @目录.
+    """
+
+    formal = _finance_formal_chapter_matches(body)
+    if formal:
+        return [
+            (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
+            for match in formal
+            if _finance_clean_chapter_title(match.group(2))
+        ]
+    if not catalog_titles:
+        return []
+    plain = _finance_plain_chapter_matches(body, catalog_titles)
+    return [
+        (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
+        for match in plain
+        if _finance_clean_chapter_title(match.group(2))
+    ]
+
+
+def _finance_chapter_matches(markdown: str) -> list[re.Match[str]]:
+    """Return strict chapter heading matches for a complete manuscript."""
+
+    body = _finance_body_text(markdown)
+    formal = _finance_formal_chapter_matches(body)
+    if formal:
+        return formal
+    return _finance_plain_chapter_matches(body, _finance_catalog_titles(markdown))
+
+
+def _finance_chapter_titles(markdown: str) -> list[tuple[int, str]]:
+    matches = _finance_chapter_matches(markdown)
+    return [
+        (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
+        for match in matches
+        if _finance_clean_chapter_title(match.group(2))
+    ]
+
+
+def _finance_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
+    """Extract strict ``(number, title, content)`` tuples."""
+
+    body = _finance_body_text(markdown)
+    matches = _finance_chapter_matches(markdown)
+    parts: list[tuple[int, str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        title = _finance_clean_chapter_title(match.group(2))
+        content = body[match.end() : end].strip()
+        if title:
+            parts.append((int(match.group(1)), title, content))
+    return parts
+
+
+def _finance_chapter_structure_issue(source: str, candidate: str) -> str | None:
+    """Detect a stage output that silently dropped, duplicated, or reordered chapters.
+
+    Finance books are intentionally processed as whole manuscripts, but the
+    provider may still return a shorter *structurally valid* manuscript when
+    a long response is compressed or truncated.  A character-count check is
+    not sufficient: the lost chapters can be replaced by denser prose.  The
+    writer stage is the structural baseline; every later whole-book stage
+    must preserve its formal chapter-number sequence.
+    """
+
+    source_titles = _finance_chapter_titles(source)
+    candidate_titles = _finance_chapter_titles(candidate)
+    if not source_titles:
+        # Some legacy short fixtures contain no formal chapters.  Preserve
+        # their existing behavior and let the ordinary front-matter/length
+        # checks decide whether they are usable.
+        return None
+    if not candidate_titles:
+        return f"candidate has no formal chapters; source has {len(source_titles)}"
+
+    source_numbers = [number for number, _ in source_titles]
+    candidate_numbers = [number for number, _ in candidate_titles]
+    if candidate_numbers != source_numbers:
+        missing = [number for number in source_numbers if number not in candidate_numbers]
+        extra = [number for number in candidate_numbers if number not in source_numbers]
+        return (
+            "chapter sequence changed "
+            f"source={source_numbers[:8]}.../{len(source_numbers)} "
+            f"candidate={candidate_numbers[:8]}.../{len(candidate_numbers)} "
+            f"missing={missing[:8]} extra={extra[:8]}"
+        )
+    return None
+
+
+def _finance_self_chapter_structure_issue(markdown: str) -> str | None:
+    """Validate a standalone cached finance manuscript when no prior stage exists."""
+
+    titles = _finance_chapter_titles(markdown)
+    if not titles:
+        return None
+    numbers = [number for number, _ in titles]
+    expected = list(range(1, len(numbers) + 1))
+    if numbers != expected:
+        return f"chapter numbers are not contiguous: {numbers[:12]}"
+    return None
+
+
+def _finance_reject_cached_stage(
+    output_dir: Path | None,
+    *,
+    filename: str,
+    content: str,
+    reason: str,
+) -> None:
+    """Keep a rejected provider artifact for diagnosis without reusing it."""
+
+    stem = Path(filename).stem
+    _dump_stage(output_dir, f"{stem}_rejected_structure.md", content)
+    _dump_stage(output_dir, f"{stem}_rejected_structure.txt", reason)
+
+
 def _finance_next_chapter_number(markdown: str) -> int:
-    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
+    titles = _finance_chapter_titles(markdown)
     if not titles:
         return 1
     return max(number for number, _title in titles) + 1
@@ -5055,7 +5616,7 @@ def _finance_append_continuation(markdown: str, continuation: str) -> str:
 
 
 def _finance_existing_chapter_map(markdown: str) -> str:
-    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
+    titles = _finance_chapter_titles(markdown)
     if not titles:
         return "当前正文没有稳定章节标题。"
     return "\n".join(f"- {number}. {title}" for number, title in titles[-20:])
@@ -5267,6 +5828,8 @@ def _finance_stage_looks_compressed(source: str, candidate: str, *, category: st
         return False
     if not candidate or not candidate.strip():
         return True
+    if _finance_chapter_structure_issue(source, candidate) is not None:
+        return True
     if _front_matter_missing(candidate):
         return True
     source_body_chars = _finance_body_chars(source)
@@ -5366,12 +5929,88 @@ async def _generate_finance_longform_book(
             encoding="utf-8",
         )
 
+    # Validate cached stages from the writer forward before considering a
+    # later artifact reusable.  A provider can return a manuscript with enough
+    # characters but fewer formal chapters; accepting that artifact would
+    # permanently lose the omitted chapters on the next retry.
     stale_final_resume = False
     final_resume_markdown = _read_stage_file(output_dir, "04_format.md")
+    resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
+    resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
+    resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+
+    if resume_writer_markdown:
+        resume_writer_markdown = normalize_final_markdown(
+            resume_writer_markdown,
+            category=category,
+        )
+
+    effective_polished = resume_polished_markdown
+    if effective_polished:
+        effective_polished = normalize_final_markdown(effective_polished, category=category)
+        baseline = resume_writer_markdown
+        issue = (
+            _finance_chapter_structure_issue(baseline, effective_polished)
+            if baseline
+            else _finance_self_chapter_structure_issue(effective_polished)
+        )
+        if issue:
+            logger.warning("忽略不完整的财经科技 02_polish.md: %s", issue)
+            _finance_reject_cached_stage(
+                output_dir,
+                filename="02_polish.md",
+                content=effective_polished,
+                reason=issue,
+            )
+            effective_polished = None
+
+    effective_refined = resume_refined_markdown
+    if effective_refined:
+        effective_refined = normalize_final_markdown(effective_refined, category=category)
+        baseline = effective_polished or resume_writer_markdown
+        issue = _refine_stage_cache_issue(
+            output_dir,
+            effective_refined,
+            source_text=baseline,
+            system_instruction=None,
+            category=category,
+        )
+        if issue is None:
+            issue = (
+                _finance_chapter_structure_issue(baseline, effective_refined)
+                if baseline
+                else _finance_self_chapter_structure_issue(effective_refined)
+            )
+        if issue:
+            logger.warning("忽略不完整的财经科技 03_refine.md: %s", issue)
+            _finance_reject_cached_stage(
+                output_dir,
+                filename="03_refine.md",
+                content=effective_refined,
+                reason=issue,
+            )
+            effective_refined = None
+
     if final_resume_markdown:
-        if _finance_final_resume_reusable(final_resume_markdown, target_words, category=category):
+        final_resume_markdown = normalize_final_markdown(
+            final_resume_markdown,
+            category=category,
+        )
+        baseline = effective_refined or effective_polished or resume_writer_markdown
+        structure_issue = (
+            _finance_chapter_structure_issue(baseline, final_resume_markdown)
+            if baseline
+            else _finance_self_chapter_structure_issue(final_resume_markdown)
+        )
+        if (
+            _finance_final_resume_reusable(
+                final_resume_markdown,
+                target_words,
+                category=category,
+            )
+            and structure_issue is None
+        ):
             logger.info("复用已存在的财经长文 04_format.md")
-            final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=category)
             final_resume_markdown = await _repair_final_hard_errors_once(
                 final_resume_markdown,
                 category=category,
@@ -5384,17 +6023,25 @@ async def _generate_finance_longform_book(
             if on_stage:
                 on_stage("format_done", {"chars": len(final_resume_markdown)})
             return final_resume_markdown
-        logger.warning(
-            "已有财经长文 04_format.md 不在当前质量区间内，忽略终稿并回到中间阶段处理: body_chars=%d target=%d",
-            _finance_body_chars(final_resume_markdown),
-            target_words,
+        reason = structure_issue or (
+            f"body_chars={_finance_body_chars(final_resume_markdown)} target={target_words}"
         )
+        logger.warning("已有财经长文 04_format.md 不可安全复用: %s", reason)
         _dump_stage(output_dir, "04_format_stale_short.md", final_resume_markdown)
+        if structure_issue:
+            _finance_reject_cached_stage(
+                output_dir,
+                filename="04_format.md",
+                content=final_resume_markdown,
+                reason=structure_issue,
+            )
         stale_final_resume = True
 
-    resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
-    resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
-    resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
+    # Use only the structurally compatible cache at each stage.  If a later
+    # cache was derived from a shortened earlier response, it is deliberately
+    # discarded and regenerated from the intact writer checkpoint.
+    resume_polished_markdown = effective_polished
+    resume_refined_markdown = effective_refined
     if stale_final_resume and resume_writer_markdown:
         resume_polished_markdown = None
         resume_refined_markdown = None
@@ -5571,6 +6218,35 @@ async def _generate_finance_longform_book(
             category=category,
         )
         logger.info("财经科技 Gemini 二润整稿输入: chars=%d body_chars=%d", len(polished_markdown), _finance_body_chars(polished_markdown))
+
+        async def _finance_chunked_refine(reason: str) -> str:
+            """Finish二润 in bounded pieces instead of accepting a short whole-book reply."""
+
+            logger.warning("财经科技 Gemini 二润切换分块兜底: %s", reason)
+            chunked = await _refine_by_paragraph_chunks_strict(
+                polished_markdown,
+                target_chars=4_000,
+                system_instruction=refine_instruction,
+                on_stage=on_stage,
+                output_dir=output_dir,
+                chunk_func=_refine_book_text_without_output_cap,
+                allow_chunk_fallback=False,
+            )
+            chunked = normalize_final_markdown(chunked, category=category)
+            chunk_issue = _refine_output_integrity_issue(
+                polished_markdown,
+                chunked,
+                category=category,
+            )
+            if chunk_issue:
+                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", chunked)
+                raise GeminiRefineIncompleteError(
+                    f"财经科技分块二润仍未通过完整性闸门: {chunk_issue}"
+                )
+            return chunked
+
+        refine_result_kind = "generated"
+        whole_refine_issue: str | None = None
         try:
             refined_markdown = await _to_thread_with_optional_timeout(
                 refine_book_text,
@@ -5585,26 +6261,33 @@ async def _generate_finance_longform_book(
                 retries=1,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
+            refined_markdown = normalize_final_markdown(refined_markdown, category=category)
+            whole_refine_issue = _refine_output_integrity_issue(
+                polished_markdown,
+                refined_markdown,
+                category=category,
+            )
+            if whole_refine_issue:
+                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
+        except (GeminiMaxTokensError, GeminiRefineIncompleteError) as exc:
+            whole_refine_issue = str(exc)
         except Exception as exc:
             if _is_paid_polish_blocking_failure(exc):
                 raise
-            logger.warning(
-                "财经科技 Gemini 二润失败，保留上一阶段完整稿继续后续链路: %s",
-                exc,
-            )
             _dump_stage(output_dir, "03_refine_error.txt", f"{exc.__class__.__name__}: {exc}")
-            refined_markdown = polished_markdown
-        refined_markdown = normalize_final_markdown(refined_markdown, category=category)
-        if _finance_stage_looks_compressed(polished_markdown, refined_markdown, category=category):
-            logger.warning(
-                "财经科技 Gemini 二润疑似压缩，保留一润完整稿: source_body=%d candidate_body=%d",
-                _finance_body_chars(polished_markdown),
-                _finance_body_chars(refined_markdown),
-            )
-            _dump_stage(output_dir, "03_refine_rejected_compressed.md", refined_markdown)
-            refined_markdown = polished_markdown
+            raise RuntimeError(f"retryable Gemini finance refine failure: {exc}") from exc
+        if whole_refine_issue:
+            refined_markdown = await _finance_chunked_refine(whole_refine_issue)
+            refine_result_kind = "generated_chunked_fallback"
+        _persist_refine_stage(
+            output_dir,
+            refined_markdown,
+            source_text=polished_markdown,
+            system_instruction=refine_instruction,
+            category=category,
+            result_kind=refine_result_kind,
+        )
         _log_stage("finance 3/4 refine", refined_markdown, prev_chars=polish_chars)
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": len(refined_markdown)})
 
@@ -5727,15 +6410,354 @@ async def _repair_front_matter(
     return await _route_writer_call(repair_prompt, prompt_cache_key=prompt_cache_key)
 
 
-def _dump_stage(output_dir: Path | None, filename: str, content: str) -> None:
-    """把每一层的产物落盘，便于审稿和定位是哪一层吃掉了内容。"""
-    if output_dir is None or not content:
-        return
+class StageArtifactWriteError(RuntimeError):
+    """A required workflow checkpoint could not be durably written."""
+
+
+def _stage_text_sha256(content: str | None) -> str:
+    return hashlib.sha256((content or "").strip().encode("utf-8")).hexdigest()
+
+
+def _atomic_write_stage_text(path: Path, content: str) -> None:
+    """Write a stage file via a verified replace, never a partial target write."""
+
+    data = content.encode("utf-8")
+    descriptor = -1
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if temporary_path.stat().st_size != len(data):
+            raise OSError(f"temporary stage size mismatch: expected={len(data)}")
+
+        os.replace(temporary_path, path)
+        temporary_path = None
+        if not path.is_file():
+            raise OSError("stage file disappeared immediately after replace")
+        if path.read_bytes() != data:
+            raise OSError("stage file verification mismatch after replace")
+
+        # Persist the directory entry as well on Linux/Docker.  Directory fsync
+        # is not available on Windows and is intentionally best effort there.
+        if os.name != "nt":
+            try:
+                directory_fd = os.open(str(path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                logger.debug("stage directory fsync unavailable: %s", path.parent, exc_info=True)
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _stage_metadata_path(output_dir: Path, filename: str) -> Path:
+    return output_dir / f".{Path(filename).name}.meta.json"
+
+
+def _dump_stage(
+    output_dir: Path | None,
+    filename: str,
+    content: str,
+    *,
+    required: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Persist a stage atomically; required checkpoints fail the workflow on error."""
+
+    if not content or not content.strip():
+        if required:
+            raise StageArtifactWriteError(f"中间产物 {filename} 为空，拒绝继续工作流")
+        return False
+    # Unit callers may intentionally omit an output directory.  There is no
+    # checkpoint to write in that mode, but the in-memory workflow can proceed.
+    if output_dir is None:
+        return True
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / filename).write_text(content, encoding="utf-8")
+        path = output_dir / filename
+        _atomic_write_stage_text(path, content)
+        if metadata is not None:
+            payload = dict(metadata)
+            payload.update(
+                content_sha256=_stage_text_sha256(content),
+                content_chars=len(content),
+                status="complete",
+            )
+            _atomic_write_stage_text(
+                _stage_metadata_path(output_dir, filename),
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            )
+        return True
     except Exception as exc:
-        logger.warning("中间产物 %s 写盘失败: %s", filename, exc)
+        logger.warning("中间产物 %s 写盘失败: %s", filename, exc, exc_info=required)
+        if required:
+            raise StageArtifactWriteError(f"中间产物 {filename} 写盘失败: {exc}") from exc
+        return False
+
+
+def _refine_stage_identity(category: str | None) -> dict[str, str]:
+    try:
+        provider = refine_provider_name()
+    except Exception:
+        provider = str(getattr(settings, "BACKEND_REFINE_PROVIDER", "gemini") or "gemini").strip().lower()
+    provider = provider or "gemini"
+    model = (
+        str(getattr(settings, "GEMINI_MODEL", "") or "").strip()
+        if provider == "gemini"
+        else str(getattr(settings, "CLAUDE_MODEL", "") or "").strip()
+    )
+    return {
+        "category": normalize_category(category or ""),
+        "provider": provider,
+        "model": model,
+    }
+
+
+def _persist_refine_stage(
+    output_dir: Path | None,
+    content: str,
+    *,
+    source_text: str | None,
+    system_instruction: str | None,
+    category: str | None,
+    result_kind: str = "generated",
+) -> None:
+    """Write the completed second-polish checkpoint before any later stage runs."""
+
+    if not content or not content.strip():
+        raise GeminiRefineIncompleteError("二润返回空稿，不能落盘或进入终稿")
+    identity = _refine_stage_identity(category)
+    metadata = {
+        "stage": "refine",
+        "result_kind": result_kind,
+        "source_sha256": _stage_text_sha256(source_text),
+        "prompt_sha256": _stage_text_sha256(system_instruction),
+        **identity,
+    }
+    _dump_stage(
+        output_dir,
+        "03_refine.md",
+        content,
+        required=True,
+        metadata=metadata,
+    )
+
+
+def _stage_body_for_integrity(markdown: str) -> str:
+    normalized = (markdown or "").replace("\r\n", "\n").replace("\r", "\n")
+    match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", normalized)
+    return normalized[match.end() :] if match else normalized
+
+
+def _stage_chapter_numbers(markdown: str) -> list[int]:
+    """Return distinct chapter numbers visible in the manuscript body.
+
+    The first Gemini polish is paragraph-based, so a writer draft can contain
+    repeated numbered markers at chunk boundaries or on internal subheadings.
+    The second-polish prompt is allowed to normalize those markers.  The
+    integrity gate therefore cares about numbers disappearing, not about the
+    raw occurrence order being byte-for-byte identical.
+    """
+    body = _stage_body_for_integrity(markdown)
+    return sorted(
+        {
+            int(match.group(1))
+            for match in re.finditer(
+                r"^\s*(?:！！！)?@?\s*(\d+)[.．、]\s*.+?\s*$",
+                body,
+                re.MULTILINE,
+            )
+        }
+    )
+
+
+_REFINE_NOTICE_MARKERS = (
+    "无法完成",
+    "无法在不新增内容的前提下",
+    "请提供",
+    "请补充缺失",
+    "作为 ai",
+    "as an ai",
+)
+
+
+def _refine_chunk_output_issue(source_chunk: str, candidate_chunk: str | None) -> str | None:
+    """Reject a partial/diagnostic response before it enters the chunk cache."""
+
+    source = (source_chunk or "").strip()
+    candidate = (candidate_chunk or "").strip()
+    if not candidate:
+        return "二润分块返回空稿"
+    if len(candidate) < 800 and any(marker in candidate.lower() for marker in _REFINE_NOTICE_MARKERS):
+        return "二润分块返回模型诊断而非稿件"
+
+    source_chars = len(re.sub(r"\s+", "", source))
+    candidate_chars = len(re.sub(r"\s+", "", candidate))
+    # A refinement is allowed to remove a little genuine repetition, but a
+    # chunk that loses nearly half its text is almost always a capped or
+    # summary response.  Keep this less strict than the whole-manuscript gate
+    # so short headings and front-matter chunks remain usable.
+    if source_chars >= 500 and candidate_chars < max(200, int(source_chars * 0.55)):
+        return f"二润分块疑似压缩或截断: source={source_chars} candidate={candidate_chars}"
+
+    source_chapters = _stage_chapter_numbers(source)
+    if source_chapters:
+        candidate_chapters = _stage_chapter_numbers(candidate)
+        missing_chapters = sorted(set(source_chapters) - set(candidate_chapters))
+        if missing_chapters:
+            return (
+                "二润分块缺少原稿章节号: "
+                f"missing={missing_chapters[:8]} source={source_chapters[:8]} "
+                f"candidate={candidate_chapters[:8]}"
+            )
+
+    for marker in ("最终书名", "最终简介", "目录", "导言", "正文"):
+        if marker in source and marker not in candidate:
+            return f"二润分块丢失前置块: {marker}"
+    return None
+
+
+def _refine_output_integrity_issue(
+    source_text: str | None,
+    candidate: str | None,
+    *,
+    category: str | None,
+) -> str | None:
+    """Reject a partial/summary response before it can become 03_refine.md."""
+
+    source = (source_text or "").strip()
+    output = (candidate or "").strip()
+    if not output:
+        return "二润返回空稿"
+    if source and not _front_matter_missing(source) and _front_matter_missing(output):
+        return "二润丢失完整前置块"
+
+    source_chars = len(re.sub(r"\s+", "", source))
+    output_chars = len(re.sub(r"\s+", "", output))
+    # The refine prompt permits only small edits.  A 25% loss is deliberately
+    # conservative and catches the provider's common summary/length-cap path
+    # without imposing a subjective prose-quality gate on short fixtures.
+    if source_chars >= 2_000 and output_chars < max(1_000, int(source_chars * 0.75)):
+        return f"二润疑似压缩或截断: source={source_chars} candidate={output_chars}"
+
+    source_chapters = _stage_chapter_numbers(source)
+    if source_chapters:
+        output_chapters = _stage_chapter_numbers(output)
+        missing_chapters = sorted(set(source_chapters) - set(output_chapters))
+        if missing_chapters:
+            return (
+                "二润缺少原稿章节号: "
+                f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
+                f"candidate={output_chapters[:12]}"
+            )
+    if source and _is_finance_longform_category(category):
+        finance_issue = _finance_chapter_structure_issue(source, output)
+        if finance_issue:
+            return finance_issue
+    return None
+
+
+def _refine_stage_cache_issue(
+    output_dir: Path | None,
+    content: str,
+    *,
+    source_text: str | None,
+    system_instruction: str | None,
+    category: str | None,
+) -> str | None:
+    issue = _refine_output_integrity_issue(source_text, content, category=category)
+    if issue:
+        return issue
+    if output_dir is None:
+        return None
+    metadata_path = _stage_metadata_path(output_dir, "03_refine.md")
+    if not metadata_path.exists():
+        # Legacy runs predate the sidecar.  The structural/length checks above
+        # still protect resume; do not force every historical book to rerun.
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return f"二润阶段元数据不可读: {type(exc).__name__}"
+    if not isinstance(metadata, dict) or metadata.get("status") != "complete":
+        return "二润阶段元数据未标记为 complete"
+    if metadata.get("stage") != "refine":
+        return "二润阶段元数据 stage 不匹配"
+    if metadata.get("content_sha256") != _stage_text_sha256(content):
+        return "二润阶段文件与元数据内容哈希不一致"
+
+    identity = _refine_stage_identity(category)
+    for key in ("category", "provider", "model"):
+        if metadata.get(key) != identity[key]:
+            return f"二润阶段元数据 {key} 已变化"
+    if source_text is not None and metadata.get("source_sha256") != _stage_text_sha256(source_text):
+        return "二润阶段来源稿已变化"
+    if system_instruction is not None and metadata.get("prompt_sha256") != _stage_text_sha256(system_instruction):
+        return "二润阶段 prompt 已变化"
+    return None
+
+
+def _final_resume_cache_issue(
+    source_text: str | None,
+    candidate: str | None,
+    *,
+    category: str | None,
+) -> str | None:
+    """Reject an obviously partial final artifact on a resumable task.
+
+    ``04_format.md`` used to be trusted solely because it was non-empty.  If
+    an older run persisted a truncated second-polish result and then formatted
+    it, that shortcut made every later retry skip the corrected pipeline.  The
+    final-stage check is intentionally narrower than the refine gate: normal
+    copy-editing may remove some repetition, but it must not lose the front
+    matter, chapter sequence, or roughly half of the manuscript.
+    """
+
+    source = (source_text or "").strip()
+    candidate_text = (candidate or "").strip()
+    if not candidate_text:
+        return "终稿缓存为空"
+    if source and not _front_matter_missing(source) and _front_matter_missing(candidate_text):
+        return "终稿缓存丢失完整前置块"
+
+    source_chars = len(re.sub(r"\s+", "", source))
+    candidate_chars = len(re.sub(r"\s+", "", candidate_text))
+    if source_chars >= 2_000 and candidate_chars < max(1_000, int(source_chars * 0.5)):
+        return f"终稿缓存疑似压缩或截断: source={source_chars} candidate={candidate_chars}"
+
+    source_chapters = _stage_chapter_numbers(source)
+    if source_chapters:
+        candidate_chapters = _stage_chapter_numbers(candidate_text)
+        missing_chapters = sorted(set(source_chapters) - set(candidate_chapters))
+        if missing_chapters:
+            return (
+                "终稿缓存缺少原稿章节号: "
+                f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
+                f"candidate={candidate_chapters[:12]}"
+            )
+    if source and _is_finance_longform_category(category):
+        return _finance_chapter_structure_issue(source, candidate_text)
+    return None
 
 
 def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
@@ -6760,13 +7782,16 @@ async def generate_full_book(
     )
 
     async def finish_with_aigc(markdown: str) -> str:
-        return await _apply_final_aigc_gate(
+        final_text = await _apply_final_aigc_gate(
             markdown,
             category=normalized_category,
             output_dir=output_dir,
             on_stage=on_stage,
             required=effective_aigc_required,
         )
+        # Keep the delivery contract true even when a resumed or optional
+        # post-processing stage returns body-only text after final formatting.
+        return normalize_final_markdown(final_text, category=normalized_category)
 
     task_prompt_cache_key = _content_prompt_cache_key(
         normalized_category,
@@ -6854,6 +7879,45 @@ async def generate_full_book(
             return None
 
     final_resume_markdown = _read_stage("04_format.md")
+    if final_resume_markdown and not direct_writer_only:
+        # Do not let a legacy partial 03/04 pair permanently bypass the
+        # corrected Gemini二润 path.  Keep the intact earlier checkpoint when
+        # possible so a retry resumes without regenerating the paid writer.
+        resume_polished_markdown = _read_stage("02_polish.md")
+        resume_refined_markdown = _read_stage("03_refine.md")
+        resume_issue: str | None = None
+        if resume_refined_markdown:
+            resume_issue = _refine_stage_cache_issue(
+                output_dir,
+                resume_refined_markdown,
+                source_text=resume_polished_markdown,
+                system_instruction=gemini_fast_refine_prompt,
+                category=normalized_category,
+            )
+            if resume_issue is None:
+                resume_issue = _final_resume_cache_issue(
+                    resume_refined_markdown,
+                    final_resume_markdown,
+                    category=normalized_category,
+                )
+        elif resume_polished_markdown:
+            resume_issue = _final_resume_cache_issue(
+                resume_polished_markdown,
+                final_resume_markdown,
+                category=normalized_category,
+            )
+        if use_buddhist_story_unit_writer and resume_refined_markdown:
+            cached_story_issues = _buddhist_story_manuscript_issues(
+                resume_refined_markdown,
+                buddhist_story_units,
+            )
+            if cached_story_issues:
+                resume_issue = "; ".join(cached_story_issues)
+        if resume_issue:
+            logger.warning("忽略不可安全复用的终稿/二润缓存: %s", resume_issue)
+            _dump_stage(output_dir, "03_refine_stale.md", resume_refined_markdown or "")
+            _dump_stage(output_dir, "04_format_stale.md", final_resume_markdown)
+            final_resume_markdown = None
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
@@ -7103,7 +8167,22 @@ async def generate_full_book(
         polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
-    refined_markdown = polished_markdown if direct_writer_only else _read_stage("03_refine.md")
+    refined_markdown = polished_markdown if direct_writer_only else None
+    if not direct_writer_only:
+        cached_refined_markdown = _read_stage("03_refine.md")
+        if cached_refined_markdown:
+            cache_issue = _refine_stage_cache_issue(
+                output_dir,
+                cached_refined_markdown,
+                source_text=polished_markdown,
+                system_instruction=gemini_fast_refine_prompt,
+                category=normalized_category,
+            )
+            if cache_issue:
+                logger.warning("忽略不可安全复用的 03_refine.md: %s", cache_issue)
+                _dump_stage(output_dir, "03_refine_stale.md", cached_refined_markdown)
+            else:
+                refined_markdown = cached_refined_markdown
     if refined_markdown and use_buddhist_story_unit_writer:
         cached_refine_issues = _buddhist_story_manuscript_issues(
             refined_markdown,
@@ -7128,11 +8207,12 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("refine_start", {})
-        refine_func = (
-            _refine_book_text_without_output_cap
-            if is_classical_category
-            else refine_book_text
-        )
+        # 二润无论走整稿还是整稿失败后的分块兜底，都必须关闭输出上限。
+        # 整稿调用仍使用原始 provider 函数（由下面显式传入
+        # ``disable_max_output_tokens``），分块调用使用无上限包装器；这样
+        # 两条路径的参数一致，同时不改变一润的分块逻辑。
+        refine_func = refine_book_text
+        refine_chunk_func = _refine_book_text_without_output_cap
         if is_classical_category:
             logger.info("Classical Chinese refine uses chunked path to avoid whole-book Gemini stalls")
             refined_markdown = await _refine_by_paragraph_chunks_strict(
@@ -7141,7 +8221,7 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
-                chunk_func=refine_func,
+                chunk_func=refine_chunk_func,
                 allow_chunk_fallback=True,
                 splitter=_split_text_by_classical_marker_lines,
                 chunk_validator=_classical_chunk_marker_issues,
@@ -7154,33 +8234,72 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
+                chunk_func=refine_chunk_func,
                 allow_chunk_fallback=True,
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
         else:
+            candidate_refine = ""
             try:
-                refined_markdown = await _to_thread_with_optional_timeout(
+                candidate_refine = await _to_thread_with_optional_timeout(
                     refine_func,
                     polished_markdown,
                     system_instruction=gemini_fast_refine_prompt,
+                    # The second pass must not inherit a small configured
+                    # output cap.  A whole-book response that reaches the
+                    # provider limit is a partial manuscript, not a valid
+                    # refinement; the integrity gate below will route it to
+                    # the chunked fallback instead.
+                    disable_max_output_tokens=True,
+                    request_timeout_seconds=max(
+                        int(settings.GEMINI_REFINE_REQUEST_TIMEOUT or 0),
+                        int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
+                        1800,
+                    ),
+                    retries=1,
                     timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
                 )
-            except GeminiMaxTokensError as exc:
-                logger.warning("Gemini refine hit MAX_TOKENS; falling back to chunked refine: %s", exc)
+                integrity_issue = _refine_output_integrity_issue(
+                    polished_markdown,
+                    candidate_refine,
+                    category=normalized_category,
+                )
+                if integrity_issue:
+                    _dump_stage(output_dir, "03_refine_rejected_incomplete.md", candidate_refine)
+                    raise GeminiRefineIncompleteError(integrity_issue)
+                refined_markdown = candidate_refine
+            except (GeminiMaxTokensError, GeminiRefineIncompleteError) as exc:
+                logger.warning("Gemini refine returned an incomplete whole-book response; falling back to chunked refine: %s", exc)
                 refined_markdown = await _refine_by_paragraph_chunks_strict(
                     polished_markdown,
                     target_chars=1000,
                     system_instruction=gemini_fast_refine_prompt,
                     on_stage=on_stage,
                     output_dir=output_dir,
-                    chunk_func=refine_func,
+                    chunk_func=refine_chunk_func,
                 )
+                integrity_issue = _refine_output_integrity_issue(
+                    polished_markdown,
+                    refined_markdown,
+                    category=normalized_category,
+                )
+                if integrity_issue:
+                    _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
+                    raise RuntimeError(
+                        f"retryable Gemini refine quality gate: {integrity_issue}"
+                    ) from exc
             except Exception as exc:
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
+        _persist_refine_stage(
+            output_dir,
+            refined_markdown,
+            source_text=polished_markdown,
+            system_instruction=gemini_fast_refine_prompt,
+            category=normalized_category,
+        )
         _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
@@ -7198,7 +8317,13 @@ async def generate_full_book(
                 original_title=classical_original_title,
                 prompt_cache_key=task_prompt_cache_key,
             )
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+        _persist_refine_stage(
+            output_dir,
+            refined_markdown,
+            source_text=polished_markdown,
+            system_instruction=gemini_fast_refine_prompt,
+            category=normalized_category,
+        )
         refine_chars = len(refined_markdown)
     if is_classical_category and not direct_writer_only:
         refined_markdown = await _repair_classical_quality_once(
@@ -7211,7 +8336,13 @@ async def generate_full_book(
             interleaved=is_classical_interleaved,
             prompt_cache_key=task_prompt_cache_key,
         )
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+        _persist_refine_stage(
+            output_dir,
+            refined_markdown,
+            source_text=polished_markdown,
+            system_instruction=gemini_fast_refine_prompt,
+            category=normalized_category,
+        )
         refine_chars = len(refined_markdown)
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
@@ -7332,8 +8463,8 @@ async def generate_full_book(
             )
 
     if _front_matter_missing(final_markdown):
-        logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")
-        final_markdown = generated_markdown
+        logger.warning("后处理丢失前置块，回退到完整的 Gemini 二润稿。")
+        final_markdown = refined_markdown
 
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
@@ -7346,6 +8477,21 @@ async def generate_full_book(
             buddhist_scripture_final_title(classical_original_title),
         )
     final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
+    final_integrity_issue = _final_resume_cache_issue(
+        refined_markdown,
+        final_markdown,
+        category=normalized_category,
+    )
+    if final_integrity_issue:
+        logger.warning(
+            "DeepSeek 格式层破坏完整书稿，保留 Gemini 二润完整稿: %s",
+            final_integrity_issue,
+        )
+        _dump_stage(output_dir, "04_format_rejected_incomplete.md", final_markdown)
+        final_markdown = normalize_final_markdown(
+            refined_markdown,
+            category=normalized_category,
+        )
     final_markdown = await _repair_final_hard_errors_once(
         final_markdown,
         category=normalized_category,
@@ -7353,7 +8499,7 @@ async def generate_full_book(
         stage="format",
         prompt_cache_key=task_prompt_cache_key,
     )
-    _dump_stage(output_dir, "04_format.md", final_markdown)
+    _dump_stage(output_dir, "04_format.md", final_markdown, required=True)
 
     logger.info(
         "[summary] writer=%d → polish=%d → refine=%d → final=%d 字 (整体保留 %.1f%%)",

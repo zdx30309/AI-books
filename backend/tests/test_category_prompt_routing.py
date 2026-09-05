@@ -470,7 +470,7 @@ def test_longform_variant_categories_use_dedicated_prompts() -> None:
         (
             "emotion_relationship_unique_view",
             "心理情感（情感·关系）（独特观点版）",
-            "让最终成稿与原视频文稿在结构、案例、表达和推进方式上都有明显区别",
+            "我提供的文章、视频或视频文稿，只能作为“参照材料”",
         ),
         (
             "health_wellness_daily_pain",
@@ -1443,6 +1443,61 @@ def test_finance_longform_deepseek_compression_keeps_refined_full_text(
     assert (tmp_path / "finance_deepseek_compression" / "04_format_rejected_compressed.md").exists()
 
 
+def test_finance_whole_book_stages_reject_chapter_loss_even_when_char_count_grows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chapter_body = "这一章保留完整产业链、机制、条件和现实影响，不能被后处理阶段静默删除。" * 700
+    writer_output = (
+        "@最终书名\n结构保护测试\n@最终简介\n测试简介\n@目录\n"
+        "1. 第一章\n2. 第二章\n3. 第三章\n@导言\n测试导言。\n@正文\n"
+        f"@1. 第一章\n{chapter_body}\n\n"
+        f"@2. 第二章\n{chapter_body}\n\n"
+        f"@3. 第三章\n{chapter_body}\n"
+    )
+    shortened = writer_output.replace(f"\n\n@3. 第三章\n{chapter_body}", "")
+    polish_inputs: list[str] = []
+    refine_inputs: list[str] = []
+    format_inputs: list[str] = []
+
+    async def fake_route_writer_call(_prompt: str, **_kwargs: object) -> str:
+        return writer_output
+
+    def fake_polish(text: str, **_kwargs: object) -> str:
+        polish_inputs.append(text)
+        return shortened
+
+    def fake_refine(text: str, **_kwargs: object) -> str:
+        refine_inputs.append(text)
+        return text
+
+    def fake_format(text: str, **_kwargs: object) -> str:
+        format_inputs.append(text)
+        return text
+
+    _patch_finance_latest_research(monkeypatch)
+    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
+    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish)
+    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine)
+    monkeypatch.setattr(content_engine, "format_book_text", fake_format)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "视频讲到完整产业链、技术机制、政策条件和普通人影响。",
+            category="finance_technology",
+            output_dir=tmp_path / "finance_chapter_guard",
+            source_duration_seconds=60,
+        )
+    )
+
+    assert polish_inputs and refine_inputs and format_inputs
+    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(result))) == 3
+    # The shortened Gemini candidate must never become the input to refine or
+    # the final accepted manuscript.
+    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(refine_inputs[0]))) == 3
+    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(format_inputs[0]))) == 3
+
+
 def test_finance_gemini_billing_failure_stops_without_provider_substitution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1576,7 +1631,8 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
             assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
                 "final_book_format"
             ].find("{text}")
-            assert "`###短标题`" in prompts["final_book_format"]
+            assert "正文不设置内部小标题" in prompts["final_book_format"]
+            assert "正文不设置内部小标题" in prompts["final_book_format"]
             assert "不得出现“短标题，正文”" in prompts["final_book_format"]
             assert "正文内小节标题，标题正文必须限制" not in prompts["final_book_format"]
 
@@ -1585,8 +1641,8 @@ def test_section_title_rules_forbid_body_subheadings() -> None:
     prompt = get_prompts("social_science")["full_book_writer"]
 
     assert "正文正式章节标题只能使用" in prompt
-    assert "`###短标题`" in prompt
-    assert "不得写成“短标题，正文”" in prompt
+    assert "正文不设置内部小标题" in prompt
+    assert "正文不设置内部小标题" in prompt
 
 
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:

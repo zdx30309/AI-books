@@ -54,6 +54,7 @@ QUOTA_EXHAUSTED_MARKERS = (
 
 _KEY_PREFIX = "video-plan:paid-api-breaker:"
 _DEFAULT_TTL_SECONDS = 1800
+_DEFAULT_RATE_LIMIT_TTL_SECONDS = 60
 _local_breakers: dict[str, tuple[float, str]] = {}
 _local_breakers_lock = threading.RLock()
 
@@ -79,6 +80,47 @@ def is_quota_exhausted(value: object) -> bool:
 
     message = error_text(value)
     return bool(message) and any(marker in message for marker in QUOTA_EXHAUSTED_MARKERS)
+
+
+def is_transient_rate_limit(value: object) -> bool:
+    """Return true for provider throttling that should recover quickly.
+
+    Vertex uses ``429 RESOURCE_EXHAUSTED`` for a temporary request/token-rate
+    window.  It is materially different from a billing denial such as
+    ``insufficient_quota`` or a dunning decision.  Keep the broad quota
+    predicate above for compatibility, but give this case a short breaker
+    TTL so a brief upstream throttle cannot park every book for 30 minutes.
+    """
+
+    message = error_text(value)
+    if not message:
+        return False
+    hard_markers = (
+        "insufficient_quota",
+        "credit_balance_exhausted",
+        "no credits remaining",
+        "billing_not_active",
+        "billing unavailable",
+        "billing hard limit",
+        "dunning decision is deny",
+        "permission_denied",
+        "permission denied",
+    )
+    if any(marker in message for marker in hard_markers):
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "429",
+            "resource_exhausted",
+            "resource exhausted",
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "try again later",
+            "retry-after",
+        )
+    )
 
 
 def is_safe_preflight_error(value: object) -> bool:
@@ -170,24 +212,68 @@ def _local_reason(provider: str) -> str | None:
 
 
 def trip(provider: str, reason: object, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
-    """Trip the provider breaker; repeated trips simply refresh its TTL."""
+    """Trip a breaker without extending an already-active cooldown.
+
+    A queued task can observe an existing breaker and raise
+    ``PaidApiQuotaExhausted`` before it reaches the provider.  Older code fed
+    that derived exception back into ``trip`` and refreshed the full TTL on
+    every worker retry, creating a permanent pending/processing loop.  The
+    first provider signal owns the cooldown; later signals preserve its
+    original expiry and reason.
+    """
 
     detail = str(reason or "quota exhausted")[:500]
     ttl = max(60, int(ttl_seconds))
     group = _provider_group(provider)
-    # Keep a local stop even when Redis is temporarily unavailable.  This is a
-    # second, process-local layer; Redis remains the cross-worker source of
-    # truth when available.
-    with _local_breakers_lock:
-        _local_breakers[group] = (time.monotonic() + ttl, detail)
+    key = _key(group)
+    # Redis is the cross-worker source of truth.  Reserve the key only when it
+    # is absent (SET NX), so a blocked retry can never prolong the window.
     try:
-        _redis_client().set(_key(group), detail, ex=ttl)
+        client = _redis_client()
+        try:
+            created = bool(client.set(key, detail, ex=ttl, nx=True))
+        except TypeError:
+            # Keep lightweight test/dummy Redis clients compatible while the
+            # production client uses the atomic NX form above.
+            if client.get(key) is not None:
+                created = False
+            else:
+                client.set(key, detail, ex=ttl)
+                created = True
+        if not created:
+            try:
+                existing_ttl = int(client.ttl(key) or 0)
+            except AttributeError:
+                existing_ttl = -1
+            existing_detail = client.get(key)
+            with _local_breakers_lock:
+                local = _local_breakers.get(group)
+                if local is None or local[0] <= time.monotonic():
+                    if existing_ttl > 0:
+                        _local_breakers[group] = (
+                            time.monotonic() + existing_ttl,
+                            str(existing_detail or detail)[:500],
+                        )
+            logger.info(
+                "paid API breaker already active provider=%s ttl_remaining=%ss; cooldown preserved",
+                group,
+                existing_ttl,
+            )
+            return
     except Exception:
         # The normal paid-api concurrency gate already fails closed when Redis
-        # is unavailable.  Do not turn a breaker telemetry failure into a new
-        # application-wide outage.
+        # is unavailable.  Keep a process-local stop, but do not turn breaker
+        # telemetry failure into a new application-wide outage.
         logger.warning("paid API breaker write failed provider=%s", provider, exc_info=True)
-        return
+
+    # Keep a local stop even when Redis is temporarily unavailable.  Do not
+    # refresh an active local cooldown either.
+    with _local_breakers_lock:
+        local = _local_breakers.get(group)
+        if local is not None and local[0] > time.monotonic():
+            return
+        _local_breakers[group] = (time.monotonic() + ttl, detail)
+
     logger.error(
         "paid API quota breaker tripped provider=%s ttl=%ss reason=%s",
         group,
@@ -250,7 +336,25 @@ def trip_if_quota(provider: str, value: object) -> bool:
 
     if not is_quota_exhausted(value):
         return False
-    trip(provider, value)
+    # This is a derived local exception, not a new provider response.  Calling
+    # trip() again here used to refresh the Redis TTL on every retry.
+    if isinstance(value, PaidApiQuotaExhausted):
+        normalized = error_text(value)
+        if "blocked before network call" in normalized or "blocked from retry" in normalized:
+            return True
+    ttl = (
+        int(
+            getattr(
+                settings,
+                "PAID_API_RATE_LIMIT_TTL_SECONDS",
+                _DEFAULT_RATE_LIMIT_TTL_SECONDS,
+            )
+            or _DEFAULT_RATE_LIMIT_TTL_SECONDS
+        )
+        if is_transient_rate_limit(value)
+        else _DEFAULT_TTL_SECONDS
+    )
+    trip(provider, value, ttl_seconds=ttl)
     return True
 
 
@@ -261,6 +365,7 @@ __all__ = [
     "error_text",
     "guard",
     "is_quota_exhausted",
+    "is_transient_rate_limit",
     "is_safe_preflight_error",
     "reason",
     "reset",

@@ -17,6 +17,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { api } from "@/api/client";
+import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   ChapterResponse,
   ClassicalSourceResponse,
@@ -592,7 +593,7 @@ export function ClassicalTranslationWorkspace() {
             <div>
               <h2 className="text-lg font-medium text-warm-100">翻译结果</h2>
               <p className="mt-1 text-xs text-warm-500">
-                {task ? `${task.progress}% · ${task.current_step}` : "任务开始后，译文会按章节出现在这里"}
+                {task ? `${task.progress}% · ${publicTaskStep(task.current_step, task.status, task.progress)}` : "任务开始后，译文会按章节出现在这里"}
               </p>
             </div>
             {taskId && (
@@ -635,7 +636,7 @@ export function ClassicalTranslationWorkspace() {
               <div className="h-1.5 overflow-hidden rounded-full bg-base-900">
                 <div className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-400 transition-all" style={{ width: `${Math.max(2, task.progress)}%` }} />
               </div>
-              {task.error_message && <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 p-3 text-xs leading-6 text-red-100">{task.error_message}</div>}
+              {publicTaskError(task.error_message) && <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 p-3 text-xs leading-6 text-red-100">{publicTaskError(task.error_message)}</div>}
             </div>
           )}
 

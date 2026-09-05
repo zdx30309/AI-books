@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { SystemHealth } from "@/api/types";
+import { publicTaskError } from "@/utils/taskStatus";
 
 interface Props {
   taskId: string;
@@ -97,7 +98,9 @@ export function StuckBanner({
       await api.retryTask(taskId);
       onRetried?.();
     } catch (e) {
-      const msg = e instanceof ApiError ? e.detail : "重试失败";
+      const msg = e instanceof ApiError
+        ? publicTaskError(e.detail) || "任务会自动继续处理"
+        : "任务会自动继续处理";
       alert(`重试失败：${msg}`);
     } finally {
       setRetrying(false);
@@ -122,40 +125,33 @@ export function StuckBanner({
           {healthLoading && !health && (
             <p className="mt-2 flex items-center gap-2 text-xs tracking-wide text-warm-400">
               <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-              正在检测后端 Celery 状态...
+              正在检查任务状态...
             </p>
           )}
 
           {noWorker && (
             <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-              后端没有检测到可用的 Celery worker，任务可能还在队列里等待处理。
-              服务器部署环境请检查 Docker worker 服务是否运行。
+              任务暂时没有新的进度，系统会自动继续处理，请稍后查看。
             </p>
           )}
 
           {workerOk && (
             <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-              Worker 在线。当前步骤已经 {Math.floor(idleSeconds)}
-              秒没有进度变化，可能是模型调用或封面生成耗时较久。
-              {health.celery_workers.length > 0 && (
-                <span className="ml-2 text-[10px] text-warm-500">
-                  Workers: {health.celery_workers.join(", ")}
-                </span>
-              )}
+              当前步骤已经 {Math.floor(idleSeconds)} 秒没有进度变化，
+              可能仍在处理较长内容，系统会自动继续。
             </p>
           )}
 
           {workerBusyOrUnknown && (
             <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-              健康检查暂时没有返回，通常是 worker 正在处理长任务或队列较忙。
-              如果任务已经进入 OpenAI、Gemini、DeepSeek 或封面阶段，请先等待当前请求返回。
+              状态检查暂时没有返回，任务仍会由系统自动接力处理。
             </p>
           )}
 
           {!health && !healthLoading && (
             <p className="mt-2 text-xs leading-relaxed tracking-wide text-warm-300">
-              当前步骤已经 {Math.floor(idleSeconds)}
-              秒没有进度变化。长模型调用期间前端可能暂时看不到进度更新。
+              当前步骤已经 {Math.floor(idleSeconds)} 秒没有进度变化，
+              长内容处理期间页面可能暂时看不到进度更新。
             </p>
           )}
 
@@ -171,7 +167,7 @@ export function StuckBanner({
               ) : (
                 <RefreshCw className="h-3 w-3" strokeWidth={1.8} />
               )}
-              <span>{retrying ? "重新投递中" : "重试任务"}</span>
+              <span>{retrying ? "继续处理" : "重新处理"}</span>
             </button>
 
             <button

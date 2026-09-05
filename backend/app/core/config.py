@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # Queue many jobs, but keep worker threads bounded; paid-call concurrency
     # is controlled separately by the distributed provider gates.
     CELERY_WORKER_CONCURRENCY: int = 12
+    CELERY_MAINTENANCE_WORKER_CONCURRENCY: int = 1
+    CELERY_MAINTENANCE_QUEUE: str = "maintenance"
     CELERY_TASK_TIME_LIMIT_SECONDS: int = 14400
     CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = 13800
     MAX_ACTIVE_GENERATION_TASKS: int = 250
@@ -61,11 +63,20 @@ class Settings(BaseSettings):
     STALE_TASK_WATCHDOG_INTERVAL_SECONDS: int = 120
     TASK_RUN_HEARTBEAT_INTERVAL_SECONDS: int = 60
     STALE_PROCESSING_REQUEUE_SECONDS: int = 900
+    # A pending task with no active run is normally waiting for a Celery
+    # message.  If that message/lease disappeared, the maintenance worker may
+    # safely redispatch it after this grace period; the database run claim is
+    # still the final duplicate-execution barrier.
+    PENDING_TASK_ORPHAN_REQUEUE_SECONDS: int = 180
+    DISPATCH_GUARD_STALE_SECONDS: int = 900
     FAILED_TASK_AUTO_RECOVERY_ENABLED: bool = True
     FAILED_TASK_AUTO_RECOVERY_SECONDS: int = 600
     FAILED_TASK_AUTO_RECOVERY_MAX_ATTEMPTS: int = 24
     PAID_API_GATE_WAIT_TIMEOUT_SECONDS: int = 14400
     PAID_API_GATE_TTL_SECONDS: int = 600
+    # Short Vertex/GenAI request-rate throttles must not become a 30-minute
+    # global production pause.  Billing/dunning failures keep the long guard.
+    PAID_API_RATE_LIMIT_TTL_SECONDS: int = 60
     # In production, block paid calls if the shared breaker cannot be read.
     # Development/test environments may leave this unset to avoid requiring
     # a Redis instance for local pure-function tests.
@@ -167,6 +178,10 @@ class Settings(BaseSettings):
     GEMINI_THINKING_BUDGET: int = 0
     GEMINI_THINKING_LEVEL: str = "medium"
     GEMINI_MAX_CONCURRENT_CALLS: int = 8
+    # Vertex may return RESOURCE_EXHAUSTED for a short request-rate window even
+    # when the project is billed correctly.  Keep the existing model/workflow,
+    # but pace starts across worker threads so the cooldown can recover.
+    GEMINI_MIN_REQUEST_INTERVAL_SECONDS: float = 30.0
     GEMINI_POLISH_CONCURRENCY: int = 1
     GEMINI_POLISH_CALL_TIMEOUT: int = 0
     GEMINI_REFINE_CALL_TIMEOUT: int = 0

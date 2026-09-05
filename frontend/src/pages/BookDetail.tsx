@@ -31,6 +31,7 @@ import {
 } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
+import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   AigcQualityReport,
   ChapterResponse,
@@ -59,21 +60,7 @@ const ACTIVE_STATUSES = new Set([
 const COMIC_IMAGE_RE = /^\s*!\[([^\]]*)\]\((?:comic_images\/)?(comic_preface\.png|comic_section_\d+(?:_\d+)?\.png)\)\s*$/;
 
 function friendlyTaskError(message: string | null | undefined) {
-  if (!message) return null;
-  const normalized = message.toLowerCase();
-  if (
-    normalized.includes("insufficient_quota") ||
-    normalized.includes("exceeded your current quota")
-  ) {
-    return "OpenAI 额度不足或账单不可用，请检查服务器当前 API Key 的余额、账单状态，或更换可用 Key 后重试。";
-  }
-  if (normalized.includes("rate_limit") || normalized.includes("429")) {
-    return "OpenAI 请求被限流，请稍后重试，或降低并发后继续生成。";
-  }
-  if (normalized.includes("timeout") || normalized.includes("timed out")) {
-    return "模型调用超时，任务已停止。可以稍后点击继续生成重试。";
-  }
-  return message;
+  return publicTaskError(message);
 }
 
 function downloadPlainText(text: string, filename: string) {
@@ -499,7 +486,7 @@ export function BookDetail() {
       (task.status === "manual_review" || task.aigc_status === "technical_failed");
     const ok = window.confirm(
       aigcOnly
-        ? "仅重跑朱雀终稿阶段吗？系统会复用不可变原稿、已有检测缓存和上游结果，不会重新生成整篇。"
+        ? "仅重新检查当前终稿吗？系统会复用已有稿件，不会重新生成整篇。"
         : "要继续生成这本书稿吗？系统会重新投递任务到队列。",
     );
     if (!ok) return;
@@ -680,7 +667,7 @@ export function BookDetail() {
         taskId={task.id}
         progress={task.progress}
         status={task.status}
-        currentStep={task.current_step}
+        currentStep={publicTaskStep(task.current_step, task.status, task.progress)}
         onRetried={refresh}
       />
 
@@ -715,11 +702,7 @@ export function BookDetail() {
                     task.aigc_status === "passed" ? "text-emerald-300" : "text-gold-200"
                   }`}
                 >
-                  朱雀 v2：{task.aigc_status === "passed" ? "朱雀与质量双达标" : task.aigc_status}
-                  {task.aigc_initial_max_score !== null
-                    ? ` · ${task.aigc_initial_max_score}% → ${task.aigc_final_max_score ?? "?"}%`
-                    : ""}
-                  {task.aigc_rewrite_rounds ? ` · ${task.aigc_rewrite_rounds} 轮` : ""}
+                  质量检查：{task.aigc_status === "passed" ? "已通过" : "处理中"}
                 </p>
               )}
               {isCompleted && (
@@ -795,12 +778,10 @@ export function BookDetail() {
               )}
               {isManualReview && (
                 <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
-                  <span className="font-medium text-gold-100">已转人工复核：</span>
-                  {task.aigc_manual_review_reason || failureMessage || "朱雀分数与文稿质量未能同时达标。"}
+                  <span className="font-medium text-gold-100">当前稿件已保留：</span>
+                  {failureMessage || "系统正在继续处理当前任务。"}
                   <div className="mt-1 text-warm-400">
-                    {detectorProbeArchive
-                      ? "高质量 04_format.md 原稿保持不变；探索稿可下载送检，但不可标记为终稿。"
-                      : "高质量 04_format.md 原稿保持不变，当前稿不可下载、不可标记完成。"}
+                    系统会从已保存的进度继续，不需要重复提交。
                   </div>
                 </div>
               )}
@@ -832,7 +813,7 @@ export function BookDetail() {
             {canRetry ? (
               <button type="button" onClick={handleRetry} className="btn-ghost">
                 <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                {isAigcOnlyRetry ? "仅重跑朱雀阶段" : "继续生成"}
+                {isAigcOnlyRetry ? "继续检查" : "继续生成"}
               </button>
             ) : null}
             <button type="button" onClick={handleDelete} className="btn-ghost">
@@ -923,7 +904,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : isManualReview ? "人工复核" : isFailed ? "失败" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -942,7 +923,7 @@ export function BookDetail() {
             </div>
             <WorkflowStepper
               progress={task.progress}
-              currentStep={task.current_step}
+              currentStep={publicTaskStep(task.current_step, task.status, task.progress)}
               status={task.status}
               category={task.category}
               aigcRequired={task.aigc_required}
@@ -959,44 +940,10 @@ export function BookDetail() {
 
       {isManualReview && (
         <section className="card-warm mb-8 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="font-serif text-xl text-warm-50">人工复核材料</h2>
-              <p className="mt-2 text-xs leading-6 text-warm-400">
-                原稿优先保留；候选只供比较，不会自动交付。朱雀与模型调用均记录在报告中。
-              </p>
-            </div>
-            {aigcReport?.costSummary && (
-              <div className="text-right text-xs leading-6 text-warm-400">
-                <div>腾讯调用 {aigcReport.costSummary.tencentCalls ?? 0} 次 · 模型调用 {aigcReport.costSummary.modelCalls ?? 0} 次</div>
-                <div>估算 ¥{aigcReport.costSummary.estimatedCny ?? 0} / ${aigcReport.costSummary.estimatedUsd ?? 0}</div>
-              </div>
-            )}
-          </div>
-          <div className="mt-5 grid gap-4 xl:grid-cols-2">
-            <details className="rounded-lg border border-gold-500/15 bg-base-900/50 p-4" open>
-              <summary className="cursor-pointer text-sm text-gold-100">不可变高质量原稿</summary>
-              <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-warm-200">
-                {manualOriginal || "原稿文件暂不可读，但任务不会交付失败候选。"}
-              </pre>
-            </details>
-            <details className="rounded-lg border border-gold-500/15 bg-base-900/50 p-4" open>
-              <summary className="cursor-pointer text-sm text-gold-100">{detectorProbeArchive ? "朱雀探索实验稿（非终稿）" : "最佳安全候选（仅供复核）"}</summary>
-              <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-warm-200">
-                {manualCandidateText || "没有同时通过确定性保护的候选，系统已回滚到原稿。"}
-              </pre>
-              {detectorProbeArchive && manualCandidateText && (
-                <button
-                  type="button"
-                  onClick={() => downloadPlainText(manualCandidateText, "朱雀探索实验稿-非终稿.txt")}
-                  className="btn-ghost mt-4 inline-flex items-center gap-2"
-                >
-                  <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  下载探索稿送检
-                </button>
-              )}
-            </details>
-          </div>
+          <h2 className="font-serif text-xl text-warm-50">任务正在处理</h2>
+          <p className="mt-2 text-xs leading-6 text-warm-400">
+            当前已保存的稿件和进度会被保留，系统会自动从断点继续。
+          </p>
         </section>
       )}
 
