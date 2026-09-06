@@ -406,6 +406,28 @@ def test_normalize_removes_unstructured_body_subheadings() -> None:
     assert "小标题四。" in result
 
 
+def test_normalize_merges_thin_standard_longform_chapters_and_renumbers() -> None:
+    markdown = """@最终书名
+测试书
+@正文
+@1. 第一章
+""" + ("第一章内容。" * 120) + """
+@2. 第二章
+这是一个被错误拆出的短章。""" + ("短内容。" * 30) + """
+@3. 第三章
+""" + ("第三章内容。" * 120) + """
+@4. 第四章
+""" + ("第四章内容。" * 120) + """
+"""
+
+    result = normalize_final_markdown(markdown, category="emotion_relationship")
+
+    assert "@1. 第一章" in result
+    assert result.count("@") >= 5
+    assert "@4." not in result
+    assert "被错误拆出的短章" in result
+
+
 def test_comic_normalize_keeps_image_markdown_unchanged() -> None:
     markdown = """@正文
 @1. 第一辑

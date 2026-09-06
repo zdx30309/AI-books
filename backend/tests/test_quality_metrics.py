@@ -202,6 +202,18 @@ def test_final_hard_error_gate_allows_inline_noun_phrase_body_sentences() -> Non
     assert "正文内小标题未标准化为 ###" not in hits
 
 
+def test_final_hard_error_gate_detects_standard_longform_thin_chapter() -> None:
+    chapters = []
+    for index in range(1, 7):
+        body = "完整章节内容。" * (180 if index != 4 else 20)
+        chapters.append(f"@{index}. 第{index}章\n{body}")
+    markdown = "@最终书名\n测试书\n@正文\n" + "\n".join(chapters)
+
+    hits = detect_final_hard_errors(markdown, category="emotion_relationship")
+
+    assert "常规长文章节过短" in hits
+
+
 def test_final_hard_error_gate_allows_finance_explanatory_sentences_with_keyword_prefixes() -> None:
     markdown = """@最终书名
 测试书

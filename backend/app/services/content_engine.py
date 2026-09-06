@@ -913,6 +913,95 @@ def _limit_internal_subheadings_per_chapter(markdown: str, *, max_count: int = 0
     return "\n".join(output)
 
 
+_STANDARD_LONGFORM_CATEGORY_IDS = frozenset(
+    {
+        "social_science",
+        "social_science_test",
+        "social_science_core_conflict",
+        "life_philosophy",
+        "life_philosophy_self_rescue",
+        "popular_science",
+        "popular_science_cognitive_upgrade",
+        "finance_technology",
+        "finance_technology_ai_optimized",
+        "finance_technology_recommendation",
+        "wisdom_stories",
+        "wisdom_stories_causal_philosophy",
+        "wisdom_stories_historical",
+        "biography",
+        "history_culture",
+        "emotion_relationship",
+        "emotion_relationship_unique_view",
+        "psychology_self_help",
+        "health_wellness",
+        "health_wellness_daily_pain",
+        "classic_interpretation",
+        "masterpiece_interpretation",
+    }
+)
+
+
+def _rebalance_standard_longform_chapters(markdown: str, *, category: str | None) -> str:
+    """Merge provider-created thin chapters in ordinary long-form books."""
+
+    if normalize_category(category or "") not in _STANDARD_LONGFORM_CATEGORY_IDS:
+        return markdown
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    body_match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", markdown or "")
+    if not body_match:
+        return markdown
+    body_start = len(markdown[: body_match.end()].replace("\r\n", "\n").replace("\r", "\n").split("\n")) - 1
+    body_lines = lines[body_start + 1 :]
+    heading_re = re.compile(r"^(?:！！！@?|@)\s*\d+[.．、]\s*.+$")
+    starts = [idx for idx, line in enumerate(body_lines) if heading_re.match(line.strip())]
+    if len(starts) < 4:
+        return markdown
+
+    chapters: list[tuple[str, list[str]]] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(body_lines)
+        chapters.append((body_lines[start].strip(), [line.strip() for line in body_lines[start + 1 : end] if line.strip()]))
+
+    def size(item: tuple[str, list[str]]) -> int:
+        return sum(1 for char in "".join(item[1]) if "\u3400" <= char <= "\u9fff")
+
+    changed = False
+    while len(chapters) >= 4:
+        short_index = next((idx for idx, item in enumerate(chapters) if size(item) < 600), None)
+        if short_index is None:
+            break
+        group_end = short_index
+        if short_index + 1 < len(chapters):
+            group_end = short_index + 1
+        if group_end == short_index and short_index == len(chapters) - 1:
+            group_start = short_index - 1
+        else:
+            group_start = short_index
+        merged_heading = chapters[group_start][0]
+        merged_body: list[str] = []
+        for group_index in range(group_start, group_end + 1):
+            heading_text = re.sub(
+                r"^(?:！！！@?|@)\s*\d+[.．、]\s*",
+                "",
+                chapters[group_index][0],
+            ).strip()
+            if group_index > group_start and heading_text:
+                merged_body.append(f"{heading_text}。")
+            merged_body.extend(chapters[group_index][1])
+        chapters[group_start : group_end + 1] = [(merged_heading, merged_body)]
+        changed = True
+
+    if not changed:
+        return markdown
+    rendered = lines[: body_start + 1]
+    for chapter_index, (heading, body) in enumerate(chapters, start=1):
+        marker = "！！！" if heading.startswith("！！！") else "@"
+        title = re.sub(r"^(?:！！！@?|@)\s*\d+[.．、]\s*", "", heading).strip()
+        rendered.append(f"{marker}{chapter_index}. {title}")
+        rendered.extend(body)
+    return "\n".join(rendered)
+
+
 def _looks_like_wisdom_story_subheading(line: str) -> bool:
     stripped = line.strip()
     if not stripped or _is_structural_markdown_line(stripped):
@@ -2822,6 +2911,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = "\n".join(compact).strip()
         if normalized in FINANCE_SOURCE_GUARDED_CATEGORIES:
             result = _clean_finance_source_leaks(result).strip()
+        result = _rebalance_standard_longform_chapters(result, category=normalized)
         result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
 
@@ -2837,11 +2927,13 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         if normalized == CLASSICAL_INTERLEAVED_CATEGORY:
             body_lines = _collapse_extra_classical_interleaved_translation_lines(body_lines)
         result = "\n".join(front_lines + body_lines).strip()
+        result = _rebalance_standard_longform_chapters(result, category=normalized)
         result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
     if normalized in {"comic_series", "healing_comic", "story_comic", "homophone_comic"}:
         result = "\n".join(front_lines + body_lines).strip()
+        result = _rebalance_standard_longform_chapters(result, category=normalized)
         result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     is_wisdom_story = normalized == "wisdom_stories"
@@ -2858,6 +2950,7 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = _clean_finance_source_leaks(result).strip()
     if normalized == "life_philosophy":
         result = _apply_life_philosophy_delivery_markers(result).strip()
+    result = _rebalance_standard_longform_chapters(result, category=normalized)
     result = _limit_internal_subheadings_per_chapter(result)
     return result + ("\n" if result else "")
 
@@ -3786,6 +3879,9 @@ async def _route_writer_call_with_usage(
 _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES = {
     "《百喻经》章节覆盖不足",
     "《百喻经》章节数量异常",
+    "常规长文章节过短",
+    "常规长文相邻短章疑似拆章",
+    "常规长文章节长度严重失衡",
 }
 
 
@@ -4139,6 +4235,66 @@ def _split_text_by_classical_marker_lines(text: str, *, target_chars: int = 1000
 def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[str]:
     retry_target = max(300, min(700, target_chars // 2 if target_chars > 0 else 500))
     return _split_text_by_paragraph(text, target_chars=retry_target)
+
+
+def _split_standard_longform_by_chapters(
+    text: str,
+    *,
+    target_chars: int = 4_000,
+) -> list[str]:
+    """Keep ordinary-book polish chunks aligned to formal chapter boundaries."""
+
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    body_match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", normalized)
+    if not body_match:
+        return [text] if text and text.strip() else []
+    prefix = normalized[: body_match.end()].strip()
+    body = normalized[body_match.end() :]
+    matches = list(
+        re.finditer(
+            r"(?m)^\s*(?:(?:！！！)?@|！！！)\s*\d+[.．、]\s*.+?\s*$",
+            body,
+        )
+    )
+    if not matches:
+        return [text] if text and text.strip() else []
+    chunks: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        chapter = body[match.start() : end].strip()
+        if not chapter:
+            continue
+        chunks.append((prefix + "\n" + chapter) if index == 0 else chapter)
+    return chunks or ([text] if text and text.strip() else [])
+
+
+def _standard_longform_chunk_issues(
+    source_chunk: str,
+    output_chunk: str,
+) -> list[str]:
+    source_parts = _stage_formal_chapter_parts(source_chunk)
+    output_parts = _stage_formal_chapter_parts(output_chunk)
+    if not source_parts:
+        return []
+    source_numbers = [number for number, _title, _body in source_parts]
+    output_numbers = [number for number, _title, _body in output_parts]
+    if output_numbers != source_numbers:
+        return [
+            "章节分块输出改变了章节边界: "
+            f"source={source_numbers} candidate={output_numbers}"
+        ]
+    issues: list[str] = []
+    for (number, _title, source_body), (_out_number, _out_title, output_body) in zip(
+        source_parts,
+        output_parts,
+    ):
+        source_chars = sum(1 for char in source_body if "\u3400" <= char <= "\u9fff")
+        output_chars = sum(1 for char in output_body if "\u3400" <= char <= "\u9fff")
+        if source_chars >= 700 and output_chars < max(500, int(source_chars * 0.6)):
+            issues.append(
+                f"第 {number} 章分块疑似压缩: source={source_chars} candidate={output_chars}"
+            )
+    return issues
 
 
 def _classical_chunk_marker_issues(source_chunk: str, output_chunk: str) -> list[str]:
@@ -6591,6 +6747,87 @@ def _stage_chapter_numbers(markdown: str) -> list[int]:
     )
 
 
+def _stage_formal_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
+    """Extract formal body chapters in occurrence order for stage comparison."""
+
+    body = _stage_body_for_integrity(markdown)
+    matches = list(
+        re.finditer(
+            r"^\s*(?:(?:！！！)?@|！！！)?\s*(\d+)[.．、]\s*(.+?)\s*$",
+            body,
+            re.MULTILINE,
+        )
+    )
+    parts: list[tuple[int, str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        parts.append(
+            (
+                int(match.group(1)),
+                match.group(2).strip(),
+                body[match.end() : end].strip(),
+            )
+        )
+    unique: list[tuple[int, str, str]] = []
+    seen: set[int] = set()
+    for part in parts:
+        if part[0] in seen:
+            continue
+        seen.add(part[0])
+        unique.append(part)
+    return unique
+
+
+def _standard_longform_stage_structure_issue(
+    source_text: str | None,
+    candidate_text: str | None,
+    *,
+    category: str | None,
+) -> str | None:
+    """Reject a polish/refine result that splits or swallows formal chapters."""
+
+    normalized = normalize_category(category or "")
+    if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
+        return None
+    source_parts = _stage_formal_chapter_parts(source_text or "")
+    if not source_parts:
+        return None
+    candidate_parts = _stage_formal_chapter_parts(candidate_text or "")
+    source_numbers = [number for number, _title, _body in source_parts]
+    candidate_numbers = [number for number, _title, _body in candidate_parts]
+    if candidate_numbers != source_numbers:
+        return (
+            "正式章节序列被拆分、合并、改号或遗漏: "
+            f"source={source_numbers[:20]} candidate={candidate_numbers[:20]}"
+        )
+
+    def cjk_count(value: str) -> int:
+        return sum(1 for char in value if "\u3400" <= char <= "\u9fff")
+
+    source_counts = [cjk_count(body) for _number, _title, body in source_parts]
+    candidate_counts = [cjk_count(body) for _number, _title, body in candidate_parts]
+    if sum(source_counts) < 5_000:
+        return None
+    for index, (source_count, candidate_count) in enumerate(
+        zip(source_counts, candidate_counts)
+    ):
+        chapter_number = source_parts[index][0]
+        if source_count >= 700 and candidate_count < max(500, int(source_count * 0.6)):
+            return (
+                f"第 {chapter_number} 章被压成短章: "
+                f"source={source_count} candidate={candidate_count}"
+            )
+        if candidate_count >= 1_800 and candidate_count > max(
+            int(source_count * 1.9),
+            source_count + 900,
+        ):
+            return (
+                f"第 {chapter_number} 章异常膨胀并疑似吞并相邻内容: "
+                f"source={source_count} candidate={candidate_count}"
+            )
+    return None
+
+
 _REFINE_NOTICE_MARKERS = (
     "无法完成",
     "无法在不新增内容的前提下",
@@ -6670,6 +6907,13 @@ def _refine_output_integrity_issue(
                 f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
                 f"candidate={output_chapters[:12]}"
             )
+    structure_issue = _standard_longform_stage_structure_issue(
+        source,
+        output,
+        category=category,
+    )
+    if structure_issue:
+        return structure_issue
     if source and _is_finance_longform_category(category):
         finance_issue = _finance_chapter_structure_issue(source, output)
         if finance_issue:
@@ -6755,6 +6999,13 @@ def _final_resume_cache_issue(
                 f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
                 f"candidate={candidate_chapters[:12]}"
             )
+    structure_issue = _standard_longform_stage_structure_issue(
+        source,
+        candidate_text,
+        category=category,
+    )
+    if structure_issue:
+        return structure_issue
     if source and _is_finance_longform_category(category):
         return _finance_chapter_structure_issue(source, candidate_text)
     return None
@@ -8091,12 +8342,22 @@ async def generate_full_book(
         _log_stage("2/4 polish (skipped: direct writer)", polished_markdown, prev_chars=writer_chars)
         polish_chars = len(polished_markdown)
     elif polished_markdown:
-        logger.info("复用已存在的 02_polish.md")
-        _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
-        polish_chars = len(polished_markdown)
-        if on_stage:
-            on_stage("polish_done", {"chars": polish_chars})
-    else:
+        polish_structure_issue = _standard_longform_stage_structure_issue(
+            generated_markdown,
+            polished_markdown,
+            category=normalized_category,
+        )
+        if polish_structure_issue:
+            logger.warning("忽略章节结构失衡的 02_polish.md: %s", polish_structure_issue)
+            _dump_stage(output_dir, "02_polish_rejected_structure.md", polished_markdown)
+            polished_markdown = None
+        else:
+            logger.info("复用已存在的 02_polish.md")
+            _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
+            polish_chars = len(polished_markdown)
+            if on_stage:
+                on_stage("polish_done", {"chars": polish_chars})
+    elif polished_markdown is None:
         if on_stage:
             on_stage("polish_start", {})
         polish_chunk_func = (
@@ -8121,6 +8382,8 @@ async def generate_full_book(
                 if is_classical_category
                 else _split_buddhist_text_by_chapters
                 if use_buddhist_story_unit_writer
+                else _split_standard_longform_by_chapters
+                if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
                 else None
             ),
             chunk_validator=(
@@ -8128,9 +8391,28 @@ async def generate_full_book(
                 if is_classical_category
                 else _buddhist_chapter_marker_issues
                 if use_buddhist_story_unit_writer
+                else _standard_longform_chunk_issues
+                if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
                 else None
             ),
         )
+        if not is_classical_category and not use_buddhist_story_unit_writer:
+            polished_markdown = normalize_final_markdown(
+                polished_markdown,
+                category=normalized_category,
+            )
+        polish_structure_issue = _standard_longform_stage_structure_issue(
+            generated_markdown,
+            polished_markdown,
+            category=normalized_category,
+        )
+        if polish_structure_issue:
+            logger.warning("Gemini 一润章节结构失衡，回退到主笔章节结构: %s", polish_structure_issue)
+            _dump_stage(output_dir, "02_polish_rejected_structure.md", polished_markdown)
+            polished_markdown = normalize_final_markdown(
+                generated_markdown,
+                category=normalized_category,
+            )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -8278,6 +8560,16 @@ async def generate_full_book(
                     on_stage=on_stage,
                     output_dir=output_dir,
                     chunk_func=refine_chunk_func,
+                    splitter=(
+                        _split_standard_longform_by_chapters
+                        if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
+                        else None
+                    ),
+                    chunk_validator=(
+                        _standard_longform_chunk_issues
+                        if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
+                        else None
+                    ),
                 )
                 integrity_issue = _refine_output_integrity_issue(
                     polished_markdown,

@@ -414,6 +414,32 @@ _FINAL_QA_EXCLUDED_CATEGORIES = {
     "story_comic",
     "homophone_comic",
 }
+_STANDARD_LONGFORM_CHAPTER_CATEGORIES = frozenset(
+    {
+        "social_science",
+        "social_science_test",
+        "social_science_core_conflict",
+        "life_philosophy",
+        "life_philosophy_self_rescue",
+        "popular_science",
+        "popular_science_cognitive_upgrade",
+        "finance_technology",
+        "finance_technology_ai_optimized",
+        "finance_technology_recommendation",
+        "wisdom_stories",
+        "wisdom_stories_causal_philosophy",
+        "wisdom_stories_historical",
+        "biography",
+        "history_culture",
+        "emotion_relationship",
+        "emotion_relationship_unique_view",
+        "psychology_self_help",
+        "health_wellness",
+        "health_wellness_daily_pain",
+        "classic_interpretation",
+        "masterpiece_interpretation",
+    }
+)
 _CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
 _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES = {
     _CLASSICAL_INTERLEAVED_CATEGORY,
@@ -624,6 +650,64 @@ def _body_chapters(text: str) -> list[tuple[str, list[str]]]:
     if current_heading:
         chapters.append((current_heading, current_lines))
     return chapters
+
+
+def _detect_standard_longform_chapter_structure_errors(
+    text: str,
+    *,
+    category: str | None = None,
+) -> dict[str, list[str]]:
+    """Detect provider-created thin chapters and severe chapter imbalance."""
+
+    category_key = (category or "").strip().lower()
+    if category_key not in _STANDARD_LONGFORM_CHAPTER_CATEGORIES:
+        return {}
+    chapters = _body_chapters(text)
+    if len(chapters) < 4:
+        return {}
+
+    counts = [_cjk_count("".join(lines)) for _heading, lines in chapters]
+    if sum(counts) < 5_000:
+        return {}
+
+    results: dict[str, list[str]] = {}
+    for index, count in enumerate(counts):
+        if count < 600:
+            preview = "".join(chapters[index][1])[:90]
+            _add_noise_hit(
+                results,
+                "常规长文章节过短",
+                f"{chapters[index][0]}｜{count} 字｜{preview or '正文为空'}",
+            )
+
+    for index in range(len(chapters) - 1):
+        left_count = counts[index]
+        right_count = counts[index + 1]
+        if left_count < 850 and right_count < 850 and left_count + right_count < 1_800:
+            _add_noise_hit(
+                results,
+                "常规长文相邻短章疑似拆章",
+                (
+                    f"{chapters[index][0]}（{left_count}字）+ "
+                    f"{chapters[index + 1][0]}（{right_count}字）"
+                ),
+            )
+
+    smallest = min(counts)
+    largest = max(counts)
+    if smallest < 700 and largest >= 1_800 and largest / max(smallest, 1) >= 3:
+        smallest_index = counts.index(smallest)
+        largest_index = counts.index(largest)
+        _add_noise_hit(
+            results,
+            "常规长文章节长度严重失衡",
+            (
+                f"最短 {chapters[smallest_index][0]}={smallest} 字；"
+                f"最长 {chapters[largest_index][0]}={largest} 字；"
+                "应合并短章并重新分配相邻内容。"
+            ),
+        )
+    return results
 
 
 def _cjk_count(text: str) -> int:
@@ -899,6 +983,12 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
     merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))
     merge(_detect_classical_reference_style_errors(markdown, category=category_key))
     merge(_detect_classical_novel_style_shape_errors(markdown, category=category_key))
+    merge(
+        _detect_standard_longform_chapter_structure_errors(
+            markdown,
+            category=category_key,
+        )
+    )
     return results
 
 

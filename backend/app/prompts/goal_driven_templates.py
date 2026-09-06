@@ -2071,6 +2071,15 @@ WRITER_PUNCTUATION_USAGE_PROMPT = """【标点符号专项要求】
 - 输出前自检全文标点。凡是读起来像“本该用逗号、顿号或分号，却被写成句号”的地方，必须主动改成更准确的中文标点。"""
 
 
+CHAPTER_BALANCE_REQUIREMENT_PROMPT = """【章节结构与篇幅全局要求】
+- 正文必须按完整的大章节组织。每章围绕一个独立核心问题展开，不能把同一问题拆成多个几百字短章，也不能把后续章节内容集中堆到最后一章。终稿必须保留所有正式章节，不得因为篇幅不足擅自新增或删除章节。
+- 常规长文每章正文应达到可完整展开问题的篇幅，原则上不少于 800 字；禁止出现只有 300～500 字、只写定义、结论或提醒的空心短章。
+- 如果相邻章节主题相近、内容互相承接或单章不足以独立成立，应合并为一个完整章节，并重新分配后续章节边界；不要为了凑章节数量硬拆。
+- 一润、二润和终稿格式整理都必须保留完整章节顺序、章节标题和内容，不得拆章、并章、改号或把某一章异常扩写成其他章节的两倍以上。
+- 章节数量由材料内容决定，不追求固定数量；宁可少而完整，也不要多而零碎。
+"""
+
+
 SECTION_TITLE_REQUIREMENT_PROMPT = """【小节标题全局要求】
 - 正文正式章节标题只能使用：@N. 章节名。
 - 正文内部小标题按阅读需要选择，可以生成，也可以完全没有；不要为每个论点、案例、段落、知识点或转折机械安排小标题。
@@ -2123,6 +2132,12 @@ def _with_writer_punctuation_rules(full_book_writer: str) -> str:
     return _insert_prompt_before_input(full_book_writer, WRITER_PUNCTUATION_USAGE_PROMPT)
 
 
+def _with_chapter_balance_rules(prompt: str) -> str:
+    if not prompt or "【章节结构与篇幅全局要求】" in prompt:
+        return prompt
+    return _insert_prompt_before_input(prompt, CHAPTER_BALANCE_REQUIREMENT_PROMPT)
+
+
 def _with_section_title_rules(prompt: str) -> str:
     if not prompt or "【小节标题全局要求】" in prompt:
         return prompt
@@ -2165,16 +2180,24 @@ def _prompt_set(
     refine_prompt = refine or GEMINI_FAST_REFINE_PROMPT
     formatter_prompt = formatter or FINAL_BOOK_FORMAT_PROMPT
     if formatter_section_title_rules:
-        formatter_prompt = _with_section_title_rules(formatter_prompt)
+        formatter_prompt = _with_chapter_balance_rules(
+            _with_section_title_rules(formatter_prompt)
+        )
     return {
         "full_book_writer": _with_intro_body_separation_rules(
-            _with_section_title_rules(_with_writer_punctuation_rules(full_book_writer))
+            _with_chapter_balance_rules(
+                _with_section_title_rules(_with_writer_punctuation_rules(full_book_writer))
+            )
         ),
         "gemini_fast_polish": _with_intro_body_refine_guard(
-            _with_polish_fixed_phrase_guard(_with_section_title_rules(polish_prompt))
+            _with_chapter_balance_rules(
+                _with_polish_fixed_phrase_guard(_with_section_title_rules(polish_prompt))
+            )
         ),
         "gemini_fast_refine": _with_intro_body_refine_guard(
-            _with_section_title_refine_guard(refine_prompt)
+            _with_chapter_balance_rules(
+                _with_section_title_refine_guard(refine_prompt)
+            )
         ),
         "final_book_format": _with_intro_body_separation_rules(
             formatter_prompt
