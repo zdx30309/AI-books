@@ -1645,6 +1645,21 @@ def test_section_title_rules_forbid_body_subheadings() -> None:
     assert "正文不设置内部小标题" in prompt
 
 
+def test_psychology_emotion_and_science_writers_forbid_fabricated_everyday_cases() -> None:
+    categories = (
+        "emotion_relationship",
+        "emotion_relationship_unique_view",
+        "psychology_self_help",
+        "popular_science",
+        "popular_science_cognitive_upgrade",
+    )
+    for category in categories:
+        prompt = get_prompts(category)["full_book_writer"]
+        assert "不得虚构普通人" in prompt, category
+        assert "只能使用原始视频文稿明确提供的事实" in prompt or "只能使用参照材料明确提供的事实" in prompt, category
+        assert "不得用虚构人物或虚构生活场景开头" in prompt or "不得虚构普通人、人物姓名" in prompt, category
+
+
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:
     for category in SUPPORTED_CATEGORIES:
         prompts = get_prompts(category)
