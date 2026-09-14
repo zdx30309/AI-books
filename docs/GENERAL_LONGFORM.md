@@ -23,7 +23,7 @@
 - 仓库/前文/附件阅读：完成。已逐条读取链接会话中的用户与助手正文；完整读取 Word 的 571 个正文/表格段落（含一个空段）、页眉和页脚。
 - 原始 Word SHA-256：`3dc1e57353c3ac57535ee1a818effb12501364eb1fe7f40b2f1de69437e96f07`。
 - 开始前基线：Git `b5b5fbc3625a11ef535bbac885d1ba0a9c8ed660`；已有未跟踪 `.tmp/` 保持原样，不加入提交。
-- 实现及最终本地验收：完成；GitHub/ECS 发布进入执行阶段，实际结果见文末发布记录。
+- 实现、最终本地验收和 GitHub/ECS 代码发布：完成；2026-09-15 的实际结果见文末发布记录。
 
 ## 操作入口
 
@@ -129,9 +129,18 @@ git diff --check
 
 实施中发现并修复：旧通用 prompt 测试需按新分类隔离；Windows 原子临时文件名过长；浏览器模拟 tasks 接口需要 `items`；导入候选修订后材料消费、来源重查及无响应 ID 的明确恢复确认；逐段证据 JSON 的原始 CRLF 通过专属 Git whitespace 属性保留，不为格式检查修改证据字节。最终测试无失败项。
 
-## 发布记录
+## 发布记录（2026-09-15）
 
 - 发布前只读检查：北京 ECS 基线 `.deploy-version=b5b5fbc`，6 服务运行，业务活动任务 0、默认队列与 unacked 均为 0。
 - 剩余磁盘约 3.8 GB：沿用 Docker 缓存、保留旧镜像回滚，不执行全局 prune，不删除无关数据。
-- 待执行：提交并同步 GitHub `main` 和 `codex/bilibili-cost-guard-main`；从同一提交生成归档，备份远端源码和镜像，保留 `.env`、代理、ADC、输出卷和参考资产；构建/切换后核查实际版本、原文及旧 prompt 哈希、公共健康、免模型调用的工作区路径。
+- 代码发布提交：`640952d3bb3bc39d748d444a5d56e1941be0a52f`。已用一次 atomic push 同步 GitHub `main` 和 `codex/bilibili-cost-guard-main`，并逐一读取远端 SHA 核对。
+- 从同一提交创建仅含本次 69 个变更文件的增量 Git archive，不打包整个工作目录；归档 SHA-256：`07506a774b59cdc42bac057dca974f7dc874d5b68629b868874bb9393b81d1df`。逐文件核对基线后覆盖，新分类之外只应用明确的条件接入点。
+- 北京 ECS 已构建 backend/web；worker、maintenance、beat 复用同一 backend 镜像，保留既有命令/环境。六个服务均运行，`.env` SHA-256 和所有挂载的完整属性与发布前一致，未改代理、ADC、输出卷、参考资产或 Redis 服务。
+- 代码发布验收时间：北京时间 2026-09-15 01:09。公开首页、`/api/v1/system/health`、新分类 prompt manifest 均为 HTTP 200，`celery_alive=true`。
+- backend 和 worker 各核对 57 个已发布后端文件哈希；完整原文、19 分段、33 个旧分类/132 份 prompt 与原顺序均 PASS。
+- 线上前端 `/assets/index-DvqQDtrv.js` 与本地已测构建逐字节相同，SHA-256：`e3d5fb97ed9de195704b0e9439e06b3194b24cb50d41df80ba02690802d4b31a`。线上前端再次运行六项浏览器场景，0 page errors（UI 场景使用确定性 API mock，不混同真实写作）。
+- 真实线上免付费验收：临时普通用户经 API 创建通用长篇任务，真实 Celery 将其推进到 `awaiting_materials`；DOCX 材料上传、哈希去重、未登录 401、原默认分类均 PASS。模型调用 0、canon 写入 0；临时用户、任务和测试文件已移除，没有修改已有业务任务。
+- 源码/版本/镜像回滚备份：`/opt/video-plan-release-backups/20260914T165102Z-640952d/`。`manifest.json` 保存原版本和 5 个旧镜像标签，`source-before.tar.gz` 保存原文件，`rollback.py` 在逐文件校验后恢复对应版本。仅在确认没有活动生成、没有后续代码/文档变更时执行该脚本；有后续文档发布时先按其备份恢复文档版本。
+- 部署验证器修正记录：首次归档受 Windows autocrlf 影响，字节预检在应用任何源码前阻断；改用 `git -c core.autocrlf=false -c core.eol=lf archive` 并双端逐文件预检。前端检查改为真实工作区标识及字节比对，挂载检查按完整属性排序比较，避免将显示顺序变化误判成挂载变更。最终全部验证通过，无待修复发布项。
+- 发布后磁盘剩余 3771 MiB，未执行清理或全局 prune。证据位于 `.local/general_longform_integration/20260914T165102Z-640952d/result.json`、`ecs_workspace_smoke.json`、`browser_ecs/browser_report.json`。文档收尾提交只同步证据，最终发布 HEAD 以 GitHub 两分支和 ECS `.deploy-version` 为准。
 - 本次不运行付费十万字作品生成；其质量需以实际选题/生成产物单独验收。Epic 总体仍为历史 `PARTIAL_IMPLEMENTATION`。
