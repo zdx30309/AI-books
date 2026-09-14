@@ -7966,6 +7966,8 @@ async def generate_full_book(
     aigc_policy_version: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
+    if normalized_category == "general_longform":
+        raise ValueError("通用长篇需要经过大纲确认与逐章验收，请使用通用长篇任务工作区")
     direct_writer_only = normalized_category in {
         CLASSICAL_NOVEL_STYLE_CATEGORY,
         CLASSICAL_REFERENCE_REWRITE_CATEGORY,

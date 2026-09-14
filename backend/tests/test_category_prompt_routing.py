@@ -120,6 +120,7 @@ WRITER_ROUTING_CATEGORIES = [
         "finance_technology",
         "finance_technology_ai_optimized",
         "finance_technology_recommendation",
+        "general_longform",  # Stateful serial category; covered by test_general_longform.py.
     }
 ]
 
@@ -1617,6 +1618,8 @@ def test_writer_prompts_include_punctuation_usage_rules() -> None:
 
 def test_all_category_generation_prompts_include_section_title_rules() -> None:
     for category in SUPPORTED_CATEGORIES:
+        if category == "general_longform":
+            continue  # Its supplied Word explicitly requires a different two-level protocol.
         prompts = get_prompts(category)
 
         assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["full_book_writer"]
@@ -1662,6 +1665,8 @@ def test_psychology_emotion_and_science_writers_forbid_fabricated_everyday_cases
 
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:
     for category in SUPPORTED_CATEGORIES:
+        if category == "general_longform":
+            continue
         prompts = get_prompts(category)
 
         assert INTRO_BODY_SEPARATION_PROMPT in prompts["full_book_writer"]
@@ -1676,6 +1681,8 @@ def test_all_category_generation_prompts_include_intro_body_separation_rules() -
 
 def test_all_category_gemini_polish_includes_fixed_phrase_guard_only_once() -> None:
     for category in SUPPORTED_CATEGORIES:
+        if category == "general_longform":
+            continue
         prompts = get_prompts(category)
 
         assert POLISH_FIXED_PHRASE_GUARD_PROMPT in prompts["gemini_fast_polish"]

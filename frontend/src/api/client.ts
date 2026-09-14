@@ -1,6 +1,8 @@
 // 后端 API 客户端。dev 时走 vite proxy（/api → :8000），prod 时由部署侧反代。
 // 自动从 localStorage 读 token 并加 Authorization 头。
 
+import type { GeneralLongformAction, GeneralLongformState, LongformManifest, MaterialRole } from "./generalLongformTypes";
+
 import type {
   BatchCreateTaskRequest,
   BatchCreateTaskResponse,
@@ -482,6 +484,19 @@ function openHiddenDownload(url: string) {
 }
 
 export const api = {
+  getGeneralLongform: (id: string) => request<GeneralLongformState>(`/general-longform/${id}`),
+  getGeneralLongformManifest: () => request<LongformManifest>("/general-longform/prompt-manifest"),
+  runGeneralLongform: (id: string, body: GeneralLongformAction) =>
+    request<{ task_id: string; status: TaskStatusResponse["status"]; request_id: string }>(`/general-longform/${id}/actions`, { method: "POST", body: JSON.stringify(body) }),
+  pauseGeneralLongform: (id: string) => request<{ status: string }>(`/general-longform/${id}/pause`, { method: "POST" }),
+  uploadGeneralLongform: (id: string, file: File, role: MaterialRole, confirmed: boolean) =>
+    uploadFile<{ status: string; id: string; characters?: number }>(`/general-longform/${id}/materials`, file, { role, confirmed: String(confirmed) }),
+  getGeneralLongformChapter: (id: string, number: number, kind: "accepted" | "draft") =>
+    request<{ content: string; version: number; kind: string }>(`/general-longform/${id}/chapters/${number}/content?kind=${kind}`),
+  downloadGeneralLongform: async (id: string, artifactId: string) => {
+    const { blob, filename } = await download(`/general-longform/${id}/artifacts/${artifactId}`);
+    saveBlob(blob, filename);
+  },
   // 任务
   listTasks: (page = 1, pageSize = 20) =>
     request<TaskListResponse>(`/tasks?page=${page}&page_size=${pageSize}`),

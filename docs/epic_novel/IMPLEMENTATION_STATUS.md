@@ -1,5 +1,19 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇分类：独立集成（2026-09-14）
+
+- Phase 1 complete: read the requested prior conversation, the entire supplied Word (571 body/table paragraphs and its header/footer), repository instructions, and relevant SPEC planning/execution/prompt/API/export sections.
+- Scope: add `general_longform` on the existing task/writer/queue infrastructure; preserve all existing category prompts and the Epic canon boundary. No full-app rewrite, no Epic corpus work, no database migration is planned.
+- Plan, source checksum, operating guide and test commands: `docs/GENERAL_LONGFORM.md`. Implementation and final local validation are complete; GitHub/ECS publication is the next release step and is not yet claimed for this change.
+- The historical Epic `PARTIAL_IMPLEMENTATION` verdict remains unchanged; this category is not a claim of 300万字 production readiness.
+- Source packaging phase: PASS — 571 paragraphs / 19 contiguous sections reconstructed exactly; original DOCX SHA-256 verified. All 33 legacy categories' four-stage prompt hashes remain identical to baseline.
+- Backend phase: PASS — dedicated Task lease bridge, file-backed planning/draft/accepted/research/QA separation, real search/page abstraction, serial chapter acceptance, idempotent paid-call slots, local revision/import controls and paired native Word export. Local imported-outline repairs consume their source material; revisions refresh source summaries/research; uncertain calls without recoverable response IDs require explicit retry before dispatch.
+- Prompt boundary: this attachment produces `ReferencePatternCards` and `ApprovedEditingSummary`, not an Epic full-corpus `ReferenceMechanismProfile`. Original reference sample/report text is limited to abstraction; all 571 original paragraphs remain losslessly archived and routed.
+- Frontend/export phase: PASS — owner-scoped six-tab workspace, explicit outline confirmation without starting chapter 1, one chapter per action, visible QA/source/call evidence, versioned double Word downloads and recoverable errors. Existing Epic workspace/canon tables and legacy category defaults remain unchanged.
+- Final local validation: `416 passed, 1 existing Google SDK warning` (137.58s); Python compile, frontend typecheck/build, source reconstruction, legacy 33-category/132-prompt hashes, and browser simulation all PASS. Browser covers creation, confirmation, serial action, six tabs, accepted preview, upload/import and actual DOCX download with 0 page errors.
+- Evidence: `.local/general_longform_integration/test_release_final.log` and `browser/browser_report.json`; 12 chapters / 105000 counted words were tested with deterministic doubles, not paid production prose. Historical Epic verdict is unchanged.
+- Release preflight: Beijing ECS reports zero active business tasks and empty default/unacked queues; existing six services remain running. Source/image backup, GitHub push, archive deployment and live verification are pending release actions; no production configuration or corpus data has been altered.
+
 Updated: 2026-08-10
 
 ## Gemini ADC Migration (2026-09-03)

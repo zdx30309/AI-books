@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from app.prompts.general_longform_prompts import registry_prompts as _general_longform_prompts
+
 from app.services.comic_prompts import (
     COMIC_COPYRIGHT_RULE,
     COMIC_IMAGE_PROMPT,
@@ -411,6 +413,13 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "历史测试版",
         "core_feature": "与历史小说端口同步，用于历史叙事测试",
         "directions": "历史故事、制度缝隙、人物命运、时代暗流",
+        "prompt_status": "ready",
+    },
+    {
+        "id": "general_longform",
+        "label": "通用长篇",
+        "core_feature": "完整十万字创作指令，先确认大纲，再逐章研究、写作与验收",
+        "directions": "九领域选题、12—15章、十万字、双Word交付、来源与编辑记录",
         "prompt_status": "ready",
     },
 )
@@ -2369,6 +2378,8 @@ HISTORY_CULTURE_PROMPT_SET = _prompt_set(
 
 
 PROMPT_REGISTRY: dict[str, dict[str, str]] = {
+    # Dedicated serial workflow: no 15k/@N./no-subheading global guards.
+    "general_longform": _general_longform_prompts(),
     "social_science": SOCIAL_SCIENCE_PROMPT_SET,
     # 社会痛点测试版：保留独立入口；prompt 与社会痛点端口严格同步，前端可追加笔锋参考。
     "social_science_test": SOCIAL_SCIENCE_PROMPT_SET,

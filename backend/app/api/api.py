@@ -1,6 +1,8 @@
 """API router aggregation."""
 from fastapi import APIRouter
 
+from app.api.routers.general_longform import router as general_longform_router
+
 from app.api.routers import (
     aigc_review_router,
     auth_router,
@@ -20,6 +22,7 @@ from app.api.routers import (
 )
 
 api_router = APIRouter()
+api_router.include_router(general_longform_router)
 api_router.include_router(health_router)
 api_router.include_router(aigc_review_router)
 api_router.include_router(long_novel_router)

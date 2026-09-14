@@ -149,6 +149,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
+  const [generalLongformImportFirst, setGeneralLongformImportFirst] = useState(false);
   const [longNovelModule, setLongNovelModule] = useState("family_sisters_in_law_longform");
   const [longNovelPremise, setLongNovelPremise] = useState("");
   const [longNovelFamilySetup, setLongNovelFamilySetup] = useState("");
@@ -200,6 +201,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isReferenceArticle = mode === "article" || mode === "articleBatch";
   const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
+  const isGeneralLongform = category === "general_longform";
   const isBuddhistScripture = category === "buddhist_scripture_story";
   const isClassicalNovelStyle = category === "classical_chinese_novel_style";
   const isClassicalReferenceRewrite = category === "classical_chinese_reference_rewrite";
@@ -240,6 +242,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setMode("single");
       setUrl("");
       setRawText("");
+      setGeneralLongformImportFirst(false);
       setLongNovelModule("family_sisters_in_law_longform");
       setLongNovelPremise("");
       setLongNovelFamilySetup("");
@@ -332,13 +335,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setMode("comic");
       return;
     }
-    if (isClassicalChinese) setMode("single");
+    if (isClassicalChinese || isGeneralLongform) setMode("single");
     else {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setClassicalReferenceDocxFile(null);
     }
-  }, [category, isClassicalChinese]);
+  }, [category, isClassicalChinese, isGeneralLongform]);
 
   useEffect(() => {
     if (!supportsStyleReference) {
@@ -795,13 +798,14 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setError("请粘贴需要转换的文言文原文");
       return;
     }
-    if (!isClassicalChinese && !url.trim() && !rawText.trim()) {
+    if (!isClassicalChinese && !isGeneralLongform && !url.trim() && !rawText.trim()) {
       setError("请填入 YouTube、小红书、微信视频号等视频链接，或直接粘贴视频文稿");
       return;
     }
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
+      if (isGeneralLongform) config.general_longform_import_first = generalLongformImportFirst;
       if (isClassicalChinese) {
         config.classical_variant = effectiveClassicalVariant;
         if (classicalBookTitle.trim()) {
@@ -815,7 +819,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       }
       if (rawText.trim()) config.raw_text = rawText.trim();
       const res = await api.createTask({
-        url: isClassicalChinese ? `manual://${category}` : url.trim() || "manual://raw_text",
+        url: isClassicalChinese ? `manual://${category}` : url.trim() || (isGeneralLongform ? "manual://general_longform" : "manual://raw_text"),
         config,
       });
       onCreated(res.task_id);
@@ -885,11 +889,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             <button
               type="button"
               onClick={() => switchMode("batch")}
-              disabled={isClassicalChinese || isComicCategory}
+              disabled={isClassicalChinese || isComicCategory || isGeneralLongform}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "batch"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : isClassicalChinese || isComicCategory
+                  : isClassicalChinese || isComicCategory || isGeneralLongform
                     ? "cursor-not-allowed border-gold-500/10 text-warm-600"
                     : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
@@ -1067,6 +1071,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
+                if (nextCategory === "general_longform") setMode("single");
                 if (CLASSICAL_CHINESE_CATEGORY_IDS.has(nextCategory)) {
                   setMode("single");
                   setClassicalVariant(
@@ -1128,6 +1133,17 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               <p className="mt-2 text-xs leading-relaxed text-warm-500">
                 {LONG_NOVEL_MODULES.find((item) => item.id === longNovelModule)?.description}
               </p>
+            </div>
+          )}
+
+          {isGeneralLongform && (
+            <div className="rounded-xl border border-gold-400/30 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200">
+              <p>已内置完整 2026-09-14 版指令与五份附录，无需重复粘贴 prompt。先研究并给出五组包装和 12—15 章大纲；确认后每次只写一章，交付正文与来源记录两个 Word。</p>
+              <p className="mt-2 text-xs text-warm-400">可留空自主选题，也可填写创作要求、视频逐字稿。已有大纲或正文请先创建工作区，再上传原文件识别进度。</p>
+              <label className="mt-3 flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={generalLongformImportFirst} onChange={(e) => setGeneralLongformImportFirst(e.target.checked)} />
+                已有材料：先创建工作区，暂不调用模型
+              </label>
             </div>
           )}
 
@@ -1420,7 +1436,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       htmlFor="task-url"
                       className="mb-2 block text-[11px] tracking-widest text-warm-300"
                     >
-                      视频链接
+                      {isGeneralLongform ? "参考视频链接（可选）" : "视频链接"}
                     </label>
                     <input
                       id="task-url"
@@ -1609,7 +1625,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       : "文言文原文"
                     : isReferenceArticle
                       ? "参考文章全文"
-                      : "视频文稿（可选）"}
+                      : isGeneralLongform ? "选题要求或视频逐字稿（可留空）" : "视频文稿（可选）"}
                 </label>
                 <textarea
                   id="task-raw-text"
@@ -1622,6 +1638,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                         : "请直接粘贴需要转成白话文的文言文原文"
                       : isReferenceArticle
                         ? "请粘贴公众号文章或已有文章全文。系统会提炼情感关系问题，重新组织结构和案例，生成原创文章。"
+                        : isGeneralLongform ? "留空时按完整指令自主选题；也可写目标读者、关注问题、创作要求或粘贴逐字稿"
                         : "如果已经有视频文稿，可以直接粘贴在这里，跳过链接解析步骤"
                   }
                   rows={isClassicalChinese ? 9 : isReferenceArticle ? 12 : 5}
@@ -1889,7 +1906,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       ? "批量抓取生成"
                     : mode === "article"
                       ? "抓取并生成"
-                      : "立即生成"}
+                      : isGeneralLongform ? (generalLongformImportFirst ? "创建通用长篇工作区" : "研究并生成待确认大纲") : "立即生成"}
               </span>
             )}
           </button>

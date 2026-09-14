@@ -191,7 +191,7 @@ def _stamp_aigc_policy(config: dict) -> dict:
     """Snapshot the gate decision so future flag changes never touch old tasks."""
     cfg = dict(config or {})
     category = str(cfg.get("category") or "social_science").strip()
-    required = bool(settings.AIGC_GATE_ENABLED and aigc_category_eligible(category))
+    required = bool(category != "general_longform" and settings.AIGC_GATE_ENABLED and aigc_category_eligible(category))
     cfg.update(
         aigc_policy_version=AIGC_POLICY_VERSION,
         aigc_required=required,
@@ -242,6 +242,12 @@ def _normalize_task_config(config: dict | None) -> dict:
         category_label=category_meta["label"],
         category_prompt_status=category_meta["prompt_status"],
     )
+    if category == "general_longform":
+        if len(str(cfg.get("raw_text") or "")) > 250000:
+            raise HTTPException(status_code=400, detail="通用长篇单份素材最多250000字符；请在工作区分文件导入，原文不会截断")
+        cfg.pop("general_longform_request", None)
+        cfg["general_longform_phase"] = "needs_outline"
+        cfg["general_longform_policy"] = "2026-09-14-v16"
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
     if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
@@ -788,6 +794,8 @@ def _clear_task_output_dir(task_id: UUID) -> None:
 
 
 def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
+    if task.category == "general_longform":
+        raise HTTPException(status_code=409, detail="通用长篇保留版本与验收状态，请在专属工作区局部修订或恢复断点")
     _clear_task_output_dir(task.id)
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
 
@@ -1325,6 +1333,8 @@ def create_task_batch(
     if cfg.get("category") == "comic_series" or is_healing_comic_family(cfg.get("category")):
         label = str(cfg.get("category_label") or "插画")
         raise HTTPException(status_code=400, detail=f"{label}不支持候选链接库，请使用{label}入口输入 5 或 6 条短语")
+    if cfg.get("category") == "general_longform":
+        raise HTTPException(status_code=400, detail="通用长篇请创建独立工作区，确认大纲后逐章执行")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
@@ -2047,7 +2057,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
         .all()
     )
     return _normalize_download_markdown(
-        "\n".join(f"@{c.title}\n{c.content}" for c in chapters),
+        "\n".join(c.content if task.category == "general_longform" else f"@{c.title}\n{c.content}" for c in chapters),
         category=str(cfg.get("category") or ""),
     )
 
@@ -2184,6 +2194,8 @@ def _normalize_download_markdown(markdown: str, *, category: str | None = None) 
     the generic delivery normalizer instead of failing the download.
     """
     normalized_category = _docx_category(category)
+    if normalized_category == "general_longform":
+        return markdown
     return normalize_final_markdown(markdown, category=normalized_category or None)
 
 
@@ -2419,6 +2431,8 @@ def update_task_metadata(
 
     cfg = dict(task.config or {})
     fields = body.model_fields_set
+    if (task.category == "general_longform" and fields & {"title", "category"}) or ("category" in fields and str(body.category or "").strip() in {"general_longform", "通用长篇"}):
+        raise HTTPException(status_code=409, detail="通用长篇的分类与书名绑定确认大纲，请在专属工作区管理；书架可单独调整")
     if "title" in fields:
         title = (body.title or "").strip()
         if title:
@@ -2472,6 +2486,8 @@ async def regenerate_selection(
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    if task.category == "general_longform":
+        raise HTTPException(status_code=409, detail="请使用通用长篇工作区的指定章修订，保留来源与重新验收")
 
     text = body.text.strip()
     if not text:
@@ -2819,6 +2835,8 @@ def update_chapter(
             status_code=404,
             detail=f"chapter {chapter_num} of task {task_id} not found",
         )
+    if chapter.task.category == "general_longform":
+        raise HTTPException(status_code=409, detail="通用长篇正文需经计划实绩对比与验收，请从专属工作区修订")
     if body.title is not None and body.title.strip():
         chapter.title = body.title.strip()
     chapter.content = body.content
@@ -2850,6 +2868,20 @@ def get_markdown(
     return MarkdownResponse(task_id=task_id, markdown=md, char_count=len(md))
 
 
+def _general_longform_book_file(task: Task) -> tuple[Path, str]:
+    from hashlib import sha256
+    from app.services.general_longform import load_state, work_dir
+    directory = work_dir(task.id)
+    state = load_state(directory) or {}
+    artifact = next((item for item in reversed(state.get("artifacts", [])) if item.get("kind") == "book"), None)
+    if state.get("phase") != "completed" or not artifact:
+        raise HTTPException(status_code=409, detail="通用长篇尚无通过全书验收的 Word")
+    path = (directory / "exports" / artifact["filename"]).resolve()
+    if not path.is_relative_to((directory / "exports").resolve()) or not path.is_file() or sha256(path.read_bytes()).hexdigest() != artifact["sha256"]:
+        raise HTTPException(status_code=409, detail="通用长篇全书 Word 完整性校验失败")
+    return path, artifact["filename"]
+
+
 def _build_batch_download_response(
     task_ids: list[UUID],
     *,
@@ -2877,7 +2909,10 @@ def _build_batch_download_response(
             if not md:
                 continue
             category = str((task.config or {}).get("category") or "")
-            if fmt == "docx":
+            if fmt == "docx" and category == "general_longform":
+                path, filename = _general_longform_book_file(task)
+                content = path.read_bytes()
+            elif fmt == "docx":
                 content = _markdown_to_docx(
                     md,
                     image_base_dir=_task_output_dir(task.id),
@@ -2993,6 +3028,9 @@ def _build_single_download_response(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
+    if category == "general_longform" and fmt == "docx":
+        path, filename = _general_longform_book_file(task)
+        return FileResponse(path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Cache-Control": "no-store"})
     use_preview_docx = bool(comic_preview_images and is_healing_comic_family(category) and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"

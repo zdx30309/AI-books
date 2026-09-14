@@ -2505,6 +2505,11 @@ def process_video(_self, task_id: str) -> dict:
         output_dir = PROJECT_ROOT / "backend" / "output" / f"task_{task.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if str((task.config or {}).get("category") or "") == "general_longform":
+            from app.services.general_longform_task import process_claimed_task
+
+            return process_claimed_task(db, task, run_id, output_dir)
+
         input_source = str((task.config or {}).get("input_source") or "").strip()
         is_reference_article = input_source == "reference_article"
         fetch_start_step = "正在读取参考文章" if is_reference_article else "正在获取视频文案"

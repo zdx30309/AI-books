@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# User-supplied prompt evidence is byte-checked on every deployment.
+backend/app/prompts/general_longform/source.docx binary
+backend/app/prompts/general_longform/source_text.txt -text
+backend/app/prompts/general_longform/source_sections/*.txt -text
+backend/app/prompts/general_longform/source_paragraphs.json -text whitespace=cr-at-eol
+backend/app/prompts/general_longform/manifest.json text eol=lf
+backend/app/prompts/general_longform/*.md text eol=lf
+backend/app/prompts/general_longform/stages/*.md text eol=lf

@@ -31,6 +31,7 @@ import {
 } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
+import { GeneralLongformPanel } from "@/components/GeneralLongformPanel";
 import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   AigcQualityReport,
@@ -601,6 +602,10 @@ export function BookDetail() {
         </Link>
       </div>
     );
+  }
+
+  if (task.category === "general_longform" && id) {
+    return <GeneralLongformPanel taskId={id} />;
   }
 
   const isActive = ACTIVE_STATUSES.has(task.status);

@@ -249,6 +249,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     directions: "历史故事、制度缝隙、人物命运、时代暗流",
     prompt_status: "ready",
   },
+  {
+    id: "general_longform",
+    label: "通用长篇",
+    core_feature: "完整十万字创作指令，先确认大纲，再逐章研究、写作与验收",
+    directions: "九领域选题、12—15章、十万字、双Word交付、来源与编辑记录",
+    prompt_status: "ready",
+  },
 ];
 
 export const LONGFORM_VARIANT_CATEGORY_IDS = [
