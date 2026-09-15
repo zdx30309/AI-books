@@ -56,8 +56,22 @@
 
 可复现：在仓库根目录设置 `PYTHONPATH=E:/video-plan/backend`，运行 `docs/GENERAL_LONGFORM.md` 中的完整回归命令，并增加 `backend/tests/test_general_longform_v02.py`；新版浏览器数据使用 `python scripts/smoke_general_longform_fixture.py --output .local/general_longform_v02/browser`，浏览器命令使用 `--fixture .local/general_longform_v02/browser/browser_fixture.json`。
 
-## 阶段 6：发布（待执行）
+## 阶段 6：发布（PASS，2026-09-15）
 
 - 发布前已实际核对：GitHub 两分支与北京 ECS 均为 `2faeb735f4500df551a5995b7705cb6e02c7d3dd`；6 个服务运行；活动任务、Celery 默认队列及 unacked 均为 0；公开健康为 200 且 `celery_alive=true`。
 - ECS 剩余 3759 MiB，继续使用提交增量与 Docker 缓存，不做无关清理。只应用本轮相关路径，保留 `.env`、ADC、代理、外部参考资产、数据卷、旧源码及镜像回滚。
 - 发布工具已改为同时校验当前 v02 和归档 v16；线上验证仍使用免模型费用的真实 API→Celery import-first 流程，不自动生成付费整书。
+
+实际发布与验收：
+
+- 代码提交 `c38a90bac2792ae27003fa579b4319577885c333` 已通过 atomic push 同步到 GitHub 的 `main` 与 `codex/bilibili-cost-guard-main`，远端引用逐一核对一致。
+- 从同一提交生成 82 文件、738473 字节的增量 Git archive；SHA-256 `252c1be1bb8dd892adc9d92e108324dfabc7cc312dbe073ba219a370d488a001`。逐文件核对旧基线和新内容后部署，没有覆盖无关路径。
+- 北京时间 17:33 部署验收通过。backend/web 构建完成，worker/maintenance/beat 复用相同后端镜像；6 个服务运行。公开首页、健康和提示词清单均为 200，`celery_alive=true`。
+- backend 与 worker 各核对 71 个本轮后端文件哈希；当前 v02 840/23 与旧 v16 571/19 的完整原文、逐段路由、39 个旧归档文件、33 个其他分类/132 prompt 均 PASS。
+- 线上前端 `/assets/index-C-eKBrOS.js` 与本地已测试构建逐字节一致，SHA-256 `75f709836445049a1af91c93f9e55e316d5688e78934c64f3624fd529a0c50ca`。对已发布前端再次运行 11 项确定性浏览器场景，0 page errors。
+- 真实线上验收（不是 API mock）：临时普通用户经真实 API 和 Celery 建立 v02 `awaiting_materials` 工作区；确认 v02 默认版本、旧版查询、34 分类及原默认分类；DOCX 上传/重复检测和 owner 鉴权 PASS。模型调用 0、canon 写入 0，测试用户、任务和文件已清理。
+- `.env` 哈希和所有容器挂载的完整属性保持不变；没有改动既有业务数据、ADC、代理、参考资产和 Redis。剩余磁盘 3655 MiB，未执行全局清理。
+- 源码、原版本和 5 个回滚镜像保留在 `/opt/video-plan-release-backups/20260915T093101Z-c38a90b/`。收尾文档单独同步，不重建或重启服务；最终 GitHub HEAD 与 ECS `.deploy-version` 同步核对。
+- 证据：`.local/general_longform_v02/releases/20260915T093101Z-c38a90b/result.json`、`ecs_workspace_smoke.json`、`browser_production/browser_report.json`。
+
+本轮通用长篇 v02 的实现、回归和代码发布无剩余阻断项；所有新增附录与规则均完整归档并有工作流位置。整书文本验证使用确定性模拟，未执行真实付费十万字创作或承诺检测通过率；Epic 的历史 `PARTIAL_IMPLEMENTATION` 不变。
