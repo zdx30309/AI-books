@@ -11,7 +11,7 @@ from io import BytesIO
 
 import pytest
 
-from app.prompts.general_longform_prompts import BUNDLE, get_manifest, render_stage, stage_source
+from app.prompts.general_longform_prompts import BUNDLE, get_bundle, get_manifest, render_stage, stage_source
 from app.prompts.goal_driven_templates import get_prompts, list_categories, normalize_category
 from app.services import general_longform as engine
 from app.services import general_longform_documents as documents
@@ -22,18 +22,23 @@ from general_longform_helpers import FakeGateway, SOURCE, add_material, chapter_
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_docx_source_is_lossless_and_every_paragraph_has_a_stage():
+@pytest.mark.parametrize("version,paragraphs,sections,digest", [
+    ("2026-09-14-v16", 571, 19, "3dc1e57353c3ac57535ee1a818effb12501364eb1fe7f40b2f1de69437e96f07"),
+    ("2026-09-14-v02", 840, 23, "1f70baec84e1cd1f47ddb269574c1e7daa0d6ac54e6d71b8f1c9bbe996f8cbef"),
+])
+def test_docx_source_is_lossless_and_every_paragraph_has_a_stage(version, paragraphs, sections, digest):
     spec = importlib.util.spec_from_file_location("prompt_import", ROOT / "scripts/import_general_longform_prompt.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    result = module.verify(BUNDLE)
-    assert result == {"paragraphs": 571, "sections": 19, "source_sha256": "3dc1e57353c3ac57535ee1a818effb12501364eb1fe7f40b2f1de69437e96f07", "status": "pass"}
-    manifest = get_manifest()
+    bundle = get_bundle(version)
+    result = module.verify(bundle)
+    assert result == {"paragraphs": paragraphs, "sections": sections, "source_sha256": digest, "status": "pass"}
+    manifest = get_manifest(version)
     for stage in manifest["stage_sections"]:
-        assert (BUNDLE / "stages" / f"{stage}.md").is_file()
+        assert (bundle / "stages" / f"{stage}.md").is_file()
         for section in manifest["sections"]:
             if stage in section["stages"]:
-                assert (BUNDLE / section["file"]).read_text(encoding="utf-8") in stage_source(stage)
+                assert (bundle / section["file"]).read_text(encoding="utf-8") in stage_source(stage, version)
 
 
 def test_legacy_categories_and_all_132_prompts_are_byte_identical():
@@ -47,12 +52,13 @@ def test_legacy_categories_and_all_132_prompts_are_byte_identical():
 
 
 @pytest.mark.parametrize("stage", ["outline", "draft", "continue", "polish", "refine", "acceptance", "repair", "final"])
-def test_generation_never_receives_raw_historical_sample_or_report(stage):
-    prompt = render_stage(stage, {"ReferencePatternCards": []})
-    for section in get_manifest()["sections"]:
+@pytest.mark.parametrize("version", ["2026-09-14-v16", "2026-09-14-v02"])
+def test_generation_never_receives_raw_historical_sample_or_report(stage, version):
+    prompt = render_stage(stage, {"ReferencePatternCards": []}, version)
+    for section in get_manifest(version)["sections"]:
         if section["role"] == "reference_only":
-            raw = (BUNDLE / section["file"]).read_text(encoding="utf-8")
-            assert raw in stage_source("reference_analysis")
+            raw = (get_bundle(version) / section["file"]).read_text(encoding="utf-8")
+            assert raw in stage_source("reference_analysis", version)
             assert raw not in prompt
     assert "本次唯一工作节点" in prompt
 

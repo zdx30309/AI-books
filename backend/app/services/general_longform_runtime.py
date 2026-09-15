@@ -18,7 +18,7 @@ import uuid
 
 import httpx
 
-from app.prompts.general_longform_prompts import render_stage
+from app.prompts.general_longform_prompts import get_manifest, render_stage
 
 
 class GeneralLongformError(ValueError):
@@ -77,11 +77,13 @@ def _error_text(exc: BaseException) -> str:
 
 
 class ModelGateway:
-    def __init__(self, directory: Path, request_id: str, *, check_active: Callable[[], None] | None = None, retry_uncertain: bool = False):
+    def __init__(self, directory: Path, request_id: str, *, check_active: Callable[[], None] | None = None, retry_uncertain: bool = False,
+                 prompt_version: str | None = None):
         self.directory = directory
         self.request_id = request_id
         self.check_active = check_active or (lambda: None)
         self.retry_uncertain = retry_uncertain
+        self.prompt_version = prompt_version
 
     def call(self, stage: str, context: dict[str, Any], *, provider: str = "openai", max_tokens: int = 12000, web: bool = False, slot: str = "") -> dict[str, Any]:
         from app.core.config import settings
@@ -98,7 +100,7 @@ class ModelGateway:
         existing = read_json(path, {})
         if existing.get("status") == "completed":
             return existing
-        prompt = prompt_path.read_text(encoding="utf-8") if existing and prompt_path.exists() else render_stage(stage, context)
+        prompt = prompt_path.read_text(encoding="utf-8") if existing and prompt_path.exists() else render_stage(stage, context, version=self.prompt_version)
         if len(prompt) > 350_000:
             raise GeneralLongformReview(f"本节点上下文为 {len(prompt)} 字符，超过 350000 限额；未截断原文或前文")
         response_id = existing.get("response_id")
@@ -110,6 +112,8 @@ class ModelGateway:
                 raise GeneralLongformReview("上次来源检索未完整交付；请核对调用记录后明确确认重新请求")
             response_id = None
         record = {"action": stage, "provider": provider, "model": model, "request_id": self.request_id,
+                  "prompt_version": existing.get("prompt_version") or get_manifest(self.prompt_version)["version"],
+                  "prompt_source_sha256": existing.get("prompt_source_sha256") or get_manifest(self.prompt_version)["source_sha256"],
                   "slot": slot, "status": "started", "started_at": now_iso(), "prompt_sha256": sha256(prompt.encode()).hexdigest(),
                   "prompt_characters": len(prompt), "estimated_cost": None, "error": None,
                   "attempt": int(existing.get("attempt", 0)) + 1, "response_id": response_id}

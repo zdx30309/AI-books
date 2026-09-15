@@ -485,7 +485,7 @@ function openHiddenDownload(url: string) {
 
 export const api = {
   getGeneralLongform: (id: string) => request<GeneralLongformState>(`/general-longform/${id}`),
-  getGeneralLongformManifest: () => request<LongformManifest>("/general-longform/prompt-manifest"),
+  getGeneralLongformManifest: (version?: string) => request<LongformManifest>(`/general-longform/prompt-manifest${version ? `?version=${encodeURIComponent(version)}` : ""}`),
   runGeneralLongform: (id: string, body: GeneralLongformAction) =>
     request<{ task_id: string; status: TaskStatusResponse["status"]; request_id: string }>(`/general-longform/${id}/actions`, { method: "POST", body: JSON.stringify(body) }),
   pauseGeneralLongform: (id: string) => request<{ status: string }>(`/general-longform/${id}/pause`, { method: "POST" }),

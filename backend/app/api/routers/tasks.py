@@ -247,7 +247,8 @@ def _normalize_task_config(config: dict | None) -> dict:
             raise HTTPException(status_code=400, detail="通用长篇单份素材最多250000字符；请在工作区分文件导入，原文不会截断")
         cfg.pop("general_longform_request", None)
         cfg["general_longform_phase"] = "needs_outline"
-        cfg["general_longform_policy"] = "2026-09-14-v16"
+        from app.prompts.general_longform_prompts import get_manifest as get_general_longform_manifest
+        cfg["general_longform_policy"] = get_general_longform_manifest()["version"]
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
     if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:

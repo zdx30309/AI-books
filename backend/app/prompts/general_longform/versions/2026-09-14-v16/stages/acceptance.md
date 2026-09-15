@@ -1,0 +1,3 @@
+执行本章状态抽取、Planned-vs-Actual Diff 和 Acceptance Gate。context.local_issues 是实际程序校验，不能忽略。全文与完整已验收前文做语义重复、事实边界、任务覆盖与一致性核对。
+输出 JSON：{"summary":"本章实质内容摘要","endingHook":"衔接下一章的问题/判断，不强造悬念","new_information":["新增结论"],"used_source_ids":["本章确实使用的来源 id"],"terms":{},"cases":["本章实际使用的案例及来源"],"completed_sections":["逐字列出已完整完成的小节名"],"planned_vs_actual":[{"section":"小节名","fulfilled":true,"evidence":"对应内容与执行差异"}],"issues":[{"severity":"low/medium/high/severe","type":"fact/coverage/repetition/continuity/format/length","description":"问题及原句位置","suggested_fix":"只针对问题的局部修复"}]}。
+只有确实完成任务、可溯源且没有 high/severe 时才可通过。来源 id 必须来自当前实际读取并核验的来源；无事实来源、缺小节、伪引用、捏造人物/经历、同义重复占篇幅、改写事实都属于 high 或 severe。摘要不是正文，不能依据摘要假装全文已读。不要把检测率当作事实通过标准。

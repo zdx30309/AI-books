@@ -27,10 +27,18 @@ export interface LongformOutline {
   research_gaps: string[]; handoff: Record<string, unknown>;
 }
 export interface LongformIssue { severity: string; type: string; description: string; suggested_fix?: string }
+export interface LongformStyleEvidence { chapter_number?: number; evidence: string; reason: string }
+export interface LongformStyleReview {
+  positive_application: (LongformStyleEvidence & { card_id: string })[];
+  negative_checks: (LongformStyleEvidence & { card_id: string; finding: string })[];
+  ordinary_word_review: { mechanical_ban_applied: boolean; reason: string; examples: LongformStyleEvidence[] };
+  historical_reports_used_as_current_result: boolean;
+}
 export interface LongformAudit {
   summary: string; endingHook: string; new_information: string[]; used_source_ids: string[];
   planned_vs_actual: { section: string; fulfilled: boolean; evidence: string }[];
   issues: LongformIssue[];
+  style_review?: LongformStyleReview;
 }
 export interface LongformChapter {
   number: number; title: string; version: number; status: string; word_count?: number;
@@ -51,6 +59,7 @@ export interface LongformCall {
   action: string; provider: string; model: string; status: string; started_at: string;
   estimated_cost: number | null; cost_status?: string; error?: string | null;
   usage?: Record<string, number | string | boolean>;
+  prompt_version?: string; prompt_source_sha256?: string;
 }
 export interface GeneralLongformState {
   project_id: string; phase: string; task_status: TaskStatus; progress: number; current_step: string;
@@ -62,10 +71,14 @@ export interface GeneralLongformState {
   materials: { id: string; filename: string; role: MaterialRole; imported: boolean; confirmed: boolean; characters: number; sha256: string; notes?: string; approved_notes?: string }[];
   call_logs: LongformCall[]; can_resume: boolean;
   delivery_holds: { request_id: string; action: string; status: string; response_id?: string | null; error?: string }[];
-  final_audit?: { issues: LongformIssue[]; actual_words: number; summary: string };
+  final_audit?: { issues: LongformIssue[]; actual_words: number; summary: string; style_review?: LongformStyleReview };
 }
 export interface LongformManifest {
   version: string; paragraph_count: number; source_sha256: string;
   sections: { id: string; file: string; paragraph_count: number; sha256: string; role: string; stages: string[] }[];
   stage_sections: Record<string, string[]>;
+  default_version?: string; available_versions?: string[];
+  reference_examples?: { role: "positive" | "negative"; title: string; sample_section_id: string; report_section_id: string;
+    historical_report: { scope: string; manuscript_words: number; overall_risk_percent: number; problem_categories: number; approximate_occurrences: number; dimension_scores: Record<string, number> } }[];
+  reference_policy?: { mode?: string; ordinary_words_contextual?: boolean; historical_reports_are_current_results?: boolean };
 }

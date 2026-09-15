@@ -215,6 +215,7 @@ def export_outline(directory: Path, state: dict[str, Any], *, confirmed: bool) -
     chosen = packaging[outline["recommended_index"]]
     status = "确认版大纲" if confirmed else "待确认大纲"
     paragraphs = [(f"{status} v{version:02d}", "Title"), (f"项目 {state['project_id']} · {datetime.now(TZ).isoformat()}", "Normal")]
+    paragraphs.append((f"固定提示词版本：{state.get('prompt_version', '')}；原文 SHA-256：{state.get('prompt_source_sha256', '')}", "Normal"))
     for key, label in [("domain", "主领域"), ("topic", "选题"), ("audience", "读者"), ("central_question", "全书主问题"), ("voice", "叙述方式")]:
         paragraphs.append((f"{label}：{outline.get(key, '')}", "Normal"))
     paragraphs.append(("不纳入本书：" + "；".join(outline.get("scope_exclusions") or []), "Normal"))
@@ -246,6 +247,7 @@ def export_outline(directory: Path, state: dict[str, Any], *, confirmed: bool) -
     return _bundle(directory, f"outline:{version}:{confirmed}", lambda stamp: [{
         "filename": f"{safe_name(chosen['title'])}_{status}_v{version:02d}_{stamp}.docx", "paragraphs": paragraphs,
         "metadata": {"kind": "outline", "project_id": state["project_id"], "version": version, "confirmed": confirmed,
+                     "prompt_version": state.get("prompt_version"), "prompt_source_sha256": state.get("prompt_source_sha256"),
                      "confirmed_at": state.get("confirmed_at"), "outline": outline, "sources": state.get("sources", {})},
     }])[0]
 
@@ -268,6 +270,7 @@ def _chapter_files(state: dict[str, Any], chapter: dict[str, Any], content: str,
     if not sources and not accepted:
         sources = list(chapter.get("research", {}).get("sources", {}).values())
     meta = {"kind": "chapter", "project_id": state["project_id"], "number": chapter["number"], "title": chapter["title"],
+            "prompt_version": state.get("prompt_version"), "prompt_source_sha256": state.get("prompt_source_sha256"),
             "version": version, "accepted": accepted, "outline_version": state["outline_version"], "audit": audit, "sources": sources}
     # Invalid third-level headings in an unfinished candidate remain visible as
     # ordinary paragraphs in its partial delivery, not fabricated valid headings.
@@ -276,6 +279,7 @@ def _chapter_files(state: dict[str, Any], chapter: dict[str, Any], content: str,
     paragraphs = bibliography(sources) + [("", "PageBreak"), ("编辑记录（不属于书稿正文）", "Normal")]
     records = {
         "项目": state["project_id"], "章号": chapter["number"], "章名": chapter["title"], "版本": version,
+        "固定提示词版本": state.get("prompt_version", ""), "指令原文SHA256": state.get("prompt_source_sha256", ""),
         "正文文件名": body_name, "配套文件名": record_name, "同批输出时间": stamp,
         "完成状态": "已验收" if accepted else "未完成，待续写或修订", "字数口径": "汉字字符＋英文单词＋数字组；不计标题、标点和空格",
         "实际正文数": word_count(content), "累计有效正文数": state.get("total_words", 0),
@@ -285,6 +289,7 @@ def _chapter_files(state: dict[str, Any], chapter: dict[str, Any], content: str,
         "累计章节与案例索引": state.get("accepted_state", {}),
         "读取范围与来源记录": sources, "断点": chapter.get("checkpoint", {}),
         "编辑阶段记录": chapter.get("stage_rejections", []),
+        "正反方法与语境复核": audit.get("style_review", "此提示词版本没有单独的正反风格复核字段"),
         "原稿格式提醒": "部分稿中的第三层标题仅以普通段落呈现；原始候选文字完整保存在项目中" if export_content != content else "",
     }
     paragraphs.extend((f"{key}：{json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value}", "Normal") for key, value in records.items())
@@ -307,5 +312,7 @@ def export_book(directory: Path, state: dict[str, Any], chapters: list[tuple[dic
     version = int(state.get("book_version", 0)) + 1
     return _bundle(directory, f"book:{operation_id or version}", lambda stamp: [{
         "filename": f"{safe_name(package['title'])}_全书_v{version:02d}_{stamp}.docx", "paragraphs": paragraphs,
-        "metadata": {"kind": "book", "project_id": state["project_id"], "version": version, "word_count": state["total_words"]},
+        "metadata": {"kind": "book", "project_id": state["project_id"], "version": version, "word_count": state["total_words"],
+                     "prompt_version": state.get("prompt_version"), "prompt_source_sha256": state.get("prompt_source_sha256"),
+                     "final_audit": state.get("final_audit", {})},
     }])[0]

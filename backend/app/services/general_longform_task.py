@@ -24,7 +24,7 @@ def process_claimed_task(db: Session, task: Task, run_id: str, output_dir: Path)
         source = str(cfg.get("raw_text") or "")
         if not source and task.source_url.startswith(("http://", "https://")) and not import_first:
             source, _duration = _resolve_video_text_for_run(task, output_dir)
-        state = initial_state(str(task.id), source)
+        state = initial_state(str(task.id), source, version=cfg.get("general_longform_policy"))
         atomic_json(directory / "state.json", state)
     if import_first:
         state["phase"] = "awaiting_materials"
@@ -64,7 +64,8 @@ def process_claimed_task(db: Session, task: Task, run_id: str, output_dir: Path)
     cfg = dict(task.config or {})
     cfg["pause_requested"] = False
     cfg.update(general_longform_phase=state["phase"], general_longform_outline_version=state["outline_version"],
-               general_longform_accepted_chapters=len(accepted), markdown_chars=state["total_words"])
+               general_longform_accepted_chapters=len(accepted), markdown_chars=state["total_words"],
+               general_longform_policy=state["prompt_version"])
     if state.get("outline"):
         plan = state["outline"]
         cfg["title"] = plan["packaging"][plan["recommended_index"]]["title"]

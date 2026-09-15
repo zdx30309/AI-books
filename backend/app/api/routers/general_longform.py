@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.db.session import get_db
 from app.models import Task, TaskStatus, User
-from app.prompts.general_longform_prompts import CATEGORY, get_manifest
+from app.prompts.general_longform_prompts import CATEGORY, available_versions, get_manifest
 from app.services.general_longform import initial_state, load_state, public_state, work_dir
 from app.services.general_longform_documents import inspect_docx
 from app.services.general_longform_runtime import atomic_json, atomic_text, now_iso, read_json
@@ -46,7 +46,11 @@ def owned_task(db: Session, task_id: UUID, user: User, *, lock: bool = False) ->
 
 
 def state_for(task: Task) -> dict:
-    return load_state(work_dir(task.id)) or initial_state(str(task.id), str((task.config or {}).get("raw_text") or ""))
+    try:
+        return load_state(work_dir(task.id)) or initial_state(str(task.id), str((task.config or {}).get("raw_text") or ""),
+                                                             version=(task.config or {}).get("general_longform_policy"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def delivery_holds(task_id: UUID) -> list[dict]:
@@ -59,9 +63,15 @@ def delivery_holds(task_id: UUID) -> list[dict]:
 
 
 @router.get("/prompt-manifest")
-def prompt_manifest() -> dict:
-    manifest = get_manifest()
-    return {key: manifest[key] for key in ("category", "label", "version", "source_sha256", "text_sha256", "paragraph_count", "sections", "stage_sections", "raw_reference_generation_allowed")}
+def prompt_manifest(version: str | None = None) -> dict:
+    try:
+        manifest = get_manifest(version)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {key: manifest[key] for key in ("category", "label", "version", "source_sha256", "text_sha256", "paragraph_count", "sections", "stage_sections", "raw_reference_generation_allowed")} | {
+        "reference_examples": manifest.get("reference_examples", []), "reference_policy": manifest.get("reference_policy", {}),
+        "available_versions": available_versions(), "default_version": get_manifest()["version"],
+    }
 
 
 @router.get("/{task_id}")
@@ -73,7 +83,7 @@ def get_project(task_id: UUID, db: Session = Depends(get_db), user: User = Depen
     for path in sorted((work_dir(task_id) / "calls").glob("*/*.json")):
         try:
             item = read_json(path, {})
-            logs.append({key: item.get(key) for key in ("action", "provider", "model", "status", "started_at", "finished_at", "estimated_cost", "cost_status", "usage", "error")})
+            logs.append({key: item.get(key) for key in ("action", "provider", "model", "status", "started_at", "finished_at", "estimated_cost", "cost_status", "usage", "error", "prompt_version", "prompt_source_sha256")})
         except (OSError, ValueError):
             continue
     state["call_logs"] = sorted(logs, key=lambda item: item.get("started_at") or "")[-200:]

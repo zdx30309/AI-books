@@ -21,7 +21,7 @@ def generate(directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     engine.research = fake_research
     state = new_state()
-    gateway = FakeGateway(directory / "project")
+    gateway = FakeGateway(directory / "projects" / state["project_id"])
     def visible():
         return engine.public_state(deepcopy(state)) | {"task_status": "paused", "progress": 15, "current_step": "通用长篇：确定性浏览器测试数据",
             "call_logs": [], "delivery_holds": [], "task_error": None}
@@ -33,9 +33,14 @@ def generate(directory: Path) -> Path:
     one_chapter = visible()
     files = {item["id"]: {"filename": item["filename"], "base64": base64.b64encode((gateway.directory / "exports" / item["filename"]).read_bytes()).decode()} for item in state["artifacts"]}
     accepted = state["chapters"]["1"]["accepted"]
+    legacy = engine.initial_state(state["project_id"], version="2026-09-14-v16")
+    legacy.update(phase="awaiting_materials", task_status="paused", progress=0, current_step="旧版项目保持固定提示词",
+                  call_logs=[], delivery_holds=[], task_error=None, can_resume=False)
+    manifest = {**get_manifest(), "default_version": get_manifest()["version"]}
+    legacy_manifest = {**get_manifest("2026-09-14-v16"), "default_version": get_manifest()["version"]}
     fixture = {"simulation": True, "task_id": state["project_id"], "initial": initial, "confirmed": confirmed,
         "one_chapter": one_chapter, "chapter_content": (gateway.directory / accepted["acceptedContent"]).read_text(encoding="utf-8"),
-        "files": files, "manifest": get_manifest(), "categories": list_categories()}
+        "files": files, "manifest": manifest, "legacy_project": legacy, "legacy_manifest": legacy_manifest, "categories": list_categories()}
     path = directory / "browser_fixture.json"
     path.write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
     return path

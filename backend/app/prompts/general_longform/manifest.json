@@ -1,12 +1,12 @@
 {
   "category": "general_longform",
   "label": "通用长篇",
-  "version": "2026-09-14-v16",
-  "source_filename": "10万字长篇创作指令词_重构版_2026年9月14日_16.docx",
-  "source_sha256": "3dc1e57353c3ac57535ee1a818effb12501364eb1fe7f40b2f1de69437e96f07",
-  "text_sha256": "1de091d17a2eb573c9cbecf7d656332a13746f019ceba28d7b6189532a892136",
-  "paragraph_count": 571,
-  "text_characters": 42835,
+  "version": "2026-09-14-v02",
+  "source_filename": "10万字长篇创作指令词_重构版_v02_2026年9月14日.docx",
+  "source_sha256": "1f70baec84e1cd1f47ddb269574c1e7daa0d6ac54e6d71b8f1c9bbe996f8cbef",
+  "text_sha256": "5a5dcf7954eab9efe2b47c2b2c2f318e87f42cbdb9dd627c770ae9efe0f5bfe0",
+  "paragraph_count": 840,
+  "text_characters": 58587,
   "extra_parts": {
     "word/header1.xml": [
       "微信读书长篇创作  |  可重复上传使用的完整指令"
@@ -22,7 +22,7 @@
       "start_paragraph": 0,
       "end_paragraph": 4,
       "paragraph_count": 4,
-      "sha256": "20b3d896ef330ef240d590e750d04609bc054d7edbfb744323576d8a5a40e2f7",
+      "sha256": "0de72a18e43358dea1678e077f4f88afd3809095f31cdaee1a4b6e5c1ec4d205",
       "role": "prompt",
       "stages": [
         "reference_analysis",
@@ -48,7 +48,7 @@
       "start_paragraph": 4,
       "end_paragraph": 9,
       "paragraph_count": 5,
-      "sha256": "8d452a8d1f8c48106dfe19871cdaf4d97d03c510b9c8b2acd1b038ba3d550c3a",
+      "sha256": "330456e574a73a8fcc61c67c18480945644b677a407d4c5923a9f8af9b311059",
       "role": "prompt",
       "stages": [
         "reference_analysis",
@@ -196,9 +196,9 @@
       "id": "style",
       "file": "source_sections/08_style.txt",
       "start_paragraph": 75,
-      "end_paragraph": 122,
-      "paragraph_count": 47,
-      "sha256": "e8881f8ece45024f21019314220809caca28e47b23740cec26a6fbb60aefee55",
+      "end_paragraph": 124,
+      "paragraph_count": 49,
+      "sha256": "9a3f82798d8b4c93cbd15730513d45392123ce89ffc625c403a9a91920caf7cc",
       "role": "prompt",
       "stages": [
         "reference_analysis",
@@ -216,8 +216,8 @@
     {
       "id": "continuity",
       "file": "source_sections/09_continuity.txt",
-      "start_paragraph": 122,
-      "end_paragraph": 127,
+      "start_paragraph": 124,
+      "end_paragraph": 129,
       "paragraph_count": 5,
       "sha256": "c16177746d6bd7d3ab7081b3a3fbcf141c38bb6264df680f4b9ae434c8ec7726",
       "role": "prompt",
@@ -237,8 +237,8 @@
     {
       "id": "export",
       "file": "source_sections/10_export.txt",
-      "start_paragraph": 127,
-      "end_paragraph": 135,
+      "start_paragraph": 129,
+      "end_paragraph": 137,
       "paragraph_count": 8,
       "sha256": "4e4600a556f8329a4ad2e2f95d74714a8ab4a632a7deb063a03422040716c3b0",
       "role": "prompt",
@@ -259,8 +259,8 @@
     {
       "id": "acceptance",
       "file": "source_sections/11_acceptance.txt",
-      "start_paragraph": 135,
-      "end_paragraph": 141,
+      "start_paragraph": 137,
+      "end_paragraph": 143,
       "paragraph_count": 6,
       "sha256": "0d9ff7bfe048816f18c925ec5822160ab3eed037e3607129ecb03e2392032647",
       "role": "prompt",
@@ -283,10 +283,10 @@
     {
       "id": "appendix_boundary",
       "file": "source_sections/12_appendix_boundary.txt",
-      "start_paragraph": 141,
-      "end_paragraph": 144,
+      "start_paragraph": 143,
+      "end_paragraph": 146,
       "paragraph_count": 3,
-      "sha256": "e5c25a8935e6478e3160754f2155a77992657225951b5c219cd1caefa0a5fbb5",
+      "sha256": "39c71169b0bf25f3b1a138a79b19a234fc7d3251e50e6d98f92e9b8f368be394",
       "role": "prompt",
       "stages": [
         "reference_analysis",
@@ -309,8 +309,8 @@
     {
       "id": "topic_list",
       "file": "source_sections/13_topic_list.txt",
-      "start_paragraph": 144,
-      "end_paragraph": 192,
+      "start_paragraph": 146,
+      "end_paragraph": 194,
       "paragraph_count": 48,
       "sha256": "54cbb21ab2b222dc0a7bc2af98fc2c20172f5f34be530ac876a897d1795a67cb",
       "role": "prompt",
@@ -323,10 +323,34 @@
     {
       "id": "reference_sample",
       "file": "source_sections/14_reference_sample.txt",
-      "start_paragraph": 192,
-      "end_paragraph": 358,
-      "paragraph_count": 166,
-      "sha256": "dfe540a31ad63602abd30b286574af9b2cb52a651ae71313c945fcc22e141e12",
+      "start_paragraph": 194,
+      "end_paragraph": 196,
+      "paragraph_count": 2,
+      "sha256": "749142e7af8d170719295159315a9228e1ec9df59da9a3aec8cce50fdce96bc0",
+      "role": "reference_only",
+      "stages": [
+        "reference_analysis"
+      ]
+    },
+    {
+      "id": "reference_positive",
+      "file": "source_sections/14a_reference_positive.txt",
+      "start_paragraph": 196,
+      "end_paragraph": 458,
+      "paragraph_count": 262,
+      "sha256": "839b4a0c6354704f4381fcb83e52cac206411c59b1fa391437ea920411a3c917",
+      "role": "reference_only",
+      "stages": [
+        "reference_analysis"
+      ]
+    },
+    {
+      "id": "reference_negative",
+      "file": "source_sections/14b_reference_negative.txt",
+      "start_paragraph": 458,
+      "end_paragraph": 631,
+      "paragraph_count": 173,
+      "sha256": "37206b5354c05939b64daab9cc654581bd3c56a271deecbc47cee43b8d565eaf",
       "role": "reference_only",
       "stages": [
         "reference_analysis"
@@ -335,10 +359,34 @@
     {
       "id": "reference_report",
       "file": "source_sections/15_reference_report.txt",
-      "start_paragraph": 358,
-      "end_paragraph": 425,
-      "paragraph_count": 67,
-      "sha256": "376c6682866e274586f634c7dfd5ddb9a05c7b85801b8123da2a492da06280a3",
+      "start_paragraph": 631,
+      "end_paragraph": 633,
+      "paragraph_count": 2,
+      "sha256": "6e0bf5b9f486e3939bc7e90f0bbebef406f24a8965b94256af0b98091dfdca25",
+      "role": "reference_only",
+      "stages": [
+        "reference_analysis"
+      ]
+    },
+    {
+      "id": "report_positive",
+      "file": "source_sections/15a_report_positive.txt",
+      "start_paragraph": 633,
+      "end_paragraph": 646,
+      "paragraph_count": 13,
+      "sha256": "429eab4665320dc4fcbb34b1efa6be61bbd46465db0453f6b6c071506a3d5690",
+      "role": "reference_only",
+      "stages": [
+        "reference_analysis"
+      ]
+    },
+    {
+      "id": "report_negative",
+      "file": "source_sections/15b_report_negative.txt",
+      "start_paragraph": 646,
+      "end_paragraph": 693,
+      "paragraph_count": 47,
+      "sha256": "0d367474102dd69f29b3f4dde071f19bece17975ea585aedc15f011a68627dd1",
       "role": "reference_only",
       "stages": [
         "reference_analysis"
@@ -347,10 +395,10 @@
     {
       "id": "editing_examples",
       "file": "source_sections/16_editing_examples.txt",
-      "start_paragraph": 425,
-      "end_paragraph": 543,
-      "paragraph_count": 118,
-      "sha256": "2e2e49787adfaf93fcf5709302946b9122cb782ab2735c062241d5052d147f13",
+      "start_paragraph": 693,
+      "end_paragraph": 812,
+      "paragraph_count": 119,
+      "sha256": "5fd9d098c170c4488f4774d60e14e8fdfd258b9b6354a1f2f7e795ce7cc1d495",
       "role": "prompt",
       "stages": [
         "polish",
@@ -363,8 +411,8 @@
     {
       "id": "packaging_examples",
       "file": "source_sections/17_packaging_examples.txt",
-      "start_paragraph": 543,
-      "end_paragraph": 569,
+      "start_paragraph": 812,
+      "end_paragraph": 838,
       "paragraph_count": 26,
       "sha256": "63d6cd08c8473e21be16939f080ef646e67beca6a00a62d193ea5088a290992c",
       "role": "prompt",
@@ -376,8 +424,8 @@
     {
       "id": "closing",
       "file": "source_sections/18_closing.txt",
-      "start_paragraph": 569,
-      "end_paragraph": 571,
+      "start_paragraph": 838,
+      "end_paragraph": 840,
       "paragraph_count": 2,
       "sha256": "cb7caf410346ece7d8df19803836b3f65a57daf62c7c45ad7d4543a4e3edddcf",
       "role": "prompt",
@@ -410,7 +458,11 @@
       "style",
       "continuity",
       "reference_sample",
-      "reference_report"
+      "reference_report",
+      "reference_positive",
+      "reference_negative",
+      "report_positive",
+      "report_negative"
     ],
     "research": [
       "preamble",
@@ -606,5 +658,55 @@
       "acceptance"
     ]
   },
-  "raw_reference_generation_allowed": false
+  "raw_reference_generation_allowed": false,
+  "reference_examples": [
+    {
+      "role": "positive",
+      "title": "中国白酒四十年：名酒崛起与价格崩盘",
+      "sample_section_id": "reference_positive",
+      "report_section_id": "report_positive",
+      "historical_report": {
+        "scope": "attachment_sample_only",
+        "manuscript_words": 13447,
+        "overall_risk_percent": 0,
+        "problem_categories": 0,
+        "approximate_occurrences": 0,
+        "dimension_scores": {
+          "句式套路化": 0,
+          "表达空泛": 0,
+          "句法臃肿": 0,
+          "节奏机械": 0,
+          "信息密度": 0
+        }
+      }
+    },
+    {
+      "role": "negative",
+      "title": "越虐越上头：大脑为何迷恋痛感",
+      "sample_section_id": "reference_negative",
+      "report_section_id": "report_negative",
+      "historical_report": {
+        "scope": "attachment_sample_only",
+        "manuscript_words": 14992,
+        "overall_risk_percent": 50,
+        "problem_categories": 4,
+        "approximate_occurrences": 17,
+        "dimension_scores": {
+          "句式套路化": 45,
+          "表达空泛": 0,
+          "句法臃肿": 0,
+          "节奏机械": 0,
+          "信息密度": 25
+        }
+      }
+    }
+  ],
+  "reference_policy": {
+    "mode": "contrastive",
+    "ordinary_words_contextual": true,
+    "whole_sample_roles_override_sentence_examples": true,
+    "historical_reports_are_current_results": false,
+    "raw_sample_facts_are_sources": false,
+    "style_review_required": true
+  }
 }

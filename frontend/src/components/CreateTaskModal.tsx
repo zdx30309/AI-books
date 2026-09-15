@@ -1138,7 +1138,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
           {isGeneralLongform && (
             <div className="rounded-xl border border-gold-400/30 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200">
-              <p>已内置完整 2026-09-14 版指令与五份附录，无需重复粘贴 prompt。先研究并给出五组包装和 12—15 章大纲；确认后每次只写一章，交付正文与来源记录两个 Word。</p>
+              <p>已内置完整 2026-09-14 v02 版指令与五份附录，840 段完整保留，无需重复粘贴 prompt。新增正反样稿对照：学习信息推进与自然节奏，诊断模板和重复，不机械禁用常用词。先研究并给出五组包装和 12—15 章大纲；确认后每次只写一章，交付正文与来源记录两个 Word。</p>
               <p className="mt-2 text-xs text-warm-400">可留空自主选题，也可填写创作要求、视频逐字稿。已有大纲或正文请先创建工作区，再上传原文件识别进度。</p>
               <label className="mt-3 flex cursor-pointer items-center gap-2">
                 <input type="checkbox" checked={generalLongformImportFirst} onChange={(e) => setGeneralLongformImportFirst(e.target.checked)} />

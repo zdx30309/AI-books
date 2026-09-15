@@ -58,12 +58,30 @@ def api_fixture(tmp_path, monkeypatch):
 def test_manifest_available_and_owner_isolation(api_fixture):
     f = api_fixture
     manifest = f.client.get("/api/v1/general-longform/prompt-manifest")
-    assert manifest.status_code == 200 and manifest.json()["paragraph_count"] == 571
+    assert manifest.status_code == 200 and manifest.json()["paragraph_count"] == 840
+    assert manifest.json()["version"] == "2026-09-14-v02"
+    legacy = f.client.get("/api/v1/general-longform/prompt-manifest", params={"version": "2026-09-14-v16"})
+    assert legacy.status_code == 200 and legacy.json()["paragraph_count"] == 571
+    assert f.client.get("/api/v1/general-longform/prompt-manifest", params={"version": "../../"}).status_code == 404
     assert f.client.get(f.url).status_code == 200
     f.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid4())
     assert f.client.get(f.url).status_code == 404
     assert f.client.post(f.url + "/actions", json={"action": "plan"}).status_code == 404
     assert f.client.get(f.url + "/artifacts/missing").status_code == 404
+
+
+def test_existing_config_policy_pins_state_but_new_config_defaults_v02(api_fixture):
+    f = api_fixture
+    normalized = tasks_router._normalize_task_config({"category": "general_longform", "general_longform_policy": "2026-09-14-v16"})
+    assert normalized["general_longform_policy"] == "2026-09-14-v02"
+    f.task.config = {"category": "general_longform", "general_longform_policy": "2026-09-14-v16"}
+    f.session.commit()
+    result = f.client.get(f.url).json()
+    assert result["prompt_version"] == "2026-09-14-v16"
+    assert result["prompt_source_sha256"] == router.get_manifest("2026-09-14-v16")["source_sha256"]
+    f.task.config = {"category": "general_longform", "general_longform_policy": "missing"}
+    f.session.commit()
+    assert f.client.get(f.url).status_code == 409
 
 
 def test_action_dispatch_is_serial_and_idempotent(api_fixture):

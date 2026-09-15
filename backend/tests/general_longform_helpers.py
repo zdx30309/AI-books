@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.services import general_longform as engine
+from app.prompts.general_longform_prompts import get_manifest
 from app.services.general_longform_runtime import now_iso
 
 SOURCE = {"id": "Sverified", "url": "https://example.org/research", "title": "公开研究资料",
@@ -37,6 +38,32 @@ def chapter_text(number, plan=None):
     return engine.GeneralLongformRunner._assemble_sections(contract, [section_text(number, i, s["target_words"]) for i, s in enumerate(contract["sections"])])
 
 
+def reference_data(version=None):
+    if version == "2026-09-14-v16":
+        return {"ReferencePatternCards": [{"id": "R1", "function": "表达节奏", "mechanism": "按信息量设置停顿", "avoid": "相同结尾"}], "ApprovedEditingSummary": {"pacing": "随任务推进"}}
+    roles = {item["role"]: item["sample_section_id"] for item in get_manifest(version)["reference_examples"]}
+    return {"ReferencePatternCards": [
+        {"id": "RP1", "source_role": "positive", "source_section_id": roles["positive"], "function": "事实组织", "mechanism": "以参与方决策联起具体变化", "avoid": "挪用样稿事例"},
+        {"id": "RN1", "source_role": "negative", "source_section_id": roles["negative"], "function": "重复诊断", "mechanism": "比较段落间新增的条件与后果", "avoid": "同义填充篇幅"}],
+        "ApprovedEditingSummary": {"pacing": "按论述的实际步骤控制停顿", "continuity": "每个后果指向新的待答事项", "anti_repetition": "检查新增条件而非换词频次", "evidence_boundaries": "独立查证当前材料",
+            "positive_methods": [{"card_id": "RP1", "method": "按参与方的决策串起结果"}],
+            "negative_diagnostics": [{"card_id": "RN1", "diagnostic": "检查换词后仍在重述的段落"}],
+            "ordinary_word_policy": {"mechanical_ban": False, "evaluation_basis": "判断各句承担的论述任务"},
+            "report_scope": "attachment_samples_only", "sentence_examples_override_roles": False}}
+
+
+def style_review(candidates, reference=None):
+    cards = (reference or reference_data())["ReferencePatternCards"]
+    positive = next(card["id"] for card in cards if card["source_role"] == "positive")
+    negative = next(card["id"] for card in cards if card["source_role"] == "negative")
+    samples = [{"chapter_number": number, "evidence": next(line.strip()[:64] for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")),
+                "reason": "确定性测试的正文证据；不证明真实写作质量"} for number, text in candidates.items()]
+    return {"positive_application": [{**sample, "card_id": positive} for sample in samples],
+            "negative_checks": [{**sample, "card_id": negative, "finding": "clear"} for sample in samples],
+            "ordinary_word_review": {"mechanical_ban_applied": False, "reason": "按句子功能检查，不按词表改写", "examples": deepcopy(samples)},
+            "historical_reports_used_as_current_result": False}
+
+
 class FakeGateway:
     def __init__(self, directory: Path):
         self.directory = directory
@@ -56,7 +83,7 @@ class FakeGateway:
         if stage in self.hooks:
             result = self.hooks[stage](context, kwargs)
         elif stage == "reference_analysis":
-            result = {"ReferencePatternCards": [{"id": "R1", "function": "表达节奏", "mechanism": "按信息量设置停顿", "avoid": "相同结尾"}], "ApprovedEditingSummary": {"pacing": "随任务推进"}}
+            result = reference_data(context.get("prompt_version"))
         elif stage == "outline":
             result = self.plan
         elif stage == "materials":
@@ -73,8 +100,12 @@ class FakeGateway:
             result = {"summary": f"第{contract['number']}章实质信息", "endingHook": "后续的新问题", "new_information": ["明确的新信息"],
                       "used_source_ids": ["Sverified"], "terms": {}, "cases": [], "completed_sections": [s["title"] for s in contract["sections"]],
                       "planned_vs_actual": [{"section": s["title"], "fulfilled": True, "evidence": "完整对应章节任务"} for s in contract["sections"]], "issues": []}
+            if context.get("prompt_version") != "2026-09-14-v16":
+                result["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
         elif stage == "final":
             result = {"issues": [], "summary": "确定性结构测试通过，不代表线上作品质量"}
+            if context.get("prompt_version") != "2026-09-14-v16":
+                result["style_review"] = style_review({c["number"]: c["content"] for c in context["chapters"]}, context["reference"])
         else:
             raise AssertionError(f"Unexpected fake stage: {stage}")
         response = {"text": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)}

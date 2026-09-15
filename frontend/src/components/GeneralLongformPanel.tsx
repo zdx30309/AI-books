@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, BookOpen, CheckCircle2, Download, FileText, Loader2, Pause, Play, RefreshCcw, Upload } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import type { GeneralLongformAction, GeneralLongformState, LongformIssue, LongformManifest, MaterialRole } from "@/api/generalLongformTypes";
+import type { GeneralLongformAction, GeneralLongformState, LongformIssue, LongformManifest, LongformStyleReview, MaterialRole } from "@/api/generalLongformTypes";
 
 const ACTIVE = new Set(["pending", "processing", "fetching_topics", "filtering_topics", "generating_outline", "writing_chapters", "fact_checking"]);
 const PHASES: Record<string, string> = {
@@ -47,9 +47,26 @@ function Issues({ items }: { items?: LongformIssue[] }) {
   </ul>;
 }
 
+function StyleReview({ review, title = "正反方法与语境复核" }: { review?: LongformStyleReview; title?: string }) {
+  if (!review || typeof review !== "object") return null;
+  const positive = Array.isArray(review.positive_application) ? review.positive_application : [];
+  const negative = Array.isArray(review.negative_checks) ? review.negative_checks : [];
+  const words = review.ordinary_word_review;
+  return <details className="mt-3" data-testid="longform-style-review"><summary className="cursor-pointer text-xs text-gold-300">{title}</summary>
+    <div className="mt-3 space-y-3 text-sm leading-7 text-warm-300">
+      {positive.map((item, i) => <div key={`p-${i}`}><p className="text-gold-200">正面方法 · {item?.chapter_number ? `第${item.chapter_number}章 · ` : ""}{printable(item?.card_id)}</p><blockquote className="border-l border-gold-400/30 pl-3">{printable(item?.evidence)}</blockquote><p>{printable(item?.reason)}</p></div>)}
+      {negative.map((item, i) => <div key={`n-${i}`}><p className="text-amber-200">反面诊断 · {item?.chapter_number ? `第${item.chapter_number}章 · ` : ""}{printable(item?.card_id)} · {item?.finding === "clear" ? "本次未发现该问题" : "待处理"}</p><blockquote className="border-l border-amber-400/30 pl-3">{printable(item?.evidence)}</blockquote><p>{printable(item?.reason)}</p></div>)}
+      <p>普通词语境判断：{words?.mechanical_ban_applied === false ? "未采用机械禁词" : "待复核"} · {printable(words?.reason)}</p>
+      {Array.isArray(words?.examples) && words.examples.map((item, i) => <p key={`w-${i}`} className="text-xs">第{printable(item?.chapter_number || "—")}章：“{printable(item?.evidence)}” · {printable(item?.reason)}</p>)}
+      <p className="text-xs text-warm-400">{review.historical_reports_used_as_current_result === false ? "历史样稿报告未作为当前稿件的检测结果。" : "待核对历史样稿报告与当前稿件的边界。"}</p>
+    </div>
+  </details>;
+}
+
 export function GeneralLongformPanel({ taskId }: { taskId: string }) {
   const [state, setState] = useState<GeneralLongformState | null>(null);
   const [manifest, setManifest] = useState<LongformManifest | null>(null);
+  const [manifestError, setManifestError] = useState("");
   const [tab, setTab] = useState<Tab>("规划");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -77,10 +94,20 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
   useEffect(() => {
     mounted.current = true;
     void refresh();
-    void api.getGeneralLongformManifest().then((value) => { if (mounted.current) setManifest(value); }).catch(() => undefined);
     const timer = window.setInterval(() => void refresh(), 4000);
     return () => { mounted.current = false; window.clearInterval(timer); };
   }, [refresh]);
+  useEffect(() => {
+    let cancelled = false;
+    setManifest(null); setManifestError("");
+    if (state?.prompt_version) {
+      void api.getGeneralLongformManifest(state.prompt_version).then((value) => {
+        if (value.version !== state.prompt_version || value.source_sha256 !== state.prompt_source_sha256) throw new Error("项目固定提示词版本或原文哈希不一致，请核对后继续");
+        if (!cancelled) setManifest(value);
+      }).catch((e) => { if (!cancelled) setManifestError(message(e)); });
+    }
+    return () => { cancelled = true; };
+  }, [state?.prompt_version, state?.prompt_source_sha256]);
 
   const active = !!state && ACTIVE.has(state.task_status);
   const held = !!state?.delivery_holds?.length && state?.phase === "needs_review";
@@ -215,6 +242,7 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
             <p>{(slot.candidate?.audit || slot.accepted?.audit)?.summary}</p>
             {(slot.candidate?.audit || slot.accepted?.audit)?.planned_vs_actual?.map((diff, i) => <p key={i}>{diff.fulfilled ? "✓" : "待处理"} {diff.section}：{diff.evidence}</p>)}
           </div></details>}
+          <StyleReview review={(slot.candidate?.audit || slot.accepted?.audit)?.style_review} />
         </div>)}
         {previewLoading && <p className="text-sm text-warm-400">读取正文…</p>}
         {preview && <article className="rounded-xl border border-gold-400/25 p-5"><div className="mb-4 flex justify-between text-xs text-gold-300"><span>第{preview.number}章 · {preview.kind === "accepted" ? "验收正文" : "候选正文"} v{preview.version}</span><button onClick={() => setPreview(null)}>收起</button></div><div className="max-h-[65vh] overflow-y-auto whitespace-pre-wrap break-words font-serif text-base leading-8 text-warm-200">{preview.content}</div></article>}
@@ -225,6 +253,7 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
           <button className="btn-ghost disabled:opacity-40" disabled={busy || held || !state.confirmed || !feedback.trim()} onClick={() => void act({ action: "revise_chapter", chapter_number: chapterNumber, feedback })}>修订、复验并导出两份 Word</button>
         </div>}
         <Issues items={state.final_audit?.issues} />
+        <StyleReview review={state.final_audit?.style_review} title="全书正反方法与语境复核" />
       </>}
       {tab === "材料" && <>
         <h2 className="font-serif text-xl text-warm-100">跨对话材料与进度恢复</h2>
@@ -250,7 +279,15 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
       </>}
       {tab === "日志" && <>
         <h2 className="font-serif text-xl text-warm-100">调用记录与原文保真</h2>
-        <div className="space-y-2 rounded-xl border border-gold-400/20 p-4 text-sm text-warm-300"><p className="flex items-center gap-2"><FileText className="h-4 w-4 text-gold-300" />指令版本 {state.prompt_version}</p><p>{manifest?.paragraph_count || 571} 个原段落 · {manifest?.sections?.length || 19} 个完整分段 · 五份附录完整保留</p><p className="break-all font-mono text-xs text-warm-500">原 Word SHA-256 {state.prompt_source_sha256}</p>
+        <div className="space-y-2 rounded-xl border border-gold-400/20 p-4 text-sm text-warm-300"><p className="flex items-center gap-2"><FileText className="h-4 w-4 text-gold-300" />指令版本 {state.prompt_version}</p>
+          {manifest ? <p>{manifest.paragraph_count} 个原段落 · {manifest.sections.length} 个完整分段 · 五份附录完整保留</p> : <p className="text-amber-200">{manifestError || "正在读取本项目固定版本清单…"}</p>}
+          <p className="break-all font-mono text-xs text-warm-500">原 Word SHA-256 {state.prompt_source_sha256}</p>
+          {manifest?.default_version && manifest.default_version !== state.prompt_version && <p className="text-xs text-amber-200">本项目继续使用原固定版本；新项目默认 {manifest.default_version}，已有正文与断点未自动迁移。</p>}
+          {!!manifest?.reference_examples?.length && <div className="space-y-3 border-t border-gold-400/15 pt-3" data-testid="longform-reference-roles">
+            {manifest.reference_examples.map((example) => <div key={example.role}><p className={example.role === "positive" ? "text-gold-200" : "text-amber-200"}>{example.role === "positive" ? "正面样稿 · 学习方法" : "反面样稿 · 仅用于诊断"}：《{example.title}》</p>
+              <p className="text-xs">附件历史报告：{numberText(example.historical_report.manuscript_words)} 字 · 风险 {example.historical_report.overall_risk_percent}% · {example.historical_report.problem_categories} 类问题；不是当前书稿的检测结果。</p></div>)}
+            <p className="text-xs text-warm-400">原文只进入参考抽象。普通词按句子功能与信息推进判断，不机械禁词；历史检测分数不作为通过率承诺。</p>
+          </div>}
           {manifest && <details><summary className="cursor-pointer text-xs text-gold-300">查看全部分段与链路位置</summary><div className="mt-3 space-y-2">{manifest.sections.map((s) => <p className="break-words text-xs" key={s.id}>{s.file} · {s.paragraph_count} 段 · {s.role === "reference_only" ? "仅抽象" : "阶段原文"}：{s.stages.map((stage) => STAGES[stage] || stage).join(" / ")}</p>)}</div></details>}
         </div>
         <p className="text-xs leading-relaxed text-warm-400">最近 200 次调用。费用按已配置模型 token 费率估算，未计搜索工具等附加费用；未配置费率不等同于免费。交付待定调用需核对后恢复，不自动重复提交。</p>

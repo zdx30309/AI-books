@@ -1,5 +1,15 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇 v02 增量迭代（2026-09-15）
+
+- Phase 1 PASS: parsed all 840 paragraphs and header/footer from the new attachment, compared every paragraph with the deployed v16 source, and read the added/changed positive-negative examples and policy/report sections. Source SHA-256: `1f70baec84e1cd1f47ddb269574c1e7daa0d6ac54e6d71b8f1c9bbe996f8cbef`.
+- Plan: `docs/GENERAL_LONGFORM_V02.md`. Keep old project prompt versions resumable; use role-preserving abstract cards, not raw sample text, for generation; add contextual style checks without ordinary-word blacklists. No new DB tables/migrations, no changes to other categories or Epic canon.
+- Phase 2 PASS: v02 840 paragraphs / 23 sections losslessly packaged; all 39 v16 files archived byte-for-byte and all 15 old stage renders preserved. New tasks pin v02; old state/config pins v16 and resumes original paid prompts/response IDs. Version/hash mismatch blocks before dispatch. Targeted fidelity/version/legacy-registry/API checks: `33 passed, 1 existing Google SDK warning` (32.60s).
+- Phase 3 PASS: version-bound positive/negative cards and approved editing summary; role/provenance checks and raw/title isolation; actual-text style evidence at chapter and whole-book acceptance; contextual ordinary-word policy instead of blacklists; historical reports never count as current results. High issues use the existing one-repair/re-extract/recheck gate, with no draft state writes. Dedicated regression: `145 passed, 1 existing Google SDK warning` (22.90s).
+- Phase 4 PASS: project-version manifest UI, role/history labels, style evidence views, and version/hash/style metadata in Word delivery; frontend typecheck/build and 11 browser scenarios PASS, 0 page errors. Missing manifests show errors rather than fallback counts; malformed model style records remain viewable.
+- Phase 5 PASS: final full regression `477 passed, 1 existing Google SDK warning` (72.34s), compileall PASS, all 33 other categories/132 prompt hashes unchanged. v02 and v16 source/route/archive checks PASS; deterministic 12-chapter/105000-word book and style/Word/version recovery checks PASS, not a paid literary-quality evaluation.
+- Phase 6 pending publication. Live preflight confirmed both GitHub branches and Beijing ECS at `2faeb735f4500df551a5995b7705cb6e02c7d3dd`, 6 running services, 0 active/queued/unacked tasks, health 200 and celery alive. No production data/config changes so far. The historical Epic `PARTIAL_IMPLEMENTATION` verdict remains unchanged.
+
 ## 通用长篇分类：独立集成（2026-09-14）
 
 - Phase 1 complete: read the requested prior conversation, the entire supplied Word (571 body/table paragraphs and its header/footer), repository instructions, and relevant SPEC planning/execution/prompt/API/export sections.

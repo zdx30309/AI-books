@@ -15,8 +15,9 @@ import re
 from typing import Any, Callable
 from uuid import UUID
 
-from app.prompts.general_longform_prompts import BUNDLE, CATEGORY, get_manifest
+from app.prompts.general_longform_prompts import CATEGORY, available_versions, get_manifest
 from app.services import general_longform_documents as documents
+from app.services.general_longform_reference import approve_reference, contrastive, style_issues, validate_cached_reference
 from app.services.general_longform_runtime import (
     GeneralLongformError, GeneralLongformPaused, GeneralLongformReview, ModelGateway,
     _error_text, atomic_json, atomic_text, canonical_url, now_iso, read_json, research,
@@ -32,8 +33,8 @@ def work_dir(task_id: UUID | str) -> Path:
     return ROOT / "backend" / "output" / f"task_{UUID(str(task_id))}" / CATEGORY
 
 
-def initial_state(project_id: str, source_text: str = "") -> dict[str, Any]:
-    manifest = get_manifest()
+def initial_state(project_id: str, source_text: str = "", *, version: str | None = None) -> dict[str, Any]:
+    manifest = get_manifest(version)
     return {"schema_version": 1, "project_id": str(UUID(project_id)), "category": CATEGORY,
             "prompt_version": manifest["version"], "prompt_source_sha256": manifest["source_sha256"],
             "phase": "needs_outline", "source_text": source_text, "outline": None,
@@ -299,7 +300,7 @@ class GeneralLongformRunner:
         self.checkpoint = checkpoint or (lambda: None)
         self.progress = progress or (lambda _number, _text: None)
         self.gateway = gateway or ModelGateway(directory, str(UUID(request["id"])), check_active=self.checkpoint,
-                                               retry_uncertain=bool(request.get("retry_uncertain")))
+                                               retry_uncertain=bool(request.get("retry_uncertain")), prompt_version=state.get("prompt_version"))
         self.directory.mkdir(parents=True, exist_ok=True)
 
     def save(self) -> None:
@@ -341,6 +342,7 @@ class GeneralLongformRunner:
 
     def context(self, **values: Any) -> dict[str, Any]:
         return {"current_time": self.request.get("created_at") or self.state.get("created_at"), "project_id": self.state["project_id"],
+                "prompt_version": self.state["prompt_version"],
                 "source_summary": self.state.get("source_summary", ""), "outline": self.state.get("outline"),
                 "accepted_state": self.state["accepted_state"], "reference": self.state.get("reference", {}),
                 "sources": self.state["sources"], **values}
@@ -360,22 +362,15 @@ class GeneralLongformRunner:
 
     def ensure_reference(self) -> None:
         if self.state.get("reference"):
+            validate_cached_reference(self.state["reference"], self.state["prompt_version"])
             return
-        self.progress(5, "通用长篇：抽象内置参考，不复制旧样稿")
-        data = self.gateway.json("reference_analysis", {"purpose": "只抽象编辑机制"}, max_tokens=6000)
-        cards, profile = data.get("ReferencePatternCards"), data.get("ApprovedEditingSummary")
-        if set(data) != {"ReferencePatternCards", "ApprovedEditingSummary"} or not isinstance(cards, list) or not cards or not isinstance(profile, dict) or not profile:
-            raise GeneralLongformReview("参考机制抽象不完整")
-        allowed = {"id", "function", "mechanism", "avoid"}
-        if len(cards) > 12 or any(not isinstance(card, dict) or set(card) - allowed or not card.get("mechanism") for card in cards):
-            raise GeneralLongformReview("参考卡包含未批准字段或缺少抽象机制")
-        serialized = json.dumps(data, ensure_ascii=False)
-        raw = "\n".join((BUNDLE / item["file"]).read_text(encoding="utf-8") for item in get_manifest()["sections"] if item["role"] == "reference_only")
-        compact = re.sub(r"\s", "", serialized)
-        raw_compact = re.sub(r"\s", "", raw)
-        if any(compact[index:index + 32] in raw_compact for index in range(max(0, len(compact) - 31))):
-            raise GeneralLongformReview("参考抽象混入原文长片段，已阻止进入生成上下文")
-        self.state["reference"] = {**data, "source_sha256": self.state["prompt_source_sha256"], "rawTextIncluded": False, "generated_card_count": len(cards)}
+        version = self.state["prompt_version"]
+        manifest = get_manifest(version)
+        self.progress(5, "通用长篇：按固定角色抽象内置参考，不复制样稿")
+        data = self.gateway.json("reference_analysis", {"purpose": "只抽象编辑机制", "prompt_version": version,
+            "reference_examples": manifest.get("reference_examples", []), "reference_policy": manifest.get("reference_policy", {})},
+            max_tokens=10000 if contrastive(version) else 6000)
+        self.state["reference"] = approve_reference(data, version)
         self.save()
 
     def research(self, *, slot: str = "plan", **values: Any) -> dict[str, Any]:
@@ -626,6 +621,7 @@ class GeneralLongformRunner:
             local = chapter_issues(text, contract, self.state["outline"], previous)
             audit = self.gateway.json("acceptance", {**base, "candidate": text, "local_issues": local}, max_tokens=12000, slot=f"chapter-{candidate['number']}-attempt-{attempt}")
             issues = local + validate_audit(audit, contract, self.state["sources"]) + (audit.get("issues") if isinstance(audit.get("issues"), list) else [])
+            issues += style_issues(audit, self.state["reference"], {candidate["number"]: text}, self.state["prompt_version"])
             candidate.update(audit=audit, issues=issues)
             atomic_json(self.directory / folder / f"acceptance_{self.request['id']}_{attempt}.json", {"content_sha256": sha256(text.encode()).hexdigest(), "audit": audit, "local_issues": local, "issues": issues})
             self.save()
@@ -670,6 +666,7 @@ class GeneralLongformRunner:
     def assemble(self) -> None:
         if not self.state["confirmed"] or not self.state.get("outline"):
             raise GeneralLongformReview("先确认大纲并完成全部正文")
+        self.ensure_reference()
         accepted = self.accepted()
         count = len(self.state["outline"]["chapters"])
         if [item["number"] for item in accepted] != list(range(1, count + 1)):
@@ -680,10 +677,12 @@ class GeneralLongformRunner:
         issues = []
         for item, contract in zip(accepted, self.state["outline"]["chapters"]):
             issues.extend(chapter_issues(item["content"], contract, self.state["outline"], [old for old in accepted if old["number"] < item["number"]]))
+            issues.extend(style_issues(item["audit"], self.state["reference"], {item["number"]: item["content"]}, self.state["prompt_version"]))
         audit = self.gateway.json("final", self.context(chapters=accepted, actual_words=total, local_issues=issues), max_tokens=12000)
         if not isinstance(audit.get("issues"), list):
             raise GeneralLongformReview("全书终审未返回有效问题清单")
         issues += audit["issues"]
+        issues += style_issues(audit, self.state["reference"], {item["number"]: item["content"] for item in accepted}, self.state["prompt_version"])
         self.state["final_audit"] = {**audit, "issues": issues, "actual_words": total, "checked_at": now_iso()}
         self.save()
         if blocking(issues):
@@ -714,8 +713,9 @@ class GeneralLongformRunner:
             text = self.content(material["text_path"])
             metadata = material.get("metadata") or {}
             role = material.get("role", "auto")
-            if material.get("sha256") == self.state["prompt_source_sha256"]:
-                material.update(role="instruction", imported=True, status="imported", error=None)
+            instruction_version = next((version for version in available_versions() if material.get("sha256") == get_manifest(version)["source_sha256"]), None)
+            if instruction_version:
+                material.update(role="instruction", instruction_version=instruction_version, imported=True, status="imported", error=None)
                 self.save()
                 continue
             if material.get("identified"):
@@ -865,13 +865,17 @@ class GeneralLongformRunner:
         action = self.request.get("action")
         if action not in ACTIONS:
             raise GeneralLongformError("未支持的通用长篇动作")
-        if self.state["prompt_source_sha256"] != get_manifest()["source_sha256"]:
-            raise GeneralLongformReview("项目 prompt 版本与当前部署不一致，先核对版本再续写")
         if self.request["id"] in self.state["completed_requests"]:
             return self.state
         self.state["last_request"] = deepcopy(self.request)
         self.state["last_error"] = None
         try:
+            try:
+                manifest = get_manifest(self.state["prompt_version"])
+            except (KeyError, ValueError, RuntimeError) as exc:
+                raise GeneralLongformReview(f"项目固定提示词版本核验失败：{exc}") from exc
+            if self.state["prompt_source_sha256"] != manifest["source_sha256"]:
+                raise GeneralLongformReview("项目 prompt 源文件哈希与其固定版本不一致，已保留断点")
             self.save()
             if action == "plan":
                 self.plan()
