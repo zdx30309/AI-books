@@ -9,6 +9,21 @@ from sqlalchemy.orm import Session
 from app.models import Chapter, Task, TaskStatus
 from app.services.general_longform import GeneralLongformRunner, initial_state, load_state
 from app.services.general_longform_runtime import GeneralLongformPaused, atomic_json, now_iso
+from app.services.video_sources import extract_source_url
+
+
+def _needs_video_source(source_url: str, cfg: dict, state: dict) -> bool:
+    """Reuse short-form share-text parsing; never retroactively rewrite a book."""
+    request = cfg.get("general_longform_request") or {}
+    return (
+        not cfg.get("general_longform_import_first")
+        and not str(cfg.get("raw_text") or "").strip()
+        and extract_source_url(source_url).startswith(("http://", "https://"))
+        and request.get("action", "plan") == "plan"
+        and not any(state.get(key) for key in (
+            "source_text", "source_summary", "outline", "outline_candidate", "chapters", "materials",
+        ))
+    )
 
 
 def process_claimed_task(db: Session, task: Task, run_id: str, output_dir: Path) -> dict:
@@ -20,11 +35,20 @@ def process_claimed_task(db: Session, task: Task, run_id: str, output_dir: Path)
     cfg = dict(task.config or {})
     request = cfg.get("general_longform_request")
     import_first = bool(cfg.get("general_longform_import_first")) and not request and not state
+    created_state = state is None
     if state is None:
         source = str(cfg.get("raw_text") or "")
-        if not source and task.source_url.startswith(("http://", "https://")) and not import_first:
-            source, _duration = _resolve_video_text_for_run(task, output_dir)
         state = initial_state(str(task.id), source, version=cfg.get("general_longform_policy"))
+    source_resolved = False
+    if _needs_video_source(task.source_url, cfg, state):
+        source, _duration = _resolve_video_text_for_run(task, output_dir)
+        if not str(source or "").strip():
+            raise ValueError("参考视频尚未提取到有效正文，已停止策划；请查看解析结果或导入逐字稿")
+        state["source_text"] = source
+        source_resolved = True
+    if created_state or source_resolved:
+        # This also repairs an early v02 empty-source checkpoint on an explicit
+        # planning resume. Once extracted, never pay to fetch the video again.
         atomic_json(directory / "state.json", state)
     if import_first:
         state["phase"] = "awaiting_materials"

@@ -166,12 +166,30 @@ class ModelGateway:
             record["cost_status"] = "estimated" if record["estimated_cost"] is not None else "rate_not_configured"
             record["cost_scope"] = "configured_model_token_estimate_excludes_web_tool_charges"
         except BaseException as exc:
-            status_code = getattr(exc, "status_code", None)
-            record.update(status="failed" if (isinstance(status_code, int) and 400 <= status_code < 500) or isinstance(exc, GeneralLongformError) else "uncertain",
-                          error=_error_text(exc), finished_at=now_iso())
+            status_code, error_code = content_engine._openai_error_details(exc)
+            # A 401 on a fresh POST is rejected, not delivery-uncertain. A 401
+            # while retrieving an existing response does NOT erase that paid
+            # response or authorize a replacement POST. HTTP 408 stays uncertain.
+            rejected = (
+                not record.get("response_id")
+                and not isinstance(exc, (content_engine.OpenAIDeliveryUncertainError, content_engine.GeminiDeliveryUncertainError))
+                and isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 408
+            )
+            error = _error_text(exc)
+            if provider == "openai" and status_code in {401, 403} and not isinstance(exc, content_engine.OpenAIDeliveryUncertainError):
+                error = content_engine._openai_writer_connection_error_message(exc)
+            record.update(status="failed" if rejected or isinstance(exc, GeneralLongformError) else "uncertain",
+                          error=error, http_status=status_code, error_code=error_code, finished_at=now_iso())
+            if rejected:
+                record["failure_kind"] = "authentication" if status_code in {401, 403} else "request_rejected"
+                record["delivery_status"] = "rejected_before_generation"
+                record["estimated_cost"] = 0
+                record["cost_status"] = "request_rejected_no_generation"
             atomic_json(path, record)
             if isinstance(exc, Exception):
                 paid_api_guard.trip_if_quota(provider, exc)
+                if provider == "openai" and rejected and not isinstance(exc, content_engine.OpenAIRequestRejectedError):
+                    raise content_engine._openai_writer_failure(exc) from exc
             raise
         atomic_json(path, record)
         self.check_active()

@@ -34,3 +34,4 @@ deployment.local.json
 cover_analysis/
 dangdang_book_covers/
 样本库/
+.tmp/

@@ -70,6 +70,25 @@ def test_manifest_available_and_owner_isolation(api_fixture):
     assert f.client.get(f.url + "/artifacts/missing").status_code == 404
 
 
+def test_rejected_auth_is_not_a_paid_delivery_hold(api_fixture):
+    f = api_fixture
+    state = engine.initial_state(str(f.task.id))
+    request_id = str(uuid4())
+    state.update(phase="needs_review", last_request={"id": request_id, "action": "plan"},
+                 last_error="OpenAI API 密钥所属账户已停用（HTTP 401，account_deactivated）")
+    atomic_json(f.directory / "state.json", state)
+    atomic_json(f.directory / "calls" / request_id / "reference_analysis.json", {
+        "request_id": request_id, "action": "reference_analysis", "status": "failed",
+        "http_status": 401, "error_code": "account_deactivated", "failure_kind": "authentication",
+        "delivery_status": "rejected_before_generation", "response_id": None,
+    })
+    project = f.client.get(f.url).json()
+    assert project["delivery_holds"] == [] and project["can_resume"]
+    result = f.client.post(f.url + "/actions", json={"action": "resume"})
+    assert result.status_code == 200 and result.json()["request_id"] == request_id
+    assert len(f.dispatched) == 1
+
+
 def test_existing_config_policy_pins_state_but_new_config_defaults_v02(api_fixture):
     f = api_fixture
     normalized = tasks_router._normalize_task_config({"category": "general_longform", "general_longform_policy": "2026-09-14-v16"})
@@ -216,13 +235,74 @@ def test_generic_mutation_and_regeneration_cannot_bypass_general_longform_gate(a
 def test_task_bridge_import_first_has_no_paid_work(api_fixture, monkeypatch):
     f = api_fixture
     f.task.status = "processing"
+    f.task.source_url = "分享视频标题 https://b23.tv/fixture"
     f.task.config = {"category": "general_longform", "general_longform_import_first": True, "active_run_id": "run-1"}
     f.session.commit()
     def unexpected(*args, **kwargs): raise AssertionError("no paid call when waiting for uploads")
     monkeypatch.setattr(engine.ModelGateway, "call", unexpected)
+    from app.tasks import tasks as task_module
+    monkeypatch.setattr(task_module, "_resolve_video_text_for_run", unexpected)
     result = bridge.process_claimed_task(f.session, f.task, "run-1", f.root / "output")
     assert result["phase"] == "awaiting_materials" and result["status"] == "paused"
     assert f.session.query(Chapter).count() == 0
+
+
+@pytest.mark.parametrize("share_text", ["https://b23.tv/fixture", "【视频标题-哔哩哔哩】 https://b23.tv/fixture"])
+@pytest.mark.parametrize("existing_checkpoint", [False, True])
+def test_bridge_extracts_share_link_and_resumes_empty_source_once(api_fixture, monkeypatch, share_text, existing_checkpoint):
+    from app.tasks import tasks as task_module
+    f = api_fixture
+    output = f.root / "video-output"
+    f.task.status = "processing"
+    f.task.source_url = share_text
+    f.task.config = {"category": "general_longform", "active_run_id": "run-1"}
+    f.session.commit()
+    if existing_checkpoint:
+        state = engine.initial_state(str(f.task.id))
+        state.update(phase="needs_review", last_error="account_deactivated")
+        atomic_json(output / "general_longform" / "state.json", state)
+    calls = []
+    def resolve(task, directory):
+        calls.append(task.source_url)
+        return "已实际提取的视频逐字稿", 120
+    monkeypatch.setattr(task_module, "_resolve_video_text_for_run", resolve)
+    class StopAfterSource:
+        def __init__(self, directory, state, *args, **kwargs):
+            assert state["source_text"] == "已实际提取的视频逐字稿"
+        def run(self): raise RuntimeError("stop before model request")
+    monkeypatch.setattr(bridge, "GeneralLongformRunner", StopAfterSource)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="stop before model request"):
+            bridge.process_claimed_task(f.session, f.task, "run-1", output)
+    assert calls == [share_text]
+    assert f.task.source_url == share_text
+    assert engine.load_state(output / "general_longform")["source_text"] == "已实际提取的视频逐字稿"
+
+
+@pytest.mark.parametrize("protected", ["source_text", "source_summary", "outline", "outline_candidate", "chapters", "materials"])
+def test_video_recovery_does_not_replace_existing_material_or_book(protected):
+    state = engine.initial_state(str(uuid4()))
+    state[protected] = "already present"
+    assert not bridge._needs_video_source("分享 https://b23.tv/fixture", {}, state)
+
+
+def test_video_source_selection_respects_manual_text_and_import_first():
+    state = engine.initial_state(str(uuid4()))
+    for cfg in ({"raw_text": "本次创作要求"}, {"general_longform_import_first": True},
+                {"general_longform_request": {"action": "import_materials"}}):
+        assert not bridge._needs_video_source("分享 https://b23.tv/fixture", cfg, state)
+    assert not bridge._needs_video_source("manual://general_longform", {}, state)
+
+
+def test_empty_video_extraction_stops_before_any_model_request(api_fixture, monkeypatch):
+    from app.tasks import tasks as task_module
+    f = api_fixture
+    f.task.source_url = "分享 https://b23.tv/fixture"
+    monkeypatch.setattr(task_module, "_resolve_video_text_for_run", lambda *args: ("", None))
+    def unexpected(*args, **kwargs): raise AssertionError("no model calls without the requested source")
+    monkeypatch.setattr(engine.ModelGateway, "call", unexpected)
+    with pytest.raises(ValueError, match="已停止策划"):
+        bridge.process_claimed_task(f.session, f.task, "run-1", f.root / "empty-video-output")
 
 
 def test_task_bridge_persists_only_accepted_rows(api_fixture, monkeypatch):

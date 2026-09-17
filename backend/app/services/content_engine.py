@@ -97,6 +97,15 @@ class OpenAIDeliveryUncertainError(RuntimeError):
         super().__init__(f"paid_call_delivery_uncertain: {message}{suffix}")
 
 
+class OpenAIRequestRejectedError(RuntimeError):
+    """Preserve a definite provider rejection across the shared writer boundary."""
+
+    def __init__(self, message: str, *, cause: BaseException) -> None:
+        self.status_code, self.code = _openai_error_details(cause)
+        self.request_id = getattr(cause, "request_id", None)
+        super().__init__(message)
+
+
 class GeminiRefineIncompleteError(RuntimeError):
     """The refine provider returned a manuscript that cannot be a full stage."""
 
@@ -3107,20 +3116,42 @@ def _is_flex_preflight_rejection(exc: Exception) -> bool:
     )
 
 
+def _openai_error_details(exc: BaseException) -> tuple[int | None, str | None]:
+    """Read SDK status/code without losing metadata in a chained wrapper."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    status: int | None = None
+    code: str | None = None
+    while current is not None and id(current) not in seen and len(seen) < 16:
+        seen.add(id(current))
+        for candidate in (
+            getattr(current, "status_code", None),
+            getattr(getattr(current, "response", None), "status_code", None),
+            getattr(current, "code", None),
+        ):
+            try:
+                numeric = int(candidate)
+                if status is None and 100 <= numeric <= 599:
+                    status = numeric
+            except (TypeError, ValueError):
+                pass
+        body = getattr(current, "body", None)
+        if isinstance(body, dict) and isinstance(body.get("error"), dict):
+            body = body["error"]
+        raw_code = getattr(current, "code", None) or (body.get("code") if isinstance(body, dict) else None)
+        if code is None and isinstance(raw_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", raw_code):
+            code = raw_code
+        current = current.__cause__ or current.__context__
+    return status, code
+
+
 def _is_openai_explicit_preflight_rejection(exc: BaseException) -> bool:
     """Provider rejected request validation/auth before model execution."""
 
-    for candidate in (
-        getattr(exc, "status_code", None),
-        getattr(exc, "code", None),
-        getattr(getattr(exc, "response", None), "status_code", None),
-    ):
-        try:
-            if candidate is not None and int(candidate) in {400, 401, 403, 404, 409, 422}:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    if isinstance(exc, OpenAIDeliveryUncertainError):
+        return False
+    return _openai_error_details(exc)[0] in {400, 401, 403, 404, 409, 422}
 
 
 def _openai_delivery_uncertain(
@@ -3139,6 +3170,18 @@ def _openai_delivery_uncertain(
 
 
 def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
+    status, code = _openai_error_details(exc)
+    if status == 401:
+        reason = "OpenAI API 密钥所属账户已停用" if code == "account_deactivated" else "OpenAI API 密钥鉴权失败"
+        return (
+            f"{reason}（HTTP 401，{code or 'authentication_failed'}）。"
+            "请求已到达 API 服务端并在鉴权阶段被拒绝，不是国外代理连接故障。"
+            "请在项目配置中更新有效账户的 OPENAI_API_KEY，并重新加载后端和写作 worker 配置，再恢复上次操作。"
+            "不要将密钥粘贴到聊天或日志中。"
+        )
+    if status in {400, 403, 404, 409, 422}:
+        advice = "请核对账户、项目和模型访问权限" if status == 403 else "请核对模型名称、请求参数与接口配置"
+        return f"OpenAI 请求被服务端拒绝（HTTP {status}，{code or 'request_rejected'}）；{advice}，修正后恢复原任务。"
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     parts = [
         "OpenAI 初稿生成连接失败",
@@ -3154,6 +3197,13 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
             "OFFICIAL_API_DIRECT_ONLY 只锁定官方 base_url，不会禁用代理。"
         )
     return "；".join(parts)
+
+
+def _openai_writer_failure(exc: Exception, first_exc: Exception | None = None) -> RuntimeError:
+    message = _openai_writer_connection_error_message(exc, first_exc)
+    if _is_openai_explicit_preflight_rejection(exc):
+        return OpenAIRequestRejectedError(message, cause=exc)
+    return RuntimeError(message)
 
 
 def _response_attr(value: Any, name: str, default: Any = None) -> Any:
@@ -3349,7 +3399,7 @@ def _stream_openai_writer(
             ) from exc
         # A narrow Flex preflight rejection is safe for the caller to handle;
         # all transport failures may mean the request was already accepted.
-        if _is_flex_preflight_rejection(exc):
+        if _is_flex_preflight_rejection(exc) or _is_openai_explicit_preflight_rejection(exc):
             raise
         raise _openai_delivery_uncertain(exc, phase="stream request") from exc
     chunks: list[str] = []
@@ -3670,6 +3720,8 @@ def _openai_writer_call_result(
                             # request with another tier/effort.
                             if isinstance(stream_exc, OpenAIDeliveryUncertainError):
                                 raise
+                            if _is_openai_explicit_preflight_rejection(stream_exc):
+                                raise
                             raise _openai_delivery_uncertain(
                                 stream_exc,
                                 phase="stream delivery",
@@ -3740,16 +3792,12 @@ def _openai_writer_call_result(
                         str(exc)[:500],
                     )
                     break
-                raise RuntimeError(
-                    _openai_writer_connection_error_message(exc, first_stream_exc)
-                ) from exc
+                raise _openai_writer_failure(exc, first_stream_exc) from exc
         if text:
             break
     else:
         if last_exc is not None:
-            raise RuntimeError(
-                _openai_writer_connection_error_message(last_exc, first_stream_exc)
-            ) from last_exc
+            raise _openai_writer_failure(last_exc, first_stream_exc) from last_exc
 
     if not text:
         text = _extract_openai_response_text(response)

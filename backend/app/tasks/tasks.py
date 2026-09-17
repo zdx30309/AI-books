@@ -211,6 +211,9 @@ _RETRYABLE_ERROR_TOKENS = (
 _NON_RETRYABLE_ERROR_TOKENS = (
     "imageapiuncertainerror",
     "openaideliveryuncertainerror",
+    "openairequestrejectederror",
+    "account_deactivated",
+    "invalid_api_key",
     "clauderequestrejectederror",
     "claudedeliveryuncertainerror",
     "paid_call_delivery_uncertain",

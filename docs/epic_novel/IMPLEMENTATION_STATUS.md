@@ -1,5 +1,13 @@
 # Epic Novel Engine Implementation Status
 
+## OpenAI 鉴权故障定位与恢复修正（2026-09-15）
+
+- Diagnosis PASS: the live Beijing ECS worker reached the configured OpenAI endpoint through the unchanged project proxy; a read-only `GET /v1/models` returned HTTP 401 / `account_deactivated` in 3.35 seconds. Local active configuration and the worker have the same credential fingerprint; no credentials are printed or changed.
+- Scope: preserve structured writer rejection status/code, distinguish rejected requests from uncertain paid deliveries, prevent authentication-error replay, and correct the affected general-longform task's historical classification with a backup. No model/prompt, proxy, other category, manuscript, or canon changes.
+- Validation PASS: 498 tests (66.44 seconds, one existing Google SDK deprecation warning), Python compile, diff check, and v02 840/23 prompt-fidelity check. Covers structured 401/403/4xx, metadata propagation, original-prompt resume, existing paid-response retention, uncertain 408/transport failures, watchdog behavior and a no-generation auth-check CLI. No frontend or prompt changes.
+- Publication and existing-record correction: pending. Account recovery or an active-account `OPENAI_API_KEY` is an external prerequisite for real generation; software checks alone do not establish that the account is usable.
+- The historical Epic `PARTIAL_IMPLEMENTATION` verdict is unchanged.
+
 ## 通用长篇 v02 增量迭代（2026-09-15）
 
 - Phase 1 PASS: parsed all 840 paragraphs and header/footer from the new attachment, compared every paragraph with the deployed v16 source, and read the added/changed positive-negative examples and policy/report sections. Source SHA-256: `1f70baec84e1cd1f47ddb269574c1e7daa0d6ac54e6d71b8f1c9bbe996f8cbef`.
