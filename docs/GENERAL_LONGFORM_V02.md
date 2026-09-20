@@ -75,3 +75,11 @@
 - 证据：`.local/general_longform_v02/releases/20260915T093101Z-c38a90b/result.json`、`ecs_workspace_smoke.json`、`browser_production/browser_report.json`。
 
 本轮通用长篇 v02 的实现、回归和代码发布无剩余阻断项；所有新增附录与规则均完整归档并有工作流位置。整书文本验证使用确定性模拟，未执行真实付费十万字创作或承诺检测通过率；Epic 的历史 `PARTIAL_IMPLEMENTATION` 不变。
+## 阶段 7：两个校验断点的低成本恢复修正（PASS，2026-09-20）
+
+- 动机：首版大纲只差本地结构校验时会把项目停在“有待处理项”且无按钮；来源抽象条目全部未通过核验时同样停住，用户只能选择重新检索（真实多花一次 web 搜索）。
+- 改动（纯加法，未动任何专属 prompt）：`plan` 校验失败后用既有 `outline_revision` 节点做有界局部修复（复用本次证据，修复后仍过同一 `validate_outline`）；新增 `repair_outline_candidate` 动作让已卡住的项目复用 `last_research + sources` 零联网修复候选；`research()` 在同批已读页面上做有界重试并把被拒条目与原因作为 `rejected_entries` 数据回传，单 slot 上限 3 次，尝试次数从 gateway 日志读出；“恢复上次操作”因此每点一次只多 1 次来源抽象调用。
+- 发布提交 `669dc419cf79e1c8bb73919a8d28ba9b2125cdec`（GitHub `main` 与 `codex/bilibili-cost-guard-main` 同一 SHA），北京 ECS release `20260920T080857Z-669dc41`，base `518d61e`，备份 `/opt/video-plan-release-backups/20260920T080857Z-669dc41/`。
+- 验收：首页/健康/prompt-manifest 200 且 `celery_alive=true`；线上前端 `/assets/index-CRhfK2Xc.js` 与本地构建逐字节一致；backend/worker 内 v02 840/23 与 v16 571/19 完整性与 132 个历史 prompt 哈希 PASS；部署文件哈希 6/6 PASS；生产前端浏览器回归 13 场景 PASS、0 page error（`.local/general_longform_v02/browser_production/browser_report.json`）。
+- 环境侧记录：ECS 对 Docker Hub 直连超时，构建前用 `docker.1panel.live` 预取 node/caddy/python 基础镜像（digest 与构建解析一致）；compose worker 原运行镜像已被回收，发布脚本在该情况下回退到 `video-plan-backend:latest` 生成回滚标签并记录 note。发布后剩余磁盘约 2.6 GiB。
+- 未做：未运行真实十万字付费生成；未改动 prompt、验收门禁、串行链路、其他 33 个分类与生产数据。
