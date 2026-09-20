@@ -82,4 +82,5 @@
 - 发布提交 `669dc419cf79e1c8bb73919a8d28ba9b2125cdec`（GitHub `main` 与 `codex/bilibili-cost-guard-main` 同一 SHA），北京 ECS release `20260920T080857Z-669dc41`，base `518d61e`，备份 `/opt/video-plan-release-backups/20260920T080857Z-669dc41/`。
 - 验收：首页/健康/prompt-manifest 200 且 `celery_alive=true`；线上前端 `/assets/index-CRhfK2Xc.js` 与本地构建逐字节一致；backend/worker 内 v02 840/23 与 v16 571/19 完整性与 132 个历史 prompt 哈希 PASS；部署文件哈希 6/6 PASS；生产前端浏览器回归 13 场景 PASS、0 page error（`.local/general_longform_v02/browser_production/browser_report.json`）。
 - 环境侧记录：ECS 对 Docker Hub 直连超时，构建前用 `docker.1panel.live` 预取 node/caddy/python 基础镜像（digest 与构建解析一致）；compose worker 原运行镜像已被回收，发布脚本在该情况下回退到 `video-plan-backend:latest` 生成回滚标签并记录 note。发布后剩余磁盘约 2.6 GiB。
+- 尾部文档同步：release `20260920T090758Z-af98b2a`（docs-only，base `669dc41`）把本记录同步到 ECS，验收检查再次 PASS。
 - 未做：未运行真实十万字付费生成；未改动 prompt、验收门禁、串行链路、其他 33 个分类与生产数据。
