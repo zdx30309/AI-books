@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "backend/tests")]
@@ -14,7 +15,8 @@ sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "backend/tests")]
 from app.prompts.general_longform_prompts import get_manifest
 from app.prompts.goal_driven_templates import list_categories
 from app.services import general_longform as engine
-from general_longform_helpers import FakeGateway, fake_research, new_state, run
+from app.services.general_longform_runtime import now_iso
+from general_longform_helpers import FakeGateway, fake_research, new_state, outline, run
 
 
 def generate(directory: Path) -> Path:
@@ -38,9 +40,29 @@ def generate(directory: Path) -> Path:
                   call_logs=[], delivery_holds=[], task_error=None, can_resume=False)
     manifest = {**get_manifest(), "default_version": get_manifest()["version"]}
     legacy_manifest = {**get_manifest("2026-09-14-v16"), "default_version": get_manifest()["version"]}
+    # A first outline that failed validation keeps its paid candidate; the
+    # workspace must show a concrete next step instead of an empty action row.
+    recovery = new_state()
+    recovery_gateway = FakeGateway(directory / "projects" / recovery["project_id"])
+    broken = outline()
+    broken["packaging"][0]["title"] = "短"
+    recovery_gateway.plan = broken
+    recovery_gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"recommendation": "仍未补齐书名"}}
+    run(recovery_gateway.directory, recovery, recovery_gateway, "plan")
+    assert recovery["phase"] == "needs_review" and recovery["outline_candidate"], recovery.get("last_error")
+    recovery_visible = engine.public_state(deepcopy(recovery)) | {"task_status": "paused", "progress": 15,
+        "current_step": "通用长篇：已保留正文与断点，请查看具体待处理项", "call_logs": [], "delivery_holds": [], "task_error": None}
+    # A research-stage stop has no outline at all; the paid retrieval and page
+    # reads stay on disk, so the workspace must point at the cheap resume.
+    research_stop = new_state()
+    research_stop.update(phase="needs_review", last_request={"id": str(uuid4()), "action": "plan", "created_at": now_iso()},
+                          last_error="GeneralLongformReview: 实际读取材料未形成可靠的来源摘要，未开始正文（已实际读取 4 个页面；1 个条目未通过核验（approved_summary 缺失或为空））；已保留检索与已读页面，重试本阶段会复用它们而不重新联网")
+    research_visible = engine.public_state(deepcopy(research_stop)) | {"task_status": "paused", "progress": 10,
+        "current_step": "通用长篇：已保留正文与断点，请查看具体待处理项", "call_logs": [], "delivery_holds": [], "task_error": None}
     fixture = {"simulation": True, "task_id": state["project_id"], "initial": initial, "confirmed": confirmed,
         "one_chapter": one_chapter, "chapter_content": (gateway.directory / accepted["acceptedContent"]).read_text(encoding="utf-8"),
-        "files": files, "manifest": manifest, "legacy_project": legacy, "legacy_manifest": legacy_manifest, "categories": list_categories()}
+        "files": files, "manifest": manifest, "legacy_project": legacy, "legacy_manifest": legacy_manifest,
+        "outline_recovery": recovery_visible, "research_recovery": research_visible, "categories": list_categories()}
     path = directory / "browser_fixture.json"
     path.write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
     return path

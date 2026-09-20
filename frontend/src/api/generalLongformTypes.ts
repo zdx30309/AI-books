@@ -1,6 +1,6 @@
 import type { TaskStatus } from "./types";
 
-export type LongformAction = "plan" | "revise_outline" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume";
+export type LongformAction = "plan" | "repair_outline_candidate" | "revise_outline" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume";
 export type MaterialRole = "auto" | "source" | "outline" | "chapter" | "editorial" | "report" | "instruction";
 export interface GeneralLongformAction {
   action: LongformAction;

@@ -328,6 +328,93 @@ def _tool_source_urls(record: dict[str, Any]) -> set[str]:
     return result
 
 
+# A source abstraction that drops every entry is retried against the pages this
+# book already paid to read: the failure reason list is passed back as data, the
+# stage prompt is untouched, and the acceptance rule for an approved source is
+# byte-for-byte the same. Total attempts per research slot stay bounded so a
+# hopeless retrieval cannot spend without limit.
+_EVIDENCE_ATTEMPT_CAP = 3
+_EVIDENCE_RETRY_NOTE = "上一次返回的条目未通过核验，已附上被排除的条目与原因；请沿用实际读取页面的 id 与 url，补齐被拒条目缺失的字段，不要新增未阅读的来源。"
+
+
+def evidence_retry_attempts() -> int:
+    """Extra abstraction attempts inside one run (default 1)."""
+    raw = os.environ.get("GENERAL_LONGFORM_EVIDENCE_RETRY_ATTEMPTS", "1")
+    try:
+        return max(0, min(2, int(str(raw).strip() or "0")))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _completed_evidence_attempts(gateway: ModelGateway, slot: str) -> int:
+    """Count abstraction attempts already journaled for this research slot.
+
+    Reading the gateway journal instead of storing a counter keeps a resumed
+    request honest: a replay continues at the next attempt slot, so every resume
+    costs at most one abstraction call and never repeats the web search.
+    """
+    folder = gateway.directory / "calls" / gateway.request_id
+    pattern = re.compile(re.escape(slot) + r"(-evidence-retry-(\d+))?-batch-\d+$")
+    attempts = set()
+    if folder.is_dir():
+        for path in folder.glob("evidence_*.json"):
+            record = read_json(path, {})
+            if record.get("status") != "completed":
+                continue
+            match = pattern.match(str(record.get("slot") or ""))
+            if match:
+                attempts.add(int(match.group(2) or 0))
+    return len(attempts)
+
+
+def approve_abstracted_sources(payload: dict[str, Any], pages: dict[str, dict[str, Any]],
+                               originals: dict[str, dict[str, Any]], *, directory: Path, project_dir: Path,
+                               query: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Accept only entries that describe a page this run really read.
+
+    Returns the approved map plus a deterministic reason list for every dropped
+    entry, so a retry (and the user-facing error) can name the actual gap. The
+    acceptance rule is exactly the previous inline filter.
+    """
+    approved: dict[str, dict[str, Any]] = {}
+    dropped: list[dict[str, Any]] = []
+    for source in payload.get("sources") or []:
+        if not isinstance(source, dict):
+            dropped.append({"id": None, "url": None, "reason": "条目不是对象"})
+            continue
+        sid = source.get("id")
+        if not isinstance(sid, str) or sid not in pages:
+            dropped.append({"id": sid if isinstance(sid, str) else None, "url": source.get("url"), "reason": "id 不匹配任何实际读取的页面"})
+            continue
+        if canonical_url(str(source.get("url", ""))) != canonical_url(pages[sid]["url"]):
+            dropped.append({"id": sid, "url": source.get("url"), "reason": "url 与实际读取的页面不一致"})
+            continue
+        missing = next((field for field, kind in (("approved_summary", str), ("supported_claims", list), ("bibliography", str))
+                        if not isinstance(source.get(field), kind)
+                        or (isinstance(source.get(field), str) and not source[field].strip())
+                        or (isinstance(source.get(field), list) and not source[field])), None)
+        if missing:
+            dropped.append({"id": sid, "url": source.get("url"), "reason": f"{missing} 缺失或为空"})
+            continue
+        entry = {key: value for key, value in {**originals[sid], **source}.items() if key in {
+            "id", "url", "title", "authors", "year", "publication", "doi", "bibliography", "approved_summary", "supported_claims", "limitations"}}
+        entry.update({key: pages[sid][key] for key in ("read_scope", "retrieved_at", "file_sha256", "text_sha256")})
+        entry["verification"] = "page_read_and_abstracted"
+        entry.update(provider="openai_web_search+public_page_reader", query=query or "",
+                     local_path=str((directory / f"{sid}.json").relative_to(project_dir)), status="imported",
+                     error=None, generated_card_count=0)
+        approved[sid] = entry
+    return approved, dropped
+
+
+def evidence_failure_message(pages_read: int, dropped: list[dict[str, Any]], exhausted: bool) -> str:
+    reasons = "；".join(str(item.get("reason")) for item in dropped[:6] if isinstance(item, dict))
+    detail = f"；{len(dropped)} 个条目未通过核验（{reasons}）" if dropped else ""
+    tail = ("；本轮来源抽象尝试已达上限，需要完成一次新的联网检索才能继续"
+            if exhausted else "；已保留检索与已读页面，重试本阶段会复用它们而不重新联网")
+    return f"实际读取材料未形成可靠的来源摘要，未开始正文（已实际读取 {pages_read} 个页面{detail}）{tail}"
+
+
 def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[[str], dict[str, Any]] = fetch_public_page, slot: str = "") -> dict[str, Any]:
     directory = gateway.directory / "research" / gateway.request_id / (sha256(slot.encode()).hexdigest()[:16] if slot else "plan")
     cached = read_json(directory / "approved.json")
@@ -381,31 +468,36 @@ def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[
         size += len(page["text"])
     if group:
         groups.append(group)
-    abstracted: dict[str, list] = {"sources": [], "gaps": []}
-    for index, group in enumerate(groups):
-        page_ids = {page["id"] for page in group}
-        part = gateway.json("evidence", {"proposed_sources": [source for source in source_info if source["id"] in page_ids], "pages": group}, max_tokens=10000, slot=f"{slot}-batch-{index}")
-        if not isinstance(part.get("sources"), list) or not isinstance(part.get("gaps", []), list):
-            raise GeneralLongformReview("来源摘要的结构不完整")
-        abstracted["sources"].extend(part["sources"])
-        abstracted["gaps"].extend(part.get("gaps", []))
     by_id = {item["id"]: item for item in pages}
     originals = {item["id"]: item for item in source_info}
-    approved = {}
-    for source in abstracted.get("sources") or []:
-        sid = source.get("id") if isinstance(source, dict) else None
-        if not isinstance(sid, str) or sid not in by_id or canonical_url(str(source.get("url", ""))) != canonical_url(by_id[sid]["url"]):
-            continue
-        if not isinstance(source.get("approved_summary"), str) or not source["approved_summary"].strip() or not isinstance(source.get("supported_claims"), list) or not source["supported_claims"] or not isinstance(source.get("bibliography"), str) or not source["bibliography"].strip():
-            continue
-        approved[sid] = {key: value for key, value in {**originals[sid], **source}.items() if key in {
-            "id", "url", "title", "authors", "year", "publication", "doi", "bibliography", "approved_summary", "supported_claims", "limitations"}}
-        approved[sid].update({key: by_id[sid][key] for key in ("read_scope", "retrieved_at", "file_sha256", "text_sha256")})
-        approved[sid]["verification"] = "page_read_and_abstracted"
-        approved[sid].update(provider="openai_web_search+public_page_reader", query=proposed.get("search_summary") or proposed.get("topic", ""),
-                             local_path=str((directory / f"{sid}.json").relative_to(gateway.directory)), status="imported", error=None, generated_card_count=0)
+    query = proposed.get("search_summary") or proposed.get("topic", "")
+    used = _completed_evidence_attempts(gateway, slot)
+    budget = max(0, min(_EVIDENCE_ATTEMPT_CAP, used + evidence_retry_attempts() + 1) - used)
+    abstracted: dict[str, list] = {"sources": [], "gaps": []}
+    approved: dict[str, dict[str, Any]] = {}
+    dropped = read_json(directory / "rejected.json", []) or []
+    for step in range(budget):
+        attempt = used + step
+        rejected = dropped if attempt else []
+        abstracted = {"sources": [], "gaps": []}
+        for index, group in enumerate(groups):
+            page_ids = {page["id"] for page in group}
+            part_context: dict[str, Any] = {"proposed_sources": [source for source in source_info if source["id"] in page_ids], "pages": group}
+            if rejected:
+                part_context.update(rejected_entries=rejected, rejection_note=_EVIDENCE_RETRY_NOTE)
+            suffix = f"-evidence-retry-{attempt}" if attempt else ""
+            part = gateway.json("evidence", part_context, max_tokens=10000, slot=f"{slot}{suffix}-batch-{index}")
+            if not isinstance(part.get("sources"), list) or not isinstance(part.get("gaps", []), list):
+                raise GeneralLongformReview("来源摘要的结构不完整")
+            abstracted["sources"].extend(part["sources"])
+            abstracted["gaps"].extend(part.get("gaps", []))
+        approved, dropped = approve_abstracted_sources(abstracted, by_id, originals, directory=directory,
+                                                      project_dir=gateway.directory, query=query)
+        atomic_json(directory / "rejected.json", dropped)
+        if approved:
+            break
     if not approved:
-        raise GeneralLongformReview("实际读取材料未形成可靠的来源摘要，未开始正文")
+        raise GeneralLongformReview(evidence_failure_message(len(pages), dropped, budget == 0 or used + budget >= _EVIDENCE_ATTEMPT_CAP))
     result = {"topic": proposed.get("topic", ""), "domain": proposed.get("domain", ""), "sources": approved,
               "gaps": abstracted.get("gaps", []), "errors": errors, "web_call_completed": True,
               "rawTextIncluded": False, "retrieved_at": now_iso()}

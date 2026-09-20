@@ -26,7 +26,7 @@ BUSY = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.FETCHING_TOPICS, T
 
 
 class ActionRequest(BaseModel):
-    action: Literal["plan", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume"]
+    action: Literal["plan", "repair_outline_candidate", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume"]
     feedback: str = Field(default="", max_length=10000)
     chapter_number: int | None = Field(default=None, ge=1, le=15)
     packaging_index: int | None = Field(default=None, ge=0, le=4)

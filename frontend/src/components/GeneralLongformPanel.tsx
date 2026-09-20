@@ -195,6 +195,20 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
     </header>
     {(error || state.last_error || state.task_error || state.export_error) && <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-4 text-sm leading-relaxed text-amber-200">{error || state.last_error || state.task_error || state.export_error}</div>}
     {notice && <p role="status" className="text-sm text-gold-200">{notice}</p>}
+    {!plan && state.outline_candidate && <div className="rounded-xl border border-gold-400/25 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200" data-testid="longform-outline-recovery">
+        <p className="text-warm-100">大纲候选已保留（未确认、未进入正文），下一步二选一：</p>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-warm-300">
+          <li>只修校验问题：点下面按钮，复用本书已完成并核验过的检索证据按校验问题做一次局部修复，<strong className="text-gold-200">不重新联网检索</strong>；只补不合格字段，其余章节保持原样。通过后仍是待确认大纲，需要你自己确认。</li>
+          <li>确实要改内容或换方向：到“规划”页填写具体修改要求后点“修订并导出新版大纲”，那条路径会按既定流程重新核查来源（多一轮检索调用）。</li>
+          <li>已有确认大纲时，去“材料”页上传 Word，识别后从真实进度接续。</li>
+        </ol>
+        <button className="btn-gold mt-3 disabled:opacity-40" disabled={busy || held} onClick={() => void act({ action: "repair_outline_candidate" })}>按校验结果修复候选大纲（不重新检索）</button>
+        <p className="mt-2 text-xs text-warm-500">只新增一次「大纲局部修订」生成调用并计入费用，已完成的检索不会重复付费；若本项目没有可复用的检索证据，系统会提示改用大纲局部修订。</p>
+      </div>}
+    {!plan && !state.outline_candidate && state.phase === "needs_review" && state.can_resume && <div className="rounded-xl border border-gold-400/25 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200" data-testid="longform-resume-recovery">
+        <p className="text-warm-100">上次操作停在检索/大纲阶段，断点已保留：</p>
+        <p className="mt-2 text-warm-300">已完成的参考抽象、联网检索和<b>实际读取的页面全文</b>都在断点里。点<b className="text-gold-200">「恢复上次操作」</b>会用它们继续，只重跑未完成的来源抽象，<strong className="text-gold-200">不重新联网检索</strong>；只有点「研究并生成待确认大纲」才会发起一次全新的联网检索并产生新的费用。</p>
+      </div>}
     <nav role="tablist" aria-label="通用长篇模块" className="flex flex-wrap gap-2">
       {TABS.map((name) => <button key={name} id={`longform-tab-${name}`} role="tab" aria-selected={tab === name} aria-controls="longform-content" onClick={() => setTab(name)} className={`rounded-full border px-5 py-2 text-sm transition-colors ${tab === name ? "border-gold-400/60 bg-gold-500/10 text-warm-100" : "border-gold-500/15 text-warm-400 hover:text-warm-100"}`}>{name}</button>)}
     </nav>
@@ -274,7 +288,10 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
       {tab === "研究" && <>
         <h2 className="font-serif text-xl text-warm-100">真实检索与来源证据</h2>
         <p className="text-sm leading-7 text-warm-400">这里仅展示实际搜索、读取页面后形成的摘要与适用范围。原始参考文本只在摄取/抽象阶段使用，不进入正文生成。</p>
-        {!Object.keys(state.sources).length && <p className="text-sm text-warm-500">尚未形成通过核验的来源。搜索或页面读取失败会保留错误并停止推进。</p>}
+        {!Object.keys(state.sources).length && <div className="rounded-xl border border-gold-500/15 p-4 text-sm leading-7 text-warm-400">
+          <p>尚未形成通过核验的来源；搜索、页面读取和摘要核验失败都会保留错误并停止推进，不会用未核验的材料写正文。</p>
+          <p className="mt-2">继续的办法（按花费从低到高）：① 点工作区顶部「恢复上次操作」，复用已完成的检索和已读取的页面重跑来源抽象，不重新联网；② 在“材料”页上传选题要求、逐字稿或权威来源清单后点“识别材料并继续当前阶段”，让下一轮检索带着方向跑；③ 只有确实要换一批来源时才重新“研究并生成待确认大纲”（会发起新的联网检索）。</p>
+        </div>}
         {Object.values(state.sources).map((s) => <details key={s.id} className="rounded-xl border border-gold-500/15 p-4"><summary className="cursor-pointer text-sm text-warm-100">{s.title || s.bibliography} <span className="text-xs text-gold-300">· 已读取并抽象</span></summary><div className="mt-3 space-y-3 text-sm leading-7 text-warm-300"><p>{s.bibliography}</p>{/^https?:\/\//i.test(s.url) && <a href={s.url} target="_blank" rel="noopener noreferrer" className="block break-all text-gold-300 underline">打开原始来源</a>}<p>{s.approved_summary}</p><p>支撑观点：{s.supported_claims?.map(printable).join("；")}</p><p>范围：{s.read_scope}</p><p>局限：{s.limitations?.map(printable).join("；") || "以记录的读取范围为准"}</p><p className="text-xs text-warm-500">{s.id} · {timeText(s.retrieved_at)}</p></div></details>)}
       </>}
       {tab === "日志" && <>

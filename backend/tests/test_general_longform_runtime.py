@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -159,6 +160,59 @@ def test_failed_reads_are_recorded_not_fabricated(tmp_path):
         runtime.research(gateway, {}, fetch=fail)
     error_file = next(tmp_path.glob("research/**/errors.json"))
     assert "unreachable" in error_file.read_text(encoding="utf-8")
+
+
+def evidence_gateway(directory, *, mode="retry_ok"):
+    """Abstraction double: ``retry_ok`` fixes itself, ``always_bad`` never does."""
+    gateway = ResearchGateway(directory)
+    contexts = []
+    def evidence_call(stage, context, **kwargs):
+        gateway.calls.append(stage)
+        contexts.append(deepcopy(context))
+        # Journal like ModelGateway so attempt bookkeeping matches production.
+        folder = directory / "calls" / gateway.request_id
+        folder.mkdir(parents=True, exist_ok=True)
+        key = sha256(json.dumps([stage, kwargs.get("slot", "")], ensure_ascii=False).encode()).hexdigest()
+        (folder / f"{stage}_{key}.json").write_text(json.dumps({"status": "completed", "slot": kwargs.get("slot", "")}), encoding="utf-8")
+        entry = context["pages"][0]
+        usable = mode == "retry_ok" and "rejected_entries" in context
+        common = {"id": entry["id"], "url": entry["url"], "bibliography": "Institute. Study. 2026."}
+        if usable:
+            payload = {**common, "approved_summary": "依据与范围", "supported_claims": ["受限定的测试事实"], "limitations": []}
+        else:
+            payload = {**common, "approved_summary_note": "字段名写错", "supported_claims": ["受限定的测试事实"]}
+        return {"sources": [payload], "gaps": []}
+    gateway.json = evidence_call
+    return gateway, contexts
+
+
+def test_unusable_evidence_entries_retry_against_the_same_paid_pages(tmp_path):
+    gateway, contexts = evidence_gateway(tmp_path)
+    fetched = []
+    def fetch(url): fetched.append(url); return page(url)
+    result = runtime.research(gateway, {}, fetch=fetch)
+    assert fetched == ["https://example.org/research"]           # no second retrieval and no second page read
+    assert gateway.calls.count("research") == 1
+    assert gateway.calls.count("evidence") == 2
+    assert "rejected_entries" not in contexts[0]
+    assert contexts[1]["rejected_entries"][0]["reason"] == "approved_summary 缺失或为空"
+    assert contexts[1]["pages"] == contexts[0]["pages"]
+    assert len(result["sources"]) == 1 and result["web_call_completed"]
+
+
+def test_hopeless_evidence_stops_within_its_attempt_budget_and_never_re_searches(tmp_path):
+    gateway, _ = evidence_gateway(tmp_path, mode="always_bad")
+    fetched = []
+    def fetch(url): fetched.append(url); return page(url)
+    with pytest.raises(runtime.GeneralLongformReview, match="未形成可靠的来源摘要"):
+        runtime.research(gateway, {}, fetch=fetch)
+    assert gateway.calls.count("evidence") == 2 and len(fetched) == 1  # no second retrieval or page read
+    with pytest.raises(runtime.GeneralLongformReview, match="已达上限"):
+        runtime.research(gateway, {}, fetch=fetch)               # an explicit resume buys one more abstraction only
+    assert gateway.calls.count("evidence") == 3 and len(fetched) == 1
+    with pytest.raises(runtime.GeneralLongformReview, match="已达上限"):
+        runtime.research(gateway, {}, fetch=fetch)               # cap reached: no further paid call
+    assert gateway.calls.count("evidence") == 3 and len(fetched) == 1
 
 
 def test_large_sources_are_abstracted_in_complete_bounded_groups(tmp_path):

@@ -216,6 +216,21 @@ def test_incomplete_outline_uses_local_revision_not_new_plan(api_fixture):
     assert response.status_code == 409 and not f.dispatched
 
 
+def test_blocked_candidate_repair_action_is_accepted_and_dispatched(api_fixture):
+    f = api_fixture
+    state = engine.initial_state(str(f.task.id))
+    state["outline_candidate"] = {"chapters": []}
+    state["last_research"] = {"web_call_completed": True}
+    atomic_json(f.directory / "state.json", state)
+    response = f.client.post(f.url + "/actions", json={"action": "repair_outline_candidate"})
+    assert response.status_code == 200, response.text
+    assert f.dispatched == [str(f.task.id)]
+    assert f.task.config["general_longform_request"]["action"] == "repair_outline_candidate"
+    # Re-planning while a candidate exists is still refused; the repair action is
+    # the only way forward, so nothing silently regenerates the paid plan.
+    assert f.client.post(f.url + "/actions", json={"action": "plan"}).status_code == 409
+
+
 def test_generic_mutation_and_regeneration_cannot_bypass_general_longform_gate(api_fixture):
     f = api_fixture
     for data in ({"title": "new"}, {"category": "social_science"}):

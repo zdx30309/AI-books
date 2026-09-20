@@ -101,6 +101,111 @@ def test_outline_patch_does_not_rewrite_unrelated_or_accepted_chapters():
             engine.apply_outline_patch(plan, patch, accepted_numbers={1})
 
 
+def test_format_invalid_first_outline_is_repaired_with_the_existing_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "research", fake_research)
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    broken = outline()
+    broken["packaging"][0]["title"] = "短"
+    broken["packaging"][2]["title"] = "短"
+    gateway.plan = broken
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"packaging": outline()["packaging"]}}
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "awaiting_outline_confirmation", state.get("last_error")
+    assert state["outline"] and not state.get("outline_candidate")
+    repair = next(call for call in gateway.calls if call["stage"] == "outline_revision")
+    assert "方案1书名需要10—18个可见字符" in repair["context"]["feedback"]
+    assert repair["context"]["outline"]["packaging"][0]["title"] == "短"  # patch the candidate, not a rewrite
+    assert read_json(tmp_path / "planning" / "outline_repair_1.json")["adopted"] is True
+    assert len([call for call in gateway.calls if call["stage"] == "research"]) == 1  # no re-search
+
+
+def test_failed_local_repair_keeps_a_revisable_candidate_and_blocks_normally(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "research", fake_research)
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    broken = outline()
+    broken["packaging"][0]["title"] = "短"
+    gateway.plan = broken
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"recommendation": "仍未补齐书名"}}
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "needs_review" and not state["confirmed"]
+    assert state["outline_candidate"] and "方案1书名需要10—18个可见字符" in state["last_error"]
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "plan")
+    assert len(gateway.calls) == calls  # a kept candidate never triggers a second paid plan
+
+
+def test_blocked_or_unpatchable_outline_errors_do_not_spend_a_repair_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "research", fake_research)
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    short = outline()
+    short["chapters"] = short["chapters"][:11]
+    gateway.plan = short
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "needs_review" and state["outline_candidate"]
+    assert not [call for call in gateway.calls if call["stage"] == "outline_revision"]
+
+    monkeypatch.setattr(engine, "research", fake_research)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "0")
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    gateway.plan = broken_titles()
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "needs_review" and state["outline_candidate"]
+    assert not [call for call in gateway.calls if call["stage"] == "outline_revision"]
+
+
+def broken_titles():
+    plan = outline()
+    plan["packaging"][0]["title"] = "短"
+    return plan
+
+
+def blocked_candidate(tmp_path, monkeypatch):
+    """Reproduce a first plan that failed validation and kept its candidate."""
+    monkeypatch.setattr(engine, "research", fake_research)
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    gateway.plan = broken_titles()
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"recommendation": "仍未补齐书名"}}
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "needs_review" and state["outline_candidate"]
+    calls = len(gateway.calls)
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"packaging": outline()["packaging"]}}
+    return state, gateway, calls
+
+
+def test_blocked_candidate_is_repaired_from_stored_evidence_without_a_new_research_round(tmp_path, monkeypatch):
+    state, gateway, calls = blocked_candidate(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "repair_outline_candidate")
+    assert state["phase"] == "awaiting_outline_confirmation", state.get("last_error")
+    assert state["outline"] and not state["outline_candidate"] and not state["confirmed"]
+    added = gateway.calls[calls:]
+    assert [call["stage"] for call in added] == ["outline_revision"]          # one generation call, no new search
+    assert len([call for call in gateway.calls if call["stage"] == "research"]) == 1
+    assert added[0]["context"]["research"]["web_call_completed"] is True
+    assert added[0]["context"]["research"]["sources"] == state["sources"]     # reuses this book's verified evidence
+    exported = read_json(tmp_path / "planning" / "outline_repair_1.json")
+    assert exported["adopted"] is True and exported["errors_after"] == []
+
+
+def test_blocked_candidate_repair_is_idempotent_and_never_double_charges(tmp_path, monkeypatch):
+    state, gateway, calls = blocked_candidate(tmp_path, monkeypatch)
+    request = {"id": str(uuid4()), "action": "repair_outline_candidate", "created_at": "2026-09-20T00:00:00+00:00"}
+    run(tmp_path, state, gateway, "repair_outline_candidate", request=request)
+    after = len(gateway.calls)
+    state["completed_requests"].remove(request["id"])  # a worker restart replays the same request id
+    run(tmp_path, state, gateway, "repair_outline_candidate", request=request)
+    assert len(gateway.calls) == after
+    assert state["phase"] == "awaiting_outline_confirmation"
+
+
+def test_candidate_without_stored_evidence_points_to_the_documented_revision_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "research", fake_research)
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    state["outline_candidate"] = broken_titles()
+    run(tmp_path, state, gateway, "repair_outline_candidate")
+    assert state["phase"] == "needs_review" and "大纲局部修订" in state["last_error"]
+    assert not gateway.calls
+
+
 def test_plan_confirm_three_serial_chapters_and_idempotent_replay(tmp_path, monkeypatch):
     state, gateway = ready(tmp_path, monkeypatch)
     assert not state["chapters"] and len(state["artifacts"]) == 2

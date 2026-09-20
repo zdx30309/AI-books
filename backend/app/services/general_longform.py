@@ -10,6 +10,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any, Callable
@@ -26,7 +27,25 @@ from app.services.general_longform_runtime import (
 ROOT = Path(__file__).resolve().parents[3]
 DOMAINS = {"小白理财", "女性成长", "医疗健康与体重管理", "两性关系与婚育", "情绪心理与高情商沟通",
            "认知成长与效能提升", "生活方式与人生选择", "职场成长与职业突围", "人性洞察与传统智慧"}
-ACTIONS = {"plan", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials"}
+ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials"}
+
+# A first outline that only fails local structure checks is recovered with the
+# existing outline_revision stage, so one format slip cannot strand a project in
+# a dead end. The validator output is the data passed as feedback; no prompt
+# asset, stage list or acceptance rule changes, and the repaired outline still
+# has to pass exactly the same validation.
+_OUTLINE_REPAIR_FEEDBACK_LEAD = "自动结构校验未通过，请只按下述问题做最小必要修正，其余内容保持原样、不要完整重写："
+# These cannot be produced by a local patch, so do not spend a call on them.
+_OUTLINE_UNPATCHABLE_ERRORS = ("大纲不是结构化对象", "全书需要12—15章")
+
+
+def outline_repair_attempts() -> int:
+    """Bounded auto-repair budget for one invalid first outline (default 1)."""
+    raw = os.environ.get("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "1")
+    try:
+        return max(0, min(3, int(str(raw).strip() or "0")))
+    except (TypeError, ValueError):
+        return 1
 
 
 def work_dir(task_id: UUID | str) -> Path:
@@ -408,11 +427,84 @@ class GeneralLongformRunner:
         atomic_json(self.directory / "planning" / f"candidate_{self.request['id']}.json", plan)
         errors = validate_outline(plan, self.state["sources"])
         if errors:
+            # Keep the paid candidate as the breakpoint, then try the documented
+            # bounded local repair before reporting a blocking item.
+            plan, errors = self.repair_outline(plan, errors, evidence)
+        if errors:
             self.state["outline_candidate"] = plan
             raise GeneralLongformReview("；".join(errors))
-        self.state.update(outline=plan, outline_version=1, confirmed=False, phase="awaiting_outline_confirmation", outline_candidate=None, planned_request_id=self.request["id"])
+        self.adopt_first_outline(plan)
+
+    def adopt_first_outline(self, plan: dict[str, Any]) -> None:
+        """Publish the first outline version and stop for user confirmation."""
+        self.state.update(outline=plan, outline_version=1, confirmed=False, phase="awaiting_outline_confirmation",
+                          outline_candidate=None, planned_request_id=self.request["id"])
         self.save()
         self._outline_export(confirmed=False)
+
+    def repair_outline_candidate(self) -> None:
+        """Finish a blocked first outline without paying for a second research round.
+
+        Only evidence this book already verified is reused, and the repaired
+        outline still has to pass exactly the same ``validate_outline`` gate. A
+        candidate without stored evidence is sent to the documented
+        ``revise_outline`` path instead, so nothing is silently degraded.
+        """
+        if self.state.get("candidate_repair_request_id") == self.request["id"]:
+            if self.state.get("outline"):
+                self._outline_export(confirmed=False)
+            return
+        if self.state.get("outline"):
+            raise GeneralLongformReview("已有大纲；请使用局部修订或确认大纲")
+        plan = self.state.get("outline_candidate")
+        if not isinstance(plan, dict):
+            raise GeneralLongformReview("没有可修复的大纲候选；请先生成或导入大纲")
+        stored = self.state.get("last_research")
+        if not isinstance(stored, dict) or not stored.get("web_call_completed") or not self.state.get("sources"):
+            raise GeneralLongformReview("本项目没有可直接复用的检索证据；请使用大纲局部修订")
+        errors = validate_outline(plan, self.state["sources"])
+        if errors:
+            evidence = {**stored, "sources": self.state["sources"]}
+            plan, errors = self.repair_outline(plan, errors, evidence)
+        if errors:
+            self.state["outline_candidate"] = plan
+            raise GeneralLongformReview("；".join(errors))
+        self.state["candidate_repair_request_id"] = self.request["id"]
+        self.adopt_first_outline(plan)
+
+    def repair_outline(self, plan: Any, errors: list[str], evidence: dict[str, Any]) -> tuple[Any, list[str]]:
+        """Locally repair a structurally invalid first outline, keeping the gate.
+
+        Reuses the existing ``outline_revision`` stage and the evidence already
+        fetched for this plan request, so nothing is re-searched and no prompt
+        asset changes. If the repaired outline still fails validation, the
+        repaired version and its remaining errors are returned so the caller
+        records the most advanced candidate; rejections and blocked patches
+        return the previous plan and errors untouched.
+        """
+        attempts = outline_repair_attempts()
+        if not attempts or not isinstance(plan, dict) or any(error.startswith(_OUTLINE_UNPATCHABLE_ERRORS) for error in errors):
+            return plan, errors
+        for attempt in range(1, attempts + 1):
+            self.progress(20, f"通用长篇：大纲结构校验未通过，正在按校验问题做第{attempt}次局部修复")
+            audit = {"attempt": attempt, "errors_before": list(errors), "previous": plan}
+            try:
+                patch = self.gateway.json(
+                    "outline_revision",
+                    self.context(outline=plan, feedback=_OUTLINE_REPAIR_FEEDBACK_LEAD + "；".join(errors), research=evidence),
+                    max_tokens=22000, slot=f"outline-repair-{attempt}")
+                updated = apply_outline_patch(plan, patch, accepted_numbers=set())
+                repaired = validate_outline(updated, self.state["sources"])
+            except GeneralLongformReview as exc:
+                atomic_json(self.directory / "planning" / f"outline_repair_{attempt}.json",
+                            {**audit, "adopted": False, "reason": _error_text(exc)})
+                return plan, errors
+            atomic_json(self.directory / "planning" / f"outline_repair_{attempt}.json",
+                        {**audit, "adopted": not repaired, "patch": patch, "result": updated, "errors_after": repaired})
+            plan, errors = updated, repaired
+            if not errors:
+                break
+        return plan, errors
 
     def _outline_export(self, *, confirmed: bool) -> None:
         key = f"{self.state['outline_version']}:{confirmed}"
@@ -879,6 +971,8 @@ class GeneralLongformRunner:
             self.save()
             if action == "plan":
                 self.plan()
+            elif action == "repair_outline_candidate":
+                self.repair_outline_candidate()
             elif action == "revise_outline":
                 self.revise_outline()
             elif action == "confirm_outline":

@@ -1,5 +1,16 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：两个校验断点的低成本恢复修正（2026-09-20）
+
+- 现象一：新项目（v02）输入视频链接后，逐字稿已成功提取，但首版大纲因书名长度超出 10—18 可见字符被拦下，工作区停在“有待处理项”，主操作按钮消失，用户不知道下一步。现象二：来源抽象节点出现 `实际读取材料未形成可靠的来源摘要，未开始正文`（生成件已下载的页面全部读到了，但摘要条目没有一个通过核验），同样停在“有待处理项”。
+- 只修这两处，未改动任何专属 prompt：`backend/app/prompts/general_longform/**`（v02 840/23、v16 571/19、manifest、全部 stage 模板）逐字节不变；`validate_outline`、来源核验规则（approved_summary / supported_claims / bibliography / id / url）、验收门禁、串行链路、10 万字与双 Word 规则全部不变。成功路径的行为完全不变。
+- 成本审计（回答“局部写入是不是要重来一遍钱”）：一次 `plan` 请求的付费节点是 reference_analysis(1) + materials 素材摘要(有素材时 1) + research 联网检索(1 次 web 搜索) + evidence 来源抽象(每个 ≤18 万字符页面组 1 次) + outline(1)。原先的 `revise_outline` 会命中缓存的 reference/素材摘要（0 费用），但 `research(slot="outline-revision")` 是**新的请求上下文，必然重新联网检索**，再加一次 outline_revision 生成；大纲候选被拦下后重跑 `plan` 同样会重新检索。这就是“再来一遍钱”的真实来源。
+- 修复一（大纲）：`GeneralLongformRunner.plan` 校验失败时保留已付费候选，随后用既有 `outline_revision` 节点（同一 stage、同一提示词文件、复用本次已完成的检索证据）做一次有界局部修复，修复后仍需通过同一 `validate_outline`。新增动作 `repair_outline_candidate`（API + 工作区按钮）让**已经卡住的任务**也能走同一条廉价路径：直接复用 `state["last_research"] + state["sources"]`，零联网、零页面重读，只新增 1 次 outline_revision 生成；没有可复用证据时明确拒绝并指向 `revise_outline`，不静默降级。幂等键 `candidate_repair_request_id`。
+- 修复二（来源）：`research()` 在每个页面组上做有界重试。被核验排除的条目会带上确定性原因（id 不匹配 / url 不一致 / approved_summary 缺失或为空 / supported_claims 缺失或为空 / bibliography 缺失或为空），作为 `rejected_entries` 数据随下一次抽象请求回传；页面全文、web 检索结果、已读页面缓存全部复用，不重新联网。每个 research slot 的总尝试上限 `_EVIDENCE_ATTEMPT_CAP=3`，尝试次数从 gateway 调用日志读出，所以**“恢复上次操作”每点一次只多花 1 次来源抽象调用**，永远不会重跑 web 搜索；达到上限后停止并给出明确原因，不再产生调用。开关 `GENERAL_LONGFORM_EVIDENCE_RETRY_ATTEMPTS`（默认 1，最大 2）。错误信息现在会写明已读取页面数、被排除条目的原因与“是否可复用”。
+- 前端：候选大纲存在且未确认时显示“大纲候选已保留”面板（一键按校验结果修复，明确标注不重新检索）；检索阶段停在 `needs_review` 时显示“恢复上次操作更便宜”提示，指出已读取页面仍在断点里、只有点“研究并生成待确认大纲”才会发起新的联网检索。
+- 验证（2026-09-20，本机）：通用长篇相关六个测试文件 `300 passed`，其中新增 9 个用例（大纲：成功后采用修复、修复失败仍保留可修订候选、结构错误/关闭开关不产生调用、廉价动作复用证据不重检索、幂等重放、无证据时改走局部修订；来源：条目不合格时用同一批已读页面重试一次并带上排除原因、无望时尝试上限内停止且每点一次只多 1 次抽象调用）。`backend/tests` 全量 `1053 passed, 1 skipped`，另有 `test_qingdou_xiaohongshu.py` 2 项既有失败（在未打补丁的基线上同样失败，属既有问题，本次未触碰）。`npm run typecheck`、`npm run build` PASS；浏览器 fixture 13 项场景 PASS、0 page errors（新增两条恢复面板场景），证据 `.local/general_longform_v02/browser/browser_report.json`。
+- 未做：未运行真实付费十万字生成，未改动其他分类、Epic 状态表、模型凭据与生产数据；历史 `PARTIAL_IMPLEMENTATION` 结论不变。发布到 GitHub/北京 ECS 仍待执行。
+
 ## OpenAI 鉴权故障定位与恢复修正（2026-09-15）
 
 - Diagnosis PASS: the live Beijing ECS worker reached the configured OpenAI endpoint through the unchanged project proxy; a read-only `GET /v1/models` returned HTTP 401 / `account_deactivated` in 3.35 seconds. Local active configuration and the worker have the same credential fingerprint; no credentials are printed or changed.
