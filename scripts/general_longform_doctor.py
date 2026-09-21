@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +26,7 @@ for path in (str(REPO_ROOT / "backend"), str(REPO_ROOT)):
 from app.core.config import settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models import Task  # noqa: E402
-from app.services.general_longform import load_state, work_dir  # noqa: E402
+from app.services.general_longform import CATEGORY, load_state, work_dir  # noqa: E402
 from app.services.general_longform_guidance import build_guidance  # noqa: E402
 
 PHASES = {
@@ -77,7 +78,52 @@ def advice(task: Task, cfg: dict, state: dict | None, *, stale_seconds: int) -> 
     return result.get("headline", ""), todo, result
 
 
-def collect(*, task_id: str | None, all_longform: bool, stale_seconds: int) -> list[dict]:
+def remote_state(task_id: str) -> dict | None:
+    """Read one task's state.json from the deployed host, read-only.
+
+    The workspace itself runs on the deployed host, so a task that ran there has
+    no local state file. Without this the command line would guess a different
+    next step than the workspace shows; it never writes, never calls a model.
+    """
+    try:
+        import paramiko
+    except ImportError:
+        return None
+    config_path = REPO_ROOT / "deployment.local.json"
+    if not config_path.exists():
+        return None
+    try:
+        host_config = json.loads(config_path.read_text(encoding="utf-8-sig"))["beijing_ecs"]
+    except (KeyError, OSError, ValueError):
+        return None
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(host_config["host"], username=host_config["user"], password=host_config.get("password"),
+                       timeout=15, look_for_keys=True)
+        compose = "docker compose -f /opt/video-plan/docker-compose.yml"
+        _, stdout, _ = client.exec_command(compose + " ps -q backend", timeout=30)
+        container = stdout.read().decode("utf-8", "replace").strip()
+        if not container:
+            return None
+        path = "/app/backend/output/task_" + str(task_id) + "/" + CATEGORY + "/state.json"
+        _, stdout, _ = client.exec_command("docker exec " + container + " cat " + shlex.quote(path), timeout=60)
+        raw = stdout.read().decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    finally:
+        client.close()
+    if not raw.startswith("{"):
+        return None
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def collect(*, task_id: str | None, all_longform: bool, stale_seconds: int, allow_remote: bool = True) -> list[dict]:
+    remote_used = [0]
     categories = {"general_longform"}
     if all_longform:
         categories |= {"long_novel", "public_domain_rewrite", "epic_novel"}
@@ -94,6 +140,11 @@ def collect(*, task_id: str | None, all_longform: bool, stale_seconds: int) -> l
                 state = load_state(work_dir(task.id))
             except (OSError, ValueError):
                 state = None
+            state_source = "本地断点"
+            if state is None and allow_remote and remote_used[0] < 10:
+                remote_used[0] += 1
+                state = remote_state(task.id)
+                state_source = "北京服务器断点" if state is not None else "无（本地与服务器都没读到）"
             judge, todo, plan = advice(task, cfg, state, stale_seconds=stale_seconds)
             rows.append(
                 {
@@ -114,6 +165,7 @@ def collect(*, task_id: str | None, all_longform: bool, stale_seconds: int) -> l
                     "last_action": (cfg.get("general_longform_request") or {}).get("action"),
                     "holds": [key for key in HOLD_KEYS if cfg.get(key)],
                     "error": str(task.error_message or "")[:300],
+                    "state_source": state_source,
                     "judge": judge,
                     "todo": todo,
                     "created_at": task.created_at.isoformat() if task.created_at else "",
@@ -127,10 +179,12 @@ def main() -> int:
     parser.add_argument("--task", default=None, help="只看某个任务 id")
     parser.add_argument("--all-longform", action="store_true", help="连其它长篇分类一起看")
     parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument("--no-remote", action="store_true", help="只读本地断点，不连北京服务器")
     args = parser.parse_args()
 
     stale_seconds = max(60, int(getattr(settings, "STALE_PROCESSING_REQUEUE_SECONDS", 900) or 900))
-    rows = collect(task_id=args.task, all_longform=args.all_longform, stale_seconds=stale_seconds)
+    rows = collect(task_id=args.task, all_longform=args.all_longform, stale_seconds=stale_seconds,
+                   allow_remote=not args.no_remote)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
@@ -149,6 +203,7 @@ def main() -> int:
         print(f"  状态: {item['status']} | 阶段: {item['phase']}（{item['phase_label']}） | 进度: {item['progress']}%")
         print(f"  已验收章节: {item['accepted_chapters']} | 大纲版本: v{item['outline_version']} | 最近动作: {item['last_action']}")
         print(f"  当前步骤: {item['current_step']}")
+        print(f"  状态来源: {item['state_source']}（只读）")
         if item["holds"]:
             print(f"  ⚠ 人工闸门: {', '.join(item['holds'])}")
         if item["error"]:
