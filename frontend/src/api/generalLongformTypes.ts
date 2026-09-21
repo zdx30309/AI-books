@@ -1,6 +1,6 @@
 import type { TaskStatus } from "./types";
 
-export type LongformAction = "plan" | "repair_outline_candidate" | "revise_outline" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume";
+export type LongformAction = "plan" | "repair_outline_candidate" | "revise_outline" | "repair_outline_revision" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume";
 export type MaterialRole = "auto" | "source" | "outline" | "chapter" | "editorial" | "report" | "instruction";
 export interface GeneralLongformAction {
   action: LongformAction;
@@ -61,6 +61,26 @@ export interface LongformCall {
   usage?: Record<string, number | string | boolean>;
   prompt_version?: string; prompt_source_sha256?: string;
 }
+export interface LongformNextAction {
+  action: LongformAction | "manual";
+  label: string;
+  reason: string;
+  cost: string;
+  params: Record<string, unknown>;
+  enabled: boolean;
+  disabled_reason: string;
+  requires_feedback: boolean;
+  tab: string;
+}
+export interface LongformGuidance {
+  stall_kind: string;
+  headline: string;
+  detail: string;
+  primary: LongformNextAction | null;
+  alternatives: LongformNextAction[];
+  avoid: { action: string; reason: string }[];
+  notes: string[];
+}
 export interface GeneralLongformState {
   project_id: string; phase: string; task_status: TaskStatus; progress: number; current_step: string;
   task_error?: string | null; last_error?: string | null; export_error?: string | null;
@@ -69,7 +89,7 @@ export interface GeneralLongformState {
   total_words: number; chapters: Record<string, { accepted?: LongformChapter | null; candidate?: LongformChapter | null; history?: LongformChapter[] }>;
   artifacts: LongformArtifact[]; sources: Record<string, LongformSource>;
   materials: { id: string; filename: string; role: MaterialRole; imported: boolean; confirmed: boolean; characters: number; sha256: string; notes?: string; approved_notes?: string }[];
-  call_logs: LongformCall[]; can_resume: boolean;
+  call_logs: LongformCall[]; can_resume: boolean; guidance?: LongformGuidance | null;
   delivery_holds: { request_id: string; action: string; status: string; response_id?: string | null; error?: string }[];
   final_audit?: { issues: LongformIssue[]; actual_words: number; summary: string; style_review?: LongformStyleReview };
 }

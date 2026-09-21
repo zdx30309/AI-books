@@ -27,7 +27,7 @@ from app.services.general_longform_runtime import (
 ROOT = Path(__file__).resolve().parents[3]
 DOMAINS = {"小白理财", "女性成长", "医疗健康与体重管理", "两性关系与婚育", "情绪心理与高情商沟通",
            "认知成长与效能提升", "生活方式与人生选择", "职场成长与职业突围", "人性洞察与传统智慧"}
-ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials"}
+ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials"}
 
 # A first outline that only fails local structure checks is recovered with the
 # existing outline_revision stage, so one format slip cannot strand a project in
@@ -37,6 +37,17 @@ ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "confirm_outlin
 _OUTLINE_REPAIR_FEEDBACK_LEAD = "自动结构校验未通过，请只按下述问题做最小必要修正，其余内容保持原样、不要完整重写："
 # These cannot be produced by a local patch, so do not spend a call on them.
 _OUTLINE_UNPATCHABLE_ERRORS = ("大纲不是结构化对象", "全书需要12—15章")
+_TOP_LEVEL_PATCH_FIELDS = ("topic", "domain", "audience", "central_question", "scope_exclusions", "voice",
+                            "packaging", "recommended_index", "recommendation", "target_words", "handoff", "research_gaps")
+_CHAPTER_PATCH_FIELDS = ("title", "target_words", "question", "new_information", "previous_link", "next_link",
+                         "do_not_repeat", "source_ids", "sections")
+_REVISION_SCHEMA_REMINDER = (
+    "上一次补丁没有通过结构校验。请只输出这样的 JSON："
+    '{"chapter_patches":[{"number":章号,"changes":{...}}],"top_level_changes":{...},"reason":"修改理由"}；'
+    "top_level_changes 里只允许出现这些字段：" + "、".join(_TOP_LEVEL_PATCH_FIELDS) + "；"
+    "chapter_patches[].changes 里只允许出现这些字段：" + "、".join(_CHAPTER_PATCH_FIELDS) + "；"
+    "不要附带其它顶层键，不要返回整本书结构，不要新增或删除章号。仍然只解决下面的问题："
+)
 
 
 def outline_repair_attempts() -> int:
@@ -159,12 +170,27 @@ def validate_outline(outline: dict[str, Any], sources: dict[str, Any], *, confir
 
 
 def apply_outline_patch(outline: dict[str, Any], patch: dict[str, Any], *, accepted_numbers: set[int]) -> dict[str, Any]:
+    if not isinstance(patch, dict):
+        raise GeneralLongformReview("大纲补丁必须是 JSON 对象")
     result = deepcopy(outline)
     allowed = {"topic", "domain", "audience", "central_question", "scope_exclusions", "voice", "packaging",
                "recommended_index", "recommendation", "target_words", "handoff", "research_gaps"}
     changes = patch.get("top_level_changes", {})
-    if not isinstance(changes, dict) or set(changes) - allowed:
-        raise GeneralLongformReview("大纲补丁包含未允许的全局结构改写")
+    if not isinstance(changes, dict):
+        # A model sometimes puts the whole book structure here. Drop the
+        # unusable shape instead of failing the round; a patch with no usable
+        # content at all is still refused below.
+        changes = {}
+    unknown = set(changes) - allowed
+    if unknown:
+        # 模型偶尔会把整本书结构塞进 top_level_changes。这里只丢弃不认识/不允许的字段，
+        # 保留认识的部分；结果仍要过 validate_outline 并等用户确认，不降低任何验收门。
+        changes = {key: value for key, value in changes.items() if key in allowed}
+    patches = patch.get("chapter_patches") or []
+    if not changes and not (isinstance(patches, list) and patches):
+        # Nothing usable arrived (unknown keys only, or an unusable shape).
+        # Refuse loudly instead of reporting a revision that changed nothing.
+        raise GeneralLongformReview("大纲补丁包含未允许的全局结构改写，且没有可用的章节补丁")
     if accepted_numbers and set(changes) & {"topic", "domain", "audience", "central_question", "voice", "packaging", "recommended_index"}:
         raise GeneralLongformReview("已有验收正文，书名、定位及主问题保持固定")
     result.update(changes)
@@ -485,25 +511,31 @@ class GeneralLongformRunner:
         attempts = outline_repair_attempts()
         if not attempts or not isinstance(plan, dict) or any(error.startswith(_OUTLINE_UNPATCHABLE_ERRORS) for error in errors):
             return plan, errors
+        feedback = _OUTLINE_REPAIR_FEEDBACK_LEAD + "；".join(errors)
         for attempt in range(1, attempts + 1):
             self.progress(20, f"通用长篇：大纲结构校验未通过，正在按校验问题做第{attempt}次局部修复")
             audit = {"attempt": attempt, "errors_before": list(errors), "previous": plan}
             try:
                 patch = self.gateway.json(
                     "outline_revision",
-                    self.context(outline=plan, feedback=_OUTLINE_REPAIR_FEEDBACK_LEAD + "；".join(errors), research=evidence),
+                    self.context(outline=plan, feedback=feedback, research=evidence),
                     max_tokens=22000, slot=f"outline-repair-{attempt}")
                 updated = apply_outline_patch(plan, patch, accepted_numbers=set())
                 repaired = validate_outline(updated, self.state["sources"])
             except GeneralLongformReview as exc:
+                errors = [_error_text(exc)]
                 atomic_json(self.directory / "planning" / f"outline_repair_{attempt}.json",
-                            {**audit, "adopted": False, "reason": _error_text(exc)})
+                            {**audit, "adopted": False, "reason": errors[0]})
+                if attempt < attempts:
+                    feedback = _OUTLINE_REPAIR_FEEDBACK_LEAD + "；".join(errors) + "\n" + _REVISION_SCHEMA_REMINDER
+                    continue
                 return plan, errors
             atomic_json(self.directory / "planning" / f"outline_repair_{attempt}.json",
                         {**audit, "adopted": not repaired, "patch": patch, "result": updated, "errors_after": repaired})
             plan, errors = updated, repaired
             if not errors:
                 break
+            feedback = _OUTLINE_REPAIR_FEEDBACK_LEAD + "；".join(errors)
         return plan, errors
 
     def _outline_export(self, *, confirmed: bool) -> None:
@@ -527,11 +559,49 @@ class GeneralLongformRunner:
         self.ensure_reference()
         self.ensure_source_summary()
         evidence = self.research(slot="outline-revision", outline=plan, feedback=feedback)
-        patch = self.gateway.json("outline_revision", self.context(outline=plan, feedback=feedback, research=evidence), max_tokens=22000)
+        # Keep this revision's paid evidence: a malformed patch is a shape
+        # problem, not a research problem, so it can be retried without paying
+        # for the same search twice.
+        self.state["outline_revision_context"] = {"feedback": feedback, "evidence": evidence,
+                                                  "outline_version": self.state["outline_version"]}
+        self.save()
+        self._apply_outline_revision(plan, feedback, evidence, idempotency_key="revised_outline_request_id")
+
+    def repair_outline_revision(self) -> None:
+        """Retry one outline revision against the evidence already paid for.
+
+        A model returning an unusable patch is a shape problem, not a research
+        problem, so this reuses the stored outline_revision_context (same
+        outline version, same feedback, same verified evidence) and only re-runs
+        the outline_revision generation. The result still has to pass exactly
+        the same validate_outline gate and still waits for user confirmation.
+        """
+        if self.state.get("outline_revision_repair_request_id") == self.request["id"]:
+            if self.state.get("outline"):
+                self._outline_export(confirmed=False)
+            return
+        context = self.state.get("outline_revision_context")
+        if not isinstance(context, dict) or not isinstance(context.get("evidence"), dict) or not context["evidence"]:
+            raise GeneralLongformReview("没有可复用的上次修订检索；请改用「修订并导出新版大纲」")
+        if context.get("outline_version") != self.state["outline_version"]:
+            raise GeneralLongformReview("大纲版本已变化；请重新填写并提交修订要求")
+        plan = self.state.get("outline") or self.state.get("outline_candidate")
+        if not isinstance(plan, dict):
+            raise GeneralLongformReview("先生成或导入大纲")
+        feedback = str(context.get("feedback") or "").strip()
+        if not feedback:
+            raise GeneralLongformReview("上次的修订要求已丢失；请重新提交")
+        self._apply_outline_revision(plan, feedback, context["evidence"],
+                                     idempotency_key="outline_revision_repair_request_id")
+
+    def _apply_outline_revision(self, plan: dict[str, Any], feedback: str, evidence: dict[str, Any], *,
+                                idempotency_key: str) -> None:
         accepted_numbers = {int(key) for key, slot in self.state["chapters"].items() if slot.get("accepted")}
-        updated = apply_outline_patch(plan, patch, accepted_numbers=accepted_numbers)
         final_packaging = bool(self.state["confirmed"] or self.state.get("imported_outline_confirmed") or self.state.get("outline_candidate_confirmed"))
-        errors = validate_outline(updated, self.state["sources"], confirmed=final_packaging)
+        patch = self.gateway.json("outline_revision", self.context(outline=plan, feedback=feedback, research=evidence), max_tokens=22000)
+        updated, errors, patch = self._revise_until_valid(
+            plan, patch, feedback, evidence, accepted_numbers=accepted_numbers, final_packaging=final_packaging
+        )
         if errors:
             raise GeneralLongformReview("；".join(errors))
         version = self.state["outline_version"] + 1
@@ -545,9 +615,53 @@ class GeneralLongformRunner:
                 if material["id"] == candidate_material_id:
                     material.update(imported=True, status="imported", error=None, adopted_outline_version=version)
         self.state.pop("outline_candidate_confirmed", None)
-        self.state.update(outline=updated, outline_version=version, confirmed=False, phase="awaiting_outline_confirmation", outline_candidate=None, revised_outline_request_id=self.request["id"])
+        self.state.pop("outline_revision_context", None)
+        self.state.update(outline=updated, outline_version=version, confirmed=False, phase="awaiting_outline_confirmation", outline_candidate=None)
+        self.state[idempotency_key] = self.request["id"]
         self.save()
         self._outline_export(confirmed=False)
+
+    def _revise_until_valid(self, plan: dict[str, Any], patch: Any, feedback: str, evidence: dict[str, Any], *,
+                            accepted_numbers: set[int], final_packaging: bool) -> tuple[dict[str, Any], list[str], Any]:
+        """Apply an outline revision patch; retry a bounded number of times when the model returns an unusable shape.
+
+        Reuses the research evidence already fetched for this request, so a retry only costs one
+        ``outline_revision`` call and never re-runs the paid search. The repaired outline still has to
+        pass exactly the same ``validate_outline`` gate and still waits for the user to confirm.
+        """
+        attempts = outline_repair_attempts()
+        updated: dict[str, Any] | None = None
+        errors: list[str] = []
+        last_error = ""
+        for attempt in range(0, max(1, attempts + 1)):
+            updated, errors, last_error = None, [], ""
+            try:
+                updated = apply_outline_patch(plan, patch, accepted_numbers=accepted_numbers)
+                errors = validate_outline(updated, self.state["sources"], confirmed=final_packaging)
+            except GeneralLongformReview as exc:
+                updated, errors, last_error = None, [], _error_text(exc)
+            if updated is not None and not errors and updated != plan:
+                return updated, [], patch
+            if updated is not None and not errors:
+                # Silence is not success: a patch that changed nothing (empty
+                # top_level_changes, dropped unknown keys, no chapter patches)
+                # must not report a revision the user never got.
+                errors = ["大纲补丁没有产生任何有效修改：顶层字段与章节补丁为空或都不可用；请把修改要求写得更具体"]
+            atomic_json(self.directory / "planning" / f"outline_revision_attempt_{attempt}.json",
+                        {"attempt": attempt, "patch": patch, "errors": errors, "last_error": last_error})
+            if attempt >= attempts:
+                break
+            self.progress(18, "通用长篇：大纲补丁未通过结构校验，按允许字段重做一次局部修订")
+            retry_feedback = feedback + "\n" + _REVISION_SCHEMA_REMINDER + ("；".join(errors) or last_error)
+            patch = self.gateway.json(
+                "outline_revision",
+                self.context(outline=plan, feedback=retry_feedback, research=evidence),
+                max_tokens=22000,
+                slot=f"outline-revision-retry-{attempt + 1}",
+            )
+        if updated is None:
+            raise GeneralLongformReview(last_error or "大纲补丁无法应用")
+        return updated, errors, patch
 
     def confirm(self) -> None:
         plan = self.state.get("outline")
@@ -975,6 +1089,8 @@ class GeneralLongformRunner:
                 self.repair_outline_candidate()
             elif action == "revise_outline":
                 self.revise_outline()
+            elif action == "repair_outline_revision":
+                self.repair_outline_revision()
             elif action == "confirm_outline":
                 self.confirm()
             elif action == "next_chapter":

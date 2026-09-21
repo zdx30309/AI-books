@@ -18,6 +18,7 @@ from app.models import Task, TaskStatus, User
 from app.prompts.general_longform_prompts import CATEGORY, available_versions, get_manifest
 from app.services.general_longform import initial_state, load_state, public_state, work_dir
 from app.services.general_longform_documents import inspect_docx
+from app.services.general_longform_guidance import build_guidance
 from app.services.general_longform_runtime import atomic_json, atomic_text, now_iso, read_json
 from app.utils.docx_text import extract_docx_text
 
@@ -26,7 +27,7 @@ BUSY = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.FETCHING_TOPICS, T
 
 
 class ActionRequest(BaseModel):
-    action: Literal["plan", "repair_outline_candidate", "revise_outline", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume"]
+    action: Literal["plan", "repair_outline_candidate", "revise_outline", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume"]
     feedback: str = Field(default="", max_length=10000)
     chapter_number: int | None = Field(default=None, ge=1, le=15)
     packaging_index: int | None = Field(default=None, ge=0, le=4)
@@ -88,6 +89,15 @@ def get_project(task_id: UUID, db: Session = Depends(get_db), user: User = Depen
             continue
     state["call_logs"] = sorted(logs, key=lambda item: item.get("started_at") or "")[-200:]
     state["delivery_holds"] = delivery_holds(task_id)
+    # The workspace always shows one concrete next step: this reads the same
+    # persisted state the buttons use and makes no model call.
+    from app.core.config import settings
+    state["guidance"] = build_guidance(
+        state,
+        task_status=str(getattr(task.status, "value", task.status) or ""),
+        config=dict(task.config or {}),
+        stale_seconds=int(getattr(settings, "STALE_PROCESSING_REQUEUE_SECONDS", 900) or 900),
+    )
     return state
 
 

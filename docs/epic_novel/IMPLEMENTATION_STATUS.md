@@ -1,5 +1,29 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：把「卡住之后不知道点哪」这一整类问题解决（2026-09-22）
+
+- 背景：用户输入视频链接后，项目停在「有待处理项」，主操作按钮消失或点了也没用；上一轮的停滞排查只到命令行（新增了 @@@scripts/general_longform_doctor.py@@@ 和文档表格），工作区本身仍然不告诉用户下一步。本轮把这类问题一次解决到「任何停下都有可点的一步」。
+- 解决的五个子类：
+  1. 停滞时工作区没有可执行的下一步，用户只能猜；
+  2. 明确会再次被同一条规则拦下的按钮仍然可点（最典型：字数不在 100000—110000 时反复点「全书终审与合稿」，每次都失败）；
+  3. 大纲局部修订失败后只剩「重新联网检索」这条昂贵路径；
+  4. 模型返回形状错误的补丁时，要么直接卡死，要么（顶层字段被丢弃后）**静默通过、版本号照涨但内容没变**；
+  5. 命令行体检与工作区文案口径不一致。
+- 新增 @@@backend/app/services/general_longform_guidance.py@@@：纯函数 next-step 指引。只读持久化状态与任务配置，**不发任何模型调用、不改任何 prompt**，输出 一个状态判断 + 一个主按钮 + 备选动作 + 每个动作的费用说明 + 明确列出的「现在点也没用」按钮。任何分支都保证至少有一个可执行动作（只有「正在跑」分支允许没有按钮，并给出看门狗说明）。
+- @@@GET /api/v1/general-longform/{task_id}@@@ 增加 @@@guidance@@@ 字段；工作区顶部新增「下一步」面板（按钮直接复用既有动作，不新增工作流），@@@avoid@@@ 里的动作在前端置灰并写明原因（例如合稿按钮）。
+- 大纲修订的低成本恢复：@@@revise_outline@@@ 现在把本次已付费的检索证据与修改要求存进 @@@outline_revision_context@@@，新增动作 @@@repair_outline_revision@@@（API + 指引 + 工作区按钮）复用它们只重跑一次 @@@outline_revision@@@ 生成，**不重新联网**；大纲版本变化或没有证据时明确拒绝并指向原有路径。修订成功后才清空该上下文。
+- 补丁形状与空补丁：@@@apply_outline_patch@@@ 对 @@@top_level_changes@@@ 形状错误、含未允许字段的情况改为只丢弃不可用部分（无任何可用内容仍然拒绝）；@@@_revise_until_valid@@@ 增加空补丁检测与失败审计（@@@planning/outline_revision_attempt_N.json@@@），补丁没有产生任何真实修改时按失败处理，不再静默涨版本号。
+- @@@scripts/general_longform_doctor.py@@@ 改为直接复用同一个指引模块，命令行与工作区说的永远是同一句话；只读数据库与状态文件。
+- 新增操作手册 @@@docs/GENERAL_LONGFORM_USAGE.md@@@（从视频链接到成书的完整按钮流程、卡住对照表、费用表、FAQ）。
+- 不变项（硬约束）：@@@backend/app/prompts/general_longform/**@@@ 逐字节未改；@@@validate_outline@@@、来源核验规则、验收门禁、严格串行、每章验收、100000—110000 字与双 Word 规则全部不变；没有数据库迁移；没有新增任何模型调用；成功路径行为不变。
+- 补丁形状失败的解释：停在旧版「大纲补丁包含未允许的全局结构改写」的项目，指引会额外说明这次失败是补丁形状问题、新版会自动丢弃不允许字段并局部重试一次，用户不必自己猜要不要重新联网检索。
+- 验证（2026-09-22，本机，全部重跑）：
+  - @@@python -m pytest backend/tests -q -k general_longform@@@ → @@@219 passed, 960 deselected@@@（58.9s）。其中新增：指引测试 42 项（@@@backend/tests/test_general_longform_guidance.py@@@，含任意状态必有可执行动作、只读不改状态、无字段被工作区拒绝、畸形状态不抛异常、字数盈亏算术）、引擎 7 项（空补丁不再静默通过、畸形 @@@top_level_changes@@@ 保留可用章节补丁、@@@repair_outline_revision@@@ 复用已付费证据且不发新检索、无上下文时拒绝）、API 2 项（项目载荷必带 next-step、@@@repair_outline_revision@@@ 可下发）。
+  - @@@npm run typecheck@@@（frontend）→ PASS；@@@npm run build@@@ → PASS（@@@frontend/dist/assets/index-LDfgrpIH.js@@@）。
+  - 只读真机核对（本机读线上 Supabase + ECS 断点）：@@@python scripts/general_longform_doctor.py@@@ 对真实停滞任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@ 输出「下一步：按校验结果修复候选大纲（不重新检索）」，与该任务在 ECS 上 @@@state.json@@@ 经 @@@build_guidance@@@ 计算出的结果一致（主按钮 @@@repair_outline_candidate@@@，复用已核验的 4 个来源，不重新联网）。
+- 未做：未运行真实付费十万字生成；未改动其他分类、Epic 状态表、模型凭据与生产数据；历史 @@@PARTIAL_IMPLEMENTATION@@@ 结论不变。
+
+
 ## 通用长篇：两个校验断点的低成本恢复修正（2026-09-20）
 
 - 现象一：新项目（v02）输入视频链接后，逐字稿已成功提取，但首版大纲因书名长度超出 10—18 可见字符被拦下，工作区停在“有待处理项”，主操作按钮消失，用户不知道下一步。现象二：来源抽象节点出现 `实际读取材料未形成可靠的来源摘要，未开始正文`（生成件已下载的页面全部读到了，但摘要条目没有一个通过核验），同样停在“有待处理项”。
@@ -753,3 +777,293 @@ Follow-up production finding on 2026-09-03:
 - Added regression coverage proving Bilibili tracking variants produce one Qingdou submission.
 
 Follow-up validation: `python -m pytest -q tests/test_qingdou_concurrency.py tests/test_qingdou_xiaohongshu.py tests/test_youtube_transcript.py tests/test_video_sources.py` -> `47 passed, 1 warning`.
+
+## 视频文案对照表 / 金山文档同步 (2026-09-21, 非 Epic Novel 模块)
+
+老板 2026-09-20 在金山文档《视频文案汇总》提的需求：把每条视频生成的文稿对上原视频标题，放进汇总表，
+让编辑能对比生成稿与原视频文案的相似度，避免侵权投诉。该功能只读 `tasks` / `chapters` / `config`，不改动
+Epic Novel Engine，也不改动既有短篇生成链路。
+
+- 新增 `backend/app/services/video_script_table.py`：源视频标题还原（B 站转写头部 `视频标题：`、抖音/小红书分享文案正则、
+  `config.source_title` 兜底）、相似度（字符 5-gram 重合度 + 最长公共连续片段 + SimHash64）、风险分级
+  （低/中/高/待核对，缺原文一律「待核对」而不是误判低风险）、csv/tsv/xlsx/md 导出。
+- 新增 `backend/app/services/kdocs_adapter.py`：金山文档开放平台适配器（OAuth2 授权/换 token/刷新、
+  `GET/POST /api/v1/openapi/ksheet/{file_token}/sheets/{sheet_idx}/cells` 读写、单请求 ≤2000 格分批、
+  写入后回读校验、失败自动降级导出、JSONL 审计日志）。
+- 新增 `/api/v1/video-script-table/*` 路由（rows / export / problems / config / logs / remote-schema / sync /
+  auth-url / exchange-code）与 `scripts/video_script_table_export.py` CLI。
+- 新增前端页面「视频文案对照表」（预览 / 复制全表到剪贴板 / 导出 / 同步，默认试运行）。
+- 默认 `KDOCS_PROVIDER=manual_required`：未配置开放平台授权时导出 CSV/TSV 供编辑直接粘贴，不阻塞使用。
+
+验证（2026-09-21）:
+
+- 真实样例：任务 `2c714d03-600c-40dd-bdb5-9c0f29cf8082` →
+  视频《【深度】理论+亲身经历，我为什么劝你关注法拍房？》↔ 文稿《法拍房便宜的代价》，
+  相似度 0.05%、原文重合度 0.61%、最长雷同 0 字、风险「低」。
+- `python -m pytest -q tests/test_video_script_table.py tests/test_kdocs_adapter.py tests/test_bilibili_transcript.py`
+  from `backend/` -> `19 passed`。
+- `npx tsc -p tsconfig.json --noEmit` from `frontend/` -> passed。
+- FastAPI TestClient 冒烟：`/config` `/rows` `/export?fmt=tsv` `/sync(dry_run)` 均 200。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围。
+
+## 视频文案对照表 / 金山文档同步 —— 第二批（2026-09-21 晚）
+
+在第一批（对照表 + 金山文档适配器）基础上补齐"一次性导入"链路和标题覆盖：
+
+- `scripts/video_script_table_export.py` 新增 `setup / find-doc / doctor / enrich` 子命令，
+  `sync` 新增 `--once / --ensure-columns`；`enrich` 支持 `--workers`（并发抓取，写库仍串行）和 `--cookies`（yt-dlp cookies.txt）。
+- `backend/app/services/kdocs_adapter.py` 的 `sync_once()`：找表 → 读远端表头做别名映射 → 缺列自动补在最右侧（不动已有列）
+  → 按"视频链接 + 任务ID"去重 → 分批写入（≤2000 格/请求）→ 回读逐格校验 → JSONL 审计；失败自动降级导出 CSV。
+- `backend/app/tasks/kdocs_tasks.py` + `celery_app.beat_schedule`：可按 `KDOCS_AUTO_SYNC_INTERVAL_SECONDS` 定时自动同步，
+  未授权时任务直接 skip。
+- `backend/app/services/video_source_titles.py`：共享 httpx 连接池、`--workers` 并发抓取、
+  抖音口令文案解析（`share_text`）、无 cookies 时快速失败（`needs_cookies`）、
+  同一视频被"分享文案/裸短链"两条任务指向时不互相覆盖结果、`id = ANY(CAST(:ids AS uuid[]))` 修正。
+- 风险等级新增「不适用」（`manual://` 手动录入来源），前端徽章同步支持。
+
+2026-09-21 实测与验证：
+
+- 1173 条任务：标题覆盖 688 行；风险分布 低 819 / 待核对 278 / 不适用 76。
+- 老板样例任务 `2c714d03-600c-40dd-bdb5-9c0f29cf8082`：相似度 0.05%、最长雷同 0 字、风险「低」。
+- 导出：`.local/video_script_table/exports/视频文案汇总.xlsx`、`视频文案汇总_全量.tsv`（1166 行）。
+- `python -m pytest -q tests/test_video_script_table.py tests/test_kdocs_adapter.py tests/test_video_source_titles.py`
+  from `backend/` -> `32 passed`。
+- `npx tsc -p tsconfig.json --noEmit` from `frontend/` -> passed。
+
+金山文档直写（方式 B）仍需人工一步：开放平台建应用拿 `APP_ID`/`APP_KEY` 并授权一次，
+之后 `sync --once --ensure-columns` 即可全量写入。未授权时走导出 + 粘贴，编辑侧不阻塞。
+
+## 视频文案对照表 —— 第三批：新任务自动进表（2026-09-21 深夜）
+
+需求补充：全平台标题都要自动进入，且"以后每生成一个新任务"都要自动进后续那张金山文档。
+
+- 新增 `backend/app/services/kdocs_sync.py`：`enqueue_row_sync(task_id)`，完成时把单行增量丢给 Celery；
+  未开开关/未授权/broker 异常一律降级为日志，绝不影响生成主链路。
+- `app/tasks/kdocs_tasks.py::sync_video_script_table` 新增 `task_ids` 参数，支持单任务增量推送（不再只依赖 beat 轮询）。
+- 新增入库即抓标题：`video_source_titles.capture_source_title_into_config()`
+  （config 已有 → 转写头部 → 分享文案 → 可选联网），在 `app/tasks/tasks.py` 抓到文案后调用，
+  写 `config.source_title` / `config.source_title_source`，全平台通用。
+- 完成钩子接入 4 处：主生成流程、公版/古文流程、通用长篇、AIGC 复检；celery beat 每 300 秒兜底对账。
+- 新增配置：`VIDEO_SCRIPT_TABLE_AUTO_TITLE_FETCH`、`VIDEO_SCRIPT_TABLE_YTDLP_COOKIES`、
+  `KDOCS_AUTO_SYNC_ON_COMPLETED`；`KDOCS_AUTO_SYNC_ENABLED` 改为默认 `true`，
+  `KDOCS_AUTO_SYNC_INTERVAL_SECONDS` 600→300，`KDOCS_AUTO_SYNC_MAX_ROWS` 200→500。
+- `.env` / `.env.example` 同步更新。
+
+验证（2026-09-21）：
+
+- `python -m pytest -q tests/test_kdocs_sync_hooks.py tests/test_video_source_titles.py tests/test_video_script_table.py tests/test_kdocs_adapter.py`
+  from `backend/` -> `49 passed`（含新增的"开关关闭不推送""broker 异常不抛出""入库抓标题"用例）。
+- 仍需人工一步：金山文档开放平台建应用 + 授权一次（`setup → authorize → exchange-code → find-doc → doctor → sync --once`）。
+
+## 视频文案对照表 —— 第四批：视频链接 → 文稿标题 一一对应回填（2026-09-21，需求口径校正）
+
+老板需求口径被校正为**一件事**：金山文档《视频链接汇总》里**已有原视频链接**（及原视频标题等），
+**唯一缺的是"AI 生成的文稿标题"这一列**；要按**视频链接**把生成文稿标题写回**同一行**，
+全自动、每生成一个就进表、且不能填错。区域（区块）分类不需要。
+（第一/二/三批的"相似度风险对照表"保留为附属能力，不再是主线。）
+
+新增主线核心 `backend/app/services/video_link_titles.py`：
+
+- `extract_url` / `link_keys`：链接归一化 -> 匹配键集合。B 站 `bilibili:bv:*` / `bilibili:av:*`（query 参数不影响）、
+  抖音 `douyin:*`、小红书 `xhs:*`、YouTube `youtube:*`、微信 `wechat:*`、短链 `b23:*` / `douyin-short:*` / `xhs-short:*`；
+  无 URL 的纯文本退回 `text:前160字`。
+- `build_task_index` / `match_links`：逐条链接匹配；同一视频多篇文稿时**优先取有标题的那篇**，
+  `prefer=latest|first|join`；任务存在但标题为空 -> `matched=False` + 「任务已存在，但还没有生成文稿标题」；
+  库里没有该链接 -> 留空。**宁可不填，也不乱填。**
+- `resolve_short_links`：联网展开 `b23.tv` / `v.douyin.com` / `xhslink.com`，带本地缓存。
+- `render_tsv` / `parse_link_lines`：输出「视频链接 / 文稿标题 / 匹配状态 / 任务ID」四列，行序与输入一致。
+
+`backend/app/services/kdocs_adapter.py` 新增：
+
+- `read_link_rows()`：读回表头候选行 + 数据区，自动定位「视频链接」列；支持表头不在第 0 行
+  （表头行本身是标题行时会跳过、往下试 3 行），列宽以工作表 `col_to` 为准。
+- `sync_link_titles()`：缺「文稿标题」列时自动补在最右侧；**只写标题列**（可选状态列）；
+  值没变的行跳过（`unchanged_rows`，幂等）；每请求 ≤2000 格分批；写完 `_verify_cells` **逐格回读校验**，
+  不一致 -> `status=error` + `mismatches`；未授权 -> `manual_required`（不抛异常）。
+- `KdocsConfig` 新增 `link_column` / `title_column` / `status_column`，从
+  `KDOCS_LINK_COLUMN` / `KDOCS_TITLE_COLUMN` / `KDOCS_STATUS_COLUMN` / `KDOCS_LINK_TITLE_PREFER` /
+  `KDOCS_LINK_RESOLVE_SHORT_LINKS` 读取。
+
+自动推送链路：
+
+- `backend/app/tasks/kdocs_tasks.py` 新增 `sync_kdocs_link_titles_task`（任务名 `tasks.sync_kdocs_link_titles`）；
+  `kdocs_sync.enqueue_row_sync` 改发这个任务（`retry=False`，broker 挂了立刻返回）。
+- `backend/celery_app.py` 的 `beat_schedule` 改为 `sync-kdocs-link-titles` -> `tasks.sync_kdocs_link_titles`，
+  间隔 `KDOCS_AUTO_SYNC_INTERVAL_SECONDS`。
+- 完成钩子沿用第三批 4 处（主流程 / 公版古文 / 通用长篇 / AIGC 复检），异常全吞。
+
+CLI `scripts/video_script_table_export.py` 新增：
+
+- `links`（不需授权）：`--links-file` / `--clipboard` / stdin，输出 `文稿标题_回填.tsv` +
+  `文稿标题_回填.titles.txt`（纯标题列，可直接整列粘回金山文档）。
+- `sync-links`（需授权）：`--dry-run` / `--link-column` / `--title-column` / `--status-column` / `--prefer` / `--no-resolve`。
+
+测试（离线）：
+
+- 新增 `backend/tests/test_video_link_titles.py`（11 个）、`backend/tests/test_kdocs_link_titles.py`（6 个，FakeClient），
+  覆盖：B 站 query 参数、短链解析、抖音分享文案、小红书 note_id、YouTube id、prefer=latest/join、
+  跳过无标题任务、未匹配留空、幂等、自动补列、表头在第 2 行、dry-run、未授权。
+
+验证（2026-09-21）：
+
+- `python -m pytest -q tests/test_video_link_titles.py tests/test_kdocs_link_titles.py tests/test_kdocs_adapter.py tests/test_video_script_table.py tests/test_video_source_titles.py tests/test_kdocs_sync_hooks.py tests/test_video_sources.py`
+  from `backend/` -> `72 passed`。
+- 回归：`test_recovery_watchdog / test_general_longform* / test_aigc_* / test_public_domain_* / test_cover_workflow / test_media_transcription / test_qingdou_*`
+  -> `513 passed, 2 failed`；2 个失败为既存问题（`test_qingdou_xiaohongshu.py` 的
+  `test_exhausted_retry_step_is_not_waiting_auto_recovery_label`、
+  `test_xiaohongshu_share_token_is_not_reported_as_model_api_key_error`），已用 `git stash` 确认与本次无关。
+- 真实数据：1173 tasks / 12948 chapters；视频类 1097，去重后 1009 个视频；平台分布 B站 577 / 抖音 427 / 小红书 81 / 手动 76 / YouTube 5 / 微信视频号 2。
+- `links` 命令实跑 12 条真实链接 -> 匹配 11（1 条为"分享文案+garbled 短链"未匹配，符合预期）。
+- 老板样例任务 `2c714d03-600c-40dd-bdb5-9c0f29cf8082` -> 视频《【深度】理论+亲身经历，我为什么劝你关注法拍房？》↔ 文稿《法拍房便宜的代价》。
+
+仍需人工一步：金山文档开放平台建应用 + 授权一次
+（`setup → authorize → exchange-code → find-doc → doctor → sync-links --dry-run → sync-links`）。
+未授权前用 `links --clipboard` 出标题列，人工粘回。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围（与前三批同属视频文案对照表模块）。
+
+## 视频文案对照表 —— 第五批：全平台链接覆盖 + 未进表链接一键补入（2026-09-21）
+
+需求补充：抖音 / 小红书 / 其他平台的链接也要一起管起来，而且**文档里还没有的链接也要自己补进去**。
+
+`backend/app/services/video_link_titles.py`：
+
+- `link_keys` 平台覆盖从 6 类扩到 **16 类**：新增快手（含 `v.kuaishou.com` 短链）、西瓜视频、微博（`fid=` / `/status/` / `/tv/show/`）、
+  腾讯视频、优酷、爱奇艺、好看视频、TikTok、Instagram、X(Twitter)、知乎、B 站番剧 `ep`/`ss`、B 站专栏 `cv`、
+  微信视频号 `sph`、`iesdouyin.com/share/video/`；统一走 `_URL_ID_RULES` 规则表（host 后缀 + 正则 + key 前缀）。
+- `guess_platform` 改走 `_PLATFORM_NAMES` 表，覆盖同样这批 host。
+- 新增 `canonical_key()`：从一组匹配键里挑最有代表性的一支（`bilibili:bv` > `douyin` > `xhs` ... > 短链 > `url:`），
+  用于"一条视频一行"。
+- 新增 `build_video_rows(db, statuses, prefer)`：把库里**所有平台**的视频任务归并成一条视频一行
+  （链接 / 文稿标题 / 平台 / 原视频标题 / 状态 / 任务ID / 候选篇数），跳过 `manual://`。
+- 新增 `render_lookup_tsv()` + `LOOKUP_COLUMNS`。
+- `build_matcher` 现在把 `index` / `prefer` 挂在返回的 matcher 上，供适配器补行时使用。
+
+`backend/app/services/kdocs_adapter.py`：
+
+- `read_link_rows` 额外返回 `sheet_row_to`（工作表实际行数），用于定位追加位置。
+- `sync_link_titles` 新增 `append_missing` / `append_entries` / `max_append`：
+  先算"文档里已有链接的 key 集合"，`append_entries` 里 key 不相交且**有文稿标题**的，
+  从表尾开始按"链接列 + 标题列（+可选状态列）"追加，一条视频一行；
+  已存在/无标题/超 `max_append` 的跳过；追加的格子同样纳入回读校验。
+
+CLI `scripts/video_script_table_export.py`：
+
+- 新增 `lookup`：导出**全平台**"链接 -> 文稿标题"查找表（不需要授权）。
+- `sync-links` 新增 `--append-missing` / `--max-append`。
+- 新增 `docs/KDOCS_AUTHORIZATION_REQUEST.md`：授权沟通稿（可直接转发给文档所有者）+ 不给授权时的替代路径。
+
+验证（2026-09-21）：
+
+- `python -m pytest -q tests/test_video_link_titles.py tests/test_kdocs_link_titles.py tests/test_kdocs_adapter.py tests/test_video_script_table.py tests/test_video_source_titles.py tests/test_kdocs_sync_hooks.py tests/test_video_sources.py`
+  from `backend/` -> `80 passed`（新增 8 个：16 类平台归一化、微信视频号 `sph`、`guess_platform`、`canonical_key`、
+  `render_lookup_tsv`、追加未进表链接、追加 dry-run 不写、`max_append` 截断）。
+- `python scripts\video_script_table_export.py lookup` 实跑：**1000 条视频**（有文稿标题 994 条）——
+  bilibili 514 / douyin 408 / xiaohongshu 72 / youtube 3 / wechat 2 / unknown 1。
+- `sync-links --append-missing --dry-run`：未授权时正确返回 `manual_required`，不误写。
+
+仍需人工一步：金山文档开放平台建应用 + 授权一次（沟通稿见 `docs/KDOCS_AUTHORIZATION_REQUEST.md`）。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围（与前三批同属视频文案对照表模块）。
+
+## 视频文案对照表 —— 第六批：不授权也能干（导出 -> 回填 -> 粘回）（2026-09-21）
+
+需求追问："自建应用的授权和他们已经填好的金山文档链接没关系吧，难道让他们重新处理？"
+
+结论：**没关系，也不用重处理**。分享短链是"给人看的门"，开放平台应用+一次授权是"给程序用的门"，
+两者指向同一份文档；授权不重建文档、不迁移数据、不需要编辑重录任何内容。
+为彻底绕开"对方不想建应用/不想授权"，补了一条**零授权、零改动**的路：
+
+- `backend/app/services/video_link_titles.py`：
+  - 抽出可复用的 `column_index_of()` / `guess_column()` / `locate_link_column()`，
+    把"表头可能不在第一行 / 没有表头 / 表头行本身是数据"的探测逻辑从适配器里解耦出来（适配器改为委托，行为不变）。
+  - 修掉"单列纯链接文件"场景下 headerless 回退拿不到 URL 密度分的问题。
+- `scripts/video_script_table_export.py` 新增 `fill`：
+  `fill --src 金山文档导出的.xlsx` -> 输出 `xxx_回填.xlsx`（**同一个表**：行列、其它列、格式原样不动，
+  只在最右侧补「文稿标题」列）+ `xxx_回填.titles.txt`（纯标题列）。
+  支持 xlsx / csv / tsv / 单列 txt；表里已有「文稿标题/生成文稿名/文章标题…」列则直接写入；
+  匹配不上留空；`--sheet / --link-column / --prefer / --no-resolve` 可调。
+- `docs/KDOCS_AUTHORIZATION_REQUEST.md` 增补两节：
+  「授权跟已经填好的那张表是什么关系」（两通道对照表 + 让文档创建者授权最稳）
+  「对方连建应用都不愿意弄：导出 -> 回填 -> 粘回」。
+
+验证（2026-09-21）：
+
+- `python -m pytest -q tests/test_video_link_titles.py tests/test_kdocs_link_titles.py tests/test_kdocs_adapter.py`
+  from `backend/` -> `37 passed`（含新增的 5 个：表头定位、表头不在首行、无表头、
+  指定列名、URL 密度兜底）。
+- 真实 xlsx 固定样例端到端：4 行链接（B站样例/抖音/小红书/不存在的BV）-> 匹配 3、未匹配 1，
+  输出文件其它列一字未改，新增「文稿标题」列三行有值、未匹配行留空。
+- 单列 txt（一行一条链接）-> 匹配 2/2，输出 `链接 \t 标题` 两列。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围（与前三批同属视频文案对照表模块）。
+
+## 视频文案对照表 —— 第七批：授权链路核对官方文档 + 沟通稿纠偏（2026-09-21）
+
+需求追问："那授权该让他们怎么弄"。
+
+拿官方文档把授权链路逐条核对了一遍（developer.kdocs.cn），并据此修正了沟通稿里
+"3~5 分钟"的错误预期：
+
+- 官方《入驻金山文档开放平台》：服务端 API 要**企业入驻** —— 新建服务商需填
+  服务商名称（与营业执照一致、≤20 字）/ 企业邮箱 / 联系电话 / 官网 / 营业执照（PNG-JPG <10MB）/ 行业 / 规模，
+  平台 **3 个工作日**内审核，通过后才能创建应用拿 `app_id`/`app_key`。
+- 官方《Web 授权》：`GET /h5/auth?app_id&scope&redirect_uri&state` -> 回调
+  `redirect_uri?code=..&state=..`，**code 仅 5 分钟有效**（过期报 20001）；
+  `GET /api/v1/oauth2/access_token?code&app_id&app_key` -> access_token（86400s）+ refresh_token（90 天）；
+  `POST /api/v1/oauth2/refresh_token?app_id` body `{app_key, refresh_token}`。
+  **回调地址必须是应用里登记过的地址之一。**
+- 官方《权限说明》的 scope 与项目默认值逐字一致：
+  `user_basic` / `access_personal_files` / `edit_personal_files` / `download_personal_files`。
+- 官方《接口说明》：分「个人文档接口 / 应用文档接口」；我们走的是**个人文档接口**，
+  所以必须由**能在这份表所在账号的"我的文档"里看到它的人**（即文档创建者）授权。
+  应用分「测试应用 / 正式应用」，测试应用 500 次/天（够用）。
+- 核对结论：`backend/app/services/kdocs_adapter.py` 的 `authorize_url` / `exchange_code` / `refresh_token`
+  与官方接口路径、参数、方法全部一致，无需改动。
+
+文档纠偏：
+
+- `docs/KDOCS_AUTHORIZATION_REQUEST.md` 重写：
+  新增「〇、先说清楚门槛：这条路是企业入驻，不是点一下就完」、
+  「A-1 他们要做什么」（含回调地址和 scope 怎么写）、
+  「A-2 我们再发授权链接，他们点一下」（含 code 5 分钟、404 属正常的说明）、
+  「A-3 权限说明」「A-4 常见坑」；
+  保留路线 B（导出 -> `fill` -> 粘回）与路线 C（复制链接列 -> `links`）。
+- `docs/VIDEO_SCRIPT_TABLE.md` 的「方式 B」加上门槛提醒与授权注意事项。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围（与前三批同属视频文案对照表模块）。
+
+## 视频文案对照表 —— 第八批：回调地址收敛 + 授权回调接收器（2026-09-21）
+
+需求追问："回调地址确定他们填这个嘛？"
+
+背景：上一版沟通稿让后台登记 `https://example.com/kdocs/callback` 这个占位地址，
+只在"能手工复制地址栏里的 code"时才成立。这一批把回调地址这件事收敛成可控流程：
+
+- 新增配置 `KDOCS_REDIRECT_URI`（`backend/app/core/config.py`，`.env` / `.env.example` 各写入一条默认
+  `https://example.com/kdocs/callback`），
+  `authorize` 不再强制手敲 `--redirect-uri`，而是优先 CLI 参数、其次读它 ——
+  避免"后台登记的地址"和"授权链接里用的地址"两边写歪（这是授权失败最常见的原因）。
+- `authorize` 打印内容补齐：授权链接 + 给文档所有者的一句话 + 回调后怎么把 code 拿回来 +
+  本机可用的回调接收器提示 + **回读一致性核对行**；缺 APP_ID/APP_KEY 或回调地址时给明确指引并返回 2。
+- `setup` 新增 `--redirect-uri`，一次性把凭据和回调地址都写进 `.env`。
+- 新增 `scripts/kdocs_callback_server.py`：本机 HTTP 回调接收器
+  （`--host/--port/--path/--exchange/--once`）。授权跳转过来即打印并落盘 code
+  （`.local/video_script_table/kdocs_code.txt`），`--exchange` 直接换 token；
+  用 `HTTPServer` + `timeout=1.0` 保证 `--once` 能可靠退出、Ctrl+C 好使。
+  配内网穿透（cloudflared/ngrok）即可支持"老板不在同一台机器"的场景。
+- `docs/KDOCS_AUTHORIZATION_REQUEST.md` 新增「五、回调地址到底填什么？」：
+  三种选法（自有域名 > 内网穿透+接收器 > 占位地址+手工复制 code）+ 三条铁律
+  （一字不差 / 后台拒绝就换自有域名 / code 5 分钟）。
+- `docs/VIDEO_SCRIPT_TABLE.md` 的「方式 B」同步补充回调地址说明与本机接收器用法。
+
+验证（2026-09-21）：
+
+- 新增 `backend/tests/test_kdocs_callback_server.py`（2 个）：
+  起真实端口 -> `GET /kdocs/callback?code=..&state=..` -> 200 + "授权成功" + code 落盘 + `--once` 自动退出；
+  缺 code 时返回 400 且不落盘。
+- 实跑：`--once` 收到请求后进程退出、端口释放；`authorize` 未配 APP_ID 时给出明确指引。
+- `python -m pytest -q tests/test_kdocs_callback_server.py` -> `2 passed`。
+
+Epic Novel Engine 的整体结论不变；本次改动不属于 SPEC 阶段范围（与前三批同属视频文案对照表模块）。

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, BookOpen, CheckCircle2, Download, FileText, Loader2, Pause, Play, RefreshCcw, Upload } from "lucide-react";
 import { api, ApiError } from "@/api/client";
-import type { GeneralLongformAction, GeneralLongformState, LongformIssue, LongformManifest, LongformStyleReview, MaterialRole } from "@/api/generalLongformTypes";
+import type { GeneralLongformAction, GeneralLongformState, LongformIssue, LongformManifest, LongformNextAction, LongformStyleReview, MaterialRole } from "@/api/generalLongformTypes";
 
 const ACTIVE = new Set(["pending", "processing", "fetching_topics", "filtering_topics", "generating_outline", "writing_chapters", "fact_checking"]);
 const PHASES: Record<string, string> = {
@@ -116,6 +116,10 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
   const acceptedNumbers = Object.entries(state?.chapters || {}).filter(([, slot]) => slot.accepted).map(([n]) => Number(n));
   const nextNumber = (plan?.chapters || []).find((chapter) => !acceptedNumbers.includes(chapter.number))?.number;
   const title = plan?.packaging?.[plan.recommended_index]?.title || "通用长篇工作区";
+  // The backend guidance names the one action worth taking right now; "avoid"
+  // lists buttons that would only be rejected again by the same gate.
+  const guidance = state?.guidance || null;
+  const avoided = new Set((guidance?.avoid || []).map((item) => item.action));
 
   async function act(body: GeneralLongformAction) {
     if (actionLock.current || !state) return;
@@ -161,6 +165,19 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
     try { await api.downloadGeneralLongform(taskId, id); }
     catch (e) { setError(message(e)); }
   }
+  function runGuidance(item: LongformNextAction) {
+    if (item.action === "manual") { if (item.tab) setTab(item.tab as Tab); return; }
+    const feedback = typeof item.params.feedback === "string" ? item.params.feedback : "";
+    if (item.requires_feedback && !feedback.trim()) {
+      if (item.tab) setTab(item.tab as Tab);
+      setFeedback("");
+      setNotice("请先在下方的修改要求里写清楚要改什么，再点对应按钮提交。");
+      return;
+    }
+    // 交付待定必须由用户自己勾选确认；按钮沿用同一个勾选框，不代替用户确认。
+    const params = item.action === "resume" ? { ...item.params, retry_uncertain: retryUncertain } : item.params;
+    void act({ action: item.action, ...params } as GeneralLongformAction);
+  }
 
   if (!state) return <div className="card-warm p-8">
     <Link to="/bookshelf" className="btn-ghost mb-4 inline-flex"><ArrowLeft className="h-4 w-4" />返回书架</Link>
@@ -186,13 +203,24 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
         {!plan && !state.outline_candidate && <button className="btn-gold disabled:opacity-40" disabled={busy || held} onClick={() => void act({ action: "plan" })}>研究并生成待确认大纲</button>}
         {plan && !state.confirmed && <button className="btn-gold disabled:opacity-40" disabled={busy || held} onClick={() => void act({ action: "confirm_outline", packaging_index: packageIndex ?? plan.recommended_index })}><CheckCircle2 className="h-4 w-4" />确认选中包装与大纲</button>}
         {state.confirmed && nextNumber && <button className="btn-gold disabled:opacity-40" disabled={busy || held || state.phase === "paused"} onClick={() => void act({ action: "next_chapter" })}><Play className="h-4 w-4" />{state.chapters[String(nextNumber)]?.candidate ? "继续完成" : "研究并写作"}第{nextNumber}章</button>}
-        {state.confirmed && !nextNumber && <button className="btn-gold disabled:opacity-40" disabled={busy || held} onClick={() => void act({ action: "assemble" })}>全书终审与合稿 Word</button>}
+        {state.confirmed && !nextNumber && <button className="btn-gold disabled:opacity-40" disabled={busy || held || avoided.has("assemble")} title={guidance?.avoid.find((item) => item.action === "assemble")?.reason || ""} onClick={() => void act({ action: "assemble" })}>全书终审与合稿 Word</button>}
         {state.can_resume && (!active || held) && <button className="btn-ghost disabled:opacity-40" disabled={busy} onClick={() => void act({ action: "resume", retry_uncertain: retryUncertain })}>恢复上次操作</button>}
         {active && !held && <button className="btn-ghost disabled:opacity-40" disabled={!!submitting} onClick={() => void pause()}><Pause className="h-4 w-4" />在断点暂停</button>}
       </div>
       {held && <label className="block text-xs leading-relaxed text-amber-300"><input className="mr-2" type="checkbox" checked={retryUncertain} onChange={(e) => setRetryUncertain(e.target.checked)} />我已核对交付待定调用，确认必要时重新请求（可能产生新费用）；已有响应 ID 时优先恢复原响应。</label>}
       {plan && !state.confirmed && <p className="text-xs text-warm-500">确认只生成确认版大纲 Word；不会同时开始第一章。</p>}
     </header>
+    {guidance && <section className="rounded-xl border border-gold-400/25 bg-gold-500/5 p-4" data-testid="longform-next-step">
+      <p className="text-sm leading-relaxed text-warm-100">下一步：{guidance.headline}</p>
+      {guidance.detail && <p className="mt-1 text-xs leading-relaxed text-warm-300">{guidance.detail}</p>}
+      <div className="mt-3 flex flex-wrap gap-3">
+        {guidance.primary && <button className="btn-gold disabled:opacity-40" disabled={(busy && guidance.primary.action !== "manual") || !guidance.primary.enabled} title={guidance.primary.disabled_reason || guidance.primary.reason} onClick={() => runGuidance(guidance.primary as LongformNextAction)}>{guidance.primary.label}</button>}
+        {guidance.alternatives.map((item, index) => <button key={item.action + "-" + index} className="btn-ghost disabled:opacity-40" disabled={(busy && item.action !== "manual") || !item.enabled} title={item.disabled_reason || item.reason} onClick={() => runGuidance(item)}>{item.label}</button>)}
+      </div>
+      {Array.from(new Set([guidance.primary, ...guidance.alternatives].map((item) => item && item.cost).filter((cost): cost is string => !!cost))).length > 0 && <p className="mt-2 text-xs leading-relaxed text-warm-500">{Array.from(new Set([guidance.primary, ...guidance.alternatives].map((item) => item && item.cost).filter((cost): cost is string => !!cost))).map((cost) => <span key={cost} className="mr-3">· {cost}</span>)}</p>}
+      {!!guidance.notes.length && <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed text-warm-400">{guidance.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
+      {!!guidance.avoid.length && <p className="mt-2 text-xs leading-relaxed text-amber-300">{guidance.avoid.map((item) => item.reason).join("；")}</p>}
+    </section>}
     {(error || state.last_error || state.task_error || state.export_error) && <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-4 text-sm leading-relaxed text-amber-200">{error || state.last_error || state.task_error || state.export_error}</div>}
     {notice && <p role="status" className="text-sm text-gold-200">{notice}</p>}
     {!plan && state.outline_candidate && <div className="rounded-xl border border-gold-400/25 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200" data-testid="longform-outline-recovery">

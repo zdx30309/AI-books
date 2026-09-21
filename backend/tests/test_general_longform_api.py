@@ -336,3 +336,42 @@ def test_task_bridge_persists_only_accepted_rows(api_fixture, monkeypatch):
     assert result["chapters"] == 1 and len(rows) == 1
     assert rows[0].chapter_num == 1 and rows[0].word_count == 8750
     assert result["status"] == "paused"
+
+def test_project_payload_always_carries_a_next_step(api_fixture):
+    """The workspace must never show a stuck project without a next action."""
+    f = api_fixture
+    state = engine.initial_state(str(f.task.id))
+    state.update(phase="needs_review", last_error="GeneralLongformReview: 大纲补丁包含未允许的全局结构改写",
+                 outline={"topic": "判断与选择", "domain": "认知成长与效能提升",
+                                 "audience": "普通读者", "central_question": "如何判断", "voice": "清楚自然",
+                                 "target_words": 105000, "recommended_index": 0, "research_gaps": [],
+                                 "packaging": [{"direction": "方向", "title": "普通人的判断与选择新方式", "description": "简介"}],
+                                 "chapters": [{"number": number, "title": "观察与选择" + str(number), "target_words": 8750,
+                                               "sections": []} for number in range(1, 13)]},
+                 confirmed=False, outline_version=1,
+                 outline_revision_context={"feedback": "只改第二章", "evidence": {"web_call_completed": True}, "outline_version": 1})
+    atomic_json(f.directory / "state.json", state)
+    payload = f.client.get(f.url).json()
+    assert payload["guidance"]["stall_kind"] == "needs_review"
+    assert payload["guidance"]["primary"]["action"] == "repair_outline_revision"
+    assert payload["guidance"]["primary"]["label"]
+    assert any(item["action"] == "revise_outline" for item in payload["guidance"]["alternatives"])
+    # A fresh project with nothing to resume still gets a runnable first step.
+    empty = engine.initial_state(str(uuid4()))
+    empty["phase"] = "needs_outline"
+    atomic_json(f.directory / "state.json", empty)
+    payload = f.client.get(f.url).json()
+    assert payload["guidance"]["primary"]["action"] == "plan"
+    assert payload["guidance"]["primary"]["enabled"] is True
+
+
+def test_cheap_outline_revision_retry_is_dispatchable(api_fixture):
+    f = api_fixture
+    state = engine.initial_state(str(f.task.id))
+    state["outline_revision_context"] = {"feedback": "只改第二章", "evidence": {"web_call_completed": True}, "outline_version": 0}
+    state["phase"] = "needs_review"
+    atomic_json(f.directory / "state.json", state)
+    response = f.client.post(f.url + "/actions", json={"action": "repair_outline_revision"})
+    assert response.status_code == 200, response.text
+    assert len(f.dispatched) == 1
+    assert f.task.config["general_longform_request"]["action"] == "repair_outline_revision"

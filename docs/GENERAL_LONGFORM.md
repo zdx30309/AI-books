@@ -131,6 +131,62 @@ git diff --check
 
 实施中发现并修复：旧通用 prompt 测试需按新分类隔离；Windows 原子临时文件名过长；浏览器模拟 tasks 接口需要 `items`；导入候选修订后材料消费、来源重查及无响应 ID 的明确恢复确认；逐段证据 JSON 的原始 CRLF 通过专属 Git whitespace 属性保留，不为格式检查修改证据字节。最终测试无失败项。
 
+## 怎么确保它在干活（停滞排查，2026-09-21）
+
+**先记住一件事**：通用长篇是「点一次、跑一步」的设计。跑完一步之后它一定停在
+`等待下一章操作 / 等待确认大纲 / 等待全书终审 / 有待处理项 / 断点已保存` 之一，
+任务列表里显示「已暂停」也是正常等待，**不是坏了**（这是 SPEC 要求的严格串行 + 每章验收）。
+
+一条命令看清所有长篇项目卡在哪、该点哪：
+
+```powershell
+python scripts\general_longform_doctor.py            # 全部通用长篇
+python scripts\general_longform_doctor.py --task <id>
+python scripts\general_longform_doctor.py --json
+```
+
+只读数据库，不发模型调用、不改任务。
+
+**工作区里的「下一步」面板（2026-09-22 起）**：不止命令行，通用长篇工作区顶部现在固定显示
+由同一套规则算出的「下一步」——一句话现状 + 一个主按钮 + 备选 + 每个动作的费用说明，
+并会明确标出「现在点只会被同一条规则再拦一次」的按钮（例如字数不达标时的合稿按钮会被置灰）。
+面板与 doctor 用的是同一个 `backend/app/services/general_longform_guidance.py`，措辞完全一致，
+只读状态、不发模型调用。完整的按钮级操作手册见 [GENERAL_LONGFORM_USAGE.md](GENERAL_LONGFORM_USAGE.md)。
+
+| 你看到的状态 | 含义 | 你要做什么 |
+| --- | --- | --- |
+| `ready_for_chapter` / 已暂停 | 已验收 N 章，等你开下一章 | 点「研究并写作第 N 章」（有候选稿时按钮变成「继续完成」） |
+| `awaiting_outline_confirmation` | 五组包装和大纲已生成 | 选包装 → 点「确认选中包装与大纲」 |
+| `awaiting_materials` | 勾了"先创建工作区" | 「材料」页上传大纲/正文 → 点「识别材料并继续当前阶段」 |
+| `needs_review` / `manual_review` | 有拦截（大纲校验、章节没写足、来源核验） | 按报错走「规划」页修订，或点「继续完成第 N 章」 |
+| `paused` | 你点过暂停 | 点「恢复上次操作」 |
+| `ready_for_assembly` | 全部章节已验收 | 点「全书终审与合稿 Word」 |
+| `completed` | 已完成并合稿 | 不用管 |
+
+**真正的"不干活"只有三种，且都有自愈**：
+
+1. `processing` 但心跳不动：`STALE_PROCESSING_REQUEUE_SECONDS`（默认 900 秒）后看门狗自动重排，
+   看门狗每 120 秒跑一次；处理中心跳新鲜时**不要重复点按钮**。
+2. `failed`：`FAILED_TASK_AUTO_RECOVERY_*`（默认 600 秒后重试，最多 24 次）。
+3. 带人工闸门的任务：配置里有 `generation_hold` / `paid_call_delivery_uncertain` /
+   `paid_call_manual_resume_required` / `pause_requested` 时，看门狗**会主动跳过**，
+   必须人工处理（交付待定要勾选确认后点「恢复上次操作」）。
+
+如果连「排队中」都不动，说明 worker/beat 没在消费队列：
+
+```powershell
+docker compose ps                       # backend / worker / maintenance / beat 都要 Up
+docker compose logs --tail=100 worker
+docker compose logs --tail=100 beat
+```
+
+**减少大纲卡死**：`GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS` 默认 1，
+调到 2—3 可以让书名/简介长度不合格这类结构问题自动多修几次再停。
+
+**当前没有"自动连跑"开关**：系统不会自己在后台把 12—15 章全部跑完，
+必须每章点一次（防跑飞、防超支、每章都要过验收门）。
+需要无人值守连跑时，用 `next_chapter` 循环脚本或等后续加开关。
+
 ## 发布记录（2026-09-15）
 
 - 发布前只读检查：北京 ECS 基线 `.deploy-version=b5b5fbc`，6 服务运行，业务活动任务 0、默认队列与 unacked 均为 0。

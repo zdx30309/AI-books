@@ -101,6 +101,79 @@ def test_outline_patch_does_not_rewrite_unrelated_or_accepted_chapters():
             engine.apply_outline_patch(plan, patch, accepted_numbers={1})
 
 
+def test_outline_patch_drops_unknown_top_level_fields_instead_of_blocking():
+    plan = outline()
+    noisy = {"top_level_changes": {"packaging": [dict(item, title=f"新的判断方式第{i}讲读本") for i, item in enumerate(plan["packaging"], 1)],
+                                   "chapters": plan["chapters"], "sections": []},
+             "chapter_patches": []}
+    patched = engine.apply_outline_patch(plan, noisy, accepted_numbers=set())
+    assert patched["chapters"] == plan["chapters"]
+    assert patched["packaging"][0]["title"] == "新的判断方式第1讲读本"
+    assert engine.validate_outline(patched, {SOURCE["id"]: SOURCE}) == []
+    with pytest.raises(GeneralLongformReview):
+        engine.apply_outline_patch(plan, {"top_level_changes": ["不是对象"]}, accepted_numbers=set())
+
+
+def test_revise_outline_retries_once_when_patch_shape_is_unusable(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "research", fake_research)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "1")
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    run(tmp_path, state, gateway, "plan")
+    assert state["phase"] == "awaiting_outline_confirmation", state.get("last_error")
+    seen: list[int] = []
+
+    def revision(context, kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return {"top_level_changes": ["坏形状"], "chapter_patches": []}
+        return {"top_level_changes": {}, "chapter_patches": [{"number": 2, "changes": {"question": "更具体的问题"}}], "reason": "只改第二章问题"}
+
+    gateway.hooks["outline_revision"] = revision
+    run(tmp_path, state, gateway, "revise_outline", feedback="把第二章的问题改得更具体")
+    assert state["phase"] == "awaiting_outline_confirmation", state.get("last_error")
+    assert len(seen) == 2, seen
+    assert state["outline"]["chapters"][1]["question"] == "更具体的问题"
+    retries = [call for call in gateway.calls if call["stage"] == "outline_revision" and str(call.get("slot", "")).startswith("outline-revision-retry")]
+    assert retries and engine._REVISION_SCHEMA_REMINDER in retries[0]["context"]["feedback"]
+
+
+def test_candidate_outline_repair_retries_after_invalid_patch_shape(tmp_path, monkeypatch):
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "2")
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    state["sources"] = {SOURCE["id"]: SOURCE}
+    state["last_research"] = {"web_call_completed": True}
+    candidate = outline()
+    candidate["packaging"][0]["title"] = "短"
+    state["outline_candidate"] = candidate
+    runner = engine.GeneralLongformRunner(
+        tmp_path,
+        state,
+        {"id": str(uuid4()), "action": "repair_outline_candidate"},
+        gateway=gateway,
+    )
+    calls: list[int] = []
+
+    def repair(context, kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"top_level_changes": ["坏形状"], "chapter_patches": []}
+        return {
+            "top_level_changes": {"packaging": outline()["packaging"]},
+            "chapter_patches": [],
+            "reason": "只修正包装书名",
+        }
+
+    gateway.hooks["outline_revision"] = repair
+    repaired, errors = runner.repair_outline(
+        candidate,
+        ["方案1书名需要10—18个可见字符"],
+        {"sources": state["sources"]},
+    )
+    assert errors == [], errors
+    assert repaired["packaging"][0]["title"] == outline()["packaging"][0]["title"]
+    assert len(calls) == 2
+
+
 def test_format_invalid_first_outline_is_repaired_with_the_existing_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "research", fake_research)
     state, gateway = new_state(), FakeGateway(tmp_path)
@@ -416,6 +489,7 @@ def test_import_candidate_local_repair_consumes_material_and_keeps_final_packagi
     assert state["imported_outline_id"] == material["id"] and not state.get("outline_candidate_material_id")
     assert not state["confirmed"] and not state["chapters"]
     assert len(state["outline"]["packaging"]) == 1
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"chapter_patches": [{"number": 2, "changes": {"question": "再次核对后的具体问题"}}]}
     run(tmp_path, state, gateway, "revise_outline", feedback="再次核对同一处边界")
     assert state["outline_version"] == 2 and not state["last_error"]
     add_material(tmp_path, state, "新增来源", role="source", filename="来源.txt")
@@ -496,3 +570,53 @@ def test_old_heading_import_changes_format_not_body():
     normalized = engine.normalize_imported_chapter(text, updated["chapters"][0], updated["handoff"]["heading_aliases"])
     assert normalized.startswith("##第1章 观察与选择1\n#问题1甲")
     assert "正文保持不动。\n旧三级内容\n更多正文。" in normalized
+
+def test_outline_revision_reports_a_noop_patch_instead_of_silently_accepting_it(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "0")
+    version = state["outline_version"]
+    # Applies cleanly (topic is an allowed field) but changes nothing.
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"topic": outline()["topic"]}, "chapter_patches": []}
+    run(tmp_path, state, gateway, "revise_outline", feedback="把第二章的问题写清楚")
+    assert state["phase"] == "needs_review"
+    assert state["outline_version"] == version  # no silent version bump
+    assert "没有产生任何有效修改" in (state["last_error"] or "")
+    assert state["outline_revision_context"]["feedback"] == "把第二章的问题写清楚"
+    assert state["outline_revision_context"]["evidence"]["web_call_completed"]
+
+
+def test_malformed_top_level_changes_keeps_valid_chapter_patches(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": ["整本书结构"], "chapter_patches": [{"number": 2, "changes": {"question": "有效章节补丁"}}]}
+    run(tmp_path, state, gateway, "revise_outline", feedback="只改第二章问题")
+    assert state["phase"] == "awaiting_outline_confirmation", state["last_error"]
+    assert state["outline"]["chapters"][1]["question"] == "有效章节补丁"
+    assert state["outline_version"] == 2
+    assert not state.get("outline_revision_context")
+
+
+def test_repair_outline_revision_reuses_the_paid_evidence_without_a_new_search(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "0")
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"topic": outline()["topic"]}, "chapter_patches": []}
+    run(tmp_path, state, gateway, "revise_outline", feedback="只补充第二章材料边界")
+    assert state["phase"] == "needs_review"
+    version = state["outline_version"]
+    searches = len([call for call in gateway.calls if call["stage"] == "research"])
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"chapter_patches": [{"number": 2, "changes": {"question": "加入新材料的边界"}}]}
+    run(tmp_path, state, gateway, "repair_outline_revision")
+    assert state["phase"] == "awaiting_outline_confirmation", state["last_error"]
+    assert state["outline_version"] == version + 1
+    assert state["outline"]["chapters"][1]["question"] == "加入新材料的边界"
+    assert len([call for call in gateway.calls if call["stage"] == "research"]) == searches
+    assert not state.get("outline_revision_context")
+    assert state["outline_revision_repair_request_id"]
+
+
+def test_repair_outline_revision_is_refused_without_a_saved_context(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "repair_outline_revision")
+    assert state["phase"] == "needs_review"
+    assert "可复用的上次修订检索" in (state["last_error"] or "")
+    assert len(gateway.calls) == calls
