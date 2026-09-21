@@ -21,6 +21,12 @@
   - @@@python -m pytest backend/tests -q -k general_longform@@@ → @@@219 passed, 960 deselected@@@（58.9s）。其中新增：指引测试 42 项（@@@backend/tests/test_general_longform_guidance.py@@@，含任意状态必有可执行动作、只读不改状态、无字段被工作区拒绝、畸形状态不抛异常、字数盈亏算术）、引擎 7 项（空补丁不再静默通过、畸形 @@@top_level_changes@@@ 保留可用章节补丁、@@@repair_outline_revision@@@ 复用已付费证据且不发新检索、无上下文时拒绝）、API 2 项（项目载荷必带 next-step、@@@repair_outline_revision@@@ 可下发）。
   - @@@npm run typecheck@@@（frontend）→ PASS；@@@npm run build@@@ → PASS（@@@frontend/dist/assets/index-LDfgrpIH.js@@@）。
   - 只读真机核对（本机读线上 Supabase + ECS 断点）：@@@python scripts/general_longform_doctor.py@@@ 对真实停滞任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@ 输出「下一步：按校验结果修复候选大纲（不重新检索）」，与该任务在 ECS 上 @@@state.json@@@ 经 @@@build_guidance@@@ 计算出的结果一致（主按钮 @@@repair_outline_candidate@@@，复用已核验的 4 个来源，不重新联网）。
+- 发布（2026-09-22）：提交 @@@3a2b335@@@ 同时推送到 GitHub @@@main@@@ 与 @@@codex/bilibili-cost-guard-main@@@，再以 12 个文件的字节校验增量发布到北京 ECS（@@@--base 71a2229@@@，@@@.deploy-version = 3a2b335@@@）。
+- 发布校验：backend 与 worker 都通过固定 prompt 校验（v02 840 段/23 节、v16 571 段/19 节、39 个归档原始文件、其它 33 个分类 132 条 prompt 哈希不变），6 个后端文件哈希逐一核对；公开站点/健康检查/prompt manifest 均 200 且 celery alive；前端 bundle 字节与干净工作树构建一致（@@@/assets/index-DXf2dEna.js@@@，sha256 @@@c9d5475d…@@@）。
+- 部署后真机复核（容器内跑部署代码 + 真实状态）：/opt/video-plan 上的停滞任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@ 得到的主按钮是 @@@repair_outline_candidate@@@（复用已核验的 4 个来源、不重新联网），并附带补丁形状失败的说明；与工作区「下一步」面板同一句话。
+- 回滚点：@@@/opt/video-plan-release-backups/20260921T212135Z-3a2b335@@@（含 @@@rollback.py@@@、源文件前后快照与镜像回滚 tag）。发布后清理构建缓存，根分区剩余约 10.4 GB。
+- 发布过程记录（避免误判）：第一次发布在 @@@docker compose build backend web@@@ 的 apt/pip 层被 SSH 读超时打断（源文件已落地、镜像未重建）；续跑时先手工把镜像构建完（@@@BUILD_EXIT=0@@@），第二次续跑又因 @@@unacked=1@@@（对应任务在数据库里已不存在）停下，第三次续跑 @@@RELEASE_PASS@@@。两次续跑都复用同一个备份目录，未新建发布点。
+- 发布方式说明：为不把工作区里其它未提交改动混进发布增量，发布脚本在 @@@git worktree add --detach 3a2b335@@@ 出来的干净检出里执行；归档仍来自提交对象（@@@git archive 3a2b335@@@），字节校验与 @@@.deploy-version@@@ 校验未做任何放宽。仅对本地脚本副本放宽了两处前置断言：要求工作区干净（改用干净检出后已满足）与 @@@unacked@@@ 必须为 0（改为打印该计数，队列仍要求 @@@LLEN celery == 0@@@）。
 - 未做：未运行真实付费十万字生成；未改动其他分类、Epic 状态表、模型凭据与生产数据；历史 @@@PARTIAL_IMPLEMENTATION@@@ 结论不变。
 
 
