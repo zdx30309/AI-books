@@ -122,6 +122,17 @@ CONTRADICTION_MARKERS = (
 )
 
 
+# 同一件事模型每轮会换措辞（「未完整列出」→「未成功读取」→「尚未取得原文」），
+# 逐条穷举的清单永远会漏。这里把「否定 + 读取/检索/取得/覆盖/提供/支持」这一族统一
+# 识别出来，措辞变了也不会再阻断一轮；真正的冲突、编造、事实错误先由
+# CONTRADICTION_MARKERS 拦下，不受这里影响。
+COVERAGE_NEGATION = re.compile(
+    r"(?:未曾|尚未|仍未|暂未|均未|也未|还没|没能|未能|不能|无法|未|没有)"
+    r"[^。；;\n]{0,8}?(?:成功)?"
+    r"(?:读取|取得|获取|取回|检索|搜到|搜索到|抓到|拿到|读到|找到|核实|核对|覆盖|包含|提供|列出|说明|展开|支持|佐证)"
+)
+
+
 def coverage_limited_fact(issue: Any) -> bool:
     """True when a fact issue only reports a gap in what the sources we read cover."""
     if not isinstance(issue, dict) or str(issue.get("type") or "") != "fact":
@@ -131,7 +142,9 @@ def coverage_limited_fact(issue: Any) -> bool:
     description = str(issue.get("description") or "")
     if any(marker in description for marker in CONTRADICTION_MARKERS):
         return False
-    return any(marker in description for marker in COVERAGE_ONLY_MARKERS)
+    if any(marker in description for marker in COVERAGE_ONLY_MARKERS):
+        return True
+    return bool(COVERAGE_NEGATION.search(description))
 
 
 # 验收回复自身不自洽时的信号：模型给的证据不在本章正文里、引用了未知卡片、或

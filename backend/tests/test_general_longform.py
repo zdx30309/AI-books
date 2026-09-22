@@ -767,6 +767,70 @@ def test_a_real_conflict_is_never_downgraded_by_the_source_policy(tmp_path, monk
     assert state["phase"] == "needs_review"
 
 
+# 第 4 章线上真实出现过的措辞：作者已经选过 search_trusted，这类只说明「已读来源没有
+# 覆盖到」的描述必须被认出来，否则同一件事换个说法又会阻断一轮（这是用户重复付费的来源）。
+REALIZED_COVERAGE_ISSUES = [
+    {"severity": "high", "type": "fact",
+     "description": "“早晚有倾向”承担本章第一层分型任务，但一般人群时型的正式定义、连续分布、测量工具及其与年龄和环境关系的专项来源未成功读取。"},
+    {"severity": "high", "type": "fact",
+     "description": "“社会时间差”一节使用了该概念并解释工作日与休息日错位，但本轮没有成功读取社会时间差原始定义或一般人群测量研究。"},
+    {"severity": "high", "type": "fact",
+     "description": "研究记录显示，拟用于晨晚型连续偏好、测量工具及年龄分布的论文页面均未成功读取。"},
+    {"severity": "high", "type": "fact",
+     "description": "该小节依赖的临床边界尚未取得原文，页面读取失败的记录已经保留。"},
+]
+
+
+def test_every_realized_coverage_wording_counts_as_a_gap_not_a_conflict():
+    for issue in REALIZED_COVERAGE_ISSUES:
+        assert engine.coverage_limited_fact(issue), issue["description"]
+
+
+def test_a_conflict_phrased_with_the_same_negation_is_still_blocking():
+    assert not engine.coverage_limited_fact({
+        "severity": "high", "type": "fact",
+        "description": "本轮未成功读取社会时间差原始定义，且正文写的计算方式与已读来源不符。"})
+
+
+def test_a_plain_misstatement_without_coverage_wording_is_still_blocking():
+    assert not engine.coverage_limited_fact({
+        "severity": "high", "type": "fact",
+        "description": "正文把N1写成深睡眠，已读来源把它归入浅睡眠。"})
+
+
+def test_search_trusted_accepts_the_chapter_on_the_realized_gap_wording(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    gateway.hooks["acceptance"] = _acceptance_with_issue(REALIZED_COVERAGE_ISSUES[0])
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    assert not [call for call in gateway.calls[calls:] if call["stage"] == "repair"]
+    recorded = state["chapters"]["1"]["accepted"]["policy_downgrades"]
+    assert recorded and recorded[0]["type"] == "fact" and recorded[0]["severity"] == "medium"
+
+
+def test_a_section_shortfall_tied_to_the_realized_wording_is_also_waived(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+
+    def hook(context, kwargs):
+        contract = context["chapter"]
+        payload = _audit_payload(contract)
+        payload["planned_vs_actual"][1]["fulfilled"] = False
+        title = contract["sections"][1]["title"]
+        payload["issues"] = [{"severity": "high", "type": "fact",
+                              "description": f"“{title}”一节承担本章第一层分型任务，但专项来源未成功读取。"}]
+        payload["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    gateway.hooks["acceptance"] = hook
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    recorded = state["chapters"]["1"]["accepted"]["policy_downgrades"]
+    assert {item["type"] for item in recorded} == {"acceptance", "fact"}
+
+
 def test_malformed_acceptance_json_retries_at_most_once_and_never_needs_a_manual_restart(tmp_path, monkeypatch):
     state, gateway = ready(tmp_path, monkeypatch)
     broken = '{"summary": "cut off mid object", "issues": ['
