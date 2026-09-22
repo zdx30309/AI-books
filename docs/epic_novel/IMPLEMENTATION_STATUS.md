@@ -27,6 +27,7 @@
 - 回滚点：@@@/opt/video-plan-release-backups/20260921T212135Z-3a2b335@@@（含 @@@rollback.py@@@、源文件前后快照与镜像回滚 tag）。发布后清理构建缓存，根分区剩余约 10.4 GB。
 - 发布过程记录（避免误判）：第一次发布在 @@@docker compose build backend web@@@ 的 apt/pip 层被 SSH 读超时打断（源文件已落地、镜像未重建）；续跑时先手工把镜像构建完（@@@BUILD_EXIT=0@@@），第二次续跑又因 @@@unacked=1@@@（对应任务在数据库里已不存在）停下，第三次续跑 @@@RELEASE_PASS@@@。两次续跑都复用同一个备份目录，未新建发布点。
 - 发布方式说明：为不把工作区里其它未提交改动混进发布增量，发布脚本在 @@@git worktree add --detach 3a2b335@@@ 出来的干净检出里执行；归档仍来自提交对象（@@@git archive 3a2b335@@@），字节校验与 @@@.deploy-version@@@ 校验未做任何放宽。仅对本地脚本副本放宽了两处前置断言：要求工作区干净（改用干净检出后已满足）与 @@@unacked@@@ 必须为 0（改为打印该计数，队列仍要求 @@@LLEN celery == 0@@@）。
+- 命令行的口径修正（2026-09-22，提交 @@@9b50ebf@@@）：任务实际跑在北京服务器上，本地没有 @@@state.json@@@，旧版 doctor 只能凭数据库字段猜，给出的下一步与工作区不一致。现在 @@@scripts/general_longform_doctor.py@@@ 在本地读不到断点时，会通过 @@@deployment.local.json@@@ 用 SSH 只读取回服务器容器里的 @@@state.json@@@（最多 10 个任务，@@@--no-remote@@@ 可关掉），因此命令行与工作区「下一步」完全一致；输出新增「状态来源」一行标明读的是本地断点还是服务器断点。该提交同样以 1 个文件的增量发布到 ECS（@@@--base 71b0030@@@，@@@.deploy-version = 9b50ebf@@@，备份 @@@/opt/video-plan-release-backups/20260921T230220Z-9b50ebf@@@）。
 - 未做：未运行真实付费十万字生成；未改动其他分类、Epic 状态表、模型凭据与生产数据；历史 @@@PARTIAL_IMPLEMENTATION@@@ 结论不变。
 
 
