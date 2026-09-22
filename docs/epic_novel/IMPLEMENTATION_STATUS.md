@@ -10,6 +10,9 @@
 - 前端：@@@GeneralLongformPanel.tsx@@@ 下一步面板新增来源策略勾选框（带当前待核实条数与策略说明）与自动连跑勾选框（当前自动步骤 / 暂停原因 / 连续失败提示）。
 - 验证（2026-09-22，本机全量重跑）：@@@python -m pytest backend/tests -q -k general_longform@@@ → @@@242 passed, 960 deselected@@@。本轮新增 8 项：引擎 4 项（@@@revise_outline_local@@@ 复用已付费证据且检索调用数不变、gap 未清空即失败且不能静默返回、无证据时拒绝、@@@set_auto_run@@@ 零调用幂等）+ 引擎 2 项（@@@search_trusted@@@ 直接确认并写出第一章、默认策略仍拒绝且非法策略被拒）+ 决策表 2 项（信任策略下自动确认、自动连跑不自行改策略）+ 指引 1 项（信任前给切换备选、信任后主按钮为确认）。@@@npm run typecheck@@@ → PASS。
 - 不变项（硬约束复核）：@@@backend/app/prompts/general_longform/**@@@ 逐字节未改（发布校验照旧比对 v02 840 段/23 节、v16 571 段/19 节、39 个归档文件与其余 33 分类 132 条哈希）；无数据库迁移；新增动作中 @@@set_source_policy@@@ 与 @@@set_auto_run@@@ **不含任何模型调用**。
+- 发布（2026-09-22/23）：提交 @@@f9ffa34@@@ 同时推送到 GitHub @@@main@@@ 与 @@@codex/bilibili-cost-guard-main@@@，再以 11 个文件的字节校验增量发布到北京 ECS（@@@--base abcb3ed@@@，@@@.deploy-version = f9ffa34@@@，备份 @@@/opt/video-plan-release-backups/20260922T145946Z-f9ffa34@@@）。发布校验：backend 与 worker 都通过固定 prompt 校验（v02 840 段/23 节、v16 571 段/19 节、39 个归档原始文件、其它 33 分类 132 条 prompt 哈希不变），7 个后端文件哈希逐一核对，公开首页/健康检查/prompt manifest 均 200 且 celery alive，前端 bundle @@@/assets/index-mYELcrQ1.js@@@（sha256 @@@73b63d56…@@@）与干净工作树构建逐字节一致。
+- 发布过程记录（避免误判）：第一次发布在 @@@docker compose build backend web@@@ 的 apt/pip 层被 SSH 读超时打断（11 个源文件已落地、备份已建、镜像未重建、版本号未动）；随后在服务器上以 @@@setsid nohup@@@ 后台重跑镜像构建并轮询日志，手工完成 rollback 打标与 @@@docker compose up -d --no-build --no-deps@@@，再用 @@@--resume-release 20260922T145946Z-f9ffa34@@@ 完成全部校验并落版本号（@@@RELEASE_PASS@@@）。构建缓存已清理，根分区剩余约 7.2 GB。
+- 真实停滞任务的解封（2026-09-22）：@@@bc69c362@@@ 按作者选择置 @@@source_policy=search_trusted@@@（@@@gap_waiver@@@ 记录 10 条未取得原文的要点）并完成 @@@confirm_outline@@@（packaging_index=1，《忙到很晚，也要好好睡觉》），阶段由 @@@needs_review@@@ 变为 @@@ready_for_chapter@@@；只读体检 @@@scripts/general_longform_doctor.py@@@ 输出「下一步：研究并写作第1章」。
 
 ## 通用长篇：把「卡住之后不知道点哪」这一整类问题解决（2026-09-22）
 
