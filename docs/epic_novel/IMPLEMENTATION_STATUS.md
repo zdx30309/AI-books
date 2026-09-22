@@ -1,5 +1,17 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：余额耗尽被当成交付待定（2026-09-23，第五轮）
+
+- 复现：任务 @@@bc69c362@@@ 的第 5 章。连续两次章节验收调用都以 @@@status=failed@@@ 结束，落库信息是 @@@paid_call_delivery_uncertain@@@ / "OpenAI background response delivery failed after the request may have been accepted; do not submit an automatic replacement"，工作区显示「恢复上次操作（先核对交付待定调用）」——把一个根本不存在、也从未计费的交付摆到作者面前要求确认。
+- 真实原因（线上拿密钥 @@@responses.retrieve@@@ 那两个 response）：@@@error.code=credit_balance_exhausted@@@、@@@message="You have no credits remaining..."@@@、@@@output=[]@@@、@@@usage=null@@@、@@@model=gpt-5.6-sol@@@。即 provider 在生成任何内容前就拒绝，既没有产出也没有扣费；第 5 章四小节正文、一润、二润、修复全部完好保存在断点里。
+- 根因一：@@@_openai_response_debug_summary()@@@ 丢掉了 @@@response.error@@@，@@@_wait_for_openai_background_response()@@@ 只要看到 @@@status != completed@@@ 就统一抛「交付待定」，把平台侧的额度决定误判为「请求可能已被接受」。
+- 修复一：新增 @@@_openai_response_error_text()@@@，调试摘要带 @@@error=...@@@；provider error 命中硬额度/计费信号时 @@@paid_api_guard.trip()@@@ 并抛 @@@PaidApiQuotaExhausted@@@，作者看到的是真实原因。@@@general_longform_runtime.provider_failure_status()@@@ 同时把 provider 的 @@@status=failed@@@ 写进调用记录，作者确认重试后可以清掉死 @@@response_id@@@ 并只重发一次。
+- 根因二（线上手工修复并入 git）：章节流程里既有 @@@02_polish.md@@@ 被判「章节序列被拆分、合并、改号或遗漏」后会清空 @@@polished_markdown@@@，但紧跟的阶段闸门是 @@@elif@@@，被清空的值进不了闸门——一润整段不跑，下一阶段拿到空稿（线上日志 @@@二润返回空稿@@@）。改为 @@@if@@@，并补一条回归用例（改回 @@@elif@@@ 时用例失败、改回 @@@if@@@ 时通过）。
+- 验证（2026-09-23 本机）：@@@python -m pytest backend/tests -q -k general_longform@@@ → @@@270 passed@@@；@@@content_engine@@@ 相关 11 个测试文件 @@@447 passed@@@；@@@test_category_prompt_routing.py@@@ 单独 @@@113 passed@@@。
+- 发布（2026-09-23 06:00 本地）：@@@4c3ac5a@@@ 以 @@@--base af0a333@@@ 发布到北京 ECS，3 个文件增量（@@@.deploy-version=4c3ac5a@@@，备份 @@@/opt/video-plan-release-backups/20260922T220053Z-4c3ac5a@@@）。线上那份未提交的手工修复以内容哈希白名单放行：既不回退它，也不接受未知基线；发布后线上 @@@content_engine.py@@@ 与 git blob 逐字节一致（@@@633c7d0a@@@），漂移清零，后续发布不再需要白名单。prompt 校验、@@@DEPLOYED_CODE_HASHES_PASS 3@@@、公开首页/健康/manifest 200、前端 bundle @@@/assets/index-mYELcrQ1.js@@@ 未变。
+- 待作者执行：第 5 章正文已写完（@@@chapters/05/v01/draft.txt@@@ 34675 B，四小节 9142/7739/9213/8464 B），只差最后一次验收调用（约 @@@$1@@@）。线上 OpenAI 账户余额耗尽，充值后在通用长篇工作区点一次「恢复上次操作」即可验收第 5 章；充值前反复重试只会重复撞额度，不产生新费用但也不前进。
+- 不变项：@@@backend/app/prompts/general_longform/**@@@ 逐字节未改；严格串行、每章验收、只有 @@@acceptedContent@@@ 写验收状态表、100000—110000 字与双 Word 规则不变。
+
 ## 通用长篇：来源缺口的措辞族识别（2026-09-23，第四轮）
 
 - 复现：任务 @@@bc69c362@@@ 的第 4 章《晚睡的分界》。第一次验收真的发现问题（@@@11365@@@ 字超计划 42%、诊断门槛结论反复重复），系统按设计做了一次局部修复并复验；复验后剩下的 4 条阻断项全部是「来源覆盖不足 + 它指名的小节未落实」，措辞是 @@@专项来源未成功读取@@@ / @@@本轮没有成功读取@@@ —— 旧的豁免清单只认得较早的「未完整列出 / 未覆盖 / 未取得原文」，于是同一件事换个说法又拦了一轮。
