@@ -177,6 +177,21 @@ def _error_text(exc: BaseException) -> str:
     return re.sub(r"(?:sk-|AIza)[A-Za-z0-9_-]{12,}", "[redacted]", f"{type(exc).__name__}: {exc}")[:2000]
 
 
+_PROVIDER_FAILURE_STATUS = re.compile(r"status=(failed|incomplete|cancelled|expired)")
+
+
+def provider_failure_status(exc: BaseException) -> str:
+    """Which terminal state the provider itself reported, when it reported one.
+
+    A response the provider ended as failed/incomplete/cancelled carries no
+    deliverable content, so after the author confirms the retry this paid slot
+    may issue exactly one replacement request. A polling interruption does not
+    match here, so a resume still never re-POSTs a response that may exist.
+    """
+    match = _PROVIDER_FAILURE_STATUS.search(str(exc))
+    return match.group(1) if match else ""
+
+
 class ModelGateway:
     def __init__(self, directory: Path, request_id: str, *, check_active: Callable[[], None] | None = None, retry_uncertain: bool = False,
                  prompt_version: str | None = None):
@@ -281,6 +296,12 @@ class ModelGateway:
                 error = content_engine._openai_writer_connection_error_message(exc)
             record.update(status="failed" if rejected or isinstance(exc, GeneralLongformError) else "uncertain",
                           error=error, http_status=status_code, error_code=error_code, finished_at=now_iso())
+            # Record the provider's own terminal state so an explicitly confirmed
+            # retry can clear the unusable response id and send exactly one
+            # replacement request, instead of re-reading the same dead response.
+            provider_status = provider_failure_status(exc)
+            if provider_status:
+                record["response_status"] = provider_status
             if rejected:
                 record["failure_kind"] = "authentication" if status_code in {401, 403} else "request_rejected"
                 record["delivery_status"] = "rejected_before_generation"

@@ -63,6 +63,53 @@ def test_background_resume_uses_durable_response_id_not_second_post(tmp_path, mo
     assert calls == [None, "resp_existing"]
 
 
+def test_dead_provider_response_needs_confirmation_and_then_reissues_exactly_once(tmp_path, monkeypatch):
+    """A response the provider ended as failed must not deadlock the paid slot."""
+    posted = []
+
+    def dead(prompt, **kwargs):
+        posted.append(kwargs.get("background_response_id"))
+        callback = kwargs.get("on_background_response_id")
+        if callback is not None:
+            callback("resp_failed_1")
+        raise content_engine.OpenAIDeliveryUncertainError(
+            "paid_call_delivery_uncertain: OpenAI background response delivery failed after the request "
+            "may have been accepted; do not submit an automatic replacement (RuntimeError: background "
+            "response ended with status=failed; status=failed; incomplete_reason=none; output_types=none; "
+            "usage=unknown) response_id=resp_failed_1"
+        )
+
+    monkeypatch.setattr(content_engine, "_openai_writer_call_result", dead)
+    request_id = str(uuid4())
+    with pytest.raises(content_engine.OpenAIDeliveryUncertainError):
+        runtime.ModelGateway(tmp_path, request_id).call("acceptance", {}, slot="chapter-5-attempt-1")
+    record = json.loads((tmp_path / "calls" / request_id / runtime.ModelGateway(tmp_path, request_id).record_path("acceptance", "chapter-5-attempt-1").name).read_text(encoding="utf-8"))
+    assert record["status"] == "uncertain" and record["response_status"] == "failed"
+
+    # 1) an unconfirmed resume refuses to send anything at all
+    with pytest.raises(runtime.GeneralLongformReview):
+        runtime.ModelGateway(tmp_path, request_id).call("acceptance", {}, slot="chapter-5-attempt-1")
+    # the first call was a fresh POST (no id yet) and nothing was sent afterwards
+    assert posted == [None]
+
+    # 2) a confirmed retry clears the dead id and posts exactly one replacement
+    def healthy(prompt, **kwargs):
+        posted.append(kwargs.get("background_response_id"))
+        return "验收结论", {"input_tokens": 10, "output_tokens": 20}
+
+    monkeypatch.setattr(content_engine, "_openai_writer_call_result", healthy)
+    result = runtime.ModelGateway(tmp_path, request_id, retry_uncertain=True).call("acceptance", {}, slot="chapter-5-attempt-1")
+    assert result["status"] == "completed" and result["text"] == "验收结论"
+    assert posted == [None, None], posted
+
+
+def test_provider_failure_status_only_matches_terminal_provider_states():
+    assert runtime.provider_failure_status(RuntimeError("... status=failed; ...")) == "failed"
+    assert runtime.provider_failure_status(RuntimeError("status=incomplete")) == "incomplete"
+    assert runtime.provider_failure_status(RuntimeError("poll interrupted, status unknown")) == ""
+    assert runtime.provider_failure_status(RuntimeError("status=queued")) == ""
+
+
 def test_gemini_single_attempt_and_provider_is_logged(tmp_path, monkeypatch):
     calls = []
     def generate(prompt, **kwargs):
