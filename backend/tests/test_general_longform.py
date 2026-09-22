@@ -843,3 +843,49 @@ def test_audit_reasks_are_bounded_and_persisted_so_a_resume_cannot_loop(tmp_path
     settled = len(gateway.calls)
     engine.GeneralLongformRunner(tmp_path, state, request, gateway=gateway).run()
     assert len(gateway.calls) == settled, "a resume must reuse the persisted verdicts"
+
+
+def _section_shortfall_hook(section_index, note_section):
+    def hook(context, kwargs):
+        contract = context["chapter"]
+        payload = _audit_payload(contract)
+        payload["planned_vs_actual"][section_index]["fulfilled"] = False
+        payload["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        if note_section:
+            title = contract["sections"][section_index]["title"]
+            payload["issues"] = [{"severity": "high", "type": "fact",
+                                  "description": f"「{title}」一节的核心判断尚未获得足够完整的针对性来源，"
+                                                 "本轮实际读取的页面未覆盖该小节所依赖的临床边界。"}]
+        return json.dumps(payload, ensure_ascii=False)
+    return hook
+
+
+def test_unfulfilled_section_that_only_misses_the_waived_coverage_does_not_block(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    gateway.hooks["acceptance"] = _section_shortfall_hook(1, note_section=True)
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    assert not [call for call in gateway.calls[calls:] if call["stage"] == "repair"]
+    recorded = state["chapters"]["1"]["accepted"]["policy_downgrades"]
+    assert {item["type"] for item in recorded} == {"acceptance", "fact"}
+
+
+def test_unfulfilled_section_without_that_gap_is_still_blocking_and_names_itself(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    gateway.hooks["acceptance"] = _section_shortfall_hook(1, note_section=False)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["phase"] == "needs_review"
+    assert not state["chapters"]["1"].get("accepted")
+    assert "问题1乙" in (state["last_error"] or ""), state["last_error"]
+
+
+def test_verified_policy_keeps_the_same_section_shortfall_blocking(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    assert state.get("source_policy", "verified") == "verified"
+    gateway.hooks["acceptance"] = _section_shortfall_hook(1, note_section=True)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["phase"] == "needs_review"
+    assert not state["chapters"]["1"].get("accepted")

@@ -166,12 +166,22 @@ def apply_source_policy(issues: list[dict[str, Any]], state: dict[str, Any]) -> 
     """Keep the chapter gate consistent with the source policy the author already chose."""
     if not trusts_search(state):
         return issues
+    waived_notes = [str(item.get("description") or "") for item in issues if coverage_limited_fact(item)]
     resolved: list[dict[str, Any]] = []
     for issue in issues:
+        reason = ""
         if coverage_limited_fact(issue):
-            resolved.append({**issue, "severity": "medium", "downgraded_by": "search_trusted",
-                             "downgraded_reason": "作者已选择直接采用联网检索结果；本条只说明已读来源覆盖不足，"
-                                                  "没有指出正文与已读来源冲突或编造，按已记录豁免保留为 medium。"})
+            reason = ("作者已选择直接采用联网检索结果；本条只说明已读来源覆盖不足，"
+                      "没有指出正文与已读来源冲突或编造，按已记录豁免保留为 medium。")
+        elif (isinstance(issue, dict) and str(issue.get("type") or "") == "acceptance" and issue.get("section")
+              and any(str(issue.get("section")) in note for note in waived_notes)):
+            # The section is only short of the same source coverage that is
+            # already waived for this book; it is recorded, never hidden, and it
+            # no longer re-flags whichever section the auditor picks each round.
+            reason = ("作者已选择直接采用联网检索结果；该小节的计划缺口正是已记录、已豁免的来源覆盖不足，"
+                      "不是正文没写，按同一条豁免保留为 medium。")
+        if reason:
+            resolved.append({**issue, "severity": "medium", "downgraded_by": "search_trusted", "downgraded_reason": reason})
         else:
             resolved.append(issue)
     return resolved
@@ -377,8 +387,14 @@ def validate_audit(audit: dict[str, Any], contract: dict[str, Any], sources: dic
     if audit.get("completed_sections") != names:
         add("验收未确认所有小节完整执行")
     diffs = audit.get("planned_vs_actual")
-    if not isinstance(diffs, list) or [item.get("section") for item in diffs if isinstance(item, dict)] != names or any(not isinstance(item, dict) or item.get("fulfilled") is not True or not item.get("evidence") for item in diffs):
+    structured = isinstance(diffs, list) and [item.get("section") for item in diffs if isinstance(item, dict)] == names
+    if not structured or any(not isinstance(item, dict) or not item.get("evidence") for item in diffs):
         add("Planned-vs-Actual Diff 缺失或存在未完成任务")
+    else:
+        for item in diffs:
+            if item.get("fulfilled") is not True:
+                errors.append({"severity": "high", "type": "acceptance", "section": str(item.get("section")),
+                               "description": f"Planned-vs-Actual：小节「{item.get('section')}」的计划任务未落实"})
     ids = audit.get("used_source_ids")
     if not valid_source_ids(ids, sources):
         add("实际使用来源不完整或没有真实页面读取证据")
