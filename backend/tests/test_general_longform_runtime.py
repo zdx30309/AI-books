@@ -110,6 +110,45 @@ def test_provider_failure_status_only_matches_terminal_provider_states():
     assert runtime.provider_failure_status(RuntimeError("status=queued")) == ""
 
 
+def test_provider_error_text_carries_the_billing_reason():
+    response = SimpleNamespace(error={"code": "credit_balance_exhausted",
+                                      "message": "You have no credits remaining."})
+    text = content_engine._openai_response_error_text(response)
+    assert text.startswith("credit_balance_exhausted")
+    assert paid_api_guard.is_quota_exhausted(text)
+    assert "error=none" not in content_engine._openai_response_debug_summary(response)
+
+
+def test_provider_error_text_is_empty_when_the_response_has_none():
+    response = SimpleNamespace(status="failed", output=[], usage=None, error=None, incomplete_details=None)
+    assert content_engine._openai_response_error_text(response) == ""
+    summary = content_engine._openai_response_debug_summary(response)
+    assert "status=failed" in summary and "error=none" in summary
+
+
+def test_balance_failure_is_reported_as_quota_and_trips_the_breaker(tmp_path, monkeypatch):
+    """A provider billing failure must never masquerade as an uncertain delivery."""
+    paid_api_guard.reset("openai")
+
+    def no_redis():
+        raise RuntimeError("no redis in this test")
+
+    monkeypatch.setattr(paid_api_guard, "_redis_client", no_redis)
+    failed = SimpleNamespace(id="resp_credit_1", status="failed", output=[], usage=None, incomplete_details=None,
+                             model="gpt-5.6-sol",
+                             error={"code": "credit_balance_exhausted", "message": "You have no credits remaining."})
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: failed,
+                                                     retrieve=lambda response_id: failed))
+    client.with_options = lambda **kwargs: client
+    monkeypatch.setattr(content_engine, "_get_openai_writer_client", lambda: client)
+    try:
+        with pytest.raises(paid_api_guard.PaidApiQuotaExhausted):
+            content_engine._openai_writer_call_result("提示词", background=True, retry_on_failure=False)
+        assert "credit_balance_exhausted" in (paid_api_guard._local_reason("openai") or "")
+    finally:
+        paid_api_guard._local_breakers.pop("openai", None)
+
+
 def test_gemini_single_attempt_and_provider_is_logged(tmp_path, monkeypatch):
     calls = []
     def generate(prompt, **kwargs):

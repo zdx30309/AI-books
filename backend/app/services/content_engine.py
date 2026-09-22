@@ -3256,6 +3256,26 @@ def _extract_openai_response_text(response: Any | None) -> str:
     return ""
 
 
+def _openai_response_error_text(response: Any | None) -> str:
+    """Return the provider's own error code and message, when it sent one.
+
+    A response the provider ended as ``failed`` usually explains itself here
+    (for example ``credit_balance_exhausted``).  Without it the caller can only
+    see "status=failed" and has to treat a billing decision as an uncertain
+    delivery, which is both misleading and impossible to act on.
+    """
+
+    error = _response_attr(response, "error")
+    if error is None:
+        return ""
+    if isinstance(error, dict):
+        code, message = error.get("code"), error.get("message")
+    else:
+        code, message = _response_attr(error, "code"), _response_attr(error, "message")
+    parts = [str(part).strip() for part in (code, message) if part]
+    return ": ".join(parts)
+
+
 def _openai_response_debug_summary(response: Any | None) -> str:
     if response is None:
         return "response=None"
@@ -3271,10 +3291,12 @@ def _openai_response_debug_summary(response: Any | None) -> str:
         reason = None
 
     usage = _response_attr(response, "usage")
+    provider_error = _openai_response_error_text(response)
     return (
         f"status={_response_attr(response, 'status', 'unknown')}; "
         f"incomplete_reason={reason or 'none'}; "
         f"output_types={output_types or 'none'}; "
+        f"error={provider_error or 'none'}; "
         f"usage={usage or 'unknown'}"
     )
 
@@ -3616,6 +3638,16 @@ def _wait_for_openai_background_response(
 
     status = str(_response_attr(current, "status", "") or "").lower()
     if status != "completed":
+        provider_error = _openai_response_error_text(current)
+        if provider_error and paid_api_guard.is_quota_exhausted(provider_error):
+            # The provider produced no output and billed nothing; this is a
+            # billing decision, not a delivery whose fate is unknown.  Trip the
+            # shared breaker so every worker reports the real reason instead of
+            # asking the author to confirm a delivery that never existed.
+            paid_api_guard.trip("openai", provider_error)
+            raise paid_api_guard.PaidApiQuotaExhausted(
+                f"OpenAI refused response {response_id} before generating anything: {provider_error}"
+            )
         raise _openai_delivery_uncertain(
             RuntimeError(
                 f"background response ended with status={status or 'unknown'}; "
