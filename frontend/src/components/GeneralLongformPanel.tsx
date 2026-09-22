@@ -80,6 +80,7 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
   const [files, setFiles] = useState<File[]>([]);
   const [preview, setPreview] = useState<{ number: number; kind: string; content: string; version: number } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [autoNote, setAutoNote] = useState("");
   const mounted = useRef(true);
   const actionLock = useRef(false);
   const lastRequest = useRef<{ signature: string; id: string } | null>(null);
@@ -119,7 +120,19 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
   // The backend guidance names the one action worth taking right now; "avoid"
   // lists buttons that would only be rejected again by the same gate.
   const guidance = state?.guidance || null;
+  // 来源策略：默认严格核实（未取得原文的要点会拦住确认）；勾选后按作者意愿直接
+  // 采用联网检索结果，不二次核实、不产生任何调用，未取得原文的要点只作留痕。
+  const gapCount = (plan?.research_gaps || []).length;
+  const srcTrusted = state?.source_policy === "search_trusted";
   const avoided = new Set((guidance?.avoid || []).map((item) => item.action));
+  // 自动连跑：后端给出「下一步」，前端按同一条接口一步步提交。它不能做人做不到的
+  // 事——同一套校验、同一套断点；后端要求停下时（需要新检索/人工闸门）这里会显示原因。
+  const auto = guidance?.auto || null;
+  const autoOn = Boolean(auto?.enabled);
+  const autoSig = auto?.action
+    ? [auto.action, JSON.stringify(auto.params || {}), state?.phase, state?.outline_version, acceptedNumbers.length, state?.progress].join("|")
+    : "";
+  const autoTrack = useRef({ sig: "", tries: 0 });
 
   async function act(body: GeneralLongformAction) {
     if (actionLock.current || !state) return;
@@ -132,7 +145,7 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
       await api.runGeneralLongform(taskId, { ...payload, request_id: lastRequest.current.id });
       lastRequest.current = null;
       setFeedback(""); setRetryUncertain(false); setPreview(null);
-      setNotice("指定操作已入队；已完成节点复用断点，不自动启动后续章节。");
+      setNotice(autoOn ? "操作已入队；自动连跑会在它结束后接着提交下一步。" : "指定操作已入队；已完成节点复用断点，不自动启动后续章节。");
       await refresh();
     } catch (e) { setError(message(e)); }
     finally { actionLock.current = false; setSubmitting(""); }
@@ -179,6 +192,22 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
     void act({ action: item.action, ...params } as GeneralLongformAction);
   }
 
+  useEffect(() => {
+    if (!autoOn || !auto?.action || busy || held || !state) return;
+    if (autoTrack.current.sig !== autoSig) autoTrack.current = { sig: autoSig, tries: 0 };
+    if (autoTrack.current.tries >= 2) {
+      setAutoNote("自动连跑连续两次拿到同一个结果，已停下等你看一眼，不会再重复提交。");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      autoTrack.current = { sig: autoSig, tries: autoTrack.current.tries + 1 };
+      setAutoNote("");
+      runGuidance(auto as unknown as LongformNextAction);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOn, autoSig, busy, held, !!state, state?.phase, state?.progress]);
+
   if (!state) return <div className="card-warm p-8">
     <Link to="/bookshelf" className="btn-ghost mb-4 inline-flex"><ArrowLeft className="h-4 w-4" />返回书架</Link>
     {error ? <div role="alert"><p className="text-amber-300">{error}</p><button className="btn-ghost mt-3" onClick={() => void refresh()}>重新加载</button></div>
@@ -220,6 +249,26 @@ export function GeneralLongformPanel({ taskId }: { taskId: string }) {
       {Array.from(new Set([guidance.primary, ...guidance.alternatives].map((item) => item && item.cost).filter((cost): cost is string => !!cost))).length > 0 && <p className="mt-2 text-xs leading-relaxed text-warm-500">{Array.from(new Set([guidance.primary, ...guidance.alternatives].map((item) => item && item.cost).filter((cost): cost is string => !!cost))).map((cost) => <span key={cost} className="mr-3">· {cost}</span>)}</p>}
       {!!guidance.notes.length && <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed text-warm-400">{guidance.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
       {!!guidance.avoid.length && <p className="mt-2 text-xs leading-relaxed text-amber-300">{guidance.avoid.map((item) => item.reason).join("；")}</p>}
+      {!!plan && gapCount > 0 && !state?.confirmed && <div className="mt-3 border-t border-gold-400/20 pt-3">
+        <label className="flex items-start gap-2 text-xs leading-relaxed text-warm-200">
+          <input type="checkbox" className="mt-0.5" checked={srcTrusted} disabled={busy}
+            onChange={() => void act({ action: "set_source_policy", policy: srcTrusted ? "verified" : "search_trusted" })} />
+          <span>直接采用联网检索结果：不再二次核实来源（当前 {gapCount} 条未取得原文的要点只作留痕），
+            <b>不产生任何调用</b>，改完就能确认大纲开写。取消勾选即恢复严格核实门。</span>
+        </label>
+        {state?.source_policy_note && <p className="mt-1 text-xs leading-relaxed text-warm-500">{state.source_policy_note}</p>}
+      </div>}
+      <div className="mt-3 border-t border-gold-400/20 pt-3">
+        <label className="flex items-start gap-2 text-xs leading-relaxed text-warm-200">
+          <input type="checkbox" className="mt-0.5" checked={autoOn} disabled={busy} onChange={() => void act({ action: "set_auto_run", enabled: !autoOn })} />
+          <span>自动连跑到成书：确认推荐方案 → 逐章写作 → 章节被拦下时按预填要求自动局部修订 → 全部验收后自动合稿。
+            遇到需要<b>重新联网检索</b>、交付待定或必须你决定的地方会自动停下并说明原因。请保持本页面打开；关掉页面就停在当前断点，回来继续。</span>
+        </label>
+        {autoOn && <p className="mt-1 text-xs leading-relaxed text-gold-200">
+          {auto?.action ? "自动连跑将执行：" + auto.label + "（" + auto.reason + "）" : "自动连跑已暂停：" + (auto?.stop || "等待状态刷新")}
+        </p>}
+        {autoNote && <p className="mt-1 text-xs leading-relaxed text-amber-300">{autoNote}</p>}
+      </div>
     </section>}
     {(error || state.last_error || state.task_error || state.export_error) && <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-4 text-sm leading-relaxed text-amber-200">{error || state.last_error || state.task_error || state.export_error}</div>}
     {notice && <p role="status" className="text-sm text-gold-200">{notice}</p>}

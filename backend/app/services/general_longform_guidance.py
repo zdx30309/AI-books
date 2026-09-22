@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.general_longform_autopilot import auto_next
+
 PHASE_LABELS = {
     "needs_outline": "准备策划",
     "awaiting_materials": "等待材料",
@@ -288,6 +290,20 @@ def _heartbeat_age(config: dict[str, Any]) -> float | None:
 
 def build_guidance(state: dict[str, Any] | None, *, task_status: str = "", config: dict[str, Any] | None = None,
                    stale_seconds: int | None = None) -> dict[str, Any]:
+    """Return the single next step, plus what 自动连跑 may take on its own."""
+    result = _guidance(state, task_status=task_status, config=config, stale_seconds=stale_seconds)
+    safe_state = state if isinstance(state, dict) else {}
+    safe_config = config if isinstance(config, dict) else {}
+    result["auto"] = {
+        "enabled": bool(safe_state.get("auto_run")),
+        **auto_next(safe_state, task_status=task_status, config=safe_config,
+                    allow_search=bool(safe_config.get("general_longform_auto_run_allow_search"))),
+    }
+    return result
+
+
+def _guidance(state: dict[str, Any] | None, *, task_status: str = "", config: dict[str, Any] | None = None,
+              stale_seconds: int | None = None) -> dict[str, Any]:
     """Return the single next step (plus alternatives) for any 通用长篇 state."""
     state = state if isinstance(state, dict) else {}
     config = config if isinstance(config, dict) else {}
@@ -436,16 +452,33 @@ def build_guidance(state: dict[str, Any] | None, *, task_status: str = "", confi
     if not state.get("confirmed"):
         gaps = plan.get("research_gaps")
         gaps = gaps if isinstance(gaps, list) else []
+        trusted = str(state.get("source_policy") or "verified") == "search_trusted"
         kind = "needs_review" if review else "awaiting_user"
-        if gaps:
-            headline = "大纲还有待核实材料，先补齐再确认"
-            detail = "research_gaps 非空时确认会被拒绝；请先局部修订补齐来源或改掉这些待核实项。"
+        if gaps and trusted:
+            headline = "已选择直接采用联网检索结果：大纲可以确认了"
+            detail = ("待核实要点不再阻断确认（仍有 " + str(len(gaps)) + " 条未取得原文的要点留在记录里，仅作留痕）。"
+                      "确认只生成确认版大纲 Word，不会同时开写第一章。")
+            primary = _action("confirm_outline", "确认选中包装与大纲",
+                              "确认后进入逐章写作；包装（书名与简介）在开始正文后固定。",
+                              cost="不产生生成调用", tab="规划")
+            alternatives.append(_action("set_source_policy", "改回二次核实门",
+                                        "想恢复严格核实门时用它；改回后要先补齐或改掉这些待核实项才能确认。",
+                                        cost="不产生生成调用", params={"policy": "verified"}, tab="规划"))
+            alternatives.append(_nav("先看五组包装", "在「规划」页对比书名、简介与推荐理由再确认。", "规划"))
+        elif gaps:
+            headline = "大纲还有待核实材料：可以补齐，也可以直接采用检索结果"
+            detail = ("research_gaps 非空时确认会被拒绝。要么补齐或改掉这些待核实项，"
+                      "要么把来源策略改成「直接采用联网检索结果」，不再做二次核实。")
             primary = _action("revise_outline", "按待核实项修订大纲",
                               "把 research_gaps 里的内容补齐或改掉，通过后仍需你确认。",
                               cost=NEW_SEARCH_NOTE, requires_feedback=True,
                               params={"feedback": "请按 research_gaps 补齐或替换待核实材料，保持其余章节不变：" +
                                                   "；".join(_text(item, 120) for item in gaps[:6])},
                               tab="规划")
+            alternatives.append(_action("set_source_policy", "直接采用联网检索结果（不再二次核实）",
+                                        "不想再为核实花钱或来源读不到时用它：不产生任何调用，改完直接确认大纲开写；"
+                                        "未取得原文的要点会留在记录里。",
+                                        cost="不产生生成调用", params={"policy": "search_trusted"}, tab="规划"))
         else:
             headline = "五组包装和大纲已就绪，等你确认"
             detail = "选一个书名/简介方案后点确认。确认只生成确认版大纲 Word，不会同时开写第一章。"

@@ -27,7 +27,11 @@ from app.services.general_longform_runtime import (
 ROOT = Path(__file__).resolve().parents[3]
 DOMAINS = {"小白理财", "女性成长", "医疗健康与体重管理", "两性关系与婚育", "情绪心理与高情商沟通",
            "认知成长与效能提升", "生活方式与人生选择", "职场成长与职业突围", "人性洞察与传统智慧"}
-ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials"}
+ACTIONS = {"plan", "repair_outline_candidate", "revise_outline", "revise_outline_local", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "set_auto_run", "set_source_policy"}
+# Default, editable requirement used by ``revise_outline_local``: remove what no
+# verified source supports instead of inventing support for it.
+_LOCAL_REVISION_FEEDBACK = ("请只做一件事：把章节计划里没有已核验来源支撑的具体数据、结论或承诺删掉，"
+                            "改成现有已核验来源能够支撑的表述，并清空 research_gaps；其余结构与书名方案保持原样。")
 
 # A first outline that only fails local structure checks is recovered with the
 # existing outline_revision stage, so one format slip cannot strand a project in
@@ -67,7 +71,7 @@ def initial_state(project_id: str, source_text: str = "", *, version: str | None
     manifest = get_manifest(version)
     return {"schema_version": 1, "project_id": str(UUID(project_id)), "category": CATEGORY,
             "prompt_version": manifest["version"], "prompt_source_sha256": manifest["source_sha256"],
-            "phase": "needs_outline", "source_text": source_text, "outline": None,
+            "phase": "needs_outline", "source_text": source_text, "outline": None, "source_policy": "verified",
             "outline_version": 0, "confirmed": False, "sources": {}, "chapters": {},
             "accepted_state": {}, "total_words": 0, "artifacts": [], "materials": [],
             "completed_requests": [], "request_bindings": {}, "created_at": now_iso(), "last_error": None}
@@ -84,6 +88,21 @@ def title_valid(title: Any) -> bool:
 
 def valid_source_ids(ids: Any, sources: dict[str, Any]) -> bool:
     return isinstance(ids, list) and bool(ids) and all(isinstance(sid, str) and sid in sources and sources[sid].get("verification") == "page_read_and_abstracted" for sid in ids)
+
+
+SOURCE_POLICIES = {"verified", "search_trusted"}
+
+
+def trusts_search(state: dict[str, Any]) -> bool:
+    """Whether the author chose to write from the live search as-is.
+
+    ``verified`` keeps the original rule: an outline resting on material no
+    readable source supports cannot be confirmed. ``search_trusted`` is the
+    author's explicit decision that search results are enough for this book, so
+    the same outline can be confirmed and written. The unverified points stay
+    recorded either way; this only stops them from blocking the author.
+    """
+    return str(state.get("source_policy") or "verified") == "search_trusted"
 
 
 def validate_outline(outline: dict[str, Any], sources: dict[str, Any], *, confirmed: bool = False) -> list[str]:
@@ -567,6 +586,61 @@ class GeneralLongformRunner:
         self.save()
         self._apply_outline_revision(plan, feedback, evidence, idempotency_key="revised_outline_request_id")
 
+    def revise_outline_local(self) -> None:
+        """Revise the outline with evidence this book already paid for.
+
+        Used for blockers that are local: a chapter plan resting on content no
+        verified source supports. It reuses the stored research result and the
+        already verified sources, so it never re-runs the paid web search, and it
+        still has to pass exactly the same ``validate_outline`` gate and the same
+        user confirmation as any other revision. When the outline carries
+        ``research_gaps`` this revision is only accepted once they are gone, so a
+        blocked confirmation cannot come back unchanged.
+        """
+        if self.state.get("revised_outline_local_request_id") == self.request["id"]:
+            self._outline_export(confirmed=False)
+            return
+        plan = self.state.get("outline") or self.state.get("outline_candidate")
+        if not isinstance(plan, dict):
+            raise GeneralLongformReview("先生成或导入大纲")
+        stored = self.state.get("last_research")
+        if not isinstance(stored, dict) or not stored.get("web_call_completed") or not self.state.get("sources"):
+            raise GeneralLongformReview("本项目没有可直接复用的检索证据；请改用「按我的要求修订大纲」（会重新核查来源）")
+        feedback = str(self.request.get("feedback") or "").strip() or _LOCAL_REVISION_FEEDBACK
+        evidence = {**stored, "sources": self.state["sources"]}
+        self.state["outline_revision_context"] = {"feedback": feedback, "evidence": evidence,
+                                                  "outline_version": self.state["outline_version"]}
+        self.save()
+        self._apply_outline_revision(plan, feedback, evidence,
+                                     idempotency_key="revised_outline_local_request_id",
+                                     require_no_gaps=bool(plan.get("research_gaps")) and not trusts_search(self.state))
+
+    def set_auto_run(self) -> None:
+        """Turn automatic continuous running on/off for this book (no model call)."""
+        self.state["auto_run"] = bool(self.request.get("enabled", True))
+        self.state["auto_run_changed_at"] = now_iso()
+
+    def set_source_policy(self) -> None:
+        """Choose how this book treats material the live search could not open (no model call).
+
+        ``verified`` is the default. ``search_trusted`` records that the author
+        accepts what the search returned without a second verification pass, so
+        the outstanding points stop blocking confirmation. Nothing is spent and
+        nothing is deleted: the point list stays on the outline for the record.
+        """
+        policy = str(self.request.get("policy") or "").strip()
+        if policy not in SOURCE_POLICIES:
+            raise GeneralLongformReview("来源策略只能是 verified 或 search_trusted")
+        gaps = (self.state.get("outline") or {}).get("research_gaps")
+        gaps = [str(item) for item in gaps if str(item).strip()] if isinstance(gaps, list) else []
+        self.state["source_policy"] = policy
+        self.state["source_policy_changed_at"] = now_iso()
+        if policy == "search_trusted":
+            self.state["source_policy_note"] = ("已按作者选择直接采用联网检索结果，不再要求二次核实；"
+                                                "本书记录了 " + str(len(gaps)) + " 条未取得原文的要点，仅作留痕。")
+        else:
+            self.state["source_policy_note"] = "已恢复二次核实门：大纲仍有未核实要点时不能确认。"
+
     def repair_outline_revision(self) -> None:
         """Retry one outline revision against the evidence already paid for.
 
@@ -595,12 +669,13 @@ class GeneralLongformRunner:
                                      idempotency_key="outline_revision_repair_request_id")
 
     def _apply_outline_revision(self, plan: dict[str, Any], feedback: str, evidence: dict[str, Any], *,
-                                idempotency_key: str) -> None:
+                                idempotency_key: str, require_no_gaps: bool = False) -> None:
         accepted_numbers = {int(key) for key, slot in self.state["chapters"].items() if slot.get("accepted")}
         final_packaging = bool(self.state["confirmed"] or self.state.get("imported_outline_confirmed") or self.state.get("outline_candidate_confirmed"))
         patch = self.gateway.json("outline_revision", self.context(outline=plan, feedback=feedback, research=evidence), max_tokens=22000)
         updated, errors, patch = self._revise_until_valid(
-            plan, patch, feedback, evidence, accepted_numbers=accepted_numbers, final_packaging=final_packaging
+            plan, patch, feedback, evidence, accepted_numbers=accepted_numbers, final_packaging=final_packaging,
+            require_no_gaps=require_no_gaps,
         )
         if errors:
             raise GeneralLongformReview("；".join(errors))
@@ -622,7 +697,8 @@ class GeneralLongformRunner:
         self._outline_export(confirmed=False)
 
     def _revise_until_valid(self, plan: dict[str, Any], patch: Any, feedback: str, evidence: dict[str, Any], *,
-                            accepted_numbers: set[int], final_packaging: bool) -> tuple[dict[str, Any], list[str], Any]:
+                            accepted_numbers: set[int], final_packaging: bool,
+                            require_no_gaps: bool = False) -> tuple[dict[str, Any], list[str], Any]:
         """Apply an outline revision patch; retry a bounded number of times when the model returns an unusable shape.
 
         Reuses the research evidence already fetched for this request, so a retry only costs one
@@ -638,6 +714,12 @@ class GeneralLongformRunner:
             try:
                 updated = apply_outline_patch(plan, patch, accepted_numbers=accepted_numbers)
                 errors = validate_outline(updated, self.state["sources"], confirmed=final_packaging)
+                if require_no_gaps and updated.get("research_gaps"):
+                    # A local revision asked to clear the gaps must actually clear
+                    # them, otherwise the next confirmation would be blocked again
+                    # by the very same rule.
+                    errors = errors + ["待核实材料仍未清空（research_gaps 还剩 " +
+                                       str(len(updated["research_gaps"])) + " 条）：没有已核验来源支撑的内容必须删除或改写"]
             except GeneralLongformReview as exc:
                 updated, errors, last_error = None, [], _error_text(exc)
             if updated is not None and not errors and updated != plan:
@@ -680,10 +762,16 @@ class GeneralLongformRunner:
         updated = deepcopy(plan)
         updated["recommended_index"] = index
         errors = validate_outline(updated, self.state["sources"], confirmed=True)
-        if updated.get("research_gaps"):
+        gaps = [str(item) for item in (updated.get("research_gaps") or []) if str(item).strip()]
+        if gaps and not trusts_search(self.state):
             errors.append("策划仍有待核实材料，请补充来源或局部调整大纲后再确认")
         if errors:
             raise GeneralLongformReview("；".join(errors))
+        if gaps:
+            # The author accepted the live search as-is. Keep the waiver on the
+            # record so the acceptance trail still shows what was not verified.
+            self.state["gap_waiver"] = {"policy": "search_trusted", "count": len(gaps), "at": now_iso(),
+                                        "request_id": self.request["id"], "gaps": [item[:300] for item in gaps]}
         self.state.update(outline=updated, confirmed=True, confirmed_at=now_iso(), phase="ready_for_chapter")
         self.save()
         self._outline_export(confirmed=True)
@@ -989,7 +1077,7 @@ class GeneralLongformRunner:
                         for section, bound_section in zip(chapter["sections"], binding["sections"]):
                             section["source_ids"] = bound_section.get("source_ids")
                 errors = validate_outline(plan, self.state["sources"], confirmed=confirmed)
-                if confirmed and plan.get("research_gaps"):
+                if confirmed and plan.get("research_gaps") and not trusts_search(self.state):
                     errors.append("确认大纲仍有待核实材料")
                 if errors:
                     self.state["outline_candidate"] = plan
@@ -1089,6 +1177,12 @@ class GeneralLongformRunner:
                 self.repair_outline_candidate()
             elif action == "revise_outline":
                 self.revise_outline()
+            elif action == "revise_outline_local":
+                self.revise_outline_local()
+            elif action == "set_auto_run":
+                self.set_auto_run()
+            elif action == "set_source_policy":
+                self.set_source_policy()
             elif action == "repair_outline_revision":
                 self.repair_outline_revision()
             elif action == "confirm_outline":

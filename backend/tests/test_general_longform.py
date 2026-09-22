@@ -620,3 +620,96 @@ def test_repair_outline_revision_is_refused_without_a_saved_context(tmp_path, mo
     assert state["phase"] == "needs_review"
     assert "可复用的上次修订检索" in (state["last_error"] or "")
     assert len(gateway.calls) == calls
+
+
+def _blocked_by_gaps(state):
+    """Turn a confirmed book back into the real blocker: the outline still rests
+    on material no verified source can support, so confirm_outline is refused."""
+    state["confirmed"] = False
+    state["phase"] = "needs_review"
+    state["outline"]["research_gaps"] = ["缺少可读全文的睡眠规律性共识", "缺少2015年以后的昼夜节律指南"]
+    state["last_research"] = {"topic": "判断与选择", "domain": "认知成长与效能提升", "gaps": [], "errors": [],
+                              "rawTextIncluded": False, "web_call_completed": True,
+                              "retrieved_at": "2026-09-14T08:00:00+00:00"}
+
+
+def test_revise_outline_local_clears_gaps_from_already_paid_evidence(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "0")
+    _blocked_by_gaps(state)
+    version = state["outline_version"]
+    searches = len([call for call in gateway.calls if call["stage"] == "research"])
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"research_gaps": []}}
+    run(tmp_path, state, gateway, "revise_outline_local")
+    assert state["phase"] == "awaiting_outline_confirmation", state["last_error"]
+    assert state["confirmed"] is False
+    assert state["outline_version"] == version + 1
+    assert state["outline"]["research_gaps"] == []
+    assert len([call for call in gateway.calls if call["stage"] == "research"]) == searches
+    run(tmp_path, state, gateway, "confirm_outline")
+    assert state["confirmed"] and state["phase"] == "ready_for_chapter", state["last_error"]
+
+
+def test_revise_outline_local_that_leaves_gaps_cannot_silently_return(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    monkeypatch.setenv("GENERAL_LONGFORM_OUTLINE_REPAIR_ATTEMPTS", "0")
+    _blocked_by_gaps(state)
+    version = state["outline_version"]
+    gateway.hooks["outline_revision"] = lambda context, kwargs: {"top_level_changes": {"research_gaps": ["仍然没有来源"]}}
+    run(tmp_path, state, gateway, "revise_outline_local")
+    assert state["phase"] == "needs_review"
+    assert "待核实材料仍未清空" in (state["last_error"] or "")
+    assert state["outline_version"] == version
+    assert state["outline"]["research_gaps"]
+    assert state["confirmed"] is False
+    run(tmp_path, state, gateway, "confirm_outline")
+    assert not state["confirmed"] and "待核实材料" in (state["last_error"] or "")
+
+
+def test_revise_outline_local_is_refused_without_stored_evidence(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    state["last_research"] = None
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "revise_outline_local")
+    assert state["phase"] == "needs_review"
+    assert "没有可直接复用的检索证据" in (state["last_error"] or "")
+    assert len(gateway.calls) == calls
+
+
+def test_set_auto_run_never_spends_a_model_call(tmp_path):
+    state, gateway = new_state(), FakeGateway(tmp_path)
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "set_auto_run", enabled=True)
+    assert state["auto_run"] is True
+    assert len(gateway.calls) == calls
+    run(tmp_path, state, gateway, "set_auto_run", enabled=True)
+    assert state["auto_run"] is True and len(gateway.calls) == calls
+    run(tmp_path, state, gateway, "set_auto_run", enabled=False)
+    assert state["auto_run"] is False and len(gateway.calls) == calls
+
+
+def test_search_trusted_policy_confirms_the_outline_and_starts_chapter_one(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    _blocked_by_gaps(state)
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    assert state["source_policy"] == "search_trusted"
+    assert len(gateway.calls) == calls
+    run(tmp_path, state, gateway, "confirm_outline")
+    assert state["confirmed"] and state["phase"] == "ready_for_chapter", state["last_error"]
+    assert state["gap_waiver"]["count"] == 2
+    assert state["outline"]["research_gaps"]
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+
+
+def test_default_policy_still_blocks_an_unverified_outline(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    _blocked_by_gaps(state)
+    assert state.get("source_policy", "verified") == "verified"
+    run(tmp_path, state, gateway, "confirm_outline")
+    assert not state["confirmed"]
+    assert "待核实材料" in (state["last_error"] or "")
+    run(tmp_path, state, gateway, "set_source_policy", policy="not_a_policy")
+    assert "来源策略" in (state["last_error"] or "")
+    assert state.get("source_policy") == "verified"

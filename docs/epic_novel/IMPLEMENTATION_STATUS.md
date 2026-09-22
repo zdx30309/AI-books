@@ -1,5 +1,16 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：来源策略开关 + 自动连跑到成书（2026-09-22，第二轮）
+
+- 复现的真实停滞：任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@（B 站《睡眠革命》视频）停在 @@@needs_review@@@，@@@error_message@@@ 是「策划仍有待核实材料，请补充来源或局部调整大纲后再确认」，@@@confirm_outline@@@ 被拒 → @@@generate_chapter@@@ 因 @@@confirmed=False@@@ 必然再拒。断点里已有 7 条已核验来源、13 章大纲、10 条 research_gaps，全部来自「上游页面正文读不到」（PubMed cookie 页 / PMC reCAPTCHA / 指南正文不可读）。
+- 这不是模型问题也不是架构问题，而是**缺一条不花钱的出口**：旧版只有「重新联网检索」一种恢复路径，而那 10 条 gap 再检索一次仍然读不到，于是形成「失败→恢复→仍缺→再恢复」的死循环。本轮补上出口，同时**不放宽任何验收门**。
+- 新增来源策略 @@@source_policy@@@（@@@verified@@@ 默认 / @@@search_trusted@@@）与动作 @@@set_source_policy@@@（引擎 + API @@@Literal@@@ + 前端 @@@LongformAction@@@）。@@@search_trusted@@@ 只影响 @@@research_gaps@@@ 这一道确认门：@@@confirm()@@@ 与导入大纲路径在勾选后不再因未核实要点拒绝，并写入 @@@gap_waiver@@@（策略、条数、时间、request_id、要点摘要）留痕；**要点本身不删除**，仍在大纲与导出里可见。改动前后 @@@validate_outline@@@、来源 URL/哈希核验、验收门、严格串行、每章验收、100000—110000 字与双 Word 规则全部不变。
+- 新增自动连跑：@@@backend/app/services/general_longform_autopilot.py@@@（纯读状态决策表，@@@auto_next@@@ 返回动作或必须停下的原因）+ 引擎动作 @@@set_auto_run@@@ + 工作区勾选框。只执行 @@@AUTO_ACTIONS@@@ 内的既有动作，走同一条 API、同一套校验、同一套断点；只在「需要新联网检索 / 交付待定或人工闸门 / 同一处连续两次修不好」返回 @@@stop@@@。**自动连跑不会自己切换来源策略**（那是作者的判断，必须人工勾）。
+- 指引同步：@@@general_longform_guidance.py@@@ 在 gaps 未清空时给出「直接采用联网检索结果（不产生生成调用）」备选；勾选后主按钮变成「确认选中包装与大纲」，@@@auto@@@ 步骤同步为 @@@confirm_outline@@@。
+- 前端：@@@GeneralLongformPanel.tsx@@@ 下一步面板新增来源策略勾选框（带当前待核实条数与策略说明）与自动连跑勾选框（当前自动步骤 / 暂停原因 / 连续失败提示）。
+- 验证（2026-09-22，本机全量重跑）：@@@python -m pytest backend/tests -q -k general_longform@@@ → @@@242 passed, 960 deselected@@@。本轮新增 8 项：引擎 4 项（@@@revise_outline_local@@@ 复用已付费证据且检索调用数不变、gap 未清空即失败且不能静默返回、无证据时拒绝、@@@set_auto_run@@@ 零调用幂等）+ 引擎 2 项（@@@search_trusted@@@ 直接确认并写出第一章、默认策略仍拒绝且非法策略被拒）+ 决策表 2 项（信任策略下自动确认、自动连跑不自行改策略）+ 指引 1 项（信任前给切换备选、信任后主按钮为确认）。@@@npm run typecheck@@@ → PASS。
+- 不变项（硬约束复核）：@@@backend/app/prompts/general_longform/**@@@ 逐字节未改（发布校验照旧比对 v02 840 段/23 节、v16 571 段/19 节、39 个归档文件与其余 33 分类 132 条哈希）；无数据库迁移；新增动作中 @@@set_source_policy@@@ 与 @@@set_auto_run@@@ **不含任何模型调用**。
+
 ## 通用长篇：把「卡住之后不知道点哪」这一整类问题解决（2026-09-22）
 
 - 背景：用户输入视频链接后，项目停在「有待处理项」，主操作按钮消失或点了也没用；上一轮的停滞排查只到命令行（新增了 @@@scripts/general_longform_doctor.py@@@ 和文档表格），工作区本身仍然不告诉用户下一步。本轮把这类问题一次解决到「任何停下都有可点的一步」。

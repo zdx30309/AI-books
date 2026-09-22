@@ -27,8 +27,10 @@ BUSY = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.FETCHING_TOPICS, T
 
 
 class ActionRequest(BaseModel):
-    action: Literal["plan", "repair_outline_candidate", "revise_outline", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume"]
+    action: Literal["plan", "repair_outline_candidate", "revise_outline", "revise_outline_local", "repair_outline_revision", "confirm_outline", "next_chapter", "revise_chapter", "assemble", "import_materials", "resume", "set_auto_run", "set_source_policy"]
     feedback: str = Field(default="", max_length=10000)
+    enabled: bool | None = Field(default=None)
+    policy: Literal["verified", "search_trusted"] | None = Field(default=None)
     chapter_number: int | None = Field(default=None, ge=1, le=15)
     packaging_index: int | None = Field(default=None, ge=0, le=4)
     outline_version: int | None = Field(default=None, ge=0)

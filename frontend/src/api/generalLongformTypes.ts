@@ -1,9 +1,20 @@
 import type { TaskStatus } from "./types";
 
-export type LongformAction = "plan" | "repair_outline_candidate" | "revise_outline" | "repair_outline_revision" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume";
+export type LongformAction = "plan" | "repair_outline_candidate" | "revise_outline" | "revise_outline_local" | "repair_outline_revision" | "confirm_outline" | "next_chapter" | "revise_chapter" | "assemble" | "import_materials" | "resume" | "set_auto_run" | "set_source_policy";
 export type MaterialRole = "auto" | "source" | "outline" | "chapter" | "editorial" | "report" | "instruction";
+export interface LongformAutoStep {
+  action: LongformAction | null;
+  label: string;
+  reason: string;
+  params: Record<string, unknown>;
+  requires_feedback: boolean;
+  stop: string | null;
+  enabled: boolean;
+}
 export interface GeneralLongformAction {
   action: LongformAction;
+  enabled?: boolean;
+  policy?: "verified" | "search_trusted";
   feedback?: string;
   chapter_number?: number;
   packaging_index?: number;
@@ -73,6 +84,7 @@ export interface LongformNextAction {
   tab: string;
 }
 export interface LongformGuidance {
+  auto: LongformAutoStep;
   stall_kind: string;
   headline: string;
   detail: string;
@@ -86,6 +98,8 @@ export interface GeneralLongformState {
   task_error?: string | null; last_error?: string | null; export_error?: string | null;
   prompt_version: string; prompt_source_sha256: string; outline_version: number; confirmed: boolean;
   outline: LongformOutline | null; outline_candidate?: Partial<LongformOutline> | null;
+  source_policy?: "verified" | "search_trusted"; source_policy_note?: string;
+  gap_waiver?: { policy: string; count: number; at: string; gaps: string[] } | null;
   total_words: number; chapters: Record<string, { accepted?: LongformChapter | null; candidate?: LongformChapter | null; history?: LongformChapter[] }>;
   artifacts: LongformArtifact[]; sources: Record<string, LongformSource>;
   materials: { id: string; filename: string; role: MaterialRole; imported: boolean; confirmed: boolean; characters: number; sha256: string; notes?: string; approved_notes?: string }[];

@@ -249,7 +249,7 @@ def test_guidance_is_json_serialisable_shape_stable_and_never_mutates_state(stat
     result = guidance.build_guidance(state, task_status=task_status, config=config)
     assert state == snapshot
     json.dumps(result, ensure_ascii=False)
-    assert set(result) == {"stall_kind", "headline", "detail", "primary", "alternatives", "avoid", "notes"}
+    assert set(result) == {"stall_kind", "headline", "detail", "primary", "alternatives", "avoid", "notes", "auto"}
     for item in [result["primary"], *result["alternatives"]]:
         if item is None:
             continue
@@ -346,3 +346,22 @@ def test_legacy_outline_patch_failure_explains_the_automatic_retry():
     result = guidance.build_guidance(state, task_status="manual_review")
     assert result["primary"]["action"] == "repair_outline_candidate"
     assert any("大纲补丁" in note for note in result["notes"])
+
+
+def test_trusted_source_policy_turns_the_gap_blocker_into_a_confirmation():
+    state = outline_state(phase="awaiting_outline_confirmation", confirmed=False)
+    state["chapters"] = {}
+    state["outline"]["research_gaps"] = ["缺少 2026 年公开数据"]
+    state["last_research"] = {"web_call_completed": True}
+    strict = guidance.build_guidance(deepcopy(state), task_status="manual_review")
+    switch = next(item for item in strict["alternatives"] if item["action"] == "set_source_policy")
+    assert switch["params"] == {"policy": "search_trusted"}
+    assert switch["cost"] == "不产生生成调用"
+    assert strict["auto"]["action"] == "revise_outline_local"
+    state["source_policy"] = "search_trusted"
+    trusted = guidance.build_guidance(state, task_status="manual_review")
+    assert trusted["primary"]["action"] == "confirm_outline"
+    assert trusted["primary"]["enabled"] is True
+    assert trusted["auto"]["action"] == "confirm_outline"
+    assert any(item["action"] == "set_source_policy" and item["params"] == {"policy": "verified"}
+               for item in trusted["alternatives"])
