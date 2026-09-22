@@ -1,5 +1,23 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：验收门的三处死锁（2026-09-23，第三轮）
+
+- 复现的真实停滞：任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@ 的第 2 章《一夜怎样过去》。第 1 章已验收（8215 字），第 2 章连续两次整章停在 @@@needs_review@@@，用户为此重复付费约 @@@$3.47@@@。
+- 卡点一（JSON 尾随字符）：@@@acceptance_*.json@@@ 的 @@@text@@@ 是合法 JSON 但尾部多一个 @@@}}}@@@（@@@len=8150@@@），旧 @@@parse_json@@@ 只做 @@@json.loads@@@ 就抛 @@@GeneralLongformReview@@@，整章死锁，唯一出路是重跑整个 @@@next_chapter@@@。
+- 卡点二（豁免策略只作用于大纲）：断点里 @@@source_policy=search_trusted@@@（@@@gap_waiver.count=10@@@），但只有 @@@validate_outline@@@ 认这个策略，@@@_check_and_accept@@@ 完全不认，于是每轮验收都把同一条已豁免的来源覆盖不足重新当 high fact 打回。
+- 卡点三（验收回复与正文对不上 + 逐小节抖动）：@@@planned_vs_actual[].evidence@@@ 不在本章正文里，且每轮选中的「未完成小节」都不同（@@@睡眠有层次@@@ → @@@醒来未必坏@@@），重问一次就换一个理由。
+- 修复一（解析器）：@@@general_longform_runtime.py@@@ 的 @@@parse_json@@@ 重写为容错框架解析（去围栏 / @@@raw_decode@@@ 取首个完整对象 / 去尾逗号 / @@@_close_open_brackets@@@ 只补完整值的尾部，截断在字符串中间时按最后一个逗号回退，绝不补空对象），新增 @@@parse_json_detail@@@、@@@JSON_INCOMPLETE@@@、@@@JSON_OBJECT_ONLY@@@ 与 @@@ModelGateway.record_path()@@@；解析成功且发生过框架修复时把 @@@parse_repaired@@@ + @@@parse_repair_note@@@ 写回已付费的调用记录，不重发。
+- 修复二（策略贯通）：@@@apply_source_policy()@@@（@@@COVERAGE_ONLY_MARKERS@@@ / @@@CONTRADICTION_MARKERS@@@ / @@@coverage_limited_fact()@@@）把章节验收门与作者已选的来源策略对齐：@@@search_trusted@@@ 下，只说明已读来源覆盖不足、且不含冲突/编造标记的 high fact 降为 medium 并留痕（@@@downgraded_by/downgraded_reason@@@）；@@@verified@@@ 下完全不生效。
+- 修复三（重问而不改文）：@@@audit_defect_only()@@@ + @@@_audited_chapter()@@@（@@@AUDIT_REASK_LIMIT=1@@@）在阻断项全部只是验收回复自身缺陷（证据不在正文、未知卡片、Planned-vs-Actual 对不上）时重问验收，而不是拿正文去修；@@@_acceptance_audit()@@@ 只在 payload 完全无法解析时补一次显式 @@@-json-retry@@@ 调用。@@@validate_audit@@@ 的逐小节检查改为带 @@@section@@@ 的 high issue（指名小节），@@@apply_source_policy@@@ 把「该小节缺口正是已豁免的覆盖不足」关联降级，止住「每轮换一个未完成小节」。
+- 验证（2026-09-23 本机）：@@@python -m pytest backend/tests -q -k general_longform@@@ → @@@260 passed@@@（161.95s），本轮新增 16 项（运行时 7 + 引擎 9）；另外用线上真实 audit payload 做过离线回放确认三个根因。
+- 真实解封（2026-09-23 01:24 本地）：恢复第 2 章后 @@@phase=ready_for_chapter@@@、第 2 章 @@@accepted@@@（7947 字，标题《一夜怎样过去》，正文与来源编辑记录两份 Word 已导出），全书 @@@total_words=16162@@@；本轮新增调用 @@@0@@@ 次、新增费用 @@@$0@@@（复用 19:03 那次已付费的验收回复）。豁免留痕：@@@policy_downgrades@@@ 记录 1 条 acceptance（小节「醒来未必坏」）与 2 条 fact。
+- 成本账（线上实测）：全任务 50 次调用累计 @@@$17.02@@@（第 1 章 @@@$3.71@@@；第 2 章 @@@$8.22@@@ = v01 @@@$4.75@@@ + 重跑 @@@$3.47@@@；策划/检索/大纲 @@@$5.09@@@）。当前记账口径 @@@5/30@@@ 是 gpt-5.5 的价格，实际 @@@gpt-5.6-sol@@@ 为 @@@4/20@@@，上述数字属于高估（只高不低）。
+- 发布（2026-09-23）：@@@588f39c@@@（解析器 + 策略贯通 + 重问）先手工部署并写 @@@.deploy-version=588f39c@@@；@@@70409dd@@@（指名小节 + 关联豁免）以 2 文件增量发布到北京 ECS（@@@--base 588f39c@@@，@@@.deploy-version=70409dd@@@，备份 @@@/opt/video-plan-release-backups/20260922T192138Z-70409dd@@@）。两次发布都通过 backend/worker 固定 prompt 校验（v02 840 段/23 节、v16 571 段/19 节、39 个归档原始文件、其它 33 分类 132 条哈希不变）、@@@DEPLOYED_CODE_HASHES_PASS@@@、公开首页/健康/prompt manifest 均 200、前端 bundle @@@/assets/index-mYELcrQ1.js@@@ 未变。
+- 发布前磁盘回收：删掉 3 组最旧 rollback tag 与一个误标的 web rollback（约 4.4 GB），根分区 96% → 90%。
+- 不变项（硬约束复核）：@@@backend/app/prompts/general_longform/**@@@ 逐字节未改；@@@validate_outline@@@、来源 URL/哈希核验、@@@verified@@@ 默认策略、严格串行、每章验收、100000—110000 字与双 Word 规则全部不变；@@@draftContent@@@/@@@repairedContent@@@ 仍不写入验收状态表。
+- 使用指南同步：@@@docs/通用长篇新书使用指南.docx@@@ 新增「本次修好的三处卡点（2026-09-23）」章节、2 条新 FAQ 与费用表条目，版本口径改为 @@@70409dd@@@（7 页，PDF 渲染校对：无右/下溢出）。
+
+
 ## 通用长篇：来源策略开关 + 自动连跑到成书（2026-09-22，第二轮）
 
 - 复现的真实停滞：任务 @@@bc69c362-658f-4d67-a00e-e6e4d7c6e997@@@（B 站《睡眠革命》视频）停在 @@@needs_review@@@，@@@error_message@@@ 是「策划仍有待核实材料，请补充来源或局部调整大纲后再确认」，@@@confirm_outline@@@ 被拒 → @@@generate_chapter@@@ 因 @@@confirmed=False@@@ 必然再拒。断点里已有 7 条已核验来源、13 章大纲、10 条 research_gaps，全部来自「上游页面正文读不到」（PubMed cookie 页 / PMC reCAPTCHA / 指南正文不可读）。
