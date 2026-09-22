@@ -113,7 +113,10 @@ class FakeGateway:
         return response
 
     def json(self, stage, context, **kwargs):
-        return json.loads(self.call(stage, context, **kwargs)["text"])
+        # Mirror production: the same tolerant framing parser, so a malformed
+        # reply is exercised instead of being hidden by a strict test double.
+        from app.services.general_longform_runtime import parse_json
+        return parse_json(self.call(stage, context, **kwargs)["text"])
 
 
 def fake_research(gateway, context, **kwargs):

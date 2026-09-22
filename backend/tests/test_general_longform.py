@@ -16,8 +16,8 @@ from app.prompts.goal_driven_templates import get_prompts, list_categories, norm
 from app.services import general_longform as engine
 from app.services import general_longform_documents as documents
 from app.services import content_engine
-from app.services.general_longform_runtime import GeneralLongformPaused, GeneralLongformReview, atomic_json, read_json
-from general_longform_helpers import FakeGateway, SOURCE, add_material, chapter_text, fake_research, new_state, outline, ready, run, section_text
+from app.services.general_longform_runtime import GeneralLongformPaused, GeneralLongformReview, atomic_json, now_iso, read_json
+from general_longform_helpers import FakeGateway, SOURCE, add_material, chapter_text, fake_research, new_state, outline, ready, run, section_text, style_review
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -713,3 +713,133 @@ def test_default_policy_still_blocks_an_unverified_outline(tmp_path, monkeypatch
     run(tmp_path, state, gateway, "set_source_policy", policy="not_a_policy")
     assert "来源策略" in (state["last_error"] or "")
     assert state.get("source_policy") == "verified"
+
+COVERAGE_ISSUE = {
+    "severity": "high", "type": "fact",
+    "description": "本轮实际读取的AASM更新摘要只确认存在成人睡眠分期规则部分，没有完整列出N1、N2、N3和REM；该历史转换没有来自当前实际读取来源的完整支持。",
+}
+CONFLICT_ISSUE = {
+    "severity": "high", "type": "fact",
+    "description": "正文写“首轮平均九十分钟”，但已读来源写的是70至100分钟，二者数值不符。",
+}
+
+
+def _acceptance_with_issue(issue):
+    def hook(context, kwargs):
+        contract = context["chapter"]
+        result = {"summary": f"第{contract['number']}章实质信息", "endingHook": "后续的新问题", "new_information": ["明确的新信息"],
+                  "used_source_ids": ["Sverified"], "terms": {}, "cases": [], "completed_sections": [s["title"] for s in contract["sections"]],
+                  "planned_vs_actual": [{"section": s["title"], "fulfilled": True, "evidence": "完整对应章节任务"} for s in contract["sections"]],
+                  "issues": [dict(issue)]}
+        result["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        return json.dumps(result, ensure_ascii=False)
+    return hook
+
+
+def test_search_trusted_keeps_a_coverage_only_fact_issue_from_burning_the_chapter(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    gateway.hooks["acceptance"] = _acceptance_with_issue(COVERAGE_ISSUE)
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    assert not any(call["stage"] == "repair" for call in gateway.calls[calls:])
+    recorded = state["chapters"]["1"]["accepted"]["policy_downgrades"]
+    assert recorded and recorded[0]["severity"] == "medium" and recorded[0]["type"] == "fact"
+
+
+def test_verified_policy_still_treats_the_same_issue_as_blocking(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    assert state.get("source_policy", "verified") == "verified"
+    gateway.hooks["acceptance"] = _acceptance_with_issue(COVERAGE_ISSUE)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert not state["chapters"]["1"].get("accepted")
+    assert state["phase"] == "needs_review"
+    assert "高/严重问题仍未消除" in (state["last_error"] or "")
+
+
+def test_a_real_conflict_is_never_downgraded_by_the_source_policy(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    run(tmp_path, state, gateway, "set_source_policy", policy="search_trusted")
+    gateway.hooks["acceptance"] = _acceptance_with_issue(CONFLICT_ISSUE)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert not state["chapters"]["1"].get("accepted")
+    assert state["phase"] == "needs_review"
+
+
+def test_malformed_acceptance_json_retries_at_most_once_and_never_needs_a_manual_restart(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    broken = '{"summary": "cut off mid object", "issues": ['
+    healthy = _acceptance_with_issue({"severity": "low", "type": "format", "description": "无阻断问题"})
+
+    def hook(context, kwargs):
+        return broken if not str(kwargs.get("slot", "")).endswith("-json-retry") else healthy(context, kwargs)
+
+    gateway.hooks["acceptance"] = hook
+    request = {"id": str(uuid4()), "action": "next_chapter", "created_at": now_iso()}
+    gateway.request_id = request["id"]
+    engine.GeneralLongformRunner(tmp_path, state, request, gateway=gateway).run()
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    acceptance = [call for call in gateway.calls if call["stage"] == "acceptance"]
+    assert [call["slot"] for call in acceptance] == ["chapter-1-attempt-0", "chapter-1-attempt-0-json-retry"]
+    assert state["json_retries"][0]["slot"] == "chapter-1-attempt-0"
+
+    settled = len(gateway.calls)
+    engine.GeneralLongformRunner(tmp_path, state, {"id": str(uuid4()), "action": "assemble", "created_at": now_iso()}, gateway=gateway).run()
+    assert len([call for call in gateway.calls[settled:] if call["stage"] == "acceptance"]) == 0
+
+
+def _audit_payload(contract, **overrides):
+    result = {"summary": f"第{contract['number']}章实质信息", "endingHook": "后续的新问题", "new_information": ["明确的新信息"],
+              "used_source_ids": ["Sverified"], "terms": {}, "cases": [], "completed_sections": [s["title"] for s in contract["sections"]],
+              "planned_vs_actual": [{"section": s["title"], "fulfilled": True, "evidence": "完整对应章节任务"} for s in contract["sections"]],
+              "issues": []}
+    result.update(overrides)
+    return result
+
+
+def test_an_audit_that_contradicts_its_own_chapter_is_re_asked_instead_of_repaired(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    healthy = FakeGateway.__dict__["call"]
+
+    def hook(context, kwargs):
+        contract = context["chapter"]
+        payload = _audit_payload(contract)
+        payload["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        if not str(kwargs.get("slot", "")).endswith("-audit-retry-1"):
+            payload["planned_vs_actual"][0]["fulfilled"] = False
+            payload["planned_vs_actual"][0]["evidence"] = "本章并未执行该小节的计划任务"
+        return json.dumps(payload, ensure_ascii=False)
+
+    gateway.hooks["acceptance"] = hook
+    calls = len(gateway.calls)
+    run(tmp_path, state, gateway, "next_chapter")
+    assert state["chapters"]["1"]["accepted"], state["last_error"]
+    stages = [call["stage"] for call in gateway.calls[calls:]]
+    assert "repair" not in stages, stages
+    acceptance = [call["slot"] for call in gateway.calls[calls:] if call["stage"] == "acceptance"]
+    assert acceptance == ["chapter-1-attempt-0", "chapter-1-attempt-0-audit-retry-1"]
+    assert state["audit_reasks"][0]["slot"] == "chapter-1-attempt-0"
+
+
+def test_audit_reasks_are_bounded_and_persisted_so_a_resume_cannot_loop(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+
+    def hook(context, kwargs):
+        contract = context["chapter"]
+        payload = _audit_payload(contract)
+        payload["planned_vs_actual"][0]["fulfilled"] = False
+        payload["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    gateway.hooks["acceptance"] = hook
+    request = {"id": str(uuid4()), "action": "next_chapter", "created_at": now_iso()}
+    gateway.request_id = request["id"]
+    engine.GeneralLongformRunner(tmp_path, state, request, gateway=gateway).run()
+    assert state["phase"] == "needs_review"
+    acceptance = [call["slot"] for call in gateway.calls if call["stage"] == "acceptance"]
+    assert acceptance.count("chapter-1-attempt-0") == 1
+    assert acceptance.count("chapter-1-attempt-0-audit-retry-1") == 1
+    settled = len(gateway.calls)
+    engine.GeneralLongformRunner(tmp_path, state, request, gateway=gateway).run()
+    assert len(gateway.calls) == settled, "a resume must reuse the persisted verdicts"

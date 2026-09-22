@@ -87,6 +87,34 @@ def test_invalid_model_json_fails_closed(raw):
     with pytest.raises(runtime.GeneralLongformReview): runtime.parse_json(raw)
 
 
+@pytest.mark.parametrize("raw, expected_repaired", [
+    ('{"a": 1}', False),
+    ('```json\n{"a": 1}\n```', False),
+    ('{"a": 1}}', True),
+    ('{"a": 1}\n\n以上是验收结论。', True),
+    ('{"a": 1, "b": [1, 2,]}', True),
+    ('{"summary": "x", "endingHook": "y"}  \n注意：本条为模型附言', True),
+])
+def test_json_framing_repair_reuses_the_paid_payload(raw, expected_repaired):
+    parsed, repaired = runtime.parse_json_detail(raw)
+    assert isinstance(parsed, dict) and repaired is expected_repaired
+
+
+def test_trailing_brace_never_blocks_the_chapter_and_costs_no_second_call(tmp_path, monkeypatch):
+    calls = []
+    def writer(prompt, **kwargs):
+        calls.append(1)
+        return '{"summary": "第2章实质信息", "endingHook": "下一步"}}', {"input_tokens": 9, "output_tokens": 9}
+    monkeypatch.setattr(content_engine, "_openai_writer_call_result", writer)
+    gateway = runtime.ModelGateway(tmp_path, str(uuid4()))
+    audit = gateway.json("acceptance", {"candidate": "正文"}, slot="chapter-2-attempt-1")
+    assert audit["summary"] == "第2章实质信息"
+    assert len(calls) == 1
+    record = gateway.json("acceptance", {"candidate": "正文"}, slot="chapter-2-attempt-1")
+    assert record["summary"] == "第2章实质信息" and len(calls) == 1
+    assert gateway.call("acceptance", {"candidate": "正文"}, slot="chapter-2-attempt-1")["parse_repaired"] is True
+
+
 def test_web_search_incomplete_response_not_silently_resubmitted(tmp_path, monkeypatch):
     calls = []
     def create(**kwargs):
@@ -240,3 +268,18 @@ def test_reader_pins_public_ip_and_retains_hostname_for_tls(monkeypatch):
     assert requests[0].url.host == "1.1.1.1"
     assert requests[0].headers["Host"] == "example.org" and requests[0].extensions["sni_hostname"] == "example.org"
     assert result["url"] == "https://example.org/research" and result["file_sha256"]
+
+
+def test_cut_tail_repair_keeps_complete_elements_only():
+    filler = {"k%03d" % index: "文" * 40 for index in range(20)}
+    body = json.dumps(filler, ensure_ascii=False)
+    truncated = body[: int(len(body) * 0.9)]
+    parsed, repaired = runtime.parse_json_detail(truncated)
+    assert isinstance(parsed, dict) and "k000" in parsed and repaired is True
+    assert parsed != filler
+
+
+def test_stub_payload_is_never_repaired_into_an_empty_object():
+    for raw in ('{"broken":', '{"a":', '{', '{"a": 1, "b": "', '{"a": 1, "b": "' + "文" * 300):
+        with pytest.raises(runtime.GeneralLongformReview):
+            runtime.parse_json(raw)

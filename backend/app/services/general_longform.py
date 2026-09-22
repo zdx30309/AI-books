@@ -105,6 +105,78 @@ def trusts_search(state: dict[str, Any]) -> bool:
     return str(state.get("source_policy") or "verified") == "search_trusted"
 
 
+# 「来源覆盖不足」类问题只说明已读来源没有覆盖某个说法，并不指出正文与已读来源冲突
+# 或编造。作者选择 search_trusted 时，这类问题按已记录的豁免处理：保留在验收记录里，
+# 但不再把整章钉死在 needs_review。默认的 verified 策略下这段逻辑不生效。
+COVERAGE_ONLY_MARKERS = (
+    "没有完整列出", "未完整列出", "没有完整说明", "未完整说明", "没有列出", "未列出",
+    "没有来自当前实际读取来源", "没有来自当前来源", "未由成功读取的页面", "未被成功读取",
+    "本轮实际读取", "本次实际读取", "实际读取的", "没有实际搜索或引用工具证据",
+    "research.gaps", "研究缺口", "未能核实", "无法核实", "未取得原文", "未读取", "没有读取",
+    "没有可读全文", "未覆盖", "没有覆盖", "而未覆盖", "不在本轮", "未包含", "没有包含",
+    "未提供", "没有提供", "尚未由", "只确认", "未说明", "没有说明", "未展开",
+)
+CONTRADICTION_MARKERS = (
+    "不符", "不一致", "冲突", "矛盾", "相反", "编造", "不实", "事实错误", "存在错误",
+    "张冠李戴", "与来源相悖", "来源中不存在", "文不对题",
+)
+
+
+def coverage_limited_fact(issue: Any) -> bool:
+    """True when a fact issue only reports a gap in what the sources we read cover."""
+    if not isinstance(issue, dict) or str(issue.get("type") or "") != "fact":
+        return False
+    if str(issue.get("severity") or "").lower() not in {"high", "severe", "blocking"}:
+        return False
+    description = str(issue.get("description") or "")
+    if any(marker in description for marker in CONTRADICTION_MARKERS):
+        return False
+    return any(marker in description for marker in COVERAGE_ONLY_MARKERS)
+
+
+# 验收回复自身不自洽时的信号：模型给的证据不在本章正文里、引用了未知卡片、或
+# Planned-vs-Actual 与本章对不上。这类问题要重问验收，而不是拿正文去当替罪羊。
+AUDIT_DEFECT_STYLE_MARKERS = (
+    "风格复核证据须为", "风格复核使用了未知卡片", "风格复核条目结构不正确",
+    "缺少正反方法风格复核", "风格复核须同时提供", "正反风格复核未以真实证据覆盖",
+    "普通词复核应", "普通词语境复核缺少", "普通词语境复核未覆盖", "历史样稿检测报告不应",
+)
+AUDIT_REASK_LIMIT = 1
+
+
+def audit_defect_only(issues: list[dict[str, Any]]) -> bool:
+    """True when every blocking issue is a defect of the audit reply, not of the prose."""
+    blocking_items = [item for item in issues
+                      if not (isinstance(item, dict) and str(item.get("severity") or "").lower() in {"low", "medium"})]
+    if not blocking_items:
+        return False
+    for item in blocking_items:
+        if not isinstance(item, dict):
+            return False
+        kind, description = str(item.get("type") or ""), str(item.get("description") or "")
+        if kind == "acceptance":
+            continue
+        if kind == "style" and any(marker in description for marker in AUDIT_DEFECT_STYLE_MARKERS):
+            continue
+        return False
+    return True
+
+
+def apply_source_policy(issues: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep the chapter gate consistent with the source policy the author already chose."""
+    if not trusts_search(state):
+        return issues
+    resolved: list[dict[str, Any]] = []
+    for issue in issues:
+        if coverage_limited_fact(issue):
+            resolved.append({**issue, "severity": "medium", "downgraded_by": "search_trusted",
+                             "downgraded_reason": "作者已选择直接采用联网检索结果；本条只说明已读来源覆盖不足，"
+                                                  "没有指出正文与已读来源冲突或编造，按已记录豁免保留为 medium。"})
+        else:
+            resolved.append(issue)
+    return resolved
+
+
 def validate_outline(outline: dict[str, Any], sources: dict[str, Any], *, confirmed: bool = False) -> list[str]:
     errors: list[str] = []
     if not isinstance(outline, dict):
@@ -908,16 +980,63 @@ class GeneralLongformRunner:
             return self._assemble_sections(contract, [self.content(item["path"]) for item in sections])
         return ""
 
+    def _acceptance_audit(self, context: dict[str, Any], *, slot: str) -> dict[str, Any]:
+        """Read the acceptance verdict; an unusable payload never dead-ends the chapter.
+
+        The first read always reuses the persisted paid payload. Only when that
+        payload cannot be parsed at all does this make exactly one extra,
+        explicitly labelled call for the same slot, so a malformed reply costs a
+        retry instead of a whole chapter.
+        """
+        try:
+            return self.gateway.json("acceptance", context, max_tokens=12000, slot=slot)
+        except GeneralLongformReview as exc:
+            if "JSON" not in str(exc):
+                raise
+            self.state.setdefault("json_retries", []).append({"slot": slot, "at": now_iso(), "reason": str(exc)})
+            self.save()
+            return self.gateway.json("acceptance", context, max_tokens=12000, slot=f"{slot}-json-retry")
+
+    def _chapter_issues(self, audit: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], number: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        local = chapter_issues(text, contract, self.state["outline"], previous)
+        issues = local + validate_audit(audit, contract, self.state["sources"])
+        issues += audit.get("issues") if isinstance(audit.get("issues"), list) else []
+        issues += style_issues(audit, self.state["reference"], {number: text}, self.state["prompt_version"])
+        return local, apply_source_policy(issues, self.state)
+
+    def _audited_chapter(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any], *, attempt: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Get a verdict that is actually about this chapter.
+
+        A reply whose own evidence does not come from the chapter under review is
+        not a verdict on the prose, so it is re-asked (bounded) instead of
+        triggering a paid repair of text nobody faulted.
+        """
+        slot = f"chapter-{candidate['number']}-attempt-{attempt}"
+        verdict = None
+        for index in range(AUDIT_REASK_LIMIT + 1):
+            audit = self._acceptance_audit({**base, "candidate": text, "local_issues": chapter_issues(text, contract, self.state["outline"], previous)},
+                                           slot=slot if not index else f"{slot}-audit-retry-{index}")
+            local, issues = self._chapter_issues(audit, contract, text, previous, candidate["number"])
+            verdict = (audit, local, issues)
+            if not (blocking(issues) and audit_defect_only(issues)):
+                return verdict
+            self.state.setdefault("audit_reasks", []).append(
+                {"slot": slot, "at": now_iso(),
+                 "reason": "验收回复与本章正文对不上（证据/Planned-vs-Actual 自查不一致），已重问验收，未修改正文"})
+            self.save()
+        return verdict
+
     def _check_and_accept(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any]) -> None:
         folder = f"chapters/{candidate['number']:02d}/v{candidate['version']:02d}"
         for attempt in range(2):
             self.progress(82, f"通用长篇：第{candidate['number']}章计划实绩对比与验收")
-            local = chapter_issues(text, contract, self.state["outline"], previous)
-            audit = self.gateway.json("acceptance", {**base, "candidate": text, "local_issues": local}, max_tokens=12000, slot=f"chapter-{candidate['number']}-attempt-{attempt}")
-            issues = local + validate_audit(audit, contract, self.state["sources"]) + (audit.get("issues") if isinstance(audit.get("issues"), list) else [])
-            issues += style_issues(audit, self.state["reference"], {candidate["number"]: text}, self.state["prompt_version"])
+            audit, local, issues = self._audited_chapter(candidate, contract, text, previous, base, attempt=attempt)
+            downgraded = [{"severity": item.get("severity"), "type": item.get("type"), "description": item.get("description")}
+                          for item in issues if isinstance(item, dict) and item.get("downgraded_by")]
             candidate.update(audit=audit, issues=issues)
-            atomic_json(self.directory / folder / f"acceptance_{self.request['id']}_{attempt}.json", {"content_sha256": sha256(text.encode()).hexdigest(), "audit": audit, "local_issues": local, "issues": issues})
+            if downgraded:
+                candidate["policy_downgrades"] = downgraded
+            atomic_json(self.directory / folder / f"acceptance_{self.request['id']}_{attempt}.json", {"content_sha256": sha256(text.encode()).hexdigest(), "audit": audit, "local_issues": local, "issues": issues, "policy_downgrades": downgraded})
             self.save()
             if not blocking(issues):
                 break

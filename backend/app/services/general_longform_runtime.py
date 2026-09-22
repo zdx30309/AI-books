@@ -59,17 +59,118 @@ def read_json(path: Path, default: Any = None) -> Any:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
 
+JSON_INCOMPLETE = "模型返回的 JSON 不完整，原始结果已留存，未推进下一阶段"
+JSON_OBJECT_ONLY = "本节点需要 JSON 对象，原始结果已留存"
+
+
+def _strip_json_fence(text: str) -> str:
+    value = text.strip()
+    if value.startswith("```"):
+        value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value, flags=re.IGNORECASE)
+    return value.strip()
+
+
+def _close_open_brackets(text: str) -> str | None:
+    """Close an unterminated object at its last complete value; never invent content."""
+    stack: list[str] = []
+    in_string = escaped = False
+    safe_end = 0
+    string_start = 0
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                safe_end = index + 1
+            continue
+        if char == '"':
+            in_string = True
+            string_start = index
+        elif char in "{[":
+            stack.append(char)
+            safe_end = index + 1
+        elif char in "}]":
+            if stack:
+                stack.pop()
+            safe_end = index + 1
+        elif char in ",:":
+            safe_end = index + 1
+        elif not char.isspace():
+            safe_end = index + 1
+    if not stack:
+        return None
+    if in_string:
+        # A cut inside a string drops that one incomplete element, never the
+        # complete ones before it.
+        boundary = text.rfind(",", 0, string_start)
+        if boundary < 0:
+            return None
+        safe_end = boundary
+    body = re.sub(r"[,:]\s*$", "", text[:safe_end].rstrip())
+    if not body or body[-1] in "{[,":
+        # Closing here would invent an empty object/array that the model never
+        # produced; leave the payload unusable so the caller can re-ask.
+        return None
+    for opener in reversed(stack):
+        body += "}" if opener == "{" else "]"
+    return body if body.strip() not in {"", "{}", "[]"} else None
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    """Repair JSON framing only: framing noise, trailing prose, trailing commas, cut tails."""
+    candidates: list[str] = []
+
+    def push(value: str) -> None:
+        value = value.strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    push(text)
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0:
+        push(text[start:end + 1] if end > start else text[start:])
+    for value in list(candidates):
+        push(re.sub(r",\s*([}\]])", r"\1", value))
+    # A cut tail keeps almost the whole payload; a two-character stub is not a repair.
+    for value in list(candidates):
+        closed = _close_open_brackets(value)
+        # A repair must keep a substantial object: refuse two-character stubs
+        # that would silently turn a broken reply into an empty verdict.
+        if closed and len(closed) >= 40 and len(closed) >= int(len(value) * 0.4):
+            push(closed)
+    return candidates
+
+
+def parse_json_detail(text: str) -> tuple[dict[str, Any], bool]:
+    """Return the model JSON object plus whether framing (not prose) had to be repaired."""
+    fenced = _strip_json_fence(text or "")
+    for index, candidate in enumerate(_json_repair_candidates(fenced)):
+        try:
+            value = json.loads(candidate)
+        except (TypeError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            return value, index > 0
+    decoder = json.JSONDecoder()
+    start = fenced.find("{")
+    if start >= 0:
+        try:
+            value, _end = decoder.raw_decode(fenced[start:])
+        except ValueError:
+            value = None
+        if isinstance(value, dict):
+            return value, True
+    text_check = (text or "").strip()
+    if text_check.startswith("{") or text_check.startswith("```"):
+        raise GeneralLongformReview(JSON_INCOMPLETE)
+    raise GeneralLongformReview(JSON_OBJECT_ONLY)
+
+
 def parse_json(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
-    try:
-        result = json.loads(text)
-    except (TypeError, ValueError) as exc:
-        raise GeneralLongformReview("模型返回的 JSON 不完整，原始结果已留存，未推进下一阶段") from exc
-    if not isinstance(result, dict):
-        raise GeneralLongformReview("本节点需要 JSON 对象，原始结果已留存")
-    return result
+    return parse_json_detail(text)[0]
 
 
 def _error_text(exc: BaseException) -> str:
@@ -95,7 +196,7 @@ class ModelGateway:
         # work. A resume always reuses the original persisted prompt/response.
         key = sha256(json.dumps([stage, slot], ensure_ascii=False).encode()).hexdigest()
         folder = self.directory / "calls" / self.request_id
-        path = folder / f"{stage}_{key}.json"
+        path = self.record_path(stage, slot)
         prompt_path = folder / f"{stage}_{key}.prompt.txt"
         existing = read_json(path, {})
         if existing.get("status") == "completed":
@@ -196,7 +297,19 @@ class ModelGateway:
         return record
 
     def json(self, stage: str, context: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        return parse_json(self.call(stage, context, **kwargs)["text"])
+        record = self.call(stage, context, **kwargs)
+        parsed, repaired = parse_json_detail(record["text"])
+        if repaired and not record.get("parse_repaired"):
+            # Framing-only repair: the paid payload is reused instead of being
+            # re-requested, and the trail says exactly what was repaired.
+            record["parse_repaired"] = True
+            record["parse_repair_note"] = "只修复 JSON 框架（尾随字符/尾逗号/未闭合括号），未改写任何正文或结论"
+            atomic_json(self.record_path(stage, str(kwargs.get("slot") or "")), record)
+        return parsed
+
+    def record_path(self, stage: str, slot: str = "") -> Path:
+        key = sha256(json.dumps([stage, slot], ensure_ascii=False).encode()).hexdigest()
+        return self.directory / "calls" / self.request_id / f"{stage}_{key}.json"
 
 
 def canonical_url(url: str) -> str:
