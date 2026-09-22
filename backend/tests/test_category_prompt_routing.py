@@ -1141,6 +1141,68 @@ def test_finance_recommendation_resume_reuses_writer_without_web_search(
     assert "@最终书名" in result
 
 
+def _two_chapter_finance_manuscript(repeat: int = 1500) -> str:
+    first = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
+    second = "第二层传导需要补齐产业链、公司行为、政策条件和风险边界之间的现实联系。" * repeat
+    return (
+        "@最终书名\n测试书名\n"
+        "@最终简介\n测试简介\n"
+        "@目录\n1. 第一章\n2. 第二章\n"
+        "@导言\n测试导言。\n"
+        "@正文\n"
+        f"@1. 第一章\n{first}\n"
+        f"@2. 第二章\n{second}\n"
+    )
+
+
+def test_rejected_polish_resume_still_runs_the_polish_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached 02_polish.md that damaged the chapter list must be regenerated.
+
+    Clearing ``polished_markdown`` inside the resume branch used to fall out of
+    the ``if/elif`` chain, so the polish stage never re-ran and the chapter
+    continued with no polish result at all.
+    """
+
+    output_dir = tmp_path / "polish_resume_rejected"
+    output_dir.mkdir(parents=True)
+    writer_manuscript = _two_chapter_finance_manuscript()
+    (output_dir / "01_writer.md").write_text(writer_manuscript, encoding="utf-8")
+    collapsed = writer_manuscript.replace("@2. 第二章\n", "")
+    assert content_engine._stage_chapter_numbers(collapsed) == [1]
+    (output_dir / "02_polish.md").write_text(collapsed, encoding="utf-8")
+
+    polish_inputs: list[str] = []
+
+    async def fake_polish_chunks(text: str, **_: object) -> str:
+        polish_inputs.append(text)
+        return text
+
+    async def forbidden_call(*_: object, **__: object) -> str:
+        raise AssertionError("a resumed manuscript must not call the writer again")
+
+    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", forbidden_call)
+    monkeypatch.setattr(content_engine, "_route_writer_call", forbidden_call)
+    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
+    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
+    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
+
+    result = asyncio.run(
+        content_engine.generate_full_book(
+            "财经科技建议版资料。",
+            category="finance_technology_recommendation",
+            output_dir=output_dir,
+        )
+    )
+
+    assert (output_dir / "02_polish_rejected_structure.md").exists()
+    assert polish_inputs, "the polish stage must re-run when the cached polish is rejected"
+    assert "@最终书名" in result
+    assert content_engine._stage_chapter_numbers(result) == [1, 2]
+
+
 def _long_finance_manuscript(repeat: int = 5200) -> str:
     body = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
     return MINIMAL_MANUSCRIPT.replace("测试正文。", body)

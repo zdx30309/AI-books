@@ -8439,7 +8439,7 @@ async def generate_full_book(
             polish_chars = len(polished_markdown)
             if on_stage:
                 on_stage("polish_done", {"chars": polish_chars})
-    elif polished_markdown is None:
+    if polished_markdown is None:
         if on_stage:
             on_stage("polish_start", {})
         polish_chunk_func = (
