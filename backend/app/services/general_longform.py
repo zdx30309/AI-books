@@ -1036,14 +1036,14 @@ class GeneralLongformRunner:
         issues += style_issues(audit, self.state["reference"], {number: text}, self.state["prompt_version"])
         return local, apply_source_policy(issues, self.state)
 
-    def _audited_chapter(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any], *, attempt: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    def _audited_chapter(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any], *, attempt: int, slot_suffix: str = "") -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
         """Get a verdict that is actually about this chapter.
 
         A reply whose own evidence does not come from the chapter under review is
         not a verdict on the prose, so it is re-asked (bounded) instead of
         triggering a paid repair of text nobody faulted.
         """
-        slot = f"chapter-{candidate['number']}-attempt-{attempt}"
+        slot = f"chapter-{candidate['number']}-attempt-{attempt}{slot_suffix}"
         verdict = None
         for index in range(AUDIT_REASK_LIMIT + 1):
             audit = self._acceptance_audit({**base, "candidate": text, "local_issues": chapter_issues(text, contract, self.state["outline"], previous)},
@@ -1147,9 +1147,10 @@ class GeneralLongformRunner:
 
     def _check_and_accept(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any]) -> None:
         folder = f"chapters/{candidate['number']:02d}/v{candidate['version']:02d}"
+        slot_suffix = ""
         for attempt in range(2):
             self.progress(82, f"通用长篇：第{candidate['number']}章计划实绩对比与验收")
-            audit, local, issues = self._audited_chapter(candidate, contract, text, previous, base, attempt=attempt)
+            audit, local, issues = self._audited_chapter(candidate, contract, text, previous, base, attempt=attempt, slot_suffix=slot_suffix)
             downgraded = [{"severity": item.get("severity"), "type": item.get("type"), "description": item.get("description")}
                           for item in issues if isinstance(item, dict) and item.get("downgraded_by")]
             candidate.update(audit=audit, issues=issues)
@@ -1170,6 +1171,11 @@ class GeneralLongformRunner:
             balanced = self._restore_shortened_sections(text, previous_text, contract, base, folder, candidate)
             if balanced != text:
                 candidate["repairedContent"] = self.put(f"{folder}/qa_repair_balanced.txt", balanced)
+                # The persisted verdict for this attempt was paid for against the
+                # text the repair returned.  The rebalanced chapter is a different
+                # manuscript, so it is judged under its own slot instead of
+                # inheriting a conclusion about prose nobody is looking at now.
+                slot_suffix = "-rebalanced"
             text = balanced
             self.save()
         self.checkpoint()

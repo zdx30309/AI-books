@@ -947,6 +947,9 @@ def test_repair_that_shortens_a_section_extends_it_instead_of_blocking(tmp_path,
     accepted = state["chapters"]["1"].get("accepted")
     assert accepted, state["last_error"]
     assert continuations[0] == "chapter-1-section-1", continuations
+    # The rebalanced chapter is judged under its own slot: the verdict bought for
+    # the repair reply must never stand in for prose it never saw.
+    assert audits[-1] == "chapter-1-attempt-1-rebalanced", audits
     assert len(continuations) <= 2, continuations
     assert len([call for call in gateway.calls if call["stage"] == "repair"]) == 1
     extended = accepted["section_extensions"]
