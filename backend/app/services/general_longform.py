@@ -457,6 +457,37 @@ def normalize_imported_chapter(text: str, contract: dict[str, Any], aliases: lis
     return result
 
 
+# The generation context carries the book, not the bookkeeping. Prose,
+# summaries, hooks and citations stay complete; per-chapter QA reports, tool
+# hashes and journal paths are dropped because no stage prompt uses them and a
+# thirteen-chapter book otherwise spends its window on records.
+_GENERATION_CHAPTER_FIELDS = ("number", "title", "word_count", "content")
+_GENERATION_SOURCE_FIELDS = ("id", "url", "title", "authors", "year", "publication", "doi", "bibliography",
+                             "approved_summary", "supported_claims", "limitations")
+
+
+def generation_chapters(chapters: Any) -> list[dict[str, Any]]:
+    """Return the writing view of previous chapters: full text plus the continuity fields."""
+
+    result = []
+    for item in chapters or []:
+        if not isinstance(item, dict):
+            continue
+        audit = item.get("audit") if isinstance(item.get("audit"), dict) else {}
+        result.append({**{key: item.get(key) for key in _GENERATION_CHAPTER_FIELDS},
+                       "summary": audit.get("summary"), "endingHook": audit.get("endingHook")})
+    return result
+
+
+def generation_sources(sources: Any) -> dict[str, Any]:
+    """Return the citation view of the book's sources, without tool records."""
+
+    if not isinstance(sources, dict):
+        return sources
+    return {key: ({field: value.get(field) for field in _GENERATION_SOURCE_FIELDS}
+                  if isinstance(value, dict) else value) for key, value in sources.items()}
+
+
 class GeneralLongformRunner:
     def __init__(self, directory: Path, state: dict[str, Any], request: dict[str, Any], *,
                  gateway: ModelGateway | None = None, checkpoint: Callable[[], None] | None = None,
@@ -506,11 +537,20 @@ class GeneralLongformRunner:
         return result
 
     def context(self, **values: Any) -> dict[str, Any]:
-        return {"current_time": self.request.get("created_at") or self.state.get("created_at"), "project_id": self.state["project_id"],
-                "prompt_version": self.state["prompt_version"],
-                "source_summary": self.state.get("source_summary", ""), "outline": self.state.get("outline"),
-                "accepted_state": self.state["accepted_state"], "reference": self.state.get("reference", {}),
-                "sources": self.state["sources"], **values}
+        payload = {"current_time": self.request.get("created_at") or self.state.get("created_at"), "project_id": self.state["project_id"],
+                   "prompt_version": self.state["prompt_version"],
+                   "source_summary": self.state.get("source_summary", ""), "outline": self.state.get("outline"),
+                   "accepted_state": self.state["accepted_state"], "reference": self.state.get("reference", {}),
+                   "sources": generation_sources(self.state["sources"]), **values}
+        if "previous_chapters" in payload:
+            # A projection, never a different book: every previous chapter keeps
+            # its complete prose, title, summary and ending hook. Only the
+            # per-chapter bookkeeping (QA reports, tool hashes, journals) is left
+            # out, so the writer window is spent on the book instead of on
+            # records it cannot use. Thirteen chapters of that bookkeeping used
+            # to push a late chapter over the context guard and stop the run.
+            payload["previous_chapters"] = generation_chapters(payload["previous_chapters"])
+        return payload
 
     def ensure_source_summary(self) -> None:
         text = self.state.get("source_text", "")

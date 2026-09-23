@@ -1,5 +1,16 @@
 # Epic Novel Engine Implementation Status
 
+## 通用长篇：写入上下文超出限额 + 失败重试重复付费检索（2026-09-24，第七轮）
+
+- 结果：第 6 章《第十三个念头》@@@accepted@@@（8258 字），全书 1—6 章 @@@49553 字@@@；第 7 章已启动（四小节 2623/2607/2257/2368 全部写完）。
+- 复现（线上 @@bc69c362@@）：第 7 章四小节写完、进入一润时抛 @@@本节点上下文为 355143 字符，超过 350000 限额；未截断原文或前文@@@，@@phase=needs_review@@@，本章正文与断点全部保留。重试后仍在同一道闸门失败，且每次重试都从 @@research@@ 重新开始付费。
+- 根因一（上下文被记录占满）：@@context()@@ 把 @@accepted()@@ 的每章完整记录（@@audit@@ 6—8k、@@issues@@ 1—2k、@@research@@ 4—10k、哈希与本地路径）和 @@sources@@ 的工具记录（@@file_sha256@@/@@local_path@@/@@read_scope@@/@@retrieved_at@@/@@provider@@/@@query@@…）原样塞进 prompt 的 JSON。第 7 章的 @@previous_chapters@@ 一项就是 @@@186902@@@ 字符，其中真正的正文只有约 5 万字；到第 12—13 章必然再次超限。
+- 修复一（@@generation_chapters()@@ / @@generation_sources()@@）：生成上下文改为投影——上一章只保留 @@number/title/word_count/content@@ 与从 @@audit@@ 取出的 @@summary/endingHook@@；来源只保留引用字段（@@id/url/title/authors/year/publication/doi/bibliography/approved_summary/supported_claims/limitations@@）。这是同一本书、同一份正文，只是不再把写作用不到的记录送进窗口。@@state.json@@ 本身逐字段不变，程序侧校验（@@chapter_issues@@/@@validate_audit@@/验收状态表）仍拿完整对象。
+- 根因二（失败重试重复付费）：@@research@@ 的断点目录按 @@request_id@@ 隔离，一旦上游某阶段失败、作者再点一次，就会为同一章重新付一次联网检索（线上实测 @@$0.62—0.69/次@@）。
+- 修复二（@@research_signature()@@ / @@reusable_research()@@）：同一 slot 且"问法指纹"一致（章节契约／大纲／作者反馈 + prompt 版本）时，直接复用这本书已经付过费的 @@approved.json@@，不再联网、不再抽象，只把它写进新请求目录当本请求的断点。指纹不一致（换了章、改了大纲、换了 prompt 版本）一律重新检索。
+- 验证（2026-09-24 本机）：@@python -m pytest backend/tests -q -k general_longform@@@ → @@@281 passed@@@。新增 8 项：@@test_general_longform_research_reuse.py@@（5 项：重试复用已付费检索、换章节契约重新检索、换反馈重新检索、邻章不互相借用、换 prompt 版本重新检索）与 @@test_general_longform_context_budget.py@@（3 项：前文正文与摘要齐全而去掉验收记录、来源保留引用而去掉工具记录、第 13 章上下文留在 350000 限额之内而同内容不投影时必然超限）。@@rejected.json@@ 为空、只读到 1 个桩页面的失败重试仍然照旧重新检索（不会把不可读的来源锁死）。
+- 不变项：@@backend/app/prompts/general_longform/**@@ 逐字节未改；默认 @@@verified@@@ 来源策略、@@validate_outline@@、来源 URL/哈希核验、验收门、严格串行、每章验收、@@100000—110000@@ 字与双 Word 规则全部不变。
+
 ## 通用长篇：修复稿把正文改坏、旧结论顶替新结论（2026-09-24，第六轮）
 
 - 结果：第 5 章《光怎样改时间》@@@accepted@@@（8740 字，两份 Word 已导出），全书 1—5 章 @@@41295 字@@@，@@@phase=ready_for_chapter@@@；随后已开第 6 章（请求 @@@98213455@@@）。

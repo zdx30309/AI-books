@@ -549,11 +549,68 @@ def evidence_failure_message(pages_read: int, dropped: list[dict[str, Any]], exh
     return f"实际读取材料未形成可靠的来源摘要，未开始正文（已实际读取 {pages_read} 个页面{detail}）{tail}"
 
 
+def research_signature(payload: Any, prompt_version: str | None = None) -> str:
+    """Fingerprint the paid question a research slot answers.
+
+    The signature is deliberately narrow: the chapter contract, the outline and
+    the author feedback are the only inputs that can change what counts as
+    evidence for the same slot. Everything else in the render context (how much
+    prose exists today, which chapters were accepted) must never invalidate an
+    answer this book already paid for.
+    """
+
+    parts: dict[str, Any] = {"payload": payload, "prompt_version": prompt_version or ""}
+    return sha256(json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _slot_inputs(context: dict[str, Any]) -> dict[str, Any]:
+    source = context if isinstance(context, dict) else {}
+    return {key: source.get(key) for key in ("chapter", "outline", "feedback")}
+
+
+def reusable_research(gateway: ModelGateway, slot: str, signature: str) -> dict[str, Any] | None:
+    """Return the newest approved research this book already paid for, if it answers the same question.
+
+    Every request id owns its own folder, so a failed attempt used to throw away
+    a web search the book had already paid for: the next attempt paid again for
+    the same chapter. Reuse is byte-exact: only a stored result whose slot and
+    signature match is returned, and the local page files it points at are still
+    on disk, so nothing is re-read from the network.
+    """
+
+    if not slot or not signature:
+        return None
+    root = gateway.directory / "research"
+    if not root.is_dir():
+        return None
+    folder = sha256(slot.encode()).hexdigest()[:16]
+    newest: tuple[float, dict[str, Any]] | None = None
+    for candidate in root.glob(f"*/{folder}/approved.json"):
+        if len(candidate.parts) < 3 or candidate.parts[-3] == gateway.request_id:
+            continue
+        stored = read_json(candidate, {})
+        if not isinstance(stored, dict) or stored.get("slot_signature") != signature or not stored.get("sources"):
+            continue
+        try:
+            stamp = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, {**stored, "reused_from_request": candidate.parts[-3]})
+    return None if newest is None else newest[1]
+
+
 def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[[str], dict[str, Any]] = fetch_public_page, slot: str = "") -> dict[str, Any]:
     directory = gateway.directory / "research" / gateway.request_id / (sha256(slot.encode()).hexdigest()[:16] if slot else "plan")
     cached = read_json(directory / "approved.json")
     if cached:
         return cached
+    signature = research_signature(_slot_inputs(context), getattr(gateway, "prompt_version", None))
+    reused = reusable_research(gateway, slot, signature)
+    if reused is not None:
+        # A retry of the same question never pays a second web search.
+        atomic_json(directory / "approved.json", reused)
+        return reused
     call = gateway.call("research", context, web=True, max_tokens=8000, slot=slot)
     proposed = parse_json(call["text"])
     allowed = _tool_source_urls(call)
@@ -634,6 +691,7 @@ def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[
         raise GeneralLongformReview(evidence_failure_message(len(pages), dropped, budget == 0 or used + budget >= _EVIDENCE_ATTEMPT_CAP))
     result = {"topic": proposed.get("topic", ""), "domain": proposed.get("domain", ""), "sources": approved,
               "gaps": abstracted.get("gaps", []), "errors": errors, "web_call_completed": True,
-              "rawTextIncluded": False, "retrieved_at": now_iso()}
+              "rawTextIncluded": False, "retrieved_at": now_iso(), "slot": slot,
+              "slot_signature": signature}
     atomic_json(directory / "approved.json", result)
     return result
