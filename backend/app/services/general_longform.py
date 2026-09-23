@@ -942,6 +942,9 @@ class GeneralLongformRunner:
                 raise GeneralLongformReview("请说明当前章的具体修订范围")
             text = self.gateway.call("repair", {**base, "candidate": original, "issues": candidate.get("issues", []), "feedback": feedback}, max_tokens=26000, slot=f"chapter-{number}-revision")["text"].strip()
             candidate["repairedContent"] = self.put(f"{folder}/revision.txt", text)
+            text = self._restore_shortened_sections(text, original, contract, base, folder, candidate)
+            if text != self.content(candidate["repairedContent"]):
+                candidate["repairedContent"] = self.put(f"{folder}/revision_balanced.txt", text)
             self.save()
         else:
             texts = []
@@ -1055,6 +1058,69 @@ class GeneralLongformRunner:
             self.save()
         return verdict
 
+    def _restore_shortened_sections(self, text: str, previous_text: str, contract: dict[str, Any],
+                                    base: dict[str, Any], folder: str, candidate: dict[str, Any]) -> str:
+        """Extend sections a whole-chapter repair shortened below its own floors.
+
+        The repair reply rewrites the whole chapter, so it can satisfy the
+        auditor's "too long" verdict and still push a section under the floor the
+        gate enforces -- or drop the chapter under the minimum this gate enforces.
+        Re-auditing that text blocks the chapter and the author pays for another
+        rewrite.  Instead the sections that were healthy before the reply are
+        extended in place with one bounded continuation call each, and the chapter
+        is only rebalanced while it stays inside its own length cap.
+        """
+
+        sections = contract["sections"]
+        parts = split_sections(text)
+        previous_parts = split_sections(previous_text or "")
+        if len(parts) != len(sections) or len(previous_parts) != len(parts):
+            return text
+        outline_target = int(self.state.get("outline", {}).get("target_words") or 0)
+        minimum = max(math.ceil(contract["target_words"] * .97),
+                      math.ceil(contract["target_words"] * 100000 / outline_target) if outline_target else 0)
+        cap = math.ceil(contract["target_words"] * 1.12)
+        bodies = [body for _name, body in parts]
+        words = [documents.word_count(body) for body in bodies]
+        floors = [int(section["target_words"] * .8) for section in sections]
+        total = documents.word_count(text)
+        # Only sections this reply shortened are fair game: a shortfall that was
+        # already there is the author's explicit revision, not a repair side effect.
+        eligible = [index for index in range(len(sections))
+                    if documents.word_count(previous_parts[index][1]) >= floors[index]]
+        needed = [index for index in eligible if words[index] < floors[index]]
+        # A chapter-level shortfall is only a repair side effect when the reply
+        # actually lost the words; an already short chapter stays the author's call.
+        chapter_shortfall_is_new = documents.word_count(previous_text or "") >= minimum
+        if not needed and not (total < minimum and chapter_shortfall_is_new):
+            return text
+        order = needed + [index for index in sorted(eligible, key=lambda item: words[item]) if index not in needed]
+        extended: list[dict[str, Any]] = []
+        for index in order:
+            below = words[index] < floors[index]
+            if not below and total >= minimum:
+                break
+            section = sections[index]
+            context = {**base, "section": section, "current_chapter_sections": list(bodies)}
+            output = self.gateway.call("continue", {**context, "partial_section": bodies[index], "continuation": True},
+                                       max_tokens=min(24000, section["target_words"] * 3 + 3000),
+                                       slot=f"chapter-{candidate['number']}-section-{index}")["text"].strip()
+            grown = bodies[index].rstrip() + "\n\n" + output
+            after = documents.word_count(grown)
+            if total - words[index] + after > cap:
+                candidate.setdefault("rebalance_notes", []).append({"section": section["title"], "action": "skipped",
+                                                                  "reason": "延伸后超出本章篇幅上限",
+                                                                  "before": words[index], "after": after})
+                continue
+            extended.append({"section": section["title"], "before": words[index], "after": after})
+            total = total - words[index] + after
+            words[index] = after
+            bodies[index] = grown
+        if not extended:
+            return text
+        candidate["section_extensions"] = extended
+        return self._assemble_sections(contract, bodies)
+
     def _check_and_accept(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any]) -> None:
         folder = f"chapters/{candidate['number']:02d}/v{candidate['version']:02d}"
         for attempt in range(2):
@@ -1074,8 +1140,13 @@ class GeneralLongformRunner:
                 self.save()
                 raise GeneralLongformReview("本章高/严重问题仍未消除，未写入验收状态：" + "；".join(str(item.get("description", "")) for item in issues if isinstance(item, dict))[:1800])
             self.progress(85, f"通用长篇：第{candidate['number']}章局部修复，随后重新验收")
+            previous_text = text
             text = self.gateway.call("repair", {**base, "candidate": text, "issues": issues}, max_tokens=26000, slot=f"chapter-{candidate['number']}-qa-repair")["text"].strip()
             candidate["repairedContent"] = self.put(f"{folder}/qa_repair.txt", text)
+            balanced = self._restore_shortened_sections(text, previous_text, contract, base, folder, candidate)
+            if balanced != text:
+                candidate["repairedContent"] = self.put(f"{folder}/qa_repair_balanced.txt", balanced)
+            text = balanced
             self.save()
         self.checkpoint()
         digest = sha256(text.encode()).hexdigest()

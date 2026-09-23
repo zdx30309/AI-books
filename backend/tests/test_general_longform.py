@@ -909,6 +909,86 @@ def test_audit_reasks_are_bounded_and_persisted_so_a_resume_cannot_loop(tmp_path
     assert len(gateway.calls) == settled, "a resume must reuse the persisted verdicts"
 
 
+def test_repair_that_shortens_a_section_extends_it_instead_of_blocking(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    contract = state["outline"]["chapters"][0]
+    floor = int(contract["sections"][1]["target_words"] * .8)
+    cap = int(contract["target_words"] * 1.12)
+    continuations = []
+
+    def repair_hook(context, kwargs):
+        # A whole-chapter reply that satisfies the auditor's "too long" verdict
+        # and still leaves one section under the floor this engine enforces.
+        bodies = [section_text(1, 0, contract["sections"][0]["target_words"]),
+                  section_text(1, 1, floor - 900)]
+        return engine.GeneralLongformRunner._assemble_sections(contract, bodies)
+
+    def continue_hook(context, kwargs):
+        continuations.append(kwargs.get("slot"))
+        return section_text(9, len(continuations), 1200)
+
+    audits = []
+
+    def acceptance_hook(context, kwargs):
+        audits.append(kwargs.get("slot"))
+        payload = _audit_payload(contract)
+        bodies = dict(engine.split_sections(context["candidate"]))
+        short = documents.word_count(bodies[contract["sections"][1]["title"]]) < floor
+        if len(audits) == 1 or short:
+            payload["issues"] = [{"severity": "high", "type": "length", "description": "整章篇幅需要收敛"}]
+        payload["style_review"] = style_review({contract["number"]: context["candidate"]}, context["reference"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    gateway.hooks["repair"] = repair_hook
+    gateway.hooks["continue"] = continue_hook
+    gateway.hooks["acceptance"] = acceptance_hook
+    run(tmp_path, state, gateway, "next_chapter")
+
+    accepted = state["chapters"]["1"].get("accepted")
+    assert accepted, state["last_error"]
+    assert continuations[0] == "chapter-1-section-1", continuations
+    assert len(continuations) <= 2, continuations
+    assert len([call for call in gateway.calls if call["stage"] == "repair"]) == 1
+    extended = accepted["section_extensions"]
+    assert [item["section"] for item in extended][0] == contract["sections"][1]["title"]
+    assert len(extended) <= 2
+    assert extended[0]["after"] >= floor
+    runner = engine.GeneralLongformRunner(tmp_path, state, {"id": str(uuid4()), "action": "next_chapter"}, gateway=gateway)
+    content = runner.content(accepted["acceptedContent"])
+    bodies = dict(engine.split_sections(content))
+    assert documents.word_count(bodies[contract["sections"][1]["title"]]) >= floor
+    assert documents.word_count(content) <= cap
+
+
+def test_repair_shortfall_that_predates_the_repair_never_buys_a_continuation(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    contract = state["outline"]["chapters"][0]
+    floor = int(contract["sections"][1]["target_words"] * .8)
+    short = [section_text(1, 0, contract["sections"][0]["target_words"]), section_text(1, 1, floor - 500)]
+    previous = engine.GeneralLongformRunner._assemble_sections(contract, short)
+    candidate = {"number": 1, "version": 1}
+    runner = engine.GeneralLongformRunner(tmp_path, state, {"id": str(uuid4()), "action": "next_chapter"}, gateway=gateway)
+
+    assert runner._restore_shortened_sections(previous, previous, contract, {}, "chapters/01/v01", candidate) == previous
+    assert not [call for call in gateway.calls if call["stage"] == "continue"]
+    assert "section_extensions" not in candidate
+
+
+def test_section_extension_is_skipped_when_it_would_break_the_chapter_cap(tmp_path, monkeypatch):
+    state, gateway = ready(tmp_path, monkeypatch)
+    contract = state["outline"]["chapters"][0]
+    section = contract["sections"][1]
+    floor = int(section["target_words"] * .8)
+    previous = engine.GeneralLongformRunner._assemble_sections(contract, [section_text(1, 0, contract["sections"][0]["target_words"]), section_text(1, 1, floor)])
+    shortened = engine.GeneralLongformRunner._assemble_sections(contract, [section_text(2, 0, contract["target_words"]), section_text(1, 1, floor - 200)])
+    candidate = {"number": 1, "version": 1}
+    gateway.hooks["continue"] = lambda context, kwargs: section_text(9, 1, 4000)
+    runner = engine.GeneralLongformRunner(tmp_path, state, {"id": str(uuid4()), "action": "next_chapter"}, gateway=gateway)
+
+    assert runner._restore_shortened_sections(shortened, previous, contract, {}, "chapters/01/v01", candidate) == shortened
+    assert candidate["rebalance_notes"][0]["action"] == "skipped"
+    assert not [call for call in gateway.calls if call["stage"] == "repair"]
+
 def _section_shortfall_hook(section_index, note_section):
     def hook(context, kwargs):
         contract = context["chapter"]
