@@ -1058,17 +1058,29 @@ class GeneralLongformRunner:
             self.save()
         return verdict
 
+    @staticmethod
+    def _fit_extended_section(text: str, floor: int, allowed: int) -> str:
+        """Drop whole trailing paragraphs while an extension cannot fit the cap."""
+
+        paragraphs = text.split("\n\n")
+        while len(paragraphs) > 1 and documents.word_count("\n\n".join(paragraphs)) > allowed:
+            trimmed = paragraphs[:-1]
+            if documents.word_count("\n\n".join(trimmed)) < floor:
+                break
+            paragraphs = trimmed
+        return "\n\n".join(paragraphs)
+
     def _restore_shortened_sections(self, text: str, previous_text: str, contract: dict[str, Any],
                                     base: dict[str, Any], folder: str, candidate: dict[str, Any]) -> str:
         """Extend sections a whole-chapter repair shortened below its own floors.
 
         The repair reply rewrites the whole chapter, so it can satisfy the
         auditor's "too long" verdict and still push a section under the floor the
-        gate enforces -- or drop the chapter under the minimum this gate enforces.
-        Re-auditing that text blocks the chapter and the author pays for another
-        rewrite.  Instead the sections that were healthy before the reply are
-        extended in place with one bounded continuation call each, and the chapter
-        is only rebalanced while it stays inside its own length cap.
+        gate enforces, or drop the chapter under the minimum that same gate
+        enforces.  Re-auditing that text blocks the chapter and the author pays for
+        another rewrite.  Instead the sections that were healthy before the reply
+        are extended in place with bounded continuation calls, and the chapter is
+        never allowed past its own length cap.
         """
 
         sections = contract["sections"]
@@ -1094,20 +1106,30 @@ class GeneralLongformRunner:
         chapter_shortfall_is_new = documents.word_count(previous_text or "") >= minimum
         if not needed and not (total < minimum and chapter_shortfall_is_new):
             return text
-        order = needed + [index for index in sorted(eligible, key=lambda item: words[item]) if index not in needed]
+        pending = needed + [index for index in sorted(eligible, key=lambda item: words[item]) if index not in needed]
+        tries: dict[int, int] = {}
         extended: list[dict[str, Any]] = []
-        for index in order:
-            below = words[index] < floors[index]
-            if not below and total >= minimum:
-                break
+        while pending:
+            index = pending.pop(0)
+            if words[index] >= floors[index] and total >= minimum:
+                continue
+            tries[index] = tries.get(index, 0) + 1
+            if tries[index] > 2:
+                candidate.setdefault("rebalance_notes", []).append({"section": sections[index]["title"], "action": "exhausted",
+                                                                  "reason": "延伸两次仍未补足小节下限", "before": words[index]})
+                continue
             section = sections[index]
+            room = cap - (total - words[index])
+            ask = max(600, min(floors[index] - words[index] + 300, room))
             context = {**base, "section": section, "current_chapter_sections": list(bodies)}
             output = self.gateway.call("continue", {**context, "partial_section": bodies[index], "continuation": True},
-                                       max_tokens=min(24000, section["target_words"] * 3 + 3000),
+                                       max_tokens=min(24000, section["target_words"] * 3 + 3000, int(ask * 1.6)),
                                        slot=f"chapter-{candidate['number']}-section-{index}")["text"].strip()
             grown = bodies[index].rstrip() + "\n\n" + output
+            if documents.word_count(grown) > room:
+                grown = self._fit_extended_section(grown, floors[index], room)
             after = documents.word_count(grown)
-            if total - words[index] + after > cap:
+            if after <= words[index] or after > room:
                 candidate.setdefault("rebalance_notes", []).append({"section": section["title"], "action": "skipped",
                                                                   "reason": "延伸后超出本章篇幅上限",
                                                                   "before": words[index], "after": after})
@@ -1116,6 +1138,8 @@ class GeneralLongformRunner:
             total = total - words[index] + after
             words[index] = after
             bodies[index] = grown
+            if words[index] < floors[index] or total < minimum:
+                pending.append(index)
         if not extended:
             return text
         candidate["section_extensions"] = extended
