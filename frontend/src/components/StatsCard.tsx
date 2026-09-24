@@ -6,55 +6,50 @@ interface Props {
   loading: boolean;
 }
 
-function formatWords(n: number): string {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
-  return String(n);
+function formatWords(n: number): { value: string; unit: string } {
+  if (n >= 100_000_000) return { value: (n / 100_000_000).toFixed(2), unit: "亿字" };
+  if (n >= 10_000) return { value: (n / 10_000).toFixed(1), unit: "万字" };
+  return { value: String(n), unit: "字" };
 }
 
 function StatItem({
   icon: Icon,
   value,
+  unit,
   label,
+  loading,
 }: {
   icon: typeof BookOpen;
   value: string;
+  unit: string;
   label: string;
+  loading: boolean;
 }) {
   return (
-    <div className="flex items-center gap-4">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gold-500/15 bg-gold-500/8">
-        <Icon className="h-4 w-4 text-gold-300" strokeWidth={1.6} />
+    <div className="surface-muted flex flex-col justify-between gap-5 p-4 sm:p-5">
+      <div className="flex items-center gap-2 text-[11.5px] text-warm-400">
+        <Icon className="h-3.5 w-3.5 text-gold-300" strokeWidth={1.8} />
+        {label}
       </div>
-      <div>
-        <div className="stat-number leading-none">{value}</div>
-        <div className="mt-1.5 text-[11px] tracking-widest text-warm-400">
-          {label}
+      {loading ? (
+        <div className="skeleton h-8 w-20 rounded-md" />
+      ) : (
+        <div className="flex items-baseline gap-1">
+          <span className="stat-number leading-none">{value}</span>
+          <span className="text-xs text-warm-400">{unit}</span>
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
 export function StatsCard({ stats, loading }: Props) {
+  const words = formatWords(stats?.total_words ?? 0);
   return (
-    <div className="card-warm relative inline-flex max-w-fit items-center gap-12 px-9 py-5 shadow-card-warm">
-      <StatItem
-        icon={BookOpen}
-        value={loading ? "—" : String(stats?.total_books ?? 0)}
-        label="已创作书稿"
-      />
-      <div className="h-10 w-px bg-gold-500/15" />
-      <StatItem
-        icon={Sparkles}
-        value={loading ? "—" : formatWords(stats?.total_words ?? 0)}
-        label="字数累计"
-      />
-      <div className="h-10 w-px bg-gold-500/15" />
-      <StatItem
-        icon={Clock}
-        value={loading ? "—" : `${stats?.saved_hours ?? 0}小时`}
-        label="节省时间"
-      />
+    <div className="grid grid-cols-3 gap-2.5 sm:gap-3">
+      <StatItem icon={BookOpen} value={String(stats?.total_books ?? 0)} unit="本" label="已创作书稿" loading={loading} />
+      <StatItem icon={Sparkles} value={words.value} unit={words.unit} label="字数累计" loading={loading} />
+      <StatItem icon={Clock} value={String(stats?.saved_hours ?? 0)} unit="小时" label="节省时间" loading={loading} />
     </div>
   );
 }

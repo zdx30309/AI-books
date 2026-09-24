@@ -45,7 +45,7 @@ def test_legacy_categories_and_all_132_prompts_are_byte_identical():
     baseline = read_json(Path(__file__).parent / "fixtures/general_longform_legacy_prompt_hashes.json")
     assert len(baseline) == 33
     original_order = read_json(Path(__file__).parent / "fixtures/general_longform_category_order.json")
-    assert [item["id"] for item in list_categories()] == [*original_order, "general_longform"]
+    assert [item["id"] for item in list_categories()] == [*original_order, "general_longform", "general_short"]
     for category, prompts in baseline.items():
         for key, expected in prompts.items():
             assert sha256(get_prompts(category)[key].encode()).hexdigest() == expected, (category, key)

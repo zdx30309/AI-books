@@ -123,6 +123,10 @@ export function BookDetail() {
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
+  // 轮询读取最新的编辑态，但不把它放进 refresh 的依赖：否则每敲一个字都会
+  // 重建 refresh、重跑加载 effect，整页切回“加载中”，输入框随之失焦。
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   useEffect(() => {
     if (id && task?.source_url === "manual://public-domain-classical-vernacular") {
@@ -141,7 +145,7 @@ export function BookDetail() {
         // 仅在未编辑过时同步章节，避免覆盖用户的本地编辑
         setChapters((prev) => {
           if (prev.length === 0) return c.chapters;
-          if (Object.values(dirty).some(Boolean)) return prev;
+          if (Object.values(dirtyRef.current).some(Boolean)) return prev;
           return c.chapters;
         });
       }
@@ -154,7 +158,7 @@ export function BookDetail() {
             : "加载失败";
       setError(msg);
     }
-  }, [id, dirty]);
+  }, [id]);
 
   const restartPolling = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);

@@ -2851,3 +2851,27 @@ def test_long_single_paragraph_is_split_before_gemini() -> None:
     assert len(chunks) == 3
     assert max(len(chunk) for chunk in chunks) <= 1000
     assert "".join(chunks) == "A" * 2500
+
+
+def test_general_short_uses_v09_prompt_adapted_for_one_shot_pipeline() -> None:
+    assert normalize_category("通用短篇") == "general_short"
+    meta = get_category_meta("general_short")
+    assert meta["label"] == "通用短篇"
+    prompt = get_prompts("general_short")["full_book_writer"]
+
+    # Adapter comes first and overrides the workflow-only parts of v09.
+    assert prompt.startswith("通用短篇\n")
+    assert prompt.index("【自动成稿流程适配说明") < prompt.index("一 执行身份与材料边界")
+    assert "不交付待确认大纲" in prompt
+    assert "本流程没有联网检索工具" in prompt
+    # v09 content rules are carried verbatim.
+    assert "选题判定后的写法选择机制（强制执行）" in prompt
+    assert "来源差异化与版权风险控制（强制执行）" in prompt
+    assert "A 正面案例：《中国白酒四十年：名酒崛起与价格崩盘》" in prompt
+    # Workflow-only sections are left out.
+    assert "二 自动识别当前阶段" not in prompt
+    assert "十一 Word 交付与文件规范" not in prompt
+    assert "附录六 文本相似度审查规则" not in prompt
+    # The transcript stays last so the long static prefix can be prompt-cached.
+    assert prompt.rstrip().endswith("{raw_text}\n\n请直接输出完整书稿。")
+    assert prompt.count("{raw_text}") == 1

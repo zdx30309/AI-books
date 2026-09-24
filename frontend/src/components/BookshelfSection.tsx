@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { BookCard } from "./BookCard";
 import { EmptyState } from "./EmptyState";
@@ -21,6 +21,26 @@ interface Props {
   ) => void;
 }
 
+export function SectionHeader({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <header className="mb-5 flex items-end justify-between gap-4">
+      <div>
+        <h2 className="font-serif text-[22px] leading-tight text-warm-50">{title}</h2>
+        {description && <p className="mt-1 text-[13px] text-warm-500">{description}</p>}
+      </div>
+      {action}
+    </header>
+  );
+}
+
 export function BookshelfSection({
   tasks,
   categories = DEFAULT_CATEGORIES,
@@ -29,43 +49,29 @@ export function BookshelfSection({
   onMetadataUpdated,
 }: Props) {
   return (
-    <section className="mt-16">
-      <header className="mb-6 flex items-center justify-between">
-        <h2 className="flex items-center gap-3 font-serif text-xl tracking-widest text-warm-100">
-          <span className="h-4 w-[3px] rounded-full bg-gradient-to-b from-gold-300 to-gold-600" />
-          我的书架
-        </h2>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            aria-label="上一页"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-gold-500/15 text-warm-400 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            aria-label="下一页"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-gold-500/15 text-warm-400 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-          >
-            <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </button>
+    <section className="mt-12">
+      <SectionHeader
+        title="最近书稿"
+        description="继续阅读、编辑或导出最新生成的作品"
+        action={
           <Link
             to="/bookshelf"
-            className="ml-2 text-xs tracking-widest text-warm-300 transition-colors hover:text-warm-100"
+            className="group inline-flex shrink-0 items-center gap-1.5 text-[13px] text-warm-300 transition-colors hover:text-gold-300"
           >
             查看全部
+            <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" strokeWidth={1.8} />
           </Link>
-        </div>
-      </header>
+        }
+      />
 
       {loading ? (
         <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              className="aspect-[3/4] animate-pulse rounded-xl border border-gold-500/8 bg-base-700/40"
-            />
+            <div key={i} className="space-y-3">
+              <div className="skeleton aspect-[3/4] rounded-xl" />
+              <div className="skeleton h-3.5 w-3/4 rounded" />
+              <div className="skeleton h-3 w-1/2 rounded" />
+            </div>
           ))}
         </div>
       ) : tasks.length === 0 ? (
@@ -75,7 +81,7 @@ export function BookshelfSection({
           action={
             onCreate ? (
               <button type="button" onClick={onCreate} className="btn-gold">
-                <span className="tracking-widest">开始创作</span>
+                开始创作
               </button>
             ) : undefined
           }

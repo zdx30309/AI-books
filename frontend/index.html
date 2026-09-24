@@ -1,16 +1,25 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark-gold" data-mode="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0c0b09" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>AI ScriptBook · 让视频思想，成为你的书</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,500&family=Pinyon+Script&display=swap"
-      rel="stylesheet"
-    />
+    <script>
+      // Apply the stored theme before first paint so light themes never flash dark.
+      (function () {
+        try {
+          var id = localStorage.getItem("video-plan-ui-theme");
+          var light = ["amber-dawn", "paper-brown", "porcelain", "mist-blue", "bay-green", "sakura"];
+          var dark = ["dark-gold", "graphite", "midnight", "amethyst", "aurora", "pine", "ink-red", "obsidian"];
+          if (light.indexOf(id) >= 0 || dark.indexOf(id) >= 0) {
+            document.documentElement.dataset.theme = id;
+            document.documentElement.dataset.mode = light.indexOf(id) >= 0 ? "light" : "dark";
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-base-900">
     <div id="root"></div>

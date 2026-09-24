@@ -946,6 +946,7 @@ _STANDARD_LONGFORM_CATEGORY_IDS = frozenset(
         "health_wellness_daily_pain",
         "classic_interpretation",
         "masterpiece_interpretation",
+        "general_short",
     }
 )
 

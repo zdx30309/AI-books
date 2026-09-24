@@ -664,7 +664,7 @@ export const api = {
     fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}/preview`),
   downloadTaskImageFile: async (id: string, filename: string) => {
     const token = tokenStore.get();
-    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
+    if (!token) throw new ApiError(401, "请先登录");
     const params = new URLSearchParams({ token, _: String(Date.now()) });
     openHiddenDownload(
       `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/download/direct?${params.toString()}`,
@@ -672,7 +672,7 @@ export const api = {
   },
   downloadTaskImagePreviewFile: async (id: string, filename: string) => {
     const token = tokenStore.get();
-    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
+    if (!token) throw new ApiError(401, "请先登录");
     const params = new URLSearchParams({ token, _: String(Date.now()) });
     openHiddenDownload(
       `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/preview/download/direct?${params.toString()}`,
