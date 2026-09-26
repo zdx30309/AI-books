@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    # 主笔走 DeepSeek 时（WRITER_PROVIDER=deepseek）使用的模型与输出上限
+    DEEPSEEK_WRITER_MODEL: str = "deepseek-flash"
+    DEEPSEEK_WRITER_MAX_OUTPUT_TOKENS: int = 0
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180

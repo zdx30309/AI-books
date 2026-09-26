@@ -220,7 +220,16 @@ class ModelGateway:
         if len(prompt) > 350_000:
             raise GeneralLongformReview(f"本节点上下文为 {len(prompt)} 字符，超过 350000 限额；未截断原文或前文")
         response_id = existing.get("response_id")
-        model = (existing.get("model") if response_id else None) or (settings.GEMINI_MODEL if provider == "gemini" else settings.OPENAI_WRITER_MODEL)
+        # WRITER_PROVIDER=deepseek moves fresh writer calls to DeepSeek; a call that
+        # already has an OpenAI response id keeps reading that paid response back.
+        use_deepseek = provider == "openai" and not web and not response_id and content_engine._writer_uses_deepseek()
+        if use_deepseek:
+            provider = "deepseek"
+        model = (existing.get("model") if response_id else None) or (
+            settings.GEMINI_MODEL if provider == "gemini"
+            else (settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL) if provider == "deepseek"
+            else settings.OPENAI_WRITER_MODEL
+        )
         if existing.get("status") in {"started", "uncertain"} and not response_id and not self.retry_uncertain:
             raise GeneralLongformReview("上次付费调用交付状态待核对；已保留断点，请明确确认后重试，避免重复扣费")
         if existing.get("response_status") in {"incomplete", "failed", "cancelled"}:
@@ -264,6 +273,9 @@ class ModelGateway:
             elif provider == "gemini":
                 text = gemini.generate_text(prompt, model=model, max_output_tokens=max_tokens, retries=1)
                 usage = {"input_tokens": math.ceil(len(prompt) / 2), "output_tokens": math.ceil(len(text) / 2), "estimated": True}
+            elif provider == "deepseek":
+                text, _usage = content_engine._deepseek_writer_call_result(prompt, max_output_tokens=max_tokens)
+                usage = {"input_tokens": math.ceil(len(prompt) / 2), "output_tokens": math.ceil(len(text) / 2), "estimated": True}
             else:
                 # This is the same short-form Chapter Draft Writer, not another
                 # SDK stack. Background response IDs survive worker restarts.
@@ -276,8 +288,9 @@ class ModelGateway:
             if not str(text or "").strip():
                 raise GeneralLongformReview("模型未返回有效内容，未推进下一阶段")
             record.update(text=text, usage=usage, status="completed", finished_at=now_iso())
-            input_rate = float(getattr(settings, "LONG_NOVEL_GEMINI_INPUT_COST_PER_1M" if provider == "gemini" else "LONG_NOVEL_INPUT_COST_PER_1M", 0) or 0)
-            output_rate = float(getattr(settings, "LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M" if provider == "gemini" else "LONG_NOVEL_OUTPUT_COST_PER_1M", 0) or 0)
+            rate_prefix = {"gemini": "LONG_NOVEL_GEMINI_", "deepseek": "LONG_NOVEL_DEEPSEEK_"}.get(provider, "LONG_NOVEL_")
+            input_rate = float(getattr(settings, rate_prefix + "INPUT_COST_PER_1M", 0) or 0)
+            output_rate = float(getattr(settings, rate_prefix + "OUTPUT_COST_PER_1M", 0) or 0)
             record["estimated_cost"] = round((int(usage.get("input_tokens", 0)) * input_rate + int(usage.get("output_tokens", 0)) * output_rate) / 1_000_000, 8) if input_rate or output_rate else None
             record["cost_status"] = "estimated" if record["estimated_cost"] is not None else "rate_not_configured"
             record["cost_scope"] = "configured_model_token_estimate_excludes_web_tool_charges"

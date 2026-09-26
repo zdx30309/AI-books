@@ -3889,6 +3889,41 @@ def _openai_writer_call(
     return text
 
 
+def _writer_uses_deepseek() -> bool:
+    return (settings.WRITER_PROVIDER or "openai").strip().lower() == "deepseek"
+
+
+def _deepseek_writer_call_result(
+    rendered_prompt: str,
+    *,
+    max_output_tokens: int | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Main writer on DeepSeek (WRITER_PROVIDER=deepseek); same contract as the OpenAI path."""
+    from app.services import deepseek
+
+    raw_max = settings.DEEPSEEK_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
+    text = deepseek.generate_text(
+        rendered_prompt,
+        model=settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL,
+        temperature=settings.LLM_WRITING_TEMPERATURE,
+        max_output_tokens=_positive_max_tokens(raw_max),
+        on_progress=on_progress,
+    )
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
+        "service_tier": "default",
+        "requested_service_tier": "default",
+        "response_id": "",
+        "provider": "deepseek",
+    }
+    return text, usage
+
+
 async def _route_writer_call(
     rendered_prompt: str,
     *,
@@ -3905,6 +3940,14 @@ async def _route_writer_call(
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
+    if _writer_uses_deepseek():
+        text, _usage = await asyncio.to_thread(
+            _deepseek_writer_call_result,
+            rendered_prompt,
+            max_output_tokens=max_output_tokens,
+            on_progress=on_progress,
+        )
+        return text
     return await asyncio.to_thread(
         _openai_writer_call,
         rendered_prompt,
@@ -3939,6 +3982,13 @@ async def _route_writer_call_with_usage(
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> tuple[str, dict[str, Any]]:
+    if _writer_uses_deepseek():
+        return await asyncio.to_thread(
+            _deepseek_writer_call_result,
+            rendered_prompt,
+            max_output_tokens=max_output_tokens,
+            on_progress=on_progress,
+        )
     return await asyncio.to_thread(
         _openai_writer_call_result,
         rendered_prompt,

@@ -428,13 +428,15 @@ def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, 
 
 
 def test_source_text_path_can_feed_long_docx_text(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "source.txt"
+    # Uploads are persisted under backend/output/task_inputs; reads outside backend/ are refused.
+    path = tmp_path / "backend" / "output" / "task_inputs" / "source.txt"
+    path.parent.mkdir(parents=True)
     text = "古文白话测试。" * 50_000
     path.write_text(text, encoding="utf-8")
     monkeypatch.setattr(task_tasks, "PROJECT_ROOT", tmp_path)
 
     loaded = task_tasks._source_text_from_config(  # noqa: SLF001
-        {"source_text_path": "source.txt"},
+        {"source_text_path": "backend/output/task_inputs/source.txt"},
         task_label="test",
     )
 
@@ -442,13 +444,14 @@ def test_source_text_path_can_feed_long_docx_text(tmp_path, monkeypatch) -> None
 
 
 def test_style_notes_path_can_feed_long_reference_translation(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "style_reference.txt"
+    path = tmp_path / "backend" / "output" / "task_inputs" / "style_reference.txt"
+    path.parent.mkdir(parents=True)
     text = "参考译文：孔子说，学习以后常常温习。\n" * 500
     path.write_text(text, encoding="utf-8")
     monkeypatch.setattr(task_tasks, "PROJECT_ROOT", tmp_path)
 
     loaded = task_tasks._style_notes_from_config(  # noqa: SLF001
-        {"style_notes_path": "style_reference.txt", "style_notes": "短预览"},
+        {"style_notes_path": "backend/output/task_inputs/style_reference.txt", "style_notes": "短预览"},
         task_label="test",
     )
 

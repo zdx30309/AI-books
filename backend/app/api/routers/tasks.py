@@ -230,8 +230,45 @@ def _ensure_generation_capacity(db: Session, *, requested: int = 1) -> None:
         )
 
 
+#: Keys the server owns. A client-supplied value would let a request read files
+#: on the server (``*_path``), override worker limits or forge run/hold state.
+_SERVER_OWNED_CONFIG_KEYS = frozenset(
+    {
+        "source_text_path",
+        "style_notes_path",
+        "poll_timeout_seconds",
+        "max_video_duration",
+        "public_domain_longform_v2",
+        "generation_hold",
+        "generation_complete",
+        "pause_requested",
+    }
+)
+_SERVER_OWNED_CONFIG_PREFIXES = (
+    "active_run_",
+    "paid_api_",
+    "paid_call_",
+    "generation_hold",
+    "auto_retry_",
+    "dispatch_",
+    "pending_wakeup_",
+    "failed_auto_recovery_",
+    "orphan_requeue_",
+    "terminal_input_",
+    "aigc_",
+)
+
+
+def _strip_server_owned_config(cfg: dict) -> dict:
+    return {
+        key: value
+        for key, value in cfg.items()
+        if key not in _SERVER_OWNED_CONFIG_KEYS and not str(key).startswith(_SERVER_OWNED_CONFIG_PREFIXES)
+    }
+
+
 def _normalize_task_config(config: dict | None) -> dict:
-    cfg = dict(config or {})
+    cfg = _strip_server_owned_config(dict(config or {}))
     try:
         category = normalize_category(str(cfg.get("category") or "social_science"))
         category_meta = get_category_meta(category)

@@ -381,6 +381,17 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         raise StaleTaskRun(
             f"task {task.id} already owned by active run {active_run_id}, current run {run_id} is duplicate"
         )
+    if task.status == TaskStatus.PROCESSING and active_run_id == run_id:
+        # A broker redelivery reuses the same run id (acks_late, connection loss,
+        # visibility timeout).  While the original execution still heartbeats it
+        # is alive, and taking the claim again would pay for the same book twice.
+        # Only a silent run (worker gone) may be taken over.
+        heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at"))
+        live_window = max(180, 3 * int(settings.TASK_RUN_HEARTBEAT_INTERVAL_SECONDS or 60))
+        if heartbeat is not None and (now - heartbeat).total_seconds() < live_window:
+            raise StaleTaskRun(
+                f"task {task.id} run {run_id} is still heartbeating; redelivered message is a duplicate"
+            )
 
     cfg["active_run_id"] = run_id
     cfg["active_run_started_at"] = datetime.now(timezone.utc).isoformat()
@@ -774,9 +785,7 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
     source_text_path = str(config.get("source_text_path") or "").strip()
     if not source_text_path:
         return ""
-    path = Path(source_text_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
+    path = _task_input_file(source_text_path)
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
@@ -785,6 +794,19 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
         raise ValueError("上传的 Word 正文文件为空，请重新上传")
     logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
     return text
+
+
+
+def _task_input_file(raw_path: str) -> Path:
+    """Resolve a stored input path, refusing anything outside the backend tree."""
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    resolved = path.resolve()
+    allowed_root = (PROJECT_ROOT / "backend").resolve()
+    if not resolved.is_relative_to(allowed_root):
+        raise ValueError(f"输入文件路径不在允许的目录内：{raw_path}")
+    return resolved
 
 
 def _has_usable_cached_source_text(task: Task) -> bool:
@@ -838,9 +860,7 @@ def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
             return inline_notes
     if not style_notes_path:
         return inline_notes
-    path = Path(style_notes_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
+    path = _task_input_file(style_notes_path)
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
@@ -3255,6 +3275,13 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         active_run = str(cfg.get("active_run_id") or "")
         if active_run and active_run != run_id and task.status == TaskStatus.PROCESSING:
             return {"task_id": task_id, "status": "already_running"}
+        if active_run == run_id and task.status == TaskStatus.PROCESSING:
+            # Same guard as _claim_task_run: a redelivered message for a run that
+            # is still heartbeating must not start a second paid execution.
+            heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at"))
+            live_window = max(180, 3 * int(settings.TASK_RUN_HEARTBEAT_INTERVAL_SECONDS or 60))
+            if heartbeat is not None and (datetime.now(timezone.utc) - heartbeat).total_seconds() < live_window:
+                return {"task_id": task_id, "status": "already_running"}
         cfg.update(
             active_run_id=run_id,
             active_run_started_at=datetime.now(timezone.utc).isoformat(),

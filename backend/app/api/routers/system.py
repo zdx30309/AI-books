@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -11,6 +13,13 @@ from app.tasks.system_tasks import ping_task
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/system", tags=["System"])
+
+# The endpoint is public (the stuck-task banner and release checks use it), so
+# one ping result is shared for a short window: anonymous callers can no longer
+# fill the queue or tie up request threads with a 6s wait each.
+_HEALTH_CACHE_SECONDS = 20.0
+_health_lock = threading.Lock()
+_health_cached: tuple[float, "SystemHealth"] | None = None
 
 
 class SystemHealth(BaseModel):
@@ -26,6 +35,17 @@ class SystemHealth(BaseModel):
     summary="探测 Celery worker / 队列状态（前端在任务卡 0% 时可调用以定位问题）",
 )
 def system_health() -> SystemHealth:
+    global _health_cached
+    with _health_lock:
+        cached = _health_cached
+        if cached is not None and time.monotonic() - cached[0] < _HEALTH_CACHE_SECONDS:
+            return cached[1]
+        result = _probe_celery()
+        _health_cached = (time.monotonic(), result)
+        return result
+
+
+def _probe_celery() -> SystemHealth:
     workers: list[str] = []
     err: str | None = None
     try:
