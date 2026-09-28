@@ -31,10 +31,11 @@ from app.services.general_short_similarity import (
 
 logger = logging.getLogger(__name__)
 
-#: Only this much source text is sent to the model; the full text is always used
-#: by the deterministic layer, and the model needs the argument skeleton only.
-MODEL_SOURCE_CHARS = 12000
-MODEL_DRAFT_CHARS = 16000
+#: Appendix six requires both texts in full ("两份都必须完整可得").  The only
+#: cap is a safety ceiling far above any 2 万字 manuscript, so a pathological
+#: input cannot exhaust the context; it never truncates a normal book.
+MODEL_SOURCE_CHARS = 200_000
+MODEL_DRAFT_CHARS = 200_000
 
 
 class LlmAuditUnavailable(RuntimeError):
@@ -86,12 +87,51 @@ def _parse(payload: str) -> dict[str, Any]:
     return data
 
 
+#: The verbatim appendix six asks for a Word report.  The pipeline needs the same
+#: judgement as structured data, so this tail is appended (not substituted into)
+#: the original text and does not alter any rule above it.
+_OUTPUT_CONTRACT = """
+
+【本次调用的输出适配】
+上文规则全部照常执行；本次不产出 Word，改为把同一份判断输出为单个 JSON 对象，
+以便工程侧生成报告。字段与上文口径一一对应，不得增删判定标准：
+
+{
+  "structure": {
+    "units": [
+      {"id": 1, "source_unit": "原稿论点单元的概括", "draft_location": "新稿对应位置，找不到写“无”", "level": "完整/部分/无"}
+    ],
+    "A_unit_match": 0-100,
+    "B_case_order": 0-100,
+    "C_narrative_spine": 0-100,
+    "S": 0-100
+  },
+  "material": {
+    "data_reuse": 0-100,
+    "case_reuse": 0-100,
+    "named_entity_reuse": 0-100
+  },
+  "differentiation_list": ["新稿里原稿完全没有的章节、论点、数据与术语"],
+  "fix_directive": "一句话说明下一步该改什么，优先给改骨架的方案",
+  "notes": "需要人工复核的不确定项"
+}
+
+D（字面重合度）由工程侧按上文折算表用 difflib 计算，你不必给出，也不要估算。
+
+【原稿】
+"""
+
+
 def _render(source_text: str, draft_text: str) -> str:
     instruction = _load_instruction()
-    return (
-        instruction.replace("{source_text}", (source_text or "")[:MODEL_SOURCE_CHARS])
-        .replace("{draft_text}", (draft_text or "")[:MODEL_DRAFT_CHARS])
+    body = (
+        instruction
+        + _OUTPUT_CONTRACT
+        + (source_text or "")[:MODEL_SOURCE_CHARS]
+        + "\n\n【新稿】\n"
+        + (draft_text or "")[:MODEL_DRAFT_CHARS]
     )
+    return body
 
 
 def run_llm_audit(
@@ -99,6 +139,7 @@ def run_llm_audit(
     draft_text: str,
     *,
     caller: Callable[[str], str] | None = None,
+    literal_grade_d: float = 0.0,
 ) -> LlmAuditResult:
     """Ask a model to score one source/draft pair against the frozen rubric.
 
@@ -137,13 +178,15 @@ def run_llm_audit(
     c = _clamp(structure.get("C_narrative_spine"))
     s = _clamp(structure.get("S")) or one_decimal(a * 0.40 + b * 0.30 + c * 0.30)
 
-    m = _clamp(material.get("M")) or one_decimal(
-        _clamp(material.get("data_reuse")) * 0.30
-        + _clamp(material.get("case_reuse")) * 0.25
-        + _clamp(material.get("named_entity_reuse")) * 0.20
-        + _clamp(material.get("literal_reuse")) * 0.25
+    # M = A*0.30 + B*0.25 + C*0.20 + D*0.25.  A/B/C are model judgements;
+    # D is computed by the caller from the frozen literal table and passed in.
+    data_reuse = _clamp(material.get("data_reuse"))
+    case_reuse = _clamp(material.get("case_reuse"))
+    entity_reuse = _clamp(material.get("named_entity_reuse"))
+    m = one_decimal(
+        data_reuse * 0.30 + case_reuse * 0.25 + entity_reuse * 0.20 + literal_grade_d * 0.25
     )
-    composite = _clamp(data.get("composite")) or composite_score(s, m)
+    composite = composite_score(s, m)
 
     units: list[dict[str, str]] = []
     for item in (structure.get("units") or [])[:80]:
@@ -246,7 +289,12 @@ def audit_one_source_with_model(
     if not use_model:
         return base, LlmAuditResult(ran=False)
     try:
-        llm = run_llm_audit(source_text, draft_text, caller=caller)
+        llm = run_llm_audit(
+            source_text,
+            draft_text,
+            caller=caller,
+            literal_grade_d=base.literal.literal_grade_d,
+        )
     except LlmAuditUnavailable as exc:
         logger.warning("通用短篇模型审查层跳过：%s", exc)
         return base, LlmAuditResult(ran=False)

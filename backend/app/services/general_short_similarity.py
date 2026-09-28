@@ -46,9 +46,18 @@ def denoise(text: str) -> str:
     return "\n".join(line for line in lines if line.strip())
 
 
-def sentences(text: str) -> list[str]:
+#: Appendix six: when comparing sentences, keep draft sentences of >= 15 chars
+#: and source sentences of >= 10 chars, handling Chinese and English separately.
+MIN_DRAFT_SENTENCE_CHARS = 15
+MIN_SOURCE_SENTENCE_CHARS = 10
+
+
+def sentences(text: str, *, min_chars: int = 0) -> list[str]:
     parts = re.split(r"(?<=[。！？；!?;])", text or "")
-    return [p.strip() for p in parts if p.strip()]
+    out = [p.strip() for p in parts if p.strip()]
+    if min_chars > 0:
+        out = [p for p in out if len(p) >= min_chars]
+    return out
 
 
 def shingles(text: str, size: int) -> set[str]:
@@ -92,6 +101,7 @@ class LiteralLayer:
     high_similarity_sentence_ratio: float = 0.0
     sentence_buckets: dict[str, int] = field(default_factory=dict)
     literal_reuse_score: float = 0.0
+    literal_grade_d: float = 0.0
     is_copy: bool = False
 
 
@@ -110,6 +120,7 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
         layer.max_sentence_similarity = 1.0
         layer.high_similarity_sentence_ratio = 1.0
         layer.literal_reuse_score = COPY_SIMILARITY
+        layer.literal_grade_d = 100.0
         for size in GRAM_SIZES:
             grams = shingles(source, size)
             layer.ngrams.append(NgramRow(size, len(grams), len(grams), len(grams), 1.0))
@@ -131,7 +142,8 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
     layer.longest_common_chars = run_size
     layer.longest_common_sample = run_sample[:200]
 
-    draft_sents, source_sents = sentences(draft_text), sentences(source_text)
+    draft_sents = sentences(draft_text, min_chars=MIN_DRAFT_SENTENCE_CHARS)
+    source_sents = sentences(source_text, min_chars=MIN_SOURCE_SENTENCE_CHARS)
     buckets = {"<0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, ">=0.9": 0}
     if draft_sents and source_sents:
         best, high = 0.0, 0
@@ -171,6 +183,7 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
         )
         * 100
     )
+    layer.literal_grade_d = literal_grade_from_table(layer)
     return layer
 
 
@@ -262,14 +275,51 @@ def score_structure(fingerprint: StructureFingerprint, draft_text: str) -> Struc
     return layer
 
 
+def literal_reuse_grade(
+    *,
+    gram10_overlap: float,
+    longest_common_chars: int,
+    high_sentence_ratio: float,
+) -> float:
+    """Appendix six, part three: the D conversion table.
+
+    The table is evaluated top-down and the first matching row wins, exactly as
+    written.  It cannot be judged by a model, so it is computed here.
+    """
+    if (
+        gram10_overlap <= 0.0
+        and longest_common_chars < 12
+        and high_sentence_ratio < 0.02
+    ):
+        return 5.0
+    if longest_common_chars >= 100 or high_sentence_ratio > 0.25:
+        return 100.0
+    if longest_common_chars >= 30 or high_sentence_ratio >= 0.10:
+        return 75.0
+    if longest_common_chars >= 12 or high_sentence_ratio >= 0.02:
+        return 50.0
+    # A small overlap that the caller has already classified as factual terms.
+    return 20.0
+
+
 def material_similarity(literal: LiteralLayer, structure: StructureLayer) -> float:
     """M layer: data / case / named-entity / literal reuse, each 0-100."""
     data_reuse = min(100.0, literal.literal_reuse_score * 0.9)
     case_reuse = structure.case_order_score
     entity_reuse = min(100.0, literal.high_similarity_sentence_ratio * 100 * 2)
-    literal_reuse = literal.literal_reuse_score
+    literal_reuse = literal_grade_from_table(literal)
     return one_decimal(
         data_reuse * 0.30 + case_reuse * 0.25 + entity_reuse * 0.20 + literal_reuse * 0.25
+    )
+
+
+def literal_grade_from_table(literal: LiteralLayer) -> float:
+    """D value for this literal layer, via the frozen conversion table."""
+    gram10 = next((r.overlap for r in literal.ngrams if r.size == 10), 0.0)
+    return literal_reuse_grade(
+        gram10_overlap=gram10,
+        longest_common_chars=literal.longest_common_chars,
+        high_sentence_ratio=literal.high_similarity_sentence_ratio,
     )
 
 

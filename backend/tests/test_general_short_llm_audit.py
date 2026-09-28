@@ -34,18 +34,21 @@ def _fake(_prompt: str) -> str:
 
 
 def test_llm_audit_parses_the_frozen_rubric() -> None:
-    r = run_llm_audit("src", "draft", caller=_fake)
+    # M is A*0.30 + B*0.25 + C*0.20 + D*0.25, where A/B/C come from the model
+    # and D comes from the deterministic literal table (appendix six).
+    r = run_llm_audit("src", "draft", caller=_fake, literal_grade_d=50.0)
     assert r.ran is True
     assert r.structure_score == 80.0
-    assert r.material_score == 55.0
-    assert r.composite == 70.0
+    # 70*0.30 + 60*0.25 + 50*0.20 + 50*0.25 = 21 + 15 + 10 + 12.5 = 58.5
+    assert r.material_score == 58.5, r.material_score
+    assert r.composite == 71.4, r.composite
     assert len(r.unit_map) == 2
     assert r.differentiation_list == ["独立章节X"]
 
 
 def test_merge_takes_the_higher_score_so_a_model_miss_cannot_lower_risk() -> None:
     base = audit_one_source("s", "甲" * 300, "乙" * 300)
-    llm = run_llm_audit("s", "d", caller=_fake)
+    llm = run_llm_audit("s", "d", caller=_fake, literal_grade_d=50.0)
     merged = merge_with_deterministic(base, llm)
     assert merged.composite >= llm.composite
     assert merged.structure.structure_score >= llm.structure_score
@@ -54,7 +57,7 @@ def test_merge_takes_the_higher_score_so_a_model_miss_cannot_lower_risk() -> Non
 
 def test_merge_uses_the_model_unit_map_as_evidence() -> None:
     base = audit_one_source("s", "甲" * 300, "乙" * 300)
-    llm = run_llm_audit("s", "d", caller=_fake)
+    llm = run_llm_audit("s", "d", caller=_fake, literal_grade_d=50.0)
     merged = merge_with_deterministic(base, llm)
     assert merged.structure.unit_total == 2
     assert merged.structure.unit_full == 1
