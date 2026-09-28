@@ -3049,6 +3049,31 @@ def download_batch_direct(
     return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 
+def _build_similarity_report_response(task: Task) -> Response:
+    """Serve the newest valid Word similarity report for a task."""
+    from urllib.parse import quote
+
+    report_dir = _task_output_dir(task.id) / "04_文本相似度审查报告"
+    if not report_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="该任务未生成文本相似度审查报告（仅通用短篇在存在原稿时生成）",
+        )
+    reports = sorted(report_dir.glob("*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not reports:
+        raise HTTPException(status_code=404, detail="审查报告目录中没有 .docx 文件")
+    path = reports[0]
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}",
+        },
+    )
+
+
 def _build_single_download_response(
     db: Session,
     task: Task,
@@ -3147,6 +3172,62 @@ def download_markdown_direct(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
+
+
+@router.get(
+    "/{task_id}/similarity-report",
+    summary="下载文本相似度审查报告 Word（通用短篇）",
+)
+def download_similarity_report(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Return the v09 section-ten Word report for this task, if one exists."""
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_similarity_report_response(task)
+
+
+@router.get(
+    "/{task_id}/similarity-report/direct",
+    summary="下载文本相似度审查报告 Word（浏览器直下）",
+)
+def download_similarity_report_direct(
+    task_id: UUID,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> Response:
+    user = _get_current_user_from_download_token(
+        db, authorization=authorization, token=token
+    )
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return _build_similarity_report_response(task)
+
+
+@router.get(
+    "/{task_id}/similarity-report/data",
+    summary="读取文本相似度审查数据 JSON（通用短篇）",
+)
+def get_similarity_report_data(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    path = _task_output_dir(task.id) / "05_differentiation_report.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="该任务未生成相似度审查数据")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"审查数据无法解析：{exc}") from exc
 
 
 @router.get(

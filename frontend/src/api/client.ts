@@ -2,6 +2,14 @@
 // 自动从 localStorage 读 token 并加 Authorization 头。
 
 import type { GeneralLongformAction, GeneralLongformState, LongformManifest, MaterialRole } from "./generalLongformTypes";
+import type {
+  KdocsConfigResponse,
+  VideoScriptLogsResponse,
+  VideoScriptProblemsResponse,
+  VideoScriptRowsResponse,
+  VideoScriptSyncRequest,
+  VideoScriptSyncResponse,
+} from "./videoScriptTableTypes";
 
 import type {
   BatchCreateTaskRequest,
@@ -643,6 +651,24 @@ export const api = {
     if (preview) params.set("preview", "true");
     openHiddenDownload(`${BASE}/tasks/${id}/download/direct?${params.toString()}`);
   },
+  getSimilarityReportData: (id: string) => {
+    type SimilarityReport = {
+      applicable: boolean;
+      reason?: string;
+      max_composite: number;
+      overall_verdict: string;
+      overall_boundary?: string;
+      overall_fallback_notice?: string;
+      sources?: Array<Record<string, unknown>>;
+    };
+    return request<SimilarityReport>(`/tasks/${id}/similarity-report/data`);
+  },
+  downloadSimilarityReport: async (id: string) => {
+    const token = tokenStore.get();
+    if (!token) throw new ApiError(401, "请先登录");
+    const params = new URLSearchParams({ token, _: String(Date.now()) });
+    openHiddenDownload(`${BASE}/tasks/${id}/similarity-report/direct?${params.toString()}`);
+  },
   downloadBatchFile: async (body: BatchDownloadRequest) => {
     const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
     saveBlob(blob, filename);
@@ -1172,6 +1198,37 @@ export const api = {
     const { blob, filename } = await uploadFilesForDownload("/data-analysis/export", files);
     saveBlob(blob, filename);
   },
+
+  // 视频文案对照表 / 金山文档同步
+  videoScriptTableRows: (params: { statuses?: string[]; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    (params.statuses ?? []).forEach((s) => query.append("statuses", s));
+    if (params.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString();
+    return request<VideoScriptRowsResponse>(`/video-script-table/rows${suffix ? `?${suffix}` : ""}`);
+  },
+  videoScriptTableProblems: (limit = 100) =>
+    request<VideoScriptProblemsResponse>(`/video-script-table/problems?limit=${limit}`),
+  videoScriptTableConfig: () => request<KdocsConfigResponse>("/video-script-table/config"),
+  videoScriptTableLogs: (limit = 30) =>
+    request<VideoScriptLogsResponse>(`/video-script-table/logs?limit=${limit}`),
+  videoScriptTableRemoteSchema: () =>
+    request<Record<string, unknown>>("/video-script-table/remote-schema"),
+  videoScriptTableExport: async (
+    fmt: "csv" | "tsv" | "xlsx" | "md",
+    params: { statuses?: string[]; limit?: number } = {},
+  ) => {
+    const query = new URLSearchParams({ fmt });
+    (params.statuses ?? []).forEach((s) => query.append("statuses", s));
+    if (params.limit) query.set("limit", String(params.limit));
+    const { blob, filename } = await download(`/video-script-table/export?${query.toString()}`);
+    saveBlob(blob, filename || `video_script_table.${fmt}`);
+  },
+  videoScriptTableSync: (body: VideoScriptSyncRequest) =>
+    request<VideoScriptSyncResponse>("/video-script-table/sync", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // 鉴权
   register: (body: RegisterRequest) =>
