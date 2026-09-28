@@ -191,10 +191,15 @@ class Settings(BaseSettings):
     GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 0
     GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 0
 
-    # --- 通用短篇结构指纹与差异化审查 ---
-    # 默认只测量并写出报告；开启 strict 后综合相似度 ≥50% 直接拦截，不再产出可发布正文。
+
+    # --- 通用短篇结构指纹与相似度审查 ---
+    # 默认只测量并写出报告；开启 strict 后最高综合相似度 ≥50% 直接拦截。
     GENERAL_SHORT_DIFFERENTIATION_ENABLED: bool = True
     GENERAL_SHORT_DIFFERENTIATION_STRICT: bool = False
+    # 大模型语义审查层：在原稿/新稿之间做结构判断，与本地确定性算法取高者。
+    GENERAL_SHORT_LLM_AUDIT_ENABLED: bool = True
+    # 模型层使用的模型名，留空则用 DEEPSEEK_MODEL。
+    GENERAL_SHORT_AUDIT_MODEL: str = ""
 
     # --- 全局朱雀 AI 文本检测闸门 ---
     AIGC_GATE_ENABLED: bool = False

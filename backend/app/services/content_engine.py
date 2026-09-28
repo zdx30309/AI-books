@@ -8100,6 +8100,8 @@ async def generate_full_book(
     source_duration_seconds: int | float | None = None,
     aigc_required: bool | None = None,
     aigc_policy_version: str | None = None,
+    general_short_sources: list[tuple[str, str]] | None = None,
+    general_short_book_title: str = "",
 ) -> str:
     normalized_category = normalize_category(category)
     if normalized_category == "general_longform":
@@ -8964,13 +8966,21 @@ async def generate_full_book(
         normalized_category == "general_short"
         and getattr(settings, "GENERAL_SHORT_DIFFERENTIATION_ENABLED", True)
     ):
-        run_differentiation_gate(
-            writer_input_text,
+        # 原稿＝本轮青豆解析出的视频文案（writer_input_text 即 raw_text）。
+        # 多来源时由调用方通过 sources= 传入列表；此处默认单来源。
+        report = run_differentiation_gate(
+            general_short_sources if general_short_sources else writer_input_text,
             final_markdown,
             category=normalized_category,
             output_dir=output_dir,
             on_stage=on_stage,
             fingerprint=general_short_fingerprint,
+            book_title=general_short_book_title,
+            draft_name=f"{general_short_book_title or '通用短篇'}_全书正文_合并版",
+        )
+        logger.info(
+            "通用短篇相似度审查完成：适用=%s 最高综合=%.1f%% 判定=%s",
+            report.applicable, report.max_composite, report.overall_verdict,
         )
 
     return await finish_with_aigc(final_markdown)
