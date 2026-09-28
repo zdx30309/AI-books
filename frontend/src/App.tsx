@@ -17,6 +17,7 @@ import { EpicNovelWorkspace } from "./pages/EpicNovelWorkspace";
 import { LongNovelWorkspace } from "./pages/LongNovelWorkspace";
 import { AigcReview } from "./pages/AigcReview";
 import { TestingEndpoint } from "./pages/TestingEndpoint";
+import { VideoScriptTable } from "./pages/VideoScriptTable";
 import { NotFound } from "./pages/NotFound";
 import { LONGFORM_VARIANT_CATEGORY_IDS } from "./constants/categories";
 
@@ -86,6 +87,7 @@ export default function App() {
             <Route path="/long-novel/:id" element={<LongNovelWorkspace />} />
             <Route path="/epic-novel" element={<EpicNovelWorkspace />} />
             <Route path="/epic-novel/:id" element={<EpicNovelWorkspace />} />
+            <Route path="/video-script-table" element={<VideoScriptTable />} />
             <Route path="/data-analysis" element={<DataAnalysis />} />
             <Route path="/book/:id" element={<BookDetail />} />
             <Route path="*" element={<NotFound />} />

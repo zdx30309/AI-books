@@ -13,6 +13,7 @@ import {
   LibraryBig,
   ScrollText,
   ShieldCheck,
+  Table2,
 } from "lucide-react";
 
 export type NavItem = {
@@ -65,6 +66,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "工具",
     items: [
       { to: "/weread", label: "推荐值工具", icon: FileSpreadsheet, end: false, keywords: "微信读书 推荐值 番茄" },
+      { to: "/video-script-table", label: "视频文案对照表", icon: Table2, end: false, keywords: "金山 对照 标题 回填" },
       { to: "/data-analysis", label: "数据分析", icon: BarChart3, end: false, keywords: "表格 excel 统计" },
       { to: "/testing-endpoint", label: "测试端点", icon: FlaskConical, end: true, keywords: "testing endpoint 实验" },
     ],

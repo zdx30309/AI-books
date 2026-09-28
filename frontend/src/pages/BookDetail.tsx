@@ -21,6 +21,7 @@ import {
   Check,
   Trash2,
   RefreshCcw,
+  ShieldCheck,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import {
@@ -550,6 +551,17 @@ export function BookDetail() {
     [id],
   );
 
+  const handleDownloadSimilarityReport = useCallback(async () => {
+    if (!id) return;
+    try {
+      await api.downloadSimilarityReport(id);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
+      alert(`审查报告下载失败：${msg}`);
+    }
+  }, [id]);
+
   const handleDownloadCover = useCallback(async () => {
     if (!id) return;
     try {
@@ -867,6 +879,15 @@ export function BookDetail() {
                 >
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Markdown
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadSimilarityReport}
+                  className="btn-ghost"
+                  title="下载本轮的文本相似度审查报告 Word"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  相似度审查报告
                 </button>
                 {isHealingComic && (
                   <button
