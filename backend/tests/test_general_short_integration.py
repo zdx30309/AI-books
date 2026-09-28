@@ -65,8 +65,20 @@ def test_gate_writes_both_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     assert (out / "00_source_fingerprint.json").exists()
     assert (out / "05_differentiation_report.json").exists()
+
     report = json.loads((out / "05_differentiation_report.json").read_text(encoding="utf-8"))
-    assert report["verdict"] in {"安全", "高危"}
-    assert 0.0 <= report["composite"] <= 100.0
+    # Multi-source shape: the gate value is the highest composite across sources.
+    assert report["applicable"] is True
+    assert report["overall_verdict"] in {"安全", "高危"}
+    assert 0.0 <= report["max_composite"] <= 100.0
+    assert report["sources"], "expected at least one scored source"
+
     fingerprint = json.loads((out / "00_source_fingerprint.json").read_text(encoding="utf-8"))
     assert fingerprint["argument_units"]
+
+    # The independent Word report must land in the dedicated folder.
+    report_dir = out / "04_文本相似度审查报告"
+    assert report_dir.is_dir(), "审查报告目录未创建"
+    docx_files = list(report_dir.glob("*.docx"))
+    assert docx_files, "未生成 Word 审查报告"
+    assert "文本相似度审查报告" in docx_files[0].name
