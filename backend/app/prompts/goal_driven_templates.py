@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from app.prompts.general_longform_prompts import registry_prompts as _general_longform_prompts
+from app.prompts.general_short_prompts import writer_template as _general_short_writer_template
 
 from app.services.comic_prompts import (
     COMIC_COPYRIGHT_RULE,
@@ -2320,8 +2321,10 @@ MASTERPIECE_INTERPRETATION_PROMPT_SET = _prompt_set(
     MASTERPIECE_INTERPRETATION_FULL_BOOK_WRITER_PROMPT
 )
 
-# 通用短篇：用户提供的《2万字书稿创作指令词 v09》原文，前置自动成稿流程适配说明。
-GENERAL_SHORT_FULL_BOOK_WRITER_PROMPT = _load_prompt_template("general_short_writer.md")
+# 通用短篇：v09 主规则已拆成分层资产（app/prompts/general_short/）。
+# 写作节点只加载写作规则；结构抽取与差异化审查是独立阶段，绝不进 writer。
+# 两篇成品样稿、三份检测报告与附录六审查规则已从 writer 上下文中移除。
+GENERAL_SHORT_FULL_BOOK_WRITER_PROMPT = _general_short_writer_template()
 
 
 COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的插画绘本书稿润色得更自然、温柔、短句化，像日本日常治愈插画与文创绘本的正文。

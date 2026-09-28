@@ -12,3 +12,7 @@ backend/app/prompts/general_longform/stages/*.md text eol=lf
 # Archived releases retain the exact evidence and template bytes used by tasks.
 backend/app/prompts/general_longform/versions/** -text whitespace=cr-at-eol
 backend/app/prompts/general_longform/versions/**/source.docx binary
+
+# 通用短篇分层提示词：manifest.json 用 sha256 校验分节字节，
+# 必须禁止任何行尾转换，否则部署后校验失败。
+backend/app/prompts/general_short/** -text

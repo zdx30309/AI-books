@@ -1,0 +1,105 @@
+{
+  "category": "general_short",
+  "label": "通用短篇",
+  "version": "2026-09-28-v01",
+  "derived_from": "general_short_writer.md (v09 mega-prompt, archived)",
+  "sections": [
+    {
+      "id": "adapter",
+      "file": "sections/01_adapter.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 1324,
+      "sha256": "1fc8db3bfc4ca3c12f145cfee530999ccc8e02f56216b08208a1a04441174ca0"
+    },
+    {
+      "id": "identity",
+      "file": "sections/02_identity.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 777,
+      "sha256": "22c5bf4cb7787397574c7e94bf81ff624dbc816f7c8bc57388ac79e9424e792f"
+    },
+    {
+      "id": "taxonomy",
+      "file": "sections/03_taxonomy.txt",
+      "role": "prompt",
+      "stages": [
+        "draft",
+        "structure_extract"
+      ],
+      "chars": 5503,
+      "sha256": "38b32a8effc8696a00b3c9cf631a5b0ba9d69ff73381bfa64e7f85d199d62475"
+    },
+    {
+      "id": "facts",
+      "file": "sections/04_facts.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 266,
+      "sha256": "d62837792d61d6959c4dd0446cd4dcaea176096746fce320ac618713f27de14f"
+    },
+    {
+      "id": "packaging",
+      "file": "sections/05_packaging.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 243,
+      "sha256": "20fd01a2f1a1964b3b8b559aea9f0ad55c818777e8d1062ce409894de6ba563d"
+    },
+    {
+      "id": "outline",
+      "file": "sections/06_outline.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 1267,
+      "sha256": "ed747e969142d4cf2dae36119cd48c838fa126349508613a02f236e843ed9951"
+    },
+    {
+      "id": "style",
+      "file": "sections/07_style.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 3068,
+      "sha256": "af8b2aaeb424dcbdf260339b31fc9dfde1bbd3481249bb66dae8346b3d58a7a8"
+    },
+    {
+      "id": "continuity",
+      "file": "sections/08_continuity.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 848,
+      "sha256": "e3a6442b3811c2e526a1b8a0fec6168e5e7764f9997ad11a6baea136568d66db"
+    }
+  ],
+  "stage_sections": {
+    "draft": [
+      "adapter",
+      "identity",
+      "taxonomy",
+      "facts",
+      "packaging",
+      "outline",
+      "style",
+      "continuity"
+    ],
+    "structure_extract": [
+      "taxonomy"
+    ],
+    "differentiation_audit": []
+  }
+}

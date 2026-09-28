@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import pytest
 
 from app.core.quality_metrics import detect_final_hard_errors
+from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
 from app.prompts.goal_driven_templates import (
     CLASSICAL_NOVEL_STYLE_LOCK_PROMPT,
     CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
@@ -158,7 +159,19 @@ def test_generate_full_book_routes_writer_prompt_by_category(
         expected_raw_text = build_classical_prompt_source(raw_text, variant="reference_translation")
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         expected_raw_text = build_buddhist_scripture_story_source(raw_text)
-    expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
+    if category == "general_short":
+        # The fingerprint is injected between prompt assembly and the writer call,
+        # so rebuild the exact prompt the pipeline will send.
+        from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
+        from app.services.general_short_fingerprint import build_fingerprint
+
+        expected_prompt = (
+            get_prompts(category)["full_book_writer"]
+            .format(raw_text=expected_raw_text)
+            .replace(FINGERPRINT_TOKEN, build_fingerprint(expected_raw_text).render())
+        )
+    else:
+        expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
         if prompt == expected_prompt:
@@ -2853,25 +2866,31 @@ def test_long_single_paragraph_is_split_before_gemini() -> None:
     assert "".join(chunks) == "A" * 2500
 
 
-def test_general_short_uses_v09_prompt_adapted_for_one_shot_pipeline() -> None:
+def test_general_short_uses_layered_prompt_without_sample_books() -> None:
     assert normalize_category("通用短篇") == "general_short"
     meta = get_category_meta("general_short")
     assert meta["label"] == "通用短篇"
     prompt = get_prompts("general_short")["full_book_writer"]
 
-    # Adapter comes first and overrides the workflow-only parts of v09.
-    assert prompt.startswith("通用短篇\n")
-    assert prompt.index("【自动成稿流程适配说明") < prompt.index("一 执行身份与材料边界")
+    # The adapter leads and overrides the workflow-only parts of v09.
+    assert prompt.index("【本流程适配") < prompt.index("一 执行身份与材料边界")
     assert "不交付待确认大纲" in prompt
     assert "本流程没有联网检索工具" in prompt
-    # v09 content rules are carried verbatim.
+    # v09 content rules survive.
     assert "选题判定后的写法选择机制（强制执行）" in prompt
     assert "来源差异化与版权风险控制（强制执行）" in prompt
-    assert "A 正面案例：《中国白酒四十年：名酒崛起与价格崩盘》" in prompt
-    # Workflow-only sections are left out.
+    assert "九 防重复、来源差异化与全书一致性" in prompt
+    # Workflow-only sections stay out.
     assert "二 自动识别当前阶段" not in prompt
     assert "十一 Word 交付与文件规范" not in prompt
     assert "附录六 文本相似度审查规则" not in prompt
-    # The transcript stays last so the long static prefix can be prompt-cached.
+    # The two sample books and the sample reports are gone from the writer context.
+    for banned in ("中国白酒四十年", "越虐越上头", "附录二 正反写作样稿全文"):
+        assert banned not in prompt, banned
+    # The writer prompt is the layered bundle, far below the old 61k mega-prompt.
+    assert len(prompt) < 20000, len(prompt)
+    # The transcript stays last and the fingerprint slot is brace-free so the
+    # shared .format(raw_text=...) routing call cannot fail.
     assert prompt.rstrip().endswith("{raw_text}\n\n请直接输出完整书稿。")
     assert prompt.count("{raw_text}") == 1
+    assert FINGERPRINT_TOKEN in prompt

@@ -17,6 +17,11 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
+from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
+from app.services.general_short_gate import (
+    build_source_fingerprint,
+    run_differentiation_gate,
+)
 from app.prompts.goal_driven_templates import (
     FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT,
     FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
@@ -8154,6 +8159,13 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 通用短篇：动笔前把灵感原文抽象成结构指纹，作为主笔必须规避的对照物。
+    general_short_fingerprint = None
+    if normalized_category == "general_short":
+        general_short_fingerprint = build_source_fingerprint(
+            writer_input_text, output_dir
+        )
+
     effective_aigc_required = (
         settings.AIGC_GATE_ENABLED if aigc_required is None else bool(aigc_required)
     )
@@ -8414,6 +8426,11 @@ async def generate_full_book(
                 input_source=input_source,
             )
             writer_max_output_tokens = 0 if is_classical_category else None
+            if normalized_category == "general_short" and general_short_fingerprint is not None:
+                writer_prompt = writer_prompt.replace(
+                    FINGERPRINT_TOKEN,
+                    general_short_fingerprint.render(),
+                )
             generated_markdown = await _route_writer_call(
                 writer_prompt,
                 max_output_tokens=writer_max_output_tokens,
@@ -8942,5 +8959,18 @@ async def generate_full_book(
             report_path.write_text(report_text, encoding="utf-8")
         except Exception as exc:
             logger.warning("质量度量跳过: %s", exc)
+
+    if (
+        normalized_category == "general_short"
+        and getattr(settings, "GENERAL_SHORT_DIFFERENTIATION_ENABLED", True)
+    ):
+        run_differentiation_gate(
+            writer_input_text,
+            final_markdown,
+            category=normalized_category,
+            output_dir=output_dir,
+            on_stage=on_stage,
+            fingerprint=general_short_fingerprint,
+        )
 
     return await finish_with_aigc(final_markdown)
