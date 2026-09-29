@@ -122,16 +122,25 @@ def test_report_docx_is_a_valid_zip_package() -> None:
         assert "word/styles.xml" in z.namelist()
         doc = z.read("word/document.xml").decode("utf-8")
         styles = z.read("word/styles.xml").decode("utf-8")
-    # Conclusion first, and three real heading levels must exist.
-    assert doc.index("第一部分") < doc.index("第二部分")
+    # Appendix B skeleton: the six parts appear in order, conclusion first.
+    order = ["第一部分　结论", "第二部分　打分明细",
+             "第三部分　结构框架相似度逐条依据", "第四部分　素材相似度逐条依据",
+             "第五部分　风险定性与建议", "第六部分　附录：检测口径与可复现说明"]
+    positions = [doc.find(item) for item in order]
+    assert all(p >= 0 for p in positions), positions
+    assert positions == sorted(positions), positions
+
     for style_id in ("Heading1", "Heading2", "Heading3"):
         assert f'w:styleId="{style_id}"' in styles
     # Fonts per appendix six: 黑体 headings, 宋体 body.
     assert "黑体" in styles and "宋体" in styles
-    # Mandatory content blocks.
-    for marker in ("综合相似度", "判定结果", "结构框架相似度", "素材相似度",
-                   "一句话建议", "风险定性", "检测口径", "差异化内容清单"):
+
+    # The five mandatory conclusion items.
+    for marker in ("综合相似度：", "判定：", "结构框架相似度：", "素材相似度：", "一句话建议"):
         assert marker in doc, marker
+    # The style words in appendix B name a Word style, not literal text.
+    for leaked in ("标题 1", "标题 2", "标题 3"):
+        assert leaked not in doc, leaked
 
 
 def test_report_lands_in_the_dedicated_folder(tmp_path: Path) -> None:

@@ -19,6 +19,8 @@ from app.services.general_short_similarity import (
     GRAM_SIZES,
     HIGH_RISK_THRESHOLD,
     JUST_OVER_MAX,
+    MIN_DRAFT_SENTENCE_CHARS,
+    MIN_SOURCE_SENTENCE_CHARS,
     NEAR_BOUNDARY_MIN,
     MultiSourceReport,
     SourceAudit,
@@ -142,147 +144,235 @@ def _risk_level(score: float) -> str:
     return "低"
 
 
-def _source_section(a: SourceAudit, order: int) -> str:
-    parts = [
-        _para(f"标题 2　来源 {order}：{a.source_name}", "Heading2"),
-        _para("标题 3　分项得分", "Heading3"),
-    ]
-    rows = [
-        ["分项", "得分", "权重", "加权结果"],
-        ["A 论点单元对应率", _pct(a.structure.unit_match_score), "0.40", _pct(a.structure.unit_match_score * 0.40)],
-        ["B 案例推进次序一致度", _pct(a.structure.case_order_score), "0.30", _pct(a.structure.case_order_score * 0.30)],
-        ["C 叙事主线与因果链沿用度", _pct(a.structure.narrative_spine_score), "0.30", _pct(a.structure.narrative_spine_score * 0.30)],
-        ["结构框架相似度 S", _pct(a.structure.structure_score), "—", _pct(a.structure.structure_score)],
-        ["数据沿用率", _pct(min(100.0, a.literal.literal_reuse_score * 0.9)), "0.30", "—"],
-        ["举例与案例组合沿用度", _pct(a.structure.case_order_score), "0.25", "—"],
-        ["具名主体沿用度", _pct(min(100.0, a.literal.high_similarity_sentence_ratio * 200)), "0.20", "—"],
-        ["字面重合度", _pct(a.literal.literal_reuse_score), "0.25", "—"],
-        ["素材相似度 M", _pct(a.material_score), "—", _pct(a.material_score)],
-        ["综合相似度", _pct(a.composite), "S×0.60＋M×0.40", _pct(a.composite)],
-    ]
-    parts.append(_table(rows))
+def _conclusion(worst: SourceAudit, report: MultiSourceReport) -> str:
+    """Part one: conclusion first, exactly the five items appendix B fixes.
 
-    parts.append(_para("标题 3　结构框架相似度逐条依据", "Heading3"))
-    urows = [["序号", "原稿论点单元", "对应程度", "判定依据"]]
-    for item in a.structure.unit_map:
-        urows.append([item["id"], item.get("unit", ""), item["level"], item.get("evidence", "")])
-    parts.append(_table(urows))
-    total = max(a.structure.unit_total, 1)
+    Appendix B writes its template as 标题 2　综合相似度：XX.X%　判定：安全／高危,
+    where 标题 2 names the Word style and the rest is the literal line.  The
+    style words are therefore never emitted as text.
+    """
+    parts: list[str] = []
+    boundary = f"　{report.overall_boundary}" if report.overall_boundary else ""
     parts.append(_para(
-        f"完整 {a.structure.unit_full} 条（{_pct(a.structure.unit_full / total * 100)}）、"
-        f"部分 {a.structure.unit_partial} 条（{_pct(a.structure.unit_partial / total * 100)}）、"
-        f"无对应 {a.structure.unit_none} 条（{_pct(a.structure.unit_none / total * 100)}）。"
-        f"“无对应”条数：{a.unit_none_count}。"
+        f"综合相似度：{_pct(report.max_composite)}　判定：{report.overall_verdict}{boundary}",
+        "Heading2", bold=True,
     ))
-
-    parts.append(_para("标题 3　素材相似度逐条依据", "Heading3"))
-    parts.append(_para("数据沿用对照表", "Normal", bold=True))
-    parts.append(_table([["原稿数据点", "是否被新稿沿用"]] + [[d["point"], d["reused"] or "待人工确认"] for d in a.data_points] or [["（无）", "—"]]))
-
-    parts.append(_para("具名主体出现次数对照表", "Normal", bold=True))
-    parts.append(_table([["具名主体", "原稿次数", "新稿次数"]] + [[e["entity"], e["source_count"], e["draft_count"]] for e in a.entity_counts] or [["（无）", "—", "—"]]))
-
-    parts.append(_para("字面重合检测数据表", "Normal", bold=True))
-    lrows = [["n-gram", "原稿片段数", "新稿片段数", "共有片段数", "重合率"]]
-    for row in a.literal.ngrams:
-        lrows.append([f"{row.size}-gram", str(row.source_count), str(row.draft_count), str(row.shared_count), f"{row.overlap:.4f}"])
-    parts.append(_table(lrows))
+    parts.append(_para(f"结构框架相似度：{_pct(worst.structure.structure_score)}", "Heading2"))
     parts.append(_para(
-        f"最长连续相同片段：{a.literal.longest_common_chars} 字"
-        + (f"（示例：{a.literal.longest_common_sample[:40]}…）" if a.literal.longest_common_sample else "")
+        f"A 论点单元对应率 {_pct(worst.structure.unit_match_score)}、"
+        f"B 案例推进次序一致度 {_pct(worst.structure.case_order_score)}、"
+        f"C 叙事主线与因果链沿用度 {_pct(worst.structure.narrative_spine_score)}。"
     ))
-    parts.append(_para(f"句级相似度最高值：{a.literal.max_sentence_similarity:.2f}；"
-                       f"句级相似度 ≥0.5 的句子占比：{a.literal.high_similarity_sentence_ratio:.2%}"))
-    parts.append(_table([["句级相似度区间", "句数"]] + [[k, str(v)] for k, v in a.literal.sentence_buckets.items()]))
+    parts.append(_para(f"素材相似度：{_pct(worst.material_score)}", "Heading2"))
+    parts.append(_para(
+        f"数据沿用率 {_pct(worst.material_data)}、举例与案例组合沿用度 {_pct(worst.material_case)}、"
+        f"具名主体沿用度 {_pct(worst.material_entity)}、字面重合度 {_pct(worst.material_literal)}；"
+        f"最长连续相同片段 {worst.literal.longest_common_chars} 字。"
+    ))
+    parts.append(_para("一句话建议", "Heading2"))
+    parts.append(_para(worst.fix_directive))
+    if report.overall_fallback_notice:
+        parts.append(_para(report.overall_fallback_notice, bold=True))
+    return "".join(parts)
 
-    parts.append(_para("标题 3　差异化内容清单", "Heading3"))
-    if a.differentiation_list:
-        for item in a.differentiation_list:
+
+def _scoring_detail(report: MultiSourceReport) -> str:
+    """Part two: S and M sub-scores with weights and the composite working."""
+    parts: list[str] = []
+    for idx, src in enumerate(report.sources, start=1):
+        label = f"来源 {idx}：{src.source_name}" if len(report.sources) > 1 else src.source_name
+        parts.append(_para(label, "Heading3"))
+        rows = [
+            ["分项", "代号", "权重", "得分", "加权结果"],
+            ["论点单元对应率", "A", "40%", _pct(src.structure.unit_match_score),
+             _pct(src.structure.unit_match_score * 0.40)],
+            ["案例推进次序一致度", "B", "30%", _pct(src.structure.case_order_score),
+             _pct(src.structure.case_order_score * 0.30)],
+            ["叙事主线与因果链沿用度", "C", "30%", _pct(src.structure.narrative_spine_score),
+             _pct(src.structure.narrative_spine_score * 0.30)],
+            ["结构框架相似度 S", "S", "—", _pct(src.structure.structure_score),
+             _pct(src.structure.structure_score)],
+            ["数据沿用率", "A", "30%", _pct(src.material_data), "—"],
+            ["举例与案例组合沿用度", "B", "25%", _pct(src.material_case), "—"],
+            ["具名主体沿用度", "C", "20%", _pct(src.material_entity), "—"],
+            ["字面重合度", "D", "25%", _pct(src.material_literal), "—"],
+            ["素材相似度 M", "M", "—", _pct(src.material_score), _pct(src.material_score)],
+            ["综合相似度", "S×0.60＋M×0.40", "—", _pct(src.composite), _pct(src.composite)],
+        ]
+        parts.append(_table(rows))
+        parts.append(_para(
+            f"S ＝ {_pct(src.structure.unit_match_score)} × 0.40 ＋ "
+            f"{_pct(src.structure.case_order_score)} × 0.30 ＋ "
+            f"{_pct(src.structure.narrative_spine_score)} × 0.30 ＝ {_pct(src.structure.structure_score)}"
+        ))
+        parts.append(_para(
+            f"M ＝ {_pct(src.material_data)} × 0.30 ＋ {_pct(src.material_case)} × 0.25 ＋ "
+            f"{_pct(src.material_entity)} × 0.20 ＋ {_pct(src.material_literal)} × 0.25 ＝ {_pct(src.material_score)}"
+        ))
+        parts.append(_para(
+            f"综合相似度 ＝ {_pct(src.structure.structure_score)} × 0.60 ＋ "
+            f"{_pct(src.material_score)} × 0.40 ＝ {_pct(src.composite)}"
+        ))
+    return "".join(parts)
+
+
+def _structure_evidence(report: MultiSourceReport) -> str:
+    """Part three: the unit-by-unit mapping table plus the counts."""
+    parts: list[str] = []
+    for idx, src in enumerate(report.sources, start=1):
+        if len(report.sources) > 1:
+            parts.append(_para(f"来源 {idx}：{src.source_name}", "Heading3"))
+        rows = [["序号", "原稿论点单元", "新稿对应位置", "对应程度"]]
+        for item in src.structure.unit_map:
+            rows.append([
+                item["id"],
+                item.get("unit", ""),
+                item.get("evidence", "") or "无",
+                item["level"],
+            ])
+        if len(rows) == 1:
+            rows.append(["—", "—", "—", "—"])
+        parts.append(_table(rows))
+        total = max(src.structure.unit_total, 1)
+        parts.append(_para(
+            f"完整 {src.structure.unit_full} 条（{_pct(src.structure.unit_full / total * 100)}）、"
+            f"部分 {src.structure.unit_partial} 条（{_pct(src.structure.unit_partial / total * 100)}）、"
+            f"无 {src.structure.unit_none} 条（{_pct(src.structure.unit_none / total * 100)}）。"
+            f"“无对应”条数：{src.unit_none_count}。"
+        ))
+        if src.structure.unit_none == 0:
+            parts.append(_para("原稿的每一个论点都被接走了。"))
+    return "".join(parts)
+
+
+def _material_evidence(report: MultiSourceReport) -> str:
+    """Part four: the four material tables appendix B requires."""
+    parts: list[str] = []
+    for idx, src in enumerate(report.sources, start=1):
+        if len(report.sources) > 1:
+            parts.append(_para(f"来源 {idx}：{src.source_name}", "Heading3"))
+
+        parts.append(_para("数据沿用对照表", "Heading3"))
+        rows = [["原稿数据点", "是否被新稿沿用"]]
+        rows += [[d["point"], d["reused"] or "待人工确认"] for d in src.data_points] or [["（无）", "—"]]
+        parts.append(_table(rows))
+
+        parts.append(_para("举例与案例组合对照表", "Heading3"))
+        rows = [["原稿案例", "是否被新稿沿用"]]
+        rows += [[c["case"], c.get("reused", "") or "待人工确认"] for c in src.case_pairs] or [["（无）", "—"]]
+        parts.append(_table(rows))
+
+        parts.append(_para("具名主体出现次数对照表", "Heading3"))
+        rows = [["具名主体", "原稿次数", "新稿次数"]]
+        rows += [[e["entity"], e["source_count"], e["draft_count"]] for e in src.entity_counts] or [["（无）", "—", "—"]]
+        parts.append(_table(rows))
+
+        parts.append(_para("字面重合检测数据表", "Heading3"))
+        rows = [["n-gram", "原稿片段数", "新稿片段数", "共有片段数", "重合率"]]
+        for row in src.literal.ngrams:
+            rows.append([f"{row.size}-gram", str(row.source_count), str(row.draft_count),
+                         str(row.shared_count), f"{row.overlap:.4f}"])
+        parts.append(_table(rows))
+        parts.append(_para(
+            f"最长连续相同片段：{src.literal.longest_common_chars} 字"
+            + (f"（示例：{src.literal.longest_common_sample[:40]}…）"
+               if src.literal.longest_common_sample else "")
+        ))
+        parts.append(_para(
+            f"句级相似度最高值：{src.literal.max_sentence_similarity:.2f}；"
+            f"句级相似度 ≥0.5 的句子占比：{src.literal.high_similarity_sentence_ratio:.2%}"
+        ))
+        rows = [["句级相似度区间", "句数"]] + [[k, str(v)] for k, v in src.literal.sentence_buckets.items()]
+        parts.append(_table(rows))
+
+    parts.append(_para("差异化内容清单", "Heading3"))
+    listed = [item for src in report.sources for item in src.differentiation_list]
+    if listed:
+        for item in dict.fromkeys(listed):
             parts.append(_para("• " + item))
     else:
         parts.append(_para("（新稿未显示可单列的差异化条目，需人工复核）"))
     return "".join(parts)
 
 
-def build_report_docx(report: MultiSourceReport, *, book_title: str = "", draft_name: str = "") -> bytes:
-    """Render the appendix-six report. Conclusion first, then detail."""
-    body: list[str] = []
-    title = (book_title or "通用短篇").strip()
-    body.append(_para(f"{title}_相似度审查报告", "Title"))
+def _risk_and_advice(report: MultiSourceReport) -> str:
+    """Part five: three risk layers plus actionable, skeleton-first advice."""
+    worst = max(report.sources, key=lambda s: s.composite)
+    parts = [_table([
+        ["风险层", "等级", "理由"],
+        ["著作权风险", _risk_level(report.max_composite),
+         f"综合相似度 {_pct(report.max_composite)}；最长连续相同片段 {worst.literal.longest_common_chars} 字。"],
+        ["反不正当竞争风险", _risk_level(worst.structure.structure_score),
+         f"结构框架相似度 {_pct(worst.structure.structure_score)}；"
+         f"论点单元“无对应”{worst.unit_none_count} 条。"],
+        ["平台原创审核风险", _risk_level(report.max_composite),
+         "以平台原创度与洗稿识别规则为准；本报告只给风险等级，不产出法律结论。"],
+    ])]
+    parts.append(_para("改法建议（优先改骨架）：" + worst.fix_directive))
+    return "".join(parts)
 
-    # ---- 第一部分 结论（必须最先，且在第一页内）----
-    body.append(_para("标题 1　第一部分　结论", "Heading1"))
+
+def _reproducibility(report: MultiSourceReport) -> str:
+    """Part six: enough detail for a third party to recompute every score."""
+    parts = [_para(
+        f"预处理：删除时间轴标记、结尾字数统计行与纯排版空行；所有统计均在去除全部空白字符后的文本上进行。"
+        f"n-gram 取值：{'/'.join(str(s) for s in GRAM_SIZES)}。"
+        f"字面算法：difflib.SequenceMatcher(autojunk=False) 取最长连续相同片段与句级相似度；"
+        f"句级比较时新稿保留 ≥{MIN_DRAFT_SENTENCE_CHARS} 字的句子，原稿保留 ≥{MIN_SOURCE_SENTENCE_CHARS} 字的句子。"
+        f"论点单元划分：按每 800—1500 字合并为一条，总量 20—80 条。"
+        f"结构分项：A ＝（完整×1.0 ＋ 部分×0.5）÷ 单元总数 × 100；"
+        f"B 取 100／85／70／40／25／10；C 取 100／75／40／10。"
+        f"字面重合度 D 按折算表取值：无重合且最长片段 <12 字且句级高相似占比 <2% 取 5；"
+        f"仅事实性排列重合取 20；最长片段 12—29 字或占比 2%—10% 取 50；"
+        f"最长片段 30—99 字或占比 10%—25% 取 75；存在整段搬用（≥100 字）或占比 >25% 取 100。"
+        f"M ＝ A×0.30 ＋ B×0.25 ＋ C×0.20 ＋ D×0.25。"
+        f"综合相似度 ＝ S×0.60 ＋ M×0.40，保留一位小数。"
+        f"判定：<50.0% 安全；≥50.0% 高危；{NEAR_BOUNDARY_MIN:.1f}%—49.9% 标【临界限】；"
+        f"50.1%—{JUST_OVER_MAX:.1f}% 标【刚过线】；S≥70% 必须给出结构兜底提示。"
+    )]
+    parts.append(_para(f"被审查新稿：{report.draft_name or '（未命名）'}"))
+    parts.append(_para("被审查原稿：" + "；".join(s.source_name for s in report.sources)))
+    parts.append(_para("生成时间：" + datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S") + "（UTC+8）"))
+    return "".join(parts)
+
+
+def build_report_docx(report: MultiSourceReport, *, book_title: str = "", draft_name: str = "") -> bytes:
+    """Render the report on the appendix-B skeleton, conclusion first."""
+    title = (book_title or "通用短篇").strip()
+    body: list[str] = [_para(f"{title}_相似度审查报告", "Title")]
+
+    body.append(_para("第一部分　结论", "Heading1"))
     if not report.applicable:
         body.append(_para(report.reason or "本步骤不适用。"))
         body.append(_para("本步骤标记为“不适用”，未生成百分比与风险判定。"))
         return _package("".join(body), {"applicable": False, "reason": report.reason})
 
     worst = max(report.sources, key=lambda s: s.composite)
-    body.append(_para(f"综合相似度：{_pct(report.max_composite)}", "Heading2", bold=True))
-    boundary = f"　{report.overall_boundary}" if report.overall_boundary else ""
-    body.append(_para(f"判定结果：{report.overall_verdict}{boundary}（以 50.0% 为界；≥50.0% 判高危）", "Normal", bold=True))
-    body.append(_para(f"结构框架相似度：{_pct(worst.structure.structure_score)}　主要依据："
-                      f"A 论点单元对应率 {_pct(worst.structure.unit_match_score)}、"
-                      f"B 案例次序 {_pct(worst.structure.case_order_score)}、"
-                      f"C 叙事主线 {_pct(worst.structure.narrative_spine_score)}。"))
-    body.append(_para(f"素材相似度：{_pct(worst.material_score)}　主要依据："
-                      f"字面重合度 {_pct(worst.literal.literal_reuse_score)}、"
-                      f"最长连续相同片段 {worst.literal.longest_common_chars} 字。"))
-    body.append(_para(f"一句话建议：{worst.fix_directive}"))
-    if report.overall_fallback_notice:
-        body.append(_para(report.overall_fallback_notice, "Normal", bold=True))
+    body.append(_conclusion(worst, report))
 
-    # ---- 多来源总览 ----
     if len(report.sources) > 1:
-        body.append(_para("标题 2　多来源结果总览（取最高综合相似度为本轮门槛）", "Heading2"))
+        body.append(_para("多来源总览（门槛取最高综合相似度）", "Heading2"))
         body.append(_table(
             [["来源", "结构框架 S", "素材 M", "综合相似度", "判定"]]
-            + [[s.source_name, _pct(s.structure.structure_score), _pct(s.material_score), _pct(s.composite),
+            + [[s.source_name, _pct(s.structure.structure_score), _pct(s.material_score),
+                _pct(s.composite),
                 s.verdict + (f" {s.boundary}" if s.boundary else "")] for s in report.sources]
         ))
 
-    # ---- 第二部分 打分明细 ----
-    body.append(_para("标题 1　第二部分　打分明细", "Heading1"))
-    body.append(_para(f"被审查新稿：{report.draft_name or draft_name or '（未命名）'}"))
-    for idx, src in enumerate(report.sources, start=1):
-        body.append(_para(f"标题 2　来源 {idx}：{src.source_name}", "Heading2"))
-        body.append(_para(f"原稿去空白字数：{src.source_chars}"))
-        body.append(_para(f"结构框架相似度 S={_pct(src.structure.structure_score)}；"
-                          f"素材相似度 M={_pct(src.material_score)}；"
-                          f"综合＝S×0.60＋M×0.40＝{_pct(src.composite)}"))
+    body.append(_para("第二部分　打分明细", "Heading1"))
+    body.append(_scoring_detail(report))
 
-    # ---- 第三 / 四部分 逐条依据 ----
-    body.append(_para("标题 1　第三部分　结构框架相似度逐条依据", "Heading1"))
-    body.append(_para("标题 1　第四部分　素材相似度逐条依据", "Heading1"))
-    for idx, src in enumerate(report.sources, start=1):
-        body.append(_source_section(src, idx))
+    body.append(_para("第三部分　结构框架相似度逐条依据", "Heading1"))
+    body.append(_structure_evidence(report))
 
-    # ---- 第五部分 风险定性 ----
-    body.append(_para("标题 1　第五部分　风险定性与建议", "Heading1"))
-    body.append(_table([
-        ["风险层", "等级", "理由"],
-        ["著作权风险", _risk_level(report.max_composite),
-         f"综合相似度 {_pct(report.max_composite)}；字面最长连续相同 {worst.literal.longest_common_chars} 字。"],
-        ["反不正当竞争风险", _risk_level(worst.structure.structure_score),
-         f"结构框架相似度 {_pct(worst.structure.structure_score)}；论点单元“无对应”{worst.unit_none_count} 条。"],
-        ["平台原创审核风险", _risk_level(report.max_composite),
-         "以平台原创度与洗稿识别规则为准，本报告只给风险等级，不产出法律结论。"],
-    ]))
-    body.append(_para("改法建议（优先改骨架）：" + worst.fix_directive))
+    body.append(_para("第四部分　素材相似度逐条依据", "Heading1"))
+    body.append(_material_evidence(report))
 
-    # ---- 第六部分 可复现说明 ----
-    body.append(_para("标题 1　第六部分　附录　检测口径与可复现说明", "Heading1"))
-    body.append(_para(
-        f"预处理：删除时间轴标记、结尾字数统计行与纯排版空行；所有统计在去除全部空白字符后的文本上进行。"
-        f"n-gram 取值：{'/'.join(str(s) for s in GRAM_SIZES)}。"
-        f"字面算法：SequenceMatcher(autojunk=False) 取最长连续相同片段与句级相似度。"
-        f"结构分项：A=（完整×1.0＋部分×0.5）÷单元总数×100；B 取 100/85/70/40/25/10；C 取 100/75/40/10。"
-        f"M 权重：数据 0.30／案例 0.25／具名主体 0.20／字面 0.25。"
-        f"综合＝S×0.60＋M×0.40，保留一位小数。"
-        f"判定：<50.0% 安全；≥50.0% 高危；{NEAR_BOUNDARY_MIN:.1f}%—49.9% 标【临界限】；"
-        f"50.1%—{JUST_OVER_MAX:.1f}% 标【刚过线】；S≥70% 必须给出结构兜底提示。"
-    ))
-    body.append(_para("生成时间：" + datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S") + "（UTC+8）"))
+    body.append(_para("第五部分　风险定性与建议", "Heading1"))
+    body.append(_risk_and_advice(report))
+
+    body.append(_para("第六部分　附录：检测口径与可复现说明", "Heading1"))
+    body.append(_reproducibility(report))
 
     return _package("".join(body), {
         "applicable": True,

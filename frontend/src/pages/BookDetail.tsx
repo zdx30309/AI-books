@@ -37,6 +37,7 @@ import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   AigcQualityReport,
   ChapterResponse,
+  SimilaritySummary,
   StageName,
   TaskCategoryOption,
   TaskStatusResponse,
@@ -551,6 +552,24 @@ export function BookDetail() {
     [id],
   );
 
+  // Similarity audit summary, loaded so the verdict is visible without a download.
+  const [similarity, setSimilarity] = useState<SimilaritySummary | null>(null);
+  useEffect(() => {
+    let live = true;
+    if (!id || task?.status !== "completed") return;
+    api
+      .getSimilarityReportData(id)
+      .then((data) => {
+        if (live) setSimilarity(data);
+      })
+      .catch(() => {
+        if (live) setSimilarity(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, task?.status]);
+
   const handleDownloadSimilarityReport = useCallback(async () => {
     if (!id) return;
     try {
@@ -888,6 +907,18 @@ export function BookDetail() {
                 >
                   <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
                   相似度审查报告
+                  {similarity && similarity.applicable ? (
+                    <span
+                      className={
+                        similarity.overall_verdict === "高危"
+                          ? "ml-1 text-rose-400"
+                          : "ml-1 text-emerald-400"
+                      }
+                    >
+                      {similarity.max_composite.toFixed(1)}% {similarity.overall_verdict}
+                      {similarity.overall_boundary ? similarity.overall_boundary : ""}
+                    </span>
+                  ) : null}
                 </button>
                 {isHealingComic && (
                   <button

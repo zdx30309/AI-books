@@ -2034,3 +2034,23 @@ export interface EpicExportMetadata {
   artifactRecordId?: string;
   status?: string;
 }
+
+
+/** 通用短篇文本相似度审查结果（v09 第十节 / 附录六）。 */
+export type SimilaritySummary = {
+  applicable: boolean;
+  reason?: string;
+  draft_name?: string;
+  max_composite: number;
+  overall_verdict: string;
+  overall_boundary?: string;
+  overall_fallback_notice?: string;
+  sources?: Array<{
+    source_name: string;
+    composite: number;
+    verdict: string;
+    boundary?: string;
+    structure?: Record<string, unknown>;
+    literal?: Record<string, unknown>;
+  }>;
+};

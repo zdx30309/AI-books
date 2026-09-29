@@ -114,6 +114,7 @@ import type {
   WeReadBookRow,
   WeReadCompanyRequest,
   WeReadExcelImportResponse,
+  SimilaritySummary,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -651,18 +652,8 @@ export const api = {
     if (preview) params.set("preview", "true");
     openHiddenDownload(`${BASE}/tasks/${id}/download/direct?${params.toString()}`);
   },
-  getSimilarityReportData: (id: string) => {
-    type SimilarityReport = {
-      applicable: boolean;
-      reason?: string;
-      max_composite: number;
-      overall_verdict: string;
-      overall_boundary?: string;
-      overall_fallback_notice?: string;
-      sources?: Array<Record<string, unknown>>;
-    };
-    return request<SimilarityReport>(`/tasks/${id}/similarity-report/data`);
-  },
+  getSimilarityReportData: (id: string) =>
+    request<SimilaritySummary>(`/tasks/${id}/similarity-report/data`),
   downloadSimilarityReport: async (id: string) => {
     const token = tokenStore.get();
     if (!token) throw new ApiError(401, "请先登录");

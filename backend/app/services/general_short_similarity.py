@@ -359,6 +359,10 @@ class SourceAudit:
     unit_none_count: int
     fix_directive: str
     differentiation_list: list[str]
+    material_data: float = 0.0
+    material_case: float = 0.0
+    material_entity: float = 0.0
+    material_literal: float = 0.0
     data_points: list[dict[str, str]] = field(default_factory=list)
     case_pairs: list[dict[str, str]] = field(default_factory=list)
     entity_counts: list[dict[str, str]] = field(default_factory=list)
@@ -370,6 +374,10 @@ class SourceAudit:
             "literal": asdict(self.literal),
             "structure": asdict(self.structure),
             "material_score": self.material_score,
+            "material_data": self.material_data,
+            "material_case": self.material_case,
+            "material_entity": self.material_entity,
+            "material_literal": self.material_literal,
             "composite": self.composite,
             "verdict": self.verdict,
             "boundary": self.boundary,
@@ -414,6 +422,10 @@ def audit_one_source(
     literal = measure_literal(source_text, draft_text)
     structure = score_structure(fp, draft_text)
     material = material_similarity(literal, structure)
+    data_part = min(100.0, literal.literal_reuse_score * 0.9)
+    case_part = structure.case_order_score
+    entity_part = min(100.0, literal.high_similarity_sentence_ratio * 100 * 2)
+    literal_part = literal_grade_from_table(literal)
     composite = COPY_SIMILARITY if literal.is_copy else composite_score(structure.structure_score, material)
     verdict = "高危" if composite >= HIGH_RISK_THRESHOLD else "安全"
 
@@ -435,6 +447,10 @@ def audit_one_source(
         literal=literal,
         structure=structure,
         material_score=material,
+        material_data=data_part,
+        material_case=case_part,
+        material_entity=entity_part,
+        material_literal=literal_part,
         composite=composite,
         verdict=verdict,
         boundary=boundary_label(composite),
