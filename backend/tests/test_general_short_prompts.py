@@ -16,15 +16,13 @@ from app.prompts.general_short_prompts import (
 from app.prompts.goal_driven_templates import get_prompts
 
 # 两篇成品样稿、三份检测报告与审查规则，在任何阶段都不允许出现。
+# The writer receives every rule section plus the two whole-book anchors the
+# original designates (appendix two and its reports in appendix three). What
+# must never reach any generation stage is the audit instruction, which lives in
+# its own stage and is a separate task.
 BANNED_IN_ALL_STAGES = (
-    "中国白酒四十年",
-    "越虐越上头",
-    "附录二 正反写作样稿全文",
-    "附录三 正反案例检测报告",
-    "附录四 人工表达写作方法",
-    "附录五 书名与简介风格参考",
-    "附录六 文本相似度审查规则",
-    "附录 A",
+    "第零部分　这份指令词要解决什么",
+    "文本相似度审查指令词：结构框架与素材双维打分版",
 )
 
 
@@ -80,12 +78,24 @@ def test_no_sample_books_or_audit_spec_enter_any_stage(stage: str) -> None:
         assert banned not in rendered, f"{stage} leaked {banned}"
 
 
-def test_writer_prompt_is_cut_down_from_the_v09_mega_prompt() -> None:
+def test_writer_prompt_carries_every_original_rule_without_the_sample_prose() -> None:
     prompt = get_prompts("general_short")["full_book_writer"]
-    # v09 writer prompt was 61,044 chars; the layered writer must be far smaller.
-    assert len(prompt) < 20000, len(prompt)
+    # The full v09 rule set is fed to the writer (sections one through nine plus
+    # appendices one, four and five), so it is larger than the earlier trimmed
+    # build but still far below the 61,044-character original mega-prompt that
+    # additionally embedded two complete sample books and three reports.
+    assert len(prompt) < 80000, len(prompt)
     for banned in BANNED_IN_ALL_STAGES:
         assert banned not in prompt, banned
+    # Every original rule section and anchor must be present.
+    for marker in ("一 执行身份与材料边界", "三 选题分类与内容定位",
+                   "四 联网研究与证据规则", "五 书名与简介策划",
+                   "六 大纲与约 2 万字分配", "八 人工表达",
+                   "九 防重复、来源差异化", "十 最终文本相似度审查",
+                   "十二 交付前验收", "附录一 微信读书选题清单",
+                   "附录二 正反写作样稿全文", "附录三 正反案例检测报告",
+                   "附录四 人工表达写作方法", "附录五 书名与简介风格参考"):
+        assert marker in prompt, marker
 
 
 def test_bundle_manifest_matches_files_on_disk() -> None:

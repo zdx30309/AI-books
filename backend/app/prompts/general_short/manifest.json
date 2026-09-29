@@ -1,8 +1,8 @@
 {
   "category": "general_short",
   "label": "通用短篇",
-  "version": "2026-09-28-v01",
-  "derived_from": "general_short_writer.md (v09 mega-prompt, archived)",
+  "version": "2026-09-29-v03",
+  "derived_from": "2万字书稿创作指令词_重构版_v09 (original docx)",
   "sections": [
     {
       "id": "adapter",
@@ -11,8 +11,8 @@
       "stages": [
         "draft"
       ],
-      "chars": 1324,
-      "sha256": "1fc8db3bfc4ca3c12f145cfee530999ccc8e02f56216b08208a1a04441174ca0"
+      "chars": 1666,
+      "sha256": "a0174a77f41ed621ce019a35d000649eff8f64ef251e73bc7ae904755e9c6cfb"
     },
     {
       "id": "identity",
@@ -21,29 +21,28 @@
       "stages": [
         "draft"
       ],
-      "chars": 777,
-      "sha256": "22c5bf4cb7787397574c7e94bf81ff624dbc816f7c8bc57388ac79e9424e792f"
+      "chars": 1269,
+      "sha256": "7c8e33dbf9fadba43aca3b1008e01f42856540f5d6a275f3e23ba1ba796540ec"
     },
     {
       "id": "taxonomy",
       "file": "sections/03_taxonomy.txt",
       "role": "prompt",
       "stages": [
-        "draft",
-        "structure_extract"
+        "draft"
       ],
-      "chars": 5503,
-      "sha256": "38b32a8effc8696a00b3c9cf631a5b0ba9d69ff73381bfa64e7f85d199d62475"
+      "chars": 5560,
+      "sha256": "7e6486a6f198f41dc06c6472a62978edf1f350bb080a67e55a9cdaccff15c1d8"
     },
     {
-      "id": "facts",
+      "id": "research",
       "file": "sections/04_facts.txt",
       "role": "prompt",
       "stages": [
         "draft"
       ],
-      "chars": 266,
-      "sha256": "d62837792d61d6959c4dd0446cd4dcaea176096746fce320ac618713f27de14f"
+      "chars": 2775,
+      "sha256": "3812ac5fbf82e5588fdce61277299c1f4b4741c4e978fa3563aefc7f75bf6b57"
     },
     {
       "id": "packaging",
@@ -52,8 +51,8 @@
       "stages": [
         "draft"
       ],
-      "chars": 243,
-      "sha256": "20fd01a2f1a1964b3b8b559aea9f0ad55c818777e8d1062ce409894de6ba563d"
+      "chars": 728,
+      "sha256": "5fb400317c06169e3c07f1a7e5a82ca76b29788d9e0a44d73e16626bcd8801fa"
     },
     {
       "id": "outline",
@@ -62,8 +61,8 @@
       "stages": [
         "draft"
       ],
-      "chars": 1267,
-      "sha256": "ed747e969142d4cf2dae36119cd48c838fa126349508613a02f236e843ed9951"
+      "chars": 1882,
+      "sha256": "b3884b8bdf2f41c66e471759adb8c48debb457ac2eb75ce6246065cae122658e"
     },
     {
       "id": "style",
@@ -72,8 +71,8 @@
       "stages": [
         "draft"
       ],
-      "chars": 3068,
-      "sha256": "af8b2aaeb424dcbdf260339b31fc9dfde1bbd3481249bb66dae8346b3d58a7a8"
+      "chars": 4475,
+      "sha256": "29541d5a2a5fb46d73af4518f893b33d04433fc75c031cec90fafe6e3c61f7c9"
     },
     {
       "id": "continuity",
@@ -84,6 +83,86 @@
       ],
       "chars": 848,
       "sha256": "e3a6442b3811c2e526a1b8a0fec6168e5e7764f9997ad11a6baea136568d66db"
+    },
+    {
+      "id": "audit_bar",
+      "file": "sections/09_audit.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 1961,
+      "sha256": "c8f6761ec4024ae8013f6c557056e497a48f4fbb122f92c7ea566a350cea8ba7"
+    },
+    {
+      "id": "acceptance",
+      "file": "sections/11_acceptance.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 1907,
+      "sha256": "01f34b6ed47175a0e7c3c3c378a5c3c278d8a0a702aa55fa518814bd120738c4"
+    },
+    {
+      "id": "topic_list",
+      "file": "sections/app1_topics.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 2005,
+      "sha256": "e788a4a9c804afb90c02a654c8b9e16f6a0e28b4d954963c38d1b547cec20aa1"
+    },
+    {
+      "id": "sample_books",
+      "file": "sections/app2_samples.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 29714,
+      "sha256": "aaf2e285d25bcbf03c2b930fbde9b3d4a4d342a4d979b9dfb786b63966712fc7"
+    },
+    {
+      "id": "sample_reports",
+      "file": "sections/app3_reports.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 4443,
+      "sha256": "0e138e74a8e9e423fefa78481d31be955cd8c824eb5acee5d8aff623a5fc03b4"
+    },
+    {
+      "id": "editing_examples",
+      "file": "sections/app4_style.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 5304,
+      "sha256": "efe3358a4357e85a42f4f64b717fd6eb73d43b7c9c60214ab783e00c40bbc837"
+    },
+    {
+      "id": "pack_style",
+      "file": "sections/app5_packaging.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 629,
+      "sha256": "8a5b5091147f9a62a4a37c6fe18e727726fcd5e45ba1996f181ac38079ae2806"
+    },
+    {
+      "id": "delivery",
+      "file": "sections/10_delivery.txt",
+      "role": "prompt",
+      "stages": [
+        "draft"
+      ],
+      "chars": 2495,
+      "sha256": "069cdff6f006971dfc0c6af46502c1ebba6bc941ecbe7349a12435e4d1d990ea"
     }
   ],
   "stage_sections": {
@@ -91,15 +170,24 @@
       "adapter",
       "identity",
       "taxonomy",
-      "facts",
+      "research",
       "packaging",
       "outline",
       "style",
-      "continuity"
+      "continuity",
+      "audit_bar",
+      "acceptance",
+      "topic_list",
+      "sample_books",
+      "sample_reports",
+      "editing_examples",
+      "pack_style",
+      "delivery"
     ],
     "structure_extract": [
       "taxonomy"
     ],
-    "differentiation_audit": []
+    "differentiation_audit": [],
+    "llm_audit": []
   }
 }

@@ -2882,13 +2882,20 @@ def test_general_short_uses_layered_prompt_without_sample_books() -> None:
     assert "九 防重复、来源差异化与全书一致性" in prompt
     # Workflow-only sections stay out.
     assert "二 自动识别当前阶段" not in prompt
-    assert "十一 Word 交付与文件规范" not in prompt
     assert "附录六 文本相似度审查规则" not in prompt
-    # The two sample books and the sample reports are gone from the writer context.
-    for banned in ("中国白酒四十年", "越虐越上头", "附录二 正反写作样稿全文"):
-        assert banned not in prompt, banned
-    # The writer prompt is the layered bundle, far below the old 61k mega-prompt.
-    assert len(prompt) < 20000, len(prompt)
+    # The audit instruction is a separate stage and must not leak into writing.
+    assert "第零部分　这份指令词要解决什么" not in prompt
+    # Every original rule section and the two designated anchors are present.
+    assert len(prompt) < 80000, len(prompt)
+    for marker in ("一 执行身份与材料边界", "三 选题分类与内容定位",
+                   "四 联网研究与证据规则", "五 书名与简介策划",
+                   "六 大纲与约 2 万字分配", "八 人工表达",
+                   "九 防重复、来源差异化", "十 最终文本相似度审查",
+                   "十一 Word 交付与文件规范", "十二 交付前验收",
+                   "附录一 微信读书选题清单",
+                   "附录二 正反写作样稿全文", "附录四 人工表达写作方法",
+                   "附录五 书名与简介风格参考"):
+        assert marker in prompt, marker
     # The transcript stays last and the fingerprint slot is brace-free so the
     # shared .format(raw_text=...) routing call cannot fail.
     assert prompt.rstrip().endswith("{raw_text}\n\n请直接输出完整书稿。")
