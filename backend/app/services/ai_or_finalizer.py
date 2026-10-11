@@ -155,6 +155,7 @@ def call_correction(original: str, rewritten: str) -> dict:
         result = get_deepseek_client().with_options(max_retries=0).chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}],
             temperature=0.1, response_format={"type": "json_object"},
+            max_tokens=4096, extra_body={"thinking": {"type": "disabled"}},
         )
     choice = result.choices[0]
     if choice.finish_reason != "stop":
