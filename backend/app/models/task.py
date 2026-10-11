@@ -125,6 +125,11 @@ class Task(Base):
         return value if isinstance(value, bool) else None
 
     @property
+    def ai_or_finalizer_status(self) -> str | None:
+        value = (self.config or {}).get("ai_or_finalizer_status")
+        return value if isinstance(value, str) else None
+
+    @property
     def aigc_max_score(self) -> int | None:
         value = (self.config or {}).get("aigc_max_score")
         return int(value) if isinstance(value, (int, float)) else None

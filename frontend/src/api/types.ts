@@ -266,6 +266,7 @@ export interface TaskStatusResponse {
   aigc_rewrite_rounds: number;
   aigc_quality_passed: boolean | null;
   aigc_report_available: boolean;
+  ai_or_finalizer_status?: string | null;
   aigc_manual_review_reason: string | null;
   error_message: string | null;
   created_at: string;

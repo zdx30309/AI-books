@@ -8,6 +8,8 @@ Gravity Singularity - Celery 流水线任务
 """
 from __future__ import annotations
 
+from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_task_manuscript
+
 import asyncio
 import json
 import logging
@@ -2706,12 +2708,16 @@ def process_video(_self, task_id: str) -> dict:
                 ),
                 input_source=input_source,
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
-                aigc_required=bool((task.config or {}).get("aigc_required")),
+                aigc_required=False if enabled_for(task.created_at) else bool((task.config or {}).get("aigc_required")),
                 aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
             )
         )
         _ensure_active_run(db, task, run_id)
         markdown = normalize_final_markdown(markdown, category=category)
+        markdown = finalize_task_manuscript(
+            task, markdown, output_dir,
+            progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
+        )
         integrity_issue, integrity_parts = _finance_completion_integrity_issue(
             task,
             markdown,
@@ -2908,7 +2914,13 @@ def process_video(_self, task_id: str) -> dict:
             _clear_task_run(review_task, run_id)
             review_task.status = TaskStatus.MANUAL_REVIEW
             review_task.progress = max(93, int(review_task.progress or 0))
-            review_task.current_step = "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
+            review_task.current_step = (
+                "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
+                if isinstance(e, FinalizerHold)
+                else "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
+            )
+            if isinstance(e, FinalizerHold):
+                _patch_config(review_task, ai_or_finalizer_status="manual_review")
             review_task.error_message = str(e)[:2000]
             db.commit()
         return {
@@ -3412,7 +3424,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             else "长篇质量终审通过，正在执行最终交付闸门",
         )
 
-        if bool(cfg.get("aigc_required")):
+        if bool(cfg.get("aigc_required")) and not enabled_for(task.created_at):
             try:
                 gate_result = asyncio.run(
                     enforce_aigc_quality_gate(
@@ -3457,6 +3469,14 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             cfg.update(aigc_status="not_required", aigc_passed=True, aigc_quality_passed=True)
             task.config = cfg
 
+        final_markdown = finalize_task_manuscript(
+            task, final_markdown, output_dir,
+            progress=lambda label: update(96, label),
+        )
+        if enabled_for(task.created_at):
+            _, _, final_chapters = parse_final_markdown(final_markdown)
+            if len(final_chapters) != len(result.chapters):
+                raise FinalizerHold("双稿纠错后章节数不一致，需要人工确认")
         db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
         for chapter in final_chapters:
             db.add(
@@ -3531,7 +3551,13 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
             task.progress = 96
-            task.current_step = "高质量公版长篇原稿已保留；朱雀候选未通过全部终稿闸门"
+            task.current_step = (
+                "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
+                if isinstance(exc, FinalizerHold)
+                else "高质量公版长篇原稿已保留；朱雀候选未通过全部终稿闸门"
+            )
+            if isinstance(exc, FinalizerHold):
+                _patch_config(task, ai_or_finalizer_status="manual_review")
             task.error_message = str(exc)[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}

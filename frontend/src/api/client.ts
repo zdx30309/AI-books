@@ -660,6 +660,10 @@ export const api = {
     const params = new URLSearchParams({ token, _: String(Date.now()) });
     openHiddenDownload(`${BASE}/tasks/${id}/similarity-report/direct?${params.toString()}`);
   },
+  downloadAiOrDelivery: async (id: string) => {
+    const { blob, filename } = await download(`/tasks/${id}/ai-or-delivery`);
+    saveBlob(blob, filename);
+  },
   downloadBatchFile: async (body: BatchDownloadRequest) => {
     const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
     saveBlob(blob, filename);

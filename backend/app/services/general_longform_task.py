@@ -10,6 +10,7 @@ from app.models import Chapter, Task, TaskStatus
 from app.services.general_longform import GeneralLongformRunner, initial_state, load_state
 from app.services.general_longform_runtime import GeneralLongformPaused, atomic_json, now_iso
 from app.services.video_sources import extract_source_url
+from app.services.ai_or_finalizer import finalize_task_manuscript
 
 
 def _needs_video_source(source_url: str, cfg: dict, state: dict) -> bool:
@@ -97,6 +98,12 @@ def process_claimed_task(db: Session, task: Task, run_id: str, output_dir: Path)
         cfg.pop("markdown", None)
     if state["phase"] == "completed":
         cfg["markdown"] = (directory / "manuscript.md").read_text(encoding="utf-8")
+        task.config = cfg
+        cfg["markdown"] = finalize_task_manuscript(
+            task, cfg["markdown"], output_dir,
+            progress=lambda label: _update_progress(db, task, progress=96, step=label, run_id=run_id),
+        )
+        cfg.update({key: value for key, value in (task.config or {}).items() if key.startswith("ai_or_")})
         # Existing read-only stage/download consumers can find the final book.
         from app.services.general_longform_runtime import atomic_text
         atomic_text(output_dir / "04_format.md", cfg["markdown"])

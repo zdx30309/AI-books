@@ -3091,6 +3091,14 @@ def _build_single_download_response(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
+    if ((task.config or {}).get("ai_or_finalizer_status") == "completed" and fmt == "docx"
+            and category != "comic_series" and not is_healing_comic_family(category)):
+        directory = _task_output_dir(task.id) / "ai_or_finalizer"
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        filename = manifest["artifacts"]["docx"]
+        return FileResponse(directory / filename, filename=filename,
+                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            headers={"Cache-Control": "no-store"})
     if category == "general_longform" and fmt == "docx":
         path, filename = _general_longform_book_file(task)
         return FileResponse(path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Cache-Control": "no-store"})
@@ -3149,6 +3157,20 @@ def download_markdown(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
+
+
+@router.get("/{task_id}/ai-or-delivery", summary="下载降AI与双稿纠错交付包")
+def download_ai_or_delivery(task_id: UUID, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != TaskStatus.COMPLETED or (task.config or {}).get("ai_or_finalizer_status") != "completed":
+        raise HTTPException(status_code=409, detail="降AI纠错交付尚未完成")
+    path = _task_output_dir(task.id) / "ai_or_finalizer" / "delivery.zip"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="交付文件不存在")
+    return FileResponse(path, filename=f"降AI纠错_{task.id}.zip", media_type="application/zip")
 
 
 @router.get(

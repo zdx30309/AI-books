@@ -920,6 +920,23 @@ export function BookDetail() {
                     </span>
                   ) : null}
                 </button>
+                {task.ai_or_finalizer_status === "completed" && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={async () => {
+                      if (!id) return;
+                      try {
+                        await api.downloadAiOrDelivery(id);
+                      } catch (error) {
+                        alert(error instanceof ApiError ? error.detail : "降AI纠错交付包下载失败");
+                      }
+                    }}
+                  >
+                    <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    降AI纠错交付包
+                  </button>
+                )}
                 {isHealingComic && (
                   <button
                     type="button"

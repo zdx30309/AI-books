@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # --- 应用 ---
     APP_NAME: str = "GravitySingularity"
     APP_ENV: str = "development"
+    AI_OR_FINALIZER_ENABLED: bool = False
+    AI_OR_ACCESS_KEY: str = ""
+    AI_OR_ACCESS_SECRET: str = ""
+    AI_OR_FINALIZER_START_AT: str = ""
+    AI_OR_CHUNK_CHARS: int = 6000
+    AI_OR_TIMEOUT_SECONDS: int = 1800
+    AI_OR_CORRECTION_MODEL: str = ""
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---
