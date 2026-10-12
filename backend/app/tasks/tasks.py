@@ -2438,6 +2438,7 @@ def _persist_chapters_from_markdown(
     markdown: str,
     *,
     category: str | None = None,
+    commit: bool = True,
 ) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
     if _is_finance_integrity_category(category):
@@ -2457,7 +2458,8 @@ def _persist_chapters_from_markdown(
                     word_count=len(content),
                 )
             )
-        db.commit()
+        if commit:
+            db.commit()
         return len(parts)
 
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
@@ -2480,7 +2482,8 @@ def _persist_chapters_from_markdown(
     if not matches:
         chapter = Chapter(task_id=task.id, chapter_num=1, title="全文", content=markdown, word_count=len(markdown))
         db.add(chapter)
-        db.commit()
+        if commit:
+            db.commit()
         return 1
 
     for idx, match in enumerate(matches):
@@ -2497,7 +2500,8 @@ def _persist_chapters_from_markdown(
             word_count=len(content or markdown),
         )
         db.add(chapter)
-    db.commit()
+    if commit:
+        db.commit()
     return len(matches)
 
 
