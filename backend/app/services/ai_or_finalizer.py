@@ -89,6 +89,14 @@ def correction_pieces(text: str, limit: int) -> list[str]:
     parts: list[str] = []
     buffer = ""
     for line in text.splitlines(keepends=True):
+        while len(line) > limit:
+            if buffer:
+                parts.append(buffer)
+                buffer = ""
+            boundaries = list(re.finditer(r"[。！？；.!?]", line[:limit]))
+            boundary = boundaries[-1].end() if boundaries else limit
+            parts.append(line[:boundary])
+            line = line[boundary:]
         if buffer and len(buffer) + len(line) > limit:
             parts.append(buffer)
             buffer = ""
@@ -147,7 +155,7 @@ def call_rewrite(text: str) -> dict:
         raise FinalizerHold("未配置降AI服务密钥，原稿已保留")
     from app.services.generation_spend import reserve
 
-    reserve("ai-or-v1-enhanced", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, "zhuque-v1")
+    reservation_index = reserve("ai-or-v1-enhanced", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, "zhuque-v1")
     try:
         with httpx.Client(timeout=httpx.Timeout(settings.AI_OR_TIMEOUT_SECONDS, connect=30)) as client:
             response = client.post(BASE + "/zhuque-direct", headers={
@@ -162,8 +170,10 @@ def call_rewrite(text: str) -> dict:
             raise FinalizerHold("降AI接口未返回成功状态；请查看平台使用记录，禁止自动重试")
         if not isinstance(result.get("outputText"), str):
             raise FinalizerHold("降AI接口没有返回正文")
-        return {key: result.get(key) for key in (
+        saved = {key: result.get(key) for key in (
             "taskId", "status", "outputText", "consumeAmount", "consumeCharCount", "executeTime")}
+        saved["budget_reservation_index"] = reservation_index
+        return saved
     except FinalizerHold:
         raise
     except Exception as exc:
@@ -375,6 +385,9 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
                     return result
 
                 result = paid("rewrite", directory / f"{index:05d}_rewrite.json", lambda: call_rewrite(chunk))
+                from app.services.generation_spend import settle_rewrite
+
+                settle_rewrite(result.get("budget_reservation_index"), directory / f"{index:05d}_rewrite.json")
                 ending = chunk[len(chunk.rstrip("\n")):]
                 rewritten = result["outputText"].rstrip("\n") + ending
                 validate_rewrite(chunk, rewritten)

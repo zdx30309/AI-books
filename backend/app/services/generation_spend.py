@@ -48,6 +48,42 @@ def reserve(action, amount, model):
         state["calls"].append({"action": action, "model": model, "upper_bound_cny": amount,
                                "status": "reserved_not_actual_invoice"})
         atomic_json(path, state)
+        return len(state["calls"]) - 1
+
+
+def settle_rewrite(call_index, receipt_path):
+    context = _current.get()
+    if context is None or call_index is None:
+        return
+    directory, limit = context
+    receipt_path = Path(receipt_path).resolve()
+    if not receipt_path.is_relative_to(directory.resolve()):
+        raise GenerationBudgetExceeded("费用凭据不属于当前任务")
+    receipt = json.loads(receipt_path.read_text())
+    if receipt.get("status") != 1 or not receipt.get("taskId"):
+        raise GenerationBudgetExceeded("降AI账单凭据不完整，不能释放预算")
+    amount = float(receipt.get("consumeAmount"))
+    if not math.isfinite(amount) or amount < 0:
+        raise GenerationBudgetExceeded("降AI实际费用无效")
+    path = directory / "generation_spend.json"
+    with (directory / "generation_spend.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        if type(call_index) is not int or not 0 <= call_index < len(state["calls"]):
+            raise GenerationBudgetExceeded("费用凭据对应的预留记录无效")
+        call = state["calls"][call_index]
+        reference = str(receipt_path.relative_to(directory.resolve()))
+        if call.get("status") == "billed_confirmed":
+            if call.get("receipt") != reference or call.get("actual_cny") != amount or call.get("provider_task_id") != receipt["taskId"]:
+                raise GenerationBudgetExceeded("已结算凭据发生变化")
+            return
+        if call.get("action") != "ai-or-v1-enhanced" or amount > call["upper_bound_cny"]:
+            raise GenerationBudgetExceeded("降AI实际账单超过对应预算，需人工核对")
+        if any(item.get("receipt") == reference or item.get("provider_task_id") == receipt["taskId"] for item in state["calls"]):
+            raise GenerationBudgetExceeded("同一账单不能用于重复释放预算")
+        state["reserved_cny"] = round(state["reserved_cny"] - call["upper_bound_cny"] + amount, 6)
+        call.update(status="billed_confirmed", actual_cny=amount, receipt=reference, provider_task_id=receipt["taskId"])
+        atomic_json(path, state)
 
 
 def reserve_deepseek(prompt, system, model, max_tokens):

@@ -138,6 +138,13 @@ def test_correction_pieces_rejoin_and_respect_limit():
     assert all(len(piece) <= 1000 for piece in pieces)
 
 
+def test_long_single_paragraph_correction_is_bounded_without_text_loss():
+    text = "长句" * 800 + "。" + "无标点" * 1200 + "\n"
+    pieces = service.correction_pieces(text, 1000)
+    assert "".join(pieces) == text
+    assert all(len(piece) <= 1000 for piece in pieces)
+
+
 def test_correction_runs_per_piece_and_applies_each(tmp_path, monkeypatch):
     configure(monkeypatch)
     monkeypatch.setattr(service.settings, "AI_OR_CHUNK_CHARS", 5000)

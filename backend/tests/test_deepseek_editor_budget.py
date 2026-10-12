@@ -11,6 +11,7 @@ from app.services.generation_spend import (
     generation_budget,
     reserve,
     reserve_deepseek,
+    settle_rewrite,
 )
 
 
@@ -69,3 +70,45 @@ def test_budget_error_blocks_quality_fallback(tmp_path):
         with pytest.raises(GenerationBudgetExceeded) as caught:
             reserve("test", 2, "test")
     assert content_engine._is_paid_polish_blocking_failure(caught.value)
+
+
+def test_confirmed_rewrite_invoice_settles_only_its_reservation(tmp_path):
+    receipt = tmp_path / "rewrite.json"
+    receipt.write_text(json.dumps({"status": 1, "taskId": "provider-task", "consumeAmount": 1}))
+    with generation_budget({"generation_budget_cny": 10}, tmp_path):
+        index = reserve("ai-or-v1-enhanced", 3, "zhuque-v1")
+        reserve("deepseek-text", 1, "deepseek-flash")
+        settle_rewrite(index, receipt)
+        settle_rewrite(index, receipt)
+        reserve("deepseek-text", 8, "deepseek-flash")
+        with pytest.raises(GenerationBudgetExceeded):
+            reserve("deepseek-text", .01, "deepseek-flash")
+    state = json.loads((tmp_path / "generation_spend.json").read_text())
+    assert state["reserved_cny"] == 10
+    assert state["calls"][0]["actual_cny"] == 1
+    assert state["calls"][0]["upper_bound_cny"] == 3
+    assert state["calls"][1]["status"] == "reserved_not_actual_invoice"
+
+
+def test_same_invoice_cannot_release_two_reservations(tmp_path):
+    receipt = tmp_path / "rewrite.json"
+    receipt.write_text(json.dumps({"status": 1, "taskId": "provider-task", "consumeAmount": 1}))
+    with generation_budget({"generation_budget_cny": 10}, tmp_path):
+        first = reserve("ai-or-v1-enhanced", 3, "zhuque-v1")
+        second = reserve("ai-or-v1-enhanced", 3, "zhuque-v1")
+        settle_rewrite(first, receipt)
+        with pytest.raises(GenerationBudgetExceeded):
+            settle_rewrite(second, receipt)
+    assert json.loads((tmp_path / "generation_spend.json").read_text())["reserved_cny"] == 4
+
+
+def test_invoice_cannot_settle_deepseek_or_exceed_reserved_amount(tmp_path):
+    receipt = tmp_path / "rewrite.json"
+    receipt.write_text(json.dumps({"status": 1, "taskId": "provider-task", "consumeAmount": 3}))
+    with generation_budget({"generation_budget_cny": 10}, tmp_path):
+        rewrite = reserve("ai-or-v1-enhanced", 2, "zhuque-v1")
+        deepseek_index = reserve("deepseek-text", 4, "deepseek-flash")
+        for index in (rewrite, deepseek_index):
+            with pytest.raises(GenerationBudgetExceeded):
+                settle_rewrite(index, receipt)
+    assert json.loads((tmp_path / "generation_spend.json").read_text())["reserved_cny"] == 6
