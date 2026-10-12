@@ -13,7 +13,7 @@ from app.services import ai_or_finalizer as service
 def configure(monkeypatch):
     monkeypatch.setattr(service.settings, "AI_OR_CHUNK_CHARS", 1000)
     monkeypatch.setattr(service, "call_rewrite", lambda text: {"outputText": text.replace("认为认为", "认为认为")})
-    monkeypatch.setattr(service, "call_correction", lambda original, text: {
+    monkeypatch.setattr(service, "call_correction", lambda original, text, cap=None: {
         "text": json.dumps({"issues": [{"original": "他认为认为这很好。", "replacement": "他认为这很好。",
                                           "remark": "词语重复", "severe": False}]}, ensure_ascii=False)})
 
@@ -128,3 +128,86 @@ def test_severe_issue_requires_manual_review(tmp_path, monkeypatch):
     with pytest.raises(service.FinalizerHold):
         service.finalize_manuscript("他认为认为这很好。", tmp_path)
     assert (tmp_path / "ai_or_finalizer/delivery.zip").exists()
+
+
+def test_correction_pieces_rejoin_and_respect_limit():
+    text = "".join(f"第{i}段" + "甲" * 300 + "\n" for i in range(10))
+    pieces = service.correction_pieces(text, 1000)
+    assert "".join(pieces) == text
+    assert len(pieces) > 1
+    assert all(len(piece) <= 1000 for piece in pieces)
+
+
+def test_correction_runs_per_piece_and_applies_each(tmp_path, monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setattr(service.settings, "AI_OR_CHUNK_CHARS", 5000)
+    monkeypatch.setattr(service.settings, "AI_OR_CORRECTION_CHUNK_CHARS", 600)
+    source = "他认为认为这很好。" + "甲" * 500 + "\n" + "她认为认为那不错。" + "乙" * 500 + "\n"
+    seen = []
+
+    def correct(original, piece, cap=None):
+        seen.append((original, piece))
+        before = "他认为认为这很好。" if "他认为认为" in piece else "她认为认为那不错。"
+        return {"text": json.dumps({"issues": [{"original": before, "replacement": before.replace("认为认为", "认为"),
+                                                  "remark": "词语重复", "severe": False}]}, ensure_ascii=False)}
+    monkeypatch.setattr(service, "call_correction", correct)
+    final = service.finalize_manuscript(source, tmp_path)
+    assert len(seen) == 2 and all(original == source for original, _piece in seen)
+    assert "认为认为" not in final and final.count("认为") == 2
+
+
+def test_truncated_whole_chunk_resumes_with_split_without_paying_rewrite_again(tmp_path, monkeypatch):
+    configure(monkeypatch)
+    source = "他认为认为这很好。\n"
+    rewrites = []
+    monkeypatch.setattr(service, "call_rewrite", lambda text: rewrites.append(1) or {"outputText": text})
+
+    def truncated(*args):
+        raise service.CorrectionTruncated(service.TRUNCATED)
+    monkeypatch.setattr(service, "call_correction", truncated)
+    with pytest.raises(service.FinalizerHold):
+        service.finalize_manuscript(source, tmp_path)
+    # Simulate the manifest left by the earlier version: whole-chunk call still marked inflight.
+    manifest_path = tmp_path / "ai_or_finalizer/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["chunks"][0]["actions"] = {"rewrite": "saved", "correction": "inflight"}
+    manifest["chunks"][0].pop("correction_split", None)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False))
+    for stale in (tmp_path / "ai_or_finalizer").glob("00000_correction_*"):
+        stale.unlink()
+    configure(monkeypatch)
+    monkeypatch.setattr(service, "call_rewrite", lambda text: (_ for _ in ()).throw(AssertionError("rewrite repeated")))
+    assert service.finalize_manuscript(source, tmp_path) == "他认为这很好。\n"
+    assert len(rewrites) == 1
+
+
+def test_uncertain_legacy_inflight_correction_still_blocks(tmp_path, monkeypatch):
+    configure(monkeypatch)
+    source = "他认为认为这很好。\n"
+    monkeypatch.setattr(service, "call_correction", lambda *args: (_ for _ in ()).throw(TimeoutError()))
+    with pytest.raises(service.FinalizerHold):
+        service.finalize_manuscript(source, tmp_path)
+    manifest_path = tmp_path / "ai_or_finalizer/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["chunks"][0]["actions"]["correction"] = "inflight"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False))
+    configure(monkeypatch)
+    with pytest.raises(service.FinalizerHold):
+        service.finalize_manuscript(source, tmp_path)
+
+
+def test_truncated_piece_does_not_replay_until_limit_raised(tmp_path, monkeypatch):
+    configure(monkeypatch)
+    attempts = []
+
+    def truncated(*args):
+        attempts.append(1)
+        raise service.CorrectionTruncated(service.TRUNCATED)
+    monkeypatch.setattr(service, "call_correction", truncated)
+    for _attempt in range(2):
+        with pytest.raises(service.FinalizerHold):
+            service.finalize_manuscript("他认为认为这很好。", tmp_path)
+    assert len(attempts) == 1
+    configure(monkeypatch)
+    monkeypatch.setattr(service.settings, "AI_OR_CORRECTION_MAX_TOKENS", 16384)
+    assert service.finalize_manuscript("他认为认为这很好。", tmp_path) == "他认为这很好。"

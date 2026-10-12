@@ -36,6 +36,13 @@ class FinalizerHold(AigcManualReviewRequired):
     pass
 
 
+TRUNCATED = "双稿纠错输出不完整；已暂停，不自动重放付费调用"
+
+
+class CorrectionTruncated(FinalizerHold):
+    """The paid correction response arrived but stopped at the output limit."""
+
+
 def enabled_for(created_at: datetime | None) -> bool:
     if not settings.AI_OR_FINALIZER_ENABLED:
         return False
@@ -66,6 +73,22 @@ def split_chunks(text: str, limit: int) -> list[str]:
             continue
         if len(line) > limit:
             raise FinalizerHold("存在超长单段，需人工分段；尚未调用降AI服务")
+        if buffer and len(buffer) + len(line) > limit:
+            parts.append(buffer)
+            buffer = ""
+        buffer += line
+    if buffer:
+        parts.append(buffer)
+    return parts
+
+
+def correction_pieces(text: str, limit: int) -> list[str]:
+    """Split one rewritten chunk into smaller review windows; joining them restores the chunk."""
+    if not 500 <= limit <= 50000:
+        raise FinalizerHold("纠错子段上限必须为500至50000字符")
+    parts: list[str] = []
+    buffer = ""
+    for line in text.splitlines(keepends=True):
         if buffer and len(buffer) + len(line) > limit:
             parts.append(buffer)
             buffer = ""
@@ -147,25 +170,28 @@ def call_rewrite(text: str) -> dict:
         raise FinalizerHold("降AI请求结果不确定，已暂停避免重复扣费；请核对平台记录") from exc
 
 
-def call_correction(original: str, rewritten: str) -> dict:
+def call_correction(original: str, rewritten: str, max_tokens: int | None = None) -> dict:
     rules = (PROMPTS / "ai_or_dual_manuscript_correction.md").read_text(encoding="utf-8")
     transport = (PROMPTS / "ai_or_correction_transport.md").read_text(encoding="utf-8")
     prompt = rules + "\n\n" + transport + "\n\n" + json.dumps(
         {"原稿": original, "降AI后": rewritten}, ensure_ascii=False)
     model = settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL
+    cap = int(max_tokens or settings.AI_OR_CORRECTION_MAX_TOKENS)
     from app.services.generation_spend import reserve_deepseek
 
-    reserve_deepseek(prompt, None, model, 4096)
+    reserve_deepseek(prompt, None, model, cap)
     with distributed_semaphore("deepseek-format", limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS):
         paid_api_guard.guard("deepseek")
         result = get_deepseek_client().with_options(max_retries=0).chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}],
             temperature=0.1, response_format={"type": "json_object"},
-            max_tokens=4096, extra_body={"thinking": {"type": "disabled"}},
+            max_tokens=cap, extra_body={"thinking": {"type": "disabled"}},
         )
     choice = result.choices[0]
+    if choice.finish_reason == "length":
+        raise CorrectionTruncated(TRUNCATED)
     if choice.finish_reason != "stop":
-        raise FinalizerHold("双稿纠错输出不完整；已暂停，不自动重放付费调用")
+        raise FinalizerHold(TRUNCATED)
     return {"text": choice.message.content or "", "model": model,
             "usage": result.usage.model_dump() if result.usage else None, "cost": None}
 
@@ -311,36 +337,79 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
                 entry = state["chunks"][index]
                 if entry["hash"] != digest(chunk):
                     raise FinalizerHold("分段断点与原稿不一致")
-                for action in ("rewrite", "correction"):
-                    artifact = directory / f"{index:05d}_{action}.json"
+                def paid(key: str, artifact: Path, call, cap: int | None = None) -> dict:
                     if artifact.exists():
                         result = json.loads(artifact.read_text())
-                    else:
-                        if entry["actions"].get(action) == "inflight":
-                            raise FinalizerHold("上次付费请求结果不确定；请核对平台记录后人工恢复")
-                        entry["actions"][action] = "inflight"
+                        entry["actions"][key] = "saved"
                         atomic_json(manifest_path, state)
-                        started = time.monotonic()
-                        try:
-                            result = call_rewrite(chunk) if action == "rewrite" else call_correction(chunk, rewritten)
-                        except AigcManualReviewRequired as exc:
-                            from app.services.generation_spend import GenerationBudgetExceeded
-
-                            if isinstance(exc, GenerationBudgetExceeded):
-                                entry["actions"].pop(action, None)
-                            raise
-                        atomic_json(artifact, result)
-                        logger.info("finalizer action=%s model=%s cost=%s status=completed elapsed=%.2f",
-                                    action, result.get("model", "zhuque-v1-paragraph-enhanced"),
-                                    result.get("consumeAmount", result.get("cost")), time.monotonic() - started)
-                    entry["actions"][action] = "saved"
+                        return result
+                    status = entry["actions"].get(key)
+                    if status == "inflight":
+                        raise FinalizerHold("上次付费请求结果不确定；请核对平台记录后人工恢复")
+                    if isinstance(status, str) and status.startswith("truncated:") and (
+                            cap is None or cap <= int(status.split(":", 1)[1])):
+                        raise FinalizerHold("纠错子段输出仍超过上限；请调大 AI_OR_CORRECTION_MAX_TOKENS "
+                                            "或调小 AI_OR_CORRECTION_CHUNK_CHARS 后人工恢复")
+                    entry["actions"][key] = "inflight"
                     atomic_json(manifest_path, state)
-                    if action == "rewrite":
-                        ending = chunk[len(chunk.rstrip("\n")):]
-                        rewritten = result["outputText"].rstrip("\n") + ending
-                        validate_rewrite(chunk, rewritten)
-                    else:
-                        corrected, chunk_issues = parse_issues(result["text"], rewritten)
+                    started = time.monotonic()
+                    try:
+                        result = call()
+                    except CorrectionTruncated:
+                        entry["actions"][key] = f"truncated:{cap}"
+                        atomic_json(manifest_path, state)
+                        raise
+                    except AigcManualReviewRequired as exc:
+                        from app.services.generation_spend import GenerationBudgetExceeded
+
+                        if isinstance(exc, GenerationBudgetExceeded):
+                            entry["actions"].pop(key, None)
+                            atomic_json(manifest_path, state)
+                        raise
+                    atomic_json(artifact, result)
+                    logger.info("finalizer action=%s model=%s cost=%s status=completed elapsed=%.2f",
+                                key, result.get("model", "zhuque-v1-paragraph-enhanced"),
+                                result.get("consumeAmount", result.get("cost")), time.monotonic() - started)
+                    entry["actions"][key] = "saved"
+                    atomic_json(manifest_path, state)
+                    return result
+
+                result = paid("rewrite", directory / f"{index:05d}_rewrite.json", lambda: call_rewrite(chunk))
+                ending = chunk[len(chunk.rstrip("\n")):]
+                rewritten = result["outputText"].rstrip("\n") + ending
+                validate_rewrite(chunk, rewritten)
+
+                legacy = directory / f"{index:05d}_correction.json"
+                if legacy.exists():
+                    # Whole-chunk correction saved by the earlier version: reuse it, never pay again.
+                    entry["actions"]["correction"] = "saved"
+                    corrected, chunk_issues = parse_issues(json.loads(legacy.read_text())["text"], rewritten)
+                else:
+                    if entry["actions"].get("correction") == "inflight":
+                        # The earlier whole-chunk call only leaves this state with the truncation error
+                        # when its response actually arrived and stopped at the output limit.
+                        if state.get("error") != TRUNCATED:
+                            raise FinalizerHold("上次付费请求结果不确定；请核对平台记录后人工恢复")
+                        entry["actions"]["correction"] = "truncated:4096"
+                        atomic_json(manifest_path, state)
+                    limit = settings.AI_OR_CORRECTION_CHUNK_CHARS
+                    cap = settings.AI_OR_CORRECTION_MAX_TOKENS
+                    pieces = correction_pieces(rewritten, limit)
+                    plan = {"limit": limit, "hashes": [digest(piece) for piece in pieces]}
+                    if entry.setdefault("correction_split", plan) != plan:
+                        raise FinalizerHold("纠错子段断点与当前分段设置不一致；请恢复原分段设置后再续跑")
+                    atomic_json(manifest_path, state)
+                    corrected_parts, chunk_issues = [], []
+                    for part, piece in enumerate(pieces):
+                        if not piece.strip():
+                            corrected_parts.append(piece)
+                            continue
+                        result = paid(f"correction_{part}", directory / f"{index:05d}_correction_{part:02d}.json",
+                                      lambda piece=piece: call_correction(chunk, piece, cap), cap)
+                        piece_final, piece_issues = parse_issues(result["text"], piece)
+                        corrected_parts.append(piece_final)
+                        chunk_issues.extend(piece_issues)
+                    corrected = "".join(corrected_parts)
                 rewrites.append(rewritten)
                 finals.append(corrected)
                 issues.extend(chunk_issues)

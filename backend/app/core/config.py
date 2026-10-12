@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     AI_OR_CHUNK_CHARS: int = 6000
     AI_OR_TIMEOUT_SECONDS: int = 1800
     AI_OR_CORRECTION_MODEL: str = ""
+    AI_OR_CORRECTION_CHUNK_CHARS: int = 2000
+    AI_OR_CORRECTION_MAX_TOKENS: int = 8192
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---
