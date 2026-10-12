@@ -150,6 +150,7 @@ class Settings(BaseSettings):
     # backend to route them through a dedicated Claude relay.
     BACKEND_POLISH_PROVIDER: str = "gemini"
     BACKEND_REFINE_PROVIDER: str = "gemini"
+    GEMINI_TEXT_PROVIDER: str = "gemini"
     CLAUDE_API_KEY: str = ""
     CLAUDE_BASE_URL: str = "https://anyrouter.top/v1"
     # AnyRouter exposes this account's Opus model under ``claude-opus-5``.

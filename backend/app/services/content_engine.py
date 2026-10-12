@@ -50,11 +50,12 @@ from app.services.classical_chinese import (
     classical_variant_for_category,
     strip_classical_paragraph_markers,
 )
-from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
+from app.services.deepseek import DeepSeekDeliveryUncertainError, DeepSeekMaxTokensError, format_book_text
 from app.services.polish_provider import (
     polish_book_text,
     refine_book_text,
     refine_provider_name,
+    polish_provider_name,
 )
 from app.services.gemini import (
     GeminiDeliveryUncertainError,
@@ -4218,6 +4219,8 @@ def _is_paid_polish_blocking_failure(exc: BaseException) -> bool:
             GeminiDeliveryUncertainError,
             ClaudeDeliveryUncertainError,
             ClaudeRequestRejectedError,
+            AigcManualReviewRequired,
+            DeepSeekDeliveryUncertainError,
         ),
     ):
         return True
@@ -4605,6 +4608,10 @@ async def _polish_by_paragraph_chunks_strict(
     abort_event = asyncio.Event()
     bypass_remaining_event = asyncio.Event()
     cache_dir = output_dir / cache_subdir if output_dir is not None else None
+    stage_provider = refine_provider_name() if progress_stage == "refine_chunk" else polish_provider_name()
+    if cache_dir is not None and stage_provider == "deepseek":
+        identity = (settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL) + (system_instruction or "")
+        cache_dir = cache_dir / ("deepseek_" + hashlib.sha256(identity.encode()).hexdigest()[:16])
     call = chunk_func or polish_book_text
     configured_timeout = (
         settings.GEMINI_POLISH_CALL_TIMEOUT
@@ -6807,9 +6814,9 @@ def _dump_stage(
         return False
 
 
-def _refine_stage_identity(category: str | None) -> dict[str, str]:
+def _refine_stage_identity(category: str | None, *, stage: str = "refine") -> dict[str, str]:
     try:
-        provider = refine_provider_name()
+        provider = polish_provider_name() if stage == "polish" else refine_provider_name()
     except Exception:
         provider = str(getattr(settings, "BACKEND_REFINE_PROVIDER", "gemini") or "gemini").strip().lower()
     provider = provider or "gemini"
@@ -6818,6 +6825,8 @@ def _refine_stage_identity(category: str | None) -> dict[str, str]:
         if provider == "gemini"
         else str(getattr(settings, "CLAUDE_MODEL", "") or "").strip()
     )
+    if provider == "deepseek":
+        model = settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL
     return {
         "category": normalize_category(category or ""),
         "provider": provider,
@@ -8269,6 +8278,15 @@ async def generate_full_book(
         path = output_dir / filename
         if not path.exists():
             return None
+        if filename in {"02_polish.md", "04_format.md"} and not direct_writer_only and polish_provider_name() == "deepseek":
+            metadata_path = _stage_metadata_path(output_dir, "02_polish.md")
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            expected = _refine_stage_identity(normalized_category, stage="polish")
+            if any(metadata.get(key) != expected[key] for key in ("provider", "model")):
+                return None
         try:
             content = path.read_text(encoding="utf-8").strip()
             return content or None
@@ -8566,7 +8584,8 @@ async def generate_full_book(
                 category=normalized_category,
             )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
-        _dump_stage(output_dir, "02_polish.md", polished_markdown)
+        _dump_stage(output_dir, "02_polish.md", polished_markdown,
+                    metadata=_refine_stage_identity(normalized_category, stage="polish"))
         polish_chars = len(polished_markdown)
         if on_stage:
             on_stage("polish_done", {"chars": polish_chars})

@@ -305,6 +305,16 @@ def generate_text(
     - Vertex 端遇到 504/499/SSL timeout 时，如果配置了 GOOGLE_API_KEY，会自动切到 API Key 通道。
     - 关闭 AFC，避免无工具调用场景下多余的 automatic function calling 行为。
     """
+    provider = settings.GEMINI_TEXT_PROVIDER.strip().lower()
+    if provider == "deepseek":
+        from app.services.deepseek_editor import generate_text as generate_deepseek_text
+
+        return generate_deepseek_text(
+            prompt, system_instruction=system_instruction, temperature=temperature,
+            max_output_tokens=max_output_tokens, request_timeout_seconds=request_timeout_seconds,
+        )
+    if provider != "gemini":
+        raise ValueError("GEMINI_TEXT_PROVIDER只支持gemini或deepseek")
     model_name = (model or settings.GEMINI_MODEL).strip()
     uses_new_controls = (
         model_name.startswith("gemini-3.6-")

@@ -122,6 +122,9 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
 def call_rewrite(text: str) -> dict:
     if not settings.AI_OR_ACCESS_KEY or not settings.AI_OR_ACCESS_SECRET:
         raise FinalizerHold("未配置降AI服务密钥，原稿已保留")
+    from app.services.generation_spend import reserve
+
+    reserve("ai-or-v1-enhanced", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, "zhuque-v1")
     try:
         with httpx.Client(timeout=httpx.Timeout(settings.AI_OR_TIMEOUT_SECONDS, connect=30)) as client:
             response = client.post(BASE + "/zhuque-direct", headers={
@@ -150,6 +153,9 @@ def call_correction(original: str, rewritten: str) -> dict:
     prompt = rules + "\n\n" + transport + "\n\n" + json.dumps(
         {"原稿": original, "降AI后": rewritten}, ensure_ascii=False)
     model = settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL
+    from app.services.generation_spend import reserve_deepseek
+
+    reserve_deepseek(prompt, None, model, 4096)
     with distributed_semaphore("deepseek-format", limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS):
         paid_api_guard.guard("deepseek")
         result = get_deepseek_client().with_options(max_retries=0).chat.completions.create(
@@ -315,7 +321,14 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
                         entry["actions"][action] = "inflight"
                         atomic_json(manifest_path, state)
                         started = time.monotonic()
-                        result = call_rewrite(chunk) if action == "rewrite" else call_correction(chunk, rewritten)
+                        try:
+                            result = call_rewrite(chunk) if action == "rewrite" else call_correction(chunk, rewritten)
+                        except AigcManualReviewRequired as exc:
+                            from app.services.generation_spend import GenerationBudgetExceeded
+
+                            if isinstance(exc, GenerationBudgetExceeded):
+                                entry["actions"].pop(action, None)
+                            raise
                         atomic_json(artifact, result)
                         logger.info("finalizer action=%s model=%s cost=%s status=completed elapsed=%.2f",
                                     action, result.get("model", "zhuque-v1-paragraph-enhanced"),
@@ -343,10 +356,10 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
             atomic_json(manifest_path, state)
             return final
         except Exception as exc:
-            state.update(status="manual_review", error=str(exc) if isinstance(exc, FinalizerHold) else type(exc).__name__)
+            state.update(status="manual_review", error=str(exc) if isinstance(exc, AigcManualReviewRequired) else type(exc).__name__)
             atomic_json(manifest_path, state)
             logger.error("finalizer status=manual_review error_type=%s", type(exc).__name__)
-            if isinstance(exc, FinalizerHold):
+            if isinstance(exc, AigcManualReviewRequired):
                 raise
             raise FinalizerHold("降AI或双稿纠错未完成，原稿与断点已保存，需人工核对") from exc
 

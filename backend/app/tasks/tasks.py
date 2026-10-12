@@ -9,6 +9,8 @@ Gravity Singularity - Celery 流水线任务
 from __future__ import annotations
 
 from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_task_manuscript
+from app.services.generation_spend import GenerationBudgetExceeded, generation_budget
+from app.services.polish_provider import polish_provider_name, refine_provider_name
 
 import asyncio
 import json
@@ -2588,11 +2590,11 @@ def process_video(_self, task_id: str) -> dict:
             "comic_structure_done": (45, f"{comic_label}短语结构已生成"),
             "comic_images_start": (86, f"{comic_label}配图启动"),
             "comic_image": (88, f"{comic_label}配图生成中"),
-            "writer_start": (28, "OpenAI 主模型生成初稿中"),
+            "writer_start": (28, f"{settings.WRITER_PROVIDER} 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
-            "polish_start": (50, "Gemini 一润启动"),
-            "polish_done": (70, "Gemini 一润完成"),
-            "refine_start": (72, "Gemini 二润中"),
+            "polish_start": (50, f"{polish_provider_name()} 一润启动"),
+            "polish_done": (70, f"{polish_provider_name()} 一润完成"),
+            "refine_start": (72, f"{refine_provider_name()} 二润中"),
             "refine_done": (85, "二润完成"),
             "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
@@ -2609,7 +2611,7 @@ def process_video(_self, task_id: str) -> dict:
                         db,
                         task,
                         progress=prog,
-                        step=f"OpenAI 主模型生成初稿中（已生成 {chars:,} 字）",
+                        step=f"{settings.WRITER_PROVIDER} 主模型生成初稿中（已生成 {chars:,} 字）",
                         run_id=run_id,
                     )
                     return
@@ -2620,7 +2622,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 70),
-                        step=f"Gemini 一润 {idx}/{total} 块",
+                        step=f"{polish_provider_name()} 一润 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return
@@ -2631,7 +2633,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 85),
-                        step=f"Gemini 二润 {idx}/{total} 块",
+                        step=f"{refine_provider_name()} 二润 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return
@@ -2676,7 +2678,8 @@ def process_video(_self, task_id: str) -> dict:
         db.flush()
         _ensure_active_run(db, task, run_id)
         db.commit()
-        markdown = asyncio.run(
+        with generation_budget(task.config or {}, output_dir):
+            markdown = asyncio.run(
             generate_full_book(
                 video_text,
                 category=category,
@@ -2714,10 +2717,11 @@ def process_video(_self, task_id: str) -> dict:
         )
         _ensure_active_run(db, task, run_id)
         markdown = normalize_final_markdown(markdown, category=category)
-        markdown = finalize_task_manuscript(
-            task, markdown, output_dir,
-            progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
-        )
+        with generation_budget(task.config or {}, output_dir):
+            markdown = finalize_task_manuscript(
+                task, markdown, output_dir,
+                progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
+            )
         integrity_issue, integrity_parts = _finance_completion_integrity_issue(
             task,
             markdown,
@@ -2915,6 +2919,7 @@ def process_video(_self, task_id: str) -> dict:
             review_task.status = TaskStatus.MANUAL_REVIEW
             review_task.progress = max(93, int(review_task.progress or 0))
             review_task.current_step = (
+                str(e) if isinstance(e, GenerationBudgetExceeded) else
                 "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
                 if isinstance(e, FinalizerHold)
                 else "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"

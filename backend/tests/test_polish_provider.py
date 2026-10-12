@@ -26,7 +26,7 @@ def test_polish_provider_routes_only_configured_stage_to_claude(monkeypatch: pyt
 
 def test_invalid_polish_provider_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "BACKEND_POLISH_PROVIDER", "openai")
-    with pytest.raises(ValueError, match="只支持 gemini 或 claude"):
+    with pytest.raises(ValueError, match="只支持 gemini、claude 或 deepseek"):
         polish_provider.polish_book_text("text")
 
 

@@ -139,8 +139,17 @@ def generate_text(
     thinking: bool | None = None,
     fail_on_max_tokens: bool = False,
     on_progress: Callable[[int], None] | None = None,
+    request_timeout_seconds: float | None = None,
 ) -> str:
+    from app.services.generation_spend import active, reserve_deepseek
+
+    max_output_tokens = reserve_deepseek(prompt, system_instruction, model or settings.DEEPSEEK_MODEL, max_output_tokens)
+    if active():
+        thinking = False
+        fail_on_max_tokens = True
     client = get_deepseek_client()
+    if request_timeout_seconds:
+        client = client.with_options(timeout=httpx.Timeout(float(request_timeout_seconds), connect=60.0))
     messages: list[dict[str, str]] = []
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction})
