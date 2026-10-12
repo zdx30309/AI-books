@@ -8111,6 +8111,7 @@ async def generate_full_book(
     aigc_policy_version: str | None = None,
     general_short_sources: list[tuple[str, str]] | None = None,
     general_short_book_title: str = "",
+    approved_final_structure_repair_sha256: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
     if normalized_category == "general_longform":
@@ -8295,7 +8296,11 @@ async def generate_full_book(
             return None
 
     final_resume_markdown = _read_stage("04_format.md")
-    if final_resume_markdown and not direct_writer_only:
+    if approved_final_structure_repair_sha256:
+        from app.services.final_structure_repair import load_approved_structure
+
+        final_resume_markdown = load_approved_structure(output_dir, normalized_category, approved_final_structure_repair_sha256)
+    if final_resume_markdown and not direct_writer_only and not approved_final_structure_repair_sha256:
         # Do not let a legacy partial 03/04 pair permanently bypass the
         # corrected Gemini二润 path.  Keep the intact earlier checkpoint when
         # possible so a retry resumes without regenerating the paid writer.

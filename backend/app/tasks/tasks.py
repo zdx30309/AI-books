@@ -2713,6 +2713,7 @@ def process_video(_self, task_id: str) -> dict:
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
                 aigc_required=False if enabled_for(task.created_at) else bool((task.config or {}).get("aigc_required")),
                 aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
+                approved_final_structure_repair_sha256=(task.config or {}).get("approved_final_structure_repair_sha256"),
             )
         )
         _ensure_active_run(db, task, run_id)
