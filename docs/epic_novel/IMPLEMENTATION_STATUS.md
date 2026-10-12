@@ -8,6 +8,7 @@
 - 验证：`PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests` → 1257 passed、1 skipped；新增5项路由、提示词、预算持久化/线程传播、断路测试。`git diff --check`通过。Supabase集成仍跳过；本地既有10月6日修改未纳入本次提交。
 - 发布验收：b79a092已推送origin/main并部署北京ECS；13个发布文件与Git一致，四个Python服务增量镜像已更新，未重建Redis/删除数据卷。公开健康接口和首页HTTP200，运行配置主笔/一润/二润/Gemini文本重定向及纠错均为DeepSeek，模型统一deepseek-flash。回滚源码/环境及旧镜像保留在/opt/video-plan-release-backups/deepseek-b79a092。
 - 续跑实测：指定书原始01_writer.md哈希未变；旧Gemini定时消息因部署暂停状态安全跳过，只投递一次新任务；DeepSeek官方接口返回200，一润9块已完成并进入二润。预算账本已预留2.240850元/10元（10次调用上界，非实际收费），未调用Gemini。该时点书籍仍processing，未宣称导出或全书完成；完整 Epic 验收结论不变。
+- 最终阻塞：DeepSeek二润及格式调用完成后，终稿结构门禁检测前三章816/760/665字，相邻短章2处，被既有不可自动修复规则阻止。未调用AI橡皮擦/双稿纠错，未完成导出；17次DeepSeek调用累计保守预留3.843930元（不是实际收费）。已保留初稿、一润/二润/格式稿和质检报告，设置manual_review及generation_hold，等待用户确认是否改动原稿章节结构；未放宽门禁或重跑整篇。
 
 ## AI橡皮擦最终交付阶段（2026-10-10）
 
