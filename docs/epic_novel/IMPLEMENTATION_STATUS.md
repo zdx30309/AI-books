@@ -6,7 +6,8 @@
 - 完成：新增 DeepSeek 润色适配器及 Gemini 文本调用总开关；DeepSeek 模型身份写入断点，分块缓存按模型/提示词隔离，旧 Gemini 一润/终稿不直接复用；进度显示实际供应商，不再固定显示 Gemini。
 - 本次指定书籍 757101ff-6285-4038-90e5-0cdaeaabe8e2 获准从保存初稿续跑，新增费用上限10元。调用前按保守峰值价格、输出上限及 AI橡皮擦增强费率预留预算，账本跨重试持久化；预算不足/未知模型价格/付费响应不确定则人工暂停，绝不自动换供应商或突破上限。预留金额不是实际账单。
 - 验证：`PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests` → 1257 passed、1 skipped；新增5项路由、提示词、预算持久化/线程传播、断路测试。`git diff --check`通过。Supabase集成仍跳过；本地既有10月6日修改未纳入本次提交。
-- 发布待验收：北京ECS环境切换、服务健康检查、指定任务续跑及实际模型/预算/交付文件核验；完整 Epic 验收结论不变。
+- 发布验收：b79a092已推送origin/main并部署北京ECS；13个发布文件与Git一致，四个Python服务增量镜像已更新，未重建Redis/删除数据卷。公开健康接口和首页HTTP200，运行配置主笔/一润/二润/Gemini文本重定向及纠错均为DeepSeek，模型统一deepseek-flash。回滚源码/环境及旧镜像保留在/opt/video-plan-release-backups/deepseek-b79a092。
+- 续跑实测：指定书原始01_writer.md哈希未变；旧Gemini定时消息因部署暂停状态安全跳过，只投递一次新任务；DeepSeek官方接口返回200，一润9块已完成并进入二润。预算账本已预留2.240850元/10元（10次调用上界，非实际收费），未调用Gemini。该时点书籍仍processing，未宣称导出或全书完成；完整 Epic 验收结论不变。
 
 ## AI橡皮擦最终交付阶段（2026-10-10）
 
