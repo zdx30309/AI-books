@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import zipfile
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -27,8 +28,10 @@ from app.utils.distributed_limiter import distributed_semaphore
 logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 VERSION = "ai-or-final-v1"
+_profile = ContextVar("ai_or_editor_profile", default="")
 BASE = "https://api.ai-or.com/c/api/open/workflow"
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+PACKAGING_MARKERS = {"@最终书名", "@最终简介", "@目录", "@导言", "@正文"}
 ET.register_namespace("w", WORD)
 
 
@@ -64,8 +67,12 @@ def split_chunks(text: str, limit: int) -> list[str]:
         raise FinalizerHold("降AI分段上限必须为1000至50000字符")
     parts: list[str] = []
     buffer = ""
+    metadata_section = False
     for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith(("#", "![")):
+        if _profile.get() == "editor-v0.5" and line.strip() in PACKAGING_MARKERS:
+            metadata_section = line.strip() in {"@最终书名", "@最终简介", "@目录"}
+        protected_metadata = _profile.get() == "editor-v0.5" and (metadata_section or line.strip() in PACKAGING_MARKERS)
+        if line.lstrip().startswith(("#", "![")) or protected_metadata:
             if buffer:
                 parts.append(buffer)
                 buffer = ""
@@ -158,7 +165,14 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
     for start, end, replacement, _issue in reversed(spans):
         final = final[:start] + replacement + final[end:]
     if structure(final) != structure(text):
-        raise FinalizerHold("纠错建议改变加工符号或标题，需要人工确认")
+        if _profile.get() != "editor-v0.5":
+            raise FinalizerHold("纠错建议改变加工符号或标题，需要人工确认")
+        original_headings = [line for line in text.splitlines() if line.lstrip().startswith("#")]
+        final_headings = [line for line in final.splitlines() if line.lstrip().startswith("#")]
+        original_images = [line for line in text.splitlines() if line.lstrip().startswith("![")]
+        final_images = [line for line in final.splitlines() if line.lstrip().startswith("![")]
+        if len(original_headings) != len(final_headings) or original_images != final_images:
+            raise FinalizerHold("纠错不能增删章节或修改图像链接")
     return final, [item[3] for item in spans]
 
 
@@ -185,9 +199,16 @@ def call_rewrite(text: str) -> dict:
         raise FinalizerHold("未配置降AI服务密钥，原稿已保留")
     from app.services.generation_spend import reserve
 
-    body = _rewrite_body(text)
-    path = str(getattr(settings, "AI_OR_REWRITE_PATH", "/text") or "/text")
-    reservation_index = reserve("ai-or-v1-enhanced", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, "zhuque-v1")
+    if _profile.get() == "editor-v0.5":
+        body = {"accessKey": settings.AI_OR_ACCESS_KEY, "accessSecret": settings.AI_OR_ACCESS_SECRET,
+                "inputText": text, "repair_paragraphs": False}
+        path = "/zhuque-direct"
+    else:
+        body = _rewrite_body(text)
+        path = str(getattr(settings, "AI_OR_REWRITE_PATH", "/text") or "/text")
+    if path not in {"/text", "/zhuque-direct"}:
+        raise FinalizerHold("降AI接口路径不在已验证的端点范围内")
+    reservation_index = reserve("ai-or-rewrite", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, path)
     try:
         with httpx.Client(timeout=httpx.Timeout(settings.AI_OR_TIMEOUT_SECONDS, connect=30)) as client:
             response = client.post(BASE + path, headers={
@@ -203,6 +224,7 @@ def call_rewrite(text: str) -> dict:
         saved = {key: result.get(key) for key in (
             "taskId", "status", "outputText", "consumeAmount", "consumeCharCount", "executeTime")}
         saved["budget_reservation_index"] = reservation_index
+        saved["model"] = "zhuque-v1" if path == "/zhuque-direct" else str(body.get("workModeId") or body.get("workMode"))
         return saved
     except FinalizerHold:
         raise
@@ -211,8 +233,10 @@ def call_rewrite(text: str) -> dict:
 
 
 def call_correction(original: str, rewritten: str, max_tokens: int | None = None) -> dict:
-    rules = (PROMPTS / "ai_or_dual_manuscript_correction.md").read_text(encoding="utf-8")
-    transport = (PROMPTS / "ai_or_correction_transport.md").read_text(encoding="utf-8")
+    rules_path = PROMPTS / ("editor_v05/correction.md" if _profile.get() == "editor-v0.5" else "ai_or_dual_manuscript_correction.md")
+    rules = rules_path.read_text(encoding="utf-8")
+    transport_path = PROMPTS / ("editor_v05/correction_transport.md" if _profile.get() == "editor-v0.5" else "ai_or_correction_transport.md")
+    transport = transport_path.read_text(encoding="utf-8")
     prompt = rules + "\n\n" + transport + "\n\n" + json.dumps(
         {"原稿": original, "降AI后": rewritten}, ensure_ascii=False)
     model = settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL
@@ -296,7 +320,8 @@ def word_document(before: str, after: str | None = None) -> bytes:
 
 def write_delivery(directory: Path, original: str, rewritten: str, final: str,
                    issues: list[dict], title: str, stamp: str) -> dict:
-    safe_title = re.sub(r'[\s/\\:*?"<>|%]+', "", title)[:80] or "书稿"
+    replacements = str.maketrans('/\\:*?"<>|', '／＼：＊？＂＜＞｜')
+    safe_title = re.sub(r"\s+", "_", title.strip()).translate(replacements) or "书稿"
     stem = f"【降AI后纠错】_{safe_title}_{stamp}"
     workbook = Workbook()
     sheet = workbook.active
@@ -338,7 +363,15 @@ def write_delivery(directory: Path, original: str, rewritten: str, final: str,
     return {"docx": stem + ".docx", "xlsx": stem + ".xlsx", "zip": "delivery.zip"}
 
 
-def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None) -> str:
+def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None, profile: str = "") -> str:
+    token = _profile.set(profile)
+    try:
+        return _finalize_manuscript(text, output_dir, title=title, progress=progress)
+    finally:
+        _profile.reset(token)
+
+
+def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None) -> str:
     directory = output_dir / "ai_or_finalizer"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "workflow.lock").open("a") as lock:
@@ -348,11 +381,16 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
             raise FinalizerHold("该书降AI交付步骤正在运行，禁止并行重复扣费") from exc
         manifest_path = directory / "manifest.json"
         state = json.loads(manifest_path.read_text()) if manifest_path.exists() else {
-            "version": VERSION, "source_hash": digest(text), "status": "running",
+            "version": _profile.get() or VERSION, "source_hash": digest(text), "status": "running",
             "stamp": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%-m月%-d日_%H时%M分%S秒"),
             "chunks": [], "detection": "not_requested"}
-        if state["source_hash"] != digest(text) or state.get("version") != VERSION:
+        if state["source_hash"] != digest(text) or state.get("version") != (_profile.get() or VERSION):
             raise FinalizerHold("原稿或处理版本已变更，已有付费断点不能覆盖；请人工确认")
+        if _profile.get() == "editor-v0.5":
+            prompt_hash = digest((PROMPTS / "editor_v05/correction.md").read_text() +
+                                 (PROMPTS / "editor_v05/correction_transport.md").read_text())
+            if state.setdefault("correction_prompt_hash", prompt_hash) != prompt_hash:
+                raise FinalizerHold("纠错提示词已变更，不能覆盖已有付费断点")
         if state["status"] == "completed":
             final = (directory / "final.md").read_text(encoding="utf-8")
             if digest(final) != state["final_hash"]:
@@ -362,9 +400,13 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
         atomic_json(manifest_path, state)
         chunks = split_chunks(text, settings.AI_OR_CHUNK_CHARS)
         rewrites, finals, issues = [], [], []
+        metadata_section = False
         try:
             for index, chunk in enumerate(chunks):
-                if not chunk.strip() or chunk.lstrip().startswith(("#", "![")):
+                if _profile.get() == "editor-v0.5" and chunk.strip() in PACKAGING_MARKERS:
+                    metadata_section = chunk.strip() in {"@最终书名", "@最终简介", "@目录"}
+                protected_metadata = _profile.get() == "editor-v0.5" and (metadata_section or chunk.strip() in PACKAGING_MARKERS)
+                if not chunk.strip() or chunk.lstrip().startswith(("#", "![")) or protected_metadata:
                     rewrites.append(chunk)
                     finals.append(chunk)
                     if len(state["chunks"]) <= index:
@@ -460,6 +502,7 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
             final = "".join(finals)
             if any(issue["severe"] for issue in issues):
                 atomic_json(directory / "issues.json", issues)
+            state["stamp"] = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%-m月%-d日_%H时%M分%S秒")
             artifacts = write_delivery(directory, text, rewritten, final, issues, title, state["stamp"])
             severe_count = sum(1 for issue in issues if issue["severe"])
             if severe_count and bool(getattr(settings, "AI_OR_SEVERE_BLOCKS_DELIVERY", False)):
@@ -481,6 +524,10 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
 def finalize_task_manuscript(task, text: str, output_dir: Path, *, progress=None) -> str:
     if not enabled_for(task.created_at):
         return text
+    from app.services.editor_v05 import applies, finalize_editor_task
+
+    if applies(task):
+        return finalize_editor_task(task, text, output_dir, progress=progress)
     cfg = dict(task.config or {})
     heading = next((line.lstrip("#").strip() for line in text.splitlines() if line.startswith("#")), "书稿")
     final = finalize_manuscript(text, output_dir, title=str(cfg.get("title") or heading), progress=progress)

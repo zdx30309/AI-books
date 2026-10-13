@@ -8112,6 +8112,7 @@ async def generate_full_book(
     general_short_sources: list[tuple[str, str]] | None = None,
     general_short_book_title: str = "",
     approved_final_structure_repair_sha256: str | None = None,
+    editor_v05_delivery: bool = False,
 ) -> str:
     normalized_category = normalize_category(category)
     if normalized_category == "general_longform":
@@ -8989,6 +8990,7 @@ async def generate_full_book(
     if (
         normalized_category == "general_short"
         and getattr(settings, "GENERAL_SHORT_DIFFERENTIATION_ENABLED", True)
+        and not editor_v05_delivery
     ):
         # 原稿＝本轮青豆解析出的视频文案（writer_input_text 即 raw_text）。
         # 多来源时由调用方通过 sources= 传入列表；此处默认单来源。

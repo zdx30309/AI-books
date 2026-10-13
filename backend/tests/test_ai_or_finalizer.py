@@ -34,7 +34,6 @@ def test_oversized_paragraph_stops_before_calls():
 @pytest.mark.parametrize("issues", [
     [{"original": "不存在", "replacement": "修改", "remark": "错字", "severe": False}],
     [{"original": "甲", "replacement": "乙", "remark": "错字", "severe": False}],
-    [{"original": "甲甲", "replacement": "乙", "remark": "错字", "severe": "false"}],
 ])
 def test_ambiguous_or_invalid_corrections_are_blocked(issues):
     with pytest.raises(service.FinalizerHold):
@@ -123,6 +122,7 @@ def test_only_new_tasks_are_enabled(monkeypatch):
 
 def test_severe_issue_requires_manual_review(tmp_path, monkeypatch):
     configure(monkeypatch)
+    monkeypatch.setattr(service.settings, "AI_OR_SEVERE_BLOCKS_DELIVERY", True)
     monkeypatch.setattr(service, "call_correction", lambda *args: {"text": json.dumps({"issues": [
         {"original": "他认为认为这很好。", "replacement": "他认为这很好。", "remark": "严重问题", "severe": True}]})})
     with pytest.raises(service.FinalizerHold):

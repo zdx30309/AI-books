@@ -9,6 +9,7 @@ Gravity Singularity - Celery 流水线任务
 from __future__ import annotations
 
 from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_task_manuscript
+from app.services.editor_v05 import applies as editor_v05_applies
 from app.services.generation_spend import GenerationBudgetExceeded, generation_budget
 from app.services.polish_provider import polish_provider_name, refine_provider_name
 
@@ -2718,6 +2719,7 @@ def process_video(_self, task_id: str) -> dict:
                 aigc_required=False if enabled_for(task.created_at) else bool((task.config or {}).get("aigc_required")),
                 aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
                 approved_final_structure_repair_sha256=(task.config or {}).get("approved_final_structure_repair_sha256"),
+                editor_v05_delivery=editor_v05_applies(task),
             )
         )
         _ensure_active_run(db, task, run_id)

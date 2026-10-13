@@ -105,7 +105,7 @@ class LiteralLayer:
     is_copy: bool = False
 
 
-def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
+def measure_literal(source_text: str, draft_text: str, *, exact_metrics: bool = False) -> LiteralLayer:
     source = normalize(denoise(source_text))
     draft = normalize(denoise(draft_text))
     layer = LiteralLayer(source_chars=len(source), draft_chars=len(draft))
@@ -122,7 +122,7 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
         layer.literal_reuse_score = COPY_SIMILARITY
         layer.literal_grade_d = 100.0
         for size in GRAM_SIZES:
-            grams = shingles(source, size)
+            grams = set() if exact_metrics and len(source) < size else shingles(source, size)
             layer.ngrams.append(NgramRow(size, len(grams), len(grams), len(grams), 1.0))
         return layer
 
@@ -130,7 +130,8 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
 
     shared_by_size: dict[int, int] = {}
     for size in GRAM_SIZES:
-        gs, gd = shingles(source, size), shingles(draft, size)
+        gs = set() if exact_metrics and len(source) < size else shingles(source, size)
+        gd = set() if exact_metrics and len(draft) < size else shingles(draft, size)
         shared = len(gs & gd)
         shared_by_size[size] = shared
         layer.ngrams.append(
@@ -154,7 +155,7 @@ def measure_literal(source_text: str, draft_text: str) -> LiteralLayer:
                     continue
                 ratio = SequenceMatcher(None, normalize(d), normalize(s), autojunk=False).ratio()
                 cand = max(cand, ratio)
-                if cand >= 0.99:
+                if cand >= 0.99 and not exact_metrics:
                     break
             best = max(best, cand)
             if cand >= 0.5:
@@ -366,6 +367,8 @@ class SourceAudit:
     data_points: list[dict[str, str]] = field(default_factory=list)
     case_pairs: list[dict[str, str]] = field(default_factory=list)
     entity_counts: list[dict[str, str]] = field(default_factory=list)
+    editorial_risks: dict = field(default_factory=dict)
+    editorial_notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -388,6 +391,8 @@ class SourceAudit:
             "data_points": self.data_points,
             "case_pairs": self.case_pairs,
             "entity_counts": self.entity_counts,
+            "editorial_risks": self.editorial_risks,
+            "editorial_notes": self.editorial_notes,
         }
 
 

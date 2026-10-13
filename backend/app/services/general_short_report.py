@@ -75,7 +75,8 @@ def _table(rows: list[list[str]], *, header: bool = True) -> str:
             f'{_para(cell, "TableHeader" if (header and idx == 0) else "TableCell")}</w:tc>'
             for cell in row
         )
-        out.append(f"<w:tr>{cells}</w:tr>")
+        properties = '<w:trPr><w:cantSplit/>' + ('<w:tblHeader/>' if header and idx == 0 else '') + '</w:trPr>'
+        out.append(f"<w:tr>{properties}{cells}</w:tr>")
     out.append("</w:tbl>")
     return "".join(out)
 
@@ -83,14 +84,14 @@ def _table(rows: list[list[str]], *, header: bool = True) -> str:
 def _styles_xml() -> str:
     """黑体 headings, 宋体 body, per appendix six."""
     return f'''<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="{W}">
-<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体"/><w:sz w:val="21"/></w:rPr></w:rPrDefault>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/><w:color w:val="000000"/><w:sz w:val="21"/></w:rPr></w:rPrDefault>
 <w:pPrDefault><w:pPr><w:spacing w:after="100" w:line="320" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
-<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/><w:sz w:val="36"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/><w:sz w:val="32"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/><w:sz w:val="28"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/><w:sz w:val="24"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="TableHeader"><w:name w:val="Table Header"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="260" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/><w:sz w:val="19"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:rFonts w:ascii="黑体" w:hAnsi="黑体" w:eastAsia="黑体"/><w:b/><w:sz w:val="36"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:rFonts w:ascii="黑体" w:hAnsi="黑体" w:eastAsia="黑体"/><w:b/><w:sz w:val="32"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:rFonts w:ascii="黑体" w:hAnsi="黑体" w:eastAsia="黑体"/><w:b/><w:sz w:val="28"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:rFonts w:ascii="黑体" w:hAnsi="黑体" w:eastAsia="黑体"/><w:b/><w:sz w:val="24"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="TableHeader"><w:name w:val="Table Header"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="260" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="黑体" w:hAnsi="黑体" w:eastAsia="黑体"/><w:b/><w:sz w:val="19"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="TableCell"><w:name w:val="Table Cell"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="260" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="19"/></w:rPr></w:style>
 </w:styles>'''
 
@@ -154,7 +155,7 @@ def _conclusion(worst: SourceAudit, report: MultiSourceReport) -> str:
     parts: list[str] = []
     boundary = f"　{report.overall_boundary}" if report.overall_boundary else ""
     parts.append(_para(
-        f"综合相似度：{_pct(report.max_composite)}　判定：{report.overall_verdict}{boundary}",
+        f"综合相似度：{_pct(report.max_composite)}　判定：{report.overall_verdict}{boundary}（<50%安全，≥50%高危）",
         "Heading2", bold=True,
     ))
     parts.append(_para(f"结构框架相似度：{_pct(worst.structure.structure_score)}", "Heading2"))
@@ -192,10 +193,10 @@ def _scoring_detail(report: MultiSourceReport) -> str:
              _pct(src.structure.narrative_spine_score * 0.30)],
             ["结构框架相似度 S", "S", "—", _pct(src.structure.structure_score),
              _pct(src.structure.structure_score)],
-            ["数据沿用率", "A", "30%", _pct(src.material_data), "—"],
-            ["举例与案例组合沿用度", "B", "25%", _pct(src.material_case), "—"],
-            ["具名主体沿用度", "C", "20%", _pct(src.material_entity), "—"],
-            ["字面重合度", "D", "25%", _pct(src.material_literal), "—"],
+            ["数据沿用率", "A", "30%", _pct(src.material_data), _pct(src.material_data * 0.3)],
+            ["举例与案例组合沿用度", "B", "25%", _pct(src.material_case), _pct(src.material_case * 0.25)],
+            ["具名主体沿用度", "C", "20%", _pct(src.material_entity), _pct(src.material_entity * 0.2)],
+            ["字面重合度", "D", "25%", _pct(src.material_literal), _pct(src.material_literal * 0.25)],
             ["素材相似度 M", "M", "—", _pct(src.material_score), _pct(src.material_score)],
             ["综合相似度", "S×0.60＋M×0.40", "—", _pct(src.composite), _pct(src.composite)],
         ]
@@ -242,6 +243,8 @@ def _structure_evidence(report: MultiSourceReport) -> str:
         ))
         if src.structure.unit_none == 0:
             parts.append(_para("原稿的每一个论点都被接走了。"))
+        if src.editorial_notes:
+            parts.append(_para(src.editorial_notes))
     return "".join(parts)
 
 
@@ -308,6 +311,11 @@ def _risk_and_advice(report: MultiSourceReport) -> str:
         ["平台原创审核风险", _risk_level(report.max_composite),
          "以平台原创度与洗稿识别规则为准；本报告只给风险等级，不产出法律结论。"],
     ])]
+    if worst.editorial_risks:
+        parts = [_table([["风险层", "等级", "理由"]] + [
+            [name, worst.editorial_risks[name]["level"], worst.editorial_risks[name]["reason"]]
+            for name in ("著作权风险", "反不正当竞争风险", "平台原创审核风险")
+        ]), _para("本报告仅说明风险，不构成确定性违法、侵权或诉讼结论。")]
     parts.append(_para("改法建议（优先改骨架）：" + worst.fix_directive))
     return "".join(parts)
 
@@ -331,6 +339,9 @@ def _reproducibility(report: MultiSourceReport) -> str:
         f"50.1%—{JUST_OVER_MAX:.1f}% 标【刚过线】；S≥70% 必须给出结构兜底提示。"
     )]
     parts.append(_para(f"被审查新稿：{report.draft_name or '（未命名）'}"))
+    for source in report.sources:
+        parts.append(_para(f"原稿去空白字数：{source.literal.source_chars}；新稿去空白字数：{source.literal.draft_chars}；"
+                           f"新稿／原稿篇幅比：{source.literal.length_ratio:.1f}%。"))
     parts.append(_para("被审查原稿：" + "；".join(s.source_name for s in report.sources)))
     parts.append(_para("生成时间：" + datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S") + "（UTC+8）"))
     return "".join(parts)
@@ -349,6 +360,7 @@ def build_report_docx(report: MultiSourceReport, *, book_title: str = "", draft_
 
     worst = max(report.sources, key=lambda s: s.composite)
     body.append(_conclusion(worst, report))
+    body.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
 
     if len(report.sources) > 1:
         body.append(_para("多来源总览（门槛取最高综合相似度）", "Heading2"))

@@ -3057,7 +3057,7 @@ def _build_similarity_report_response(task: Task) -> Response:
     if not report_dir.is_dir():
         raise HTTPException(
             status_code=404,
-            detail="该任务未生成文本相似度审查报告（仅通用短篇在存在原稿时生成）",
+            detail="该任务未生成文本相似度审查报告（0.5版或通用短篇需要完整原稿）",
         )
     reports = sorted(report_dir.glob("*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
     if not reports:
@@ -3094,6 +3094,8 @@ def _build_single_download_response(
     if ((task.config or {}).get("ai_or_finalizer_status") == "completed" and fmt == "docx"
             and category != "comic_series" and not is_healing_comic_family(category)):
         directory = _task_output_dir(task.id) / "ai_or_finalizer"
+        if (task.config or {}).get("editor_v05_status") == "completed":
+            directory = _task_output_dir(task.id) / "editor_v05/ai_or_finalizer"
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
         filename = manifest["artifacts"]["docx"]
         return FileResponse(directory / filename, filename=filename,
@@ -3167,7 +3169,10 @@ def download_ai_or_delivery(task_id: UUID, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.status != TaskStatus.COMPLETED or (task.config or {}).get("ai_or_finalizer_status") != "completed":
         raise HTTPException(status_code=409, detail="降AI纠错交付尚未完成")
-    path = _task_output_dir(task.id) / "ai_or_finalizer" / "delivery.zip"
+    directory = _task_output_dir(task.id) / "ai_or_finalizer"
+    if (task.config or {}).get("editor_v05_status") == "completed":
+        directory = _task_output_dir(task.id) / "editor_v05/ai_or_finalizer"
+    path = directory / "delivery.zip"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="交付文件不存在")
     return FileResponse(path, filename=f"降AI纠错_{task.id}.zip", media_type="application/zip")

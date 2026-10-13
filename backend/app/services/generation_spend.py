@@ -77,7 +77,7 @@ def settle_rewrite(call_index, receipt_path):
             if call.get("receipt") != reference or call.get("actual_cny") != amount or call.get("provider_task_id") != receipt["taskId"]:
                 raise GenerationBudgetExceeded("已结算凭据发生变化")
             return
-        if call.get("action") != "ai-or-v1-enhanced" or amount > call["upper_bound_cny"]:
+        if call.get("action") not in {"ai-or-v1-enhanced", "ai-or-rewrite"} or amount > call["upper_bound_cny"]:
             raise GenerationBudgetExceeded("降AI实际账单超过对应预算，需人工核对")
         if any(item.get("receipt") == reference or item.get("provider_task_id") == receipt["taskId"] for item in state["calls"]):
             raise GenerationBudgetExceeded("同一账单不能用于重复释放预算")

@@ -8,6 +8,7 @@ from app.services import ai_or_finalizer as finalizer, human_delivery_acceptance
 
 
 def create_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(finalizer.settings, "AI_OR_SEVERE_BLOCKS_DELIVERY", True)
     source = "原稿内容已明确收紧。\n"
     monkeypatch.setattr(finalizer, "call_rewrite", lambda text: {"outputText": text.replace("收紧", "放宽")})
     monkeypatch.setattr(finalizer, "call_correction", lambda *args: {"text": json.dumps({"issues": [{
