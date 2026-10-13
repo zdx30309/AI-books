@@ -132,10 +132,14 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
             raise FinalizerHold("纠错记录格式错误")
         before, after = issue.get("original"), issue.get("replacement")
         remark = issue.get("remark")
+        if before == after:
+            # 模型有时会把“无需改动”的句子也列进来；这是空操作，跳过即可，
+            # 不能让一条 no-op 记录把整份交付停在 manual_review。
+            continue
         if (not isinstance(before, str) or not before or not isinstance(after, str)
                 or not isinstance(remark, str)
                 or max(len(before), len(after), len(remark)) > 2000
-                or text.count(before) != 1 or before == after):
+                or text.count(before) != 1):
             raise FinalizerHold("纠错记录无法唯一定位或超出可读表格长度，已保存模型输出")
         # 模型偶尔漏写 severe 或写成字符串；缺省按“非严重”处理，避免一条格式瑕疵
         # 让整份交付停在 manual_review。
@@ -155,7 +159,7 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
         final = final[:start] + replacement + final[end:]
     if structure(final) != structure(text):
         raise FinalizerHold("纠错建议改变加工符号或标题，需要人工确认")
-    return final, issues
+    return final, [item[3] for item in spans]
 
 
 def _rewrite_body(text: str) -> dict:
