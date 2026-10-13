@@ -70,7 +70,7 @@ def call_audit(source: str, draft: str) -> dict:
     prompt = rules + "\n\n" + transport + "\n\n" + json.dumps({"原稿": source, "新稿": draft}, ensure_ascii=False)
     model = settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL
     cap = settings.EDITOR_V05_AUDIT_MAX_TOKENS
-    reserve_deepseek(prompt, None, model, cap)
+    cap, reservation_index = reserve_deepseek(prompt, None, model, cap, with_index=True)
     with distributed_semaphore("deepseek-format", limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS):
         paid_api_guard.guard("deepseek")
         response = get_deepseek_client().with_options(max_retries=0).chat.completions.create(
@@ -80,7 +80,9 @@ def call_audit(source: str, draft: str) -> dict:
         )
     choice = response.choices[0]
     result = {"text": choice.message.content or "", "model": model, "finish_reason": choice.finish_reason,
-              "usage": response.usage.model_dump() if response.usage else None, "cost": None}
+              "usage": response.usage.model_dump() if response.usage else None, "cost": None,
+              "budget_reservation_index": reservation_index, "response_id": getattr(response, "id", None),
+              "response_model": getattr(response, "model", None)}
     logger.info("editor-v05 action=similarity model=%s cost=null status=%s", model, choice.finish_reason)
     return result
 
@@ -237,6 +239,9 @@ def audit_manuscript(source: str, draft: str, directory: Path, title: str) -> di
                 raise
             atomic_json(response_path, response)
         response = json.loads(response_path.read_text())
+        from app.services.generation_spend import settle_deepseek_usage
+
+        settle_deepseek_usage(response.get("budget_reservation_index"), response_path)
         if response.get("finish_reason") != "stop":
             raise FinalizerHold("相似度模型报告输出不完整，已保存，不自动重放")
         report = scored_report(source, draft, json.loads(response["text"]), title)

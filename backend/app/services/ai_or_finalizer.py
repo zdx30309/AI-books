@@ -243,7 +243,7 @@ def call_correction(original: str, rewritten: str, max_tokens: int | None = None
     cap = int(max_tokens or settings.AI_OR_CORRECTION_MAX_TOKENS)
     from app.services.generation_spend import reserve_deepseek
 
-    reserve_deepseek(prompt, None, model, cap)
+    cap, reservation_index = reserve_deepseek(prompt, None, model, cap, with_index=True)
     with distributed_semaphore("deepseek-format", limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS):
         paid_api_guard.guard("deepseek")
         result = get_deepseek_client().with_options(max_retries=0).chat.completions.create(
@@ -257,7 +257,9 @@ def call_correction(original: str, rewritten: str, max_tokens: int | None = None
     if choice.finish_reason != "stop":
         raise FinalizerHold(TRUNCATED)
     return {"text": choice.message.content or "", "model": model,
-            "usage": result.usage.model_dump() if result.usage else None, "cost": None}
+            "usage": result.usage.model_dump() if result.usage else None, "cost": None,
+            "budget_reservation_index": reservation_index, "response_id": getattr(result, "id", None),
+            "response_model": getattr(result, "model", None)}
 
 
 def word_document(before: str, after: str | None = None) -> bytes:
@@ -491,6 +493,9 @@ def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", 
                             continue
                         result = paid(f"correction_{part}", directory / f"{index:05d}_correction_{part:02d}.json",
                                       lambda piece=piece: call_correction(chunk, piece, cap), cap)
+                        from app.services.generation_spend import settle_deepseek_usage
+
+                        settle_deepseek_usage(result.get("budget_reservation_index"), directory / f"{index:05d}_correction_{part:02d}.json")
                         piece_final, piece_issues = parse_issues(result["text"], piece)
                         corrected_parts.append(piece_final)
                         chunk_issues.extend(piece_issues)

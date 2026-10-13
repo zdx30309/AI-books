@@ -86,12 +86,51 @@ def settle_rewrite(call_index, receipt_path):
         atomic_json(path, state)
 
 
-def reserve_deepseek(prompt, system, model, max_tokens):
+def reserve_deepseek(prompt, system, model, max_tokens, *, with_index=False):
     if not active():
-        return max_tokens
+        return (max_tokens, None) if with_index else max_tokens
     if model not in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}:
         raise GenerationBudgetExceeded("当前预算未核定该模型的价格，暂停付费请求")
     cap = int(max_tokens or 16384)
     input_bound = len(prompt.encode()) + len((system or "").encode()) + 1000
-    reserve("deepseek-text", (input_bound * 0.3 + cap * 1.2) / 1000000 * 10, model)
-    return cap
+    index = reserve("deepseek-text", (input_bound * 0.3 + cap * 1.2) / 1000000 * 10, model)
+    return (cap, index) if with_index else cap
+
+
+def settle_deepseek_usage(call_index, receipt_path):
+    context = _current.get()
+    if context is None or call_index is None:
+        return
+    directory, limit = context
+    receipt_path = Path(receipt_path).resolve()
+    if not receipt_path.is_relative_to(directory.resolve()):
+        raise GenerationBudgetExceeded("DeepSeek用量凭据路径超出预算目录")
+    receipt = json.loads(receipt_path.read_text())
+    usage, response_id = receipt.get("usage"), receipt.get("response_id")
+    if not isinstance(usage, dict) or not isinstance(response_id, str) or not response_id:
+        return
+    input_tokens, output_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if type(input_tokens) is not int or type(output_tokens) is not int or input_tokens <= 0 or output_tokens <= 0:
+        raise GenerationBudgetExceeded("DeepSeek返回token用量无效，保留原预算上界")
+    amount = round((input_tokens * 0.3 + output_tokens * 1.2) / 1000000 * 10, 6)
+    path = directory / "generation_spend.json"
+    with (directory / "generation_spend.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        if type(call_index) is not int or not 0 <= call_index < len(state["calls"]):
+            raise GenerationBudgetExceeded("DeepSeek用量对应的预留记录无效")
+        call = state["calls"][call_index]
+        reference = str(receipt_path.relative_to(directory.resolve()))
+        if call.get("status") == "usage_verified_upper_bound_not_actual_invoice":
+            if call.get("receipt") != reference or call.get("provider_response_id") != response_id or call.get("usage") != usage:
+                raise GenerationBudgetExceeded("DeepSeek已核定用量发生变化")
+            return
+        if call.get("action") != "deepseek-text" or receipt.get("model") != call.get("model") or amount > call["upper_bound_cny"]:
+            raise GenerationBudgetExceeded("DeepSeek用量与预算记录不一致，需人工核对")
+        if any(item.get("provider_response_id") == response_id or item.get("receipt") == reference for item in state["calls"]):
+            raise GenerationBudgetExceeded("同一DeepSeek用量凭据不能重复释放预算")
+        state["reserved_cny"] = round(state["reserved_cny"] - call["upper_bound_cny"] + amount, 6)
+        call.update(status="usage_verified_upper_bound_not_actual_invoice", usage_upper_bound_cny=amount,
+                    receipt=reference, provider_response_id=response_id, usage=usage,
+                    response_model=receipt.get("response_model"))
+        atomic_json(path, state)

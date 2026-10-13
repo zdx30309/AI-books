@@ -51,7 +51,7 @@ def require_length(markdown):
         raise LengthHold("；".join(errors))
 
 
-def supplement(response, source_text, chapters, number, minimum, maximum, directory):
+def supplement(response, source_text, chapters, number, minimum, maximum, directory, accepted_maximum=None):
     from app.services import deepseek
 
     instruction = (Path(__file__).parents[1] / "prompts/editor_v05/length_supplement.md").read_text()
@@ -104,7 +104,7 @@ def supplement(response, source_text, chapters, number, minimum, maximum, direct
             if word_count(addition) < 30 or re.search(r"(?m)^\s*(?:@|！！！|```)", addition):
                 raise ValueError("增补正文无效")
             candidate = response.replace(anchor, anchor + "\n\n" + addition.strip(), 1)
-            if word_count(candidate) > maximum:
+            if word_count(candidate) > (accepted_maximum or maximum):
                 raise ValueError("增补后超出章节上限")
         except (KeyError, TypeError, ValueError) as exc:
             raise LengthHold("局部增补响应未通过核验，已保存，不自动付费重试：" + str(exc)) from exc
@@ -179,12 +179,36 @@ def repair_length(markdown, source_text, output_dir, on_stage=None):
         if record.get("response_sha256") != digest(response):
             raise AigcManualReviewRequired("补写响应hash不一致，禁止复用")
         count = word_count(response)
+        chapter_ceiling = 3000
         if 600 <= count < minimum:
-            response = supplement(response, source_text, chapters, number, math.ceil(20000 / len(chapters)), maximum, directory)
+            response = supplement(response, source_text, chapters, number,
+                                  min(math.ceil(20000 / len(chapters)), chapter_ceiling),
+                                  min(maximum, chapter_ceiling), directory, chapter_ceiling)
             count = word_count(response)
-        if not math.ceil(18000 / len(chapters)) <= count <= maximum or re.search(r"(?m)^\s*(?:@|！！！|```)", response):
+        if not math.ceil(18000 / len(chapters)) <= count <= chapter_ceiling or re.search(r"(?m)^\s*(?:@|！！！|```)", response):
             raise LengthHold(f"第{number}章补写结果{count}词，未满足章节篇幅契约；响应已保存，不自动付费重试")
         repaired.append((number, title, response))
+    omitted = []
+    total = sum(word_count(part[2]) for part in repaired)
+    if total > 22000:
+        for artifact in sorted(directory.glob("*_supplement_*_response.json")):
+            addition = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", artifact.read_text().strip())).get("content")
+            if not isinstance(addition, str) or not addition.strip():
+                continue
+            chapter_index = int(artifact.name.split("_", 1)[0]) - 1
+            number, title, body = repaired[chapter_index]
+            span = "\n\n" + addition.strip()
+            if body.count(span) != 1:
+                continue
+            candidate = body.replace(span, "", 1)
+            reduction = word_count(body) - word_count(candidate)
+            if word_count(candidate) < 1000 or total - reduction < 18000:
+                continue
+            repaired[chapter_index] = (number, title, candidate)
+            total -= reduction
+            omitted.append({"chapter": number, "artifact": artifact.name, "words": reduction})
+            if total <= 22000:
+                break
     prefix, body = markdown.split("@正文", 1)
     ending = re.search(r"(?m)^@(?:参考|编辑|全书完成|附录).*$", body)
     suffix = body[ending.start():] if ending else ""
@@ -193,5 +217,6 @@ def repair_length(markdown, source_text, output_dir, on_stage=None):
     require_length(result)
     atomic_text(directory / "result.md", result)
     atomic_json(directory / "result.json", {"sha256": digest(result), "status": "length_checked",
-                                            "body_words": sum(word_count(part[2]) for part in repaired)})
+                                            "body_words": sum(word_count(part[2]) for part in repaired),
+                                            "omitted_optional_supplements": omitted})
     return result

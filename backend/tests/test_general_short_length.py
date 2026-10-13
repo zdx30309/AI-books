@@ -63,6 +63,20 @@ def test_saved_short_response_gets_local_insertions_not_rewritten(tmp_path, monk
     assert len(calls) == 18
 
 
+def test_chapter_target_is_not_an_artificial_total_book_limit(tmp_path, monkeypatch):
+    def generate(payload, **kwargs):
+        data = json.loads(payload)
+        if "draft" in data:
+            return "文" * 1883
+        return json.dumps({"after": data["chapter_body"], "content": "补" * 616}, ensure_ascii=False)
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    result = repair_length(book(700), "原始资料", tmp_path)
+    assert not issues(result)
+    assert result.count("文" * 1883) == 9
+    assert len(list(tmp_path.glob("length_repair/*/[0-9][0-9]_response.md"))) == 9
+    assert json.loads(next(tmp_path.glob("length_repair/*/result.json")).read_text())["omitted_optional_supplements"]
+
+
 def test_uncertain_paid_call_does_not_replay(tmp_path, monkeypatch):
     calls = []
     def generate(*args, **kwargs):
