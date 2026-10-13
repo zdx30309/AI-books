@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     AI_OR_REWRITE_PATH: str = "/text"
     AI_OR_WORK_MODE_ID: int = 0
     AI_OR_WORK_MODE: str = ""
+    # 双稿纠错发现严重问题时是否阻断交付。默认 False：仍产出标红 Excel 与
+    # 修订 Word 供编辑复核，并把严重问题数量写进 config，但不卡住下载。
+    AI_OR_SEVERE_BLOCKS_DELIVERY: bool = False
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---

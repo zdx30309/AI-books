@@ -461,10 +461,12 @@ def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", p
             if any(issue["severe"] for issue in issues):
                 atomic_json(directory / "issues.json", issues)
             artifacts = write_delivery(directory, text, rewritten, final, issues, title, state["stamp"])
-            if any(issue["severe"] for issue in issues):
+            severe_count = sum(1 for issue in issues if issue["severe"])
+            if severe_count and bool(getattr(settings, "AI_OR_SEVERE_BLOCKS_DELIVERY", False)):
                 raise FinalizerHold("双稿纠错发现严重问题，已生成标红Excel和修订Word，需人工确认后交付")
             state.update(status="completed", final_hash=digest(final), artifacts=artifacts,
-                         issue_count=len(issues), correction_model=settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL)
+                         issue_count=len(issues), severe_issue_count=severe_count,
+                         correction_model=settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL)
             atomic_json(manifest_path, state)
             return final
         except Exception as exc:
@@ -482,7 +484,15 @@ def finalize_task_manuscript(task, text: str, output_dir: Path, *, progress=None
     cfg = dict(task.config or {})
     heading = next((line.lstrip("#").strip() for line in text.splitlines() if line.startswith("#")), "书稿")
     final = finalize_manuscript(text, output_dir, title=str(cfg.get("title") or heading), progress=progress)
+    manifest_path = output_dir / "ai_or_finalizer" / "manifest.json"
+    severe_count = 0
+    if manifest_path.exists():
+        try:
+            severe_count = int(json.loads(manifest_path.read_text()) .get("severe_issue_count") or 0)
+        except (OSError, ValueError):
+            severe_count = 0
     cfg.update(ai_or_finalizer_status="completed", ai_or_detection_status="not_requested",
+               ai_or_severe_issue_count=severe_count,
                ai_or_correction_model=settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL)
     task.config = cfg
     return final
