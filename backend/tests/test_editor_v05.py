@@ -87,6 +87,13 @@ def test_invalid_evidence_blocks_score(change):
         service.scored_report(SOURCE, DRAFT, value, "测试")
 
 
+def test_data_point_label_can_summarize_exactly_quoted_fact():
+    value = payload()
+    value["data_points"][0]["point"] = "2020年设备投入的年份"
+    report = service.scored_report(SOURCE, DRAFT, value, "测试")
+    assert report.sources[0].material_data == 100
+
+
 def test_source_hash_and_saved_result_prevent_paid_replay(tmp_path, monkeypatch):
     configure(monkeypatch)
     directory = tmp_path / "editor_v05"

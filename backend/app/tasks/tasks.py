@@ -317,6 +317,8 @@ def _ensure_active_run(db: Session, task: Task, run_id: str) -> None:
     current_status, current_config = _read_task_run_state(db, task)
     if current_status == TaskStatus.COMPLETED:
         raise StaleTaskRun(f"task {task.id} already completed")
+    if current_config.get("generation_hold"):
+        raise StaleTaskRun(f"task {task.id} is held; stale run must not overwrite the hold")
     active_run_id = current_config.get("active_run_id")
     if active_run_id and active_run_id != run_id:
         raise StaleTaskRun(
@@ -2946,7 +2948,10 @@ def process_video(_self, task_id: str) -> dict:
                 else "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
             )
             if isinstance(e, FinalizerHold):
-                _patch_config(review_task, ai_or_finalizer_status="manual_review")
+                _patch_config(review_task, ai_or_finalizer_status="manual_review", generation_hold=True,
+                              generation_hold_reason=str(e), generation_hold_step=review_task.current_step)
+                if editor_v05_applies(review_task):
+                    _patch_config(review_task, editor_v05_status="manual_review")
             review_task.error_message = str(e)[:2000]
             db.commit()
         return {

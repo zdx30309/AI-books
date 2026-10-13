@@ -142,8 +142,8 @@ def scored_report(source: str, draft: str, payload: dict, title: str) -> MultiSo
     structure.structure_score = one_decimal(structure.unit_match_score * 0.4 + case_order * 0.3 + narrative * 0.3)
     data = evidence_rows(payload.get("data_points"), source, draft, levels=False)
     points = [required_text(row.get("point"), "数据点") for row in data]
-    if len(set(points)) != len(points) or any(normalize(point) not in normalize(row["source_quote"]) for point, row in zip(points, data)):
-        raise FinalizerHold("数据点重复或无法从原稿摘录核验")
+    if len(set(points)) != len(points):
+        raise FinalizerHold("数据点重复")
     cases = evidence_rows(payload.get("cases"), source, draft, levels=True)
     entities = payload.get("entities")
     if not isinstance(entities, list) or len(set(entities)) != len(entities):
@@ -244,7 +244,16 @@ def audit_manuscript(source: str, draft: str, directory: Path, title: str) -> di
         settle_deepseek_usage(response.get("budget_reservation_index"), response_path)
         if response.get("finish_reason") != "stop":
             raise FinalizerHold("相似度模型报告输出不完整，已保存，不自动重放")
-        report = scored_report(source, draft, json.loads(response["text"]), title)
+        from app.services.editor_evidence import verified_payload
+
+        payload, changes = verified_payload(source, draft, json.loads(response["text"]), directory, response_path)
+        if changes:
+            payload["notes"] = required_text(payload.get("notes"), "复核说明") + "；摘录已逐字锚定实际原文，句读差异及限定ASR赘词引用核对另存记录；两稿全文、数值、对应程度、沿用标记及评分计数未改动。"
+        atomic_json(directory / "audit_verified_evidence.json", {"source_hash": digest(source), "draft_hash": digest(draft),
+                                                                "response_hash": digest(response_path.read_text()),
+                                                                "changes": changes, "payload": payload})
+        report = scored_report(source, draft, payload, title)
+        state["verified_quote_changes"] = len(changes)
     report_data = report.to_dict()
     report_data.update(version=VERSION, compared_stage="pre_ai_rewrite", source_sha256=digest(source),
                        draft_sha256=digest(draft), draft_chars=len(normalize(denoise(draft))))
