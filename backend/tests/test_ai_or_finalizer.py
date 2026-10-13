@@ -218,3 +218,26 @@ def test_truncated_piece_does_not_replay_until_limit_raised(tmp_path, monkeypatc
     configure(monkeypatch)
     monkeypatch.setattr(service.settings, "AI_OR_CORRECTION_MAX_TOKENS", 16384)
     assert service.finalize_manuscript("他认为认为这很好。", tmp_path) == "他认为这很好。"
+
+
+def test_rewrite_body_requires_work_mode(monkeypatch):
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE_ID", 0)
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE", "")
+    with pytest.raises(service.FinalizerHold):
+        service._rewrite_body("正文")
+
+
+def test_rewrite_body_uses_work_mode_id_first(monkeypatch):
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE_ID", 123)
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE", "中文/降AI（学术）/大雅")
+    body = service._rewrite_body("正文")
+    assert body["workModeId"] == 123
+    assert "workMode" not in body
+
+
+def test_rewrite_body_falls_back_to_work_mode_path(monkeypatch):
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE_ID", 0)
+    monkeypatch.setattr(service.settings, "AI_OR_WORK_MODE", "中文/降AI（学术）/大雅")
+    body = service._rewrite_body("正文")
+    assert body["workMode"] == "中文/降AI（学术）/大雅"
+    assert "workModeId" not in body

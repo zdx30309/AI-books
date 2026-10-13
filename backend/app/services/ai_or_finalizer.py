@@ -150,19 +150,37 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
     return final, issues
 
 
+def _rewrite_body(text: str) -> dict:
+    """官方降重接口 /workflow/text 的请求体。
+
+    workModeId 与 workMode 二选一；实测两者都不传会返回 500「平台不能为空」，
+    所以未配置时直接判为配置缺失，避免把付费调用浪费在必失败的请求上。
+    """
+    body: dict = {"accessKey": settings.AI_OR_ACCESS_KEY,
+                  "accessSecret": settings.AI_OR_ACCESS_SECRET,
+                  "inputText": text}
+    if int(getattr(settings, "AI_OR_WORK_MODE_ID", 0) or 0):
+        body["workModeId"] = int(settings.AI_OR_WORK_MODE_ID)
+    elif str(getattr(settings, "AI_OR_WORK_MODE", "") or "").strip():
+        body["workMode"] = str(settings.AI_OR_WORK_MODE).strip()
+    else:
+        raise FinalizerHold("未配置降AI工作模式（AI_OR_WORK_MODE_ID / AI_OR_WORK_MODE），原稿已保留")
+    return body
+
+
 def call_rewrite(text: str) -> dict:
     if not settings.AI_OR_ACCESS_KEY or not settings.AI_OR_ACCESS_SECRET:
         raise FinalizerHold("未配置降AI服务密钥，原稿已保留")
     from app.services.generation_spend import reserve
 
+    body = _rewrite_body(text)
+    path = str(getattr(settings, "AI_OR_REWRITE_PATH", "/text") or "/text")
     reservation_index = reserve("ai-or-v1-enhanced", max(0.01, len(text) * 0.2 / 1000 * 2) * 2, "zhuque-v1")
     try:
         with httpx.Client(timeout=httpx.Timeout(settings.AI_OR_TIMEOUT_SECONDS, connect=30)) as client:
-            response = client.post(BASE + "/zhuque-direct", headers={
+            response = client.post(BASE + path, headers={
                 "X-Aigc-Platform": "api", "X-Aigc-Site": "www",
-            }, json={"accessKey": settings.AI_OR_ACCESS_KEY,
-                     "accessSecret": settings.AI_OR_ACCESS_SECRET,
-                     "inputText": text, "repair_paragraphs": True})
+            }, json=body)
             response.raise_for_status()
             payload = response.json()
         result = payload.get("data", payload)

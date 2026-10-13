@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     AI_OR_CORRECTION_MODEL: str = ""
     AI_OR_CORRECTION_CHUNK_CHARS: int = 2000
     AI_OR_CORRECTION_MAX_TOKENS: int = 8192
+    # 文本降重端点与工作模式（api.ai-or.com/c/api/open/workflow）。
+    # 官方接口 /workflow/text 必须带 workModeId 或 workMode，否则报「平台不能为空」。
+    AI_OR_REWRITE_PATH: str = "/text"
+    AI_OR_WORK_MODE_ID: int = 0
+    AI_OR_WORK_MODE: str = ""
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---
