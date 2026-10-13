@@ -6934,6 +6934,11 @@ def _standard_longform_stage_structure_issue(
     normalized = normalize_category(category or "")
     if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
         return None
+    if normalized == "general_short":
+        from app.services.general_short_length import issues as length_issues
+
+        if not length_issues(source_text or "") and length_issues(candidate_text or ""):
+            return "润色稿破坏已满足的2万字篇幅契约"
     source_parts = _stage_formal_chapter_parts(source_text or "")
     if not source_parts:
         return None
@@ -8200,7 +8205,12 @@ async def generate_full_book(
         )
         # Keep the delivery contract true even when a resumed or optional
         # post-processing stage returns body-only text after final formatting.
-        return normalize_final_markdown(final_text, category=normalized_category)
+        final_text = normalize_final_markdown(final_text, category=normalized_category)
+        if normalized_category == "general_short" and editor_v05_delivery:
+            from app.services.general_short_length import require_length
+
+            require_length(final_text)
+        return final_text
 
     task_prompt_cache_key = _content_prompt_cache_key(
         normalized_category,
@@ -8291,6 +8301,11 @@ async def generate_full_book(
                 return None
         try:
             content = path.read_text(encoding="utf-8").strip()
+            if normalized_category == "general_short" and editor_v05_delivery and filename != "01_writer.md":
+                from app.services.general_short_length import issues as length_issues
+
+                if length_issues(content):
+                    return None
             return content or None
         except Exception as exc:
             logger.warning("读取中间产物 %s 失败: %s", filename, exc)
@@ -8497,6 +8512,13 @@ async def generate_full_book(
             prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
+
+    if normalized_category == "general_short" and editor_v05_delivery:
+        from app.services.general_short_length import repair_length
+
+        generated_markdown = await asyncio.to_thread(
+            repair_length, generated_markdown, raw_text, output_dir, on_stage,
+        )
 
     writer_chars = len(generated_markdown)
 
@@ -8837,6 +8859,8 @@ async def generate_full_book(
             on_stage("format_start", {})
         try:
             format_max_output_tokens = 0 if (is_classical_category or use_buddhist_story_unit_writer) else None
+            if normalized_category == "general_short" and editor_v05_delivery:
+                format_max_output_tokens = 32768
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
                     format_book_text,

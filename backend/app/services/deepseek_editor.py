@@ -18,8 +18,12 @@ def generate_text(prompt, *, system_instruction=None, temperature=None,
 
 
 def polish_book_text(text, *, system_instruction=None, **kwargs):
+    if "max_output_tokens" not in kwargs:
+        kwargs["max_output_tokens"] = min(32768, max(4096, len(text) * 2 + 1024))
     return generate_text(text, system_instruction=system_instruction or GEMINI_FAST_POLISH_PROMPT, **kwargs)
 
 
 def refine_book_text(text, *, system_instruction=None, **kwargs):
+    if "max_output_tokens" not in kwargs:
+        kwargs["max_output_tokens"] = min(32768, max(4096, len(text) * 2 + 1024))
     return generate_text(text, system_instruction=system_instruction or GEMINI_FAST_REFINE_PROMPT, **kwargs)

@@ -41,7 +41,7 @@ from app.services.classical_chinese import (
     classical_final_title,
 )
 from app.services.classical_reference_templates import DEFAULT_REFERENCE_STYLE_GUIDE, default_reference_template_status
-from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
+from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text, verify_transcript_duration
 from app.services.comic_series import (
     ComicGenerationPaused,
     parse_healing_comic_character_prompt,
@@ -748,6 +748,8 @@ def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> 
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
         result.batch_id, result.task_id, duration,
     )
+    if source_platform == "bilibili":
+        return text, verify_transcript_duration(parser_url, text, duration or config_duration)
     return text, duration or config_duration
 
 
@@ -2631,6 +2633,13 @@ def process_video(_self, task_id: str) -> dict:
                         run_id=run_id,
                     )
                     return
+                if stage == "length_repair_chapter":
+                    _update_progress(
+                        db, task, progress=48,
+                        step=f"DeepSeek 局部补足正文 {info.get('idx')}/{info.get('total')} 章",
+                        run_id=run_id,
+                    )
+                    return
                 if stage == "refine_chunk":
                     idx = int(info.get("idx", 0))
                     total = max(int(info.get("total", 1)), 1)
@@ -2729,6 +2738,10 @@ def process_video(_self, task_id: str) -> dict:
                 task, markdown, output_dir,
                 progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
             )
+        if category == "general_short" and editor_v05_applies(task):
+            from app.services.general_short_length import require_length
+
+            require_length(markdown)
         integrity_issue, integrity_parts = _finance_completion_integrity_issue(
             task,
             markdown,
