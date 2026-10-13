@@ -131,12 +131,20 @@ def parse_issues(raw: str, text: str) -> tuple[str, list[dict]]:
         if not isinstance(issue, dict):
             raise FinalizerHold("纠错记录格式错误")
         before, after = issue.get("original"), issue.get("replacement")
+        remark = issue.get("remark")
         if (not isinstance(before, str) or not before or not isinstance(after, str)
-                or not isinstance(issue.get("remark"), str)
-                or not isinstance(issue.get("severe"), bool)
-                or max(len(before), len(after), len(issue["remark"])) > 2000
+                or not isinstance(remark, str)
+                or max(len(before), len(after), len(remark)) > 2000
                 or text.count(before) != 1 or before == after):
             raise FinalizerHold("纠错记录无法唯一定位或超出可读表格长度，已保存模型输出")
+        # 模型偶尔漏写 severe 或写成字符串；缺省按“非严重”处理，避免一条格式瑕疵
+        # 让整份交付停在 manual_review。
+        severe = issue.get("severe")
+        if isinstance(severe, str):
+            severe = severe.strip().lower() in {"true", "1", "yes", "y", "是", "严重", "严重问题"}
+        if not isinstance(severe, bool):
+            severe = False
+        issue = {"original": before, "replacement": after, "remark": remark, "severe": severe}
         position = text.index(before)
         spans.append((position, position + len(before), after, issue))
     spans.sort(key=lambda item: item[0])
