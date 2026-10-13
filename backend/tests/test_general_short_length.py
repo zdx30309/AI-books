@@ -46,6 +46,23 @@ def test_invalid_paid_response_not_replayed(tmp_path, monkeypatch):
     assert calls == [1]
 
 
+def test_saved_short_response_gets_local_insertions_not_rewritten(tmp_path, monkeypatch):
+    calls = []
+    def generate(payload, **kwargs):
+        data = json.loads(payload)
+        calls.append(data)
+        if "draft" in data:
+            return "已保存段落" + "文" * 1400
+        return json.dumps({"after": data["chapter_body"], "content": "补" * 970}, ensure_ascii=False)
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    result = repair_length(book(700), "原始资料", tmp_path)
+    assert not issues(result)
+    assert len(calls) == 18
+    assert result.count("已保存段落") == 9
+    assert repair_length(book(700), "原始资料", tmp_path) == result
+    assert len(calls) == 18
+
+
 def test_uncertain_paid_call_does_not_replay(tmp_path, monkeypatch):
     calls = []
     def generate(*args, **kwargs):

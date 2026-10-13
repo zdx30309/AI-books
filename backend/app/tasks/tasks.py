@@ -11,6 +11,7 @@ from __future__ import annotations
 from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_task_manuscript
 from app.services.editor_v05 import applies as editor_v05_applies
 from app.services.generation_spend import GenerationBudgetExceeded, generation_budget
+from app.services.general_short_length import LengthHold
 from app.services.polish_provider import polish_provider_name, refine_provider_name
 
 import asyncio
@@ -2937,9 +2938,9 @@ def process_video(_self, task_id: str) -> dict:
             review_task.config = cfg
             _clear_task_run(review_task, run_id)
             review_task.status = TaskStatus.MANUAL_REVIEW
-            review_task.progress = max(93, int(review_task.progress or 0))
+            review_task.progress = int(review_task.progress or 0) if isinstance(e, LengthHold) else max(93, int(review_task.progress or 0))
             review_task.current_step = (
-                str(e) if isinstance(e, GenerationBudgetExceeded) else
+                str(e) if isinstance(e, (GenerationBudgetExceeded, LengthHold)) else
                 "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
                 if isinstance(e, FinalizerHold)
                 else "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"

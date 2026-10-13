@@ -10,6 +10,10 @@ from app.services.general_longform_runtime import atomic_json, atomic_text
 from app.services.generation_spend import GenerationBudgetExceeded
 
 
+class LengthHold(AigcManualReviewRequired):
+    pass
+
+
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -44,7 +48,70 @@ def issues(markdown):
 def require_length(markdown):
     errors = issues(markdown)
     if errors:
-        raise AigcManualReviewRequired("；".join(errors))
+        raise LengthHold("；".join(errors))
+
+
+def supplement(response, source_text, chapters, number, minimum, maximum, directory):
+    from app.services import deepseek
+
+    instruction = (Path(__file__).parents[1] / "prompts/editor_v05/length_supplement.md").read_text()
+    for attempt in range(1, 4):
+        count = word_count(response)
+        if count >= minimum:
+            return response
+        payload = json.dumps({"source_text": source_text, "chapter_body": response,
+                              "chapter_number": number, "chapters": [{"number": part[0], "title": part[1]} for part in chapters],
+                              "minimum_words": minimum - count, "maximum_words": maximum - count}, ensure_ascii=False)
+        signature = digest(payload + instruction)
+        stem = f"{number:02d}_supplement_{attempt}_{signature[:16]}"
+        request_path = directory / (stem + "_request.json")
+        response_path = directory / (stem + "_response.json")
+        if request_path.exists():
+            record = json.loads(request_path.read_text())
+            if record.get("request_sha256") != signature:
+                raise LengthHold("补写增补断点输入变化")
+        else:
+            record = {}
+        if response_path.exists():
+            raw = response_path.read_text()
+        else:
+            if record.get("status") not in (None, "budget_blocked"):
+                raise LengthHold("局部增补付费结果不确定，不自动重放")
+            record = {"request_sha256": signature, "model": settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL,
+                      "action": "general_short_length_supplement", "status": "inflight", "cost": None}
+            atomic_json(request_path, record)
+            try:
+                raw = deepseek.generate_text(payload, system_instruction=instruction, model=record["model"],
+                                              max_output_tokens=3072, thinking=False, fail_on_max_tokens=True)
+            except GenerationBudgetExceeded:
+                record["status"] = "budget_blocked"
+                atomic_json(request_path, record)
+                raise
+            except Exception as exc:
+                record.update(status="uncertain_or_failed", error=str(exc))
+                atomic_json(request_path, record)
+                raise
+            atomic_text(response_path, raw)
+            record.update(status="response_saved", response_sha256=digest(raw))
+            atomic_json(request_path, record)
+        if record.get("response_sha256") != digest(raw):
+            raise LengthHold("局部增补响应hash不一致")
+        try:
+            result = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip()))
+            anchor, addition = result["after"], result["content"]
+            if not isinstance(anchor, str) or not isinstance(addition, str) or not anchor.strip() or response.count(anchor) != 1:
+                raise ValueError("增补定位不唯一")
+            if word_count(addition) < 30 or re.search(r"(?m)^\s*(?:@|！！！|```)", addition):
+                raise ValueError("增补正文无效")
+            candidate = response.replace(anchor, anchor + "\n\n" + addition.strip(), 1)
+            if word_count(candidate) > maximum:
+                raise ValueError("增补后超出章节上限")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LengthHold("局部增补响应未通过核验，已保存，不自动付费重试：" + str(exc)) from exc
+        response = candidate
+    if word_count(response) < minimum:
+        raise LengthHold("最多三次局部增补后篇幅仍不足，需人工复核")
+    return response
 
 
 def repair_length(markdown, source_text, output_dir, on_stage=None):
@@ -112,8 +179,11 @@ def repair_length(markdown, source_text, output_dir, on_stage=None):
         if record.get("response_sha256") != digest(response):
             raise AigcManualReviewRequired("补写响应hash不一致，禁止复用")
         count = word_count(response)
+        if 600 <= count < minimum:
+            response = supplement(response, source_text, chapters, number, math.ceil(20000 / len(chapters)), maximum, directory)
+            count = word_count(response)
         if not math.ceil(18000 / len(chapters)) <= count <= maximum or re.search(r"(?m)^\s*(?:@|！！！|```)", response):
-            raise AigcManualReviewRequired(f"第{number}章补写结果{count}词，未满足章节篇幅契约；响应已保存，不自动付费重试")
+            raise LengthHold(f"第{number}章补写结果{count}词，未满足章节篇幅契约；响应已保存，不自动付费重试")
         repaired.append((number, title, response))
     prefix, body = markdown.split("@正文", 1)
     ending = re.search(r"(?m)^@(?:参考|编辑|全书完成|附录).*$", body)
