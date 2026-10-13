@@ -62,6 +62,26 @@ def test_resume_does_not_repeat_paid_calls(tmp_path, monkeypatch):
     assert manifest["status"] == "completed"
 
 
+def test_rewrite_chunk_budget_is_scoped_and_checkpoint_plan_frozen(tmp_path, monkeypatch):
+    from app.services.generation_spend import GenerationBudgetExceeded
+
+    monkeypatch.setattr(service.settings, "AI_OR_CHUNK_CHARS", 6000)
+    calls = []
+    monkeypatch.setattr(service, "call_rewrite", lambda text: calls.append(text) or {"outputText": text})
+    def blocked(*args):
+        raise GenerationBudgetExceeded("budget before request")
+    monkeypatch.setattr(service, "call_correction", blocked)
+    source = "甲" * 1200 + "\n" + "乙" * 1200 + "\n"
+    with pytest.raises(GenerationBudgetExceeded):
+        service.finalize_manuscript(source, tmp_path, rewrite_chunk_chars=1500)
+    monkeypatch.setattr(service, "call_correction", lambda *args: {"text": '{"issues": []}'})
+    assert service.finalize_manuscript(source, tmp_path, rewrite_chunk_chars=3000) == source
+    state = json.loads((tmp_path / "ai_or_finalizer/manifest.json").read_text())
+    assert state["rewrite_chunk_chars"] == 1500
+    assert len(calls) == 2
+    assert service.settings.AI_OR_CHUNK_CHARS == 6000
+
+
 def test_uncertain_correction_never_replays(tmp_path, monkeypatch):
     configure(monkeypatch)
     attempts = []

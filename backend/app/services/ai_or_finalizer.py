@@ -365,15 +365,15 @@ def write_delivery(directory: Path, original: str, rewritten: str, final: str,
     return {"docx": stem + ".docx", "xlsx": stem + ".xlsx", "zip": "delivery.zip"}
 
 
-def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None, profile: str = "") -> str:
+def finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None, profile: str = "", rewrite_chunk_chars=None) -> str:
     token = _profile.set(profile)
     try:
-        return _finalize_manuscript(text, output_dir, title=title, progress=progress)
+        return _finalize_manuscript(text, output_dir, title=title, progress=progress, rewrite_chunk_chars=rewrite_chunk_chars)
     finally:
         _profile.reset(token)
 
 
-def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None) -> str:
+def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", progress=None, rewrite_chunk_chars=None) -> str:
     directory = output_dir / "ai_or_finalizer"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "workflow.lock").open("a") as lock:
@@ -400,7 +400,12 @@ def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", 
             return final
         atomic_text(directory / "source.md", text)
         atomic_json(manifest_path, state)
-        chunks = split_chunks(text, settings.AI_OR_CHUNK_CHARS)
+        chunk_limit = state.get("rewrite_chunk_chars")
+        if chunk_limit is None:
+            chunk_limit = settings.AI_OR_CHUNK_CHARS if state.get("chunks") else int(rewrite_chunk_chars or settings.AI_OR_CHUNK_CHARS)
+            state["rewrite_chunk_chars"] = chunk_limit
+            atomic_json(manifest_path, state)
+        chunks = split_chunks(text, chunk_limit)
         rewrites, finals, issues = [], [], []
         metadata_section = False
         try:

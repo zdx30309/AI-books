@@ -6928,13 +6928,14 @@ def _standard_longform_stage_structure_issue(
     candidate_text: str | None,
     *,
     category: str | None,
+    enforce_short_length: bool = False,
 ) -> str | None:
     """Reject a polish/refine result that splits or swallows formal chapters."""
 
     normalized = normalize_category(category or "")
     if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
         return None
-    if normalized == "general_short":
+    if normalized == "general_short" and enforce_short_length:
         from app.services.general_short_length import issues as length_issues
 
         if not length_issues(source_text or "") and length_issues(candidate_text or ""):
@@ -8544,6 +8545,7 @@ async def generate_full_book(
             generated_markdown,
             polished_markdown,
             category=normalized_category,
+            enforce_short_length=editor_v05_delivery,
         )
         if polish_structure_issue:
             logger.warning("忽略章节结构失衡的 02_polish.md: %s", polish_structure_issue)
@@ -8603,6 +8605,7 @@ async def generate_full_book(
             generated_markdown,
             polished_markdown,
             category=normalized_category,
+            enforce_short_length=editor_v05_delivery,
         )
         if polish_structure_issue:
             logger.warning("Gemini 一润章节结构失衡，回退到主笔章节结构: %s", polish_structure_issue)
@@ -8720,6 +8723,27 @@ async def generate_full_book(
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
+        elif normalized_category == "general_short" and editor_v05_delivery:
+            from app.services.general_short_length import require_length
+
+            refined_markdown = await _refine_by_paragraph_chunks_strict(
+                polished_markdown,
+                target_chars=1000,
+                system_instruction=gemini_fast_refine_prompt,
+                on_stage=on_stage,
+                output_dir=output_dir,
+                chunk_func=refine_chunk_func,
+                splitter=_split_standard_longform_by_chapters,
+                chunk_validator=_standard_longform_chunk_issues,
+            )
+            refined_markdown = normalize_final_markdown(refined_markdown, category=normalized_category)
+            require_length(refined_markdown)
+            integrity_issue = _refine_output_integrity_issue(polished_markdown, refined_markdown, category=normalized_category)
+            if integrity_issue:
+                from app.services.general_short_length import LengthHold
+
+                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
+                raise LengthHold("二润稿未通过完整性检查，付费缓存已保留：" + integrity_issue)
         else:
             candidate_refine = ""
             try:
@@ -8975,6 +8999,11 @@ async def generate_full_book(
         final_markdown,
         category=normalized_category,
     )
+    if normalized_category == "general_short" and editor_v05_delivery:
+        from app.services.general_short_length import issues as length_issues
+
+        if length_issues(final_markdown):
+            final_integrity_issue = "格式层破坏已满足的2万字篇幅契约"
     if final_integrity_issue:
         logger.warning(
             "DeepSeek 格式层破坏完整书稿，保留 Gemini 二润完整稿: %s",

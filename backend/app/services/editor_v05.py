@@ -296,7 +296,9 @@ def _finalize_editor_task(task, text: str, output_dir: Path, *, progress=None) -
         cfg.update(editor_v05_status="similarity_completed", editor_v05_similarity=audit["data"]["max_composite"],
                    editor_v05_verdict=audit["data"]["overall_verdict"])
         task.config = cfg
-        final = finalize_manuscript(text, directory, title=title, progress=progress, profile=VERSION)
+        rewrite_chunk_chars = int(cfg.get("editor_v05_rewrite_chunk_chars") or min(settings.AI_OR_CHUNK_CHARS, 3000))
+        final = finalize_manuscript(text, directory, title=title, progress=progress, profile=VERSION,
+                                    rewrite_chunk_chars=rewrite_chunk_chars)
         delivery_dir = directory / "ai_or_finalizer"
         manifest_path = delivery_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text())

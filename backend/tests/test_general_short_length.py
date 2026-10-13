@@ -103,6 +103,16 @@ def test_budget_block_before_paid_request_can_resume(tmp_path, monkeypatch):
 def test_valid_length_is_preserved_through_edit_gate():
     assert content_engine._standard_longform_stage_structure_issue(book(), book(1000), category="general_short")
     assert content_engine._standard_longform_stage_structure_issue(book(), book(2300), category="general_short") is None
+    assert content_engine._standard_longform_stage_structure_issue(book(2000), book(1900), category="general_short") is None
+    assert content_engine._standard_longform_stage_structure_issue(book(2000), book(1900), category="general_short", enforce_short_length=True)
+
+
+def test_normalized_refine_markers_are_not_false_short_book_errors():
+    source = book()
+    candidate = source.replace("@1. 标题", "！！！1. 标题").replace("@2. 标题", "！！！2. 标题")
+    normalized = content_engine.normalize_final_markdown(candidate, category="general_short")
+    assert not issues(normalized)
+    assert content_engine._refine_output_integrity_issue(source, normalized, category="general_short") is None
 
 
 def test_edit_caps_are_bounded_and_explicit_caps_preserved(monkeypatch):
