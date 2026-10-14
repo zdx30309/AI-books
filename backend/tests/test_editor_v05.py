@@ -182,6 +182,28 @@ def test_v05_two_word_delivery_and_resume(tmp_path, monkeypatch):
     assert finalizer.finalize_task_manuscript(current, DRAFT, tmp_path) == DRAFT
 
 
+def test_low_similarity_completes_two_word_delivery_with_gate_enabled(tmp_path, monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setattr(service.settings, "EDITOR_V05_SIMILARITY_GATE_ENABLED", True)
+    safe_draft = "#城市夜灯\n晚上街道亮起了灯，行人慢慢穿过广场。公园里有人练习合唱，歌声随着风飘远。"
+    evidence = payload()
+    for row in evidence["units"] + evidence["cases"]:
+        row.update(level="无", draft_quote="", location="无")
+    for row in evidence["data_points"]:
+        row.update(reused=False, draft_quote="")
+    evidence.update(case_order_score=10, narrative_score=10)
+    monkeypatch.setattr(service, "call_audit", lambda *args: {
+        "text": json.dumps(evidence, ensure_ascii=False), "finish_reason": "stop", "model": "deepseek-flash"})
+    current = task()
+    assert finalizer.finalize_task_manuscript(current, safe_draft, tmp_path) == safe_draft
+    assert current.config["editor_v05_similarity"] < 50
+    assert current.config["editor_v05_status"] == "completed"
+    with zipfile.ZipFile(tmp_path / "editor_v05/ai_or_finalizer/delivery.zip") as archive:
+        assert len(archive.namelist()) == 2
+        assert all(name.endswith(".docx") for name in archive.namelist())
+        assert archive.testzip() is None
+
+
 def test_old_tasks_and_other_engines_are_not_migrated(monkeypatch):
     configure(monkeypatch)
     for category in ("general_longform", "public_domain_rewrite", "classical_chinese", "comic_series"):
