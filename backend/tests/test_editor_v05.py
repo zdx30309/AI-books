@@ -135,6 +135,8 @@ def test_missing_source_blocks_before_paid_calls(tmp_path, monkeypatch):
 
 
 def test_v05_two_word_delivery_and_resume(tmp_path, monkeypatch):
+    # Delivery mechanics only; the similarity stop is covered in test_editor_v05_similarity_gate.py.
+    monkeypatch.setattr(service.settings, "EDITOR_V05_SIMILARITY_GATE_ENABLED", False)
     configure(monkeypatch)
     current = task()
     assert finalizer.finalize_task_manuscript(current, DRAFT, tmp_path) == DRAFT
@@ -221,6 +223,8 @@ def test_packaging_and_real_book_title_are_not_rewritten(tmp_path, monkeypatch):
 
 
 def test_v05_download_routes_use_two_word_artifacts(tmp_path, monkeypatch):
+    # Delivery mechanics only; the similarity stop is covered in test_editor_v05_similarity_gate.py.
+    monkeypatch.setattr(service.settings, "EDITOR_V05_SIMILARITY_GATE_ENABLED", False)
     from app.api.routers import tasks as router
     from app.models import TaskStatus
 

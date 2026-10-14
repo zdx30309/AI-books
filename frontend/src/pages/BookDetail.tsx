@@ -434,7 +434,9 @@ export function BookDetail() {
   const regenerateWholeTask = useCallback(async () => {
     if (!id || !task) return;
     const ok = window.confirm(
-      "确定从头重新生成整篇文稿吗？系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类。",
+      task.editor_v05_status === "similarity_blocked"
+        ? "确认重新生成一次整篇文稿吗？首稿和报告将保留备份，费用累计不重置；新稿若仍不低于50%，将停止并提示更换视频。重新生成会产生模型费用。"
+        : "确定从头重新生成整篇文稿吗？系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类。",
     );
     if (!ok) return;
     setRegenerating(true);
@@ -556,7 +558,10 @@ export function BookDetail() {
   const [similarity, setSimilarity] = useState<SimilaritySummary | null>(null);
   useEffect(() => {
     let live = true;
-    if (!id || task?.status !== "completed") return;
+    if (!id || !task || !["completed", "manual_review"].includes(task.status)) {
+      setSimilarity(null);
+      return;
+    }
     api
       .getSimilarityReportData(id)
       .then((data) => {
@@ -568,7 +573,7 @@ export function BookDetail() {
     return () => {
       live = false;
     };
-  }, [id, task?.status]);
+  }, [id, task?.status, task?.editor_v05_status]);
 
   const handleDownloadSimilarityReport = useCallback(async () => {
     if (!id) return;
@@ -648,13 +653,15 @@ export function BookDetail() {
   const isFailed = task.status === "failed";
   const isPaused = task.status === "paused";
   const isManualReview = task.status === "manual_review";
+  const similarityBlocked = task.editor_v05_status === "similarity_blocked";
+  const videoRejected = Boolean(task.editor_v05_video_rejected);
   const isHealingComic = ["healing_comic", "story_comic", "homophone_comic"].includes(
     task.category || "",
   );
   const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
-  const canRetry = isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100);
+  const canRetry = !similarityBlocked && !videoRejected && (isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100));
   const isAigcOnlyRetry =
     task.aigc_required &&
     task.aigc_report_available &&
@@ -856,6 +863,18 @@ export function BookDetail() {
                 {isAigcOnlyRetry ? "继续检查" : "继续生成"}
               </button>
             ) : null}
+            {similarityBlocked && !videoRejected && (
+              <button type="button" onClick={regenerateWholeTask} disabled={regenerating} className="btn-ghost disabled:opacity-50">
+                <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                {regenerating ? "重新生成中" : "人工确认重新生成整篇"}
+              </button>
+            )}
+            {(similarityBlocked || videoRejected) && (
+              <button type="button" onClick={handleDownloadSimilarityReport} className="btn-ghost">
+                <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+                相似度审查报告
+              </button>
+            )}
             <button type="button" onClick={handleDelete} className="btn-ghost">
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
               删除任务
@@ -982,7 +1001,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : similarityBlocked || videoRejected ? "审核未通过" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -1018,9 +1037,11 @@ export function BookDetail() {
 
       {isManualReview && (
         <section className="card-warm mb-8 p-6">
-          <h2 className="font-serif text-xl text-warm-50">任务正在处理</h2>
+          <h2 className="font-serif text-xl text-warm-50">{videoRejected ? "此视频不可用，建议更换视频" : similarityBlocked ? "相似度审核未通过，等待人工确认" : "任务正在处理"}</h2>
           <p className="mt-2 text-xs leading-6 text-warm-400">
-            当前已保存的稿件和进度会被保留，系统会自动从断点继续。
+            {videoRejected ? "重新生成后相似度仍不低于50%，已停止，不再继续生成或调用降AI。"
+              : similarityBlocked ? "已停在降AI之前，不会自动重写。请先下载相似度报告，再决定是否重新生成一次。"
+              : "当前已保存的稿件和进度会被保留，系统会自动从断点继续。"}
           </p>
         </section>
       )}

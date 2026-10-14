@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,64 @@ from app.services.general_short_similarity import (
 logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts/editor_v05"
 VERSION = "editor-v0.5"
+VIDEO_REJECTED = "此视频不可用，建议更换视频"
+
+
+class SimilarityGateHold(FinalizerHold):
+    """Similarity audit stopped delivery before any de-AI spend; carries the config to persist."""
+
+    def __init__(self, message: str, config_patch: dict, *, rejected: bool = False):
+        super().__init__(message)
+        self.config_patch = config_patch
+        self.rejected = rejected
+
+
+def similarity_gate(cfg: dict, draft: str, data: dict) -> dict:
+    """Record this draft's composite score and stop at the limit.
+
+    The first generation at or above the limit waits for a human to decide on regeneration;
+    a later generation still at or above it rejects the video so no further books are generated.
+    """
+    try:
+        score = float(data["max_composite"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FinalizerHold("相似度综合分无效，不能继续降AI") from exc
+    if not math.isfinite(score) or not 0 <= score <= 100:
+        raise FinalizerHold("相似度综合分无效，不能继续降AI")
+    draft_hash = digest(draft)
+    history = [dict(item) for item in (cfg.get("editor_v05_similarity_history") or []) if isinstance(item, dict)]
+    for index, item in enumerate(history, 1):
+        item.setdefault("generation_attempt", index)
+    attempt = int(cfg.get("editor_v05_generation_attempt") or 1)
+    if not any(item.get("draft_sha256") == draft_hash and item["generation_attempt"] == attempt for item in history):
+        history.append({"draft_sha256": draft_hash, "composite": score, "generation_attempt": attempt,
+                        "at": datetime.now(timezone.utc).isoformat()})
+    patch = {"editor_v05_similarity_history": history, "editor_v05_similarity": score,
+             "editor_v05_verdict": data.get("overall_verdict"), "editor_v05_similarity_attempt": attempt,
+             "editor_v05_generation_attempt": attempt}
+    limit = float(settings.EDITOR_V05_SIMILARITY_LIMIT)
+    if cfg.get("editor_v05_video_rejected"):
+        patch.update(editor_v05_status="video_rejected", editor_v05_video_rejected=True)
+        raise SimilarityGateHold(VIDEO_REJECTED, patch, rejected=True)
+    if not settings.EDITOR_V05_SIMILARITY_GATE_ENABLED or score < limit:
+        return patch
+    if any(item["generation_attempt"] < attempt and float(item["composite"]) >= limit for item in history):
+        patch.update(editor_v05_status="video_rejected", editor_v05_video_rejected=True)
+        raise SimilarityGateHold(
+            f"{VIDEO_REJECTED}（第{attempt}次生成与原视频相似度{score:g}%，仍不低于{limit:g}%，不再生成）",
+            patch, rejected=True)
+    patch.update(editor_v05_status="similarity_blocked")
+    raise SimilarityGateHold(
+        f"与原视频相似度{score:g}%，不低于{limit:g}%，已报错并停在降AI之前；请查看相似度报告，人工确认是否重新生成",
+        patch)
+
+
+def similarity_retry_reason(cfg: dict) -> str | None:
+    if cfg.get("editor_v05_video_rejected"):
+        return VIDEO_REJECTED
+    if cfg.get("editor_v05_status") == "similarity_blocked":
+        return "相似度审核未通过；请先查看报告，再人工确认“重新生成整篇”，不能续跑原稿或仅重跑降AI"
+    return None
 
 
 def applies(task) -> bool:
@@ -276,7 +335,8 @@ def finalize_editor_task(task, text: str, output_dir: Path, *, progress=None) ->
     except Exception as exc:
         from app.services.aigc_quality_gate import AigcManualReviewRequired
 
-        task.config = {**(task.config or {}), "editor_v05_status": "manual_review"}
+        task.config = {**(task.config or {}), "editor_v05_status": "manual_review",
+                       **(exc.config_patch if isinstance(exc, SimilarityGateHold) else {})}
         logger.error("editor-v05 status=manual_review error_type=%s", type(exc).__name__)
         if isinstance(exc, AigcManualReviewRequired):
             raise
@@ -291,6 +351,9 @@ def _finalize_editor_task(task, text: str, output_dir: Path, *, progress=None) -
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise FinalizerHold("0.5版正在执行，禁止并行重复扣费") from exc
+        if (task.config or {}).get("editor_v05_video_rejected"):
+            raise SimilarityGateHold(VIDEO_REJECTED, {"editor_v05_status": "video_rejected",
+                                                     "editor_v05_video_rejected": True}, rejected=True)
         source = source_text(task)
         cfg = dict(task.config or {})
         from app.tasks.tasks import _extract_book_title
@@ -302,8 +365,8 @@ def _finalize_editor_task(task, text: str, output_dir: Path, *, progress=None) -
             progress("0.5版：全文结构框架与素材相似度审查")
         audit = audit_manuscript(source, text, directory, title)
         atomic_text(directory / "inspiration_source.md", source)
-        cfg.update(editor_v05_status="similarity_completed", editor_v05_similarity=audit["data"]["max_composite"],
-                   editor_v05_verdict=audit["data"]["overall_verdict"])
+        cfg.update(similarity_gate(cfg, text, audit["data"]))
+        cfg.update(editor_v05_status="similarity_completed")
         task.config = cfg
         rewrite_chunk_chars = int(cfg.get("editor_v05_rewrite_chunk_chars") or min(settings.AI_OR_CHUNK_CHARS, 3000))
         final = finalize_manuscript(text, directory, title=title, progress=progress, profile=VERSION,

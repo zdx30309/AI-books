@@ -4,6 +4,7 @@ Gravity Singularity - 全局配置中心
 """
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +43,8 @@ class Settings(BaseSettings):
     EDITOR_V05_ENABLED: bool = False
     EDITOR_V05_START_AT: str = ""
     EDITOR_V05_AUDIT_MAX_TOKENS: int = 16384
+    EDITOR_V05_SIMILARITY_GATE_ENABLED: bool = True
+    EDITOR_V05_SIMILARITY_LIMIT: float = Field(default=50.0, gt=0, le=100)
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---

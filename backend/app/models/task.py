@@ -130,6 +130,15 @@ class Task(Base):
         return value if isinstance(value, str) else None
 
     @property
+    def editor_v05_status(self) -> str | None:
+        value = (self.config or {}).get("editor_v05_status")
+        return value if isinstance(value, str) else None
+
+    @property
+    def editor_v05_video_rejected(self) -> bool:
+        return bool((self.config or {}).get("editor_v05_video_rejected"))
+
+    @property
     def aigc_max_score(self) -> int | None:
         value = (self.config or {}).get("aigc_max_score")
         return int(value) if isinstance(value, (int, float)) else None

@@ -267,6 +267,8 @@ export interface TaskStatusResponse {
   aigc_quality_passed: boolean | null;
   aigc_report_available: boolean;
   ai_or_finalizer_status?: string | null;
+  editor_v05_status?: string | null;
+  editor_v05_video_rejected?: boolean;
   aigc_manual_review_reason: string | null;
   error_message: string | null;
   created_at: string;

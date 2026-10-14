@@ -159,6 +159,8 @@ class TaskStatusResponse(BaseModel):
     aigc_report_available: bool = False
     aigc_manual_review_reason: str | None = None
     ai_or_finalizer_status: str | None = None
+    editor_v05_status: str | None = None
+    editor_v05_video_rejected: bool = False
     error_message: str | None = None
     created_at: datetime
 

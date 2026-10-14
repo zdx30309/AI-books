@@ -2952,6 +2952,11 @@ def process_video(_self, task_id: str) -> dict:
                               generation_hold_reason=str(e), generation_hold_step=review_task.current_step)
                 if editor_v05_applies(review_task):
                     _patch_config(review_task, editor_v05_status="manual_review")
+            from app.services.editor_v05 import SimilarityGateHold
+
+            if isinstance(e, SimilarityGateHold):
+                _patch_config(review_task, **e.config_patch)
+                review_task.current_step = str(e)[:255]
             review_task.error_message = str(e)[:2000]
             db.commit()
         return {

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
@@ -87,6 +87,7 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
+from app.services.editor_v05 import VIDEO_REJECTED, similarity_retry_reason
 from app.services.video_sources import (
     canonical_source_url,
     detect_video_source_platform,
@@ -242,6 +243,14 @@ _SERVER_OWNED_CONFIG_KEYS = frozenset(
         "generation_hold",
         "generation_complete",
         "pause_requested",
+        "editor_v05_status",
+        "editor_v05_similarity",
+        "editor_v05_verdict",
+        "editor_v05_similarity_history",
+        "editor_v05_similarity_attempt",
+        "editor_v05_generation_attempt",
+        "editor_v05_video_rejected",
+        "editor_v05_previous_generation_path",
     }
 )
 _SERVER_OWNED_CONFIG_PREFIXES = (
@@ -762,6 +771,9 @@ def _has_active_run(task: Task) -> bool:
 
 
 def _prepare_task_for_retry(task: Task) -> None:
+    reason = similarity_retry_reason(task.config or {})
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     cfg = dict(task.config or {})
     cfg.pop("active_run_id", None)
     cfg.pop("active_run_started_at", None)
@@ -834,10 +846,40 @@ def _clear_task_output_dir(task_id: UUID) -> None:
 def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
     if task.category == "general_longform":
         raise HTTPException(status_code=409, detail="通用长篇保留版本与验收状态，请在专属工作区局部修订或恢复断点")
-    _clear_task_output_dir(task.id)
+    cfg = dict(task.config or {})
+    if cfg.get("editor_v05_video_rejected"):
+        raise HTTPException(status_code=409, detail=VIDEO_REJECTED)
+    similarity_regeneration = cfg.get("editor_v05_status") == "similarity_blocked"
+    if similarity_regeneration:
+        if cfg.get("paid_call_delivery_uncertain") or cfg.get("paid_call_manual_resume_required"):
+            raise HTTPException(status_code=409, detail="付费结果尚未核对，不能重新生成")
+        import shutil
+
+        output_dir = _task_output_dir(task.id)
+        if output_dir.exists():
+            archive = output_dir.parent / "_regeneration_history" / str(task.id) / str(uuid4())
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            output_dir.rename(archive)
+            try:
+                output_dir.mkdir()
+                ledger = archive / "generation_spend.json"
+                if ledger.exists():
+                    shutil.copy2(ledger, output_dir / ledger.name)
+            except Exception:
+                shutil.rmtree(output_dir, ignore_errors=True)
+                archive.rename(output_dir)
+                raise
+            cfg["editor_v05_previous_generation_path"] = str(archive)
+        for key in ("generation_hold", "generation_hold_reason", "generation_hold_step", "generation_hold_at"):
+            cfg.pop(key, None)
+        cfg["editor_v05_generation_attempt"] = int(cfg.get("editor_v05_generation_attempt") or
+                                                    cfg.get("editor_v05_similarity_attempt") or 1) + 1
+        cfg["editor_v05_status"] = "pending"
+        cfg.pop("ai_or_finalizer_status", None)
+    else:
+        _clear_task_output_dir(task.id)
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
 
-    cfg = dict(task.config or {})
     for key in _REGENERATE_CONFIG_DROP_KEYS:
         cfg.pop(key, None)
     cfg = _stamp_aigc_policy(cfg)
@@ -1494,6 +1536,10 @@ def retry_failed_tasks(
                 )
             )
             continue
+        reason = similarity_retry_reason(task.config or {})
+        if reason:
+            skipped.append(BatchRetryTaskItem(task_id=task.id, status="skipped", reason=reason))
+            continue
         if bool((task.config or {}).get("public_domain_longform_v2")):
             if bool((task.config or {}).get("generation_complete")):
                 skipped.append(
@@ -1603,6 +1649,15 @@ def regenerate_tasks(
                     task_id=task.id,
                     status="skipped",
                     reason=f"当前状态为 {task.status}，不能从头重新生成",
+                )
+            )
+            continue
+        if (task.config or {}).get("editor_v05_video_rejected"):
+            skipped.append(
+                BatchRegenerateTaskItem(
+                    task_id=task.id,
+                    status="skipped",
+                    reason=f"{VIDEO_REJECTED}：两次生成与原视频相似度均不低于50%，不再重新生成",
                 )
             )
             continue
@@ -1747,6 +1802,9 @@ def retry_task(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+    reason = similarity_retry_reason(task.config or {})
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     if task.status == TaskStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="任务已完成，不能重新投递，避免重复消耗 API。")
     if task.status == TaskStatus.PROCESSING or _has_active_run(task):
@@ -1839,6 +1897,9 @@ def retry_task_aigc(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     cfg = dict(task.config or {})
+    reason = similarity_retry_reason(cfg)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     if bool(cfg.get("public_domain_rewrite")):
         raise HTTPException(
             status_code=409,
