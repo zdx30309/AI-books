@@ -188,7 +188,6 @@ def generate_text(
                 stream = client.chat.completions.create(
                     **kwargs, stream=True, stream_options={"include_usage": True}
                 )
-                stream_response_id = getattr(stream, "id", None) or stream_response_id
             except Exception as exc:
                 if paid_api_guard.trip_if_quota("deepseek", exc):
                     raise paid_api_guard.PaidApiQuotaExhausted(
@@ -199,6 +198,8 @@ def generate_text(
                 raise
             try:
                 for event in stream:
+                    if stream_response_id is None:
+                        stream_response_id = getattr(event, "id", None)
                     event_usage = getattr(event, "usage", None)
                     if event_usage is not None:
                         stream_usage = event_usage.model_dump() if hasattr(event_usage, "model_dump") else event_usage
