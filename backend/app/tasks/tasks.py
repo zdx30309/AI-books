@@ -2731,6 +2731,7 @@ def process_video(_self, task_id: str) -> dict:
                 aigc_required=False if enabled_for(task.created_at) else bool((task.config or {}).get("aigc_required")),
                 aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
                 approved_final_structure_repair_sha256=(task.config or {}).get("approved_final_structure_repair_sha256"),
+                approved_length_repair_sha256=(task.config or {}).get("approved_length_repair_sha256"),
                 editor_v05_delivery=editor_v05_applies(task),
             )
         )

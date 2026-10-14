@@ -251,6 +251,7 @@ _SERVER_OWNED_CONFIG_KEYS = frozenset(
         "editor_v05_generation_attempt",
         "editor_v05_video_rejected",
         "editor_v05_previous_generation_path",
+        "approved_length_repair_sha256",
     }
 )
 _SERVER_OWNED_CONFIG_PREFIXES = (

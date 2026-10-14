@@ -6,6 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -15,6 +17,11 @@ from app.db.session import get_db
 from app.models import Chapter, Task, TaskStatus, User
 from app.services.editor_v05 import SimilarityGateHold, similarity_gate
 from app.services.generation_spend import GenerationBudgetExceeded, generation_budget, reserve
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_for_sqlite(type_, compiler, **kwargs):
+    return "JSON"
 
 
 @pytest.fixture

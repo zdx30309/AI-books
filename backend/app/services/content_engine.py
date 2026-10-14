@@ -8118,6 +8118,7 @@ async def generate_full_book(
     general_short_sources: list[tuple[str, str]] | None = None,
     general_short_book_title: str = "",
     approved_final_structure_repair_sha256: str | None = None,
+    approved_length_repair_sha256: str | None = None,
     editor_v05_delivery: bool = False,
 ) -> str:
     normalized_category = normalize_category(category)
@@ -8519,6 +8520,7 @@ async def generate_full_book(
 
         generated_markdown = await asyncio.to_thread(
             repair_length, generated_markdown, raw_text, output_dir, on_stage,
+            approved_sha256=approved_length_repair_sha256,
         )
 
     writer_chars = len(generated_markdown)

@@ -114,9 +114,51 @@ def supplement(response, source_text, chapters, number, minimum, maximum, direct
     return response
 
 
-def repair_length(markdown, source_text, output_dir, on_stage=None):
+def apply_approved_length_reduction(base, response, chapter_number):
+    chapters = manuscript_parts(base)
+    if type(chapter_number) is not int or chapter_number not in [part[0] for part in chapters]:
+        raise LengthHold("局部篇幅修复章节定位无效")
+    original = next(part[2] for part in chapters if part[0] == chapter_number)
+    if not 1000 <= word_count(response) <= min(3000, word_count(original)):
+        raise LengthHold("局部压缩结果不符合章节篇幅要求")
+    if re.search(r"(?m)^\s*(?:@|#|！！！|```)", response):
+        raise LengthHold("局部压缩结果包含标题或其他章节标记")
+    prefix, body = base.split("@正文", 1)
+    ending = re.search(r"(?m)^@(?:参考|编辑|全书完成|附录).*$", body)
+    suffix = body[ending.start():] if ending else ""
+    result = prefix + "@正文\n\n" + "\n\n".join(
+        f"@{number}. {title}\n\n{response.strip() if number == chapter_number else content}"
+        for number, title, content in chapters)
+    result += "\n\n" + suffix
+    require_length(result)
+    return result
+
+
+def load_approved_length_repair(markdown, source_text, output_dir, expected_sha256):
+    directory = Path(output_dir) / "approved_length_repair"
+    record = json.loads((directory / "approval.json").read_text())
+    base = (directory / "base.md").read_text()
+    response = (directory / "response.md").read_text().strip()
+    result = (directory / "result.md").read_text()
+    expected = {"initial_sha256": digest(markdown), "source_sha256": digest(source_text),
+                "base_sha256": digest(base), "response_sha256": digest(response), "result_sha256": digest(result)}
+    if record.get("status") != "approved" or not record.get("human_approval"):
+        raise LengthHold("局部篇幅修复缺少明确人工批准")
+    if expected_sha256 != expected["result_sha256"] or any(record.get(key) != value for key, value in expected.items()):
+        raise LengthHold("局部篇幅修复与原稿、资料或批准hash不一致")
+    initial_parts, base_parts = manuscript_parts(markdown), manuscript_parts(base)
+    if [(part[0], part[1]) for part in initial_parts] != [(part[0], part[1]) for part in base_parts]:
+        raise LengthHold("局部篇幅修复改变了原始章节目录")
+    if apply_approved_length_reduction(base, response, record.get("chapter_number")) != result:
+        raise LengthHold("批准稿并非仅局部压缩指定章节")
+    return result
+
+
+def repair_length(markdown, source_text, output_dir, on_stage=None, *, approved_sha256=None):
     from app.services import deepseek
 
+    if approved_sha256:
+        return load_approved_length_repair(markdown, source_text, output_dir, approved_sha256)
     if not issues(markdown):
         return markdown
     chapters = manuscript_parts(markdown)
