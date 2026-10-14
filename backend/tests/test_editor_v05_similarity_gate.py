@@ -114,7 +114,7 @@ def test_below_gate_reaches_next_stage(tmp_path, monkeypatch):
     class NextStage(Exception):
         pass
 
-    monkeypatch.setattr(editor_v05, "audit_manuscript", lambda *args: {"data": data(49.9)})
+    monkeypatch.setattr(editor_v05, "audit_manuscript", lambda *args, **kwargs: {"data": data(49.9)})
     monkeypatch.setattr(editor_v05, "finalize_manuscript", lambda *args, **kwargs: (_ for _ in ()).throw(NextStage()))
     with pytest.raises(NextStage):
         editor_v05._finalize_editor_task(SimpleNamespace(config={"raw_text": "原稿"}), "#新稿\n正文", tmp_path)

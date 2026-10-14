@@ -94,6 +94,32 @@ def test_data_point_label_can_summarize_exactly_quoted_fact():
     assert report.sources[0].material_data == 100
 
 
+def test_regeneration_settles_new_audit_without_colliding_with_previous_receipt(tmp_path, monkeypatch):
+    import shutil
+    from app.services.generation_spend import generation_budget, reserve
+
+    configure(monkeypatch)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for generation, directory in ((1, first), (2, second)):
+        directory.mkdir()
+        if generation == 2:
+            shutil.copy2(first / "generation_spend.json", second / "generation_spend.json")
+        with generation_budget({"generation_budget_cny": 20}, directory):
+            index = reserve("deepseek-text", 1, "deepseek-flash")
+            monkeypatch.setattr(service, "call_audit", lambda *args: {
+                "text": json.dumps(payload(), ensure_ascii=False), "finish_reason": "stop", "model": "deepseek-flash",
+                "budget_reservation_index": index, "response_id": f"audit-{generation}",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 100},
+            })
+            service.audit_manuscript(SOURCE, DRAFT, directory / "editor_v05", "测试", generation_attempt=generation)
+    ledger = json.loads((second / "generation_spend.json").read_text())
+    assert len(ledger["calls"]) == 2
+    assert all(call["status"] == "usage_verified_upper_bound_not_actual_invoice" for call in ledger["calls"])
+    assert ledger["calls"][0]["receipt"] == "editor_v05/audit_response.json"
+    assert ledger["calls"][1]["receipt"] == "editor_v05/audit_response_generation_2.json"
+
+
 def test_source_hash_and_saved_result_prevent_paid_replay(tmp_path, monkeypatch):
     configure(monkeypatch)
     directory = tmp_path / "editor_v05"

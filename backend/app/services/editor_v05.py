@@ -265,7 +265,7 @@ def copy_report(source: str, title: str) -> MultiSourceReport:
                              overall_fallback_notice=audit.fallback_notice, draft_name=title + "_降AI前完整成稿")
 
 
-def audit_manuscript(source: str, draft: str, directory: Path, title: str) -> dict:
+def audit_manuscript(source: str, draft: str, directory: Path, title: str, *, generation_attempt: int = 1) -> dict:
     if not source.strip() or not draft.strip():
         raise FinalizerHold("相似度审查必须提供两份完整文稿")
     if max(len(source), len(draft)) > 200000:
@@ -277,7 +277,8 @@ def audit_manuscript(source: str, draft: str, directory: Path, title: str) -> di
     state = json.loads(path.read_text()) if path.exists() else {**signature, "status": "ready"}
     if any(state.get(key) != value for key, value in signature.items()):
         raise FinalizerHold("相似度输入或提示词变更，不能覆盖旧付费断点")
-    response_path = directory / "audit_response.json"
+    response_path = directory / ("audit_response.json" if generation_attempt == 1 else
+                                 f"audit_response_generation_{generation_attempt}.json")
     if normalize(denoise(source)) == normalize(denoise(draft)):
         report = copy_report(source, title)
     else:
@@ -363,7 +364,8 @@ def _finalize_editor_task(task, text: str, output_dir: Path, *, progress=None) -
             title = next((line.lstrip("#").strip() for line in text.splitlines() if line.startswith("#")), str(cfg.get("title") or "书稿"))
         if progress:
             progress("0.5版：全文结构框架与素材相似度审查")
-        audit = audit_manuscript(source, text, directory, title)
+        audit = audit_manuscript(source, text, directory, title,
+                                 generation_attempt=int(cfg.get("editor_v05_generation_attempt") or 1))
         atomic_text(directory / "inspiration_source.md", source)
         cfg.update(similarity_gate(cfg, text, audit["data"]))
         cfg.update(editor_v05_status="similarity_completed")
