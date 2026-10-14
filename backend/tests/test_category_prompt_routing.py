@@ -173,6 +173,10 @@ def test_generate_full_book_routes_writer_prompt_by_category(
     else:
         expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
+    from app.services.standard_chapter_guard import writer_contract
+
+    expected_prompt = writer_contract(expected_prompt, category)
+
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
         if prompt == expected_prompt:
             writer_prompts.append(prompt)
@@ -261,7 +265,9 @@ def test_masterpiece_interpretation_uses_requested_writer_prompt_and_generic_lat
     )
 
     assert calls == ["writer", "polish", "refine", "format"]
-    assert writer_prompts == [prompts["full_book_writer"].format(raw_text=raw_text)]
+    from app.services.standard_chapter_guard import writer_contract
+
+    assert writer_prompts == [writer_contract(prompts["full_book_writer"].format(raw_text=raw_text), category)]
     assert "\u540d\u4f5c\u89e3\u8bfb" in writer_prompts[0]
     assert "\u6210\u719f\u7684\u4eba\u6587\u8bfb\u7269\u5199\u4f5c\u8005" in writer_prompts[0]
     assert "\u76f4\u63a5\u751f\u6210\u4e00\u7bc7\u5b8c\u6574\u7684\u6df1\u5ea6\u957f\u6587" in writer_prompts[0]

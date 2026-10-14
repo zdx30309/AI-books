@@ -4083,8 +4083,10 @@ async def _repair_final_hard_errors_once(
     prompt_cache_key: str | None = None,
 ) -> str:
     from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
+    from app.services.standard_chapter_guard import ensure_chapter_structure
 
     normalized_category = normalize_category(category or "")
+    markdown = ensure_chapter_structure(markdown, normalized_category, output_dir, stage)
     original_markdown = markdown or ""
     issues = detect_final_hard_errors(original_markdown, category=normalized_category)
     if not issues:
@@ -8139,6 +8141,9 @@ async def generate_full_book(
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
     writer_input_text = raw_text.strip()
+    from app.services.standard_chapter_guard import ensure_chapter_structure, writer_contract
+
+    full_book_writer_prompt = writer_contract(full_book_writer_prompt, normalized_category)
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
@@ -8359,6 +8364,7 @@ async def generate_full_book(
             final_resume_markdown = None
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
+        final_resume_markdown = ensure_chapter_structure(final_resume_markdown, normalized_category, output_dir, "resume")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
         if is_buddhist_scripture_story and use_buddhist_story_unit_writer:
             final_resume_markdown = await _repair_buddhist_story_manuscript_against_units(
@@ -8523,6 +8529,7 @@ async def generate_full_book(
             approved_sha256=approved_length_repair_sha256,
         )
 
+    generated_markdown = ensure_chapter_structure(generated_markdown, normalized_category, output_dir, "writer")
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
@@ -8651,6 +8658,9 @@ async def generate_full_book(
         )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
+
+    polished_markdown = ensure_chapter_structure(polished_markdown, normalized_category, output_dir, "polish")
+    polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = polished_markdown if direct_writer_only else None
@@ -8861,6 +8871,9 @@ async def generate_full_book(
             category=normalized_category,
         )
         refine_chars = len(refined_markdown)
+
+    refined_markdown = ensure_chapter_structure(refined_markdown, normalized_category, output_dir, "refine")
+    refine_chars = len(refined_markdown)
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")

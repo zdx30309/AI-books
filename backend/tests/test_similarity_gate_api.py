@@ -173,3 +173,31 @@ def test_worker_persists_gate_after_database_rollback(fixture, monkeypatch):
     assert current.task.config["generation_hold"]
     assert current.task.config["editor_v05_similarity"] == 78.7
     assert "人工确认" in current.task.current_step
+
+
+def test_worker_structure_hold_keeps_real_progress_and_prevents_auto_retry(fixture, monkeypatch):
+    from unittest.mock import MagicMock
+    from app.tasks import tasks as worker
+    from app.services.standard_chapter_guard import ChapterStructureHold
+
+    current = fixture
+    current.task.config = {"category": "social_science", "raw_text": "原始素材"}
+    current.task.progress = 45
+    current.session.commit()
+    session = MagicMock(wraps=current.session)
+    session.close = lambda: None
+    monkeypatch.setattr(worker, "SessionLocal", lambda: session)
+
+    def blocked(*args):
+        raise ChapterStructureHold("章节结构无法局部修复，不自动付费重写")
+
+    monkeypatch.setattr(worker, "_claim_task_run", blocked)
+    result = worker.process_video.run(str(current.task.id))
+    current.session.refresh(current.task)
+    assert result["status"] == TaskStatus.MANUAL_REVIEW
+    assert current.task.progress == 45
+    assert current.task.config["chapter_structure_status"] == "manual_review"
+    assert current.task.config["generation_hold"]
+    assert not current.task.config.get("auto_retry_scheduled_by")
+    assert "章节结构" in current.task.current_step
+    assert (current.directory / "generation_spend.json").read_text() == current.ledger

@@ -2954,7 +2954,13 @@ def process_video(_self, task_id: str) -> dict:
                 if editor_v05_applies(review_task):
                     _patch_config(review_task, editor_v05_status="manual_review")
             from app.services.editor_v05 import SimilarityGateHold
+            from app.services.standard_chapter_guard import ChapterStructureHold
 
+            if isinstance(e, ChapterStructureHold):
+                cfg = dict(review_task.config or {})
+                cfg.update(chapter_structure_status="manual_review", generation_hold=True,
+                           generation_hold_reason=str(e), generation_hold_step=str(e)[:255])
+                review_task.config = cfg
             if isinstance(e, SimilarityGateHold):
                 _patch_config(review_task, **e.config_patch)
                 review_task.current_step = str(e)[:255]
