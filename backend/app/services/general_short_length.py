@@ -138,7 +138,10 @@ def load_approved_length_repair(markdown, source_text, output_dir, expected_sha2
     directory = Path(output_dir) / "approved_length_repair"
     record = json.loads((directory / "approval.json").read_text())
     base = (directory / "base.md").read_text()
-    response = (directory / "response.md").read_text().strip()
+    response_name = record.get("response_filename", "response.md")
+    if response_name not in {"response.md", "accepted_response.md"}:
+        raise LengthHold("批准稿的局部压缩响应文件名无效")
+    response = (directory / response_name).read_text().strip()
     result = (directory / "result.md").read_text()
     expected = {"initial_sha256": digest(markdown), "source_sha256": digest(source_text),
                 "base_sha256": digest(base), "response_sha256": digest(response), "result_sha256": digest(result)}

@@ -61,3 +61,14 @@ def test_changing_another_chapter_is_not_a_local_repair(tmp_path):
 def test_short_global_body_is_still_rejected():
     with pytest.raises(LengthHold):
         apply_approved_length_reduction(book([700] * 7 + [3380, 1119]), "压" * 2400, 8)
+
+
+def test_successful_followup_does_not_overwrite_original_response(tmp_path):
+    initial, base, result, directory, record = fixture(tmp_path)
+    accepted = (directory / "response.md").read_text()
+    (directory / "accepted_response.md").write_text(accepted)
+    (directory / "response.md").write_text("已保存的第一次失败响应")
+    record["response_filename"] = "accepted_response.md"
+    (directory / "approval.json").write_text(json.dumps(record))
+    assert load_approved_length_repair(initial, "参考资料", tmp_path, digest(result)) == result
+    assert (directory / "response.md").read_text() == "已保存的第一次失败响应"
