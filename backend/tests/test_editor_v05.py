@@ -50,6 +50,18 @@ def task(**config):
                            config={"category": "social_science_core_conflict", "raw_text": SOURCE, **config})
 
 
+def test_pasted_video_share_uses_parsed_canonical_url_for_editor_gate(monkeypatch):
+    configure(monkeypatch)
+    current = task(source_canonical_url="https://www.bilibili.com/video/BV1hN596zEas")
+    current.source_url = "【资本是如何接连引爆多个国家的金融危机的？-哔哩哔哩】 https://b23.tv/cdgDaff"
+    assert service.applies(current)
+    current.created_at = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    assert not service.applies(current)
+    current.created_at = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    current.config["category"] = "general_longform"
+    assert not service.applies(current)
+
+
 def test_formulas_are_recomputed_from_evidence():
     report = service.scored_report(SOURCE, DRAFT, payload(), "费用的边界")
     audit = report.sources[0]

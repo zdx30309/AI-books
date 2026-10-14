@@ -95,7 +95,8 @@ def applies(task) -> bool:
         created = task.created_at
         if created is None or created.replace(tzinfo=created.tzinfo or timezone.utc) < boundary:
             return False
-    return str(getattr(task, "source_url", "")).startswith(("http://", "https://")) or cfg.get("input_source") in {
+    urls = (getattr(task, "source_url", ""), cfg.get("source_canonical_url"))
+    return any(str(url or "").strip().startswith(("http://", "https://")) for url in urls) or cfg.get("input_source") in {
         "reference_article", "video_transcript", "manual_text",
     }
 
