@@ -142,6 +142,7 @@ _RETRY_STAGE_PROGRESS: tuple[tuple[str, int, str], ...] = (
     ("01_writer.md", 50, "排队中（断点续跑：从一润继续）"),
 )
 _REGENERATE_CONFIG_DROP_KEYS = {
+    "approved_length_repair_sha256",
     "active_run_id",
     "active_run_started_at",
     "active_run_heartbeat_at",

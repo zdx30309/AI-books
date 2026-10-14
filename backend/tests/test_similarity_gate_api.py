@@ -65,6 +65,8 @@ def fixture(tmp_path, monkeypatch):
 
 def test_human_regeneration_releases_only_similarity_hold_and_keeps_budget(fixture):
     current = fixture
+    current.task.config = {**current.task.config, "approved_length_repair_sha256": "old-generation-hash"}
+    current.session.commit()
     result = current.client.post("/api/v1/tasks/regenerate", json={"task_ids": [str(current.task.id)]})
     assert result.status_code == 200
     assert result.json()["total_regenerated"] == 1
@@ -72,6 +74,7 @@ def test_human_regeneration_releases_only_similarity_hold_and_keeps_budget(fixtu
     assert current.task.status == TaskStatus.PENDING
     assert not current.task.config.get("generation_hold")
     assert current.task.config["editor_v05_generation_attempt"] == 2
+    assert "approved_length_repair_sha256" not in current.task.config
     assert current.task.config["raw_text"] == "原始素材"
     assert len(current.task.config["editor_v05_similarity_history"]) == 1
     assert (current.directory / "generation_spend.json").read_text() == current.ledger
