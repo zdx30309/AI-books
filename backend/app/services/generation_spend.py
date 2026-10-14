@@ -97,6 +97,44 @@ def reserve_deepseek(prompt, system, model, max_tokens, *, with_index=False):
     return (cap, index) if with_index else cap
 
 
+def settle_deepseek_stream(call_index, usage, response_id, model):
+    """Release a streaming call's reserved upper bound once usage is reported.
+
+    Same accounting as :func:`settle_deepseek_usage`, but the receipt lives in
+    memory (the stream has no artifact on disk).  Unknown usage keeps the
+    original bound so the task stays fail-closed.
+    """
+    context = _current.get()
+    if context is None or call_index is None:
+        return
+    directory, _limit = context
+    if not isinstance(usage, dict) or not isinstance(response_id, str) or not response_id:
+        return
+    input_tokens, output_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if type(input_tokens) is not int or type(output_tokens) is not int or input_tokens <= 0 or output_tokens <= 0:
+        return
+    amount = round((input_tokens * 0.3 + output_tokens * 1.2) / 1000000 * 10, 6)
+    path = directory / "generation_spend.json"
+    with (directory / "generation_spend.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        if type(call_index) is not int or not 0 <= call_index < len(state["calls"]):
+            raise GenerationBudgetExceeded("DeepSeek流式用量对应的预留记录无效")
+        call = state["calls"][call_index]
+        if call.get("status") == "usage_verified_upper_bound_not_actual_invoice":
+            if call.get("provider_response_id") != response_id or call.get("usage") != usage:
+                raise GenerationBudgetExceeded("DeepSeek流式已核定用量发生变化")
+            return
+        if call.get("action") != "deepseek-text" or call.get("model") != model or amount > call["upper_bound_cny"]:
+            raise GenerationBudgetExceeded("DeepSeek流式用量与预算记录不一致，需人工核对")
+        if any(item.get("provider_response_id") == response_id for item in state["calls"]):
+            raise GenerationBudgetExceeded("同一DeepSeek流式用量凭据不能重复释放预算")
+        state["reserved_cny"] = round(state["reserved_cny"] - call["upper_bound_cny"] + amount, 6)
+        call.update(status="usage_verified_upper_bound_not_actual_invoice", usage_upper_bound_cny=amount,
+                    provider_response_id=response_id, usage=usage)
+        atomic_json(path, state)
+
+
 def settle_deepseek_usage(call_index, receipt_path):
     context = _current.get()
     if context is None or call_index is None:

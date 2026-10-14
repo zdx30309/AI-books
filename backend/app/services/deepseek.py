@@ -143,7 +143,9 @@ def generate_text(
 ) -> str:
     from app.services.generation_spend import active, reserve_deepseek
 
-    max_output_tokens = reserve_deepseek(prompt, system_instruction, model or settings.DEEPSEEK_MODEL, max_output_tokens)
+    max_output_tokens, reservation_index = reserve_deepseek(
+        prompt, system_instruction, model or settings.DEEPSEEK_MODEL, max_output_tokens, with_index=True
+    )
     if active():
         thinking = False
         fail_on_max_tokens = True
@@ -171,6 +173,8 @@ def generate_text(
     reasoning_chars = 0
     generated_chars = 0
     stopped_by_max_tokens = False
+    stream_usage: dict | None = None
+    stream_response_id: str | None = None
     try:
         with distributed_semaphore(
             "deepseek-format",
@@ -181,7 +185,10 @@ def generate_text(
                 # The POST may already be accepted even when the SDK raises a
                 # transport/status exception.  Handle it before tenacity sees
                 # the exception so it cannot create a replacement request.
-                stream = client.chat.completions.create(**kwargs, stream=True)
+                stream = client.chat.completions.create(
+                    **kwargs, stream=True, stream_options={"include_usage": True}
+                )
+                stream_response_id = getattr(stream, "id", None) or stream_response_id
             except Exception as exc:
                 if paid_api_guard.trip_if_quota("deepseek", exc):
                     raise paid_api_guard.PaidApiQuotaExhausted(
@@ -192,6 +199,9 @@ def generate_text(
                 raise
             try:
                 for event in stream:
+                    event_usage = getattr(event, "usage", None)
+                    if event_usage is not None:
+                        stream_usage = event_usage.model_dump() if hasattr(event_usage, "model_dump") else event_usage
                     if not event.choices:
                         continue
                     delta = event.choices[0].delta
@@ -245,7 +255,26 @@ def generate_text(
         )
     if stopped_by_max_tokens and fail_on_max_tokens:
         raise DeepSeekMaxTokensError(content, max_output_tokens)
+    _settle_stream_usage(reservation_index, stream_usage, stream_response_id, model or settings.DEEPSEEK_MODEL)
     return content
+
+
+def _settle_stream_usage(reservation_index, usage, response_id, model) -> None:
+    """Release the reserved upper bound once the real token usage is known.
+
+    ``reserve_deepseek`` holds a conservative upper bound for every call; a
+    streaming reply that never reports usage would otherwise keep that bound
+    reserved for the whole task and exhaust the budget long before the real
+    spend reached it.
+    """
+    from app.services.generation_spend import settle_deepseek_stream
+
+    if reservation_index is None:
+        return
+    try:
+        settle_deepseek_stream(reservation_index, usage, response_id, model)
+    except Exception:  # noqa: BLE001 - accounting must never break generation
+        logger.warning("DeepSeek 流式用量结算跳过", exc_info=True)
 
 
 def _looks_like_complete_format_output(text: str) -> bool:
