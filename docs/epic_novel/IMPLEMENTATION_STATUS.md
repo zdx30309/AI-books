@@ -7,7 +7,10 @@
 - 数据库不执行降级，书籍、上传资料、费用账本及断点保留。已只读确认旧ORM未映射的五个long_novel非空列均有数据库DEFAULT，普通Task/User/Chapter无新增必填字段阻断。
 - 部署隔离旧队列：保留Redis DB1/DB2及原实例，使用原先为空的DB3/DB4供旧版backend/worker；旧限流REDIS_URL继续指向共享DB0。停用beat/maintenance与自动恢复，防止旧代码自动续跑新任务。当前worker并发4不扩大。
 - 旧Celery源码对本地redis仍设置TLS，部署启动命令仅在运行时清除此SSL选项；不修改7月4日业务源码。保留现有生产Caddy配置、证书卷、密钥及Google凭据挂载，不恢复过期密钥或删除数据卷。
-- 本地旧版完整测试436 passed、1 skipped；frontend typecheck/build通过，index-Ce27yWCP.js。发布只验证健康、登录鉴权读取、数据及文件hash、无付费DB事务回滚兼容；不发起真实AI调用。线上发布及快照核对结果另记，不提前宣称成功。
+- 本地旧版完整测试436 passed、1 skipped；frontend typecheck/build通过，index-Ce27yWCP.js。不发起真实AI调用，不宣称完整Epic验收完成。
+- 用户随后要求「线上版本先停止，不再运行，先完成更新」。已停止backend、worker、web、beat、maintenance并关闭它们的自动重启；Redis继续保留，不清空旧队列，不续跑书籍。最终更新采用离线模式，未启动应用服务，不执行在线健康验收。
+- 北京ECS已离线替换7月4日源码、后端镜像及前端静态产物；核对宿主机及未启动的backend/worker容器内114份运行文件hash、web容器index.html hash。三个应用容器仅create，不start；beat/maintenance保持停止。版本记录为789c363，业务基线92f69ea，后续文档提交不改变业务源码。
+- 部署前后已保存任务和重点书籍文件快照；备份在服务器/opt/video-plan-release-backups/rollback-20260704-789c363。数据库不回退、不删除书籍及数据卷。旧源码未改动文件存在CRLF差异，已统一按Git目标内容核验后复制，避免仅以差异文件覆盖造成误判。
 
 Updated: 2026-06-13
 
