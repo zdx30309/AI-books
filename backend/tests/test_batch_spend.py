@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 import json
 import sys
@@ -11,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.services import batch_spend, content_engine, gemini
+from app.services import batch_spend, content_engine, deepseek, gemini
 
 
 @pytest.fixture
@@ -121,6 +122,64 @@ def test_missing_usage_keeps_full_reservation(batch):
         reserved = json.loads(ledger.read_text())["reserved_cny"]
         batch_spend.settle(index, None, None)
     assert json.loads(ledger.read_text())["reserved_cny"] == reserved
+
+
+def test_gemini_disables_sdk_retry_and_records_thought_tokens(batch, monkeypatch):
+    config, output, owner, ledger = batch
+    calls = []
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text="润色结果", response_id="gemini-1", candidates=[],
+                               usage_metadata=SimpleNamespace(prompt_token_count=100, candidates_token_count=200, thoughts_token_count=50))
+
+    monkeypatch.setattr(gemini.settings, "GOOGLE_GENAI_USE_VERTEXAI", True)
+    monkeypatch.setattr(gemini.settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
+    monkeypatch.setattr(gemini, "_get_vertex_client", lambda *args: SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
+    monkeypatch.setattr(gemini, "_gemini_call_gate", nullcontext)
+    monkeypatch.setattr(gemini, "_google_proxy_env", nullcontext)
+    with batch_spend.scope(config, output, owner):
+        assert gemini.generate_text("来源") == "润色结果"
+    assert calls[0]["config"].http_options.retry_options.attempts == 1
+    assert json.loads(ledger.read_text())["calls"][0]["output_tokens"] == 250
+
+
+@pytest.mark.parametrize("text", ("格式化结果", ""))
+def test_deepseek_stream_records_usage_without_hidden_retry(batch, monkeypatch, text):
+    config, output, owner, ledger = batch
+    calls = []
+
+    class Client:
+        def with_options(self, **kwargs):
+            assert kwargs == {"max_retries": 0}
+            return self
+
+        @property
+        def chat(self):
+            return self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return iter([
+                SimpleNamespace(id="deepseek-1", usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason="stop")]),
+                SimpleNamespace(id="deepseek-1", usage=SimpleNamespace(prompt_tokens=100, completion_tokens=200), choices=[]),
+            ])
+
+    monkeypatch.setattr(deepseek, "get_deepseek_client", lambda: Client())
+    monkeypatch.setattr(deepseek, "distributed_semaphore", lambda *args, **kwargs: nullcontext())
+    with batch_spend.scope(config, output, owner):
+        if text:
+            assert deepseek.generate_text("来源", model="deepseek-flash") == text
+        else:
+            with pytest.raises(batch_spend.BatchBudgetStop, match="空响应"):
+                deepseek.generate_text("来源", model="deepseek-flash")
+    assert len(calls) == 1
+    assert calls[0]["stream_options"] == {"include_usage": True}
+    assert json.loads(ledger.read_text())["calls"][0]["output_tokens"] == 200
 
 
 @pytest.mark.parametrize("field,value", (("generation_batch_budget_cny", float("nan")), ("category", "healing_comic")))

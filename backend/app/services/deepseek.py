@@ -136,6 +136,8 @@ def generate_text(
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
     if not content:
+        if index is not None:
+            raise batch_spend.BatchBudgetStop("DeepSeek返回空响应，费用已保存，暂停批次，不自动重放")
         raise ValueError("DeepSeek 返回空响应")
     if stopped_by_max_tokens and fail_on_max_tokens:
         raise DeepSeekMaxTokensError(content, max_output_tokens)

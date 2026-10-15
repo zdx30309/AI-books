@@ -5970,7 +5970,7 @@ async def generate_full_book(
                         else None
                     ),
                 ),
-                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+                timeout=None if batch_spend.active() else settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
             if (
                 is_classical_category
