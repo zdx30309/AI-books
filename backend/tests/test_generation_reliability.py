@@ -288,3 +288,24 @@ def test_budget_stop_pauses_task_without_retrying_or_completing(isolated_generat
         assert task.config["generation_hold"]
         assert "active_run_id" not in task.config
         assert not task.chapters
+
+
+def test_stale_budget_stop_preserves_newer_run(isolated_generation, monkeypatch):
+    sessions, create_task, _, _, markers, _ = isolated_generation
+    task_id = create_task(markers[0])
+
+    def replace_run_then_stop(*args, **kwargs):
+        with sessions() as database:
+            task = database.get(Task, task_id)
+            task.config = {**task.config, "active_run_id": "newer-run", "approved": True}
+            database.commit()
+        raise BatchBudgetStop("旧运行费用保护测试")
+
+    monkeypatch.setattr(content_engine, "format_book_text", replace_run_then_stop)
+    generation_tasks.process_video.run(str(task_id))
+    with sessions() as database:
+        task = database.get(Task, task_id)
+        assert task.config.get("active_run_id") == "newer-run", task.config
+        assert task.config["approved"]
+        assert not task.config.get("generation_hold")
+        assert task.status != TaskStatus.PAUSED

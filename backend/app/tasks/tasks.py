@@ -1400,9 +1400,14 @@ def process_video(_self, task_id: str) -> dict:
 
     except BatchBudgetStop as error:
         db.rollback()
-        current = db.get(Task, uuid.UUID(task_id))
+        current = db.execute(
+            select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update().execution_options(populate_existing=True)
+        ).scalar_one_or_none()
         if current is not None:
             cfg = dict(current.config or {})
+            if current.status == TaskStatus.COMPLETED or cfg.get("active_run_id") != run_id:
+                db.rollback()
+                return {"task_id": task_id, "status": current.status, "chapters": len(current.chapters)}
             cfg.update(generation_hold=True, generation_hold_reason=str(error), generation_hold_step="批次费用保护暂停，断点已保存")
             current.config = cfg
             _clear_task_run(current, run_id)
