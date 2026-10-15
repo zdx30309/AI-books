@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"
-    IMAGE_MODEL: str = "gpt-image-2"
+    IMAGE_MODEL: str = "gpt-image-2.5-sunburst"
     IMAGE_SIZE: str = "2450x3500"
     IMAGE_QUALITY: str = ""
     IMAGE_RESPONSE_FORMAT: str = ""
@@ -193,8 +193,8 @@ class Settings(BaseSettings):
     YOUTUBE_PO_TOKEN: str = ""
     YOUTUBE_YT_DLP_EXTRACTOR_ARGS: str = ""
     YOUTUBE_AUDIO_TRANSCRIPTION_ENABLED: bool = True
-    YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
-    AUDIO_TRANSCRIPTION_FALLBACK_MODELS: str = "whisper-1"
+    YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
+    AUDIO_TRANSCRIPTION_FALLBACK_MODELS: str = "gpt-4o-mini-transcribe,whisper-1"
     AUDIO_TRANSCRIPTION_CHUNK_SECONDS: int = 600
     YOUTUBE_AUDIO_MAX_BYTES: int = 25_000_000
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
@@ -213,7 +213,7 @@ class Settings(BaseSettings):
     WECHAT_CHANNELS_TRANSCRIPTION_TIMEOUT_SECONDS: int = 600
     WECHAT_CHANNELS_MEDIA_MAX_BYTES: int = 200_000_000
     WECHAT_CHANNELS_AUDIO_MAX_BYTES: int = 25_000_000
-    WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     WECHAT_CHANNELS_TRANSCRIPT_MIN_CHARS: int = 20
 
     # --- Bilibili transcript fallback ---
@@ -222,7 +222,7 @@ class Settings(BaseSettings):
     BILIBILI_TRANSCRIPTION_TIMEOUT_SECONDS: int = 900
     BILIBILI_MEDIA_MAX_BYTES: int = 300_000_000
     BILIBILI_AUDIO_MAX_BYTES: int = 80_000_000
-    BILIBILI_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    BILIBILI_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     BILIBILI_AUDIO_TRANSCRIPTION_MAX_CONCURRENT: int = 2
     BILIBILI_AUDIO_GATE_WAIT_TIMEOUT_SECONDS: int = 3600
     BILIBILI_TRANSCRIPT_MIN_CHARS: int = 20

@@ -333,7 +333,7 @@ def _audio_duration_seconds(audio_path: Path, *, timeout: int) -> float | None:
 
 
 def _transcription_model_sequence(primary_model: str) -> list[str]:
-    primary = primary_model or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL or "gpt-4o-mini-transcribe"
+    primary = primary_model or settings.YOUTUBE_AUDIO_TRANSCRIPTION_MODEL or "gpt-transcribe"
     configured = ",".join(
         value
         for value in (

@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 封面与转写模型升级、合并旗舰分支（2026-10-15）
+
+- 用户要求GPT统一6.1，其余厂商用最新模型，并确认保留旗舰版：Gemini gemini-4-argon、DeepSeek deepseek-v4-pro、OpenAI文本gpt-6.1-sol（沿用feat/latest-models-and-stage-guards及其阶段护栏）。
+- 在此基础上补齐：封面图gpt-image-2改为gpt-image-2.5-sunburst（官方最强图像模型，尺寸规则与gpt-image-2相同，沿用现有16倍数与像素上限换算）；转写gpt-4o-mini-transcribe改为gpt-transcribe，回退链gpt-4o-mini-transcribe、whisper-1。
+- main上曾推送的361bb70（gemini-3.8-flash/deepseek-flash方案）被本次合并取代，不部署。
+- 官方来源：https://developers.openai.com/api/docs/models/all ，https://ai.google.dev/gemini-api/docs/models ，https://api-docs.deepseek.com/updates/ 。
+
 ## 主笔切回GPT-6.1 Sol及阶段护栏复核（2026-10-15，纽约）
 
 - 用户要求主笔改为gpt-6.1-sol：更新主笔默认值及生产/后端环境示例；Gemini 4 Argon润色、DeepSeek V4 Pro格式化及默认关闭的终审模型不变，6.1 Sol费率在batch_spend中已存在。服务器.env若显式设置OPENAI_WRITER_MODEL需同步改为gpt-6.1-sol。

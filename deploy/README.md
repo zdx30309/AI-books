@@ -65,7 +65,7 @@ For cover generation, set:
 - `COVER_BATCH_V2_ENABLED=True`
 - `OPENAI_API_KEY=<your official OpenAI key>`
 - `IMAGE_BASE_URL=https://api.openai.com/v1`
-- `IMAGE_MODEL=gpt-image-2`
+- `IMAGE_MODEL=gpt-image-2.5-sunburst`
 - `OPENAI_HTTPS_PROXY=http://172.18.0.1:7898`
 - `COVER_BATCH_MAX_CONCURRENT_ITEMS=2` initially, then raise only after checking 429/timeout metrics.
 
