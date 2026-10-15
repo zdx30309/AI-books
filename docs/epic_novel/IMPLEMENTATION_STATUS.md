@@ -6,7 +6,8 @@
 - 复核发现人生哲学品类终稿使用“！！！@正文/！！！N. 标题”分页标记，阶段护栏只识别@N.：DeepSeek格式结果每次被误判回退、终稿缓存每次被判失效、篇幅门禁必定报“缺少章节”并暂停。护栏与门禁统一先把分页标记还原为@结构行再比较。
 - 终稿硬伤修复由主笔整篇重写，此前无篇幅/结构校验；现对标准品类复用阶段护栏，修复稿被压缩、章节编号或标题被改动时抛出可重试错误，不交付压缩稿。
 - 篇幅门禁暂停的任务此前没有放行入口（length_gate_accepted无处设置），重新投递会复用同一终稿再次暂停；现在任务主人对manual_review暂停任务点击重新投递即视为人工放行。
-- 新增三项回归；backend全量pytest -q tests：482 passed、1 skipped、1 failed（test_family_long_novel_routes_are_registered，改动前同样失败，与本次无关）。未执行真实付费生成。
+- 用户要求ChatGPT所有文本模型统一为6.1 Sol：终审模型默认值及示例、财经联网搜索兜底均改为gpt-6.1-sol；财经搜索、长篇小说三档、Epic作者/编辑未单独配置时回退主笔即6.1 Sol。语音转写gpt-4o-mini-transcribe与配图gpt-image-2属专用音频/图像模型，6.1 Sol不能替代，保持不变。
+- 新增四项回归；backend全量pytest -q tests：483 passed、1 skipped、1 failed（test_family_long_novel_routes_are_registered，改动前同样失败，与本次无关）。未执行真实付费生成。
 
 ## 新模型与阶段质量护栏分支复核（2026-10-15，纽约）
 

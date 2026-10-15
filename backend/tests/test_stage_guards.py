@@ -148,3 +148,9 @@ def test_life_philosophy_page_break_markers_pass_stage_guards() -> None:
     assert ce._standard_stage_regression_issues(source, delivered) == []
     assert ce._standard_chapter_sizes(delivered) == ce._standard_chapter_sizes(source)
     assert not any("章节" in issue for issue in ce.final_length_gate_issues(delivered, category="life_philosophy"))
+
+
+def test_auditor_default_is_gpt_61_sol() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["OPENAI_AUDITOR_MODEL"].default == "gpt-6.1-sol"

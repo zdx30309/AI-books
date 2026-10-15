@@ -84,7 +84,7 @@ class Settings(BaseSettings):
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
-    OPENAI_AUDITOR_MODEL: str = "gpt-6-astra"
+    OPENAI_AUDITOR_MODEL: str = "gpt-6.1-sol"
 
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
