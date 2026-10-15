@@ -115,3 +115,36 @@ def test_invalid_chunk_is_rerun_then_kept_from_source() -> None:
     )
     assert calls["n"] == 2
     assert result == source.strip()
+
+
+def test_final_hard_error_repair_rejects_compressed_rewrite(monkeypatch, tmp_path) -> None:
+    source = _book({1: "这人心里便想“菜之所以好喝，是因为加了盐。”\n\n" + _para(12), 2: _para(12)})
+
+    async def compressing_repair(prompt: str, **kwargs) -> str:
+        return _book({1: "这人心里便想“菜之所以好吃，是因为加了盐。”", 2: _para(12)})
+
+    monkeypatch.setattr(ce, "_route_writer_call", compressing_repair)
+    with pytest.raises(RuntimeError, match="破坏篇幅或结构"):
+        asyncio.run(ce._repair_final_hard_errors_once(source, category="life_philosophy", output_dir=tmp_path))
+
+    async def local_repair(prompt: str, **kwargs) -> str:
+        return source.replace("菜之所以好喝", "菜之所以好吃")
+
+    monkeypatch.setattr(ce, "_route_writer_call", local_repair)
+    repaired = asyncio.run(ce._repair_final_hard_errors_once(source, category="life_philosophy", output_dir=tmp_path))
+    assert "菜之所以好吃" in repaired
+
+
+def test_writer_default_is_gpt_61_sol() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["OPENAI_WRITER_MODEL"].default == "gpt-6.1-sol"
+
+
+def test_life_philosophy_page_break_markers_pass_stage_guards() -> None:
+    source = _book({1: _para(30), 2: _para(30)})
+    delivered = ce.normalize_final_markdown(source, category="life_philosophy")
+    assert "！！！1." in delivered
+    assert ce._standard_stage_regression_issues(source, delivered) == []
+    assert ce._standard_chapter_sizes(delivered) == ce._standard_chapter_sizes(source)
+    assert not any("章节" in issue for issue in ce.final_length_gate_issues(delivered, category="life_philosophy"))

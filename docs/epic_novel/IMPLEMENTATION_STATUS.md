@@ -1,5 +1,13 @@
 # Epic Novel Engine Implementation Status
 
+## 主笔切回GPT-6.1 Sol及阶段护栏复核（2026-10-15，纽约）
+
+- 用户要求主笔改为gpt-6.1-sol：更新主笔默认值及生产/后端环境示例；Gemini 4 Argon润色、DeepSeek V4 Pro格式化及默认关闭的终审模型不变，6.1 Sol费率在batch_spend中已存在。服务器.env若显式设置OPENAI_WRITER_MODEL需同步改为gpt-6.1-sol。
+- 复核发现人生哲学品类终稿使用“！！！@正文/！！！N. 标题”分页标记，阶段护栏只识别@N.：DeepSeek格式结果每次被误判回退、终稿缓存每次被判失效、篇幅门禁必定报“缺少章节”并暂停。护栏与门禁统一先把分页标记还原为@结构行再比较。
+- 终稿硬伤修复由主笔整篇重写，此前无篇幅/结构校验；现对标准品类复用阶段护栏，修复稿被压缩、章节编号或标题被改动时抛出可重试错误，不交付压缩稿。
+- 篇幅门禁暂停的任务此前没有放行入口（length_gate_accepted无处设置），重新投递会复用同一终稿再次暂停；现在任务主人对manual_review暂停任务点击重新投递即视为人工放行。
+- 新增三项回归；backend全量pytest -q tests：482 passed、1 skipped、1 failed（test_family_long_novel_routes_are_registered，改动前同样失败，与本次无关）。未执行真实付费生成。
+
 ## 新模型与阶段质量护栏分支复核（2026-10-15，纽约）
 
 - 复核远端 feat/latest-models-and-stage-guards 的 d13109f；原分支离线全量测试477 passed、1 skipped，但复现同编号标题被替换、长正文无章节仍过篇幅门禁、旧终稿快速续跑跳过阶段对比的漏洞。

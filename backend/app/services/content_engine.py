@@ -3152,6 +3152,15 @@ async def _repair_final_hard_errors_once(
     repaired = normalize_final_markdown(repaired, category=normalized_category)
     _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
 
+    # The repair call rewrites the whole manuscript; it must not compress or renumber it.
+    if (
+        normalized_category not in FINAL_LENGTH_GATE_EXCLUDED_CATEGORIES
+        and normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS
+    ):
+        regression = _standard_stage_regression_issues(markdown, repaired)
+        if regression:
+            raise RuntimeError(f"终稿硬伤修复破坏篇幅或结构，需重跑: {'; '.join(regression)}")
+
     remaining = detect_final_hard_errors(repaired, category=normalized_category)
     if remaining:
         remaining_text = format_final_hard_error_hits(remaining)
@@ -5150,9 +5159,17 @@ def _standard_chunk_structure_issues(source_chunk: str, output_chunk: str) -> li
     return issues
 
 
+_DELIVERY_PAGE_BREAK_RE = re.compile(r"(?m)^[ \t]*！！！@?")
+
+
+def _canonical_stage_markers(markdown: str) -> str:
+    """人生哲学交付稿用 ！！！@正文 / ！！！N. 标题 分页；护栏统一按 @ 结构行比较。"""
+    return _DELIVERY_PAGE_BREAK_RE.sub("@", markdown or "")
+
+
 def _standard_chapter_sizes(markdown: str) -> dict[int, int]:
     sizes: dict[int, int] = {}
-    for number, _title, lines in _extract_buddhist_body_chapters(markdown):
+    for number, _title, lines in _extract_buddhist_body_chapters(_canonical_stage_markers(markdown)):
         body = "".join(line for line in lines if not line.lstrip().startswith("#"))
         sizes[number] = sizes.get(number, 0) + len(re.sub(r"\s+", "", body))
     return sizes
@@ -5170,7 +5187,9 @@ def _standard_stage_regression_issues(
         return ["输出为空"]
     if not source or not source.strip():
         return []
-    min_chapter = int(min_chapter_chars if min_chapter_chars is not None else settings.FINAL_MIN_CHAPTER_CHARS)
+    source = _canonical_stage_markers(source)
+    candidate = _canonical_stage_markers(candidate)
+    min_chapter =int(min_chapter_chars if min_chapter_chars is not None else settings.FINAL_MIN_CHAPTER_CHARS)
     issues: list[str] = []
     if not _front_matter_missing(source) and _front_matter_missing(candidate):
         issues.append("前置块（书名/简介/目录/导言/正文）缺失")
@@ -5202,6 +5221,7 @@ def final_length_gate_issues(markdown: str, *, category: str | None = None) -> l
     if key in FINAL_LENGTH_GATE_EXCLUDED_CATEGORIES or key in CLASSICAL_CHINESE_CATEGORY_IDS:
         return []
     issues: list[str] = []
+    markdown = _canonical_stage_markers(markdown)
     body_text = _finance_body_text(markdown)
     body_chars = len(re.sub(r"\s+", "", body_text))
     if body_chars < int(settings.FINAL_MIN_BODY_CHARS):

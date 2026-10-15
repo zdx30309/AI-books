@@ -1370,7 +1370,7 @@ def process_video(_self, task_id: str) -> dict:
             )
             _clear_task_run(task, run_id)
             task.status = TaskStatus.PAUSED
-            task.current_step = "篇幅质检未通过，等待人工复核"
+            task.current_step = "篇幅质检未通过，人工复核后点击重新投递即放行"
             task.error_message = f"篇幅质检未通过：{reason}"[:2000]
             db.commit()
             return {"task_id": str(task.id), "status": TaskStatus.PAUSED, "chapters": chapter_count}

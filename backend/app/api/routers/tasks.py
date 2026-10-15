@@ -1577,6 +1577,15 @@ def retry_task(
     if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED}:
         raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
 
+    # 篇幅门禁转人工复核的任务：主人复核后点击重新投递即视为放行，
+    # 否则续跑会复用同一终稿缓存并再次被门禁暂停。
+    cfg = dict(task.config or {})
+    if task.status == TaskStatus.PAUSED and cfg.get("manual_review"):
+        cfg["length_gate_accepted"] = True
+        cfg["length_gate_accepted_at"] = datetime.now(timezone.utc).isoformat()
+        cfg.pop("manual_review", None)
+        task.config = cfg
+
     _prepare_task_for_retry(task)
     db.commit()
     db.refresh(task)
