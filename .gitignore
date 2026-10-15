@@ -3,16 +3,11 @@ __pycache__/
 *.pyo
 *.pyd
 *.zip
-*.tar.gz
 
 .env
 .env.*
 !.env.example
 !.env.production.example
-**/*service-account*.json
-**/*credentials*.json
-backend/video-plan2-0d509b4cd163.json
-video-plan2-0d509b4cd163.json
 frontend/*.tsbuildinfo
 backend/output/
 .local/
@@ -23,15 +18,12 @@ models/
 !backend/app/models/
 !backend/app/models/*.py
 tmp_ytdlp/
-/output/
-/tmp/
-frontend/pnpm-lock.yaml
-frontend/pnpm-workspace.yaml
 
 .claude/worktrees/
 deployment.local.json
 .deployment.local.json
 cover_analysis/
+video-plan2-0d509b4cd163.json
+backend/video-plan2-0d509b4cd163.json
 dangdang_book_covers/
 样本库/
-.tmp/

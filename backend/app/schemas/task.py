@@ -3,9 +3,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
-
-from app.utils.task_status import public_task_error, public_task_step
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CreateTaskRequest(BaseModel):
@@ -110,7 +108,7 @@ class BatchRegenerateTaskResponse(BaseModel):
 
 class BatchDownloadRequest(BaseModel):
     task_ids: list[UUID] = Field(..., min_length=1, max_length=500, description="要打包下载的任务 ID")
-    fmt: str = Field(default="docx", pattern="^(md|docx|txt)$", description="下载格式")
+    fmt: str = Field(default="docx", pattern="^(md|docx)$", description="下载格式")
 
 
 class TaskCategoryOption(BaseModel):
@@ -148,32 +146,8 @@ class TaskStatusResponse(BaseModel):
     bookshelf: str | None = None
     category: str | None = None
     category_label: str | None = None
-    aigc_passed: bool | None = None
-    aigc_max_score: int | None = None
-    aigc_required: bool = False
-    aigc_status: str = "not_required"
-    aigc_initial_max_score: int | None = None
-    aigc_final_max_score: int | None = None
-    aigc_rewrite_rounds: int = 0
-    aigc_quality_passed: bool | None = None
-    aigc_report_available: bool = False
-    aigc_manual_review_reason: str | None = None
     error_message: str | None = None
     created_at: datetime
-
-    @field_validator("current_step", mode="before")
-    @classmethod
-    def _public_current_step(cls, value: object, info: ValidationInfo) -> str:
-        return public_task_step(
-            value,
-            status=info.data.get("status", ""),
-            progress=info.data.get("progress", 0),
-        )
-
-    @field_validator("error_message", mode="before")
-    @classmethod
-    def _public_error_message(cls, value: object, info: ValidationInfo) -> str | None:
-        return public_task_error(value, status=info.data.get("status", ""))
 
 
 class TaskListItem(BaseModel):
@@ -193,15 +167,6 @@ class TaskListItem(BaseModel):
     category_label: str | None = None
     word_count: int = 0            # 全文字数 (config.markdown_chars 或章节累加)
     chapter_count: int = 0
-
-    @field_validator("current_step", mode="before")
-    @classmethod
-    def _public_current_step(cls, value: object, info: ValidationInfo) -> str:
-        return public_task_step(
-            value,
-            status=info.data.get("status", ""),
-            progress=info.data.get("progress", 0),
-        )
 
 
 class TaskListResponse(BaseModel):

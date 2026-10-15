@@ -67,18 +67,13 @@ export function WeReadTool() {
   const [rows, setRows] = useState<WeReadBookRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [companyLoading, setCompanyLoading] = useState(false);
-  const [captureImporting, setCaptureImporting] = useState(false);
-  const [fanqieCaptureImporting, setFanqieCaptureImporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [importedFileName, setImportedFileName] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [companyName, setCompanyName] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const captureFileInputRef = useRef<HTMLInputElement | null>(null);
-  const fanqieCaptureFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stats = useMemo(() => {
     const matched = rows.filter((row) => row.status === "matched" || row.status === "partial").length;
@@ -98,14 +93,12 @@ export function WeReadTool() {
     }
     setLoading(true);
     setError(null);
-    setWarnings([]);
     try {
       const result = await api.analyzeWeReadBooks({
         catalog_text: catalogText,
         profit_text: profitText || null,
       });
       setRows(result.items);
-      setWarnings(result.warnings ?? []);
       setImportedFileName(null);
       setImportProgress(null);
     } catch (e) {
@@ -129,7 +122,6 @@ export function WeReadTool() {
     }
     setCompanyLoading(true);
     setError(null);
-    setWarnings([]);
     setRows([]);
     setImportProgress(null);
     try {
@@ -138,7 +130,6 @@ export function WeReadTool() {
         max_books: 500,
       });
       setRows(result.items);
-      setWarnings(result.warnings ?? []);
       setImportedFileName(`版权方：${name}`);
       setImportProgress({ done: result.items.length, total: result.total });
       if (result.items.length === 0) {
@@ -154,76 +145,6 @@ export function WeReadTool() {
       setError(msg);
     } finally {
       setCompanyLoading(false);
-    }
-  };
-
-  const importCompanyCapture = async (file: File) => {
-    const name = companyName.trim();
-    if (!name) {
-      setError("请先输入版权方或公司名字，再导入抓包文件");
-      if (captureFileInputRef.current) captureFileInputRef.current.value = "";
-      return;
-    }
-    setCaptureImporting(true);
-    setError(null);
-    setWarnings([]);
-    setRows([]);
-    setImportProgress(null);
-    try {
-      const result = await api.analyzeWeReadCompanyCapture(file, name, 1000);
-      setRows(result.items);
-      setWarnings(result.warnings ?? []);
-      setImportedFileName(`版权方抓包：${name} / ${file.name}`);
-      setImportProgress({ done: result.items.length, total: result.total });
-      if (result.items.length === 0) {
-        setError("抓包文件里没有识别到微信读书书籍列表，请确认导出的是版权方“全部作品”分页接口响应或 HAR。");
-      }
-    } catch (e) {
-      const msg =
-        e instanceof ApiError
-          ? e.detail
-          : e instanceof Error
-            ? e.message
-            : "版权方抓包导入失败";
-      setError(msg);
-    } finally {
-      setCaptureImporting(false);
-      if (captureFileInputRef.current) captureFileInputRef.current.value = "";
-    }
-  };
-
-  const importFanqieCapture = async (file: File) => {
-    const name = companyName.trim();
-    if (!name) {
-      setError("请先输入版权方、公司名或作者名，再导入番茄小说抓包文件");
-      if (fanqieCaptureFileInputRef.current) fanqieCaptureFileInputRef.current.value = "";
-      return;
-    }
-    setFanqieCaptureImporting(true);
-    setError(null);
-    setWarnings([]);
-    setRows([]);
-    setImportProgress(null);
-    try {
-      const result = await api.analyzeFanqieCompanyCapture(file, name, 1000);
-      setRows(result.items);
-      setWarnings(result.warnings ?? []);
-      setImportedFileName(`番茄小说抓包：${name} / ${file.name}`);
-      setImportProgress({ done: result.items.length, total: result.total });
-      if (result.items.length === 0) {
-        setError("抓包文件里没有识别到番茄小说书籍列表，请确认导出的是番茄小说搜索、作者页、书单页、详情页接口响应或 HAR。");
-      }
-    } catch (e) {
-      const msg =
-        e instanceof ApiError
-          ? e.detail
-          : e instanceof Error
-            ? e.message
-            : "番茄小说抓包导入失败";
-      setError(msg);
-    } finally {
-      setFanqieCaptureImporting(false);
-      if (fanqieCaptureFileInputRef.current) fanqieCaptureFileInputRef.current.value = "";
     }
   };
 
@@ -252,7 +173,6 @@ export function WeReadTool() {
   const importExcelAndAnalyze = async (file: File) => {
     setImporting(true);
     setError(null);
-    setWarnings([]);
     setRows([]);
     setImportProgress(null);
     try {
@@ -260,7 +180,6 @@ export function WeReadTool() {
       setImportedFileName(file.name);
       setImportProgress({ done: 0, total: imported.total });
       const mergedRows: WeReadBookRow[] = [];
-      const mergedWarnings: string[] = [];
       for (let start = 0; start < imported.items.length; start += EXCEL_ANALYZE_BATCH_SIZE) {
         const chunk = imported.items.slice(start, start + EXCEL_ANALYZE_BATCH_SIZE);
         const result = await api.analyzeWeReadBooks({
@@ -268,11 +187,7 @@ export function WeReadTool() {
           profit_text: null,
         });
         mergedRows.push(...result.items);
-        (result.warnings ?? []).forEach((warning) => {
-          if (!mergedWarnings.includes(warning)) mergedWarnings.push(warning);
-        });
         setRows([...mergedRows]);
-        setWarnings([...mergedWarnings]);
         setImportProgress({ done: mergedRows.length, total: imported.total });
       }
     } catch (e) {
@@ -293,12 +208,12 @@ export function WeReadTool() {
     <div className="space-y-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <div className="badge-gold mb-4">图书平台数据工具</div>
+          <div className="badge-gold mb-4">微信读书数据工具</div>
           <h1 className="font-serif text-3xl tracking-wide text-warm-100">
             推荐值与项目字段匹配
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-warm-400">
-            粘贴图书目录、微信读书链接或导入平台抓包后抓取推荐值、阅读人数、评论数量和版权方；系统会自动匹配项目进度表里的已有书名与链接，并生成可下载的 Excel。
+            粘贴图书目录或微信读书链接后抓取推荐值、阅读人数、评论数量和版权方；系统会自动匹配项目进度表里的已有书名与链接，并生成可下载的 Excel。
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -312,30 +227,10 @@ export function WeReadTool() {
               if (file) void importExcelAndAnalyze(file);
             }}
           />
-          <input
-            ref={captureFileInputRef}
-            type="file"
-            accept=".har,.json,.txt,application/json,text/plain"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void importCompanyCapture(file);
-            }}
-          />
-          <input
-            ref={fanqieCaptureFileInputRef}
-            type="file"
-            accept=".har,.json,.txt,.html,.htm,application/json,text/plain,text/html"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void importFanqieCapture(file);
-            }}
-          />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={loading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
+            disabled={loading || importing || companyLoading}
             className="btn-ghost"
           >
             {importing ? (
@@ -359,7 +254,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={downloadExcel}
-            disabled={rows.length === 0 || downloading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
+            disabled={rows.length === 0 || downloading || importing || companyLoading}
             className="btn-gold"
           >
             {downloading ? (
@@ -379,7 +274,7 @@ export function WeReadTool() {
               版权方书单
             </h2>
             <p className="mt-1 text-xs leading-5 text-warm-500">
-              输入版权方、公司名或作者名，抓取微信读书公开书单，或导入微信读书/番茄小说 HAR 后补齐书名、作者、译者、阅读人数、评论数量和推荐值。
+              输入版权方或公司名，抓取其公开书单并补齐书名、作者、译者、阅读人数、评论数量和推荐值；也可同框追加该版权方的书名或微信读书链接作为种子。
             </p>
           </div>
           <Building2 className="h-5 w-5 text-gold-300" strokeWidth={1.7} />
@@ -394,7 +289,7 @@ export function WeReadTool() {
           <button
             type="button"
             onClick={analyzeCompany}
-            disabled={loading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
+            disabled={loading || importing || companyLoading}
             className="btn-gold md:min-w-[220px]"
           >
             {companyLoading ? (
@@ -403,32 +298,6 @@ export function WeReadTool() {
               <Search className="h-4 w-4" strokeWidth={2} />
             )}
             <span className="tracking-widest">抓取版权方书单</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => captureFileInputRef.current?.click()}
-            disabled={loading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
-            className="btn-ghost md:min-w-[220px]"
-          >
-            {captureImporting ? (
-              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
-            ) : (
-              <FileUp className="h-4 w-4" strokeWidth={1.7} />
-            )}
-            <span className="tracking-widest">导入抓包/HAR</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => fanqieCaptureFileInputRef.current?.click()}
-            disabled={loading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
-            className="btn-ghost md:min-w-[220px]"
-          >
-            {fanqieCaptureImporting ? (
-              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
-            ) : (
-              <FileUp className="h-4 w-4" strokeWidth={1.7} />
-            )}
-            <span className="tracking-widest">导入番茄HAR</span>
           </button>
         </div>
       </section>
@@ -476,7 +345,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={analyze}
-              disabled={loading || companyLoading || captureImporting || fanqieCaptureImporting}
+              disabled={loading || companyLoading}
               className="btn-gold flex-1"
             >
               {loading ? (
@@ -491,7 +360,7 @@ export function WeReadTool() {
             <button
               type="button"
               onClick={downloadExcel}
-              disabled={rows.length === 0 || downloading || importing || companyLoading || captureImporting || fanqieCaptureImporting}
+              disabled={rows.length === 0 || downloading || importing || companyLoading}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-gold-400/45 bg-gold-500/10 px-5 py-3 text-sm font-medium tracking-widest text-warm-100 transition-colors hover:bg-gold-500/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? (
@@ -529,17 +398,6 @@ export function WeReadTool() {
         </div>
       )}
 
-      {warnings.length > 0 && (
-        <div className="space-y-2 rounded-xl border border-gold-400/25 bg-gold-500/10 px-4 py-3 text-sm leading-6 text-gold-100">
-          {warnings.map((warning) => (
-            <div key={warning} className="flex gap-2">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.7} />
-              <span>{warning}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       <section className="card-warm overflow-hidden">
         <div className="flex items-center justify-between gap-4 border-b border-gold-500/10 px-5 py-4">
           <div>
@@ -567,11 +425,10 @@ export function WeReadTool() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[1240px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-gold-500/10 text-[11px] tracking-widest text-warm-500">
                   <th className="px-5 py-3 font-medium">原始书名</th>
-                  <th className="px-5 py-3 font-medium">平台</th>
                   <th className="px-5 py-3 font-medium">版权方</th>
                   <th className="px-5 py-3 font-medium">匹配书名</th>
                   <th className="px-5 py-3 font-medium">作者</th>
@@ -591,9 +448,6 @@ export function WeReadTool() {
                     className="border-b border-gold-500/8 text-warm-200"
                   >
                     <td className="px-5 py-4 align-top">{row.query_title}</td>
-                    <td className="px-5 py-4 align-top text-warm-400">
-                      {displayText(row.platform || "微信读书")}
-                    </td>
                     <td className="px-5 py-4 align-top text-warm-100">
                       {displayCompany(row.company_name)}
                     </td>

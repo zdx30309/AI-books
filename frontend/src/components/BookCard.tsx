@@ -4,7 +4,6 @@ import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
 import { categoryIdForLabel, categoryLabelFor, normalizeCategoryLabel } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
-import { publicStatusLabel, publicTaskStep } from "@/utils/taskStatus";
 
 interface Props {
   task: TaskListItem;
@@ -26,7 +25,11 @@ interface Props {
 }
 
 function statusLabel(status: string, progress: number): string {
-  return publicStatusLabel(status, progress);
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "paused") return "已暂停";
+  if (progress === 0) return "排队中";
+  return `生成中 ${progress}%`;
 }
 
 function deriveTitle(task: TaskListItem): string {
@@ -52,7 +55,7 @@ function deriveSubtitle(task: TaskListItem): string {
     if (task.word_count) return `共 ${task.word_count.toLocaleString()} 字`;
     return "已完成";
   }
-  return publicTaskStep(task.current_step, task.status, task.progress) || statusLabel(task.status, task.progress);
+  return task.current_step || statusLabel(task.status, task.progress);
 }
 
 function formatBookDate(value: string) {
@@ -63,17 +66,6 @@ function formatBookDate(value: string) {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
-}
-
-function taskWorkspaceHref(task: TaskListItem): string {
-  const shelf = normalizeCategoryLabel(task.bookshelf || task.category_label);
-  const isClassicalTranslation =
-    task.source_url.startsWith("manual://public-domain-classical-vernacular") ||
-    shelf === "公版古文白话" ||
-    shelf === "公版古文白话试译";
-  return isClassicalTranslation
-    ? `/public-domain-classical-vernacular/${task.id}`
-    : `/book/${task.id}`;
 }
 
 export function BookCard({
@@ -111,7 +103,6 @@ export function BookCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const canSelect = selectionMode && !selectionDisabled;
-  const workspaceHref = taskWorkspaceHref(task);
 
   useEffect(() => {
     setLocalTitle(task.title);
@@ -226,12 +217,6 @@ export function BookCard({
         </div>
       )}
 
-      {task.status === "manual_review" && (
-        <div className="absolute inset-x-0 bottom-0 bg-gold-950/90 px-2 py-2 text-center text-[10px] tracking-widest text-gold-100">
-          当前稿件已保留 · 正在处理
-        </div>
-      )}
-
       {selectionMode && selectionDisabled && (
         <div className="absolute inset-x-0 bottom-0 bg-base-900/80 px-2 py-2 text-center text-[10px] tracking-widest text-warm-400">
           完成后可下载
@@ -261,7 +246,7 @@ export function BookCard({
         </button>
       ) : (
         <Link
-          to={workspaceHref}
+          to={`/book/${task.id}`}
           className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
           aria-label={`查看《${title}》`}
         >
@@ -343,7 +328,7 @@ export function BookCard({
               </button>
             )}
             <Link
-              to={workspaceHref}
+              to={`/book/${task.id}`}
               className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
             >
               <span>{isCompleted ? "继续阅读" : "查看详情"}</span>

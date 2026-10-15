@@ -55,7 +55,6 @@ def init_db() -> None:
 
     _run_startup_schema_sync()
     _ensure_owner_id_column()
-    _ensure_long_novel_schema_columns()
     _ensure_epic_schema_columns()
 
 
@@ -92,58 +91,6 @@ def _ensure_owner_id_column() -> None:
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_owner_id ON tasks(owner_id)"))
-
-
-def _ensure_long_novel_schema_columns() -> None:
-    """Keep long-novel runtime fields wide enough for model-extracted state."""
-    inspector = inspect(engine)
-    with engine.begin() as conn:
-        if inspector.has_table("long_novel_object_states"):
-            columns = {c["name"]: c for c in inspector.get_columns("long_novel_object_states")}
-            status = columns.get("status")
-            status_type = str(status.get("type", "")).lower() if status is not None else ""
-            if status is not None and "text" not in status_type:
-                conn.execute(text("ALTER TABLE long_novel_object_states ALTER COLUMN status TYPE TEXT"))
-
-        if inspector.has_table("long_novel_generation_logs"):
-            conn.execute(
-                text(
-                    "ALTER TABLE long_novel_generation_logs "
-                    "ADD COLUMN IF NOT EXISTS cached_prompt_tokens INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TABLE long_novel_generation_logs "
-                    "ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS service_tier VARCHAR(32)"))
-            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_cache_key VARCHAR(255)"))
-            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS prompt_prefix_hash VARCHAR(64)"))
-            conn.execute(text("ALTER TABLE long_novel_generation_logs ADD COLUMN IF NOT EXISTS response_id VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "ALTER TABLE long_novel_generation_logs "
-                    "ADD COLUMN IF NOT EXISTS cost_currency VARCHAR(8) NOT NULL DEFAULT 'USD'"
-                )
-            )
-
-        if inspector.has_table("long_novel_chapters"):
-            conn.execute(text("ALTER TABLE long_novel_chapters ADD COLUMN IF NOT EXISTS pre_aigc_content TEXT"))
-            conn.execute(text("ALTER TABLE long_novel_chapters ADD COLUMN IF NOT EXISTS aigc_policy_version VARCHAR(32)"))
-            conn.execute(
-                text(
-                    "ALTER TABLE long_novel_chapters "
-                    "ADD COLUMN IF NOT EXISTS aigc_status VARCHAR(32) NOT NULL DEFAULT 'not_required'"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TABLE long_novel_chapters "
-                    "ADD COLUMN IF NOT EXISTS aigc_report JSONB NOT NULL DEFAULT '{}'::jsonb"
-                )
-            )
 
 
 def _ensure_epic_schema_columns() -> None:

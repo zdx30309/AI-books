@@ -18,7 +18,6 @@ const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
   { label: "已完成", value: "completed" },
   { label: "生成中", value: "processing" },
   { label: "失败", value: "failed" },
-  { label: "人工复核", value: "manual_review" },
 ];
 
 const DATE_FILTERS = [
@@ -121,7 +120,6 @@ interface BookshelfProps {
   allCategoryLabel?: string;
   emptyTitle?: string;
   emptyDescription?: string;
-  showCreateButton?: boolean;
 }
 
 export function Bookshelf({
@@ -131,7 +129,6 @@ export function Bookshelf({
   allCategoryLabel = "全部分类",
   emptyTitle = "书架还空着",
   emptyDescription = "点击「开始创作」，把第一段视频思想写成你的第一本书",
-  showCreateButton = true,
 }: BookshelfProps = {}) {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
@@ -145,7 +142,7 @@ export function Bookshelf({
   const [modalOpen, setModalOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
-  const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | "txt" | null>(null);
+  const [batchDownloading, setBatchDownloading] = useState<"md" | "docx" | null>(null);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
   const [batchRegenerating, setBatchRegenerating] = useState(false);
@@ -341,7 +338,7 @@ export function Bookshelf({
     setCategoryOrder(next);
   };
 
-  const handleBatchDownload = async (fmt: "md" | "docx" | "txt") => {
+  const handleBatchDownload = async (fmt: "md" | "docx") => {
     if (selectedCompletedTaskIds.length === 0) {
       alert("请先选择已完成的书稿");
       return;
@@ -547,16 +544,14 @@ export function Bookshelf({
               <span className="tracking-widest">继续失败任务 ({failedTaskIds.length})</span>
             </button>
           )}
-          {showCreateButton && (
-            <button
-              type="button"
-              onClick={() => setModalOpen(true)}
-              className="btn-gold"
-            >
-              <Plus className="h-4 w-4" strokeWidth={2} />
-              <span className="tracking-widest">新建书稿</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            className="btn-gold"
+          >
+            <Plus className="h-4 w-4" strokeWidth={2} />
+            <span className="tracking-widest">新建书稿</span>
+          </button>
         </div>
       </div>
 
@@ -705,19 +700,6 @@ export function Bookshelf({
                 <FileText className="h-3.5 w-3.5" strokeWidth={1.7} />
               )}
               下载 Markdown
-            </button>
-            <button
-              type="button"
-              onClick={() => handleBatchDownload("txt")}
-              disabled={selectedCompletedTaskIds.length === 0 || batchBusy}
-              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-gold-500/20 px-4 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/45 hover:text-warm-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {batchDownloading === "txt" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.7} />
-              ) : (
-                <FileText className="h-3.5 w-3.5" strokeWidth={1.7} />
-              )}
-              下载 TXT
             </button>
             <button
               type="button"

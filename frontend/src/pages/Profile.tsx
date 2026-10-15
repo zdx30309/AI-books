@@ -44,7 +44,7 @@ export function Profile() {
       <section className="card-warm relative overflow-hidden p-8 shadow-card-warm">
         <div className="pointer-events-none absolute inset-0 bg-hero-glow opacity-50" />
         <div className="relative flex items-start gap-6">
-          <div className="text-on-accent flex h-20 w-20 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-300 to-gold-600 font-serif text-3xl font-medium ring-4 ring-gold-400/30">
+          <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-300 to-gold-600 font-serif text-3xl font-medium text-base-900 ring-4 ring-gold-400/30">
             {avatarChar}
           </div>
           <div className="flex-1">

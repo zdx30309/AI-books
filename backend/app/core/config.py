@@ -38,9 +38,6 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    # Paid upstream concurrency gates are isolated from Celery/Upstash so a
-    # queue-side rate limit cannot block or duplicate model requests.
-    PAID_API_GATE_REDIS_URL: str = ""
     CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
     CELERY_BROKER_HEARTBEAT: int = 30
     CELERY_BROKER_POOL_LIMIT: int = 0
@@ -49,11 +46,7 @@ class Settings(BaseSettings):
     CELERY_REDIS_HEALTH_CHECK_INTERVAL: int = 10
     CELERY_REDIS_MAX_RETRIES: int = 20
     CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS: bool = False
-    # Queue many jobs, but keep worker threads bounded; paid-call concurrency
-    # is controlled separately by the distributed provider gates.
-    CELERY_WORKER_CONCURRENCY: int = 12
-    CELERY_MAINTENANCE_WORKER_CONCURRENCY: int = 1
-    CELERY_MAINTENANCE_QUEUE: str = "maintenance"
+    CELERY_WORKER_CONCURRENCY: int = 200
     CELERY_TASK_TIME_LIMIT_SECONDS: int = 14400
     CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = 13800
     MAX_ACTIVE_GENERATION_TASKS: int = 250
@@ -63,24 +56,11 @@ class Settings(BaseSettings):
     STALE_TASK_WATCHDOG_INTERVAL_SECONDS: int = 120
     TASK_RUN_HEARTBEAT_INTERVAL_SECONDS: int = 60
     STALE_PROCESSING_REQUEUE_SECONDS: int = 900
-    # A pending task with no active run is normally waiting for a Celery
-    # message.  If that message/lease disappeared, the maintenance worker may
-    # safely redispatch it after this grace period; the database run claim is
-    # still the final duplicate-execution barrier.
-    PENDING_TASK_ORPHAN_REQUEUE_SECONDS: int = 180
-    DISPATCH_GUARD_STALE_SECONDS: int = 900
     FAILED_TASK_AUTO_RECOVERY_ENABLED: bool = True
     FAILED_TASK_AUTO_RECOVERY_SECONDS: int = 600
     FAILED_TASK_AUTO_RECOVERY_MAX_ATTEMPTS: int = 24
     PAID_API_GATE_WAIT_TIMEOUT_SECONDS: int = 14400
     PAID_API_GATE_TTL_SECONDS: int = 600
-    # Short Vertex/GenAI request-rate throttles must not become a 30-minute
-    # global production pause.  Billing/dunning failures keep the long guard.
-    PAID_API_RATE_LIMIT_TTL_SECONDS: int = 60
-    # In production, block paid calls if the shared breaker cannot be read.
-    # Development/test environments may leave this unset to avoid requiring
-    # a Redis instance for local pure-function tests.
-    PAID_API_GUARD_FAIL_CLOSED: bool | None = None
 
     # --- 主笔模型路由 ---
     WRITER_PROVIDER: str = "openai"  # 可选 "openai" / "deepseek" / "gemini"
@@ -89,7 +69,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_HTTPS_PROXY: str = ""
-    OPENAI_WRITER_MODEL: str = "gpt-5.6-sol"
+    OPENAI_WRITER_MODEL: str = "gpt-5.5"
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 0
@@ -97,70 +77,25 @@ class Settings(BaseSettings):
     OPENAI_WRITER_MAX_RETRIES: int = 3
     OPENAI_WRITER_RETRY_BACKOFF_SECONDS: float = 8.0
     OPENAI_WRITER_STREAM: bool = False
-    OPENAI_PROMPT_CACHE_RETENTION: str = "24h"
     OPENAI_WRITER_MAX_CONCURRENT_CALLS: int = 16
     FINANCE_WEB_SEARCH_MODEL: str = ""
     FINANCE_WEB_SEARCH_TIMEOUT_SECONDS: int = 240
     FINANCE_WEB_SEARCH_CONTEXT_SIZE: str = "medium"
-    OPENAI_OCR_MODEL: str = ""
-    OPENAI_OCR_MAX_OUTPUT_TOKENS: int = 5000
-
-    # --- Testing Endpoint (OpenAI ChatGPT API only) ---
-    TESTING_ENDPOINT_OPENAI_MODEL: str = ""
-    TESTING_ENDPOINT_OPENAI_REASONING_EFFORT: str = ""
-    TESTING_ENDPOINT_OPENAI_VERBOSITY: str = ""
-    TESTING_ENDPOINT_OPENAI_MAX_OUTPUT_TOKENS: int = 0
-    TESTING_ENDPOINT_OPENAI_TIMEOUT_SECONDS: int = 1800
-    TESTING_ENDPOINT_BOOK_CHUNK_CHARS: int = 50_000
-    TESTING_ENDPOINT_STYLE_NOTE_MAX_OUTPUT_TOKENS: int = 6000
-    TESTING_ENDPOINT_STYLE_PROFILE_MAX_OUTPUT_TOKENS: int = 8000
-    TESTING_ENDPOINT_VIDEO_MAX_CHARS: int = 160_000
-    TESTING_ENDPOINT_MAX_VIDEO_LINKS: int = 50
-    TESTING_ENDPOINT_YOUTUBE_TRANSCRIPT_PROVIDERS: str = "youtube_transcript_api,youtube_transcript_ai,pytubefix,yt_dlp,openai_audio"
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
-    OPENAI_AUDITOR_MODEL: str = "gpt-5.6-sol"
+    OPENAI_AUDITOR_MODEL: str = "gpt-5.5"
 
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_MODEL: str = "deepseek-chat"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 4
     DEEPSEEK_FORMAT_CALL_TIMEOUT: int = 1800
     DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS: int = 16
-    # 公版古文白话固定由 OpenAI gpt-5.6-sol 原生执行渲染后的完整 Prompt。
-    CLASSICAL_TRANSLATION_WRITER_PROVIDER: str = "openai"
-
-    # --- Backend polish/refine provider ---
-    # Keep the historical Gemini-named frontend stages while allowing the
-    # backend to route them through a dedicated Claude relay.
-    BACKEND_POLISH_PROVIDER: str = "gemini"
-    BACKEND_REFINE_PROVIDER: str = "gemini"
-    CLAUDE_API_KEY: str = ""
-    CLAUDE_BASE_URL: str = "https://anyrouter.top/v1"
-    # AnyRouter exposes this account's Opus model under ``claude-opus-5``.
-    # Keep the value configurable so a relay-side model rename never requires
-    # changing business logic.
-    CLAUDE_MODEL: str = "claude-opus-5"
-    # AnyRouter requires the Anthropic 1M-context beta flag for the Opus 5
-    # route. Leave it configurable so an operator can disable the beta without
-    # changing business logic if the relay changes its header contract.
-    CLAUDE_ANTHROPIC_BETA: str = "context-1m-2025-08-07"
-    CLAUDE_HTTPS_PROXY: str = ""
-    CLAUDE_REQUEST_TIMEOUT: int = 1800
-    CLAUDE_MAX_OUTPUT_TOKENS: int = 0
-    CLAUDE_MAX_CONCURRENT_CALLS: int = 1
-
-    # --- xAI / Grok (only used by the dedicated report-review page) ---
-    XAI_API_KEY: str = ""
-    XAI_BASE_URL: str = "https://api.x.ai/v1"
-    XAI_HTTPS_PROXY: str = ""
-    XAI_REQUEST_TIMEOUT: int = 600
-    XAI_MAX_RETRIES: int = 2
 
     # --- Gemini / Google Gen AI ---
     GOOGLE_API_KEY: str = ""
@@ -169,74 +104,18 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_LOCATION: str = "global"
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_HTTPS_PROXY: str = ""
-    # Vertex AI publishes the requested Gemini 3.1 Flash tier as Flash-Lite.
-    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_MODEL: str = "gemini-3-flash-preview"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
     GEMINI_MAX_RETRIES: int = 5
     GEMINI_THINKING_BUDGET: int = 0
-    GEMINI_THINKING_LEVEL: str = "medium"
     GEMINI_MAX_CONCURRENT_CALLS: int = 8
-    # Vertex may return RESOURCE_EXHAUSTED for a short request-rate window even
-    # when the project is billed correctly.  Keep the existing model/workflow,
-    # but pace starts across worker threads so the cooldown can recover.
-    GEMINI_MIN_REQUEST_INTERVAL_SECONDS: float = 30.0
     GEMINI_POLISH_CONCURRENCY: int = 1
     GEMINI_POLISH_CALL_TIMEOUT: int = 0
     GEMINI_REFINE_CALL_TIMEOUT: int = 0
     GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 0
     GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 0
-
-    # --- 全局朱雀 AI 文本检测闸门 ---
-    AIGC_GATE_ENABLED: bool = False
-    AIGC_GATE_FAIL_CLOSED: bool = True
-    AIGC_GATE_THRESHOLD: int = 50
-    AIGC_GATE_MAX_REWRITE_ROUNDS: int = 2
-    AIGC_GATE_CHUNK_MIN_CHARS: int = 350
-    AIGC_GATE_CHUNK_MAX_CHARS: int = 1800
-    AIGC_GATE_DETECT_CONCURRENCY: int = 4
-    AIGC_GATE_REWRITE_CONCURRENCY: int = 2
-    AIGC_GATE_REWRITE_TEMPERATURE: float = 0.85
-    AIGC_POLICY_VERSION: str = "v2"
-    AIGC_OPENAI_MODEL: str = ""
-    AIGC_OPENAI_REASONING_EFFORT: str = "low"
-    AIGC_OPENAI_SERVICE_TIER: str = "flex"
-    TENCENTCLOUD_SECRET_ID: str = ""
-    TENCENTCLOUD_SECRET_KEY: str = ""
-    TENCENT_AIGC_BIZ_TYPE: str = ""
-    TENCENT_AIGC_REGION: str = "ap-beijing"
-
-    # --- 独立朱雀报告审稿台（不影响全局闸门和历史任务） ---
-    AIGC_REVIEW_REWRITE_PROVIDER: str = "deepseek"
-    AIGC_REVIEW_REWRITE_MODEL: str = "deepseek-v4-flash"
-    AIGC_REVIEW_GROK_MODEL: str = "grok-4.5"
-    AIGC_REVIEW_GROK_REASONING_EFFORT: str = "low"
-    AIGC_REVIEW_GROK_MAX_OUTPUT_TOKENS: int = 12_000
-    AIGC_REVIEW_GROK_INPUT_USD_PER_M: float = 2.0
-    AIGC_REVIEW_GROK_CACHED_INPUT_USD_PER_M: float = 0.5
-    AIGC_REVIEW_GROK_OUTPUT_USD_PER_M: float = 6.0
-    AIGC_REVIEW_USD_CNY_RATE: float = 7.2
-    AIGC_REVIEW_AUDIT_MODEL: str = "gemini-3.1-flash-lite"
-    AIGC_REVIEW_MAX_REWRITE_ATTEMPTS: int = 1
-    AIGC_REVIEW_HUMAN_TARGET: float = 25.0
-    AIGC_REVIEW_EDITORIAL_UNIT_MIN_CHARS: int = 600
-    AIGC_REVIEW_EDITORIAL_UNIT_MAX_CHARS: int = 900
-    AIGC_REVIEW_MACRO_BLOCK_MIN_CHARS: int = 1_200
-    AIGC_REVIEW_MACRO_BLOCK_MAX_CHARS: int = 2_500
-    AIGC_REVIEW_AUDIT_BATCH_UNITS: int = 1
-    AIGC_REVIEW_AUDIT_MAX_OUTPUT_TOKENS: int = 6_000
-    AIGC_REVIEW_RUN_BUDGET_CNY: float = 0.30
-    AIGC_REVIEW_CALIBRATION_BUDGET_CNY: float = 0.30
-    AIGC_REVIEW_MAX_MANUSCRIPT_CHARS: int = 200_000
-    AIGC_REVIEW_MAX_PDF_BYTES: int = 30_000_000
-    AIGC_REVIEW_MAX_PDF_PAGES: int = 40
-    AIGC_REVIEW_OCR_SCALE: float = 1.5
-    AIGC_REVIEW_OCR_RETRY_SCALE: float = 2.2
-    AIGC_REVIEW_OCR_MAX_SCAN_PAGES: int = 6
-    AIGC_REVIEW_ZHUQUE_BASE_URL: str = "https://matrix.tencent.com"
-    AIGC_REVIEW_ZHUQUE_PROFILE_TIMEOUT_SECONDS: float = 12.0
-    AIGC_REVIEW_ZHUQUE_PROFILE_CACHE_SECONDS: int = 3_600
 
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
@@ -288,9 +167,7 @@ class Settings(BaseSettings):
     QINGDOU_POLL_INTERVAL_SECONDS: float = 3.0
     QINGDOU_POLL_TIMEOUT_SECONDS: int = 300
     QINGDOU_MAX_CONCURRENT_TASKS: int = 30
-    # Qingdou only permits one in-flight extraction per account. Keep the
-    # distributed lock enabled by default across all Celery worker threads.
-    QINGDOU_SERIAL_LOCK_ENABLED: bool = True
+    QINGDOU_SERIAL_LOCK_ENABLED: bool = False
     QINGDOU_LOCK_WAIT_TIMEOUT_SECONDS: int = 1800
     QINGDOU_LOCK_TTL_SECONDS: int = 900
     QINGDOU_BUSY_RETRY_SECONDS: float = 10.0
@@ -355,25 +232,6 @@ class Settings(BaseSettings):
     LONG_NOVEL_CHEAP_MODEL: str = ""
     LONG_NOVEL_MAX_PROJECT_COST: float = 0.0
     LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT: int = 1
-    LONG_NOVEL_INPUT_COST_PER_1M: float = 5.0
-    LONG_NOVEL_CACHED_INPUT_COST_PER_1M: float = 0.5
-    LONG_NOVEL_OUTPUT_COST_PER_1M: float = 30.0
-    LONG_NOVEL_GEMINI_INPUT_COST_PER_1M: float = 1.5
-    LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M: float = 7.5
-    LONG_NOVEL_DEEPSEEK_INPUT_COST_PER_1M: float = 0.14
-    LONG_NOVEL_DEEPSEEK_OUTPUT_COST_PER_1M: float = 0.28
-    LONG_NOVEL_PROCESSING_MODE: str = "flex"
-    LONG_NOVEL_FLEX_BACKGROUND: bool = True
-    LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD: bool = True
-    LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS: float = 5.0
-    LONG_NOVEL_FLEX_TIMEOUT_SECONDS: int = 3600
-    # Cache warmup is an extra paid request whose result is discarded.  Keep it
-    # opt-in so normal production runs never spend tokens before real work.
-    LONG_NOVEL_PROMPT_CACHE_WARMUP: bool = False
-    LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS: int = 14000
-    LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS: int = 10000
-    LONG_NOVEL_STATE_REASONING_EFFORT: str = "high"
-    LONG_NOVEL_CONTINUITY_REASONING_EFFORT: str = "high"
 
     # --- Epic Novel Engine ---
     EPIC_EDITOR_MODEL_PROVIDER: str = ""

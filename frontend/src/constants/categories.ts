@@ -75,13 +75,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
-    id: "finance_technology_ai_optimized",
-    label: "财经科技（优化AI味版）",
-    core_feature: "把钱、产业、公司、技术、政策和周期讲清楚",
-    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人机会误判",
-    prompt_status: "ready",
-  },
-  {
     id: "finance_technology_recommendation",
     label: "财经科技（建议版）",
     core_feature: "围绕财经科技议题讲清核心问题，并给出普通人可执行、有适用条件的建议",
@@ -159,13 +152,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
-    id: "classical_chinese_novel_style",
-    label: "古文白话小说风格版",
-    core_feature: "先准确理解古文，再按原文类型改成故事化白话；格言哲理也会转成小故事载体",
-    directions: "古代小说、史传、志怪、笔记、故事性古文、修身格言、哲理短句、纯白话故事化改写",
-    prompt_status: "ready",
-  },
-  {
     id: "buddhist_scripture_story",
     label: "佛经白话",
     core_feature: "把佛经经文译成自然连贯的白话故事稿，忠于原文讲述和道理",
@@ -198,20 +184,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     label: "漫画",
     core_feature: "只输入书名和章节数，自动生成同系列原创治愈漫画",
     directions: "出版感封面、白底留白、图上短句、原创角色、同系列配图",
-    prompt_status: "ready",
-  },
-  {
-    id: "story_comic",
-    label: "图文故事",
-    core_feature: "原创滑动图文小故事，每章 6 至 10 张单拍卡片，以生活观察、停顿和晚揭示制造趣味",
-    directions: "普通生活、单卡单拍、文字留白页、小涂鸦、自然误会、晚一点揭示",
-    prompt_status: "ready",
-  },
-  {
-    id: "homophone_comic",
-    label: "谐音梗",
-    core_feature: "故事先行的滑动谐音漫画，前六成藏住答案，末三张完成声音回扣",
-    directions: "干巴荒诞、自嘲互损、生活观察、向上讽刺、延迟揭示、无需解释",
     prompt_status: "ready",
   },
   {
@@ -249,13 +221,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     directions: "历史故事、制度缝隙、人物命运、时代暗流",
     prompt_status: "ready",
   },
-  {
-    id: "general_longform",
-    label: "通用长篇",
-    core_feature: "完整十万字创作指令，先确认大纲，再逐章研究、写作与验收",
-    directions: "九领域选题、12—15章、十万字、双Word交付、来源与编辑记录",
-    prompt_status: "ready",
-  },
 ];
 
 export const LONGFORM_VARIANT_CATEGORY_IDS = [
@@ -263,14 +228,12 @@ export const LONGFORM_VARIANT_CATEGORY_IDS = [
   "life_philosophy_self_rescue",
   "popular_science_cognitive_upgrade",
   "finance_technology",
-  "finance_technology_ai_optimized",
   "finance_technology_recommendation",
   "wisdom_stories_causal_philosophy",
   "wisdom_stories_historical",
   "emotion_relationship_unique_view",
   "health_wellness_daily_pain",
   "buddhist_scripture_story",
-  "classical_chinese_novel_style",
   "classical_chinese_interleaved",
   "classical_chinese_reference_rewrite",
 ] as const;

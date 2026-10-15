@@ -102,7 +102,7 @@ def test_format_noise_detects_markdown_heading_and_editorial_leftovers() -> None
     assert report.total_violations >= 6
 
 
-def test_format_noise_rejects_internal_subheading() -> None:
+def test_format_noise_allows_standard_internal_subheading() -> None:
     markdown = """@最终书名
 测试书
 @正文
@@ -113,7 +113,8 @@ def test_format_noise_rejects_internal_subheading() -> None:
 
     report = measure_quality(markdown)
 
-    assert "# 标题残留" in report.format_noise_hits
+    assert "# 标题残留" not in report.format_noise_hits
+    assert "裸短小标题" not in report.format_noise_hits
 
 
 def test_final_hard_error_gate_detects_semantic_collocation_errors() -> None:
@@ -161,7 +162,7 @@ def test_final_hard_error_gate_detects_illegal_at_pseudo_heading() -> None:
     assert hits["非法正文 @ 段首"]
 
 
-def test_final_hard_error_gate_rejects_internal_subheading() -> None:
+def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
     markdown = """@最终书名
 测试书
 @正文
@@ -172,77 +173,7 @@ def test_final_hard_error_gate_rejects_internal_subheading() -> None:
 
     hits = detect_final_hard_errors(markdown, category="finance_technology")
 
-    assert "# 标题残留" in hits
-
-
-def test_final_hard_error_gate_allows_normal_finance_topic_sentence_with_risk_keyword() -> None:
-    markdown = """@最终书名
-测试书
-@正文
-@1. 财经科技
-技术创新才可能真正帮我们管理风险，而不是制造麻烦。如果这些账算得不明不白，那些看起来简单好用的交易界面，其实只会掩盖背后复杂的风险分配陷阱。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="finance_technology")
-
-    assert "正文内小标题未标准化为 ###" not in hits
-
-
-def test_final_hard_error_gate_allows_inline_noun_phrase_body_sentences() -> None:
-    markdown = """@最终书名
-测试书
-@正文
-@1. 新药中国路
-扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
-基础研究与转化难题，那些全球首创的药物，往往诞生于对疾病机制的深刻洞察。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="finance_technology")
-
-    assert "正文内小标题未标准化为 ###" not in hits
-
-
-def test_final_hard_error_gate_detects_standard_longform_thin_chapter() -> None:
-    chapters = []
-    for index in range(1, 7):
-        body = "完整章节内容。" * (180 if index != 4 else 20)
-        chapters.append(f"@{index}. 第{index}章\n{body}")
-    markdown = "@最终书名\n测试书\n@正文\n" + "\n".join(chapters)
-
-    hits = detect_final_hard_errors(markdown, category="emotion_relationship")
-
-    assert "常规长文章节过短" in hits
-
-
-def test_final_hard_error_gate_allows_finance_explanatory_sentences_with_keyword_prefixes() -> None:
-    markdown = """@最终书名
-测试书
-@正文
-@1. 再融资规则
-再融资规则要解决的核心矛盾，并不是简单的“能不能融资”，而是资本市场的钱该流向谁、卖什么价、在公司里受什么约束。
-这次规则调整最耐人寻味的是，它没有简单地选择“全面放开”或“全面收紧”。
-如果这些规则能稳稳地执行下去，市场就会慢慢冷静下来。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="finance_technology_recommendation")
-
-    assert "正文内小标题未标准化为 ###" not in hits
-
-
-def test_final_hard_error_gate_allows_finance_action_clause_containing_risk_keyword() -> None:
-    markdown = """@最终书名
-测试书
-@正文
-@1. 平台风控
-平台对高风险账户实施干预后，继续发送存款奖励会削弱保护效果。营销与风险控制因此需要共享账户状态。若两个部门分别追求转化率和合规数量，用户可能同时收到停止提示与限时优惠。
-"""
-
-    hits = detect_final_hard_errors(
-        markdown,
-        category="finance_technology_ai_optimized",
-    )
-
-    assert "正文内小标题未标准化为 ###" not in hits
+    assert not hits
 
 
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
@@ -275,79 +206,6 @@ def test_final_hard_error_gate_allows_classical_reference_original_translation_p
     assert "正文内小标题未标准化为 ###" not in hits
     assert "裸短小标题" not in hits
     assert not hits
-
-
-def test_final_hard_error_gate_detects_classical_reference_stiff_direct_translation() -> None:
-    markdown = """@最终书名
-菜根谭（白话版）
-@正文
-@1. 菜根谭
-（原文）欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。
-（翻译）想要磨炼出如精金美玉般纯粹的人品，定要经过烈火般的煅烧；想要建立惊天动地的功业，必须像脚踩薄冰一样，谨慎地走过险境。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
-
-    assert hits["古文参照译写硬伤：精金美玉句停留在直译腔"]
-
-
-def test_final_hard_error_gate_allows_classical_reference_plain_modern_rewrite() -> None:
-    markdown = """@最终书名
-菜根谭（白话版）
-@正文
-@1. 菜根谭
-（原文）欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。
-（翻译）一个人要想拥有真正过硬的好品格，就必须在现实的严酷考验中不断捶打自己；要想建立了不起的功业，就必须在如履薄冰的压力下，踏踏实实走好每一步，熬过所有的磨难。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
-
-    assert "古文参照译写硬伤：精金美玉句停留在直译腔" not in hits
-    assert not hits
-
-
-def test_final_hard_error_gate_detects_classical_reference_lecture_tone() -> None:
-    markdown = """@最终书名
-菜根谭（白话版）
-@正文
-@1. 菜根谭
-（原文）路径窄处，留一步与人行；滋味浓处，减三分让人嗜。
-（翻译）这句话的意思是，一个人在处世的时候应该懂得退让。这说明为人处世要有胸怀，也体现了传统修身智慧的重要意义。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="classical_chinese_reference_rewrite")
-
-    assert hits["古文参照译写硬伤：翻译段仍是讲义解释腔"]
-
-
-def test_final_hard_error_gate_detects_classical_novel_style_without_story() -> None:
-    markdown = """@最终书名
-古文白话（白话版）
-@正文
-@1. 去旧离执
-一个人回过头看昨天，如果知道那时做错了，就不该再把这错散留在心里。错事看似已经翻篇，可只要心里还舍不得放下，病根就还在，死灰底下迟早会重新冒出火星。日子久了，世俗的情念又会缠绕上来，连原本清明的道理也跟着受了拖累。
-至于今天认定的对，也不可死攥住不放。道理固然可贵，可如果执着于“我如今是对的”这一念，心里的杂质就化不干净，清净的理趣反倒会变了味，转而成了滋生欲望的根苗。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="classical_chinese_novel_style")
-
-    assert hits["古文小说风格硬伤：抽象格言没有转成故事载体"]
-
-
-def test_final_hard_error_gate_allows_classical_novel_style_story_carrier() -> None:
-    markdown = """@最终书名
-古文白话（白话版）
-@正文
-@1. 去旧离执
-黄昏时，书生把旧信从匣子里取出来，站在灯下看了很久。信上写的是他去年与人争执时说过的狠话。门外风一吹，灯影晃了一下，他忽然觉得那几句话像没灭干净的灰，表面冷了，底下还藏着火。
-他本想把信重新收好，手指却停在匣口。若总把昨日的错留在心里，错就不是过去的事，而会变成新的执念。于是他把信折好，送到炉边烧掉，又给被他伤过的人写了一封短笺。
-第二天，他做成一件好事，心里也暗暗得意。可走到桥边，看见水面映着自己的影子，他才明白，新的对也不能拿来炫耀。旧错不可恋，新是也不可执，人若总被两头牵住，心就很难真正清明。
-"""
-
-    hits = detect_final_hard_errors(markdown, category="classical_chinese_novel_style")
-
-    assert "古文小说风格硬伤：抽象格言没有转成故事载体" not in hits
-    assert "古文小说风格硬伤：只有翻译解释没有故事推进" not in hits
 
 
 def test_final_hard_error_gate_detects_buddhist_thin_moral_chapters() -> None:
@@ -483,19 +341,6 @@ def test_finance_recommendation_source_leak_hits_reuse_finance_quality_gate() ->
 """
 
     report = measure_quality(markdown, category="finance_technology_recommendation")
-
-    assert report.finance_source_leak_hits["财经来源穿帮表述残留"]
-
-
-def test_finance_ai_optimized_source_leak_hits_reuse_finance_quality_gate() -> None:
-    markdown = """@最终书名
-测试书
-@正文
-@1. 正式章节
-视频材料中提到，某公司调整业务结构。
-"""
-
-    report = measure_quality(markdown, category="finance_technology_ai_optimized")
 
     assert report.finance_source_leak_hits["财经来源穿帮表述残留"]
 

@@ -104,7 +104,6 @@ def test_extract_bilibili_text_uses_audio_when_subtitle_empty(monkeypatch: pytes
     def ok_transcribe(media_url: str, **kwargs):
         assert media_url == "https://audio.example.test/a.m4s"
         assert kwargs["model"] == "test-transcribe-model"
-        assert kwargs["download_proxy"] == ""
         return "音频转写第一句\n音频转写第二句"
 
     class FakeGate:

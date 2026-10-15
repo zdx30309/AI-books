@@ -2,237 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-:root,
-html[data-theme="dark-gold"] {
-  color-scheme: dark;
-  --color-base-900: 10 9 8;
-  --color-base-800: 19 17 15;
-  --color-base-700: 26 22 20;
-  --color-base-600: 34 29 26;
-  --color-base-500: 42 36 33;
-  --color-gold-50: 250 243 230;
-  --color-gold-100: 240 226 194;
-  --color-gold-200: 232 208 154;
-  --color-gold-300: 220 188 115;
-  --color-gold-400: 212 168 116;
-  --color-gold-500: 196 165 114;
-  --color-gold-600: 168 137 89;
-  --color-gold-700: 128 104 64;
-  --color-warm-100: 245 240 232;
-  --color-warm-200: 232 221 201;
-  --color-warm-300: 201 185 161;
-  --color-warm-400: 155 146 133;
-  --color-warm-500: 122 114 105;
-  --color-warm-600: 90 84 76;
-  --color-button-text: 18 14 10;
-  --color-overlay: 10 9 8;
-  --app-bg-image:
-    radial-gradient(ellipse 90% 70% at 80% 25%, rgb(var(--color-gold-400) / 0.08), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 5% 90%, rgb(var(--color-gold-600) / 0.05), transparent 60%);
-  --shadow-gold-glow: 0 0 30px rgb(var(--color-gold-400) / 0.25);
-  --shadow-gold-soft: 0 4px 20px rgb(var(--color-gold-400) / 0.15);
-  --shadow-card-warm: 0 4px 24px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(var(--color-gold-400) / 0.08);
-}
-
-html[data-theme="paper-brown"] {
-  color-scheme: light;
-  --color-base-900: 248 246 241;
-  --color-base-800: 255 253 249;
-  --color-base-700: 252 249 244;
-  --color-base-600: 239 230 219;
-  --color-base-500: 224 211 197;
-  --color-gold-50: 255 250 242;
-  --color-gold-100: 247 232 211;
-  --color-gold-200: 231 205 176;
-  --color-gold-300: 204 155 108;
-  --color-gold-400: 154 86 35;
-  --color-gold-500: 138 76 28;
-  --color-gold-600: 113 61 22;
-  --color-gold-700: 85 44 18;
-  --color-warm-100: 55 38 25;
-  --color-warm-200: 82 54 36;
-  --color-warm-300: 112 77 50;
-  --color-warm-400: 145 101 70;
-  --color-warm-500: 173 126 91;
-  --color-warm-600: 201 163 129;
-  --color-button-text: 255 250 242;
-  --color-overlay: 27 18 12;
-  --app-bg-image:
-    radial-gradient(ellipse 70% 55% at 76% 20%, rgb(var(--color-gold-100) / 0.55), transparent 66%),
-    linear-gradient(180deg, rgb(255 254 251 / 0.8), rgb(248 246 241 / 0.96));
-  --shadow-gold-glow: 0 10px 36px rgb(var(--color-gold-300) / 0.24);
-  --shadow-gold-soft: 0 8px 22px rgb(var(--color-gold-400) / 0.16);
-  --shadow-card-warm: 0 10px 30px rgb(90 56 31 / 0.12), 0 0 0 1px rgb(var(--color-gold-300) / 0.18);
-}
-
-html[data-theme="mist-blue"] {
-  color-scheme: light;
-  --color-base-900: 245 248 252;
-  --color-base-800: 255 255 255;
-  --color-base-700: 240 246 252;
-  --color-base-600: 221 232 244;
-  --color-base-500: 199 215 232;
-  --color-gold-50: 239 246 255;
-  --color-gold-100: 219 234 254;
-  --color-gold-200: 191 219 254;
-  --color-gold-300: 147 197 253;
-  --color-gold-400: 59 130 246;
-  --color-gold-500: 37 99 235;
-  --color-gold-600: 29 78 216;
-  --color-gold-700: 30 64 175;
-  --color-warm-100: 24 37 57;
-  --color-warm-200: 39 55 78;
-  --color-warm-300: 71 85 105;
-  --color-warm-400: 100 116 139;
-  --color-warm-500: 128 145 166;
-  --color-warm-600: 180 194 210;
-  --color-button-text: 255 255 255;
-  --color-overlay: 14 24 40;
-  --app-bg-image:
-    radial-gradient(ellipse 80% 60% at 72% 12%, rgb(var(--color-gold-100) / 0.6), transparent 62%),
-    radial-gradient(ellipse 55% 50% at 8% 88%, rgb(125 211 252 / 0.18), transparent 68%);
-  --shadow-gold-glow: 0 14px 38px rgb(var(--color-gold-400) / 0.18);
-  --shadow-gold-soft: 0 8px 22px rgb(var(--color-gold-500) / 0.13);
-  --shadow-card-warm: 0 12px 32px rgb(40 65 95 / 0.12), 0 0 0 1px rgb(var(--color-gold-300) / 0.14);
-}
-
-html[data-theme="graphite"] {
-  color-scheme: dark;
-  --color-base-900: 12 13 15;
-  --color-base-800: 22 24 27;
-  --color-base-700: 31 34 38;
-  --color-base-600: 45 49 55;
-  --color-base-500: 64 70 78;
-  --color-gold-50: 250 247 239;
-  --color-gold-100: 234 226 209;
-  --color-gold-200: 210 198 176;
-  --color-gold-300: 186 167 133;
-  --color-gold-400: 170 145 103;
-  --color-gold-500: 145 122 86;
-  --color-gold-600: 112 95 72;
-  --color-gold-700: 82 72 58;
-  --color-warm-100: 241 242 244;
-  --color-warm-200: 219 223 228;
-  --color-warm-300: 188 196 205;
-  --color-warm-400: 145 155 168;
-  --color-warm-500: 108 118 130;
-  --color-warm-600: 78 86 96;
-  --color-button-text: 12 13 15;
-  --color-overlay: 6 7 8;
-}
-
-html[data-theme="bay-green"] {
-  color-scheme: light;
-  --color-base-900: 242 247 242;
-  --color-base-800: 252 255 250;
-  --color-base-700: 236 245 235;
-  --color-base-600: 215 231 213;
-  --color-base-500: 188 211 187;
-  --color-gold-50: 240 253 244;
-  --color-gold-100: 220 252 231;
-  --color-gold-200: 187 247 208;
-  --color-gold-300: 134 239 172;
-  --color-gold-400: 34 153 84;
-  --color-gold-500: 22 126 68;
-  --color-gold-600: 21 100 56;
-  --color-gold-700: 20 83 45;
-  --color-warm-100: 30 49 35;
-  --color-warm-200: 45 70 50;
-  --color-warm-300: 70 96 73;
-  --color-warm-400: 99 126 100;
-  --color-warm-500: 128 153 128;
-  --color-warm-600: 176 194 174;
-  --color-button-text: 255 255 248;
-  --color-overlay: 12 28 16;
-  --app-bg-image:
-    radial-gradient(ellipse 80% 58% at 74% 16%, rgb(var(--color-gold-100) / 0.55), transparent 65%),
-    radial-gradient(ellipse 55% 50% at 10% 88%, rgb(250 204 21 / 0.13), transparent 70%);
-}
-
-html[data-theme="sakura"] {
-  color-scheme: light;
-  --color-base-900: 253 247 249;
-  --color-base-800: 255 252 253;
-  --color-base-700: 252 239 244;
-  --color-base-600: 244 218 226;
-  --color-base-500: 229 194 205;
-  --color-gold-50: 255 241 242;
-  --color-gold-100: 255 228 230;
-  --color-gold-200: 254 205 211;
-  --color-gold-300: 253 164 175;
-  --color-gold-400: 225 89 116;
-  --color-gold-500: 198 62 93;
-  --color-gold-600: 164 48 78;
-  --color-gold-700: 131 39 63;
-  --color-warm-100: 62 35 48;
-  --color-warm-200: 90 48 67;
-  --color-warm-300: 120 68 88;
-  --color-warm-400: 154 93 111;
-  --color-warm-500: 184 122 139;
-  --color-warm-600: 216 171 183;
-  --color-button-text: 255 250 252;
-  --color-overlay: 38 15 24;
-  --app-bg-image:
-    radial-gradient(ellipse 70% 52% at 78% 14%, rgb(var(--color-gold-100) / 0.58), transparent 64%),
-    radial-gradient(ellipse 50% 45% at 8% 88%, rgb(251 191 36 / 0.12), transparent 68%);
-}
-
-html[data-theme="aurora"] {
-  color-scheme: dark;
-  --color-base-900: 7 12 18;
-  --color-base-800: 11 21 29;
-  --color-base-700: 15 32 42;
-  --color-base-600: 24 49 61;
-  --color-base-500: 36 70 82;
-  --color-gold-50: 236 254 255;
-  --color-gold-100: 207 250 254;
-  --color-gold-200: 165 243 252;
-  --color-gold-300: 103 232 249;
-  --color-gold-400: 45 212 191;
-  --color-gold-500: 20 184 166;
-  --color-gold-600: 14 148 136;
-  --color-gold-700: 15 118 110;
-  --color-warm-100: 237 252 249;
-  --color-warm-200: 204 236 233;
-  --color-warm-300: 161 211 208;
-  --color-warm-400: 120 169 171;
-  --color-warm-500: 85 128 134;
-  --color-warm-600: 53 89 98;
-  --color-button-text: 5 20 23;
-  --color-overlay: 3 8 12;
-  --app-bg-image:
-    radial-gradient(ellipse 70% 55% at 78% 20%, rgb(45 212 191 / 0.18), transparent 64%),
-    radial-gradient(ellipse 60% 48% at 8% 88%, rgb(168 85 247 / 0.11), transparent 66%);
-}
-
-html[data-theme="ink-red"] {
-  color-scheme: dark;
-  --color-base-900: 12 8 8;
-  --color-base-800: 22 14 14;
-  --color-base-700: 32 20 18;
-  --color-base-600: 50 31 27;
-  --color-base-500: 73 44 38;
-  --color-gold-50: 255 247 237;
-  --color-gold-100: 255 237 213;
-  --color-gold-200: 254 215 170;
-  --color-gold-300: 253 186 116;
-  --color-gold-400: 205 92 49;
-  --color-gold-500: 178 70 42;
-  --color-gold-600: 145 52 36;
-  --color-gold-700: 112 39 30;
-  --color-warm-100: 252 242 232;
-  --color-warm-200: 238 217 200;
-  --color-warm-300: 211 176 153;
-  --color-warm-400: 177 132 110;
-  --color-warm-500: 137 96 82;
-  --color-warm-600: 96 67 60;
-  --color-button-text: 255 247 237;
-  --color-overlay: 9 5 5;
-  --app-bg-image:
-    radial-gradient(ellipse 75% 58% at 80% 18%, rgb(var(--color-gold-400) / 0.13), transparent 64%),
-    radial-gradient(ellipse 54% 50% at 10% 90%, rgb(120 18 18 / 0.2), transparent 66%);
-}
-
 @layer base {
   html,
   body,
@@ -245,11 +14,18 @@ html[data-theme="ink-red"] {
   body {
     @apply bg-base-900 text-warm-100 antialiased;
     font-feature-settings: "kern", "liga";
-    background-image: var(--app-bg-image);
+    background-image:
+      radial-gradient(
+        ellipse 90% 70% at 80% 25%,
+        rgba(212, 168, 116, 0.08),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 60% 50% at 5% 90%,
+        rgba(168, 137, 89, 0.05),
+        transparent 60%
+      );
     background-attachment: fixed;
-    transition:
-      background-color 180ms ease,
-      color 180ms ease;
   }
 
   ::-webkit-scrollbar {
@@ -262,18 +38,18 @@ html[data-theme="ink-red"] {
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgb(var(--color-gold-400) / 0.15);
+    background: rgba(212, 168, 116, 0.15);
     border-radius: 4px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgb(var(--color-gold-400) / 0.3);
+    background: rgba(212, 168, 116, 0.3);
   }
 
   /* 文字选中色 */
   ::selection {
-    background: rgb(var(--color-gold-400) / 0.3);
-    color: rgb(var(--color-warm-100));
+    background: rgba(212, 168, 116, 0.3);
+    color: #f5f0e8;
   }
 }
 
@@ -283,31 +59,25 @@ html[data-theme="ink-red"] {
     @apply relative rounded-2xl border border-gold-500/10 bg-base-700/60 backdrop-blur-md;
     background-image: linear-gradient(
       135deg,
-      rgb(255 255 255 / 0.02) 0%,
-      rgb(var(--color-gold-400) / 0.03) 50%,
-      rgb(255 255 255 / 0.01) 100%
+      rgba(255, 255, 255, 0.02) 0%,
+      rgba(212, 168, 116, 0.03) 50%,
+      rgba(255, 255, 255, 0.01) 100%
     );
   }
 
   /* 主按钮：金色渐变 */
   .btn-gold {
     @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3 text-base-900 font-medium transition-all;
-    color: rgb(var(--color-button-text));
-    background: linear-gradient(
-      135deg,
-      rgb(var(--color-gold-200)) 0%,
-      rgb(var(--color-gold-400)) 50%,
-      rgb(var(--color-gold-600)) 100%
-    );
+    background: linear-gradient(135deg, #f0d9a8 0%, #d4a874 50%, #b88a52 100%);
     box-shadow:
-      0 4px 20px rgb(var(--color-gold-400) / 0.3),
-      inset 0 1px 0 rgb(255 255 255 / 0.3);
+      0 4px 20px rgba(212, 168, 116, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
 
   .btn-gold:hover {
     box-shadow:
-      0 6px 28px rgb(var(--color-gold-400) / 0.45),
-      inset 0 1px 0 rgb(255 255 255 / 0.4);
+      0 6px 28px rgba(212, 168, 116, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.4);
     transform: translateY(-1px);
   }
 
@@ -329,7 +99,7 @@ html[data-theme="ink-red"] {
   /* 数字大字号样式 (统计卡用) */
   .stat-number {
     @apply font-serif text-3xl font-semibold tracking-tight;
-    background: linear-gradient(135deg, rgb(var(--color-gold-200)) 0%, rgb(var(--color-gold-400)) 100%);
+    background: linear-gradient(135deg, #f0d9a8 0%, #d4a874 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -341,7 +111,7 @@ html[data-theme="ink-red"] {
     @apply font-serif text-warm-100;
     font-weight: 600;
     letter-spacing: 0.05em;
-    text-shadow: 0 2px 24px rgb(var(--color-gold-400) / 0.15);
+    text-shadow: 0 2px 24px rgba(212, 168, 116, 0.15);
   }
 
   /* 西文衬底花体字 */
@@ -357,8 +127,8 @@ html[data-theme="ink-red"] {
 
   .progress-fill {
     @apply h-full rounded-full transition-all duration-500;
-    background: linear-gradient(90deg, rgb(var(--color-gold-400)) 0%, rgb(var(--color-gold-200)) 100%);
-    box-shadow: 0 0 10px rgb(var(--color-gold-400) / 0.4);
+    background: linear-gradient(90deg, #d4a874 0%, #f0d9a8 100%);
+    box-shadow: 0 0 10px rgba(212, 168, 116, 0.4);
   }
 
   /* 侧边栏激活态导航项 */
@@ -372,7 +142,7 @@ html[data-theme="ink-red"] {
 
   .nav-item-active {
     @apply bg-gold-500/10 text-warm-100;
-    box-shadow: inset 0 0 0 1px rgb(var(--color-gold-400) / 0.2);
+    box-shadow: inset 0 0 0 1px rgba(212, 168, 116, 0.2);
   }
 
   /* 标签 */
@@ -388,19 +158,11 @@ html[data-theme="ink-red"] {
   /* 书籍封面占位 (无封面图时使用) */
   .cover-placeholder {
     background:
-      radial-gradient(ellipse at 30% 20%, rgb(var(--color-gold-400) / 0.4), transparent 60%),
-      linear-gradient(135deg, rgb(var(--color-base-700)) 0%, rgb(var(--color-base-600)) 50%, rgb(var(--color-base-800)) 100%);
+      radial-gradient(ellipse at 30% 20%, rgba(212, 168, 116, 0.4), transparent 60%),
+      linear-gradient(135deg, #1a1614 0%, #221d1a 50%, #13110f 100%);
     box-shadow:
-      inset 0 0 40px rgb(0 0 0 / 0.45),
-      inset 0 0 0 1px rgb(var(--color-gold-400) / 0.1);
-  }
-
-  .text-on-accent {
-    color: rgb(var(--color-button-text));
-  }
-
-  .app-overlay {
-    background: rgb(var(--color-overlay) / 0.72);
+      inset 0 0 40px rgba(0, 0, 0, 0.6),
+      inset 0 0 0 1px rgba(212, 168, 116, 0.1);
   }
 }
 

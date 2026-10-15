@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import zipfile
@@ -30,10 +29,6 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
-from app.services.aigc_quality_gate import (
-    AIGC_POLICY_VERSION,
-    aigc_category_eligible,
-)
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
     image_filename_from_markdown,
@@ -47,7 +42,6 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
     validate_comic_phrases,
 )
-from app.services.comic_variants import is_healing_comic_family
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
     CLASSICAL_CHINESE_CATEGORY_IDS,
@@ -99,8 +93,8 @@ from app.services.classical_reference_templates import (
 )
 from app.services.wechat_article import WeChatArticle, WeChatArticleError, extract_wechat_article
 from app.tasks.tasks import enqueue_cover_generation, process_video
-from app.utils.docx_text import DocxTextError, extract_classical_document_text
-from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
+from app.utils.docx_text import DocxTextError, extract_classical_docx_text
+from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
     "writer": "01_writer.md",
@@ -152,9 +146,6 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "auto_retry_exhausted_at",
     "auto_requeued_at",
     "auto_requeue_reason",
-    "terminal_input_failure",
-    "terminal_input_manual_review_at",
-    "terminal_input_manual_review_reason",
     "failed_auto_recovery_attempts",
     "failed_auto_recovered_at",
     "markdown",
@@ -162,17 +153,6 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "title",
     "quality_report",
     "quality_report_summary",
-    "aigc_quality_report",
-    "aigc_max_score",
-    "aigc_passed",
-    "aigc_required",
-    "aigc_policy_version",
-    "aigc_status",
-    "aigc_initial_max_score",
-    "aigc_final_max_score",
-    "aigc_rewrite_rounds",
-    "aigc_quality_passed",
-    "aigc_report_available",
     "cover_disabled",
     "cover_status",
     "cover_error",
@@ -185,20 +165,6 @@ _REGENERATE_CONFIG_DROP_KEYS = {
     "cover_style_brief_path",
     "draft_cover_path",
 }
-
-
-def _stamp_aigc_policy(config: dict) -> dict:
-    """Snapshot the gate decision so future flag changes never touch old tasks."""
-    cfg = dict(config or {})
-    category = str(cfg.get("category") or "social_science").strip()
-    required = bool(category != "general_longform" and settings.AIGC_GATE_ENABLED and aigc_category_eligible(category))
-    cfg.update(
-        aigc_policy_version=AIGC_POLICY_VERSION,
-        aigc_required=required,
-        aigc_status="pending" if required else "not_required",
-        aigc_report_available=False,
-    )
-    return cfg
 
 
 def _active_generation_count(db: Session) -> int:
@@ -242,13 +208,6 @@ def _normalize_task_config(config: dict | None) -> dict:
         category_label=category_meta["label"],
         category_prompt_status=category_meta["prompt_status"],
     )
-    if category == "general_longform":
-        if len(str(cfg.get("raw_text") or "")) > 250000:
-            raise HTTPException(status_code=400, detail="通用长篇单份素材最多250000字符；请在工作区分文件导入，原文不会截断")
-        cfg.pop("general_longform_request", None)
-        cfg["general_longform_phase"] = "needs_outline"
-        from app.prompts.general_longform_prompts import get_manifest as get_general_longform_manifest
-        cfg["general_longform_policy"] = get_general_longform_manifest()["version"]
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
     if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
@@ -283,7 +242,7 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("classical_variant", None)
         cfg.pop("classical_variant_label", None)
         cfg.pop("classical_original_title", None)
-    if is_healing_comic_family(category):
+    if category == "healing_comic":
         title = parse_comic_title(
             cfg.get("comic_title")
             or cfg.get("title")
@@ -394,7 +353,7 @@ def _create_and_dispatch_task(
     task = Task(
         source_url=source_url,
         owner_id=user.id,
-        config=_stamp_aigc_policy(config),
+        config=config,
         status=TaskStatus.PENDING,
         progress=0,
         current_step="排队中",
@@ -411,7 +370,8 @@ def _create_and_dispatch_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
-        _mark_dispatch_failure_pending(task, e)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Celery dispatch failed: {e}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -432,7 +392,7 @@ def _create_classical_text_task(
     if not raw_text:
         raise HTTPException(status_code=400, detail="古文白话请直接粘贴文言文原文，不需要填写视频链接")
 
-    cfg = _stamp_aigc_policy(config)
+    cfg = dict(config)
     cfg.pop("raw_text", None)
     cfg["raw_text_chars"] = len(raw_text)
     style_notes_full = str(cfg.get("style_notes") or "").strip()
@@ -480,7 +440,8 @@ def _create_classical_text_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 投递失败", task.id)
-        _mark_dispatch_failure_pending(task, e)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Celery dispatch failed: {e}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -528,48 +489,10 @@ def _dispatch_task(task: Task) -> None:
     try:
         if not acquire_task_dispatch_guard(str(task.id)):
             return
-        if bool((task.config or {}).get("public_domain_longform_v2")):
-            from app.tasks.tasks import process_public_domain_longform
-
-            cfg = task.config or {}
-            if (
-                cfg.get("generation_mode") == "classical_vernacular"
-                or cfg.get("public_domain_classical_vernacular")
-            ):
-                # A complete classical translation can legitimately run for
-                # days.  Preserve the long task limit on every manual retry,
-                # not only on the original public-domain endpoint.
-                process_public_domain_longform.apply_async(
-                    args=[str(task.id)],
-                    time_limit=7 * 24 * 60 * 60,
-                    soft_time_limit=7 * 24 * 60 * 60 - 300,
-                )
-            else:
-                process_public_domain_longform.delay(str(task.id))
-        else:
-            process_video.delay(str(task.id))
+        process_video.delay(str(task.id))
     except Exception as e:
-        # A broker outage must never leave a newly-created task hidden behind
-        # the Redis dispatch lease.  The caller keeps the row pending and the
-        # maintenance worker can safely publish it again later.
-        clear_task_dispatch_guard(str(task.id))
         logger.exception("[task %s] Celery 投递失败", task.id)
         raise RuntimeError(f"Celery dispatch failed: {e}") from e
-
-
-def _mark_dispatch_failure_pending(task: Task, exc: Exception, *, prefix: str = "Celery dispatch failed") -> None:
-    """Record a publish failure without converting a runnable task to terminal failure."""
-
-    clear_task_dispatch_guard(str(task.id))
-    cfg = dict(task.config or {})
-    cfg.update(
-        dispatch_last_error=f"{prefix}: {exc}"[:1000],
-        dispatch_last_failed_at=datetime.now(timezone.utc).isoformat(),
-    )
-    task.config = cfg
-    task.status = TaskStatus.PENDING
-    task.error_message = f"{prefix}: {exc}"[:2000]
-    task.current_step = "任务已保存，后台队列投递失败，维护队列将自动重试"[:255]
 
 
 def _task_output_dir(task_id: UUID) -> Path:
@@ -738,43 +661,6 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("paused_at", None)
     cfg.pop("paused_run_id", None)
     cfg.pop("last_pause_message", None)
-    # A deliberate user retry is the only automatic-safety boundary that may
-    # clear a paid-call hold/uncertainty.  Keep ``paid_call_response_id`` so a
-    # provider response that did arrive can still be resumed rather than
-    # submitted again.
-    for key in (
-        "generation_hold",
-        "generation_hold_reason",
-        "generation_hold_step",
-        "generation_hold_at",
-        "paid_call_delivery_uncertain",
-        "paid_call_manual_resume_required",
-        "paid_api_backoff",
-        "paid_api_backoff_reason",
-        "paid_api_backoff_at",
-        "paid_api_backoff_error",
-        "paid_api_backoff_until",
-        "paid_api_backoff_attempts",
-        "paid_api_backoff_last_due_at",
-        "failed_auto_recovery_attempts",
-        "failed_auto_recovered_at",
-        "failed_auto_recovery_suppressed_at",
-        "terminal_input_failure",
-        "terminal_input_manual_review_at",
-        "terminal_input_manual_review_reason",
-        "dispatch_last_error",
-        "dispatch_last_failed_at",
-    ):
-        cfg.pop(key, None)
-    if cfg.get("public_domain_longform_v2"):
-        # A retry starts a new validation run.  Do not keep rendering the
-        # previous manual-review reason while the corrected pipeline is
-        # already processing from its checkpoints.
-        cfg["public_domain_quality_blocked"] = False
-        cfg.pop("public_domain_quality_reason", None)
-    if cfg.get("aigc_required"):
-        cfg["aigc_status"] = "pending"
-        cfg["aigc_passed"] = False
     task.config = cfg
     progress, step = _retry_resume_state(task.id)
     task.status = TaskStatus.PENDING
@@ -795,15 +681,12 @@ def _clear_task_output_dir(task_id: UUID) -> None:
 
 
 def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
-    if task.category == "general_longform":
-        raise HTTPException(status_code=409, detail="通用长篇保留版本与验收状态，请在专属工作区局部修订或恢复断点")
     _clear_task_output_dir(task.id)
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
 
     cfg = dict(task.config or {})
     for key in _REGENERATE_CONFIG_DROP_KEYS:
         cfg.pop(key, None)
-    cfg = _stamp_aigc_policy(cfg)
     cfg["regenerated_at"] = datetime.now(timezone.utc).isoformat()
     cfg["regenerated_from_bookshelf"] = True
     task.config = cfg
@@ -1054,7 +937,8 @@ def create_emotion_reference_article_task(
         _dispatch_task(task)
     except Exception as exc:
         logger.exception("[task %s] 微信文章落盘或 Celery 投递失败", response.task_id)
-        _mark_dispatch_failure_pending(task, exc, prefix="WeChat article dispatch failed")
+        task.status = TaskStatus.FAILED
+        task.error_message = f"WeChat article dispatch failed: {exc}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -1153,11 +1037,12 @@ def create_emotion_reference_article_task_batch(
         try:
             _dispatch_task(task)
         except Exception as exc:
-            _mark_dispatch_failure_pending(task, exc, prefix="WeChat article batch dispatch failed")
+            task.status = TaskStatus.FAILED
+            task.error_message = f"WeChat article batch dispatch failed: {exc}"[:2000]
             db.commit()
             for item in created:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.PENDING
+                    item.status = TaskStatus.FAILED
                     item.reason = str(exc)[:300]
                     break
 
@@ -1173,7 +1058,7 @@ def create_emotion_reference_article_task_batch(
     "/classical-chinese/docx",
     response_model=CreateTaskResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="上传 Word/PDF 并创建古文白话任务",
+    summary="上传 Word 并创建古文白话任务",
 )
 async def create_classical_chinese_from_docx(
     file: UploadFile = File(...),
@@ -1188,11 +1073,11 @@ async def create_classical_chinese_from_docx(
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
     filename = file.filename or "classical_chinese.docx"
-    if Path(filename).suffix.lower() not in {".docx", ".pdf"}:
-        raise HTTPException(status_code=400, detail="请上传 .docx 或 .pdf 格式的古文原文文件")
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="请上传 .docx 格式的 Word 文件")
     content = await file.read()
     try:
-        raw_text = extract_classical_document_text(content, filename)
+        raw_text = extract_classical_docx_text(content)
     except DocxTextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     try:
@@ -1200,18 +1085,18 @@ async def create_classical_chinese_from_docx(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS:
-        raise HTTPException(status_code=400, detail="Word/PDF 上传只支持古文白话相关分类")
+        raise HTTPException(status_code=400, detail="Word 上传只支持古文白话相关分类")
     reference_text = ""
     reference_filename = ""
     if reference_file is not None and (reference_file.filename or "").strip():
         if normalized_category != CLASSICAL_REFERENCE_REWRITE_CATEGORY:
             raise HTTPException(status_code=400, detail="参考译文文件只支持古文白话（参照译写版）")
         reference_filename = (reference_file.filename or "reference_translation.docx")[:255]
-        if Path(reference_filename).suffix.lower() not in {".docx", ".pdf"}:
-            raise HTTPException(status_code=400, detail="参考译文请上传 .docx 或 .pdf 格式的文件")
+        if not reference_filename.lower().endswith(".docx"):
+            raise HTTPException(status_code=400, detail="参考译文请上传 .docx 格式的 Word 文件")
         reference_content = await reference_file.read()
         try:
-            reference_text = extract_classical_document_text(reference_content, reference_filename).strip()
+            reference_text = extract_classical_docx_text(reference_content).strip()
         except DocxTextError as exc:
             raise HTTPException(status_code=exc.status_code, detail=f"参考译文读取失败：{exc}") from exc
     cfg = _normalize_task_config(
@@ -1222,7 +1107,7 @@ async def create_classical_chinese_from_docx(
             "title": (title.strip() or Path(filename).stem.strip())[:120],
             "raw_text_chars": len(raw_text),
             "source_filename": filename[:255],
-            "input_source": "document_upload",
+            "input_source": "docx_upload",
         }
     )
     style_notes_parts = [style_notes.strip()]
@@ -1253,8 +1138,8 @@ async def create_classical_chinese_from_docx(
         if should_externalize_style_notes:
             cfg["style_notes_preview_chars"] = len(cfg["style_notes"])
     response = _create_and_dispatch_task(
-        source_url=f"manual://{normalized_category}_document/{filename[:120]}",
-        config=_stamp_aigc_policy(cfg),
+        source_url=f"manual://{normalized_category}_docx/{filename[:120]}",
+        config=cfg,
         db=db,
         user=user,
         dispatch=False,
@@ -1277,11 +1162,12 @@ async def create_classical_chinese_from_docx(
         _dispatch_task(task)
     except Exception as exc:
         logger.exception("[task %s] Word 正文落盘或 Celery 投递失败", response.task_id)
-        _mark_dispatch_failure_pending(task, exc, prefix="Word upload dispatch failed")
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Word upload dispatch failed: {exc}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
-            detail=f"Word/PDF 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
+            detail=f"Word 文档已读取，但任务投递失败 (task_id={response.task_id}): {exc}",
         ) from exc
     return response
 
@@ -1331,11 +1217,9 @@ def create_task_batch(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
-    if cfg.get("category") == "comic_series" or is_healing_comic_family(cfg.get("category")):
+    if cfg.get("category") in {"comic_series", "healing_comic"}:
         label = str(cfg.get("category_label") or "插画")
         raise HTTPException(status_code=400, detail=f"{label}不支持候选链接库，请使用{label}入口输入 5 或 6 条短语")
-    if cfg.get("category") == "general_longform":
-        raise HTTPException(status_code=400, detail="通用长篇请创建独立工作区，确认大纲后逐章执行")
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
@@ -1370,7 +1254,7 @@ def create_task_batch(
         task = Task(
             source_url=url,
             owner_id=user.id,
-            config=_stamp_aigc_policy(_config_with_source_platform(cfg, url)),
+            config=_config_with_source_platform(cfg, url),
             status=TaskStatus.PENDING,
             progress=0,
             current_step="排队中",
@@ -1386,11 +1270,12 @@ def create_task_batch(
         try:
             _dispatch_task(task)
         except Exception as exc:
-            _mark_dispatch_failure_pending(task, exc, prefix="Batch dispatch failed")
+            task.status = TaskStatus.FAILED
+            task.error_message = str(exc)[:2000]
             db.commit()
             for item in created:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.PENDING
+                    item.status = TaskStatus.FAILED
                     item.reason = str(exc)[:300]
                     break
 
@@ -1419,10 +1304,7 @@ def retry_failed_tasks(
     skipped: list[BatchRetryTaskItem] = []
     if requested_ids:
         locked = (
-            base_query.filter(
-                Task.id.in_(requested_ids),
-                Task.status.in_((TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW)),
-            )
+            base_query.filter(Task.id.in_(requested_ids), Task.status == TaskStatus.FAILED)
             .with_for_update(skip_locked=True)
             .all()
         )
@@ -1439,7 +1321,7 @@ def retry_failed_tasks(
                 )
     else:
         tasks = (
-            base_query.filter(Task.status.in_((TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW)))
+            base_query.filter(Task.status == TaskStatus.FAILED)
             .with_for_update(skip_locked=True)
             .order_by(Task.created_at.desc())
             .all()
@@ -1448,41 +1330,12 @@ def retry_failed_tasks(
     retried: list[BatchRetryTaskItem] = []
     tasks_to_dispatch: list[Task] = []
     for task in tasks:
-        if task.status not in {TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW}:
+        if task.status != TaskStatus.FAILED:
             skipped.append(
                 BatchRetryTaskItem(
                     task_id=task.id,
                     status="skipped",
                     reason=f"当前状态为 {task.status}，无需继续生成",
-                )
-            )
-            continue
-        if bool((task.config or {}).get("public_domain_longform_v2")):
-            if bool((task.config or {}).get("generation_complete")):
-                skipped.append(
-                    BatchRetryTaskItem(
-                        task_id=task.id,
-                        status="skipped",
-                        reason="公版长篇正文已完成，请在单本详情仅重跑朱雀阶段",
-                    )
-                )
-                continue
-            _prepare_task_for_retry(task)
-            tasks_to_dispatch.append(task)
-            retried.append(
-                BatchRetryTaskItem(
-                    task_id=task.id,
-                    status=TaskStatus.PENDING,
-                    reason="从公版证据/规划/合格章节断点继续生成",
-                )
-            )
-            continue
-        if bool((task.config or {}).get("public_domain_rewrite")):
-            skipped.append(
-                BatchRetryTaskItem(
-                    task_id=task.id,
-                    status="skipped",
-                    reason="公版融合任务必须仅重跑朱雀阶段，已跳过以避免重复消耗整套生成 API",
                 )
             )
             continue
@@ -1503,11 +1356,12 @@ def retry_failed_tasks(
             _dispatch_task(task)
         except Exception as exc:
             logger.exception("[task %s] Celery 批量重试投递失败", task.id)
-            _mark_dispatch_failure_pending(task, exc)
+            task.status = TaskStatus.FAILED
+            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
             db.commit()
             for item in retried:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.PENDING
+                    item.status = TaskStatus.FAILED
                     item.reason = str(exc)[:300]
                     break
 
@@ -1560,7 +1414,7 @@ def regenerate_tasks(
                 )
             )
             continue
-        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.MANUAL_REVIEW}:
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
             skipped.append(
                 BatchRegenerateTaskItem(
                     task_id=task.id,
@@ -1605,11 +1459,12 @@ def regenerate_tasks(
             _dispatch_task(task)
         except Exception as exc:
             logger.exception("[task %s] 批量重新生成投递失败", task.id)
-            _mark_dispatch_failure_pending(task, exc)
+            task.status = TaskStatus.FAILED
+            task.error_message = f"Celery dispatch failed: {exc}"[:2000]
             db.commit()
             for item in regenerated:
                 if item.task_id == task.id:
-                    item.status = TaskStatus.PENDING
+                    item.status = TaskStatus.FAILED
                     item.reason = str(exc)[:300]
                     break
 
@@ -1669,7 +1524,7 @@ def pause_comic_task(
 
     cfg = dict(task.config or {})
     category = str(cfg.get("category") or "").strip()
-    if not is_healing_comic_family(category):
+    if category != "healing_comic":
         raise HTTPException(status_code=409, detail="当前任务不是漫画分类，不能使用漫画暂停")
     if task.status == TaskStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="任务已完成，不能暂停")
@@ -1716,58 +1571,11 @@ def retry_task(
         raise HTTPException(status_code=409, detail="任务正在生成中，系统会自动续跑，请勿重复投递。")
     not_before = _auto_retry_not_before(task)
     if task.status == TaskStatus.PENDING:
-        cfg = dict(task.config or {})
-        # A user clicking retry on a held pending row explicitly releases the
-        # hold.  Without this branch such rows were returned unchanged forever
-        # because the endpoint treated every pending task as already queued.
-        if any(
-            cfg.get(key)
-            for key in (
-                "generation_hold",
-                "paid_call_delivery_uncertain",
-                "paid_call_manual_resume_required",
-                "paid_api_backoff",
-            )
-        ):
-            _prepare_task_for_retry(task)
-            db.commit()
-            db.refresh(task)
-            try:
-                _dispatch_task(task)
-            except Exception as exc:
-                _mark_dispatch_failure_pending(task, exc)
-                db.commit()
-                raise HTTPException(status_code=503, detail=f"重试投递失败 (task_id={task.id}): {exc}") from exc
-            return CreateTaskResponse(task_id=task.id, status=task.status)
         if not_before and not_before > datetime.now(timezone.utc):
             return CreateTaskResponse(task_id=task.id, status=task.status)
         return CreateTaskResponse(task_id=task.id, status=task.status)
-    if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED, TaskStatus.MANUAL_REVIEW}:
+    if task.status not in {TaskStatus.FAILED, TaskStatus.PAUSED}:
         raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不需要重新投递。")
-
-    if bool((task.config or {}).get("public_domain_longform_v2")):
-        cfg = dict(task.config or {})
-        if bool(cfg.get("generation_complete")):
-            raise HTTPException(
-                status_code=409,
-                detail="公版长篇正文已完成；若仅朱雀未通过，请使用“仅重跑朱雀阶段”。",
-            )
-        _prepare_task_for_retry(task)
-        task.current_step = "从公版证据、规划和已通过章节断点继续生成"
-        db.commit()
-        db.refresh(task)
-        try:
-            _dispatch_task(task)
-        except Exception as e:
-            _mark_dispatch_failure_pending(task, e, prefix="Public-domain dispatch failed")
-            db.commit()
-            raise HTTPException(status_code=503, detail=f"公版长篇重试投递失败: {e}") from e
-        return CreateTaskResponse(task_id=task.id, status=task.status)
-    if bool((task.config or {}).get("public_domain_rewrite")):
-        raise HTTPException(
-            status_code=409,
-            detail="公版融合任务请使用“仅重跑朱雀阶段”，避免重新消耗整套生成 API。",
-        )
 
     _prepare_task_for_retry(task)
     db.commit()
@@ -1777,7 +1585,8 @@ def retry_task(
         _dispatch_task(task)
     except Exception as e:
         logger.exception("[task %s] Celery 重新投递失败", task.id)
-        _mark_dispatch_failure_pending(task, e)
+        task.status = TaskStatus.FAILED
+        task.error_message = f"Celery dispatch failed: {e}"[:2000]
         db.commit()
         raise HTTPException(
             status_code=503,
@@ -1785,131 +1594,6 @@ def retry_task(
         )
 
     return CreateTaskResponse(task_id=task.id, status=task.status)
-
-
-@router.post(
-    "/{task_id}/retry-aigc",
-    response_model=CreateTaskResponse,
-    summary="仅从不可变 04_format.md 原稿重跑朱雀终稿阶段",
-)
-def retry_task_aigc(
-    task_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> CreateTaskResponse:
-    """Resume at the v2 gate without regenerating paid upstream stages."""
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    cfg = dict(task.config or {})
-    if bool(cfg.get("public_domain_rewrite")):
-        raise HTTPException(
-            status_code=409,
-            detail="公版融合任务请在公版接口重跑朱雀阶段。",
-        )
-    if not bool(cfg.get("aigc_required")) or cfg.get("aigc_policy_version") != AIGC_POLICY_VERSION:
-        raise HTTPException(status_code=409, detail="该任务没有绑定朱雀 v2 策略，不能使用 AIGC-only 重试。")
-    if task.status not in {TaskStatus.MANUAL_REVIEW, TaskStatus.FAILED}:
-        raise HTTPException(status_code=409, detail=f"当前状态为 {task.status}，不能仅重跑朱雀阶段。")
-    original_path = _task_output_dir(task.id) / "04_format.md"
-    if not original_path.exists() or original_path.stat().st_size <= 0:
-        raise HTTPException(status_code=409, detail="不可变 04_format.md 原稿不存在，无法安全执行 AIGC-only 重试。")
-    if _has_active_run(task):
-        raise HTTPException(status_code=409, detail="任务已有运行实例，请勿重复投递。")
-
-    _ensure_generation_capacity(db)
-    _prepare_task_for_retry(task)
-    task.progress = max(91, int(task.progress or 0))
-    task.current_step = "仅重跑朱雀终稿阶段（已复用 04_format.md 原稿与可用检测缓存）"
-    db.commit()
-    db.refresh(task)
-    try:
-        _dispatch_task(task)
-    except Exception as exc:
-        logger.exception("[task %s] AIGC-only dispatch failed", task.id)
-        _mark_dispatch_failure_pending(task, exc, prefix="AIGC-only dispatch failed")
-        db.commit()
-        raise HTTPException(status_code=503, detail=f"朱雀阶段重试投递失败: {exc}") from exc
-    return CreateTaskResponse(task_id=task.id, status=task.status)
-
-
-@router.get(
-    "/{task_id}/aigc-report",
-    summary="读取不含密钥的朱雀 v2 报告与人工复核候选",
-)
-def get_task_aigc_report(
-    task_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict[str, object]:
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    output_dir = _task_output_dir(task.id).resolve()
-    report_path = output_dir / "aigc_quality_report.json"
-    if not report_path.exists():
-        raise HTTPException(status_code=404, detail="朱雀报告尚未生成")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=500, detail=f"朱雀报告读取失败: {exc}") from exc
-    if not isinstance(report, dict):
-        raise HTTPException(status_code=500, detail="朱雀报告格式不正确")
-
-    review_candidates: list[dict[str, object]] = []
-    for item in report.get("candidates") or []:
-        if not isinstance(item, dict):
-            continue
-        candidate = {key: value for key, value in item.items() if key != "artifactPath"}
-        artifact = item.get("artifactPath")
-        candidate["artifactFile"] = Path(str(artifact)).name if artifact else None
-        text = ""
-        if artifact:
-            try:
-                artifact_path = Path(str(artifact)).resolve()
-                if artifact_path.is_relative_to(output_dir) and artifact_path.exists():
-                    text = artifact_path.read_text(encoding="utf-8")
-            except (OSError, ValueError):
-                logger.warning("[task %s] invalid AIGC candidate artifact: %s", task.id, artifact)
-        candidate["text"] = text
-        review_candidates.append(candidate)
-
-    safe_candidates = [
-        item
-        for item in review_candidates
-        if item.get("deterministicPassed") is True and isinstance(item.get("detection"), dict)
-    ]
-    safe_candidates.sort(
-        key=lambda item: (
-            int((item.get("detection") or {}).get("score") or 101),
-            0 if item.get("selected") else 1,
-            -int(item.get("round") or 0),
-        )
-    )
-    sanitized = dict(report)
-    sanitized["candidates"] = review_candidates
-    sanitized["selectedCandidates"] = [item for item in review_candidates if item.get("selected")]
-    sanitized["bestSafeCandidate"] = safe_candidates[0] if safe_candidates else None
-    sanitized["originalAvailable"] = (output_dir / "04_format.md").exists()
-    if bool((task.config or {}).get("aigc_review_archive")):
-        candidate_path = output_dir / "05_aigc_candidate.md"
-        try:
-            report_candidate = (
-                candidate_path.read_text(encoding="utf-8")
-                if candidate_path.exists()
-                else ""
-            )
-        except OSError:
-            logger.warning("[task %s] failed to read report-driven candidate", task.id)
-            report_candidate = ""
-        sanitized["reportDrivenCandidateText"] = report_candidate
-        sanitized["reportDrivenExperimentType"] = (task.config or {}).get(
-            "aigc_experiment_type"
-        )
-        sanitized["reportDrivenQualityBypassed"] = bool(
-            (task.config or {}).get("aigc_experimental_quality_bypassed")
-        )
-    return sanitized
 
 
 def _build_list_item(db: Session, task: Task) -> TaskListItem:
@@ -2017,7 +1701,7 @@ def _cleanup_expired_tasks(db: Session, user: User) -> int:
         .filter(
             Task.owner_id == user.id,
             Task.created_at < cutoff,
-            ~Task.status.in_((*_ACTIVE_TASK_STATUSES, TaskStatus.PAUSED, TaskStatus.MANUAL_REVIEW)),
+            ~Task.status.in_((*_ACTIVE_TASK_STATUSES, TaskStatus.PAUSED)),
         )
         .all()
     )
@@ -2049,7 +1733,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     md = cfg.get("markdown")
     if md:
-        return _normalize_download_markdown(str(md), category=str(cfg.get("category") or ""))
+        return normalize_final_markdown(str(md), category=str(cfg.get("category") or ""))
 
     chapters = (
         db.query(Chapter)
@@ -2057,8 +1741,8 @@ def _read_task_markdown(db: Session, task: Task) -> str:
         .order_by(Chapter.chapter_num.asc())
         .all()
     )
-    return _normalize_download_markdown(
-        "\n".join(c.content if task.category == "general_longform" else f"@{c.title}\n{c.content}" for c in chapters),
+    return normalize_final_markdown(
+        "\n".join(f"@{c.title}\n{c.content}" for c in chapters),
         category=str(cfg.get("category") or ""),
     )
 
@@ -2187,19 +1871,6 @@ def _docx_category(markdown_category: str | None) -> str:
         return ""
 
 
-def _normalize_download_markdown(markdown: str, *, category: str | None = None) -> str:
-    """Normalize exports while allowing independent task categories.
-
-    Public-domain fusion and other standalone workflows share the bookshelf
-    downloader but are intentionally not prompt-registry categories.  They use
-    the generic delivery normalizer instead of failing the download.
-    """
-    normalized_category = _docx_category(category)
-    if normalized_category == "general_longform":
-        return markdown
-    return normalize_final_markdown(markdown, category=normalized_category or None)
-
-
 def _classical_chinese_docx_lines(markdown: str, *, category: str = "classical_chinese") -> list[str]:
     lines: list[str] = []
     skipping_intro = False
@@ -2242,7 +1913,7 @@ def _markdown_to_docx(
     ):
         docx_lines = _classical_chinese_docx_lines(markdown, category=normalized_category)
     else:
-        docx_lines = _normalize_download_markdown(markdown, category=category).splitlines()
+        docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
     for line in docx_lines:
         image_filename = image_filename_from_markdown(line)
         image_path = None
@@ -2250,7 +1921,7 @@ def _markdown_to_docx(
             candidate = image_base_dir / "comic_images" / image_filename
             if candidate.exists():
                 image_path = candidate
-            if comic_preview_images and is_healing_comic_family(normalized_category):
+            if comic_preview_images and normalized_category == "healing_comic":
                 preview_path = _comic_image_preview_path_from_output_dir(image_base_dir, image_filename)
                 if preview_path is not None:
                     image_path = preview_path
@@ -2432,8 +2103,6 @@ def update_task_metadata(
 
     cfg = dict(task.config or {})
     fields = body.model_fields_set
-    if (task.category == "general_longform" and fields & {"title", "category"}) or ("category" in fields and str(body.category or "").strip() in {"general_longform", "通用长篇"}):
-        raise HTTPException(status_code=409, detail="通用长篇的分类与书名绑定确认大纲，请在专属工作区管理；书架可单独调整")
     if "title" in fields:
         title = (body.title or "").strip()
         if title:
@@ -2487,8 +2156,6 @@ async def regenerate_selection(
     task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    if task.category == "general_longform":
-        raise HTTPException(status_code=409, detail="请使用通用长篇工作区的指定章修订，保留来源与重新验收")
 
     text = body.text.strip()
     if not text:
@@ -2610,7 +2277,7 @@ def get_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if not is_healing_comic_family(category):
+    if category != "healing_comic":
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     image_path = _task_comic_image_preview_path(task_id, filename)
     if image_path is None:
@@ -2639,7 +2306,7 @@ def download_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if not is_healing_comic_family(category):
+    if category != "healing_comic":
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2664,7 +2331,7 @@ def download_task_image_preview_direct(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if not is_healing_comic_family(category):
+    if category != "healing_comic":
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2836,8 +2503,6 @@ def update_chapter(
             status_code=404,
             detail=f"chapter {chapter_num} of task {task_id} not found",
         )
-    if chapter.task.category == "general_longform":
-        raise HTTPException(status_code=409, detail="通用长篇正文需经计划实绩对比与验收，请从专属工作区修订")
     if body.title is not None and body.title.strip():
         chapter.title = body.title.strip()
     chapter.content = body.content
@@ -2869,20 +2534,6 @@ def get_markdown(
     return MarkdownResponse(task_id=task_id, markdown=md, char_count=len(md))
 
 
-def _general_longform_book_file(task: Task) -> tuple[Path, str]:
-    from hashlib import sha256
-    from app.services.general_longform import load_state, work_dir
-    directory = work_dir(task.id)
-    state = load_state(directory) or {}
-    artifact = next((item for item in reversed(state.get("artifacts", [])) if item.get("kind") == "book"), None)
-    if state.get("phase") != "completed" or not artifact:
-        raise HTTPException(status_code=409, detail="通用长篇尚无通过全书验收的 Word")
-    path = (directory / "exports" / artifact["filename"]).resolve()
-    if not path.is_relative_to((directory / "exports").resolve()) or not path.is_file() or sha256(path.read_bytes()).hexdigest() != artifact["sha256"]:
-        raise HTTPException(status_code=409, detail="通用长篇全书 Word 完整性校验失败")
-    return path, artifact["filename"]
-
-
 def _build_batch_download_response(
     task_ids: list[UUID],
     *,
@@ -2904,27 +2555,21 @@ def _build_batch_download_response(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for task_id in task_ids:
             task = task_map.get(task_id)
-            if task is None or task.status != TaskStatus.COMPLETED:
+            if task is None:
                 continue
             md = _read_task_markdown(db, task)
             if not md:
                 continue
             category = str((task.config or {}).get("category") or "")
-            if fmt == "docx" and category == "general_longform":
-                path, filename = _general_longform_book_file(task)
-                content = path.read_bytes()
-            elif fmt == "docx":
+            if fmt == "docx":
                 content = _markdown_to_docx(
                     md,
                     image_base_dir=_task_output_dir(task.id),
                     category=category,
                 )
                 filename = _safe_download_name(task, "docx")
-            elif fmt == "txt":
-                content = _normalize_download_markdown(md, category=category)
-                filename = _safe_download_name(task, "txt")
             else:
-                content = _normalize_download_markdown(md, category=category)
+                content = normalize_final_markdown(md, category=category)
                 filename = _safe_download_name(task, "md")
             archive.writestr(_unique_zip_name(filename, used_names), content)
             written += 1
@@ -2991,7 +2636,7 @@ def _get_current_user_from_download_token(
 )
 def download_batch_direct(
     task_ids: str = Query(..., min_length=1),
-    fmt: str = Query("docx", pattern="^(md|docx|txt)$"),
+    fmt: str = Query("docx", pattern="^(md|docx)$"),
     token: str | None = Query(None),
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
@@ -3019,24 +2664,16 @@ def _build_single_download_response(
     *,
     comic_preview_images: bool = False,
 ) -> Response:
-    if task.status != TaskStatus.COMPLETED:
-        raise HTTPException(
-            status_code=409,
-            detail="任务尚未通过全部终稿闸门，人工复核原稿不可作为终稿下载",
-        )
     md = _read_task_markdown(db, task)
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
-    if category == "general_longform" and fmt == "docx":
-        path, filename = _general_longform_book_file(task)
-        return FileResponse(path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Cache-Control": "no-store"})
-    use_preview_docx = bool(comic_preview_images and is_healing_comic_family(category) and fmt == "docx")
+    use_preview_docx = bool(comic_preview_images and category == "healing_comic" and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
-    if fmt == "docx":
+    if fmt == "docx" or fmt == "txt":
         content = _markdown_to_docx(
             md,
             image_base_dir=output_dir,
@@ -3047,16 +2684,8 @@ def _build_single_download_response(
         filename = _safe_download_name(task, "docx", suffix="预览") if use_preview_docx else _safe_download_name(task, "docx")
         file_path = download_dir / ("final_preview.docx" if use_preview_docx else "final.docx")
         file_path.write_bytes(content)
-    elif fmt == "txt":
-        content = _normalize_download_markdown(md, category=category)
-        media_type = "text/plain; charset=utf-8"
-        filename = _safe_download_name(task, "txt")
-        file_path = download_dir / "final.txt"
-        # UTF-8 BOM keeps Chinese text readable in Windows Notepad and older
-        # publishing tools while remaining valid UTF-8 everywhere else.
-        file_path.write_text(content, encoding="utf-8-sig")
     else:
-        content = _normalize_download_markdown(md, category=category)
+        content = normalize_final_markdown(md, category=category)
         media_type = "text/markdown; charset=utf-8"
         filename = _safe_download_name(task, "md")
         file_path = download_dir / "final.md"
@@ -3074,7 +2703,7 @@ def _build_single_download_response(
 
 @router.get(
     "/{task_id}/download",
-    summary="下载最终稿 (md/docx/txt)",
+    summary="下载最终稿 (md/docx)",
 )
 def download_markdown(
     task_id: UUID,
@@ -3091,7 +2720,7 @@ def download_markdown(
 
 @router.get(
     "/{task_id}/download/direct",
-    summary="下载最终稿 (md/docx/txt, browser-native)",
+    summary="下载最终稿 (md/docx, browser-native)",
 )
 def download_markdown_direct(
     task_id: UUID,

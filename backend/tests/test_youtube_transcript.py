@@ -258,7 +258,7 @@ def test_qingdou_wrapper_tries_wechat_channel_candidates(
     ]
 
 
-def test_fetch_video_text_does_not_spend_openai_fallback_when_qingdou_resources_are_exhausted(
+def test_fetch_video_text_uses_bilibili_fallback_when_qingdou_has_no_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -270,40 +270,42 @@ def test_fetch_video_text_does_not_spend_openai_fallback_when_qingdou_resources_
             "raw={'result': {'list': [{'status': 1113, 'videoContent': None}]}}"
         )
 
-    def unexpected_bilibili(source_url: str, **kwargs):
+    def ok_bilibili(source_url: str, **kwargs):
         calls.append(source_url)
-        raise AssertionError("OpenAI audio fallback must not run when Qingdou resources are exhausted")
+        return type(
+            "Result",
+            (),
+            {
+                "text": "bilibili fallback transcript",
+                "provider": "openai_audio",
+                "bvid": "BV1xx411c7mD",
+            },
+        )()
 
     monkeypatch.setattr(task_tasks, "extract_video_text_with_qingdou", fail_qingdou)
-    monkeypatch.setattr(task_tasks, "extract_bilibili_text", unexpected_bilibili)
+    monkeypatch.setattr(task_tasks, "extract_bilibili_text", ok_bilibili)
 
-    with pytest.raises(RuntimeError):
-        task_tasks._fetch_video_text(  # noqa: SLF001
-            "https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web",
-            {"source_platform": "bilibili"},
-        )
+    text = task_tasks._fetch_video_text(  # noqa: SLF001
+        "https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web",
+        {"source_platform": "bilibili"},
+    )
 
-    assert calls == []
+    assert text == "bilibili fallback transcript"
+    assert calls == ["https://www.bilibili.com/video/BV1xx411c7mD/?share_source=copy_web"]
 
 
 def test_bilibili_fallback_is_not_used_for_pure_qingdou_busy_error() -> None:
     assert task_tasks._should_try_bilibili_fallback(RuntimeError("QingdouBusyError: 返回繁忙")) is False  # noqa: SLF001
     assert task_tasks._should_try_bilibili_fallback(RuntimeError("batchStatus=2 status=1001 videoContent: None")) is False  # noqa: SLF001
     assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
-        RuntimeError("batchStatus=2 status=1100 videoContent: None")
-    ) is True
-    assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
-        RuntimeError("batchStatus=2 status=1114 videoContent: None")
-    ) is True
-    assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
         RuntimeError("batchStatus=-2 status=1113 videoContent: None")
-    ) is False
+    )
     assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
         RuntimeError("https://www.bilibili.com/video/BV1abc123456 batchStatus=-2 status=1113 videoContent: None")
-    ) is False
+    )
     assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
         RuntimeError('{"batchStatus": -2, "status": 1113, "videoContent": None}')
-    ) is False
+    )
     assert task_tasks._should_try_bilibili_fallback(  # noqa: SLF001
         RuntimeError("batchStatus=-2 status=1113 videoContent: None; QingdouBusyError: 返回繁忙")
     ) is False

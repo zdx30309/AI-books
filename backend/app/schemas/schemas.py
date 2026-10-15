@@ -5,9 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
-
-from app.utils.task_status import public_task_error, public_task_step
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ============================================================
@@ -66,20 +64,6 @@ class TaskStatusResponse(BaseModel):
     cover_url: str | None = None
     error_message: str | None = None
     created_at: datetime
-
-    @field_validator("current_step", mode="before")
-    @classmethod
-    def _public_current_step(cls, value: object, info: ValidationInfo) -> str:
-        return public_task_step(
-            value,
-            status=info.data.get("status", ""),
-            progress=info.data.get("progress", 0),
-        )
-
-    @field_validator("error_message", mode="before")
-    @classmethod
-    def _public_error_message(cls, value: object, info: ValidationInfo) -> str | None:
-        return public_task_error(value, status=info.data.get("status", ""))
 
 
 # ============================================================

@@ -39,12 +39,6 @@ class FamilyLongNovelBatchRequest(BaseModel):
     retry_failed: bool = True
 
 
-class FamilyLongNovelExtendRequest(BaseModel):
-    target_words: int = Field(default=200000, ge=1000, le=500000)
-    future_chapter_words: int = Field(default=4000, ge=1200, le=12000)
-    expansion_notes: str | None = Field(default=None, max_length=2000)
-
-
 class LongNovelActionResponse(BaseModel):
     project_id: UUID
     status: str
@@ -195,10 +189,6 @@ class LongNovelChapterResponse(BaseModel):
     status: str
     version: int
     raw_model_output: str | None = None
-    pre_aigc_content: str | None = None
-    aigc_policy_version: str | None = None
-    aigc_status: str = "not_required"
-    aigc_report: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -228,15 +218,8 @@ class LongNovelGenerationLogResponse(BaseModel):
     provider: str | None = None
     model: str | None = None
     prompt_tokens: int
-    cached_prompt_tokens: int = 0
     completion_tokens: int
-    reasoning_tokens: int = 0
     estimated_cost: float
-    cost_currency: str = "USD"
-    service_tier: str | None = None
-    prompt_cache_key: str | None = None
-    prompt_prefix_hash: str | None = None
-    response_id: str | None = None
     status: str
     error: str | None = None
     created_at: datetime

@@ -1,10 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar";
-import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { UserBadge } from "./components/UserBadge";
 import { AuthProvider } from "./auth/AuthContext";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
-import { ThemeProvider } from "./theme/ThemeContext";
 import { Workspace } from "./pages/Workspace";
 import { Bookshelf } from "./pages/Bookshelf";
 import { Profile } from "./pages/Profile";
@@ -14,11 +12,8 @@ import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { WeReadTool } from "./pages/WeReadTool";
 import { DataAnalysis } from "./pages/DataAnalysis";
-import { PublicDomainRewrite } from "./pages/PublicDomainRewrite";
 import { EpicNovelWorkspace } from "./pages/EpicNovelWorkspace";
 import { LongNovelWorkspace } from "./pages/LongNovelWorkspace";
-import { AigcReview } from "./pages/AigcReview";
-import { TestingEndpoint } from "./pages/TestingEndpoint";
 import { LONGFORM_VARIANT_CATEGORY_IDS } from "./constants/categories";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -35,212 +30,141 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <ThemeSwitcher />
-        <Routes>
-          {/* 公共路由 */}
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+    <AuthProvider>
+      <Routes>
+        {/* 公共路由 */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
 
-          {/* 受保护路由：需要登录 */}
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <Workspace />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/bookshelf"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <Bookshelf />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/bookshelf/longform-variants"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <Bookshelf
-                    title="长文新版书架"
-                    subtitle="收纳核心矛盾、困境自救、认知升级、因果哲思、独特观点、日常痛点等新版长文"
-                    categoryScopeIds={LONGFORM_VARIANT_CATEGORY_IDS}
-                    allCategoryLabel="全部新版"
-                    emptyTitle="新版书架还空着"
-                    emptyDescription="用新版分类生成书稿后，会自动收纳到这里"
-                  />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/covers"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <CoverBookshelf />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/profile"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <Profile />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/weread"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <WeReadTool />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/aigc-review"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <AigcReview />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/testing-endpoint"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <TestingEndpoint />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/aigc-review/bookshelf"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <Bookshelf
-                    title="AI 审稿书架"
-                    subtitle="自动保存原稿、审稿候选、质量闸门与真实朱雀复检状态"
-                    categoryScopeIds={["aigc_review"]}
-                    allCategoryLabel="全部审稿"
-                    emptyTitle="审稿书架还空着"
-                    emptyDescription="在 AI 审稿降率页面完成一次定向审稿后，稿件会自动归档到这里"
-                    showCreateButton={false}
-                  />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/public-domain-rewrite"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <PublicDomainRewrite fixedMode="full" />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/public-domain-classical-vernacular"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <PublicDomainRewrite fixedMode="classical_vernacular" />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/public-domain-classical-vernacular/:taskId"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <PublicDomainRewrite fixedMode="classical_vernacular" />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/long-novel"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <LongNovelWorkspace />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/long-novel/:id"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <LongNovelWorkspace />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/epic-novel"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <EpicNovelWorkspace />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/epic-novel/:id"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <EpicNovelWorkspace />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/data-analysis"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <DataAnalysis />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/book/:id"
-            element={
-              <ProtectedRoute>
-                <AppShell>
-                  <BookDetail />
-                </AppShell>
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
-      </AuthProvider>
-    </ThemeProvider>
+        {/* 受保护路由：需要登录 */}
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Workspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/bookshelf"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Bookshelf />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/bookshelf/longform-variants"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Bookshelf
+                  title="长文新版书架"
+                  subtitle="收纳核心矛盾、困境自救、认知升级、因果哲思、独特观点、日常痛点等新版长文"
+                  categoryScopeIds={LONGFORM_VARIANT_CATEGORY_IDS}
+                  allCategoryLabel="全部新版"
+                  emptyTitle="新版书架还空着"
+                  emptyDescription="用新版分类生成书稿后，会自动收纳到这里"
+                />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/covers"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <CoverBookshelf />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <Profile />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/weread"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <WeReadTool />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/long-novel"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <LongNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/long-novel/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <LongNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/epic-novel"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <EpicNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/epic-novel/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <EpicNovelWorkspace />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-analysis"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <DataAnalysis />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/book/:id"
+          element={
+            <ProtectedRoute>
+              <AppShell>
+                <BookDetail />
+              </AppShell>
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </AuthProvider>
   );
 }

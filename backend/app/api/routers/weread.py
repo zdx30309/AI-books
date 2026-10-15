@@ -3,16 +3,14 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api.routers.auth import get_current_user
 from app.models import User
 from app.services.weread_tools import (
-    analyze_fanqie_company_capture_report,
-    analyze_weread_company_capture_report,
-    analyze_weread_company_books_report,
+    analyze_weread_company_books,
     analyze_weread_catalog,
     analyze_weread_books,
     build_weread_xlsx,
@@ -50,7 +48,6 @@ class WeReadBookRow(BaseModel):
     copyright_id: str | None = None
     translator: str | None = None
     source_url: str | None = None
-    platform: str | None = None
     profit: float | None = None
     project_editor: str | None = None
     project_title: str | None = None
@@ -83,7 +80,6 @@ class WeReadAnalyzeResponse(BaseModel):
     total: int
     matched: int
     items: list[WeReadBookRow]
-    warnings: list[str] = Field(default_factory=list)
 
 
 class WeReadCatalogItem(BaseModel):
@@ -124,60 +120,10 @@ async def analyze_company_books(
     req: WeReadCompanyRequest,
     _: User = Depends(get_current_user),
 ) -> WeReadAnalyzeResponse:
-    report = await analyze_weread_company_books_report(req.company_name, limit=req.max_books)
-    items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
+    rows = await analyze_weread_company_books(req.company_name, limit=req.max_books)
+    items = [WeReadBookRow(**row.as_dict()) for row in rows]
     matched = sum(1 for item in items if item.status in {"matched", "partial"})
-    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)
-
-
-@router.post(
-    "/company-capture",
-    response_model=WeReadAnalyzeResponse,
-    summary="导入微信读书版权方页抓包/HAR/JSON 并解析全量作品",
-)
-async def analyze_company_capture(
-    company_name: str = Form(..., min_length=1),
-    max_books: int = Form(default=1000, ge=1, le=3000),
-    file: UploadFile = File(...),
-    _: User = Depends(get_current_user),
-) -> WeReadAnalyzeResponse:
-    filename = file.filename or ""
-    if not filename.lower().endswith((".har", ".json", ".txt")):
-        raise HTTPException(status_code=400, detail="请上传 .har、.json 或 .txt 格式的微信读书抓包/响应文件")
-    report = await analyze_weread_company_capture_report(
-        company_name,
-        await file.read(),
-        filename=filename,
-        limit=max_books,
-    )
-    items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
-    matched = sum(1 for item in items if item.status in {"matched", "partial"})
-    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)
-
-
-@router.post(
-    "/fanqie-capture",
-    response_model=WeReadAnalyzeResponse,
-    summary="导入番茄小说抓包/HAR/JSON 并解析作品数据",
-)
-async def analyze_fanqie_capture(
-    company_name: str = Form(..., min_length=1),
-    max_books: int = Form(default=1000, ge=1, le=3000),
-    file: UploadFile = File(...),
-    _: User = Depends(get_current_user),
-) -> WeReadAnalyzeResponse:
-    filename = file.filename or ""
-    if not filename.lower().endswith((".har", ".json", ".txt", ".html", ".htm")):
-        raise HTTPException(status_code=400, detail="请上传 .har、.json、.txt 或 .html 格式的番茄小说抓包/响应文件")
-    report = await analyze_fanqie_company_capture_report(
-        company_name,
-        await file.read(),
-        filename=filename,
-        limit=max_books,
-    )
-    items = [WeReadBookRow(**row.as_dict()) for row in report.rows]
-    matched = sum(1 for item in items if item.status in {"matched", "partial"})
-    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items, warnings=report.warnings)
+    return WeReadAnalyzeResponse(total=len(items), matched=matched, items=items)
 
 
 @router.post(

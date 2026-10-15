@@ -30,4 +30,8 @@ def official_deepseek_base_url(configured: str | None = None) -> str:
 
 
 def official_proxy(provider: str, configured: str | None = None) -> str:
-    return (configured or "").strip()
+    proxy = (configured or "").strip()
+    if settings.OFFICIAL_API_DIRECT_ONLY and proxy:
+        logger.warning("Ignoring %s proxy in direct-only mode.", provider)
+        return ""
+    return proxy

@@ -408,38 +408,7 @@ _CONTINUATION_PREFIXES = (
     "这种",
     "这类",
 )
-_FINAL_QA_EXCLUDED_CATEGORIES = {
-    "comic_series",
-    "healing_comic",
-    "story_comic",
-    "homophone_comic",
-}
-_STANDARD_LONGFORM_CHAPTER_CATEGORIES = frozenset(
-    {
-        "social_science",
-        "social_science_test",
-        "social_science_core_conflict",
-        "life_philosophy",
-        "life_philosophy_self_rescue",
-        "popular_science",
-        "popular_science_cognitive_upgrade",
-        "finance_technology",
-        "finance_technology_ai_optimized",
-        "finance_technology_recommendation",
-        "wisdom_stories",
-        "wisdom_stories_causal_philosophy",
-        "wisdom_stories_historical",
-        "biography",
-        "history_culture",
-        "emotion_relationship",
-        "emotion_relationship_unique_view",
-        "psychology_self_help",
-        "health_wellness",
-        "health_wellness_daily_pain",
-        "classic_interpretation",
-        "masterpiece_interpretation",
-    }
-)
+_FINAL_QA_EXCLUDED_CATEGORIES = {"comic_series", "healing_comic"}
 _CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"
 _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES = {
     _CLASSICAL_INTERLEAVED_CATEGORY,
@@ -448,6 +417,38 @@ _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES = {
 _CLASSICAL_LABEL_LINE_RE = re.compile(
     r"^(?:\u3010P\d{4}\u3011\s*)?"
     r"(?:\uff08\u539f\u6587\uff09|\uff08\u7ffb\u8bd1\uff09)"
+)
+_INLINE_SUBHEADING_KEYWORDS = (
+    "代价",
+    "难题",
+    "局限",
+    "风险",
+    "真相",
+    "困境",
+    "陷阱",
+    "选择",
+    "转折",
+    "退路",
+    "误判",
+    "成本",
+    "边界",
+    "启示",
+    "根源",
+    "答案",
+    "分水岭",
+    "账本",
+    "底气",
+    "诉求",
+    "策略",
+    "模式",
+    "路径",
+    "危机",
+    "余波",
+    "裂缝",
+    "规则",
+    "逻辑",
+    "竞争",
+    "转化",
 )
 _SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
     "语义搭配硬伤：菜/饭菜不应写成好喝": (
@@ -465,18 +466,6 @@ _SEMANTIC_COLLOCATION_RULES: dict[str, str] = {
     "语义搭配硬伤：可读文本不应写成读起来好听": (
         r"re:(?:书|文章|文字|文本|稿子|章节|小说|佛经)"
         r"读起来(?:很|非常|特别|也|并不|不)?好听"
-    ),
-}
-_CLASSICAL_TRANSLATION_HARD_ERROR_RULES: dict[str, str] = {
-    "古文误译硬伤：便觉等感知词不应译成导致": (
-        r"re:(?:导致|造成|引发|致使|酿成)"
-        r"[^。！？；\n]{0,40}(?:百行皆非|皆非|全都错|全错|都错|所有行为|一切行为)"
-    ),
-}
-_CLASSICAL_REFERENCE_DIRECT_TRANSLATION_RULES: dict[str, str] = {
-    "古文参照译写硬伤：精金美玉句停留在直译腔": (
-        r"re:(?:如精金美玉般纯粹的人品|纯粹的人品[^。！？；\n]{0,24}烈火般的煅烧|"
-        r"惊天动地的功业[^。！？；\n]{0,40}脚踩薄冰|像脚踩薄冰一样[^。！？；\n]{0,40}走过险境)"
     ),
 }
 _PROMPT_RESIDUAL_RULES: dict[str, str] = {
@@ -515,9 +504,8 @@ def _looks_like_naked_subheading(line: str) -> bool:
 
 
 def _is_allowed_internal_subheading(line: str) -> bool:
-    """Internal Markdown subheadings are not part of the delivery format."""
-
-    return False
+    match = re.match(r"^###\s*([^#].*?)\s*$", line.strip())
+    return bool(match and _looks_like_naked_subheading(match.group(1)))
 
 
 def _is_classical_interleaved_label_line(line: str, *, category: str | None = None) -> bool:
@@ -560,6 +548,38 @@ def _detect_format_noise(text: str, *, category: str | None = None) -> dict[str,
             _add_noise_hit(results, "审稿批注式残留", line)
         if _looks_like_naked_subheading(line):
             _add_noise_hit(results, "裸短小标题", line)
+    return results
+
+
+def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    in_body = False
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = _FRONT_SECTION_RE.match(line)
+        if section:
+            in_body = section.group(1) == "正文"
+            continue
+        if not in_body:
+            continue
+        if _is_classical_interleaved_label_line(line, category=category):
+            continue
+        if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
+            continue
+        match = re.match(r"^([^。！？；，、,.!?;：:\n]{3,16})[，,：:](.{8,})$", line)
+        if not match:
+            continue
+        title = match.group(1).strip().lstrip("@").strip()
+        if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
+            continue
+        if (
+            title
+            and _cjk_ratio(title) >= 0.55
+            and any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS)
+        ):
+            _add_noise_hit(results, "正文内小标题未标准化为 ###", line)
     return results
 
 
@@ -652,64 +672,6 @@ def _body_chapters(text: str) -> list[tuple[str, list[str]]]:
     return chapters
 
 
-def _detect_standard_longform_chapter_structure_errors(
-    text: str,
-    *,
-    category: str | None = None,
-) -> dict[str, list[str]]:
-    """Detect provider-created thin chapters and severe chapter imbalance."""
-
-    category_key = (category or "").strip().lower()
-    if category_key not in _STANDARD_LONGFORM_CHAPTER_CATEGORIES:
-        return {}
-    chapters = _body_chapters(text)
-    if len(chapters) < 4:
-        return {}
-
-    counts = [_cjk_count("".join(lines)) for _heading, lines in chapters]
-    if sum(counts) < 5_000:
-        return {}
-
-    results: dict[str, list[str]] = {}
-    for index, count in enumerate(counts):
-        if count < 600:
-            preview = "".join(chapters[index][1])[:90]
-            _add_noise_hit(
-                results,
-                "常规长文章节过短",
-                f"{chapters[index][0]}｜{count} 字｜{preview or '正文为空'}",
-            )
-
-    for index in range(len(chapters) - 1):
-        left_count = counts[index]
-        right_count = counts[index + 1]
-        if left_count < 850 and right_count < 850 and left_count + right_count < 1_800:
-            _add_noise_hit(
-                results,
-                "常规长文相邻短章疑似拆章",
-                (
-                    f"{chapters[index][0]}（{left_count}字）+ "
-                    f"{chapters[index + 1][0]}（{right_count}字）"
-                ),
-            )
-
-    smallest = min(counts)
-    largest = max(counts)
-    if smallest < 700 and largest >= 1_800 and largest / max(smallest, 1) >= 3:
-        smallest_index = counts.index(smallest)
-        largest_index = counts.index(largest)
-        _add_noise_hit(
-            results,
-            "常规长文章节长度严重失衡",
-            (
-                f"最短 {chapters[smallest_index][0]}={smallest} 字；"
-                f"最长 {chapters[largest_index][0]}={largest} 字；"
-                "应合并短章并重新分配相邻内容。"
-            ),
-        )
-    return results
-
-
 def _cjk_count(text: str) -> int:
     return sum(1 for char in text if "\u3400" <= char <= "\u9fff")
 
@@ -758,192 +720,6 @@ def _detect_buddhist_story_shape_errors(text: str, *, category: str | None = Non
     return results
 
 
-def _body_text_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    in_body = False
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.strip()
-        if not line:
-            continue
-        section = _FRONT_SECTION_RE.match(line)
-        if section:
-            in_body = section.group(1) == "正文"
-            continue
-        if not in_body:
-            continue
-        if _BODY_CHAPTER_RE.match(line) or _is_allowed_internal_subheading(line):
-            continue
-        lines.append(line)
-    return lines
-
-
-def _detect_classical_reference_style_errors(text: str, *, category: str | None = None) -> dict[str, list[str]]:
-    if (category or "").strip().lower() != "classical_chinese_reference_rewrite":
-        return {}
-    results: dict[str, list[str]] = {}
-    lecture_phrases = (
-        "这句话的意思是",
-        "这段话的意思是",
-        "这说明",
-        "这告诉我们",
-        "由此可见",
-        "我们可以看出",
-        "也就是说",
-        "所谓",
-        "换句话说",
-        "从中可以看出",
-    )
-    textbook_phrases = (
-        "应当认识到",
-        "具有重要意义",
-        "这是一种",
-        "体现了",
-        "说明了",
-        "告诉人们",
-        "我们应该",
-    )
-    for line in _body_text_lines(text):
-        if not _CLASSICAL_LABEL_LINE_RE.match(line):
-            continue
-        markerless = re.sub(r"^(?:\u3010P\d{4}\u3011\s*)?\uff08\u7ffb\u8bd1\uff09", "", line).strip()
-        if not markerless:
-            continue
-        if any(phrase in markerless for phrase in lecture_phrases):
-            _add_noise_hit(results, "古文参照译写硬伤：翻译段仍是讲义解释腔", line)
-            continue
-        textbook_count = sum(1 for phrase in textbook_phrases if phrase in markerless)
-        if textbook_count >= 2 and _cjk_count(markerless) >= 45:
-            _add_noise_hit(results, "古文参照译写硬伤：翻译段像教材总结而非自然白话", line)
-    return results
-
-
-def _detect_classical_novel_style_shape_errors(text: str, *, category: str | None = None) -> dict[str, list[str]]:
-    if (category or "").strip().lower() != "classical_chinese_novel_style":
-        return {}
-    body_lines = _body_text_lines(text)
-    if not body_lines:
-        return {}
-    body = "\n".join(body_lines)
-    body_cjk = _cjk_count(body)
-    if body_cjk < 80:
-        return {}
-
-    results: dict[str, list[str]] = {}
-    lecture_phrases = (
-        "这句话的意思是",
-        "这段话是在说",
-        "这说明",
-        "这告诉我们",
-        "由此可见",
-        "所谓",
-        "也就是说",
-        "一个人应该",
-        "一个人要懂得",
-        "一个人要明白",
-    )
-    if any(phrase in body for phrase in lecture_phrases):
-        _add_noise_hit(results, "古文小说风格硬伤：仍是句义解释或讲义腔", body_lines[0])
-
-    scene_markers = (
-        "门",
-        "屋",
-        "院",
-        "堂",
-        "街",
-        "路",
-        "桥",
-        "店",
-        "桌",
-        "灯",
-        "炉",
-        "灶",
-        "雨",
-        "风",
-        "雪",
-        "马",
-        "兵",
-        "城",
-        "河",
-        "船",
-        "席",
-        "书房",
-        "客厅",
-        "村",
-        "家中",
-        "夜里",
-        "清晨",
-    )
-    action_markers = (
-        "走",
-        "进",
-        "出",
-        "站",
-        "坐",
-        "看",
-        "听",
-        "问",
-        "答",
-        "说",
-        "想",
-        "拿",
-        "放",
-        "推",
-        "抬",
-        "低",
-        "转身",
-        "回头",
-        "停",
-        "跪",
-        "拜",
-        "哭",
-        "笑",
-        "怒",
-        "惊",
-        "叹",
-        "赶",
-        "扶",
-        "敲",
-    )
-    turn_markers = (
-        "忽然",
-        "不料",
-        "这时",
-        "于是",
-        "后来",
-        "却",
-        "偏偏",
-        "心里",
-        "脸色",
-        "沉默",
-        "犹豫",
-        "明白",
-        "发觉",
-    )
-    generic_markers = (
-        "一个人回过头",
-        "一个人要想",
-        "一个人如果",
-        "至于今天",
-        "昨日之非",
-        "今日之是",
-        "世俗的情念",
-        "理趣",
-        "道理固然",
-        "旧念头",
-    )
-    scene_count = sum(body.count(item) for item in scene_markers)
-    action_count = sum(body.count(item) for item in action_markers)
-    turn_count = sum(body.count(item) for item in turn_markers)
-    narrative_dialogue_count = len(re.findall(r"(?:说|问|答|喊|低声|开口)[^。！？\n]{0,16}“", body))
-    generic_count = sum(1 for item in generic_markers if item in body)
-
-    if generic_count >= 2 and scene_count < 2 and narrative_dialogue_count == 0:
-        _add_noise_hit(results, "古文小说风格硬伤：抽象格言没有转成故事载体", body_lines[0])
-    if body_cjk >= 140 and scene_count < 2 and action_count < 8 and turn_count < 2 and narrative_dialogue_count == 0:
-        _add_noise_hit(results, "古文小说风格硬伤：只有翻译解释没有故事推进", body_lines[0])
-    return results
-
-
 def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> dict[str, list[str]]:
     """Detect high-confidence final manuscript errors that should block delivery."""
     category_key = (category or "").strip().lower()
@@ -967,28 +743,11 @@ def detect_final_hard_errors(markdown: str, *, category: str | None = None) -> d
         hits = _detect(markdown, pattern)
         if hits:
             results[name] = hits
-    if category_key in _CLASSICAL_PAIRED_TRANSLATION_CATEGORIES or category_key == "classical_chinese":
-        for name, pattern in _CLASSICAL_TRANSLATION_HARD_ERROR_RULES.items():
-            hits = _detect(markdown, pattern)
-            if hits:
-                results[name] = hits
-    if category_key == "classical_chinese_reference_rewrite":
-        for name, pattern in _CLASSICAL_REFERENCE_DIRECT_TRANSLATION_RULES.items():
-            hits = _detect(markdown, pattern)
-            if hits:
-                results[name] = hits
     merge(_detect_format_noise(markdown, category=category_key))
+    merge(_detect_inline_pseudo_subheading(markdown, category=category_key))
     merge(_detect_empty_front_sections(markdown))
     merge(_detect_duplicate_body_headings(markdown))
     merge(_detect_buddhist_story_shape_errors(markdown, category=category_key))
-    merge(_detect_classical_reference_style_errors(markdown, category=category_key))
-    merge(_detect_classical_novel_style_shape_errors(markdown, category=category_key))
-    merge(
-        _detect_standard_longform_chapter_structure_errors(
-            markdown,
-            category=category_key,
-        )
-    )
     return results
 
 
@@ -1161,7 +920,6 @@ def measure_quality(markdown: str, *, category: str | None = None) -> QualityRep
         report.masterpiece_colloquial_hits = _detect_masterpiece_colloquial(markdown)
     if category_key in {
         "finance_technology",
-        "finance_technology_ai_optimized",
         "finance_technology_recommendation",
     }:
         report.finance_source_leak_hits = _detect_finance_source_leaks(markdown)

@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Download,
@@ -31,10 +31,7 @@ import {
 } from "@/constants/categories";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
-import { GeneralLongformPanel } from "@/components/GeneralLongformPanel";
-import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
-  AigcQualityReport,
   ChapterResponse,
   StageName,
   TaskCategoryOption,
@@ -61,17 +58,21 @@ const ACTIVE_STATUSES = new Set([
 const COMIC_IMAGE_RE = /^\s*!\[([^\]]*)\]\((?:comic_images\/)?(comic_preface\.png|comic_section_\d+(?:_\d+)?\.png)\)\s*$/;
 
 function friendlyTaskError(message: string | null | undefined) {
-  return publicTaskError(message);
-}
-
-function downloadPlainText(text: string, filename: string) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  if (!message) return null;
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("exceeded your current quota")
+  ) {
+    return "OpenAI 额度不足或账单不可用，请检查服务器当前 API Key 的余额、账单状态，或更换可用 Key 后重试。";
+  }
+  if (normalized.includes("rate_limit") || normalized.includes("429")) {
+    return "OpenAI 请求被限流，请稍后重试，或降低并发后继续生成。";
+  }
+  if (normalized.includes("timeout") || normalized.includes("timed out")) {
+    return "模型调用超时，任务已停止。可以稍后点击继续生成重试。";
+  }
+  return message;
 }
 
 interface PolishTrigger {
@@ -86,7 +87,6 @@ interface PolishTrigger {
 
 export function BookDetail() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [chapters, setChapters] = useState<ChapterResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,8 +107,6 @@ export function BookDetail() {
   const [activeView, setActiveView] = useState<"final" | StageName>("final");
   const [stageContent, setStageContent] = useState("");
   const [stageLoading, setStageLoading] = useState(false);
-  const [aigcReport, setAigcReport] = useState<AigcQualityReport | null>(null);
-  const [manualOriginal, setManualOriginal] = useState("");
 
   // 章节本地编辑态（已修改但未保存）
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
@@ -123,12 +121,6 @@ export function BookDetail() {
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (id && task?.source_url === "manual://public-domain-classical-vernacular") {
-      navigate(`/public-domain-classical-vernacular/${id}`, { replace: true });
-    }
-  }, [id, navigate, task?.source_url]);
 
   // 拉任务状态 + 章节
   const refresh = useCallback(async () => {
@@ -193,54 +185,10 @@ export function BookDetail() {
     if (!task) return;
     const coverInFlight =
       task.cover_status === "queued" || task.cover_status === "generating";
-    if (
-      (task.status === "completed" ||
-        task.status === "failed" ||
-        task.status === "paused" ||
-        task.status === "manual_review") &&
-      !coverInFlight
-    ) {
+    if ((task.status === "completed" || task.status === "failed" || task.status === "paused") && !coverInFlight) {
       if (pollRef.current) window.clearInterval(pollRef.current);
     }
   }, [task]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!id || !task?.aigc_report_available) {
-      setAigcReport(null);
-      return undefined;
-    }
-    api
-      .getAigcReport(id)
-      .then((report) => {
-        if (!cancelled) setAigcReport(report);
-      })
-      .catch(() => {
-        if (!cancelled) setAigcReport(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id, task?.aigc_report_available, task?.aigc_status]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!id || task?.status !== "manual_review") {
-      setManualOriginal("");
-      return undefined;
-    }
-    api
-      .getStage(id, "format")
-      .then((stage) => {
-        if (!cancelled) setManualOriginal(stage.content);
-      })
-      .catch(() => {
-        if (!cancelled) setManualOriginal("");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id, task?.status]);
 
   useEffect(() => {
     if (!task || metaDirty) return;
@@ -481,22 +429,10 @@ export function BookDetail() {
 
   const handleRetry = useCallback(async () => {
     if (!id || !task) return;
-    const aigcOnly =
-      task.aigc_required &&
-      task.aigc_report_available &&
-      (task.status === "manual_review" || task.aigc_status === "technical_failed");
-    const ok = window.confirm(
-      aigcOnly
-        ? "仅重新检查当前终稿吗？系统会复用已有稿件，不会重新生成整篇。"
-        : "要继续生成这本书稿吗？系统会重新投递任务到队列。",
-    );
+    const ok = window.confirm("要继续生成这本书稿吗？系统会重新投递任务到队列。");
     if (!ok) return;
     try {
-      if (aigcOnly) {
-        await api.retryTaskAigc(id, task.category === "public_domain_rewrite");
-      } else {
-        await api.retryTask(id);
-      }
+      await api.retryTask(id);
       setError(null);
       restartPolling();
       setLoading(true);
@@ -531,7 +467,7 @@ export function BookDetail() {
   }, [id, task, refresh, restartPolling]);
 
   const handleDownload = useCallback(
-    async (fmt: "md" | "docx" | "txt", preview = false) => {
+    async (fmt: "md" | "docx", preview = false) => {
       if (!id) return;
       try {
         await api.downloadFile(id, fmt, preview);
@@ -604,43 +540,15 @@ export function BookDetail() {
     );
   }
 
-  if (task.category === "general_longform" && id) {
-    return <GeneralLongformPanel taskId={id} />;
-  }
-
   const isActive = ACTIVE_STATUSES.has(task.status);
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const isPaused = task.status === "paused";
-  const isManualReview = task.status === "manual_review";
-  const isHealingComic = ["healing_comic", "story_comic", "homophone_comic"].includes(
-    task.category || "",
-  );
+  const isHealingComic = task.category === "healing_comic";
   const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
-  const canRetry = isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100);
-  const isAigcOnlyRetry =
-    task.aigc_required &&
-    task.aigc_report_available &&
-    (isManualReview || task.aigc_status === "technical_failed");
-  const bestSafeCandidate = aigcReport?.bestSafeCandidate;
-  const bestSafeCandidateText =
-    bestSafeCandidate && typeof bestSafeCandidate.text === "string"
-      ? bestSafeCandidate.text
-      : "";
-  const reportDrivenCandidateText =
-    typeof aigcReport?.reportDrivenCandidateText === "string"
-      ? aigcReport.reportDrivenCandidateText
-      : "";
-  const manualCandidateText = reportDrivenCandidateText || bestSafeCandidateText;
-  const detectorProbeArchive =
-    task.aigc_status === "detector_probe_ready"
-    || task.aigc_status === "detector_probe_hit"
-    || task.aigc_status === "detector_probe_no_hit"
-    || task.aigc_status === "positive_transfer_ready"
-    || task.aigc_status === "positive_transfer_hit"
-    || task.aigc_status === "positive_transfer_no_hit";
+  const canRetry = isFailed || isPaused || (task.status === "pending" && task.progress < 100);
   const titleCandidate = metaTitle || task.title || chapters[0]?.title || "";
   const displayTitle =
     isFailed && (!titleCandidate || titleCandidate === "书稿生成中")
@@ -672,7 +580,7 @@ export function BookDetail() {
         taskId={task.id}
         progress={task.progress}
         status={task.status}
-        currentStep={publicTaskStep(task.current_step, task.status, task.progress)}
+        currentStep={task.current_step}
         onRetried={refresh}
       />
 
@@ -701,15 +609,6 @@ export function BookDetail() {
               <p className="mt-2 break-all text-xs tracking-wide text-warm-400">
                 来源：{task.source_url}
               </p>
-              {task.aigc_required && (
-                <p
-                  className={`mt-2 text-xs tracking-wide ${
-                    task.aigc_status === "passed" ? "text-emerald-300" : "text-gold-200"
-                  }`}
-                >
-                  质量检查：{task.aigc_status === "passed" ? "已通过" : "处理中"}
-                </p>
-              )}
               {isCompleted && (
                 <div className="mt-5 grid gap-3 md:grid-cols-[1.4fr_1fr_auto]">
                   <div>
@@ -781,15 +680,6 @@ export function BookDetail() {
                   {failureMessage}
                 </div>
               )}
-              {isManualReview && (
-                <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
-                  <span className="font-medium text-gold-100">当前稿件已保留：</span>
-                  {failureMessage || "系统正在继续处理当前任务。"}
-                  <div className="mt-1 text-warm-400">
-                    系统会从已保存的进度继续，不需要重复提交。
-                  </div>
-                </div>
-              )}
               {isCompleted && task.cover_status === "failed" && task.cover_error && (
                 <div className="mt-4 rounded-lg border border-gold-500/20 bg-gold-500/8 px-4 py-2.5 text-xs leading-relaxed text-warm-300">
                   <span className="font-medium text-warm-100">封面未生成：</span>
@@ -818,7 +708,7 @@ export function BookDetail() {
             {canRetry ? (
               <button type="button" onClick={handleRetry} className="btn-ghost">
                 <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                {isAigcOnlyRetry ? "继续检查" : "继续生成"}
+                继续生成
               </button>
             ) : null}
             <button type="button" onClick={handleDelete} className="btn-ghost">
@@ -847,22 +737,6 @@ export function BookDetail() {
                 >
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Word
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDownload("txt")}
-                  className="btn-ghost"
-                >
-                  <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  TXT
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDownload("md")}
-                  className="btn-ghost"
-                >
-                  <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  Markdown
                 </button>
                 {isHealingComic && (
                   <button
@@ -909,7 +783,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : isFailed ? "失败" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -921,17 +795,16 @@ export function BookDetail() {
         </div>
 
         {/* 分步进度 - 任务进行中或失败时展示 */}
-        {(isActive || isFailed || isPaused || isManualReview) && (
+        {(isActive || isFailed || isPaused) && (
           <div className="mt-6 rounded-xl border border-gold-500/8 bg-base-700/40 p-5">
             <div className="mb-4 text-[11px] tracking-widest text-warm-400">
               工作流状态
             </div>
             <WorkflowStepper
               progress={task.progress}
-              currentStep={publicTaskStep(task.current_step, task.status, task.progress)}
+              currentStep={task.current_step}
               status={task.status}
               category={task.category}
-              aigcRequired={task.aigc_required}
             />
             {isActive && !isPaused && (
               <p className="mt-4 flex items-center gap-2 text-[10px] tracking-widest text-warm-500">
@@ -942,15 +815,6 @@ export function BookDetail() {
           </div>
         )}
       </section>
-
-      {isManualReview && (
-        <section className="card-warm mb-8 p-6">
-          <h2 className="font-serif text-xl text-warm-50">任务正在处理</h2>
-          <p className="mt-2 text-xs leading-6 text-warm-400">
-            当前已保存的稿件和进度会被保留，系统会自动从断点继续。
-          </p>
-        </section>
-      )}
 
       {isCompleted && (
         <>
@@ -1227,9 +1091,7 @@ function ChapterCard({
   onSelect,
 }: ChapterCardProps) {
   const recentlySaved = savedAt && Date.now() - savedAt < 4000;
-  const useComicPreview = ["healing_comic", "story_comic", "homophone_comic"].includes(
-    taskCategory || "",
-  );
+  const useComicPreview = taskCategory === "healing_comic";
 
   return (
     <article className="card-warm p-8" id={`chapter-${chapter.chapter_num}`}>

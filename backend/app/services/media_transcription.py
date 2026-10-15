@@ -13,7 +13,6 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.services.wechat_video_crypto import decrypt_wechat_channels_video
-from app.utils import paid_api_guard
 from app.utils.official_api import official_openai_base_url, official_proxy
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ def transcribe_media_url(
     *,
     decode_key: str | int | None = None,
     request_headers: dict[str, str] | None = None,
-    download_proxy: str | None = None,
     download_timeout: int = 120,
     transcribe_timeout: int = 300,
     max_media_bytes: int = 200_000_000,
@@ -43,14 +41,7 @@ def transcribe_media_url(
     media_path = tmp_dir / "source.media"
     audio_path = tmp_dir / "audio.mp3"
     try:
-        _download_media(
-            media_url,
-            media_path,
-            request_headers=request_headers,
-            download_proxy=download_proxy,
-            timeout=download_timeout,
-            max_bytes=max_media_bytes,
-        )
+        _download_media(media_url, media_path, request_headers=request_headers, timeout=download_timeout, max_bytes=max_media_bytes)
         if decode_key not in (None, ""):
             _decrypt_wechat_media_file(media_path, decode_key)
         _extract_audio(media_path, audio_path, timeout=download_timeout, max_bytes=max_audio_bytes)
@@ -75,7 +66,6 @@ def _download_media(
     output_path: Path,
     *,
     request_headers: dict[str, str] | None,
-    download_proxy: str | None = None,
     timeout: int,
     max_bytes: int,
 ) -> None:
@@ -86,20 +76,9 @@ def _download_media(
     max_bytes = max(1_000_000, int(max_bytes or 1))
     headers = {"User-Agent": "Mozilla/5.0"}
     headers.update(request_headers or {})
-    # Some CDNs (notably Bilibili's bilivideo hosts) accept the direct
-    # request but reset connections when the AI egress proxy is used.  An
-    # explicit empty string means "direct, and do not inherit HTTP(S)_PROXY"
-    # while None retains the historical provider-proxy behavior.
-    proxy = _download_proxy() if download_proxy is None else (download_proxy.strip() or None)
-    trust_env = download_proxy is None
+    proxy = _download_proxy()
     try:
-        with httpx.Client(
-            timeout=max(10, timeout),
-            follow_redirects=True,
-            proxy=proxy,
-            trust_env=trust_env,
-            headers=headers,
-        ) as client:
+        with httpx.Client(timeout=max(10, timeout), follow_redirects=True, proxy=proxy or None, headers=headers) as client:
             with client.stream("GET", media_url) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
@@ -190,7 +169,6 @@ def _transcribe_audio(audio_path: Path, *, timeout: int, model: str) -> str:
         "api_key": settings.OPENAI_API_KEY,
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": max(30, int(timeout or 30)),
-        "max_retries": 0,
     }
     if proxy:
         client_kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=max(30, int(timeout or 30)))
@@ -242,7 +220,6 @@ def _transcribe_audio_segment(
     for index, selected_model in enumerate(models):
         try:
             with audio_path.open("rb") as audio_file:
-                paid_api_guard.guard("openai")
                 response = client.audio.transcriptions.create(
                     model=selected_model,
                     file=audio_file,
@@ -252,7 +229,6 @@ def _transcribe_audio_segment(
                 return response.strip(), selected_model
             return str(getattr(response, "text", "") or response or "").strip(), selected_model
         except Exception as exc:
-            paid_api_guard.trip_if_quota("openai", exc)
             if index >= len(models) - 1 or not _is_transcription_model_fallback_error(exc):
                 raise MediaTranscriptionError(
                     f"OpenAI audio transcription failed on segment {segment_index}/{segment_total}: {exc}"

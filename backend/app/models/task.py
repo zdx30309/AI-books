@@ -29,7 +29,6 @@ class TaskStatus:
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
-    MANUAL_REVIEW = "manual_review"
 
     # 兼容旧流水线状态名，避免历史代码引用时失效。
     PROCESSING = "processing"
@@ -118,51 +117,3 @@ class Task(Base):
         cfg = self.config or {}
         error = cfg.get("cover_error")
         return error if isinstance(error, str) and error.strip() else None
-
-    @property
-    def aigc_passed(self) -> bool | None:
-        value = (self.config or {}).get("aigc_passed")
-        return value if isinstance(value, bool) else None
-
-    @property
-    def aigc_max_score(self) -> int | None:
-        value = (self.config or {}).get("aigc_max_score")
-        return int(value) if isinstance(value, (int, float)) else None
-
-    @property
-    def aigc_required(self) -> bool:
-        return bool((self.config or {}).get("aigc_required"))
-
-    @property
-    def aigc_status(self) -> str:
-        value = (self.config or {}).get("aigc_status")
-        return str(value) if isinstance(value, str) and value else "not_required"
-
-    @property
-    def aigc_initial_max_score(self) -> int | None:
-        value = (self.config or {}).get("aigc_initial_max_score")
-        return int(value) if isinstance(value, (int, float)) else None
-
-    @property
-    def aigc_final_max_score(self) -> int | None:
-        value = (self.config or {}).get("aigc_final_max_score")
-        return int(value) if isinstance(value, (int, float)) else None
-
-    @property
-    def aigc_rewrite_rounds(self) -> int:
-        value = (self.config or {}).get("aigc_rewrite_rounds")
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    @property
-    def aigc_quality_passed(self) -> bool | None:
-        value = (self.config or {}).get("aigc_quality_passed")
-        return value if isinstance(value, bool) else None
-
-    @property
-    def aigc_report_available(self) -> bool:
-        return bool((self.config or {}).get("aigc_report_available"))
-
-    @property
-    def aigc_manual_review_reason(self) -> str | None:
-        value = (self.config or {}).get("aigc_manual_review_reason")
-        return str(value) if isinstance(value, str) and value.strip() else None

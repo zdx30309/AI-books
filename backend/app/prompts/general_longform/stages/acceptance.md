@@ -1,7 +1,0 @@
-执行本章状态抽取、Planned-vs-Actual Diff 和 Acceptance Gate。context.local_issues 是实际程序校验，不能忽略。全文与完整已验收前文做语义重复、事实边界、任务覆盖与一致性核对。
-输出 JSON：{"summary":"本章实质内容摘要","endingHook":"衔接下一章的问题/判断，不强造悬念","new_information":["新增结论"],"used_source_ids":["本章确实使用的来源 id"],"terms":{},"cases":["本章实际使用的案例及来源"],"completed_sections":["逐字列出已完整完成的小节名"],"planned_vs_actual":[{"section":"小节名","fulfilled":true,"evidence":"对应内容与执行差异"}],"issues":[{"severity":"low/medium/high/severe","type":"fact/coverage/repetition/continuity/format/length","description":"问题及原句位置","suggested_fix":"只针对问题的局部修复"}]}。
-只有确实完成任务、可溯源且没有 high/severe 时才可通过。来源 id 必须来自当前实际读取并核验的来源；无事实来源、缺小节、伪引用、捏造人物/经历、同义重复占篇幅、改写事实都属于 high 或 severe。摘要不是正文，不能依据摘要假装全文已读。不要把检测率当作事实通过标准。
-
-在同一个 JSON 对象中增加必需的 style_review，按 context.reference 中已批准的正反卡对当前 candidate 真文逐项复核：
-{"style_review":{"positive_application":[{"chapter_number":1,"card_id":"实际positive卡id","evidence":"当前章正文连续原句片段","reason":"该处具体信息、参与者关系或因果怎样推进，节奏为何自然"}],"negative_checks":[{"chapter_number":1,"card_id":"实际negative卡id","evidence":"当前章正文连续原句片段","finding":"clear或problem","reason":"核查反复对比、同义说理、停滞、公式建议或碎片收束的具体结论"}],"ordinary_word_review":{"mechanical_ban_applied":false,"reason":"按句子功能与信息增量判断普通词，没有机械禁词","examples":[{"chapter_number":1,"evidence":"当前章正文连续原句片段","reason":"说明该处真实信息任务；有普通连接词就分析其功能，无须故意添加词语"}]},"historical_reports_used_as_current_result":false}}。
-章号必须使用实际章号；每类至少一条，evidence 必须逐字存在于本次候选正文、不含标题，长度 8—240 字符，reason 简明具体。正面应用只引用 positive，反面排查只引用 negative。finding=problem 必须同时报告 high/severe 问题并建议局部修复；没有问题才写 clear。检查普通词不等于逐词禁用，不能因为包含所谓、本质、如果、但是就判错。历史报告不提供本章分数，禁止声称本章已获历史检测结果。

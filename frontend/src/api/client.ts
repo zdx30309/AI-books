@@ -1,8 +1,6 @@
 // 后端 API 客户端。dev 时走 vite proxy（/api → :8000），prod 时由部署侧反代。
 // 自动从 localStorage 读 token 并加 Authorization 头。
 
-import type { GeneralLongformAction, GeneralLongformState, LongformManifest, MaterialRole } from "./generalLongformTypes";
-
 import type {
   BatchCreateTaskRequest,
   BatchCreateTaskResponse,
@@ -11,18 +9,6 @@ import type {
   BatchRegenerateTaskResponse,
   BatchRetryTaskRequest,
   BatchRetryTaskResponse,
-  AigcQualityReport,
-  AigcReviewContentType,
-  AigcReviewCalibrationSample,
-  AigcReviewCalibrationVariant,
-  AigcReviewComparison,
-  AigcReviewPairedAnalysis,
-  AigcReviewOptimizeResult,
-  AigcReviewReport,
-  AigcReviewStrategy,
-  ExternalGreenRepairRequest,
-  ExternalGreenRepairResult,
-  OptimizeAigcReviewRequest,
   ChapterResponse,
   ChapterUpdateRequest,
   ClassicalReferenceTemplateResponse,
@@ -58,7 +44,6 @@ import type {
   LoginRequest,
   FamilyLongNovelBatchRequest,
   FamilyLongNovelCreateRequest,
-  FamilyLongNovelExtendRequest,
   LongNovelAssistRequest,
   LongNovelAssistResponse,
   LongNovelBatchResponse,
@@ -72,12 +57,6 @@ import type {
   MarkdownResponse,
   PolishParagraphRequest,
   PolishParagraphResponse,
-  PublicDomainRewriteRequest,
-  ClassicalSourceResponse,
-  ClassicalContinueRequest,
-  ClassicalLocalRetranslateRequest,
-  ClassicalTranslationSettingsResponse,
-  ClassicalWorkspaceStateResponse,
   CoverRegenerateRequest,
   RegenerateSelectionRequest,
   RegenerateSelectionResponse,
@@ -92,13 +71,6 @@ import type {
   TaskCategoryListResponse,
   TaskListResponse,
   TaskStatusResponse,
-  TestingAnalysisResponse,
-  TestingArticleResponse,
-  TestingGenerateArticleRequest,
-  TestingRewriteCompletedArticleRequest,
-  TestingRewriteCompletedArticleResponse,
-  TestingTaskResponse,
-  TestingZhuqueFeedbackResponse,
   TokenResponse,
   UserPublic,
   WeReadAnalyzeRequest,
@@ -242,42 +214,6 @@ async function uploadFile<T>(
   return (await res.json()) as T;
 }
 
-async function uploadAigcPairedFiles(
-  baselineFile: File,
-  modifiedFile: File,
-  baselineText: string,
-  modifiedText: string,
-  contentType: AigcReviewContentType,
-  hashesConfirmed: boolean,
-): Promise<AigcReviewPairedAnalysis> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const form = new FormData();
-  form.append("baseline_file", baselineFile);
-  form.append("modified_file", modifiedFile);
-  form.append("baseline_text", baselineText);
-  form.append("modified_text", modifiedText);
-  form.append("content_type", contentType);
-  form.append("hashes_confirmed", String(hashesConfirmed));
-  const res = await fetch(`${BASE}/aigc-review/paired-analysis`, {
-    method: "POST",
-    headers,
-    body: form,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      detail = errorMessageFromBody(await res.json(), detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as AigcReviewPairedAnalysis;
-}
-
 async function downloadWithBody(
   path: string,
   body: unknown,
@@ -367,31 +303,6 @@ async function uploadFiles<T>(
   return (await res.json()) as T;
 }
 
-async function uploadTestingReferenceBooks(books: File[]): Promise<TestingAnalysisResponse> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const body = new FormData();
-  books.forEach((book) => body.append("books", book));
-  const res = await fetch(`${BASE}/testing/analyze-reference-books`, {
-    method: "POST",
-    headers,
-    body,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      detail = errorMessageFromBody(await res.json(), detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as TestingAnalysisResponse;
-}
-
 async function uploadFilesForDownload(
   path: string,
   files: File[],
@@ -427,37 +338,6 @@ async function uploadFilesForDownload(
   return { blob: await res.blob(), filename: decodeURIComponent(rawName) };
 }
 
-async function uploadPublicDomainRewriteFiles<T>(
-  files: File[],
-  metadata: unknown,
-): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const body = new FormData();
-  files.forEach((file) => body.append("files", file));
-  body.append("metadata_json", JSON.stringify(metadata));
-
-  const res = await fetch(`${BASE}/public-domain-rewrite/generate-from-files`, {
-    method: "POST",
-    headers,
-    body,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const errorBody = await res.json();
-      detail = errorMessageFromBody(errorBody, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as T;
-}
-
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -484,60 +364,12 @@ function openHiddenDownload(url: string) {
 }
 
 export const api = {
-  getGeneralLongform: (id: string) => request<GeneralLongformState>(`/general-longform/${id}`),
-  getGeneralLongformManifest: (version?: string) => request<LongformManifest>(`/general-longform/prompt-manifest${version ? `?version=${encodeURIComponent(version)}` : ""}`),
-  runGeneralLongform: (id: string, body: GeneralLongformAction) =>
-    request<{ task_id: string; status: TaskStatusResponse["status"]; request_id: string }>(`/general-longform/${id}/actions`, { method: "POST", body: JSON.stringify(body) }),
-  pauseGeneralLongform: (id: string) => request<{ status: string }>(`/general-longform/${id}/pause`, { method: "POST" }),
-  uploadGeneralLongform: (id: string, file: File, role: MaterialRole, confirmed: boolean) =>
-    uploadFile<{ status: string; id: string; characters?: number }>(`/general-longform/${id}/materials`, file, { role, confirmed: String(confirmed) }),
-  getGeneralLongformChapter: (id: string, number: number, kind: "accepted" | "draft") =>
-    request<{ content: string; version: number; kind: string }>(`/general-longform/${id}/chapters/${number}/content?kind=${kind}`),
-  downloadGeneralLongform: async (id: string, artifactId: string) => {
-    const { blob, filename } = await download(`/general-longform/${id}/artifacts/${artifactId}`);
-    saveBlob(blob, filename);
-  },
   // 任务
   listTasks: (page = 1, pageSize = 20) =>
     request<TaskListResponse>(`/tasks?page=${page}&page_size=${pageSize}`),
   getTaskCategories: () => request<TaskCategoryListResponse>("/tasks/categories"),
   getClassicalReferenceTemplate: () =>
     request<ClassicalReferenceTemplateResponse>("/tasks/classical-reference-rewrite/default-reference"),
-  analyzeTestingReferenceBooks: (books: File[]) =>
-    uploadTestingReferenceBooks(books),
-  generateTestingArticle: (taskId: string, body: TestingGenerateArticleRequest) =>
-    request<TestingArticleResponse>(`/testing/tasks/${taskId}/generate-article`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  rewriteTestingCompletedArticle: (
-    taskId: string,
-    body: TestingRewriteCompletedArticleRequest,
-  ) =>
-    request<TestingRewriteCompletedArticleResponse>(
-      `/testing/tasks/${taskId}/rewrite-completed-article`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
-  recordTestingZhuqueFeedback: (
-    taskId: string,
-    baselineReport: AigcReviewReport,
-    candidateReport: AigcReviewReport,
-  ) =>
-    request<TestingZhuqueFeedbackResponse>(
-      `/testing/tasks/${taskId}/zhuque-feedback`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          baseline_report: baselineReport,
-          candidate_report: candidateReport,
-        }),
-      },
-    ),
-  getTestingTask: (taskId: string) =>
-    request<TestingTaskResponse>(`/testing/tasks/${taskId}`),
   getCoverCategories: () => request<TaskCategoryListResponse>("/covers/categories"),
   getTask: (id: string) => request<TaskStatusResponse>(`/tasks/${id}`),
   createTask: (body: CreateTaskRequest) =>
@@ -584,15 +416,6 @@ export const api = {
     request<TaskStatusResponse>(`/tasks/${id}/pause-comic`, { method: "POST" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
-  retryTaskAigc: (id: string, publicDomain = false) =>
-    request<CreateTaskResponse>(
-      publicDomain
-        ? `/public-domain-rewrite/tasks/${id}/retry-aigc`
-        : `/tasks/${id}/retry-aigc`,
-      { method: "POST" },
-    ),
-  getAigcReport: (id: string) =>
-    request<AigcQualityReport>(`/tasks/${id}/aigc-report`),
   retryFailedTasks: (body: BatchRetryTaskRequest = {}) =>
     request<BatchRetryTaskResponse>("/tasks/retry-failed", {
       method: "POST",
@@ -634,9 +457,9 @@ export const api = {
   getStage: (id: string, stage: StageName) =>
     request<StageContentResponse>(`/tasks/${id}/stages/${stage}`),
   getStats: () => request<StatsResponse>("/stats"),
-  downloadUrl: (id: string, fmt: "md" | "docx" | "txt" = "md", preview = false) =>
+  downloadUrl: (id: string, fmt: "md" | "docx" = "md", preview = false) =>
     `${BASE}/tasks/${id}/download?fmt=${fmt}${preview ? "&preview=true" : ""}`,
-  downloadFile: async (id: string, fmt: "md" | "docx" | "txt" = "md", preview = false) => {
+  downloadFile: async (id: string, fmt: "md" | "docx" = "md", preview = false) => {
     const token = tokenStore.get();
     if (!token) throw new ApiError(401, "请先登录");
     const params = new URLSearchParams({ fmt, token, _: String(Date.now()) });
@@ -748,117 +571,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  generatePublicDomainRewrite: (body: PublicDomainRewriteRequest) =>
-    request<CreateTaskResponse>("/public-domain-rewrite/generate", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  getClassicalTranslationSettings: () =>
-    request<ClassicalTranslationSettingsResponse>(
-      "/public-domain-rewrite/classical-translation/settings",
-    ),
-  getClassicalTaskSource: (id: string, chapterNum = 1, offset = 0) =>
-    request<ClassicalSourceResponse>(
-      `/public-domain-rewrite/tasks/${id}/classical-source?chapter_num=${chapterNum}&offset=${offset}`,
-    ),
-  getClassicalWorkspaceState: (id: string) =>
-    request<ClassicalWorkspaceStateResponse>(
-      `/public-domain-rewrite/tasks/${id}/classical-workspace`,
-    ),
-  continueClassicalComplete: (id: string) =>
-    request<CreateTaskResponse>(
-      `/public-domain-rewrite/tasks/${id}/continue-complete`,
-      { method: "POST" },
-    ),
-  continueClassical: (id: string, body: ClassicalContinueRequest) =>
-    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/continue`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  pauseClassical: (id: string) =>
-    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/pause`, { method: "POST" }),
-  resumeClassical: (id: string) =>
-    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/resume`, { method: "POST" }),
-  restartClassical: (id: string, body: ClassicalContinueRequest) =>
-    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/restart`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  retranslateClassicalSelection: (id: string, body: ClassicalLocalRetranslateRequest) =>
-    request<CreateTaskResponse>(`/public-domain-rewrite/tasks/${id}/local-retranslate`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  generatePublicDomainRewriteFromFiles: (
-    files: File[],
-    metadata: Omit<PublicDomainRewriteRequest, "sources"> & {
-      sources: Array<Omit<PublicDomainRewriteRequest["sources"][number], "text">>;
-    },
-  ) => uploadPublicDomainRewriteFiles<CreateTaskResponse>(files, metadata),
-
-  // 独立朱雀报告审稿台：不修改历史任务，不依赖全局闸门
-  getAigcReviewStrategy: () => request<AigcReviewStrategy>("/aigc-review/strategy"),
-  parseAigcReviewReport: (
-    file: File,
-    originalText: string,
-    contentType: AigcReviewContentType = "article",
-  ) =>
-    uploadFile<AigcReviewReport>("/aigc-review/report", file, {
-      original_text: originalText,
-      content_type: contentType,
-    }),
-  optimizeAigcReview: (body: OptimizeAigcReviewRequest) =>
-    request<AigcReviewOptimizeResult>("/aigc-review/optimize", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  compareAigcReview: (
-    baselineReport: AigcReviewReport,
-    recheckReport: AigcReviewReport,
-    optimizeResult: AigcReviewOptimizeResult,
-  ) =>
-    request<AigcReviewComparison>("/aigc-review/compare", {
-      method: "POST",
-      body: JSON.stringify({
-        baseline_report: baselineReport,
-        recheck_report: recheckReport,
-        optimize_result: optimizeResult,
-      }),
-    }),
-  analyzeAigcReviewPair: uploadAigcPairedFiles,
-  repairExternalGreenManuscript: (body: ExternalGreenRepairRequest) =>
-    request<ExternalGreenRepairResult>("/aigc-review/external-green-repair", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  createAigcReviewCalibration: (body: {
-    text: string;
-    content_type: AigcReviewContentType;
-    source_group?: string;
-    variant_type: AigcReviewCalibrationVariant;
-    parent_sha256?: string | null;
-    strategy_id?: string | null;
-    quality_gate_passed?: boolean | null;
-  }) =>
-    request<AigcReviewCalibrationSample>("/aigc-review/calibrations", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  listAigcReviewCalibrations: (limit = 100) =>
-    request<AigcReviewCalibrationSample[]>(`/aigc-review/calibrations?limit=${limit}`),
-  saveAigcReviewCalibrationResult: (
-    sampleId: string,
-    body: { text_sha256: string; aigc_value: number; report_sha256?: string | null },
-  ) =>
-    request<AigcReviewCalibrationSample>(`/aigc-review/calibrations/${sampleId}/result`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  uploadAigcReviewCalibrationReport: (sampleId: string, file: File) =>
-    uploadFile<AigcReviewCalibrationSample>(
-      `/aigc-review/calibrations/${sampleId}/report`,
-      file,
-    ),
 
   // 系统健康（检测 Celery worker 是否在线）
   createLongNovelProject: (body: FamilyLongNovelCreateRequest) =>
@@ -884,11 +596,6 @@ export const api = {
   generateLongNovelOutline: (id: string) =>
     request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/outline`, {
       method: "POST",
-    }),
-  extendLongNovelTarget: (id: string, body: FamilyLongNovelExtendRequest) =>
-    request<LongNovelProjectDetailResponse>(`/long-novel/family/projects/${id}/extend-target`, {
-      method: "POST",
-      body: JSON.stringify(body),
     }),
   generateLongNovelChapterPlan: (id: string, chapterNumber: number) =>
     request<LongNovelChapterPlan>(
@@ -917,11 +624,6 @@ export const api = {
   repairLongNovelChapter: (id: string, chapterNumber: number) =>
     request<LongNovelChapter>(
       `/long-novel/family/projects/${id}/chapters/${chapterNumber}/repair`,
-      { method: "POST" },
-    ),
-  retryLongNovelChapterAigc: (id: string, chapterNumber: number) =>
-    request<LongNovelChapter>(
-      `/long-novel/family/projects/${id}/chapters/${chapterNumber}/retry-aigc`,
       { method: "POST" },
     ),
   listLongNovelConflicts: (id: string) =>
@@ -1145,16 +847,6 @@ export const api = {
     request<WeReadAnalyzeResponse>("/weread/company", {
       method: "POST",
       body: JSON.stringify(body),
-    }),
-  analyzeWeReadCompanyCapture: (file: File, companyName: string, maxBooks = 1000) =>
-    uploadFile<WeReadAnalyzeResponse>("/weread/company-capture", file, {
-      company_name: companyName,
-      max_books: String(maxBooks),
-    }),
-  analyzeFanqieCompanyCapture: (file: File, companyName: string, maxBooks = 1000) =>
-    uploadFile<WeReadAnalyzeResponse>("/weread/fanqie-capture", file, {
-      company_name: companyName,
-      max_books: String(maxBooks),
     }),
   importWeReadExcel: (file: File) =>
     uploadFile<WeReadExcelImportResponse>("/weread/import-excel", file),

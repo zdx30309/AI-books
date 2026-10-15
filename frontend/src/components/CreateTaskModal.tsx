@@ -11,14 +11,6 @@ import {
 import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { ClassicalReferenceTemplateResponse, TaskCategoryOption } from "@/api/types";
-import {
-  HomophoneComicCreator,
-  StoryComicCreator,
-  buildHomophoneComicBrief,
-  buildStoryComicBrief,
-  createHomophoneComicForm,
-  createStoryComicForm,
-} from "@/components/ComicVariantCreator";
 
 interface Props {
   open: boolean;
@@ -29,12 +21,7 @@ interface Props {
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
-const HEALING_COMIC_FAMILY_IDS = new Set([
-  "healing_comic",
-  "story_comic",
-  "homophone_comic",
-]);
-const COMIC_CATEGORY_IDS = new Set(["comic_series", ...HEALING_COMIC_FAMILY_IDS]);
+const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
 const HEALING_COMIC_DEFAULT_PANEL_COUNT = 32;
 const HEALING_COMIC_MIN_PANEL_COUNT = 1;
 const CLASSICAL_VARIANTS = [
@@ -43,7 +30,6 @@ const CLASSICAL_VARIANTS = [
   { id: "wuxia_web", label: "武侠小说爽读版" },
   { id: "poetry", label: "诗歌翻译" },
   { id: "buddhist_story", label: "佛经白话故事版" },
-  { id: "novel_style", label: "小说风格润色版" },
   { id: "reference_translation", label: "知名译本参照" },
 ] as const;
 const LONG_NOVEL_CONFLICT_OPTIONS = [
@@ -82,7 +68,6 @@ const LONG_NOVEL_MODULES = [
 const CLASSICAL_CHINESE_CATEGORY_IDS = new Set([
   "classical_chinese",
   "classical_chinese_interleaved",
-  "classical_chinese_novel_style",
   "classical_chinese_reference_rewrite",
   "buddhist_scripture_story",
 ]);
@@ -149,7 +134,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
-  const [generalLongformImportFirst, setGeneralLongformImportFirst] = useState(false);
   const [longNovelModule, setLongNovelModule] = useState("family_sisters_in_law_longform");
   const [longNovelPremise, setLongNovelPremise] = useState("");
   const [longNovelFamilySetup, setLongNovelFamilySetup] = useState("");
@@ -182,8 +166,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [comicSourceContent, setComicSourceContent] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
-  const [storyComicForm, setStoryComicForm] = useState(createStoryComicForm);
-  const [homophoneComicForm, setHomophoneComicForm] = useState(createHomophoneComicForm);
   const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
@@ -201,36 +183,18 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const isReferenceArticle = mode === "article" || mode === "articleBatch";
   const isReferenceArticleBatch = mode === "articleBatch";
   const isClassicalChinese = CLASSICAL_CHINESE_CATEGORY_IDS.has(category);
-  const isGeneralLongform = category === "general_longform";
   const isBuddhistScripture = category === "buddhist_scripture_story";
-  const isClassicalNovelStyle = category === "classical_chinese_novel_style";
   const isClassicalReferenceRewrite = category === "classical_chinese_reference_rewrite";
   const isClassicalButtonActive = category === "classical_chinese";
-  const isClassicalNovelStyleButtonActive = isClassicalNovelStyle;
   const isClassicalReferenceButtonActive = isClassicalReferenceRewrite;
-  const classicalDisplayName = isBuddhistScripture
-    ? "佛经白话"
-    : isClassicalNovelStyle
-      ? "古文白话小说风格版"
-      : "古文白话";
+  const classicalDisplayName = isBuddhistScripture ? "佛经白话" : "古文白话";
   const effectiveClassicalVariant = isBuddhistScripture
     ? "buddhist_story"
-    : isClassicalNovelStyle
-      ? "novel_style"
     : isClassicalReferenceRewrite && classicalVariant === "plain"
       ? "reference_translation"
       : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
-  const isHealingComicFamily = HEALING_COMIC_FAMILY_IDS.has(category);
-  const isComicVariantWorkbench = mode === "comic"
-    && (category === "story_comic" || category === "homophone_comic");
-  const comicCategoryLabel = category === "story_comic"
-    ? "图文故事"
-    : category === "homophone_comic"
-      ? "谐音梗"
-      : category === "healing_comic"
-        ? "漫画"
-        : "插画";
+  const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
   const supportsStyleReference =
     category === "web_short_story"
     || category === "social_science_test"
@@ -242,7 +206,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setMode("single");
       setUrl("");
       setRawText("");
-      setGeneralLongformImportFirst(false);
       setLongNovelModule("family_sisters_in_law_longform");
       setLongNovelPremise("");
       setLongNovelFamilySetup("");
@@ -268,8 +231,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setComicSourceContent("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
-      setStoryComicForm(createStoryComicForm());
-      setHomophoneComicForm(createHomophoneComicForm());
       setCategory(defaultCategoryId ?? "social_science");
       setStyleReference("");
       setStyleNotes("");
@@ -322,9 +283,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     if (category === "classical_chinese_reference_rewrite") {
       setClassicalVariant("reference_translation");
       setClassicalInputMode("docx");
-    } else if (category === "classical_chinese_novel_style") {
-      setClassicalVariant("novel_style");
-      setClassicalInputMode("text");
     } else if (category === "buddhist_scripture_story") {
       setClassicalVariant("buddhist_story");
     }
@@ -335,13 +293,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setMode("comic");
       return;
     }
-    if (isClassicalChinese || isGeneralLongform) setMode("single");
+    if (isClassicalChinese) setMode("single");
     else {
       setClassicalInputMode("text");
       setClassicalDocxFile(null);
       setClassicalReferenceDocxFile(null);
     }
-  }, [category, isClassicalChinese, isGeneralLongform]);
+  }, [category, isClassicalChinese]);
 
   useEffect(() => {
     if (!supportsStyleReference) {
@@ -486,77 +444,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     }
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
-      if (comicCategory === "story_comic" || comicCategory === "homophone_comic") {
-        const isStory = comicCategory === "story_comic";
-        const variantForm = isStory ? storyComicForm : homophoneComicForm;
-        const cleanedTitle = variantForm.title.trim();
-        if (!cleanedTitle) {
-          setError(`${comicCategoryLabel}需要输入系列名`);
-          return;
-        }
-        const panelCount = parsePanelCount(variantForm.episodeCount);
-        if (!Number.isInteger(panelCount) || panelCount < HEALING_COMIC_MIN_PANEL_COUNT) {
-          setError(`${comicCategoryLabel}故事数量需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
-          return;
-        }
-        const characterPrompt = variantForm.character.trim();
-        const sourceContent = isStory
-          ? buildStoryComicBrief(storyComicForm)
-          : buildHomophoneComicBrief(homophoneComicForm);
-        const rawText = [
-          `书名：${cleanedTitle}`,
-          characterPrompt ? `固定角色：${characterPrompt}` : "",
-          sourceContent,
-        ].filter(Boolean).join("\n");
-
-        setSubmitting(true);
-        try {
-          const variantConfig = isStory
-            ? {
-                comic_story_premise: storyComicForm.premise.trim() || undefined,
-                comic_story_setting: storyComicForm.setting,
-                comic_story_mood: storyComicForm.mood,
-                comic_story_ending: storyComicForm.ending,
-              }
-            : {
-                comic_homophone_seed: homophoneComicForm.seed.trim() || undefined,
-                comic_humor_scene: homophoneComicForm.scene,
-                comic_humor_flavor: homophoneComicForm.flavor,
-                comic_humor_edge: homophoneComicForm.edge,
-                comic_avoid_topics: homophoneComicForm.avoidTopics.trim() || undefined,
-              };
-          const res = await api.createTask({
-            url: `manual://${comicCategory}`,
-            config: {
-              category: comicCategory,
-              comic_interface_version: "variant-workbench-v1",
-              comic_title: cleanedTitle,
-              comic_panel_count: panelCount,
-              comic_character_prompt: characterPrompt || undefined,
-              comic_source_content: sourceContent,
-              title: cleanedTitle,
-              raw_text: rawText,
-              ...variantConfig,
-            },
-          });
-          onCreated(res.task_id);
-        } catch (e) {
-          const msg =
-            e instanceof ApiError
-              ? `[${e.status}] ${e.detail}`
-              : e instanceof Error
-                ? e.message
-                : "创建任务失败";
-          setError(msg);
-        } finally {
-          setSubmitting(false);
-        }
-        return;
-      }
       if (comicCategory === "healing_comic") {
         const cleanedTitle = comicTitle.trim();
         if (!cleanedTitle) {
-          setError(`${comicCategoryLabel}需要输入书名`);
+          setError("漫画需要输入书名");
           return;
         }
         const panelCount = parsePanelCount(comicPanelCount);
@@ -564,7 +455,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           !Number.isInteger(panelCount) ||
           panelCount < HEALING_COMIC_MIN_PANEL_COUNT
         ) {
-          setError(`${comicCategoryLabel}章节数需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
+          setError(`漫画章节数需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
           return;
         }
         const characterPrompt = comicThemeRequirement.trim();
@@ -579,9 +470,9 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         setSubmitting(true);
         try {
           const res = await api.createTask({
-            url: `manual://${comicCategory}`,
+            url: "manual://healing_comic",
             config: {
-              category: comicCategory,
+              category: "healing_comic",
               comic_title: cleanedTitle,
               comic_panel_count: panelCount,
               comic_character_prompt: characterPrompt || undefined,
@@ -765,7 +656,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
     if (isClassicalChinese && classicalInputMode === "docx") {
       if (!classicalDocxFile) {
-        setError("请上传 .docx 或 .pdf 格式的文件");
+        setError("请上传 .docx 格式的 Word 文件");
         return;
       }
       setSubmitting(true);
@@ -798,14 +689,13 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setError("请粘贴需要转换的文言文原文");
       return;
     }
-    if (!isClassicalChinese && !isGeneralLongform && !url.trim() && !rawText.trim()) {
+    if (!isClassicalChinese && !url.trim() && !rawText.trim()) {
       setError("请填入 YouTube、小红书、微信视频号等视频链接，或直接粘贴视频文稿");
       return;
     }
     setSubmitting(true);
     try {
       const config: Record<string, unknown> = { category };
-      if (isGeneralLongform) config.general_longform_import_first = generalLongformImportFirst;
       if (isClassicalChinese) {
         config.classical_variant = effectiveClassicalVariant;
         if (classicalBookTitle.trim()) {
@@ -819,7 +709,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       }
       if (rawText.trim()) config.raw_text = rawText.trim();
       const res = await api.createTask({
-        url: isClassicalChinese ? `manual://${category}` : url.trim() || (isGeneralLongform ? "manual://general_longform" : "manual://raw_text"),
+        url: isClassicalChinese ? `manual://${category}` : url.trim() || "manual://raw_text",
         config,
       });
       onCreated(res.task_id);
@@ -838,13 +728,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
 
   return (
     <div
-      className="app-overlay fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm animate-fade-in-up"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-base-900/80 backdrop-blur-sm animate-fade-in-up"
       onClick={onClose}
     >
       <div
-        className={`card-warm relative max-h-[calc(100dvh-32px)] overflow-y-auto p-6 shadow-card-warm ${
-          isComicVariantWorkbench ? "w-[min(760px,94vw)]" : "w-[min(600px,90vw)]"
-        }`}
+        className="card-warm relative max-h-[calc(100dvh-32px)] w-[min(600px,90vw)] overflow-y-auto p-6 shadow-card-warm"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -859,18 +747,10 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         </button>
 
         <h2 className="font-serif text-2xl tracking-wide text-warm-100">
-          {category === "story_comic"
-            ? "图文故事工作台"
-            : category === "homophone_comic"
-              ? "谐音梗编剧室"
-              : "开始创作"}
+          开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          {category === "story_comic"
-            ? "从一个生活起点出发，生成可以连续滑动、逐页发生变化的原创图文小故事。"
-            : category === "homophone_comic"
-              ? "选择笑点场景与喜剧口味，让编剧室先海选，再把真正成立的谐音写成完整故事。"
-              : "选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库"}
+          选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
         </p>
 
         <div className="mt-6 space-y-4">
@@ -889,11 +769,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             <button
               type="button"
               onClick={() => switchMode("batch")}
-              disabled={isClassicalChinese || isComicCategory || isGeneralLongform}
+              disabled={isClassicalChinese || isComicCategory}
               className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
                 mode === "batch"
                   ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : isClassicalChinese || isComicCategory || isGeneralLongform
+                  : isClassicalChinese || isComicCategory
                     ? "cursor-not-allowed border-gold-500/10 text-warm-600"
                     : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
               }`}
@@ -941,23 +821,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             >
               <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
               古文白话
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("single");
-                setCategory("classical_chinese_novel_style");
-                setClassicalVariant("novel_style");
-                setClassicalInputMode("text");
-              }}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                isClassicalNovelStyleButtonActive
-                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-              }`}
-            >
-              <BookOpenCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
-              古文小说
             </button>
             <button
               type="button"
@@ -1029,30 +892,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
               漫画
             </button>
-            <button
-              type="button"
-              onClick={() => switchMode("comic", "story_comic")}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                mode === "comic" && category === "story_comic"
-                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-              }`}
-            >
-              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
-              图文故事
-            </button>
-            <button
-              type="button"
-              onClick={() => switchMode("comic", "homophone_comic")}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
-                mode === "comic" && category === "homophone_comic"
-                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
-                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
-              }`}
-            >
-              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
-              谐音梗
-            </button>
           </div>
 
           {mode !== "longNovel" ? (
@@ -1071,14 +910,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               onChange={(e) => {
                 const nextCategory = e.target.value;
                 setCategory(nextCategory);
-                if (nextCategory === "general_longform") setMode("single");
                 if (CLASSICAL_CHINESE_CATEGORY_IDS.has(nextCategory)) {
                   setMode("single");
                   setClassicalVariant(
                     nextCategory === "buddhist_scripture_story"
                       ? "buddhist_story"
-                      : nextCategory === "classical_chinese_novel_style"
-                        ? "novel_style"
                       : nextCategory === "classical_chinese_reference_rewrite"
                         ? "reference_translation"
                       : "plain",
@@ -1136,17 +972,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </div>
           )}
 
-          {isGeneralLongform && (
-            <div className="rounded-xl border border-gold-400/30 bg-gold-500/5 p-4 text-sm leading-relaxed text-warm-200">
-              <p>已内置完整 2026-09-14 v02 版指令与五份附录，840 段完整保留，无需重复粘贴 prompt。新增正反样稿对照：学习信息推进与自然节奏，诊断模板和重复，不机械禁用常用词。先研究并给出五组包装和 12—15 章大纲；确认后每次只写一章，交付正文与来源记录两个 Word。</p>
-              <p className="mt-2 text-xs text-warm-400">可留空自主选题，也可填写创作要求、视频逐字稿。已有大纲或正文请先创建工作区，再上传原文件识别进度。</p>
-              <label className="mt-3 flex cursor-pointer items-center gap-2">
-                <input type="checkbox" checked={generalLongformImportFirst} onChange={(e) => setGeneralLongformImportFirst(e.target.checked)} />
-                已有材料：先创建工作区，暂不调用模型
-              </label>
-            </div>
-          )}
-
           {supportsStyleReference && (
             <div className="rounded-xl border border-gold-500/15 bg-base-700/35 p-4">
               <label className="mb-3 flex items-center gap-2 text-[11px] tracking-widest text-warm-300">
@@ -1168,8 +993,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     </div>
                     <p className="mt-1 text-xs leading-relaxed text-warm-500">
                       {classicalReferenceTemplate?.enabled
-                        ? `${classicalReferenceTemplate.name || classicalReferenceTemplate.source_filename}，约 ${formatChineseCharCount(classicalReferenceTemplate.chars)}。未上传第二份 Word/PDF 时默认使用；上传第二份 Word/PDF 时本次优先使用上传文件。`
-                        : "服务器还没有固定参照范本；可先上传第二份参照译本 Word/PDF。"}
+                        ? `${classicalReferenceTemplate.name || classicalReferenceTemplate.source_filename}，约 ${formatChineseCharCount(classicalReferenceTemplate.chars)}。未上传第二份 Word 时默认使用；上传第二份 Word 时本次优先使用上传文件。`
+                        : "服务器还没有固定参照范本；可先上传第二份参照译本 Word。"}
                     </p>
                   </div>
                 )}
@@ -1203,7 +1028,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     >
                       <UploadCloud className="mb-2 h-5 w-5 text-gold-300" strokeWidth={1.5} />
                       <span className="text-sm text-warm-100">
-                        {classicalReferenceDocxFile?.name || "第二份：可选上传参照译本 Word/PDF"}
+                        {classicalReferenceDocxFile?.name || "第二份：可选上传参照译本 Word"}
                       </span>
                       <span className="mt-1 text-xs leading-relaxed text-warm-500">
                         这是第二份文档，用于释义、术语和断句参考，不复制译文句子
@@ -1212,7 +1037,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     <input
                       id="classical-reference-docx"
                       type="file"
-                      accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                       className="sr-only"
                       onChange={(event) => {
                         setClassicalReferenceDocxFile(event.target.files?.[0] ?? null);
@@ -1223,7 +1048,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 )}
                 <p className="text-xs leading-relaxed text-warm-500">
                   {isClassicalReferenceRewrite
-                    ? "原文 Word/PDF 是生成依据；参照译本 Word/PDF 只用于释义、术语、断句和语气密度参考，不会复制参考译文句子。"
+                    ? "原文 Word 是生成依据；参照译本 Word 只用于释义、术语、断句和语气密度参考，不会复制参考译文句子。"
                     : "系统会提炼叙事节奏、镜头感、人物推进和语言密度，生成原创初稿，不会复制原文句子。"}
                 </p>
               </div>
@@ -1388,7 +1213,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   <option value="video_transcript">视频文稿</option>
                   <option value="wechat_article">公众号文章</option>
                   <option value="short_story">已有短篇</option>
-                  <option value="custom_plot">自定义剧情路线</option>
                 </select>
               </div>
               <div>
@@ -1402,11 +1226,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   id="long-novel-source"
                   value={longNovelSourceText}
                   onChange={(e) => setLongNovelSourceText(e.target.value)}
-                  placeholder={
-                    longNovelSourceType === "custom_plot"
-                      ? "写清后续剧情路线、爆点、关系变化、要保留的矛盾和不要提前解决的内容。"
-                      : "可粘贴视频文稿、公众号正文、已有短篇或补充素材。"
-                  }
+                  placeholder="可粘贴视频文稿、公众号正文、已有短篇或补充素材。"
                   rows={5}
                   className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
@@ -1436,7 +1256,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       htmlFor="task-url"
                       className="mb-2 block text-[11px] tracking-widest text-warm-300"
                     >
-                      {isGeneralLongform ? "参考视频链接（可选）" : "视频链接"}
+                      视频链接
                     </label>
                     <input
                       id="task-url"
@@ -1528,8 +1348,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     />
                     <p className="mt-2 text-xs leading-relaxed text-warm-500">
                       {isClassicalReferenceRewrite
-                        ? "参照译写需要两份材料：原文 Word/PDF 作为生成依据，参照译本 Word/PDF 作为可选参考。最终书名固定为“原书名（白话版）”。"
-                        : "最终书名会固定为“原书名（白话版）”。上传 Word/PDF 时可留空，系统会用文件名作为原书名。"}
+                        ? "参照译写需要两份材料：原文 Word 作为生成依据，参照译本 Word 作为可选参考。最终书名固定为“原书名（白话版）”。"
+                        : "最终书名会固定为“原书名（白话版）”。上传 Word 时可留空，系统会用文件名作为原书名。"}
                     </p>
                   </div>
                   <div>
@@ -1543,7 +1363,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       id="classical-variant"
                       value={effectiveClassicalVariant}
                       onChange={(e) => setClassicalVariant(e.target.value)}
-                      disabled={isBuddhistScripture || isClassicalNovelStyle}
+                      disabled={isBuddhistScripture}
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 outline-none transition-colors focus:border-gold-400/50"
                     >
                       {CLASSICAL_VARIANTS.map((item) => (
@@ -1574,7 +1394,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                           : "text-warm-500 hover:text-warm-200"
                       }`}
                     >
-                      {isClassicalReferenceRewrite ? "上传原文 Word/PDF" : "上传 Word/PDF"}
+                      {isClassicalReferenceRewrite ? "上传原文 Word" : "上传 Word"}
                     </button>
                   </div>
                 </div>
@@ -1586,7 +1406,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     htmlFor="classical-docx"
                     className="mb-2 block text-[11px] tracking-widest text-warm-300"
                   >
-                    {isClassicalReferenceRewrite ? "第一份：原文 Word/PDF 文档" : "Word/PDF 文档"}
+                    {isClassicalReferenceRewrite ? "第一份：原文 Word 文档" : "Word 文档"}
                   </label>
                   <label
                     htmlFor="classical-docx"
@@ -1594,18 +1414,18 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   >
                     <UploadCloud className="mb-3 h-7 w-7 text-gold-300" strokeWidth={1.5} />
                     <span className="text-sm text-warm-100">
-                      {classicalDocxFile?.name || (isClassicalReferenceRewrite ? "选择原文 .docx / .pdf 文件" : "选择 .docx / .pdf 文件")}
+                      {classicalDocxFile?.name || (isClassicalReferenceRewrite ? "选择原文 .docx 文件" : "选择 .docx 文件")}
                     </span>
                     <span className="mt-2 text-xs leading-relaxed text-warm-500">
                       {isClassicalReferenceRewrite
-                        ? "系统会读取这份 Word/PDF 作为古文原文，再结合参考译文生成参照译写稿"
-                        : `系统会读取 Word/PDF 正文，并按${classicalDisplayName}流程生成`}
+                        ? "系统会读取这份 Word 作为古文原文，再结合参考译文生成参照译写稿"
+                        : `系统会读取 Word 正文，并按${classicalDisplayName}流程生成`}
                     </span>
                   </label>
                   <input
                     id="classical-docx"
                     type="file"
-                    accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     className="sr-only"
                     onChange={(event) => {
                       setClassicalDocxFile(event.target.files?.[0] ?? null);
@@ -1625,7 +1445,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                       : "文言文原文"
                     : isReferenceArticle
                       ? "参考文章全文"
-                      : isGeneralLongform ? "选题要求或视频逐字稿（可留空）" : "视频文稿（可选）"}
+                      : "视频文稿（可选）"}
                 </label>
                 <textarea
                   id="task-raw-text"
@@ -1638,7 +1458,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                         : "请直接粘贴需要转成白话文的文言文原文"
                       : isReferenceArticle
                         ? "请粘贴公众号文章或已有文章全文。系统会提炼情感关系问题，重新组织结构和案例，生成原创文章。"
-                        : isGeneralLongform ? "留空时按完整指令自主选题；也可写目标读者、关注问题、创作要求或粘贴逐字稿"
                         : "如果已经有视频文稿，可以直接粘贴在这里，跳过链接解析步骤"
                   }
                   rows={isClassicalChinese ? 9 : isReferenceArticle ? 12 : 5}
@@ -1649,11 +1468,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
-              {category === "story_comic" ? (
-                <StoryComicCreator value={storyComicForm} onChange={setStoryComicForm} />
-              ) : category === "homophone_comic" ? (
-                <HomophoneComicCreator value={homophoneComicForm} onChange={setHomophoneComicForm} />
-              ) : isHealingComicFamily ? (
+              {category === "healing_comic" ? (
                 <>
                 <div>
                   <label
@@ -1670,11 +1485,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    {category === "story_comic"
-                      ? "原创滑动图文故事：每章拆成 6 到 10 张连续卡片，一张只推进一个信息点，穿插纯文字留白页与小涂鸦，让普通生活小事逐页变得有趣。"
-                      : category === "homophone_comic"
-                        ? "原创谐音滑动故事：前六成先讲一件正常小事，中段让一个动作逐渐不对劲，最后两三张才揭示谐音；可以干、怪、损或轻讽刺，但绝不解释笑点。"
-                        : "输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。"}
+                    输入书名、章节数，可选填写主角形象；系统会参考服务端漫画数据库，自动规划封面和同系列章节配图，短句会直接写在图上。
                   </p>
                 </div>
                 <div>
@@ -1695,9 +1506,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    {category === "healing_comic"
-                      ? `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。`
-                      : `默认 ${HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章生成 6 到 10 张连续图文卡片，另含 1 张封面。纯文字卡片由本地准确排字，不产生绘图费用。`}
+                    默认 {HEALING_COMIC_DEFAULT_PANEL_COUNT} 章，可自定义任意章节数；每章会按内容生成 6 到 20 张同系列小故事漫画图。
                   </p>
                 </div>
                 <div>
@@ -1721,9 +1530,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                     className="w-full resize-none rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                   />
                   <p className="mt-2 text-xs leading-relaxed text-warm-500">
-                    {category === "healing_comic"
-                      ? "可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。"
-                      : "可留空；填写后会约束原创角色。图文故事和谐音梗仍会主动变化场所、动作、关系、物件与镜头，避免只换主角。"}
+                    可留空；填写后会作为全书主角形象圣经，封面和所有章节图片都按同一形象延续。
                   </p>
                 </div>
                 <div>
@@ -1764,7 +1571,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                   id="comic-title"
                   value={comicTitle}
                   onChange={(e) => setComicTitle(e.target.value)}
-                  placeholder="今晚，月亮替我抱抱你"
+                  placeholder={category === "healing_comic" ? "看见你，心就软了" : "今晚，月亮替我抱抱你"}
                   className="w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm leading-relaxed text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50"
                 />
                 <p className="mt-2 text-xs leading-relaxed text-warm-500">
@@ -1897,16 +1704,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 {mode === "batch"
                   ? "加入候选库"
                   : mode === "comic"
-                    ? category === "story_comic"
-                      ? "开始编故事"
-                      : category === "homophone_comic"
-                        ? "海选笑点并生成"
-                        : `生成${comicCategoryLabel}`
+                    ? `生成${comicCategoryLabel}`
                     : mode === "articleBatch"
                       ? "批量抓取生成"
                     : mode === "article"
                       ? "抓取并生成"
-                      : isGeneralLongform ? (generalLongformImportFirst ? "创建通用长篇工作区" : "研究并生成待确认大纲") : "立即生成"}
+                      : "立即生成"}
               </span>
             )}
           </button>

@@ -122,27 +122,3 @@ def test_transcribe_audio_chunks_and_reuses_working_fallback_model(
         ("whisper-1", "segment_001.mp3"),
         ("whisper-1", "segment_002.mp3"),
     ]
-
-
-def test_transcribe_media_url_can_force_direct_media_download(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_download(url, output_path, *, request_headers, download_proxy, timeout, max_bytes):
-        seen["download_proxy"] = download_proxy
-        output_path.write_bytes(b"media")
-
-    monkeypatch.setattr(media_transcription.settings, "OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(media_transcription, "_download_media", fake_download)
-    monkeypatch.setattr(media_transcription, "_extract_audio", lambda *args, **kwargs: None)
-    monkeypatch.setattr(media_transcription, "_transcribe_audio", lambda *args, **kwargs: "text")
-
-    result = media_transcription.transcribe_media_url(
-        "https://cdn.example.test/video.m4s",
-        download_proxy="",
-    )
-
-    assert result == "text"
-    assert seen["download_proxy"] == ""

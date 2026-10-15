@@ -2,22 +2,17 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import hashlib
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from tenacity import stop_after_attempt
 
-from app.core.config import PROJECT_ROOT, settings
-from app.db.session import SessionLocal
+from app.core.config import settings
 from app.models import (
     LongNovelBible,
     LongNovelCanonFact,
@@ -39,15 +34,10 @@ from app.models import (
 from app.prompts.family_long_novel_prompts import (
     FAMILY_LONG_NOVEL_LABEL,
     FAMILY_LONG_NOVEL_TYPE,
-    ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
-    ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
     ZHOULI_BIBLE_PROMPT,
     ZHOULI_CHAPTER_PLAN_PROMPT,
     ZHOULI_CHAPTER_WRITE_PROMPT,
     ZHOULI_CONTINUITY_CHECK_PROMPT,
-    ZHOULI_DEEPSEEK_COPYEDIT_PROMPT,
-    ZHOULI_NARRATIVE_AUDIT_PROMPT,
-    ZHOULI_NARRATIVE_REPAIR_PROMPT,
     ZHOULI_OUTLINE_PROMPT,
     ZHOULI_QUALITY_CHECK_PROMPT,
     ZHOULI_REPAIR_PROMPT,
@@ -61,30 +51,13 @@ from app.schemas.long_novel import (
     LongNovelAssistRequest,
     LongNovelAssistResponse,
 )
-from app.services import content_engine, deepseek, gemini
-from app.services.aigc_quality_gate import (
-    AIGC_POLICY_VERSION,
-    AigcManualReviewRequired,
-    AigcTechnicalError,
-    aigc_category_eligible,
-    enforce_aigc_quality_gate,
-)
-from app.services.family_long_novel_prose_quality import (
-    compact_issue_payload,
-    inspect_editorial_candidate,
-    inspect_family_novel_prose,
-    normalize_family_novel_prose,
-)
+from app.services import content_engine
 
 logger = logging.getLogger(__name__)
 
 
 class FamilyLongNovelError(RuntimeError):
     """Raised when the family long novel workflow cannot continue."""
-
-
-class FamilyAigcManualReview(FamilyLongNovelError):
-    """The chapter draft is preserved but cannot be accepted into state ledgers."""
 
 
 class MalformedModelJsonError(FamilyLongNovelError):
@@ -138,16 +111,6 @@ def _word_count(text: str) -> int:
 
 def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
-
-
-def _canonical_json_dumps(data: Any) -> str:
-    return json.dumps(
-        data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
 
 
 def _json_loads(text: str) -> dict[str, Any]:
@@ -257,11 +220,6 @@ def _run_writer(
     max_output_tokens: int,
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    fallback_service_tier: str | None = None,
-    on_background_response_id: Any | None = None,
 ) -> str:
     try:
         asyncio.get_running_loop()
@@ -272,151 +230,9 @@ def _run_writer(
                 reasoning_effort=reasoning_effort,
                 verbosity=verbosity,
                 max_output_tokens=max_output_tokens,
-                prompt_cache_key=prompt_cache_key,
-                service_tier=service_tier,
-                background=background,
-                background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
-                background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
-                fallback_service_tier=fallback_service_tier,
-                on_background_response_id=on_background_response_id,
             )
         )
     raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
-
-
-def _run_writer_with_usage(
-    prompt: str,
-    *,
-    max_output_tokens: int,
-    reasoning_effort: str | None = None,
-    verbosity: str | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    fallback_service_tier: str | None = None,
-    on_background_response_id: Any | None = None,
-) -> tuple[str, dict[str, Any]]:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(
-            content_engine._route_writer_call_with_usage(
-                prompt,
-                reasoning_effort=reasoning_effort,
-                verbosity=verbosity,
-                max_output_tokens=max_output_tokens,
-                prompt_cache_key=prompt_cache_key,
-                service_tier=service_tier,
-                background=background,
-                background_timeout_seconds=settings.LONG_NOVEL_FLEX_TIMEOUT_SECONDS,
-                background_poll_interval_seconds=settings.LONG_NOVEL_FLEX_POLL_INTERVAL_SECONDS,
-                fallback_service_tier=fallback_service_tier,
-                on_background_response_id=on_background_response_id,
-            )
-        )
-    raise FamilyLongNovelError("family long novel service must run from a sync worker thread")
-
-
-def _project_prompt_cache_key(project_id: UUID) -> str:
-    return f"fln:{project_id}:p:v2"
-
-
-def _chapter_prompt_cache_key(project_id: UUID, chapter_number: int) -> str:
-    return f"fln:{project_id}:c{chapter_number}:v2"
-
-
-def _long_novel_processing_policy() -> tuple[str | None, bool, str | None]:
-    mode = str(settings.LONG_NOVEL_PROCESSING_MODE or "standard").strip().lower()
-    if (settings.WRITER_PROVIDER or "openai").lower() != "openai":
-        return None, False, None
-    # Standard-background keeps normal-priority processing while avoiding one
-    # long-lived HTTP connection through the deployment proxy.  The Responses
-    # API returns an id quickly and is then polled, so a three-minute proxy idle
-    # timeout cannot discard an otherwise valid long-form result.
-    if mode in {"background", "standard_background", "standard-background"}:
-        return None, True, None
-    if mode != "flex":
-        return None, False, None
-    fallback = "auto" if settings.LONG_NOVEL_FLEX_FALLBACK_TO_STANDARD else None
-    return "flex", bool(settings.LONG_NOVEL_FLEX_BACKGROUND), fallback
-
-
-def _prompt_prefix_hash(prompt: str) -> str:
-    marker = "[END AUTHORITATIVE ROLLING CHAPTER CONTEXT]"
-    end = prompt.find(marker)
-    prefix = prompt[: end + len(marker)] if end >= 0 else prompt
-    return hashlib.sha256(prefix.encode("utf-8")).hexdigest()
-
-
-def _ensure_chapter_prompt_cache_warm(
-    db: Session,
-    *,
-    project_id: UUID,
-    chapter_number: int,
-    context_pack: dict[str, Any],
-    reasoning_effort: str | None = None,
-    verbosity: str | None = None,
-    tier: str = "default",
-) -> None:
-    """Prime one exact model/effort/verbosity cache bucket without using its output."""
-
-    requested_tier, _use_background, _fallback_tier = _long_novel_processing_policy()
-    if requested_tier != "flex" or not settings.LONG_NOVEL_PROMPT_CACHE_WARMUP:
-        return
-
-    effective_effort = str(reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT or "high").strip().lower()
-    effective_verbosity = str(verbosity or settings.OPENAI_WRITER_VERBOSITY or "medium").strip().lower()
-    effective_tier = str(tier or "default").strip().lower()
-    warm_action = f"warm_prompt_cache_{effective_effort}_{effective_verbosity}"
-    cache_key = _chapter_prompt_cache_key(project_id, chapter_number)
-    warm_prompt = _with_project_cache_prefix(
-        context_pack,
-        (
-            "[PROMPT CACHE PREFILL ONLY]\n"
-            "Do not plan, draft, revise, summarize, or judge the novel. "
-            "Return only CACHE_READY."
-        ),
-    )
-    prefix_hash = _prompt_prefix_hash(warm_prompt)
-    reusable_after = datetime.now(timezone.utc) - timedelta(hours=20)
-    existing = (
-        db.query(LongNovelGenerationLog)
-        .filter(
-            LongNovelGenerationLog.project_id == project_id,
-            LongNovelGenerationLog.chapter_number == chapter_number,
-            LongNovelGenerationLog.action == warm_action,
-            LongNovelGenerationLog.status == "completed",
-            LongNovelGenerationLog.prompt_cache_key == cache_key,
-            LongNovelGenerationLog.prompt_prefix_hash == prefix_hash,
-            LongNovelGenerationLog.created_at >= reusable_after,
-        )
-        .first()
-    )
-    if existing is not None:
-        return
-
-    try:
-        _log_llm_call(
-            db,
-            project_id=project_id,
-            chapter_number=chapter_number,
-            action=warm_action,
-            tier=effective_tier,
-            prompt=warm_prompt,
-            max_output_tokens=512,
-            prompt_cache_key=cache_key,
-            reasoning_effort=effective_effort,
-            verbosity=effective_verbosity,
-        )
-    except Exception as exc:
-        logger.warning(
-            "chapter prompt cache warmup failed; continuing unchanged workflow project=%s chapter=%s effort=%s verbosity=%s error=%s",
-            project_id,
-            chapter_number,
-            effective_effort,
-            effective_verbosity,
-            str(exc)[:500],
-        )
 
 
 def _model_for_tier(tier: str) -> str:
@@ -435,30 +251,6 @@ def _model_for_tier(tier: str) -> str:
     return settings.OPENAI_WRITER_MODEL
 
 
-def _estimate_long_novel_cost(
-    *,
-    prompt_tokens: int,
-    cached_prompt_tokens: int,
-    completion_tokens: int,
-    service_tier: str | None = None,
-) -> float:
-    input_rate = max(0.0, float(settings.LONG_NOVEL_INPUT_COST_PER_1M or 0.0))
-    cached_rate = max(0.0, float(settings.LONG_NOVEL_CACHED_INPUT_COST_PER_1M or 0.0))
-    output_rate = max(0.0, float(settings.LONG_NOVEL_OUTPUT_COST_PER_1M or 0.0))
-    if input_rate <= 0 and cached_rate <= 0 and output_rate <= 0:
-        return 0.0
-    cached = min(max(0, cached_prompt_tokens), max(0, prompt_tokens))
-    uncached = max(0, prompt_tokens - cached)
-    cost = (
-        (uncached * input_rate)
-        + (cached * cached_rate)
-        + (max(0, completion_tokens) * output_rate)
-    ) / 1_000_000
-    if str(service_tier or "").strip().lower() in {"flex", "batch"}:
-        cost *= 0.5
-    return round(cost, 8)
-
-
 def _chapter_target_words(project: LongNovelProject) -> int:
     chapters = max(1, min(80, int(project.target_chapters or 50)))
     total = max(1000, int(project.target_words or 200000))
@@ -471,11 +263,7 @@ def _chapter_word_tolerance(project: LongNovelProject) -> int:
 
 def _outline_max_output_tokens(project: LongNovelProject) -> int:
     target = max(1, min(80, int(project.target_chapters or 50)))
-    # GPT-5.6 Sol xhigh counts internal reasoning against max_output_tokens.
-    # A 50-chapter JSON outline needs enough room for both that reasoning and
-    # the complete structured payload; otherwise the API can return a useful
-    # but truncated object that must never be persisted or paid for twice.
-    return min(80000, max(32000, 16000 + target * 1100))
+    return min(32000, max(10000, 5000 + target * 900))
 
 
 def _chapter_write_max_output_tokens(project: LongNovelProject) -> int:
@@ -570,11 +358,7 @@ def _log_llm_call(
     tier: str,
     prompt: str,
     max_output_tokens: int,
-    prompt_cache_key: str | None = None,
-    reasoning_effort: str | None = None,
-    verbosity: str | None = None,
 ) -> str:
-    requested_service_tier, use_background, fallback_service_tier = _long_novel_processing_policy()
     log = LongNovelGenerationLog(
         project_id=project_id,
         chapter_number=chapter_number,
@@ -582,50 +366,12 @@ def _log_llm_call(
         provider=settings.WRITER_PROVIDER,
         model=_model_for_tier(tier),
         prompt_tokens=max(1, len(prompt) // 4),
-        service_tier=requested_service_tier or "default",
-        prompt_cache_key=prompt_cache_key,
-        prompt_prefix_hash=_prompt_prefix_hash(prompt),
         status="started",
     )
     db.add(log)
     db.commit()
-
-    def _persist_background_response_id(response_id: str) -> None:
-        """Persist the id from the request thread before polling can fail."""
-
-        value = str(response_id or "").strip()
-        if not value or log.id is None:
-            return
-        try:
-            # _route_writer_call_with_usage executes in a worker thread; use a
-            # short-lived independent session instead of crossing SQLAlchemy
-            # sessions between threads.
-            with SessionLocal() as callback_db:
-                callback_log = callback_db.get(LongNovelGenerationLog, log.id)
-                if callback_log is not None:
-                    callback_log.response_id = value
-                    callback_db.add(callback_log)
-                    callback_db.commit()
-        except Exception:
-            logger.warning(
-                "failed to persist background OpenAI response id project=%s chapter=%s",
-                project_id,
-                chapter_number,
-                exc_info=True,
-            )
-
     try:
-        output, usage = _run_writer_with_usage(
-            prompt,
-            max_output_tokens=max_output_tokens,
-            reasoning_effort=reasoning_effort,
-            verbosity=verbosity,
-            prompt_cache_key=prompt_cache_key,
-            service_tier=requested_service_tier,
-            background=use_background,
-            fallback_service_tier=fallback_service_tier,
-            on_background_response_id=_persist_background_response_id,
-        )
+        output = _run_writer(prompt, max_output_tokens=max_output_tokens)
     except Exception as exc:
         log.status = "failed"
         log.error = str(exc)[:2000]
@@ -633,22 +379,7 @@ def _log_llm_call(
         db.commit()
         raise
     log.status = "completed"
-    prompt_tokens = int(usage.get("input_tokens") or 0) or max(1, len(prompt) // 4)
-    completion_tokens = int(usage.get("output_tokens") or 0) or max(1, len(output) // 4)
-    cached_prompt_tokens = min(prompt_tokens, int(usage.get("cached_input_tokens") or 0))
-    log.prompt_tokens = prompt_tokens
-    log.cached_prompt_tokens = cached_prompt_tokens
-    log.completion_tokens = completion_tokens
-    log.reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
-    actual_service_tier = str(usage.get("service_tier") or requested_service_tier or "default")
-    log.service_tier = actual_service_tier
-    log.response_id = str(usage.get("response_id") or "") or None
-    log.estimated_cost = _estimate_long_novel_cost(
-        prompt_tokens=prompt_tokens,
-        cached_prompt_tokens=cached_prompt_tokens,
-        completion_tokens=completion_tokens,
-        service_tier=actual_service_tier,
-    )
+    log.completion_tokens = max(1, len(output) // 4)
     db.add(log)
     db.commit()
     return output
@@ -663,8 +394,6 @@ def _call_json(
     tier: str,
     prompt: str,
     max_output_tokens: int = 16000,
-    prompt_cache_key: str | None = None,
-    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     return _json_loads(
         _log_llm_call(
@@ -675,8 +404,6 @@ def _call_json(
             tier=tier,
             prompt=prompt,
             max_output_tokens=max_output_tokens,
-            prompt_cache_key=prompt_cache_key,
-            reasoning_effort=reasoning_effort,
         )
     )
 
@@ -690,8 +417,6 @@ def _call_text(
     tier: str,
     prompt: str,
     max_output_tokens: int,
-    prompt_cache_key: str | None = None,
-    reasoning_effort: str | None = None,
 ) -> str:
     return _log_llm_call(
         db,
@@ -701,106 +426,7 @@ def _call_text(
         tier=tier,
         prompt=prompt,
         max_output_tokens=max_output_tokens,
-        prompt_cache_key=prompt_cache_key,
-        reasoning_effort=reasoning_effort,
     ).strip()
-
-
-def _specialist_cost(
-    *,
-    provider: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-) -> float:
-    if provider == "gemini":
-        input_rate = float(settings.LONG_NOVEL_GEMINI_INPUT_COST_PER_1M or 0.0)
-        output_rate = float(settings.LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M or 0.0)
-    elif provider == "deepseek":
-        input_rate = float(settings.LONG_NOVEL_DEEPSEEK_INPUT_COST_PER_1M or 0.0)
-        output_rate = float(settings.LONG_NOVEL_DEEPSEEK_OUTPUT_COST_PER_1M or 0.0)
-    else:
-        return 0.0
-    return round(
-        ((max(0, prompt_tokens) * input_rate) + (max(0, completion_tokens) * output_rate))
-        / 1_000_000,
-        8,
-    )
-
-
-def _call_specialist_text(
-    db: Session,
-    *,
-    project_id: UUID,
-    chapter_number: int,
-    action: str,
-    provider: str,
-    model: str,
-    prompt: str,
-    max_output_tokens: int,
-) -> str:
-    """Call one bounded specialist pass and keep it in the normal cost ledger."""
-
-    log = LongNovelGenerationLog(
-        project_id=project_id,
-        chapter_number=chapter_number,
-        action=action,
-        provider=provider,
-        model=model,
-        prompt_tokens=max(1, len(prompt) // 4),
-        prompt_prefix_hash=_prompt_prefix_hash(prompt),
-        status="started",
-    )
-    db.add(log)
-    db.commit()
-    try:
-        if provider == "gemini":
-            output = gemini.generate_text(
-                prompt,
-                model=model,
-                max_output_tokens=max_output_tokens,
-                retries=1,
-            )
-        elif provider == "deepseek":
-            # Copy editing is intentionally single-shot. A model-side content
-            # retry could charge twice while producing two different books.
-            generator = deepseek.generate_text.retry_with(stop=stop_after_attempt(1))
-            output = generator(
-                prompt,
-                model=model,
-                temperature=0.0,
-                max_output_tokens=max_output_tokens,
-                # V4 Flash defaults to thinking mode.  A deterministic copy
-                # edit needs the final prose, not a reasoning trace that can
-                # consume the whole output budget before content begins.
-                thinking=False,
-                fail_on_max_tokens=True,
-            )
-        else:
-            raise FamilyLongNovelError(f"不支持的长篇专项模型提供方：{provider}")
-    except Exception as exc:
-        log.status = "failed"
-        log.error = str(exc)[:2000]
-        db.add(log)
-        db.commit()
-        raise
-    output = str(output or "").strip()
-    if not output:
-        log.status = "failed"
-        log.error = "specialist model returned empty text"
-        db.add(log)
-        db.commit()
-        raise FamilyLongNovelError(f"{provider} 专项模型返回空文本")
-    completion_tokens = max(1, len(output) // 4)
-    log.status = "completed"
-    log.completion_tokens = completion_tokens
-    log.estimated_cost = _specialist_cost(
-        provider=provider,
-        prompt_tokens=log.prompt_tokens,
-        completion_tokens=completion_tokens,
-    )
-    db.add(log)
-    db.commit()
-    return output
 
 
 def _mark_project_generating(db: Session, project: LongNovelProject) -> None:
@@ -1042,11 +668,7 @@ def generate_family_novel_bible(
             action="generate_bible",
             tier="strong",
             prompt=prompt,
-            # The xhigh planner can spend 10k+ output tokens on reasoning before
-            # emitting the family graph.  Keep one bounded call, but size it so the
-            # JSON finishes instead of triggering a second paid attempt.
-            max_output_tokens=48000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
+            max_output_tokens=24000,
         )
     except Exception:
         _mark_generation_failed(db, project)
@@ -1195,7 +817,6 @@ def generate_family_novel_outline(
             tier="strong",
             prompt=prompt,
             max_output_tokens=_outline_max_output_tokens(project),
-            prompt_cache_key=_project_prompt_cache_key(project.id),
         )
     except Exception:
         _mark_generation_failed(db, project)
@@ -1235,653 +856,6 @@ def generate_family_novel_outline(
         db.add(plan)
     project.status = LongNovelProjectStatus.ACTIVE
     db.add(project)
-    db.commit()
-    db.refresh(project)
-    return project
-
-
-_SISTER_ACCOUNT_EXPANSION_TITLES = {"嫂子的账本", "嫂子的帐本"}
-
-
-def _is_sister_account_project(project: LongNovelProject) -> bool:
-    title = (project.title or "").strip()
-    return any(name in title for name in _SISTER_ACCOUNT_EXPANSION_TITLES)
-
-
-def _completed_chapter_payloads(db: Session, project: LongNovelProject) -> list[dict[str, Any]]:
-    chapters = (
-        db.query(LongNovelChapter)
-        .filter(
-            LongNovelChapter.project_id == project.id,
-            LongNovelChapter.status == LongNovelChapterStatus.COMPLETED,
-        )
-        .order_by(LongNovelChapter.chapter_number.asc())
-        .all()
-    )
-    payloads: list[dict[str, Any]] = []
-    for chapter in chapters:
-        _ensure_chapter_state_floor(db, project, chapter)
-        payloads.append(
-            {
-                "chapterNumber": chapter.chapter_number,
-                "title": chapter.title,
-                "summary": _chapter_summary(chapter),
-                "endingHook": _chapter_ending_hook(db, project.id, chapter.chapter_number, chapter),
-                "wordCount": chapter.word_count,
-                "last600Chars": _clip_text(chapter.content, 600),
-            }
-        )
-    db.flush()
-    return payloads
-
-
-def _family_members_payload(project: LongNovelProject) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": row.name,
-            "familyRole": row.family_role,
-            "publicImage": row.public_image,
-            "privateDesire": row.private_desire,
-            "grievance": row.grievance,
-            "leverage": row.leverage,
-            "weakness": row.weakness,
-            "secret": row.secret,
-            "relationshipToHeroine": row.relationship_to_heroine,
-            "arcStart": row.arc_start,
-            "arcEnd": row.arc_end,
-            "ending": row.ending,
-        }
-        for row in project.family_members
-    ]
-
-
-def _family_relations_payload(project: LongNovelProject) -> list[dict[str, Any]]:
-    return [
-        {
-            "fromMember": row.from_member,
-            "toMember": row.to_member,
-            "relationType": row.relation_type,
-            "surfaceRelation": row.surface_relation,
-            "hiddenConflict": row.hidden_conflict,
-            "interestConflict": row.interest_conflict,
-            "emotionalDebt": row.emotional_debt,
-            "currentTensionLevel": row.current_tension_level,
-        }
-        for row in project.family_relations
-    ]
-
-
-def _continuation_replan_context(
-    db: Session,
-    project: LongNovelProject,
-    *,
-    current_chapter: int,
-    target_words: int,
-    target_chapters: int,
-    target_words_per_chapter: int,
-    expansion_notes: str | None,
-) -> dict[str, Any]:
-    next_chapter = current_chapter + 1
-    completed = _completed_chapter_payloads(db, project)
-    canon_facts = (
-        db.query(LongNovelCanonFact)
-        .filter(LongNovelCanonFact.project_id == project.id, LongNovelCanonFact.chapter_number <= current_chapter)
-        .order_by(LongNovelCanonFact.chapter_number.asc(), LongNovelCanonFact.id.asc())
-        .limit(160)
-        .all()
-    )
-    open_issues = (
-        db.query(LongNovelContinuityIssue)
-        .filter(
-            LongNovelContinuityIssue.project_id == project.id,
-            LongNovelContinuityIssue.status == "open",
-        )
-        .order_by(LongNovelContinuityIssue.chapter_number.asc(), LongNovelContinuityIssue.created_at.asc())
-        .limit(80)
-        .all()
-    )
-    return {
-        "project": {
-            **_project_payload(project),
-            "targetWords": target_words,
-            "targetChapters": target_chapters,
-            "averageChapterTargetWords": target_words_per_chapter,
-            "completedChapterCount": current_chapter,
-            "completedWords": int(project.total_words or 0),
-            "futureStartChapter": next_chapter,
-            "futureEndChapter": target_chapters,
-            "futureChapterCount": max(0, target_chapters - current_chapter),
-        },
-        "instruction": {
-            "scope": f"只重规划第 {next_chapter}-{target_chapters} 章，不改第 1-{current_chapter} 章正文。",
-            "mustPreserve": [
-                "已完成正文",
-                "已完成章节摘要",
-                "已登记人物状态",
-                "已登记物品状态",
-                "已登记事实",
-                "已存在矛盾线",
-                "已存在家庭关系",
-            ],
-            "expansionNotes": (expansion_notes or "").strip(),
-        },
-        "currentBible": project.bible.raw_json if project.bible else {},
-        "completedChapters": completed,
-        "recentCompletedChapters": completed[-5:],
-        "familyMembers": _family_members_payload(project),
-        "familyRelations": _family_relations_payload(project),
-        "activeConflictLines": _active_conflict_payloads(db, project.id),
-        "latestCharacterStates": _latest_states(db, project.id, next_chapter, project=project),
-        "latestObjectStates": _latest_object_states(db, project.id, next_chapter),
-        "canonFacts": [
-            {
-                "chapterNumber": row.chapter_number,
-                "fact": row.fact,
-                "factType": row.fact_type,
-                "entities": row.entities,
-                "confidence": row.confidence,
-            }
-            for row in canon_facts
-        ],
-        "openContinuityIssues": [
-            {
-                "chapterNumber": row.chapter_number,
-                "severity": row.severity,
-                "issueType": row.issue_type,
-                "description": row.description,
-                "evidence": row.evidence,
-                "suggestedFix": row.suggested_fix,
-            }
-            for row in open_issues
-        ],
-    }
-
-
-def _continuation_replan_label(target_words: int | None = None) -> str:
-    if not target_words:
-        return "续规划"
-    if target_words >= 10000:
-        return f"{max(1, int(round(target_words / 10000)))}万续规划"
-    return f"{target_words}字续规划"
-
-
-def _validate_continuation_replan(
-    data: dict[str, Any],
-    *,
-    current_chapter: int,
-    target_chapters: int,
-    target_words: int | None = None,
-) -> None:
-    label = _continuation_replan_label(target_words)
-    expected_numbers = set(range(current_chapter + 1, target_chapters + 1))
-    chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
-    numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
-    got_numbers = {number for number in numbers if number > 0}
-    missing = sorted(expected_numbers - got_numbers)
-    extra = sorted(got_numbers - expected_numbers)
-    duplicate_count = len(numbers) - len(got_numbers)
-    if missing or extra or duplicate_count:
-        raise FamilyLongNovelError(
-            f"{label}章节覆盖失败：missing={missing[:8]} extra={extra[:8]} duplicates={duplicate_count}"
-        )
-    bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
-    if not bible_patch:
-        raise FamilyLongNovelError(f"{label}缺少 biblePatch，不能升级作品圣经")
-    conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
-    if len(conflicts) < 6:
-        raise FamilyLongNovelError(f"{label}矛盾线过少，不能支撑长篇扩容")
-    future_count = max(1, target_chapters - current_chapter)
-    unique_conflicts = {
-        _text(item, "domesticConflict", "domestic_conflict")
-        for item in chapters
-        if _text(item, "domesticConflict", "domestic_conflict")
-    }
-    unique_hooks = {
-        _text(item, "endingHook", "ending_hook")
-        for item in chapters
-        if _text(item, "endingHook", "ending_hook")
-    }
-    minimum_unique = min(future_count, max(12, int(future_count * 0.65)))
-    if len(unique_conflicts) < minimum_unique or len(unique_hooks) < minimum_unique:
-        raise FamilyLongNovelError(
-            f"{label}重复度过高：unique_conflicts={len(unique_conflicts)} unique_hooks={len(unique_hooks)} required={minimum_unique}"
-        )
-
-
-def _validate_global_continuation_replan(data: dict[str, Any], *, target_words: int | None = None) -> None:
-    label = _continuation_replan_label(target_words)
-    bible_patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
-    if not bible_patch:
-        raise FamilyLongNovelError(f"{label}全局规划缺少 biblePatch")
-    conflicts = [item for item in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(item, dict)]
-    if len(conflicts) < 6:
-        raise FamilyLongNovelError(f"{label}全局规划矛盾线过少，不能支撑后续分章")
-
-
-def _validate_chapter_batch_replan(
-    data: dict[str, Any],
-    *,
-    batch_start: int,
-    batch_end: int,
-    target_words: int | None = None,
-) -> list[dict[str, Any]]:
-    label = _continuation_replan_label(target_words)
-    chapters = [item for item in _as_list(_get(data, "chapters")) if isinstance(item, dict)]
-    expected = set(range(batch_start, batch_end + 1))
-    numbers = [_int_value(_get(item, "chapterNumber", "chapter_number"), 0) for item in chapters]
-    got = {number for number in numbers if number > 0}
-    missing = sorted(expected - got)
-    extra = sorted(got - expected)
-    duplicate_count = len(numbers) - len(got)
-    if missing or extra or duplicate_count:
-        raise FamilyLongNovelError(
-            f"{label}分批章节规划覆盖失败：batch={batch_start}-{batch_end} missing={missing} extra={extra} duplicates={duplicate_count}"
-        )
-    for item in chapters:
-        number = _int_value(_get(item, "chapterNumber", "chapter_number"), 0)
-        if not _text(item, "title"):
-            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少标题")
-        if not _text(item, "chapterGoal", "chapter_goal"):
-            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 chapterGoal")
-        if not _text(item, "domesticConflict", "domestic_conflict"):
-            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 domesticConflict")
-        if not _text(item, "endingHook", "ending_hook"):
-            raise FamilyLongNovelError(f"{label}分批章节规划第 {number} 章缺少 endingHook")
-    return sorted(chapters, key=lambda item: _int_value(_get(item, "chapterNumber", "chapter_number"), 0))
-
-
-def _continuation_batch_context(
-    base_context: dict[str, Any],
-    global_plan: dict[str, Any],
-    *,
-    batch_start: int,
-    batch_end: int,
-    planned_chapters: list[dict[str, Any]],
-) -> dict[str, Any]:
-    previous_future = [
-        {
-            "chapterNumber": _int_value(_get(item, "chapterNumber", "chapter_number"), 0),
-            "title": _text(item, "title"),
-            "chapterGoal": _text(item, "chapterGoal", "chapter_goal"),
-            "domesticConflict": _text(item, "domesticConflict", "domestic_conflict"),
-            "endingHook": _text(item, "endingHook", "ending_hook"),
-        }
-        for item in planned_chapters[-8:]
-    ]
-    planned_briefs = [
-        {
-            "chapterNumber": _int_value(_get(item, "chapterNumber", "chapter_number"), 0),
-            "title": _text(item, "title"),
-            "domesticConflict": _text(item, "domesticConflict", "domestic_conflict"),
-            "endingHook": _text(item, "endingHook", "ending_hook"),
-        }
-        for item in planned_chapters
-    ]
-    return {
-        "project": base_context.get("project", {}),
-        "instruction": base_context.get("instruction", {}),
-        "completedChapters": base_context.get("completedChapters", []),
-        "recentCompletedChapters": base_context.get("recentCompletedChapters", []),
-        "latestCharacterStates": base_context.get("latestCharacterStates", []),
-        "latestObjectStates": base_context.get("latestObjectStates", []),
-        "openContinuityIssues": base_context.get("openContinuityIssues", []),
-        "globalBiblePatch": _as_dict(_get(global_plan, "biblePatch", "bible_patch")),
-        "globalContinuationStrategy": _as_dict(_get(global_plan, "continuationStrategy", "continuation_strategy")),
-        "globalConflictLines": _as_list(_get(global_plan, "conflictLines", "conflict_lines")),
-        "familyMembers": _as_list(_get(global_plan, "familyMembers", "family_members")) or base_context.get("familyMembers", []),
-        "familyRelations": _as_list(_get(global_plan, "familyRelations", "family_relations")) or base_context.get("familyRelations", []),
-        "previousFutureChapters": previous_future,
-        "allPlannedFutureBriefs": planned_briefs,
-        "batchStart": batch_start,
-        "batchEnd": batch_end,
-        "expectedChapterNumbers": list(range(batch_start, batch_end + 1)),
-    }
-
-
-def _run_batched_continuation_replan(
-    db: Session,
-    project: LongNovelProject,
-    *,
-    base_context: dict[str, Any],
-    current_chapter: int,
-    target_chapters: int,
-    target_words: int,
-) -> dict[str, Any]:
-    global_prompt = render_prompt(
-        ZHOULI_30W_GLOBAL_REPLAN_PROMPT,
-        expansion_context=_json_dumps(base_context),
-    )
-    global_plan = _call_json(
-        db,
-        project_id=project.id,
-        chapter_number=None,
-        action="replan_target_global",
-        tier="strong",
-        prompt=global_prompt,
-        max_output_tokens=20000,
-        prompt_cache_key=_project_prompt_cache_key(project.id),
-    )
-    _validate_global_continuation_replan(global_plan, target_words=target_words)
-
-    planned_chapters: list[dict[str, Any]] = []
-    batch_size = 3
-    for batch_start in range(current_chapter + 1, target_chapters + 1, batch_size):
-        batch_end = min(target_chapters, batch_start + batch_size - 1)
-        batch_context = _continuation_batch_context(
-            base_context,
-            global_plan,
-            batch_start=batch_start,
-            batch_end=batch_end,
-            planned_chapters=planned_chapters,
-        )
-        batch_prompt = render_prompt(
-            ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
-            batch_context=_json_dumps(batch_context),
-        )
-        batch_data = _call_json(
-            db,
-            project_id=project.id,
-            chapter_number=None,
-            action=f"replan_target_batch_{batch_start}_{batch_end}",
-            tier="strong",
-            prompt=batch_prompt,
-            max_output_tokens=12000,
-            prompt_cache_key=_project_prompt_cache_key(project.id),
-        )
-        try:
-            planned_chapters.extend(
-                _validate_chapter_batch_replan(
-                    batch_data,
-                    batch_start=batch_start,
-                    batch_end=batch_end,
-                    target_words=target_words,
-                )
-            )
-        except FamilyLongNovelError:
-            if batch_start == batch_end:
-                raise
-            for single_number in range(batch_start, batch_end + 1):
-                single_context = _continuation_batch_context(
-                    base_context,
-                    global_plan,
-                    batch_start=single_number,
-                    batch_end=single_number,
-                    planned_chapters=planned_chapters,
-                )
-                single_prompt = render_prompt(
-                    ZHOULI_30W_CHAPTER_BATCH_REPLAN_PROMPT,
-                    batch_context=_json_dumps(single_context),
-                )
-                single_data = _call_json(
-                    db,
-                    project_id=project.id,
-                    chapter_number=None,
-                    action=f"replan_target_batch_{single_number}_{single_number}",
-                    tier="strong",
-                    prompt=single_prompt,
-                    max_output_tokens=6000,
-                    prompt_cache_key=_project_prompt_cache_key(project.id),
-                )
-                planned_chapters.extend(
-                    _validate_chapter_batch_replan(
-                        single_data,
-                        batch_start=single_number,
-                        batch_end=single_number,
-                        target_words=target_words,
-                    )
-                )
-
-    combined = dict(global_plan)
-    combined["chapters"] = planned_chapters
-    _validate_continuation_replan(
-        combined,
-        current_chapter=current_chapter,
-        target_chapters=target_chapters,
-        target_words=target_words,
-    )
-    return combined
-
-
-def _apply_bible_patch(project: LongNovelProject, data: dict[str, Any], *, current_chapter: int, target_words: int, target_chapters: int) -> None:
-    patch = _as_dict(_get(data, "biblePatch", "bible_patch"))
-    bible = project.bible or LongNovelBible(project_id=project.id)
-    bible.theme = _text(patch, "theme", default=bible.theme or "")
-    bible.core_promise = _text(patch, "corePromise", "core_promise", default=bible.core_promise or "")
-    bible.emotional_hook = _text(patch, "emotionalHook", "emotional_hook", default=bible.emotional_hook or "")
-    bible.family_background = _text(patch, "familyBackground", "family_background", default=bible.family_background or "")
-    bible.main_conflict = _text(patch, "mainConflict", "main_conflict", default=bible.main_conflict or "")
-    bible.ending_direction = _text(patch, "endingDirection", "ending_direction", default=bible.ending_direction or "")
-    bible.world_rules = _as_list(_get(patch, "worldRules", "world_rules")) or bible.world_rules
-    bible.style_rules = _as_list(_get(patch, "styleRules", "style_rules")) or bible.style_rules
-    bible.forbidden_rules = _as_list(_get(patch, "forbiddenRules", "forbidden_rules")) or bible.forbidden_rules
-    raw = dict(bible.raw_json or {})
-    raw.update({key: value for key, value in patch.items() if value not in (None, "", [], {})})
-    raw["targetWordExpansion"] = {
-        **_as_dict(_get(patch, "targetExpansion", "target_expansion")),
-        "mode": "system_replan_target_continuation",
-        "lockedCompletedChapters": current_chapter,
-        "targetWords": target_words,
-        "targetChapters": target_chapters,
-    }
-    bible.raw_json = raw
-    project.bible = bible
-
-
-def _upsert_family_members_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any]) -> None:
-    existing = {row.name: row for row in project.family_members}
-    for item in [row for row in _as_list(_get(data, "familyMembers", "family_members")) if isinstance(row, dict)]:
-        name = _text(item, "name")
-        if not name:
-            continue
-        row = existing.get(name) or LongNovelFamilyMember(project_id=project.id, name=name)
-        row.family_role = _text(item, "familyRole", "family_role", default=row.family_role or "")
-        row.public_image = _text(item, "publicImage", "public_image", default=row.public_image or "")
-        row.private_desire = _text(item, "privateDesire", "private_desire", default=row.private_desire or "")
-        row.grievance = _text(item, "grievance", default=row.grievance or "")
-        row.leverage = _text(item, "leverage", default=row.leverage or "")
-        row.weakness = _text(item, "weakness", default=row.weakness or "")
-        row.secret = _text(item, "secret", REMOVED_PRIVATE_CREDENTIAL or "")
-        row.relationship_to_heroine = _text(item, "relationshipToHeroine", "relationship_to_heroine", default=row.relationship_to_heroine or "")
-        row.arc_start = _text(item, "arcStart", "arc_start", default=row.arc_start or "")
-        row.arc_end = _text(item, "arcEnd", "arc_end", default=row.arc_end or "")
-        row.ending = _text(item, "ending", default=row.ending or "")
-        row.raw_json = {**(row.raw_json or {}), **item}
-        db.add(row)
-
-
-def _upsert_family_relations_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any]) -> None:
-    existing = {(row.from_member, row.to_member, row.relation_type or ""): row for row in project.family_relations}
-    for item in [row for row in _as_list(_get(data, "familyRelations", "family_relations")) if isinstance(row, dict)]:
-        from_member = _text(item, "fromMember", "from_member")
-        to_member = _text(item, "toMember", "to_member")
-        if not from_member or not to_member:
-            continue
-        relation_type = _text(item, "relationType", "relation_type")
-        key = (from_member, to_member, relation_type or "")
-        row = existing.get(key) or LongNovelFamilyRelation(project_id=project.id, from_member=from_member, to_member=to_member)
-        row.relation_type = relation_type or row.relation_type
-        row.surface_relation = _text(item, "surfaceRelation", "surface_relation", default=row.surface_relation or "")
-        row.hidden_conflict = _text(item, "hiddenConflict", "hidden_conflict", default=row.hidden_conflict or "")
-        row.interest_conflict = _text(item, "interestConflict", "interest_conflict", default=row.interest_conflict or "")
-        row.emotional_debt = _text(item, "emotionalDebt", "emotional_debt", default=row.emotional_debt or "")
-        row.current_tension_level = _int_value(_get(item, "currentTensionLevel", "current_tension_level"), row.current_tension_level or 1)
-        row.raw_json = {**(row.raw_json or {}), **item}
-        db.add(row)
-
-
-def _upsert_conflicts_from_replan(db: Session, project: LongNovelProject, data: dict[str, Any], *, current_chapter: int, target_chapters: int) -> None:
-    existing = {row.conflict_key: row for row in project.conflict_lines}
-    for item in [row for row in _as_list(_get(data, "conflictLines", "conflict_lines")) if isinstance(row, dict)]:
-        key = _text(item, "conflictKey", "conflict_key") or _text(item, "name")
-        name = _text(item, "name") or key
-        if not key or not name:
-            continue
-        row = existing.get(key) or LongNovelConflictLine(project_id=project.id, conflict_key=key, name=name)
-        row.name = name
-        row.conflict_type = _text(item, "conflictType", "conflict_type", default=row.conflict_type or "")
-        row.description = _text(item, "description", default=row.description or "")
-        row.introduced_chapter = min(target_chapters, max(1, _int_value(_get(item, "introducedChapter", "introduced_chapter"), row.introduced_chapter or 1)))
-        explosion = _int_value(_get(item, "plannedExplosionChapter", "planned_explosion_chapter"), row.planned_explosion_chapter or current_chapter + 5)
-        resolution = _int_value(_get(item, "plannedResolutionChapter", "planned_resolution_chapter"), row.planned_resolution_chapter or target_chapters)
-        row.planned_explosion_chapter = min(target_chapters, max(current_chapter + 1, explosion))
-        row.planned_resolution_chapter = min(target_chapters, max(row.planned_explosion_chapter, resolution))
-        row.status = _text(item, "status", default=row.status or "open") or "open"
-        row.importance = _text(item, "importance", default=row.importance or "normal") or "normal"
-        db.add(row)
-
-
-def _write_future_plans_from_replan(
-    db: Session,
-    project: LongNovelProject,
-    data: dict[str, Any],
-    *,
-    current_chapter: int,
-    target_chapters: int,
-    target_words_per_chapter: int,
-) -> None:
-    db.query(LongNovelChapterPlan).filter(
-        LongNovelChapterPlan.project_id == project.id,
-        LongNovelChapterPlan.chapter_number > current_chapter,
-    ).delete(synchronize_session=False)
-    by_number = {
-        _int_value(_get(item, "chapterNumber", "chapter_number"), 0): item
-        for item in _as_list(_get(data, "chapters"))
-        if isinstance(item, dict)
-    }
-    for number in range(current_chapter + 1, target_chapters + 1):
-        item = by_number[number]
-        plan = LongNovelChapterPlan(project_id=project.id, chapter_number=number)
-        plan.volume_number = _int_value(_get(item, "volumeNumber", "volume_number"), max(1, (number - 1) // 12 + 1))
-        plan.title = _clean_title(_text(item, "title"), f"第{number}章")
-        plan.target_words = target_words_per_chapter
-        plan.chapter_goal = _text(item, "chapterGoal", "chapter_goal")
-        plan.domestic_conflict = _text(item, "domesticConflict", "domestic_conflict")
-        plan.emotional_hook = _text(item, "emotionalHook", "emotional_hook")
-        plan.required_events = _as_list(_get(item, "requiredEvents", "required_events"))
-        plan.character_arc_move = _as_list(_get(item, "characterArcMove", "character_arc_move"))
-        plan.conflict_lines_to_advance = _as_list(_get(item, "conflictLinesToAdvance", "conflict_lines_to_advance"))
-        plan.forbidden_reveals = _as_list(_get(item, "forbiddenReveals", "forbidden_reveals"))
-        plan.ending_hook = _text(item, "endingHook", "ending_hook")
-        plan.raw_json = {
-            **item,
-            "targetWords": target_words_per_chapter,
-            "extensionMode": "system_replan_target_continuation",
-            "lockedCompletedChapters": current_chapter,
-        }
-        plan.status = LongNovelChapterStatus.PLANNED
-        db.add(plan)
-
-
-def extend_family_project_to_target(
-    db: Session,
-    project_id: UUID,
-    user: User | None = None,
-    *,
-    target_words: int = 200000,
-    future_chapter_words: int = 4000,
-    expansion_notes: str | None = None,
-) -> LongNovelProject:
-    """Extend one family project by rebuilding only future chapter plans.
-
-    Completed chapters and extracted canon/state ledgers are intentionally left
-    untouched. This is a project-plan expansion, not a manuscript rewrite.
-    """
-
-    project = _get_project(db, project_id, user)
-    project = sync_family_project_progress(db, project)
-    if not _is_sister_account_project(project):
-        raise FamilyLongNovelError("目标字数续规划目前只允许用于《嫂子的账本》这个项目，避免误伤其它长篇")
-    current_chapter = max(0, int(project.current_chapter or 0))
-    current_words = max(0, int(project.total_words or 0))
-    if current_chapter <= 0:
-        raise FamilyLongNovelError("项目还没有已完成章节，不能做承接式目标字数续规划")
-    requested_target_words = min(500000, max(1000, int(target_words or 200000)))
-    target_words = max(current_words + 1, requested_target_words)
-    future_chapter_words = max(1200, min(12000, int(future_chapter_words or 4000)))
-    remaining_words = max(0, target_words - current_words)
-    future_count = max(1, (remaining_words + future_chapter_words - 1) // future_chapter_words)
-    target_chapters = min(80, current_chapter + future_count)
-    if target_chapters <= current_chapter:
-        target_chapters = min(80, current_chapter + 1)
-    if target_chapters <= current_chapter:
-        raise FamilyLongNovelError("当前项目已达到最大章节数，无法继续扩容")
-    actual_future_count = max(1, target_chapters - current_chapter)
-    actual_future_words = max(1200, int(round(remaining_words / actual_future_count)))
-
-    project.target_words = target_words
-    project.target_chapters = target_chapters
-    db.add(project)
-    db.flush()
-
-    context = _continuation_replan_context(
-        db,
-        project,
-        current_chapter=current_chapter,
-        target_words=target_words,
-        target_chapters=target_chapters,
-        target_words_per_chapter=actual_future_words,
-        expansion_notes=expansion_notes,
-    )
-    _mark_project_generating(db, project)
-    try:
-        data = _run_batched_continuation_replan(
-            db,
-            project,
-            base_context=context,
-            current_chapter=current_chapter,
-            target_chapters=target_chapters,
-            target_words=target_words,
-        )
-    except Exception as exc:
-        db.add(
-            LongNovelGenerationLog(
-                project_id=project.id,
-                chapter_number=None,
-                action="extend_target",
-                provider=settings.WRITER_PROVIDER,
-                model=_model_for_tier("strong"),
-                prompt_tokens=0,
-                completion_tokens=0,
-                estimated_cost=0.0,
-                status="failed",
-                error=str(exc)[:2000],
-            )
-        )
-        _mark_generation_failed(db, project)
-        raise
-
-    _apply_bible_patch(project, data, current_chapter=current_chapter, target_words=target_words, target_chapters=target_chapters)
-    db.add(project.bible)
-    _upsert_family_members_from_replan(db, project, data)
-    _upsert_family_relations_from_replan(db, project, data)
-    _upsert_conflicts_from_replan(db, project, data, current_chapter=current_chapter, target_chapters=target_chapters)
-    _write_future_plans_from_replan(
-        db,
-        project,
-        data,
-        current_chapter=current_chapter,
-        target_chapters=target_chapters,
-        target_words_per_chapter=actual_future_words,
-    )
-    if project.status not in {LongNovelProjectStatus.PAUSED, LongNovelProjectStatus.GENERATING}:
-        project.status = LongNovelProjectStatus.ACTIVE
-    else:
-        project.status = LongNovelProjectStatus.ACTIVE
-    db.add(project)
-    db.add(
-        LongNovelGenerationLog(
-            project_id=project.id,
-            chapter_number=None,
-            action="extend_target",
-            provider=settings.WRITER_PROVIDER,
-            model=_model_for_tier("strong"),
-            prompt_tokens=0,
-            completion_tokens=0,
-            estimated_cost=0.0,
-            status="completed",
-            error=f"system_replan_target_continuation target_words={target_words}; requested_target_words={requested_target_words}; target_chapters={target_chapters}; current_chapter={current_chapter}",
-        )
-    )
     db.commit()
     db.refresh(project)
     return project
@@ -2400,7 +1374,7 @@ def _build_chapter_context_pack_for_project(
             LongNovelCanonFact.project_id == project.id,
             LongNovelCanonFact.chapter_number < chapter_number,
         )
-        .order_by(LongNovelCanonFact.chapter_number.desc(), LongNovelCanonFact.id.asc())
+        .order_by(LongNovelCanonFact.chapter_number.desc())
         .limit(80)
         .all()
     )
@@ -2417,11 +1391,7 @@ def _build_chapter_context_pack_for_project(
             LongNovelContinuityIssue.chapter_number < chapter_number,
             LongNovelContinuityIssue.status == "open",
         )
-        .order_by(
-            LongNovelContinuityIssue.chapter_number.desc(),
-            LongNovelContinuityIssue.created_at.desc(),
-            LongNovelContinuityIssue.id.asc(),
-        )
+        .order_by(LongNovelContinuityIssue.chapter_number.desc(), LongNovelContinuityIssue.created_at.desc())
         .limit(40)
         .all()
     )
@@ -2620,72 +1590,6 @@ def _compact_bible_for_prompt(bible: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def _stable_project_cache_prefix(context_pack: dict[str, Any]) -> str:
-    project_payload = _compact_project_for_prompt(_as_dict(context_pack.get("project")))
-    bible_payload = _compact_bible_for_prompt(_as_dict(context_pack.get("bible")))
-    relations = sorted(
-        [item for item in _as_list(context_pack.get("familyRelations")) if isinstance(item, dict)],
-        key=lambda item: (
-            str(item.get("fromMember") or ""),
-            str(item.get("toMember") or ""),
-            str(item.get("relationType") or ""),
-        ),
-    )
-    conflicts = sorted(
-        [item for item in _as_list(context_pack.get("activeConflictLines")) if isinstance(item, dict)],
-        key=lambda item: (str(item.get("conflictKey") or ""), str(item.get("name") or "")),
-    )
-    stable_payload = {
-        "cachePrefixVersion": "family-long-novel-stable-v4",
-        "purpose": "shared_project_memory_for_prompt_cache",
-        "rule": "This stable prefix is shared by all chapter workflow calls for this project. Use it only as project-level memory; the later per-call context is authoritative for current chapter state.",
-        "project": project_payload,
-        "bible": bible_payload,
-        "familyRelations": [
-            {
-                "fromMember": item.get("fromMember"),
-                "toMember": item.get("toMember"),
-                "relationType": item.get("relationType"),
-                "surfaceRelation": _clip_prompt_value(item.get("surfaceRelation"), 220),
-                "hiddenConflict": _clip_prompt_value(item.get("hiddenConflict"), 260),
-                "interestConflict": _clip_prompt_value(item.get("interestConflict"), 260),
-            }
-            for item in relations[:36]
-        ],
-        "conflictLineBlueprints": [
-            {
-                "conflictKey": item.get("conflictKey"),
-                "name": item.get("name"),
-                "type": item.get("type"),
-                "description": _clip_prompt_value(item.get("description"), 420),
-                "plannedExplosionChapter": item.get("plannedExplosionChapter"),
-                "plannedResolutionChapter": item.get("plannedResolutionChapter"),
-                "importance": item.get("importance"),
-            }
-            for item in conflicts
-        ],
-    }
-    return (
-        "【长篇项目稳定缓存前缀】\n"
-        "以下内容在同一长篇项目内保持稳定，放在提示词最前方用于 prompt cache。"
-        "不得用它替代后文的本章动态上下文、上一章结尾、最新人物状态和最新物品状态。\n"
-        f"{_canonical_json_dumps(stable_payload)}\n"
-        "【长篇项目稳定缓存前缀结束】"
-    )
-
-
-def _with_project_cache_prefix(context_pack: dict[str, Any], prompt: str) -> str:
-    rolling_context = _shared_chapter_cache_context(context_pack)
-    rolling_prefix = (
-        "[AUTHORITATIVE ROLLING CHAPTER CONTEXT]\n"
-        "This JSON contains the complete pre-chapter continuity ledger shared by planning, writing, state extraction, and QA. "
-        "The later action delta contains only fields that can change between workflow nodes.\n"
-        f"{_canonical_json_dumps(rolling_context)}\n"
-        "[END AUTHORITATIVE ROLLING CHAPTER CONTEXT]"
-    )
-    return f"{_stable_project_cache_prefix(context_pack)}\n\n{rolling_prefix}\n\n{prompt}"
-
-
 def _compact_plan_for_prompt(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(plan, dict):
         return None
@@ -2731,34 +1635,42 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
     facts = [item for item in _as_list(context_pack.get("canonFacts")) if isinstance(item, dict)]
     relations = [item for item in _as_list(context_pack.get("familyRelations")) if isinstance(item, dict)]
     issues = [item for item in _as_list(context_pack.get("openContinuityIssues")) if isinstance(item, dict)]
-    issues_for_prompt = [] if purpose == "state_extract" else issues[:12]
-    recent_limit = 1 if purpose == "state_extract" else 2
-    previous_tail_limit = 500 if purpose == "state_extract" else 800
     must_continue = _as_dict(context_pack.get("mustContinueFrom"))
     return {
         "contextPackVersion": context_pack.get("contextPackVersion"),
         "promptContextMode": "compact",
-        "stableProjectContext": "Project, Bible, relation definitions, and conflict blueprints are provided once in the stable cache prefix before this JSON.",
-        "projectControls": {
-            key: value
-            for key, value in _compact_project_for_prompt(
-                _as_dict(context_pack.get("project"))
-            ).items()
-            if key
-            in {
-                "sourceType",
-                "targetWords",
-                "targetChapters",
-                "averageChapterTargetWords",
-                "chapterWordTolerance",
-                "generationMode",
+        "purpose": purpose,
+        "chapterNumber": context_pack.get("chapterNumber"),
+        "project": _compact_project_for_prompt(_as_dict(context_pack.get("project"))),
+        "bible": _compact_bible_for_prompt(_as_dict(context_pack.get("bible"))),
+        "currentPlanRecord": current_plan,
+        "previousChapter": {
+            "chapterNumber": previous.get("chapterNumber"),
+            "title": _clip_prompt_value(previous.get("title"), 80),
+            "summary": _clip_prompt_value(previous.get("summary"), 700),
+            "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
+            "last800Chars": _clip_text(previous.get("last800Chars"), 800),
+            "wordCount": previous.get("wordCount"),
+        }
+        if previous
+        else None,
+        "recentChapters": [
+            {
+                "chapterNumber": item.get("chapterNumber"),
+                "title": _clip_prompt_value(item.get("title"), 80),
+                "summary": _clip_prompt_value(item.get("summary"), 500),
+                "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
             }
-        },
+            for item in recent_chapters[-2:]
+        ],
         "familyRelations": [
             {
                 "fromMember": item.get("fromMember"),
                 "toMember": item.get("toMember"),
                 "relationType": item.get("relationType"),
+                "surfaceRelation": _clip_prompt_value(item.get("surfaceRelation"), 180),
+                "hiddenConflict": _clip_prompt_value(item.get("hiddenConflict"), 220),
+                "interestConflict": _clip_prompt_value(item.get("interestConflict"), 220),
                 "currentTensionLevel": item.get("currentTensionLevel"),
             }
             for item in relations[:30]
@@ -2768,9 +1680,13 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "conflictKey": item.get("conflictKey"),
                 "name": item.get("name"),
                 "type": item.get("type"),
+                "description": _clip_prompt_value(item.get("description"), 360),
                 "latestUpdate": _clip_prompt_value(item.get("latestUpdate"), 360),
                 "status": item.get("status"),
                 "lastEscalatedChapter": item.get("lastEscalatedChapter"),
+                "plannedExplosionChapter": item.get("plannedExplosionChapter"),
+                "plannedResolutionChapter": item.get("plannedResolutionChapter"),
+                "importance": item.get("importance"),
             }
             for item in conflicts[:14]
         ],
@@ -2817,34 +1733,12 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
                 "description": _clip_prompt_value(item.get("description"), 260),
                 "suggestedFix": _clip_prompt_value(item.get("suggestedFix"), 220),
             }
-            for item in issues_for_prompt
-        ],
-        "purpose": purpose,
-        "chapterNumber": context_pack.get("chapterNumber"),
-        "currentPlanRecord": current_plan,
-        "previousChapter": {
-            "chapterNumber": previous.get("chapterNumber"),
-            "title": _clip_prompt_value(previous.get("title"), 80),
-            "summary": _clip_prompt_value(previous.get("summary"), 700),
-            "endingHook": _clip_prompt_value(previous.get("endingHook"), 420),
-            "last800Chars": _clip_text(previous.get("last800Chars"), previous_tail_limit),
-            "wordCount": previous.get("wordCount"),
-        }
-        if previous
-        else None,
-        "recentChapters": [
-            {
-                "chapterNumber": item.get("chapterNumber"),
-                "title": _clip_prompt_value(item.get("title"), 80),
-                "summary": _clip_prompt_value(item.get("summary"), 500),
-                "endingHook": _clip_prompt_value(item.get("endingHook"), 260),
-            }
-            for item in recent_chapters[-recent_limit:]
+            for item in issues[:12]
         ],
         "mustContinueFrom": {
             "previousEndingHook": _clip_prompt_value(must_continue.get("previousEndingHook"), 420),
             "previousChapterSummary": _clip_prompt_value(must_continue.get("previousChapterSummary"), 700),
-            "previousLast800Chars": _clip_text(must_continue.get("previousLast800Chars"), previous_tail_limit),
+            "previousLast800Chars": _clip_text(must_continue.get("previousLast800Chars"), 800),
             "requiredCarryOver": _clip_prompt_value(_as_list(must_continue.get("requiredCarryOver"))[:14], 260),
             "strictRules": _as_list(must_continue.get("strictRules")),
         },
@@ -2859,30 +1753,8 @@ def _compact_context_for_prompt(context_pack: dict[str, Any], purpose: str) -> d
     }
 
 
-def _shared_chapter_cache_context(context_pack: dict[str, Any]) -> dict[str, Any]:
-    shared = _compact_context_for_prompt(context_pack, "chapter_write")
-    shared.pop("purpose", None)
-    shared.pop("currentPlanRecord", None)
-    shared.pop("omittedForCostControl", None)
-    shared["promptContextMode"] = "shared_chapter_cache_prefix"
-    return shared
-
-
-def _compact_context_delta_for_prompt(context_pack: dict[str, Any], purpose: str) -> dict[str, Any]:
-    full = _compact_context_for_prompt(context_pack, purpose)
-    return {
-        "contextPackVersion": full.get("contextPackVersion"),
-        "promptContextMode": "action_delta",
-        "sharedChapterContext": "See AUTHORITATIVE ROLLING CHAPTER CONTEXT before this action prompt.",
-        "purpose": purpose,
-        "chapterNumber": full.get("chapterNumber"),
-        "currentPlanRecord": full.get("currentPlanRecord"),
-        "omittedForCostControl": full.get("omittedForCostControl"),
-    }
-
-
 def _context_prompt_json(context_pack: dict[str, Any], purpose: str) -> str:
-    return _json_dumps(_compact_context_delta_for_prompt(context_pack, purpose))
+    return _json_dumps(_compact_context_for_prompt(context_pack, purpose))
 
 
 def build_chapter_context_pack(
@@ -2900,20 +1772,6 @@ def build_chapter_context_pack(
 
 def _build_chapter_context(db: Session, project: LongNovelProject, chapter_number: int) -> dict[str, Any]:
     return _build_chapter_context_pack_for_project(db, project, chapter_number)
-
-
-def _chapter_context_snapshot_with_plan(
-    context_pack: dict[str, Any],
-    plan: LongNovelChapterPlan,
-) -> dict[str, Any]:
-    """Freeze one pre-chapter ledger while allowing the newly approved plan as action data."""
-
-    snapshot = copy.deepcopy(context_pack)
-    plan_payload = _plan_payload(plan)
-    snapshot["currentPlan"] = copy.deepcopy(plan.raw_json or {})
-    snapshot["currentPlanRecord"] = plan_payload
-    snapshot["currentChapterOutline"] = copy.deepcopy(plan_payload)
-    return snapshot
 
 
 def generate_family_chapter_plan(
@@ -2966,15 +1824,6 @@ def generate_family_chapter_plan(
 
     context = context_pack or _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.OPENAI_WRITER_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="default",
-    )
 
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
@@ -2989,7 +1838,6 @@ def generate_family_chapter_plan(
         chapter_context=_context_prompt_json(context, "chapter_plan"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_PLAN_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -2999,7 +1847,6 @@ def generate_family_chapter_plan(
             tier="default",
             prompt=prompt,
             max_output_tokens=16000,
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -3057,52 +1904,15 @@ def generate_family_chapter(
         )
         .first()
     )
-    initial_context = _build_chapter_context(db, project, chapter_number)
-    validate_chapter_context_pack(initial_context, chapter_number)
     if plan is None or not plan.scenes:
+        initial_context = _build_chapter_context(db, project, chapter_number)
+        validate_chapter_context_pack(initial_context, chapter_number)
         plan = generate_family_chapter_plan(db, project.id, chapter_number, user, context_pack=initial_context)
         db.refresh(project)
         db.refresh(plan)
 
-    context = _chapter_context_snapshot_with_plan(initial_context, plan)
+    context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-
-    saved_chapter = (
-        db.query(LongNovelChapter)
-        .filter(
-            LongNovelChapter.project_id == project.id,
-            LongNovelChapter.chapter_number == chapter_number,
-        )
-        .first()
-    )
-    if (
-        saved_chapter is not None
-        and (saved_chapter.content or "").strip()
-        and saved_chapter.status == LongNovelChapterStatus.NEEDS_REPAIR
-    ):
-        project.status = LongNovelProjectStatus.GENERATING
-        plan.status = LongNovelChapterStatus.GENERATING
-        db.add(project)
-        db.add(plan)
-        db.commit()
-        try:
-            saved_chapter = _postprocess_family_chapter(
-                db,
-                project,
-                plan,
-                saved_chapter,
-                context,
-                user,
-                auto_repair=auto_repair,
-            )
-        except FamilyAigcManualReview:
-            raise
-        except Exception as exc:
-            _mark_saved_chapter_postprocess_failed(db, project, plan, saved_chapter)
-            raise FamilyLongNovelError(
-                f"第{chapter_number}章正文已保留，但状态抽取或连续性审校失败，可继续从质检节点恢复：{exc}"
-            ) from exc
-        return saved_chapter
 
     project.status = LongNovelProjectStatus.GENERATING
     plan.status = LongNovelChapterStatus.GENERATING
@@ -3115,7 +1925,6 @@ def generate_family_chapter(
         chapter_context=_context_prompt_json(context, "chapter_write"),
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
     try:
         content = _call_text(
             db,
@@ -3125,7 +1934,6 @@ def generate_family_chapter(
             tier="default",
             prompt=prompt,
             max_output_tokens=_chapter_write_max_output_tokens(project),
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except Exception:
         _mark_generation_failed(db, project, plan=plan)
@@ -3143,45 +1951,61 @@ def generate_family_chapter(
     chapter.title = title
     chapter.content = content
     chapter.raw_model_output = content
-    # The immutable writer draft is preserved here.  pre_aigc_content is only
-    # populated after the ordinary long-novel editorial gate has passed.
-    chapter.pre_aigc_content = None
-    chapter.aigc_policy_version = (
-        AIGC_POLICY_VERSION
-        if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
-        else None
-    )
-    chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
-    chapter.aigc_report = {}
     chapter.word_count = _word_count(content)
-    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
+    chapter.status = LongNovelChapterStatus.COMPLETED
+    plan.status = LongNovelChapterStatus.COMPLETED
     db.add(chapter)
     db.add(plan)
     db.commit()
     db.refresh(chapter)
+    sync_family_project_progress(db, project)
+
     try:
-        chapter = _postprocess_family_chapter(
-            db,
-            project,
-            plan,
-            chapter,
-            context,
-            user,
-            auto_repair=auto_repair,
-        )
-    except FamilyAigcManualReview:
-        raise
+        extract_family_chapter_state(db, project.id, chapter_number, user)
+        issues = check_family_continuity(db, project.id, chapter_number, user)
+        severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
+        if severe and auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
+            chapter = repair_family_chapter(db, project.id, chapter_number, user)
     except Exception as exc:
         logger.exception(
             "family chapter postprocess failed after content completion project=%s chapter=%s",
             project.id,
             chapter_number,
         )
-        _mark_saved_chapter_postprocess_failed(db, project, plan, chapter)
-        raise FamilyLongNovelError(
-            f"第{chapter_number}章正文已保留，但状态抽取或连续性审校失败，可继续从质检节点恢复：{exc}"
-        ) from exc
+        db.rollback()
+        project = _get_project(db, project_id, user)
+        plan = (
+            db.query(LongNovelChapterPlan)
+            .filter(
+                LongNovelChapterPlan.project_id == project.id,
+                LongNovelChapterPlan.chapter_number == chapter_number,
+            )
+            .first()
+        )
+        chapter = (
+            db.query(LongNovelChapter)
+            .filter(
+                LongNovelChapter.project_id == project.id,
+                LongNovelChapter.chapter_number == chapter_number,
+            )
+            .first()
+        )
+        if chapter is None or not (chapter.content or "").strip():
+            _mark_generation_failed(db, project, plan=plan, chapter=chapter)
+            raise
+        chapter.status = LongNovelChapterStatus.COMPLETED
+        if plan is not None:
+            plan.status = LongNovelChapterStatus.COMPLETED
+            db.add(plan)
+        _ensure_chapter_state_floor(db, project, chapter)
+        db.add(chapter)
+        db.commit()
+        logger.warning(
+            "family chapter returned with fallback state after postprocess error project=%s chapter=%s error=%s",
+            project.id,
+            chapter_number,
+            exc,
+        )
 
     sync_family_project_progress(db, project)
     project.status = (
@@ -3195,695 +2019,11 @@ def generate_family_chapter(
     return chapter
 
 
-def _mark_saved_chapter_postprocess_failed(
-    db: Session,
-    project: LongNovelProject,
-    plan: LongNovelChapterPlan,
-    chapter: LongNovelChapter,
-) -> None:
-    db.rollback()
-    project.status = LongNovelProjectStatus.FAILED
-    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
-    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-    db.add(project)
-    db.add(plan)
-    db.add(chapter)
-    db.commit()
-
-
-def _persist_family_aigc_calls(
-    db: Session,
-    *,
-    project_id: UUID,
-    chapter_number: int,
-    input_digest: str,
-    report: dict[str, object],
-) -> None:
-    for item in report.get("calls") or []:
-        if not isinstance(item, dict):
-            continue
-        db.add(
-            LongNovelGenerationLog(
-                project_id=project_id,
-                chapter_number=chapter_number,
-                action=str(item.get("action") or "aigc_call")[:128],
-                provider=str(item.get("provider") or "")[:64] or None,
-                model=str(item.get("model") or "")[:255] or None,
-                prompt_tokens=int(item.get("inputTokens") or 0),
-                cached_prompt_tokens=int(item.get("cachedInputTokens") or 0),
-                completion_tokens=int(item.get("outputTokens") or 0),
-                reasoning_tokens=int(item.get("reasoningTokens") or 0),
-                estimated_cost=float(item.get("estimatedCost") or 0.0),
-                cost_currency=str(item.get("currency") or "USD")[:8],
-                service_tier=str(item.get("serviceTier") or "")[:32] or None,
-                prompt_prefix_hash=input_digest,
-                response_id=str(item.get("requestId") or "")[:255] or None,
-                status=str(item.get("status") or "completed")[:32],
-                error=str(item.get("error") or "")[:4000] or None,
-            )
-        )
-
-
-def _family_aigc_output_dir(project_id: UUID, chapter_number: int) -> Path:
-    return (
-        PROJECT_ROOT
-        / "backend"
-        / "output"
-        / "family_long_novel"
-        / f"project_{project_id}"
-        / f"chapter_{chapter_number:06d}"
-    )
-
-
-def _family_aigc_report_for_storage(
-    report: dict[str, object] | None,
-    output_dir: Path,
-) -> dict[str, object]:
-    """Store reviewable candidate text without exposing host filesystem paths."""
-    payload = copy.deepcopy(report or {})
-    candidates: list[dict[str, object]] = []
-    root = output_dir.resolve()
-    for raw in payload.get("candidates") or []:
-        if not isinstance(raw, dict):
-            continue
-        item = dict(raw)
-        artifact = item.pop("artifactPath", None)
-        item["artifactFile"] = Path(str(artifact)).name if artifact else None
-        text = ""
-        if artifact:
-            try:
-                artifact_path = Path(str(artifact)).resolve()
-                if artifact_path.is_relative_to(root) and artifact_path.exists():
-                    text = artifact_path.read_text(encoding="utf-8")
-            except (OSError, ValueError):
-                logger.warning("invalid family AIGC artifact: %s", artifact)
-        item["text"] = text
-        candidates.append(item)
-    payload["candidates"] = candidates
-    payload["selectedCandidates"] = [item for item in candidates if item.get("selected")]
-    safe = [
-        item
-        for item in candidates
-        if item.get("deterministicPassed") is True and isinstance(item.get("detection"), dict)
-    ]
-    safe.sort(
-        key=lambda item: (
-            int((item.get("detection") or {}).get("score") or 101),
-            0 if item.get("selected") else 1,
-        )
-    )
-    payload["bestSafeCandidate"] = safe[0] if safe else None
-    return payload
-
-
-def _apply_family_aigc_gate(
-    db: Session,
-    text: str,
-    *,
-    project_id: UUID,
-    chapter_number: int,
-) -> str:
-    if not aigc_category_eligible("family_long_novel"):
-        return text
-    chapter = (
-        db.query(LongNovelChapter)
-        .filter(
-            LongNovelChapter.project_id == project_id,
-            LongNovelChapter.chapter_number == chapter_number,
-        )
-        .first()
-    )
-    if chapter is None:
-        raise FamilyLongNovelError("章节不存在，无法执行朱雀终稿闸门")
-    if chapter.aigc_policy_version != AIGC_POLICY_VERSION:
-        return text
-    output_dir = _family_aigc_output_dir(project_id, chapter_number)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "04_format.md").write_text(text, encoding="utf-8")
-    input_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    cached_report = dict(chapter.aigc_report or {})
-    if (
-        chapter.aigc_status == "passed"
-        and cached_report.get("policyVersion") == AIGC_POLICY_VERSION
-        and cached_report.get("finalSha256") == input_digest
-        and cached_report.get("passed") is True
-    ):
-        logger.info(
-            "reuse family AIGC pass project=%s chapter=%s hash=%s",
-            project_id,
-            chapter_number,
-            input_digest[:12],
-        )
-        return text
-    try:
-        result = asyncio.run(
-            enforce_aigc_quality_gate(
-                text,
-                category="family_long_novel",
-                output_dir=output_dir,
-                required=True,
-            )
-        )
-    except AigcManualReviewRequired as exc:
-        report = _family_aigc_report_for_storage(
-            dict(exc.result.report if exc.result else {}),
-            output_dir,
-        )
-        chapter.aigc_status = "manual_review"
-        chapter.aigc_report = report
-        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-        project = db.get(LongNovelProject, project_id)
-        plan = (
-            db.query(LongNovelChapterPlan)
-            .filter(
-                LongNovelChapterPlan.project_id == project_id,
-                LongNovelChapterPlan.chapter_number == chapter_number,
-            )
-            .first()
-        )
-        if project is not None:
-            project.status = LongNovelProjectStatus.PAUSED
-            db.add(project)
-        if plan is not None:
-            plan.status = LongNovelChapterStatus.NEEDS_REPAIR
-            db.add(plan)
-        _persist_family_aigc_calls(
-            db,
-            project_id=project_id,
-            chapter_number=chapter_number,
-            input_digest=input_digest,
-            report=report,
-        )
-        db.add(chapter)
-        db.commit()
-        raise FamilyAigcManualReview(
-            f"第{chapter_number}章朱雀与文稿质量未能同时达标；原稿已保留，项目已暂停"
-        ) from exc
-    except AigcTechnicalError as exc:
-        report = _family_aigc_report_for_storage(dict(exc.report or {}), output_dir)
-        chapter.aigc_status = "technical_failed"
-        chapter.aigc_report = report
-        _persist_family_aigc_calls(
-            db,
-            project_id=project_id,
-            chapter_number=chapter_number,
-            input_digest=input_digest,
-            report=report,
-        )
-        db.add(chapter)
-        db.commit()
-        raise
-    logger.info(
-        "family AIGC gate passed project=%s chapter=%s max_score=%s rounds=%s",
-        project_id,
-        chapter_number,
-        result.max_score,
-        len(result.rounds),
-    )
-    chapter.aigc_status = "passed"
-    chapter.aigc_report = _family_aigc_report_for_storage(result.report, output_dir)
-    _persist_family_aigc_calls(
-        db,
-        project_id=project_id,
-        chapter_number=chapter_number,
-        input_digest=input_digest,
-        report=chapter.aigc_report,
-    )
-    db.add(
-        LongNovelGenerationLog(
-            project_id=project_id,
-            chapter_number=chapter_number,
-            action="aigc_final_gate",
-            provider="tencent",
-            model="zhuque-text-aigc",
-            prompt_prefix_hash=input_digest,
-            response_id=next(
-                (
-                    str(item.get("requestId"))
-                    for item in reversed(chapter.aigc_report.get("calls") or [])
-                    if isinstance(item, dict) and item.get("requestId")
-                ),
-                None,
-            ),
-            status="completed",
-            cost_currency="CNY",
-        )
-    )
-    db.add(chapter)
-    db.commit()
-    return result.text
-
-
-_EDITORIAL_ISSUE_TYPES = {
-    "empty_chapter",
-    "encoding_damage",
-    "model_process_noise",
-    "ascii_dialogue_quote",
-    "punctuation_pair_misordered",
-    "punctuation_pair_unclosed",
-    "quote_run",
-    "punctuation_run",
-    "punctuation_order",
-    "dialogue_punctuation_outside_quote",
-    "stray_punctuation",
-    "overlong_unpunctuated_sentence",
-    "unsupported_external_artifact",
-    "fabricated_external_evidence",
-    "repeated_model_cue",
-    "repeated_negative_parallelism",
-    "duplicate_sentence",
-    "repeated_accounting_anchor",
-    "narrative_quality_gate",
-    "editorial_length_drift",
-    "critical_anchor_changed",
-}
-
-
-def _save_editorial_quality_issues(
-    db: Session,
-    chapter: LongNovelChapter,
-    issues: list[dict[str, str]],
-) -> None:
-    db.query(LongNovelContinuityIssue).filter(
-        LongNovelContinuityIssue.project_id == chapter.project_id,
-        LongNovelContinuityIssue.chapter_number == chapter.chapter_number,
-        LongNovelContinuityIssue.issue_type.in_(sorted(_EDITORIAL_ISSUE_TYPES)),
-    ).delete(synchronize_session=False)
-    for item in issues:
-        description = str(item.get("description") or "").strip()
-        if not description:
-            continue
-        db.add(
-            LongNovelContinuityIssue(
-                project_id=chapter.project_id,
-                chapter_number=chapter.chapter_number,
-                severity=str(item.get("severity") or "high")[:16],
-                issue_type=str(item.get("issueType") or "prose_quality")[:128],
-                description=description[:2000],
-                evidence=str(item.get("evidence") or "")[:2000] or None,
-                suggested_fix=str(item.get("suggestedFix") or "")[:2000] or None,
-                status="open",
-            )
-        )
-
-
-def _set_editorial_report(
-    chapter: LongNovelChapter,
-    *,
-    status: str,
-    source: str,
-    candidate: str,
-    issues: list[dict[str, str]],
-    initial_audit: dict[str, Any] | None = None,
-    final_audit: dict[str, Any] | None = None,
-    copyedit_fallback: bool = False,
-) -> None:
-    report = dict(chapter.aigc_report or {})
-    report["editorialQuality"] = {
-        "policyVersion": "family-prose-v2-three-model",
-        "status": status,
-        "sourceSha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
-        "candidateSha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-        "issues": compact_issue_payload(issues),
-        "models": {
-            "writer": settings.OPENAI_WRITER_MODEL,
-            "writerReasoningEffort": "xhigh",
-            "narrativeAuditor": settings.GEMINI_MODEL,
-            "copyEditor": settings.DEEPSEEK_MODEL,
-        },
-        "initialNarrativeAudit": _compact_narrative_audit(initial_audit),
-        "finalNarrativeAudit": _compact_narrative_audit(final_audit),
-        "copyeditFallback": copyedit_fallback,
-    }
-    chapter.aigc_report = report
-
-
-def _compact_narrative_audit(audit: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not audit:
-        return None
-    issues: list[dict[str, str]] = []
-    for item in _as_list(audit.get("issues"))[:12]:
-        payload = _as_dict(item)
-        issues.append(
-            {
-                "severity": str(payload.get("severity") or "medium")[:16],
-                "issueType": str(payload.get("issueType") or "narrative")[:80],
-                "evidence": str(payload.get("evidence") or "")[:500],
-                "requiredFix": str(payload.get("requiredFix") or "")[:500],
-            }
-        )
-    return {
-        "approved": audit.get("approved") is True,
-        "issues": issues,
-        "coreStakeStatus": str(audit.get("coreStakeStatus") or "")[:40],
-        "distinctCharacterVoices": audit.get("distinctCharacterVoices") is True,
-        "unsupportedAdditions": [str(item)[:300] for item in _as_list(audit.get("unsupportedAdditions"))[:12]],
-    }
-
-
-def _narrative_audit_issues(audit: dict[str, Any] | None) -> list[dict[str, str]]:
-    if not audit:
-        return [
-            {
-                "severity": "severe",
-                "issueType": "narrative_quality_gate",
-                "description": "剧情审稿结果为空。",
-                "evidence": "",
-                "suggestedFix": "重新执行本章剧情审稿。",
-            }
-        ]
-    result: list[dict[str, str]] = []
-    for item in _as_list(audit.get("issues"))[:12]:
-        payload = _as_dict(item)
-        severity = str(payload.get("severity") or "medium").lower()
-        if severity not in {"medium", "high", "severe"}:
-            continue
-        result.append(
-            {
-                "severity": severity,
-                "issueType": "narrative_quality_gate",
-                "description": str(payload.get("issueType") or "剧情与人物质量未通过")[:400],
-                "evidence": str(payload.get("evidence") or "")[:1200],
-                "suggestedFix": str(payload.get("requiredFix") or "")[:1200],
-            }
-        )
-    if audit.get("approved") is not True and not result:
-        result.append(
-            {
-                "severity": "high",
-                "issueType": "narrative_quality_gate",
-                "description": "Gemini 终审未批准本章剧情与人物质量。",
-                "evidence": str(audit.get("coreStakeStatus") or "")[:200],
-                "suggestedFix": "从章节修复入口处理，不自动重复付费生成。",
-            }
-        )
-    return result
-
-
-def _run_family_narrative_audit(
-    db: Session,
-    project: LongNovelProject,
-    chapter: LongNovelChapter,
-    *,
-    chapter_context: str,
-    chapter_text: str,
-    action: str,
-) -> dict[str, Any]:
-    prompt = render_prompt(
-        ZHOULI_NARRATIVE_AUDIT_PROMPT,
-        chapter_context=chapter_context,
-        chapter_text=chapter_text,
-    )
-    return _json_loads(
-        _call_specialist_text(
-            db,
-            project_id=project.id,
-            chapter_number=chapter.chapter_number,
-            action=action,
-            provider="gemini",
-            model=settings.GEMINI_MODEL,
-            prompt=prompt,
-            max_output_tokens=8000,
-        )
-    )
-
-
-def _editorial_polish_family_chapter(
-    db: Session,
-    project: LongNovelProject,
-    chapter: LongNovelChapter,
-    context: dict[str, Any],
-) -> LongNovelChapter:
-    """Run one bounded editorial pass before any state/AIGC acceptance work."""
-
-    source = normalize_family_novel_prose(chapter.raw_model_output or chapter.content or "")
-    metadata = _as_dict((chapter.aigc_report or {}).get("editorialQuality"))
-    existing = normalize_family_novel_prose(chapter.pre_aigc_content or "")
-    if metadata.get("status") == "passed" and existing:
-        chapter.content = existing
-        chapter.word_count = _word_count(existing)
-        return chapter
-    if metadata.get("status") == "failed" and existing:
-        raise FamilyLongNovelError("本章终稿校对仍有机械硬伤，已保留候选且停止自动重试，请从章节修复入口处理。")
-
-    # Legacy chapters used to copy the raw draft into pre_aigc_content.  A
-    # genuinely edited legacy candidate can be reused only when it differs
-    # from the immutable writer draft and passes every local check.
-    if existing and existing != source:
-        existing_issues = inspect_editorial_candidate(source, existing)
-        if not existing_issues:
-            chapter.content = existing
-            chapter.word_count = _word_count(existing)
-            _set_editorial_report(
-                chapter,
-                status="passed",
-                source=source,
-                candidate=existing,
-                issues=[],
-            )
-            db.add(chapter)
-            db.commit()
-            return chapter
-
-    chapter_context = _context_prompt_json(context, "editorial_polish")
-    initial_audit = _run_family_narrative_audit(
-        db,
-        project,
-        chapter,
-        chapter_context=chapter_context,
-        chapter_text=source,
-        action="gemini_audit_family_chapter_draft",
-    )
-    candidate = source
-    if initial_audit.get("approved") is not True or _as_list(initial_audit.get("issues")):
-        repair_prompt = render_prompt(
-            ZHOULI_NARRATIVE_REPAIR_PROMPT,
-            chapter_context=chapter_context,
-            audit_json=_json_dumps(_compact_narrative_audit(initial_audit)),
-            chapter_text=source,
-        )
-        repair_prompt = (
-            f"{repair_prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-        )
-        repair_prompt = _with_project_cache_prefix(context, repair_prompt)
-        candidate = normalize_family_novel_prose(
-            _call_text(
-                db,
-                project_id=project.id,
-                chapter_number=chapter.chapter_number,
-                action="gpt56_repair_family_narrative",
-                tier="strong",
-                prompt=repair_prompt,
-                max_output_tokens=_chapter_write_max_output_tokens(project),
-                prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter.chapter_number),
-                reasoning_effort="xhigh",
-            )
-        )
-
-    before_copyedit = candidate
-    copyedit_prompt = render_prompt(
-        ZHOULI_DEEPSEEK_COPYEDIT_PROMPT,
-        chapter_context=chapter_context,
-        chapter_text=before_copyedit,
-    )
-    deepseek_candidate = normalize_family_novel_prose(
-        _call_specialist_text(
-            db,
-            project_id=project.id,
-            chapter_number=chapter.chapter_number,
-            action="deepseek_copyedit_family_chapter",
-            provider="deepseek",
-            model=settings.DEEPSEEK_MODEL,
-            prompt=copyedit_prompt,
-            max_output_tokens=_chapter_write_max_output_tokens(project),
-        )
-    )
-    before_copyedit_issues = inspect_editorial_candidate(source, before_copyedit)
-    issues = inspect_editorial_candidate(source, deepseek_candidate)
-    copyedit_fallback = False
-    if issues and not before_copyedit_issues:
-        # DeepSeek is a copy editor, never a license to damage a safe draft.
-        candidate = before_copyedit
-        issues = []
-        copyedit_fallback = True
-    else:
-        candidate = deepseek_candidate
-
-    final_audit: dict[str, Any] | None = None
-    if not issues:
-        final_audit = _run_family_narrative_audit(
-            db,
-            project,
-            chapter,
-            chapter_context=chapter_context,
-            chapter_text=candidate,
-            action="gemini_verify_family_chapter_final",
-        )
-        issues.extend(_narrative_audit_issues(final_audit))
-
-    chapter.content = candidate
-    chapter.pre_aigc_content = candidate
-    chapter.word_count = _word_count(candidate)
-    chapter.version = (chapter.version or 1) + 1
-    if issues:
-        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-        _set_editorial_report(
-            chapter,
-            status="failed",
-            source=source,
-            candidate=candidate,
-            issues=issues,
-            initial_audit=initial_audit,
-            final_audit=final_audit,
-            copyedit_fallback=copyedit_fallback,
-        )
-        _save_editorial_quality_issues(db, chapter, issues)
-        db.add(chapter)
-        db.commit()
-        raise FamilyLongNovelError("本章终稿校对未通过错别字、标点或事实锚点硬门槛，候选已保留且未写入状态账本。")
-
-    _save_editorial_quality_issues(db, chapter, [])
-    _set_editorial_report(
-        chapter,
-        status="passed",
-        source=source,
-        candidate=candidate,
-        issues=[],
-        initial_audit=initial_audit,
-        final_audit=final_audit,
-        copyedit_fallback=copyedit_fallback,
-    )
-    db.add(chapter)
-    db.commit()
-    db.refresh(chapter)
-    return chapter
-
-
-def _postprocess_family_chapter(
-    db: Session,
-    project: LongNovelProject,
-    plan: LongNovelChapterPlan,
-    chapter: LongNovelChapter,
-    context: dict[str, Any],
-    user: User | None,
-    *,
-    auto_repair: bool,
-) -> LongNovelChapter:
-    chapter = _editorial_polish_family_chapter(db, project, chapter, context)
-    gated_content = _apply_family_aigc_gate(
-        db,
-        chapter.content,
-        project_id=project.id,
-        chapter_number=chapter.chapter_number,
-    )
-    if gated_content != chapter.content:
-        chapter.content = gated_content
-        chapter.word_count = _word_count(gated_content)
-        chapter.version = (chapter.version or 1) + 1
-        db.add(chapter)
-        db.commit()
-    extracted_state = extract_family_chapter_state(
-        db,
-        project.id,
-        chapter.chapter_number,
-        user,
-        context_pack=context,
-    )
-    issues = check_family_continuity(
-        db,
-        project.id,
-        chapter.chapter_number,
-        user,
-        context_pack=context,
-        extracted_state=extracted_state,
-    )
-    severe = [item for item in issues if item.severity in {"high", "severe"} and item.status == "open"]
-    if severe:
-        if auto_repair and settings.LONG_NOVEL_MAX_CHAPTER_REPAIR_COUNT > 0:
-            chapter = repair_family_chapter(db, project.id, chapter.chapter_number, user)
-        else:
-            chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-            plan.status = LongNovelChapterStatus.NEEDS_REPAIR
-            project.status = LongNovelProjectStatus.PAUSED
-            db.add(chapter)
-            db.add(plan)
-            db.add(project)
-            db.commit()
-            raise FamilyLongNovelError("本章仍有 high/severe 连续性、人物刻画或文字校对问题，未进入完成状态。")
-    chapter.status = LongNovelChapterStatus.COMPLETED
-    plan.status = LongNovelChapterStatus.COMPLETED
-    project.status = LongNovelProjectStatus.ACTIVE
-    db.add(chapter)
-    db.add(plan)
-    db.add(project)
-    db.commit()
-    sync_family_project_progress(db, project)
-    db.refresh(chapter)
-    return chapter
-
-
-def retry_family_chapter_aigc(
-    db: Session,
-    project_id: UUID,
-    chapter_number: int,
-    user: User | None = None,
-) -> LongNovelChapter:
-    """Resume a preserved chapter at the AIGC gate without regenerating prose."""
-    if not aigc_category_eligible("family_long_novel"):
-        raise FamilyLongNovelError("小说类当前不启用朱雀 v2，不能重跑该阶段")
-    project = _get_project(db, project_id, user)
-    chapter = (
-        db.query(LongNovelChapter)
-        .filter(
-            LongNovelChapter.project_id == project.id,
-            LongNovelChapter.chapter_number == chapter_number,
-        )
-        .first()
-    )
-    plan = (
-        db.query(LongNovelChapterPlan)
-        .filter(
-            LongNovelChapterPlan.project_id == project.id,
-            LongNovelChapterPlan.chapter_number == chapter_number,
-        )
-        .first()
-    )
-    if chapter is None or plan is None:
-        raise FamilyLongNovelError("章节或章节计划不存在，无法仅重试朱雀阶段")
-    original = (chapter.pre_aigc_content or chapter.content or "").strip()
-    if not original:
-        raise FamilyLongNovelError("没有可重试的朱雀前原稿")
-    if chapter.aigc_policy_version != AIGC_POLICY_VERSION:
-        raise FamilyLongNovelError("该历史章节没有绑定 AIGC v2 策略，不能用开关变化追溯处理")
-    chapter.content = original
-    chapter.aigc_status = "pending"
-    chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-    plan.status = LongNovelChapterStatus.NEEDS_REPAIR
-    project.status = LongNovelProjectStatus.GENERATING
-    db.add(chapter)
-    db.add(plan)
-    db.add(project)
-    db.commit()
-    context = _build_chapter_context(db, project, chapter_number)
-    validate_chapter_context_pack(context, chapter_number)
-    return _postprocess_family_chapter(
-        db,
-        project,
-        plan,
-        chapter,
-        context,
-        user,
-        auto_repair=True,
-    )
-
-
 def extract_family_chapter_state(
     db: Session,
     project_id: UUID,
     chapter_number: int,
     user: User | None = None,
-    *,
-    context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     project = _get_project(db, project_id, user)
     chapter = (
@@ -3896,30 +2036,14 @@ def extract_family_chapter_state(
     )
     if chapter is None:
         raise FamilyLongNovelError("章节不存在，无法抽取状态")
-    if (
-        aigc_category_eligible("family_long_novel")
-        and chapter.aigc_policy_version == AIGC_POLICY_VERSION
-        and chapter.aigc_status != "passed"
-    ):
-        raise FamilyLongNovelError("章节尚未通过 AIGC v2 终稿闸门，禁止抽取或写入状态账本")
-    context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
+    context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
-    _ensure_chapter_prompt_cache_warm(
-        db,
-        project_id=project.id,
-        chapter_number=chapter_number,
-        context_pack=context,
-        reasoning_effort=settings.LONG_NOVEL_STATE_REASONING_EFFORT,
-        verbosity=settings.OPENAI_WRITER_VERBOSITY,
-        tier="cheap",
-    )
     prompt = render_prompt(
         ZHOULI_STATE_EXTRACT_PROMPT,
         chapter_context=_context_prompt_json(context, "state_extract"),
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_STATE_RULES}"
-    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -3928,9 +2052,7 @@ def extract_family_chapter_state(
             action="extract_chapter_state",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=max(8000, int(settings.LONG_NOVEL_STATE_MAX_OUTPUT_TOKENS or 14000)),
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
-            reasoning_effort=str(settings.LONG_NOVEL_STATE_REASONING_EFFORT or "high"),
+            max_output_tokens=14000,
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -4059,7 +2181,6 @@ def _rule_continuity_issues(
     issues: list[dict[str, str]] = []
     content = chapter.content or ""
     context_pack = context_pack or {}
-    issues.extend(inspect_family_novel_prose(content))
     previous = _as_dict(context_pack.get("previousChapter"))
     if chapter.chapter_number > 1 and previous:
         opening = content[:1800]
@@ -4155,32 +2276,11 @@ def _rule_continuity_issues(
     return issues
 
 
-def _compact_state_delta_for_continuity(data: dict[str, Any] | None) -> dict[str, Any]:
-    source = data if isinstance(data, dict) else {}
-    limits = {
-        "events": 8,
-        "canonFacts": 12,
-        "familyMemberStateDeltas": 12,
-        "objectStateChanges": 10,
-        "conflictLineUpdates": 8,
-        "continuityClaims": 10,
-    }
-    compact: dict[str, Any] = {
-        "chapterSummary": _clip_prompt_value(source.get("chapterSummary"), 360),
-    }
-    for key, limit in limits.items():
-        compact[key] = _clip_prompt_value(_as_list(source.get(key))[:limit], 360)
-    return compact
-
-
 def check_family_continuity(
     db: Session,
     project_id: UUID,
     chapter_number: int,
     user: User | None = None,
-    *,
-    context_pack: dict[str, Any] | None = None,
-    extracted_state: dict[str, Any] | None = None,
 ) -> list[LongNovelContinuityIssue]:
     project = _get_project(db, project_id, user)
     chapter = (
@@ -4198,7 +2298,7 @@ def check_family_continuity(
         LongNovelContinuityIssue.project_id == project.id,
         LongNovelContinuityIssue.chapter_number == chapter_number,
     ).delete()
-    context = copy.deepcopy(context_pack) if context_pack is not None else _build_chapter_context(db, project, chapter_number)
+    context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
     rule_issues = _rule_continuity_issues(db, project, chapter, context)
     prompt = render_prompt(
@@ -4206,16 +2306,7 @@ def check_family_continuity(
         chapter_context=_context_prompt_json(context, "continuity_check"),
         chapter_text=chapter.content,
     )
-    audit_seed = {
-        "deterministicCandidateIssues": rule_issues,
-        "acceptedChapterStateDelta": _compact_state_delta_for_continuity(extracted_state),
-    }
-    prompt = (
-        f"{prompt}\n\n连续性审校辅助数据（只用于核对，不得照抄扩写）：\n"
-        f"{_canonical_json_dumps(audit_seed)}"
-    )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
     try:
         data = _call_json(
             db,
@@ -4224,9 +2315,7 @@ def check_family_continuity(
             action="check_continuity",
             tier="cheap",
             prompt=prompt,
-            max_output_tokens=max(6000, int(settings.LONG_NOVEL_CONTINUITY_MAX_OUTPUT_TOKENS or 10000)),
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
-            reasoning_effort=str(settings.LONG_NOVEL_CONTINUITY_REASONING_EFFORT or "high"),
+            max_output_tokens=12000,
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -4282,7 +2371,6 @@ def quality_check_family_chapter(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_CHECK_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
     try:
         return _call_json(
             db,
@@ -4292,7 +2380,6 @@ def quality_check_family_chapter(
             tier="cheap",
             prompt=prompt,
             max_output_tokens=8000,
-            prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
         )
     except MalformedModelJsonError as exc:
         logger.warning(
@@ -4333,8 +2420,7 @@ def repair_family_chapter(
         )
         .all()
     )
-    local_issues = inspect_family_novel_prose(chapter.content or "")
-    if not issues and not local_issues:
+    if not issues:
         return chapter
     context = _build_chapter_context(db, project, chapter_number)
     validate_chapter_context_pack(context, chapter_number)
@@ -4348,7 +2434,6 @@ def repair_family_chapter(
         }
         for item in issues
     ]
-    issues_payload.extend(compact_issue_payload(local_issues))
     prompt = render_prompt(
         ZHOULI_REPAIR_PROMPT,
         chapter_context=_context_prompt_json(context, "repair"),
@@ -4356,7 +2441,6 @@ def repair_family_chapter(
         chapter_text=chapter.content,
     )
     prompt = f"{prompt}\n\n{_CONTEXT_PACK_WRITE_RULES}\n\n{GENERAL_NOVEL_PROSE_GUARDRAILS}"
-    prompt = _with_project_cache_prefix(context, prompt)
     repaired = _call_text(
         db,
         project_id=project.id,
@@ -4365,63 +2449,16 @@ def repair_family_chapter(
         tier="default",
         prompt=prompt,
         max_output_tokens=24000,
-        prompt_cache_key=_chapter_prompt_cache_key(project.id, chapter_number),
     )
-    repaired = normalize_family_novel_prose(repaired)
-    repair_gate_issues = inspect_editorial_candidate(chapter.content or "", repaired)
     chapter.content = repaired
-    chapter.pre_aigc_content = repaired
+    chapter.raw_model_output = repaired
     chapter.word_count = _word_count(repaired)
     chapter.version = (chapter.version or 1) + 1
-    if repair_gate_issues:
-        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-        _set_editorial_report(
-            chapter,
-            status="failed",
-            source=normalize_family_novel_prose(chapter.raw_model_output or chapter.content or ""),
-            candidate=repaired,
-            issues=repair_gate_issues,
-        )
-        _save_editorial_quality_issues(db, chapter, repair_gate_issues)
-        db.add(chapter)
-        db.commit()
-        raise FamilyLongNovelError("修复稿仍有可定位的错别字、标点或锚点硬伤，已停止验收并保留候选。")
-
-    _set_editorial_report(
-        chapter,
-        status="passed",
-        source=normalize_family_novel_prose(chapter.raw_model_output or chapter.content or ""),
-        candidate=repaired,
-        issues=[],
-    )
-    chapter.aigc_policy_version = (
-        AIGC_POLICY_VERSION
-        if settings.AIGC_GATE_ENABLED and aigc_category_eligible("family_long_novel")
-        else None
-    )
-    chapter.aigc_status = "pending" if chapter.aigc_policy_version else "not_required"
-    chapter.aigc_report = {}
-    db.add(chapter)
-    db.flush()
-    repaired = _apply_family_aigc_gate(
-        db,
-        repaired,
-        project_id=project.id,
-        chapter_number=chapter_number,
-    )
-    chapter.content = repaired
-    chapter.word_count = _word_count(repaired)
     chapter.status = LongNovelChapterStatus.COMPLETED
     db.add(chapter)
     db.commit()
     extract_family_chapter_state(db, project.id, chapter_number, user)
-    remaining = check_family_continuity(db, project.id, chapter_number, user)
-    blocking = [item for item in remaining if item.status == "open" and item.severity in {"high", "severe"}]
-    if blocking:
-        chapter.status = LongNovelChapterStatus.NEEDS_REPAIR
-        db.add(chapter)
-        db.commit()
-        raise FamilyLongNovelError("修复稿复检仍有 high/severe 问题，未标记完成。")
+    check_family_continuity(db, project.id, chapter_number, user)
     db.refresh(chapter)
     return chapter
 
@@ -4452,7 +2489,7 @@ def generate_family_batch(
     end = max(req.from_chapter, req.to_chapter)
     for chapter_number in range(start, end + 1):
         db.refresh(project)
-        if project.status in {LongNovelProjectStatus.PAUSED, LongNovelProjectStatus.FAILED}:
+        if project.status == LongNovelProjectStatus.PAUSED:
             break
         existing = (
             db.query(LongNovelChapter)
@@ -4464,59 +2501,22 @@ def generate_family_batch(
             continue
         if existing and existing.status == LongNovelChapterStatus.FAILED and not req.retry_failed:
             skipped.append(chapter_number)
-            # Strict serial production: a later chapter must never be billed
-            # while an earlier failed chapter is being left unresolved.
-            project.status = LongNovelProjectStatus.PAUSED
-            db.add(project)
-            db.commit()
-            break
+            continue
         try:
             generate_family_chapter(db, project.id, chapter_number, user)
             generated.append(chapter_number)
-        except FamilyAigcManualReview as exc:
-            logger.warning(
-                "family chapter requires AIGC manual review project=%s chapter=%s: %s",
-                project.id,
-                chapter_number,
-                exc,
-            )
-            failed.append(
-                {
-                    "chapter_number": chapter_number,
-                    "status": "manual_review",
-                    "error": str(exc),
-                }
-            )
-            project.status = LongNovelProjectStatus.PAUSED
-            db.add(project)
-            db.commit()
-            break
         except Exception as exc:
             logger.exception("family chapter generation failed project=%s chapter=%s", project.id, chapter_number)
             failed.append({"chapter_number": chapter_number, "error": str(exc)})
-            failed_chapter = (
-                db.query(LongNovelChapter)
-                .filter(
-                    LongNovelChapter.project_id == project.id,
-                    LongNovelChapter.chapter_number == chapter_number,
-                )
-                .first()
-                or LongNovelChapter(
-                    project_id=project.id,
-                    chapter_number=chapter_number,
-                    title=f"第{chapter_number}章",
-                    content="",
-                )
+            failed_chapter = existing or LongNovelChapter(
+                project_id=project.id,
+                chapter_number=chapter_number,
+                title=f"第{chapter_number}章",
+                content="",
             )
             failed_chapter.status = LongNovelChapterStatus.FAILED
             db.add(failed_chapter)
-            # Any chapter failure (including quota and delivery-uncertain
-            # errors) pauses the batch before the next paid request. Resume is
-            # an explicit operator action after the failed chapter is fixed.
-            project.status = LongNovelProjectStatus.PAUSED
-            db.add(project)
             db.commit()
-            break
     db.refresh(project)
     if project.status != LongNovelProjectStatus.PAUSED:
         project.status = LongNovelProjectStatus.FAILED if failed and not generated else LongNovelProjectStatus.ACTIVE
@@ -4552,32 +2552,12 @@ def resume_family_project(db: Session, project_id: UUID, user: User | None = Non
 
 def export_family_novel(db: Session, project_id: UUID, fmt: str, user: User | None = None) -> tuple[str, str, str]:
     project = _get_project(db, project_id, user)
-    all_chapters = (
+    chapters = (
         db.query(LongNovelChapter)
         .filter(LongNovelChapter.project_id == project.id)
         .order_by(LongNovelChapter.chapter_number.asc())
         .all()
     )
-    chapters = [
-        item
-        for item in all_chapters
-        if item.status == LongNovelChapterStatus.COMPLETED
-        and (
-            not aigc_category_eligible("family_long_novel")
-            or item.aigc_policy_version != AIGC_POLICY_VERSION
-            or item.aigc_status == "passed"
-        )
-    ]
-    export_blockers: list[str] = []
-    for item in chapters:
-        prose_issues = inspect_family_novel_prose(item.content or "")
-        if prose_issues:
-            labels = "、".join(str(issue.get("description") or "文字硬伤") for issue in prose_issues[:3])
-            export_blockers.append(f"第{item.chapter_number}章：{labels}")
-    if export_blockers:
-        raise FamilyLongNovelError(
-            "普通长篇终稿校对未通过，已阻止导出：" + "；".join(export_blockers[:10])
-        )
     if fmt == "json":
         payload = {
             "project": _project_payload(project),

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import asyncio
-import inspect
 import json
 import re
 
@@ -13,13 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 
-from app.core.quality_metrics import detect_final_hard_errors
 from app.prompts.goal_driven_templates import (
-    CLASSICAL_NOVEL_STYLE_LOCK_PROMPT,
-    CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
-    CLASSICAL_REFERENCE_REWRITE_PROFILE,
-    CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT,
-    FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT,
     INTRO_BODY_REFINE_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     POLISH_FIXED_PHRASE_GUARD_PROMPT,
@@ -33,12 +26,10 @@ from app.prompts.goal_driven_templates import (
 )
 from app.services.classical_chinese import (
     BUDDHIST_SCRIPTURE_STORY_CATEGORY,
-    CLASSICAL_NOVEL_STYLE_CATEGORY,
     CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     build_buddhist_scripture_story_source,
     build_classical_prompt_source,
     classical_paragraph_marker,
-    classical_variant_rules,
     classical_variant_for_category,
     get_classical_variant_meta,
     split_buddhist_story_units,
@@ -61,53 +52,6 @@ MINIMAL_MANUSCRIPT = """@最终书名
 测试正文。
 """
 
-
-EXPECTED_CLASSICAL_REFERENCE_REWRITE_PROFILE = """【参照译写默认范式】
-- 这个分类现在只做“原文一段、翻译一段”的干净对照稿，不再参考《菜根谭》类全注全译、注释、点评或讲解体例。
-- 参考译本只用于校准释义、术语译法、断句、称谓和语气准确性；如果系统提供“当前原文对应参考译文召回”，必须优先用召回片段校准本段真正含义。
-- 默认范本是“菜根谭-中华书局参照范本”时，凡召回片段覆盖到当前原文，一律以中华书局版本的断句、关键字词释义、术语方向和语气密度为第一依据；古汉语词典只负责核对、补足未覆盖字词，不得推翻已命中的中华书局释义。
-- 每个原文段落必须先保留原文，再紧跟对应现代白话翻译；不得把全部原文集中放前面，也不得把全部翻译集中放后面。
-- 最终正文只允许出现“（原文）”和“（翻译）”两类成对段落。
-- 输出目标不是古典直译腔，也不是现代励志文、鸡汤文或讲义文，而是在中华书局释义基础上，译成清楚、自然、有文气的现代白话。
-- 古典比喻原则上要保留其核心意象和比喻方向，不要轻易抹掉。只有在现代读者确实难以理解时，才可以补充为更清楚的白话表达。比如“精金美玉”应优先译为“精金美玉般纯正坚实的人品”，不宜直接改成“过硬的好品格”；“薄冰上履过”应保留“如履薄冰”的艰险与戒慎，不宜泛化成“压力下走好每一步”。
-- 所有翻译落笔前，必须在做联网检索交叉验证。检索中华书局等可靠整理本、古汉语词典、权威注释、学术资料。
-- 落不能望文生义，不能用现代汉语常见意思拆字理解原文。遇到“修业、要名、结好、植节、标异见奇、非心、尘氛、芥蒂、圆机”等词语，必须先按古汉语义项和权威注释核定含义，再转成白话。不得把“修业”直接译成现代商业语境的“经营事业”，不得把“要名”译成“索取名声”，不得把“标异见奇”简化成现代意义上的“标新立异”。"""
-
-EXPECTED_CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK = """【古文白话参照译写版语义锁】
-- 本稿的翻译段已经按中华书局或用户指定权威参照译本校准。你现在只能做语言顺滑、标点整理、轻微去翻译腔和格式保护；不得重新翻译古文，不得自行重断句，不得自行改义项。
-- 中华书局对应译文覆盖到的地方，断句、关键字词释义、术语方向、主谓宾关系、比喻方向、承接关系、语气轻重都按中华书局为第一依据。
-- 终稿目标是在中华书局释义基础上更大白话一点：允许把古典直译腔改成普通读者能直接理解的现代说法，但不得改变义项、逻辑、轻重、比喻方向。
-- “便觉、始觉、方觉、乃觉、忽觉”里的“觉”按“觉得、感到、发觉”处理，不得译成“导致、造成、引发、致使”。
-- 不得新增注释、点评、赏析、解释表、译者按或圈号说明；最终仍然只保留“（原文）/（翻译）”成对段落。
-"""
-
-EXPECTED_CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH = """【古文白话参照译写版文气润色层】
-- 这一步只做“译后润色”，不重新翻译，不新增注释、点评、赏析或人生总结。
-- 翻译段要从“语文教材式解释”改成“普通读者能顺着读下去的大白话”，有气口、有停顿、有一点文气，但不能油滑、煽情或鸡汤。
-- 不要使用“这句话的意思是”“这说明”“所谓”“也就是说”“我们可以看出”“由此可见”等讲义腔开头。
-- 每个翻译段都要像一段自然现代汉语：先把原文的判断说清，再把古典比喻落到现实经验里。
-- 中华书局或用户指定参考译文命中的义项、断句和术语仍是第一依据。
-- 输出结构仍然只保留“（原文）/（翻译）”成对段落，不得加入新标题、新栏目或说明。
-"""
-
-EXPECTED_CLASSICAL_NOVEL_STYLE_LOCK = """【古文白话小说风格版锁定规则】
-- 当前稿件是古文故事的现代白话小说重写版，不是逐句翻译稿。最终正文必须是完整、顺畅、有故事推进感的现代白话叙事，不得恢复原文穿插，不得加入“（原文）/（翻译）”、P 编号、注释、译者按或翻译过程。
-- 必须先保证人物关系、事件事实、因果逻辑、行动顺序和结局不变；这里的“准确”指剧情事实准确，不是要求逐字逐句对译。叙事型原文要改写成现代白话小说，不得改变原文事实；抽象格言型原文必须用故事载体表达原文道理。
-- 若本锁定规则与通用古文白话“一段原文一段翻译、逐句解释、不得补动作”等规则冲突，以小说风格版为准：最终必须是故事化白话叙事，不是译文说明。
-- 叙事型原文可以补足必要的动作承接、人物反应、场景气息、对白语气和转折过渡，让故事读起来连贯、有画面。但不得新增会改变剧情事实的人物、地点、事件、冲突、支线、结局、现代设定或价值判断。允许增加“非剧情事实型细节”，例如停顿、抬头等，用来增强画面和节奏，但不能改变原文事件走向。
-- 叙事型古文，尤其《杨家将》这类已有故事的文本，要按现代通俗小说方式重写：开头尽快进入人物处境和主要冲突，压缩交代，强化选择、争执、危机和后果。不要只把古文逐句翻成说明文，也不要写成“某人说、某人又说、某人听罢”的流水账。每一段都要推动情节、加深冲突或完成转折。
-- 抽象格言、议论、训诫、修身判断若本身没有人物事件，允许引入无名人物、普通处境、少量动作和心理转折作为故事化表达载体。
-- 抽象格言型原文必须出现人物处境、一次具体选择、行动变化或心理转折，让道理从故事里显出来；不能只写“一个人要怎样”“这说明什么”“这句话是在说什么”。
-- 不得把稿件改回普通直译、大白话句义解释或资料讲义；必须保留故事推进感。
-- 不得删减原文关键信息，不得只保留故事梗概；但不要求逐字逐句覆盖原文。可以合并重复信息、调整句式顺序、压缩低价值铺陈，把原文的关键信息自然融入新的叙事段落中。保留的是人物、事件、因果、选择、后果和关键对白，不是保留古文句子的表面结构。
-"""
-
-EXPECTED_CLASSICAL_NOVEL_STYLE_VARIANT = """- 这不是把文言文逐句翻成大白话，也不是翻译后轻微润色；要先彻底理解原文讲了什么，再以现代通俗小说的方式重新组织语言。重写时可以改句式、调节奏、合并重复、补过渡、强化冲突，但必须忠于原文的人物关系、事件事实、因果顺序和结局。
-- 第一优先级是准确和完整：叙事型原文的人物、关系、事件、关键动作、关键对白、因果、顺序和结局不能改；但普通叙述句、动作承接、心理反应、场面描写和对白表达方式可以重新写。抽象型原文的核心判断、因果、转折和轻重不能改。
-- 第二优先级是故事感：叙事型要写成有画面、有冲突、有节奏、有转折的现代白话故事。人物开口要有立场，场面推进要有压力，危机到来要有速度，转折发生要有冲击。
-- 小说化要有边界：不能新增具体史实、名人、朝代、地名、复杂冲突、支线、结局反转或新观点。
-- 不要把抽象格言写成讲义、注释、鸡汤或“这句话的意思是……”式解释。"""
-
 WRITER_ROUTING_CATEGORIES = [
     category
     for category in SUPPORTED_CATEGORIES
@@ -115,28 +59,10 @@ WRITER_ROUTING_CATEGORIES = [
     not in {
         "comic_series",
         "healing_comic",
-        "story_comic",
-        "homophone_comic",
         "finance_technology",
-        "finance_technology_ai_optimized",
         "finance_technology_recommendation",
-        "general_longform",  # Stateful serial category; covered by test_general_longform.py.
     }
 ]
-
-
-def test_classical_category_prompt_fragments_match_word_versions_exactly() -> None:
-    assert CLASSICAL_REFERENCE_REWRITE_PROFILE == EXPECTED_CLASSICAL_REFERENCE_REWRITE_PROFILE
-    assert (
-        CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK_PROMPT
-        == EXPECTED_CLASSICAL_REFERENCE_REWRITE_SEMANTIC_LOCK
-    )
-    assert (
-        CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT
-        == EXPECTED_CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH
-    )
-    assert CLASSICAL_NOVEL_STYLE_LOCK_PROMPT == EXPECTED_CLASSICAL_NOVEL_STYLE_LOCK
-    assert classical_variant_rules("novel_style") == EXPECTED_CLASSICAL_NOVEL_STYLE_VARIANT
 
 
 @pytest.mark.parametrize("category", WRITER_ROUTING_CATEGORIES)
@@ -152,8 +78,6 @@ def test_generate_full_book_routes_writer_prompt_by_category(
         expected_raw_text = build_classical_prompt_source(raw_text)
     elif category == "classical_chinese_interleaved":
         expected_raw_text = build_classical_prompt_source(raw_text, interleaved=True)
-    elif category == CLASSICAL_NOVEL_STYLE_CATEGORY:
-        expected_raw_text = build_classical_prompt_source(raw_text, variant="novel_style")
     elif category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
         expected_raw_text = build_classical_prompt_source(raw_text, variant="reference_translation")
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
@@ -471,7 +395,7 @@ def test_longform_variant_categories_use_dedicated_prompts() -> None:
         (
             "emotion_relationship_unique_view",
             "心理情感（情感·关系）（独特观点版）",
-            "我提供的文章、视频或视频文稿，只能作为“参照材料”",
+            "让最终成稿与原视频文稿在结构、案例、表达和推进方式上都有明显区别",
         ),
         (
             "health_wellness_daily_pain",
@@ -512,8 +436,6 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("情感关系独特观点版") == "emotion_relationship_unique_view"
     assert normalize_category("健康养生日常痛点版") == "health_wellness_daily_pain"
     assert normalize_category("古文白话（原文翻译穿插版）") == "classical_chinese_interleaved"
-    assert normalize_category("古文白话小说风格版") == CLASSICAL_NOVEL_STYLE_CATEGORY
-    assert normalize_category("古文白话（小说风格版）") == CLASSICAL_NOVEL_STYLE_CATEGORY
     assert normalize_category("古文白话参照译写版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("古文白话（参照译写版）") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
     assert normalize_category("古文白话抄袭版") == CLASSICAL_REFERENCE_REWRITE_CATEGORY
@@ -521,84 +443,10 @@ def test_longform_variant_aliases_resolve() -> None:
     assert normalize_category("佛经白话故事版") == "buddhist_scripture_story"
 
 
-def test_classical_novel_style_prompt_uses_novel_polish_rules() -> None:
-    meta = get_category_meta(CLASSICAL_NOVEL_STYLE_CATEGORY)
-    prompts = get_prompts(CLASSICAL_NOVEL_STYLE_CATEGORY)
-    writer = prompts["full_book_writer"]
-    polish = prompts["gemini_fast_polish"]
-    refine = prompts["gemini_fast_refine"]
-    formatter = prompts["final_book_format"]
-    source_pack = build_classical_prompt_source(
-        "其人夜入古寺，闻壁间有声。",
-        variant=classical_variant_for_category(CLASSICAL_NOVEL_STYLE_CATEGORY),
-        original_title="志怪录",
-    )
-
-    assert meta["label"] == "古文白话小说风格版"
-    assert "纯白话故事化小说风格稿" in writer
-    assert "小说风格版专属工作流" in writer
-    assert "原文理解" in writer
-    assert "故事化白话改写" in writer
-    assert "小故事式白话叙事" in writer
-    assert "抽象格言型" in writer
-    assert "无名人物" in writer
-    assert "故事载体" in writer
-    assert "最终只输出纯白话成稿" in writer
-    assert "小说风格版" in source_pack
-    assert "不是把文言文逐句翻成大白话" in source_pack
-    assert "忠于原文的小故事式白话叙事" in source_pack
-    assert "小说风格版段落硬规则" in source_pack
-    assert "可以把同一个 P 编号对应的白话内容拆成两个或多个自然段" in source_pack
-    assert "抽象格言" in source_pack
-    assert "不能只解释句义" in source_pack
-    for stage_prompt in (polish, refine, formatter):
-        assert "古文白话小说风格版锁定规则" in stage_prompt
-        assert "剧情事实准确，不是要求逐字逐句对译" in stage_prompt
-        assert "普通直译" in stage_prompt
-        assert "抽象格言" in stage_prompt
-        assert "无名人物" in stage_prompt
-
-
-def test_classical_novel_style_segment_writer_uses_story_rewrite_mode() -> None:
-    prompt = content_engine._classical_segment_writer_prompt(
-        segment_text="其人夜入古寺，闻壁间有声。",
-        all_lines=["其人夜入古寺，闻壁间有声。"],
-        start_index=1,
-        variant=classical_variant_for_category(CLASSICAL_NOVEL_STYLE_CATEGORY),
-        original_title="志怪录",
-    )
-
-    assert "小故事式白话叙事" in prompt
-    assert "不能只是逐字逐句翻译成大白话" in prompt
-    assert "抽象格言" in prompt
-    assert "无名人物和简短场景" in prompt
-    assert "逐段完整白话化" not in prompt
-
-
-def test_classical_novel_style_prompt_allows_abstract_maxim_story_carrier() -> None:
-    source_pack = build_classical_prompt_source(
-        "昨日之非不可留，留之则根烬复萌，而尘情终累乎理趣；今日之是不可执，执之则渣滓未化，而理趣反转为欲根。",
-        variant=classical_variant_for_category(CLASSICAL_NOVEL_STYLE_CATEGORY),
-        original_title="菜根谭",
-    )
-    prompts = get_prompts(CLASSICAL_NOVEL_STYLE_CATEGORY)
-
-    assert "抽象格言" in source_pack
-    assert "无名人物" in source_pack
-    assert "普通处境" in source_pack
-    assert "行动选择" in source_pack
-    assert "心理转折" in source_pack
-    assert "不得只写自然观点推进或生活化解释" in source_pack
-    assert "抽象格言型原文必须用故事载体表达原文道理" in prompts["gemini_fast_polish"]
-
-
 def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     meta = get_category_meta(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
     prompts = get_prompts(CLASSICAL_REFERENCE_REWRITE_CATEGORY)
     writer = prompts["full_book_writer"]
-    polish = prompts["gemini_fast_polish"]
-    refine = prompts["gemini_fast_refine"]
-    formatter = prompts["final_book_format"]
     source_pack = build_classical_prompt_source(
         "子曰：学而时习之，不亦说乎。",
         variant=classical_variant_for_category(CLASSICAL_REFERENCE_REWRITE_CATEGORY),
@@ -606,7 +454,7 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     )
 
     assert meta["label"] == "古文白话（参照译写版）"
-    assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成更大白话一点的自然白话"
+    assert meta["core_feature"] == "参考已有译文的释义和术语，结合古汉语词典，重新写成自然原创白话"
     assert "{raw_text}" in writer
     assert "原文翻译对照稿" in writer
     assert "若参考到已有译文，只能吸收释义判断、术语、断句和语气密度" in writer
@@ -615,16 +463,7 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "不再参考《菜根谭》类全注全译" in writer
     assert "参照译写安全硬规则" in writer
     assert "不得逐句模仿" in writer
-    assert "权威参照译本和古汉语词典三方校准" in writer
-    assert "联网检索专业网站" in writer
-    assert "不得用百科摘抄、论坛、营销号" in writer
-    assert "不能望文生义" in writer
-    assert "现代汉语常见意思拆字" in writer
-    assert "更大白话一点" in writer
-    assert "精金美玉般纯正坚实的人品" in writer
-    assert "如履薄冰”的艰险与戒慎" in writer
-    assert "菜根谭-中华书局参照范本" in writer
-    assert "便觉百行皆非" in writer
+    assert "输出必须回到古文原文和古汉语词典" in writer
     assert "不得输出【注释】【译文】【点评】【原文定位】" in writer
     assert "知名译本参照" in source_pack
     assert "参考已有译本或白话稿时" in source_pack
@@ -632,19 +471,7 @@ def test_classical_reference_rewrite_prompt_uses_safe_reference_rules() -> None:
     assert "【P0001】（原文）原文内容" in source_pack
     assert "（翻译）现代白话译文" in source_pack
     assert "不得照搬、近似改写或按句同义替换参考译文" in source_pack
-    assert "以该权威译本的断句、关键字词释义" in source_pack
-    assert "联网检索专业网站做交叉验证" in source_pack
-    assert "不得用百科摘抄、论坛、营销号" in source_pack
-    assert "不得按现代汉语常见意思拆字理解原文" in source_pack
-    assert "便觉百行皆非" in source_pack
     assert "【注释】【译文】【点评】必须单独成行" not in source_pack
-    for stage_prompt in (polish, refine, formatter):
-        assert "古文白话参照译写版语义锁" in stage_prompt
-        assert "不得重新翻译古文" in stage_prompt
-        assert "更大白话一点" in stage_prompt
-        assert "便觉、始觉、方觉" in stage_prompt
-        assert "语文教材式解释" in stage_prompt
-        assert "中华书局或用户指定参考译文命中的义项" in stage_prompt
 
 
 def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> None:
@@ -666,212 +493,10 @@ def test_classical_reference_rewrite_style_notes_append_to_segment_prompt() -> N
     assert "古文白话参照译写版专用的参照译本输入项" in with_reference
     assert "参考对象：某知名译本" in with_reference
     assert "补充要求：参考译文：孔子说，学习以后常常温习。" in with_reference
-    assert "校准释义、术语、断句、称谓、语气密度和关键字词准确性" in with_reference
-    assert "菜根谭-中华书局参照范本" in with_reference
+    assert "只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性" in with_reference
     assert "最终输出只允许每个原文段后紧跟一个翻译段" in with_reference
     assert "不要学习其注释、点评、章节讲解或排版体例" in with_reference
     assert "不得逐句复刻、同义替换、搬运参考译文" in with_reference
-    assert "权威译本方向，再用联网专业资料和古汉语词典补缺" in with_reference
-    assert "联网检索专业网站交叉验证" in with_reference
-    assert "不得按现代汉语常见意思拆字理解原文" in with_reference
-    assert "更大白话一点" in with_reference
-    assert "精金美玉、烈火、如履薄冰" in with_reference
-    assert "便觉、始觉、方觉" in with_reference
-
-
-def test_classical_reference_rewrite_generation_chain_uses_word_prompt_layers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, str] = {}
-    final_text = """@最终书名
-菜根谭（白话版）
-@最终简介
-测试简介。
-@目录
-1. 测试
-@导言
-测试导言。
-@正文
-（原文）欲做精金美玉的人品，定从烈火中煅来。
-
-（翻译）一个人要想拥有真正过硬的好品格，就必须在现实的严酷考验中不断捶打自己。
-"""
-
-    async def fake_route_writer_call(prompt: str, **_: object) -> str:
-        captured["writer"] = prompt
-        return final_text
-
-    async def fake_polish_chunks(text: str, **kwargs: object) -> str:
-        captured["polish_text"] = text
-        captured["polish_system"] = str(kwargs["system_instruction"])
-        return text
-
-    async def fake_refine_chunks(text: str, **kwargs: object) -> str:
-        captured["refine_text"] = text
-        captured["refine_system"] = str(kwargs["system_instruction"])
-        return text
-
-    def fake_format_book_text(text: str, **kwargs: object) -> str:
-        captured["format_text"] = text
-        captured["format_prompt"] = str(kwargs["prompt_template"])
-        return text
-
-    async def fake_repair_classical_quality_once(text: str, **_: object) -> str:
-        return text
-
-    async def fake_repair_final_hard_errors_once(text: str, **_: object) -> str:
-        return text
-
-    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
-    monkeypatch.setattr(content_engine, "_refine_by_paragraph_chunks_strict", fake_refine_chunks)
-    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
-    monkeypatch.setattr(content_engine, "_repair_classical_quality_once", fake_repair_classical_quality_once)
-    monkeypatch.setattr(content_engine, "_repair_final_hard_errors_once", fake_repair_final_hard_errors_once)
-
-    result = asyncio.run(
-        content_engine.generate_full_book(
-            "欲做精金美玉的人品，定从烈火中煅来。",
-            category="古文白话参照译写版",
-            output_dir=tmp_path / "classical-reference-chain",
-            style_reference="中华书局参照译本",
-            style_notes="参考译文：想要磨炼出如精金美玉般纯粹的人品，定要经过烈火般的煅烧。",
-            classical_original_title="菜根谭",
-        )
-    )
-
-    assert "菜根谭（白话版）" in result
-    assert "联网检索专业网站做交叉验证" in captured["writer"]
-    assert "不得用百科摘抄、论坛、营销号" in captured["writer"]
-    assert "不得按现代汉语常见意思拆字理解原文" in captured["writer"]
-    assert "参考对象：中华书局参照译本" in captured["writer"]
-    assert "参考译文：想要磨炼出如精金美玉般纯粹的人品" in captured["writer"]
-
-    assert "polish_system" not in captured
-    assert "refine_system" not in captured
-    assert "古文白话参照译写版语义锁" in captured["format_prompt"]
-    assert "不得重新翻译古文" in captured["format_prompt"]
-    assert "语文教材式解释" in captured["format_prompt"]
-    assert "中华书局或用户指定参考译文命中的义项" in captured["format_prompt"]
-
-
-@pytest.mark.parametrize(
-    ("category", "original_title", "body"),
-    [
-        (
-            CLASSICAL_NOVEL_STYLE_CATEGORY,
-            "杨家将",
-            "杨业披甲出帐，众将随他奔向城门。",
-        ),
-        (
-            CLASSICAL_REFERENCE_REWRITE_CATEGORY,
-            "菜根谭",
-            "（原文）欲做精金美玉的人品，定从烈火中煅来。\n\n"
-            "（翻译）想磨炼出精金美玉般坚实的人品，就要经得住烈火般的考验。",
-        ),
-    ],
-)
-def test_selected_classical_categories_skip_both_gemini_rewrite_stages(
-    category: str,
-    original_title: str,
-    body: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manuscript = f"""@最终书名
-{original_title}（白话版）
-@最终简介
-测试简介。
-@目录
-1. 第一章
-@导言
-测试导言。
-@正文
-{body}
-"""
-    captured: dict[str, str] = {}
-    stages: list[str] = []
-
-    async def fake_route_writer_call(prompt: str, **_: object) -> str:
-        captured["writer_prompt"] = prompt
-        return manuscript
-
-    async def fail_polish(*_: object, **__: object) -> str:
-        raise AssertionError("直出分类不得调用 Gemini 一润")
-
-    async def fail_refine(*_: object, **__: object) -> str:
-        raise AssertionError("直出分类不得调用 Gemini 二润")
-
-    def fake_format_book_text(text: str, **_: object) -> str:
-        captured["format_input"] = text
-        return text
-
-    async def keep_classical_text(text: str, **_: object) -> str:
-        return text
-
-    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fail_polish)
-    monkeypatch.setattr(content_engine, "_refine_by_paragraph_chunks_strict", fail_refine)
-    monkeypatch.setattr(content_engine, "format_book_text", fake_format_book_text)
-    monkeypatch.setattr(content_engine, "_repair_classical_quality_once", keep_classical_text)
-    monkeypatch.setattr(content_engine, "_repair_final_hard_errors_once", keep_classical_text)
-
-    output_dir = tmp_path / category
-    result = asyncio.run(
-        content_engine.generate_full_book(
-            "测试古文原文。",
-            category=category,
-            classical_original_title=original_title,
-            output_dir=output_dir,
-            on_stage=lambda stage, _: stages.append(stage),
-        )
-    )
-
-    assert original_title in result
-    assert captured["format_input"] == manuscript
-    assert (output_dir / "01_writer.md").exists()
-    assert not (output_dir / "02_polish.md").exists()
-    assert not (output_dir / "03_refine.md").exists()
-    assert (output_dir / "04_format.md").exists()
-    assert not any(stage.startswith("polish") for stage in stages)
-    assert not any(stage.startswith("refine") for stage in stages)
-
-
-def test_classical_reference_notes_match_current_source_instead_of_head_tail() -> None:
-    notes = "\n".join(
-        [
-            "前言",
-            "这是一段很长但不相关的参考说明。" * 80,
-            "一",
-            "欲做精金美玉的人品①，定从烈火中煅来②；思立掀天揭地的事功③，须向薄冰上履过④。",
-            "【注释】",
-            "①精金美玉：比喻纯洁完美的人或事物。",
-            "②煅：锻炼，烧制。",
-            "【译文】",
-            "若想成就精金美玉般完美无瑕的人格品行，一定要经受烈火煅烧般的历练。",
-            "【点评】",
-            "这一段点评不应该被召回给模型学习排版体例。",
-            "二",
-            "完全无关的后续条目。",
-        ]
-    )
-
-    excerpt = content_engine._style_reference_notes_for_classical_segment(  # noqa: SLF001
-        notes,
-        start_index=1,
-        end_index=1,
-        total_source_lines=1,
-        source_segment_text="欲做精金美玉的人品，定从烈火中煅来；思立掀天揭地的事功，须向薄冰上履过。",
-    )
-
-    assert "当前原文对应参考译文召回" in excerpt
-    assert "以这些片段的释义和断句为第一依据" in excerpt
-    assert "权威释义定准后的大白话复写" in excerpt
-    assert "精金美玉" in excerpt
-    assert "完美无瑕的人格品行" in excerpt
-    assert "这是一段很长但不相关的参考说明" not in excerpt
-    assert "这一段点评不应该被召回" not in excerpt
 
 
 def test_finance_technology_category_uses_dedicated_prompt() -> None:
@@ -901,45 +526,6 @@ def test_finance_technology_category_uses_dedicated_prompt() -> None:
     assert "【小节标题全局要求】" in prompt
     assert "【导言与正文分工全局要求】" in prompt
     assert "测试参考资料" in rendered
-
-
-def test_finance_technology_ai_optimized_uses_complete_ai_style_prompt() -> None:
-    optimized_prompt = get_prompts("finance_technology_ai_optimized")["full_book_writer"]
-    meta = get_category_meta("finance_technology_ai_optimized")
-
-    assert meta["label"] == "财经科技（优化AI味版）"
-    assert optimized_prompt.startswith(
-        FINANCE_TECHNOLOGY_AI_OPTIMIZED_FULL_BOOK_WRITER_PROMPT
-    )
-    assert "平台AI味五维控制" in optimized_prompt
-    assert "句式套路化 25%" in optimized_prompt
-    assert "节奏机械 25%" in optimized_prompt
-    assert "最高原则：像作者一样选择，而不是像模型一样解释" in optimized_prompt
-    assert "不要强迫段落闭环" in optimized_prompt
-    assert "信息不平均" in optimized_prompt
-    assert "主动取舍" in optimized_prompt
-    assert "生成后的高人工特征自检" in optimized_prompt
-    assert "最终状态" in optimized_prompt
-    assert "财经科技联网与事实要求" in optimized_prompt
-    assert "当前；今年；最新；近期；趋势；前景" in optimized_prompt
-    assert "如果具备联网能力，可以检索同类型畅销书" in optimized_prompt
-    assert "选择比覆盖更重要" in optimized_prompt
-    assert "多数句子宜控制在约15—40个汉字" in optimized_prompt
-    assert "财经科技来源表述专项要求" not in optimized_prompt
-    assert "财经科技联网检索与最新例子硬性要求" not in optimized_prompt
-    rendered_prompt = content_engine._finance_whole_book_prompt(  # noqa: SLF001
-        optimized_prompt.format(raw_text="测试参考资料"),
-        "测试参考资料",
-        target_words=12_000,
-        duration_seconds=600,
-        latest_research="已检索到当前资料。",
-        category="finance_technology_ai_optimized",
-    )
-    assert "测试参考资料" in rendered_prompt
-    assert "平台AI味五维控制" in rendered_prompt
-    assert "财经科技（优化AI味版）" in content_engine._finance_latest_research_prompt(  # noqa: SLF001
-        "测试参考资料", category="finance_technology_ai_optimized"
-    )
 
 
 def test_finance_technology_advice_category_is_removed() -> None:
@@ -979,8 +565,6 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("财经科技") == "finance_technology"
     assert normalize_category("财经·科技") == "finance_technology"
     assert normalize_category("finance_tech") == "finance_technology"
-    assert normalize_category("财经科技（优化AI味版）") == "finance_technology_ai_optimized"
-    assert normalize_category("finance_tech_ai_optimized") == "finance_technology_ai_optimized"
     assert normalize_category("财经科技（建议版）") == "finance_technology_recommendation"
     assert normalize_category("财经科技建议版") == "finance_technology_recommendation"
     assert normalize_category("财经·科技（建议版）") == "finance_technology_recommendation"
@@ -1014,11 +598,6 @@ def test_finance_dynamic_target_words_by_duration() -> None:
 def test_finance_technology_category_uses_finance_workflow() -> None:
     assert content_engine._should_use_finance_longform(
         "finance_technology",
-        "很短的财经科技资料。",
-        source_duration_seconds=60,
-    )
-    assert content_engine._should_use_finance_longform(
-        "finance_technology_ai_optimized",
         "很短的财经科技资料。",
         source_duration_seconds=60,
     )
@@ -1141,68 +720,6 @@ def test_finance_recommendation_resume_reuses_writer_without_web_search(
     assert "@最终书名" in result
 
 
-def _two_chapter_finance_manuscript(repeat: int = 1500) -> str:
-    first = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
-    second = "第二层传导需要补齐产业链、公司行为、政策条件和风险边界之间的现实联系。" * repeat
-    return (
-        "@最终书名\n测试书名\n"
-        "@最终简介\n测试简介\n"
-        "@目录\n1. 第一章\n2. 第二章\n"
-        "@导言\n测试导言。\n"
-        "@正文\n"
-        f"@1. 第一章\n{first}\n"
-        f"@2. 第二章\n{second}\n"
-    )
-
-
-def test_rejected_polish_resume_still_runs_the_polish_stage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A cached 02_polish.md that damaged the chapter list must be regenerated.
-
-    Clearing ``polished_markdown`` inside the resume branch used to fall out of
-    the ``if/elif`` chain, so the polish stage never re-ran and the chapter
-    continued with no polish result at all.
-    """
-
-    output_dir = tmp_path / "polish_resume_rejected"
-    output_dir.mkdir(parents=True)
-    writer_manuscript = _two_chapter_finance_manuscript()
-    (output_dir / "01_writer.md").write_text(writer_manuscript, encoding="utf-8")
-    collapsed = writer_manuscript.replace("@2. 第二章\n", "")
-    assert content_engine._stage_chapter_numbers(collapsed) == [1]
-    (output_dir / "02_polish.md").write_text(collapsed, encoding="utf-8")
-
-    polish_inputs: list[str] = []
-
-    async def fake_polish_chunks(text: str, **_: object) -> str:
-        polish_inputs.append(text)
-        return text
-
-    async def forbidden_call(*_: object, **__: object) -> str:
-        raise AssertionError("a resumed manuscript must not call the writer again")
-
-    monkeypatch.setattr(content_engine, "_finance_latest_research_pack", forbidden_call)
-    monkeypatch.setattr(content_engine, "_route_writer_call", forbidden_call)
-    monkeypatch.setattr(content_engine, "_polish_by_paragraph_chunks_strict", fake_polish_chunks)
-    monkeypatch.setattr(content_engine, "refine_book_text", lambda text, **_: text)
-    monkeypatch.setattr(content_engine, "format_book_text", lambda text, **_: text)
-
-    result = asyncio.run(
-        content_engine.generate_full_book(
-            "财经科技建议版资料。",
-            category="finance_technology_recommendation",
-            output_dir=output_dir,
-        )
-    )
-
-    assert (output_dir / "02_polish_rejected_structure.md").exists()
-    assert polish_inputs, "the polish stage must re-run when the cached polish is rejected"
-    assert "@最终书名" in result
-    assert content_engine._stage_chapter_numbers(result) == [1, 2]
-
-
 def _long_finance_manuscript(repeat: int = 5200) -> str:
     body = "财经科技影响链条需要回到视频信息点、产业条件、政策约束和普通人的现实选择中展开。" * repeat
     return MINIMAL_MANUSCRIPT.replace("测试正文。", body)
@@ -1276,57 +793,6 @@ def test_finance_latest_research_pack_uses_cache_without_api_call(
     )
 
     assert result == cached
-
-
-def test_content_engine_prompt_cache_key_is_stable_and_input_sensitive() -> None:
-    key1 = content_engine._content_prompt_cache_key(  # noqa: SLF001
-        "social_science",
-        "same source",
-        input_source=None,
-        classical_variant=None,
-    )
-    key2 = content_engine._content_prompt_cache_key(  # noqa: SLF001
-        "social_science",
-        "same source",
-        input_source=None,
-        classical_variant=None,
-    )
-    key3 = content_engine._content_prompt_cache_key(  # noqa: SLF001
-        "social_science",
-        "different source",
-        input_source=None,
-        classical_variant=None,
-    )
-    key4 = content_engine._content_prompt_cache_key(  # noqa: SLF001
-        "classical_chinese",
-        "same source",
-        input_source=None,
-        classical_variant="novel_style",
-    )
-
-    assert key1 == key2
-    assert key1 != key3
-    assert key1 != key4
-    assert key1.startswith("ce:social_science:")
-
-
-def test_content_engine_openai_writer_paths_thread_prompt_cache_key() -> None:
-    source = "\n".join(
-        inspect.getsource(func)
-        for func in [
-            content_engine.generate_full_book,
-            content_engine._generate_finance_longform_book,  # noqa: SLF001
-            content_engine._finance_expand_writer_to_target,  # noqa: SLF001
-            content_engine._generate_classical_segmented_writer,  # noqa: SLF001
-            content_engine._generate_buddhist_story_unit_writer,  # noqa: SLF001
-            content_engine._repair_final_hard_errors_once,  # noqa: SLF001
-            content_engine._repair_front_matter,  # noqa: SLF001
-        ]
-    )
-
-    assert "task_prompt_cache_key = _content_prompt_cache_key" in source
-    assert source.count("prompt_cache_key=task_prompt_cache_key") >= 12
-    assert source.count("prompt_cache_key=prompt_cache_key") >= 10
 
 
 def test_finance_longform_uses_single_whole_book_chain_without_output_caps(
@@ -1506,99 +972,6 @@ def test_finance_longform_deepseek_compression_keeps_refined_full_text(
     assert (tmp_path / "finance_deepseek_compression" / "04_format_rejected_compressed.md").exists()
 
 
-def test_finance_whole_book_stages_reject_chapter_loss_even_when_char_count_grows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    chapter_body = "这一章保留完整产业链、机制、条件和现实影响，不能被后处理阶段静默删除。" * 700
-    writer_output = (
-        "@最终书名\n结构保护测试\n@最终简介\n测试简介\n@目录\n"
-        "1. 第一章\n2. 第二章\n3. 第三章\n@导言\n测试导言。\n@正文\n"
-        f"@1. 第一章\n{chapter_body}\n\n"
-        f"@2. 第二章\n{chapter_body}\n\n"
-        f"@3. 第三章\n{chapter_body}\n"
-    )
-    shortened = writer_output.replace(f"\n\n@3. 第三章\n{chapter_body}", "")
-    polish_inputs: list[str] = []
-    refine_inputs: list[str] = []
-    format_inputs: list[str] = []
-
-    async def fake_route_writer_call(_prompt: str, **_kwargs: object) -> str:
-        return writer_output
-
-    def fake_polish(text: str, **_kwargs: object) -> str:
-        polish_inputs.append(text)
-        return shortened
-
-    def fake_refine(text: str, **_kwargs: object) -> str:
-        refine_inputs.append(text)
-        return text
-
-    def fake_format(text: str, **_kwargs: object) -> str:
-        format_inputs.append(text)
-        return text
-
-    _patch_finance_latest_research(monkeypatch)
-    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "polish_book_text", fake_polish)
-    monkeypatch.setattr(content_engine, "refine_book_text", fake_refine)
-    monkeypatch.setattr(content_engine, "format_book_text", fake_format)
-
-    result = asyncio.run(
-        content_engine.generate_full_book(
-            "视频讲到完整产业链、技术机制、政策条件和普通人影响。",
-            category="finance_technology",
-            output_dir=tmp_path / "finance_chapter_guard",
-            source_duration_seconds=60,
-        )
-    )
-
-    assert polish_inputs and refine_inputs and format_inputs
-    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(result))) == 3
-    # The shortened Gemini candidate must never become the input to refine or
-    # the final accepted manuscript.
-    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(refine_inputs[0]))) == 3
-    assert len(content_engine._finance_chapter_titles_from_body(content_engine._finance_body_text(format_inputs[0]))) == 3
-
-
-def test_finance_gemini_billing_failure_stops_without_provider_substitution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    writer_calls = 0
-
-    async def fake_route_writer_call(_prompt: str, **_kwargs: object) -> str:
-        nonlocal writer_calls
-        writer_calls += 1
-        return _long_finance_manuscript()
-
-    def blocked_gemini(_text: str, **_kwargs: object) -> str:
-        raise content_engine.paid_api_guard.PaidApiQuotaExhausted(
-            "Gemini quota exhausted; Lightning dunning decision is deny"
-        )
-
-    def forbidden_later_stage(*_args: object, **_kwargs: object) -> str:
-        raise AssertionError("Gemini billing failure must stop the pipeline")
-
-    _patch_finance_latest_research(monkeypatch)
-    monkeypatch.setattr(content_engine, "_route_writer_call", fake_route_writer_call)
-    monkeypatch.setattr(content_engine, "polish_book_text", blocked_gemini)
-    monkeypatch.setattr(content_engine, "refine_book_text", forbidden_later_stage)
-    monkeypatch.setattr(content_engine, "format_book_text", forbidden_later_stage)
-
-    with pytest.raises(content_engine.paid_api_guard.PaidApiQuotaExhausted):
-        asyncio.run(
-            content_engine.generate_full_book(
-                "视频讲到算力价格、AI 服务器供应链、政策条件和企业投入节奏。",
-                category="finance_technology",
-                output_dir=tmp_path / "finance_gemini_billing_hold",
-                source_duration_seconds=30 * 60,
-            )
-        )
-
-    assert writer_calls == 1
-
-
 def test_finance_openai_writer_failure_is_non_retryable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1680,8 +1053,6 @@ def test_writer_prompts_include_punctuation_usage_rules() -> None:
 
 def test_all_category_generation_prompts_include_section_title_rules() -> None:
     for category in SUPPORTED_CATEGORIES:
-        if category == "general_longform":
-            continue  # Its supplied Word explicitly requires a different two-level protocol.
         prompts = get_prompts(category)
 
         assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["full_book_writer"]
@@ -1696,8 +1067,7 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
             assert prompts["final_book_format"].find(SECTION_TITLE_REQUIREMENT_PROMPT) < prompts[
                 "final_book_format"
             ].find("{text}")
-            assert "正文不设置内部小标题" in prompts["final_book_format"]
-            assert "正文不设置内部小标题" in prompts["final_book_format"]
+            assert "`###短标题`" in prompts["final_book_format"]
             assert "不得出现“短标题，正文”" in prompts["final_book_format"]
             assert "正文内小节标题，标题正文必须限制" not in prompts["final_book_format"]
 
@@ -1706,29 +1076,12 @@ def test_section_title_rules_forbid_body_subheadings() -> None:
     prompt = get_prompts("social_science")["full_book_writer"]
 
     assert "正文正式章节标题只能使用" in prompt
-    assert "正文不设置内部小标题" in prompt
-    assert "正文不设置内部小标题" in prompt
-
-
-def test_psychology_emotion_and_science_writers_forbid_fabricated_everyday_cases() -> None:
-    categories = (
-        "emotion_relationship",
-        "emotion_relationship_unique_view",
-        "psychology_self_help",
-        "popular_science",
-        "popular_science_cognitive_upgrade",
-    )
-    for category in categories:
-        prompt = get_prompts(category)["full_book_writer"]
-        assert "不得虚构普通人" in prompt, category
-        assert "只能使用原始视频文稿明确提供的事实" in prompt or "只能使用参照材料明确提供的事实" in prompt, category
-        assert "不得用虚构人物或虚构生活场景开头" in prompt or "不得虚构普通人、人物姓名" in prompt, category
+    assert "`###短标题`" in prompt
+    assert "不得写成“短标题，正文”" in prompt
 
 
 def test_all_category_generation_prompts_include_intro_body_separation_rules() -> None:
     for category in SUPPORTED_CATEGORIES:
-        if category == "general_longform":
-            continue
         prompts = get_prompts(category)
 
         assert INTRO_BODY_SEPARATION_PROMPT in prompts["full_book_writer"]
@@ -1743,8 +1096,6 @@ def test_all_category_generation_prompts_include_intro_body_separation_rules() -
 
 def test_all_category_gemini_polish_includes_fixed_phrase_guard_only_once() -> None:
     for category in SUPPORTED_CATEGORIES:
-        if category == "general_longform":
-            continue
         prompts = get_prompts(category)
 
         assert POLISH_FIXED_PHRASE_GUARD_PROMPT in prompts["gemini_fast_polish"]
@@ -2417,25 +1768,14 @@ def test_classical_chinese_detects_structure_and_known_translation_issues() -> N
         expected_count=3,
     )
     mistranslation = content_engine._classical_translation_issues(  # noqa: SLF001
-        "家人捉双卫来寻生。\n婢子不宜好相识。\n一念错，便觉百行皆非。",
-        "@正文\n【P0001】家里的仆人带着两个侍卫来找他。\n【P0002】这丫头，确实不该结交什么好相识。\n【P0003】一念之差，往往会导致所有行为都变成错误。",
-    )
-    clean_translation = content_engine._classical_translation_issues(  # noqa: SLF001
-        "一念错，便觉百行皆非。",
-        "@正文\n【P0001】一念起错，便会觉得许多行为都不对。",
-    )
-    hard_errors = detect_final_hard_errors(
-        "@正文\n【P0001】（原文）一念错，便觉百行皆非。\n（翻译）一念之差，往往会导致所有行为都变成错误。",
-        category=CLASSICAL_REFERENCE_REWRITE_CATEGORY,
+        "家人捉双卫来寻生。\n婢子不宜好相识。",
+        "@正文\n【P0001】家里的仆人带着两个侍卫来找他。\n【P0002】这丫头，确实不该结交什么好相识。",
     )
 
     assert any("缺少原文段落编号" in issue for issue in missing)
     assert any("Markdown 伪小标题" in issue for issue in missing)
     assert any("双卫" in issue for issue in mistranslation)
     assert any("婢子不宜好相识" in issue for issue in mistranslation)
-    assert any("便觉" in issue for issue in mistranslation)
-    assert not clean_translation
-    assert any("便觉" in name for name in hard_errors)
 
 
 def test_classical_paragraph_markers_support_100w_scale_counts() -> None:

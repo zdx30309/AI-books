@@ -8,7 +8,6 @@ import logging
 import math
 import os
 import re
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -30,7 +29,6 @@ from app.services.classical_chinese import (
     BuddhistStoryUnit,
     CLASSICAL_CHINESE_CATEGORY_IDS,
     CLASSICAL_INTERLEAVED_CATEGORY,
-    CLASSICAL_NOVEL_STYLE_CATEGORY,
     CLASSICAL_PARAGRAPH_MARKER_RE,
     CLASSICAL_REFERENCE_REWRITE_CATEGORY,
     buddhist_scripture_final_title,
@@ -46,26 +44,9 @@ from app.services.classical_chinese import (
     strip_classical_paragraph_markers,
 )
 from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
-from app.services.polish_provider import (
-    polish_book_text,
-    refine_book_text,
-    refine_provider_name,
-)
-from app.services.gemini import (
-    GeminiDeliveryUncertainError,
-    GeminiMaxTokensError,
-)
-from app.services.claude import ClaudeDeliveryUncertainError, ClaudeRequestRejectedError
-from app.services.aigc_quality_gate import (
-    AIGC_POLICY_VERSION,
-    AigcManualReviewRequired,
-    AigcQualityGateError,
-    aigc_category_eligible,
-    enforce_aigc_quality_gate,
-)
+from app.services.gemini import GeminiMaxTokensError, polish_book_text, refine_book_text
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_openai_base_url, official_proxy
-from app.utils import paid_api_guard
 
 # 进度上报回调：(stage_name, info_dict)
 # stage_name 取值：
@@ -73,83 +54,11 @@ from app.utils import paid_api_guard
 #   polish_start / polish_chunk / polish_done
 #   refine_start / refine_done
 #   format_start / format_done
-#   aigc_start / aigc_done
 StageCallback = Callable[[str, dict[str, Any]], None]
 
 logger = logging.getLogger(__name__)
 
 _openai_writer_client: OpenAI | None = None
-
-
-class OpenAIDeliveryUncertainError(RuntimeError):
-    """A paid OpenAI request may have been accepted but its result is unknown.
-
-    Transport failures after ``responses.create`` (including a stream that
-    closes before ``response.completed``) cannot safely be replayed: the
-    provider may already have charged the request. Callers must persist the
-    failure and require an operator/resume flow instead of submitting a new
-    prompt with different parameters.
-    """
-
-    def __init__(self, message: str, *, response_id: str | None = None) -> None:
-        self.response_id = str(response_id or "").strip() or None
-        suffix = f" response_id={self.response_id}" if self.response_id else ""
-        super().__init__(f"paid_call_delivery_uncertain: {message}{suffix}")
-
-
-class OpenAIRequestRejectedError(RuntimeError):
-    """Preserve a definite provider rejection across the shared writer boundary."""
-
-    def __init__(self, message: str, *, cause: BaseException) -> None:
-        self.status_code, self.code = _openai_error_details(cause)
-        self.request_id = getattr(cause, "request_id", None)
-        super().__init__(message)
-
-
-class GeminiRefineIncompleteError(RuntimeError):
-    """The refine provider returned a manuscript that cannot be a full stage."""
-
-
-def _prompt_cache_digest(*parts: object) -> str:
-    hasher = hashlib.sha256()
-    for part in parts:
-        if part is None:
-            continue
-        hasher.update(str(part).encode("utf-8", errors="ignore"))
-        hasher.update(b"\x1f")
-    return hasher.hexdigest()[:24]
-
-
-def _prompt_cache_slug(value: str | None, *, max_len: int = 24) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "").strip()).strip("-")
-    return (slug[:max_len].strip("-") or "generic").lower()
-
-
-def _content_prompt_cache_key(
-    category: str,
-    raw_text: str,
-    *,
-    input_source: str | None = None,
-    classical_variant: str | None = None,
-    classical_original_title: str | None = None,
-    style_reference: str | None = None,
-    style_notes: str | None = None,
-    source_duration_seconds: int | float | None = None,
-) -> str:
-    """Stable OpenAI prompt-cache namespace for one non-epic generation task."""
-    normalized = normalize_category(category)
-    digest = _prompt_cache_digest(
-        normalized,
-        raw_text,
-        input_source,
-        classical_variant,
-        classical_original_title,
-        style_reference,
-        style_notes,
-        source_duration_seconds,
-    )
-    return f"ce:{_prompt_cache_slug(normalized)}:{digest}:v1"
-
 
 FINANCE_LONGFORM_CHARS_PER_MINUTE = 280
 FINANCE_LONGFORM_BASE_TARGET_WORDS = 50_000
@@ -164,17 +73,13 @@ FINANCE_LONGFORM_STAGE_MIN_RETAIN_RATIO = 0.75
 FINANCE_LONGFORM_CONTINUATION_BATCH_TARGET = 15_000
 FINANCE_LONGFORM_CONTINUATION_MIN_GAIN_CHARS = 1_500
 FINANCE_LONGFORM_NO_RETRY_ERROR_PREFIX = "automatic retry stopped to avoid duplicate billing"
-FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY = "finance_technology_ai_optimized"
-FINANCE_LONGFORM_CATEGORIES = frozenset(
-    {"finance_technology", FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY}
-)
+FINANCE_LONGFORM_CATEGORIES = frozenset({"finance_technology"})
 FINANCE_LATEST_RESEARCH_STAGE_FILE = "00_finance_latest_research.md"
 FINANCE_LATEST_RESEARCH_PROMPT_FILE = "00_finance_latest_research_prompt.md"
 FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY = "finance_technology_recommendation"
 FINANCE_SOURCE_GUARDED_CATEGORIES = frozenset(
     {
         "finance_technology",
-        FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY,
         FINANCE_TECHNOLOGY_RECOMMENDATION_CATEGORY,
     }
 )
@@ -685,16 +590,17 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
     if _looks_like_editorial_comment(stripped):
         return None
 
-    if re.match(r"^###(?!#)\s*\S", stripped):
-        return [stripped]
-
     markdown_heading = re.match(r"^\s{0,3}#{1,6}\s*(.+?)\s*$", stripped)
     if markdown_heading:
-        return [markdown_heading.group(1).strip()]
+        title = _normalize_internal_subheading_title(markdown_heading.group(1))
+        return [_format_internal_subheading(title)] if title else None
 
     bold_prefix = re.match(r"^\*\*([^*\n]{1,32})\*\*\s*(.*?)\s*$", stripped)
     if bold_prefix:
-        return [stripped]
+        title = _normalize_internal_subheading_title(bold_prefix.group(1), max_len=18)
+        rest = bold_prefix.group(2).strip()
+        if title and (not rest or len(rest) >= 4):
+            return [_format_internal_subheading(title), rest] if rest else [_format_internal_subheading(title)]
 
     candidate = stripped
     has_marker = False
@@ -715,7 +621,7 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
         else None
     )
     if direct_title and _looks_like_pseudo_heading_text(direct_title):
-        return [candidate]
+        return [_format_internal_subheading(direct_title)]
 
     for separator in ("：", ":", "，", ","):
         index = candidate.find(separator)
@@ -732,7 +638,7 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
             continue
         if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
             continue
-        return [candidate]
+        return [_format_internal_subheading(title), body]
 
     return None
 
@@ -772,7 +678,9 @@ def _strip_body_noise_line(line: str) -> str | None:
     if bold_prefix:
         title = bold_prefix.group(1).strip()
         rest = bold_prefix.group(2).strip()
-        if rest:
+        if _looks_like_bold_prefix_heading(title, rest):
+            stripped = rest
+        elif rest:
             stripped = f"{title}{rest}"
         else:
             stripped = title
@@ -797,22 +705,15 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
             normalized = part.strip()
             if normalized.startswith("###"):
                 title = _normalize_internal_subheading_title(normalized[3:].strip())
-                if title is None:
-                    title = normalized[3:].strip()
-                pending.append(title or None)
+                pending.append(_format_internal_subheading(title) if title else None)
                 continue
             pending.append(_strip_body_noise_line(normalized))
 
-    chapter_subheading_count = 0
     for index, line in enumerate(pending):
         if line is None:
             continue
         stripped = line.strip()
         if not stripped:
-            continue
-        if _is_body_chapter_heading(stripped):
-            chapter_subheading_count = 0
-            cleaned.append(stripped)
             continue
         if stripped.startswith("###"):
             heading_text = stripped[3:].strip()
@@ -823,10 +724,7 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                     break
             if next_line and _line_repeats_heading(heading_text, next_line):
                 continue
-            body_text = heading_text or stripped
-            if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
-                body_text = f"{body_text}。"
-            cleaned.append(body_text)
+            cleaned.append(stripped)
             continue
         if _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
             cleaned.append(stripped)
@@ -842,173 +740,12 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                 continue
             title = _normalize_internal_subheading_title(stripped, max_len=16)
             if title:
-                if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
-                    stripped = f"{stripped}。"
-                cleaned.append(stripped)
+                cleaned.append(_format_internal_subheading(title))
                 continue
             if not stripped.endswith(tuple(_SENTENCE_ENDINGS)):
                 stripped = f"{stripped}。"
         cleaned.append(stripped)
     return cleaned
-
-
-def _limit_internal_subheadings_per_chapter(markdown: str, *, max_count: int = 0) -> str:
-    """Remove internal ``###`` markers while preserving their title text."""
-
-    if not markdown or max_count < 0:
-        return markdown
-
-    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    has_formal_body = any(
-        (section := _FRONT_SECTION_RE.match(line.strip())) and section.group(1) == "正文"
-        for line in lines
-    )
-    # Some delivery views contain only the body and retain a standalone
-    # ``1,957 字`` line between chapters. Treat that stable delimiter as a
-    # chapter boundary so the same heading cap still applies to body-only text.
-    body_only_fallback = not has_formal_body and any(
-        re.match(r"^\s*[\d,]+\s*字\s*$", line.strip()) for line in lines
-    )
-    global_fallback = not has_formal_body and not body_only_fallback
-    in_body = body_only_fallback or global_fallback
-    chapter_seen = False
-    chapter_subheading_count = 0
-    output: list[str] = []
-    for raw_line in lines:
-        stripped = raw_line.strip()
-        section = _FRONT_SECTION_RE.match(stripped)
-        if section:
-            in_body = section.group(1) == "正文"
-            chapter_seen = False
-            chapter_subheading_count = 0
-            output.append(raw_line)
-            continue
-        if not in_body:
-            output.append(raw_line)
-            continue
-        if body_only_fallback and re.match(r"^\s*[\d,]+\s*字\s*$", stripped):
-            chapter_seen = False
-            chapter_subheading_count = 0
-            output.append(raw_line)
-            continue
-        if body_only_fallback and stripped and not chapter_seen:
-            chapter_seen = True
-        if global_fallback and stripped.startswith("###"):
-            if chapter_subheading_count < max_count:
-                output.append(raw_line)
-                chapter_subheading_count += 1
-            else:
-                body_text = stripped[3:].strip()
-                if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
-                    body_text = f"{body_text}。"
-                output.append(body_text or raw_line)
-            continue
-        if _is_body_chapter_heading(stripped):
-            chapter_seen = True
-            chapter_subheading_count = 0
-            output.append(raw_line)
-            continue
-        if chapter_seen and stripped.startswith("###"):
-            if chapter_subheading_count < max_count:
-                output.append(raw_line)
-                chapter_subheading_count += 1
-                continue
-            body_text = stripped[3:].strip()
-            if body_text and not body_text.endswith(tuple(_SENTENCE_ENDINGS)):
-                body_text = f"{body_text}。"
-            output.append(body_text or raw_line)
-            continue
-        output.append(raw_line)
-    return "\n".join(output)
-
-
-_STANDARD_LONGFORM_CATEGORY_IDS = frozenset(
-    {
-        "social_science",
-        "social_science_test",
-        "social_science_core_conflict",
-        "life_philosophy",
-        "life_philosophy_self_rescue",
-        "popular_science",
-        "popular_science_cognitive_upgrade",
-        "finance_technology",
-        "finance_technology_ai_optimized",
-        "finance_technology_recommendation",
-        "wisdom_stories",
-        "wisdom_stories_causal_philosophy",
-        "wisdom_stories_historical",
-        "biography",
-        "history_culture",
-        "emotion_relationship",
-        "emotion_relationship_unique_view",
-        "psychology_self_help",
-        "health_wellness",
-        "health_wellness_daily_pain",
-        "classic_interpretation",
-        "masterpiece_interpretation",
-    }
-)
-
-
-def _rebalance_standard_longform_chapters(markdown: str, *, category: str | None) -> str:
-    """Merge provider-created thin chapters in ordinary long-form books."""
-
-    if normalize_category(category or "") not in _STANDARD_LONGFORM_CATEGORY_IDS:
-        return markdown
-    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    body_match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", markdown or "")
-    if not body_match:
-        return markdown
-    body_start = len(markdown[: body_match.end()].replace("\r\n", "\n").replace("\r", "\n").split("\n")) - 1
-    body_lines = lines[body_start + 1 :]
-    heading_re = re.compile(r"^(?:！！！@?|@)\s*\d+[.．、]\s*.+$")
-    starts = [idx for idx, line in enumerate(body_lines) if heading_re.match(line.strip())]
-    if len(starts) < 4:
-        return markdown
-
-    chapters: list[tuple[str, list[str]]] = []
-    for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else len(body_lines)
-        chapters.append((body_lines[start].strip(), [line.strip() for line in body_lines[start + 1 : end] if line.strip()]))
-
-    def size(item: tuple[str, list[str]]) -> int:
-        return sum(1 for char in "".join(item[1]) if "\u3400" <= char <= "\u9fff")
-
-    changed = False
-    while len(chapters) >= 4:
-        short_index = next((idx for idx, item in enumerate(chapters) if size(item) < 600), None)
-        if short_index is None:
-            break
-        group_end = short_index
-        if short_index + 1 < len(chapters):
-            group_end = short_index + 1
-        if group_end == short_index and short_index == len(chapters) - 1:
-            group_start = short_index - 1
-        else:
-            group_start = short_index
-        merged_heading = chapters[group_start][0]
-        merged_body: list[str] = []
-        for group_index in range(group_start, group_end + 1):
-            heading_text = re.sub(
-                r"^(?:！！！@?|@)\s*\d+[.．、]\s*",
-                "",
-                chapters[group_index][0],
-            ).strip()
-            if group_index > group_start and heading_text:
-                merged_body.append(f"{heading_text}。")
-            merged_body.extend(chapters[group_index][1])
-        chapters[group_start : group_end + 1] = [(merged_heading, merged_body)]
-        changed = True
-
-    if not changed:
-        return markdown
-    rendered = lines[: body_start + 1]
-    for chapter_index, (heading, body) in enumerate(chapters, start=1):
-        marker = "！！！" if heading.startswith("！！！") else "@"
-        title = re.sub(r"^(?:！！！@?|@)\s*\d+[.．、]\s*", "", heading).strip()
-        rendered.append(f"{marker}{chapter_index}. {title}")
-        rendered.extend(body)
-    return "\n".join(rendered)
 
 
 def _looks_like_wisdom_story_subheading(line: str) -> bool:
@@ -1616,11 +1353,6 @@ def _classical_translation_issues(source_text: str, markdown: str) -> list[str]:
         issues.append("原文含“双卫”，正文疑似误译为侍卫、保镖或护卫")
     if "婢子不宜好相识" in source and re.search(r"结交.{0,8}好相识|好相识", body):
         issues.append("原文含“婢子不宜好相识”，正文疑似保留了错误的现代化理解")
-    if re.search(r"(?:便|始|方|乃|忽)觉", source) and re.search(
-        r"(?:导致|造成|引发|致使|酿成)[^。！？；\n]{0,40}(?:百行皆非|皆非|全都错|全错|都错|所有行为|一切行为)",
-        body,
-    ):
-        issues.append("原文含“便觉/始觉/方觉/乃觉/忽觉”，正文疑似把“觉得、感到、发觉”误译成导致、造成等因果关系")
     return issues
 
 
@@ -1715,7 +1447,6 @@ async def _repair_classical_quality_once(
     expected_markers: list[int] | range | None = None,
     segment_only: bool = False,
     interleaved: bool = False,
-    prompt_cache_key: str | None = None,
 ) -> str:
     issues = _classical_quality_issues(
         markdown,
@@ -1781,7 +1512,6 @@ async def _repair_classical_quality_once(
 - 辑名、篇名、作者行、导言、引语、题记、按语、正文段落都要保留，不得漏句、漏半句或跳译。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - “双卫”在本语境下不得译成侍卫、保镖或护卫；“婢子不宜好相识”不得译成“结交什么好相识”。
-- “便觉、始觉、方觉、乃觉、忽觉”里的“觉”不得译成导致、造成、引发或致使；如“便觉百行皆非”应修成“便会觉得许多行为都不对”一类表达。
 {interleaved_rule}
 - {output_scope}
 
@@ -1795,7 +1525,6 @@ async def _repair_classical_quality_once(
         repair_prompt,
         max_output_tokens=0,
         retry_on_failure=False,
-        prompt_cache_key=prompt_cache_key,
     )
     _dump_stage(output_dir, f"classical_{stage}_quality_repaired.md", repaired)
     remaining = _classical_quality_issues(
@@ -1987,15 +1716,12 @@ def _classical_segment_writer_prompt(
     before_block = before.strip() or "无"
     after_block = after.strip() or "无"
     is_reference_translation = str(variant or "").strip() == "reference_translation"
-    is_novel_style = str(variant or "").strip() == "novel_style"
     paired_original_translation = interleaved or is_reference_translation
     output_mode_rule = (
         "把当前分段范围内的原文逐段完整输出为原文翻译穿插结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
         if interleaved
         else "把当前分段范围内的原文逐段完整输出为原文翻译对照结构。只输出本段 P 编号原文翻译正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。参考译本只用于校准字词和断句。"
         if is_reference_translation
-        else "把当前分段范围内的文言文先准确理解，再逐段改写成忠于原文的小故事式白话叙事。叙事型原文保留原有人物事件；抽象格言/议论/训诫型原文必须用无名人物、普通处境、行动选择和心理转折承载原文道理。只输出本段 P 编号小说化白话正文，不输出原文、@最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
-        if is_novel_style
         else "把当前分段范围内的原文逐段完整白话化。只输出本段 P 编号白话正文，不输出 @最终书名、@最终简介、@目录、@导言、@正文、章节标题、解释或分析。"
     )
     interleaved_rule = (
@@ -2017,7 +1743,6 @@ def _classical_segment_writer_prompt(
 - 上文和下文只供理解人物关系、语气和词义，不属于本次输出范围，绝对不要翻译上下文参考。
 - 输出时不得出现没有 P 编号的小标题、Markdown 标题、任务说明或模型过程词。
 - 如果是参照译写版，最终只能输出（原文）/（翻译）成对段落；不得输出【注释】【译文】【点评】【原文定位】、赏析、解析、译者按或圈号注释。
-- 如果是小说风格版，最终必须像小故事一样连贯可读，不能只是逐字逐句翻译成大白话。叙事型原文只能补表达层承接，不得新增原文没有的人物、事件、地点、支线和结局；抽象格言/议论/训诫型原文本身没有人物事件时，必须用无名人物和简短场景作为故事化表达载体，但不得改原意或冒充史实。
 - 原文中 **作者名** 形式的作者或署名行，必须保留加粗标记。
 - 古今异义、器物名、职官名和旧称必须按上下文处理；不确定时保守表达，不要改成另一层意思。
 - 不要为了顺口改剧情，不要新增情节、人物、心理和结尾。
@@ -2081,7 +1806,6 @@ async def _generate_classical_frontmatter(
     variant: object,
     original_title: object,
     output_dir: Path | None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     total_paragraphs = len(lines)
     digest = hashlib.sha256(("\n".join(lines)).encode("utf-8")).hexdigest()[:16]
@@ -2105,7 +1829,6 @@ async def _generate_classical_frontmatter(
             prompt,
             max_output_tokens=0,
             retry_on_failure=False,
-            prompt_cache_key=prompt_cache_key,
         )
         if _front_matter_missing(frontmatter):
             raise ValueError("frontmatter missing required sections")
@@ -2136,7 +1859,6 @@ async def _generate_classical_segmented_writer(
     category: str = "classical_chinese",
     style_reference: str | None = None,
     style_notes: str | None = None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     lines = classical_source_lines(source_text)
     if not lines:
@@ -2159,7 +1881,6 @@ async def _generate_classical_segmented_writer(
         variant=variant,
         original_title=original_title,
         output_dir=output_dir,
-        prompt_cache_key=prompt_cache_key,
     )
 
     segment_bodies: list[str] = []
@@ -2223,14 +1944,12 @@ async def _generate_classical_segmented_writer(
                     start_index=start_index,
                     end_index=end_index,
                     total_source_lines=expected_count,
-                    source_segment_text=segment_text,
                 ),
             )
             raw_segment = await _route_writer_call(
                 prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
-                prompt_cache_key=prompt_cache_key,
             )
             body = _classical_segment_output_body(raw_segment, interleaved=interleaved)
             body = await _repair_classical_quality_once(
@@ -2249,7 +1968,6 @@ async def _generate_classical_segmented_writer(
                 output_dir=output_dir,
                 segment_only=True,
                 interleaved=interleaved,
-                prompt_cache_key=prompt_cache_key,
             )
             body = _classical_segment_output_body(body, interleaved=interleaved)
             if cache_path:
@@ -2531,7 +2249,6 @@ async def _repair_buddhist_story_batch_against_source(
     output_dir: Path | None,
     stage: str,
     batch_index: int,
-    prompt_cache_key: str | None = None,
 ) -> str:
     cache_path = _buddhist_story_batch_cache_path(
         output_dir,
@@ -2567,12 +2284,7 @@ async def _repair_buddhist_story_batch_against_source(
 【当前稿件对应章节】
 {_buddhist_story_existing_block(markdown, units)}
 """
-    repaired = await _route_writer_call(
-        prompt,
-        max_output_tokens=0,
-        retry_on_failure=False,
-        prompt_cache_key=prompt_cache_key,
-    )
+    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
     body = _buddhist_story_segment_output_body(repaired)
     remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2583,12 +2295,7 @@ async def _repair_buddhist_story_batch_against_source(
 
 请重新输出本批次，必须补足缺失的故事动作、误判、后果和自然收束，仍然只能输出指定章节；不要为了凑字数重复解释。
 """
-        repaired = await _route_writer_call(
-            strict_prompt,
-            max_output_tokens=0,
-            retry_on_failure=False,
-            prompt_cache_key=prompt_cache_key,
-        )
+        repaired = await _route_writer_call(strict_prompt, max_output_tokens=0, retry_on_failure=False)
         body = _buddhist_story_segment_output_body(repaired)
         remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2608,7 +2315,6 @@ async def _repair_buddhist_story_manuscript_against_units(
     output_dir: Path | None,
     stage: str,
     original_title: object = None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     if not units:
         return markdown
@@ -2635,7 +2341,6 @@ async def _repair_buddhist_story_manuscript_against_units(
             output_dir=output_dir,
             stage=stage,
             batch_index=batch_index,
-            prompt_cache_key=prompt_cache_key,
         )
         replacements.update(_buddhist_story_chapter_map(batch_body))
 
@@ -2713,7 +2418,6 @@ async def _repair_buddhist_story_segment_once(
     units: list[BuddhistStoryUnit],
     output_dir: Path | None,
     segment_index: int,
-    prompt_cache_key: str | None = None,
 ) -> str:
     issues = _buddhist_story_manuscript_issues(markdown, units)
     if not issues:
@@ -2742,12 +2446,7 @@ async def _repair_buddhist_story_segment_once(
 【待修复正文】
 {markdown.strip()}
 """
-    repaired = await _route_writer_call(
-        prompt,
-        max_output_tokens=0,
-        retry_on_failure=False,
-        prompt_cache_key=prompt_cache_key,
-    )
+    repaired = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
     body = _buddhist_story_segment_output_body(repaired)
     remaining = _buddhist_story_manuscript_issues(body, units)
     if remaining:
@@ -2806,7 +2505,6 @@ async def _generate_buddhist_story_unit_writer(
     original_title: object,
     output_dir: Path | None,
     on_stage: StageCallback | None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     if not units:
         raise ValueError("佛经白话故事单元为空，无法分单元生成")
@@ -2841,19 +2539,13 @@ async def _generate_buddhist_story_unit_writer(
                 all_units=units,
                 original_title=original_title,
             )
-            raw_segment = await _route_writer_call(
-                prompt,
-                max_output_tokens=0,
-                retry_on_failure=False,
-                prompt_cache_key=prompt_cache_key,
-            )
+            raw_segment = await _route_writer_call(prompt, max_output_tokens=0, retry_on_failure=False)
             body = _buddhist_story_segment_output_body(raw_segment)
             body = await _repair_buddhist_story_segment_once(
                 body,
                 units=segment_units,
                 output_dir=output_dir,
                 segment_index=segment_index,
-                prompt_cache_key=prompt_cache_key,
             )
             if cache_path:
                 try:
@@ -2907,12 +2599,6 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     text = _repair_blank_catalog_titles(text)
     text = _remove_intro_duplicate_from_body(text)
     normalized = normalize_category(category or "")
-    # Gemini may legally return the same chapter boundaries with the ``@``
-    # marker omitted.  Restore only a complete sequence proven by @目录 before
-    # the generic numbered-list cleaner runs; otherwise real in-body lists
-    # would be mistaken for formal chapters or formal chapters would lose
-    # their numbers.
-    text = _restore_catalog_chapter_markers(text)
     match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", text)
     if not match:
         lines = [line.rstrip() for line in text.split("\n")]
@@ -2920,8 +2606,6 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = "\n".join(compact).strip()
         if normalized in FINANCE_SOURCE_GUARDED_CATEGORIES:
             result = _clean_finance_source_leaks(result).strip()
-        result = _rebalance_standard_longform_chapters(result, category=normalized)
-        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
 
     front = text[: match.end()]
@@ -2936,14 +2620,10 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         if normalized == CLASSICAL_INTERLEAVED_CATEGORY:
             body_lines = _collapse_extra_classical_interleaved_translation_lines(body_lines)
         result = "\n".join(front_lines + body_lines).strip()
-        result = _rebalance_standard_longform_chapters(result, category=normalized)
-        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     body_lines = [line.rstrip() for line in body.split("\n") if line.strip()]
-    if normalized in {"comic_series", "healing_comic", "story_comic", "homophone_comic"}:
+    if normalized in {"comic_series", "healing_comic"}:
         result = "\n".join(front_lines + body_lines).strip()
-        result = _rebalance_standard_longform_chapters(result, category=normalized)
-        result = _limit_internal_subheadings_per_chapter(result)
         return result + ("\n" if result else "")
     is_wisdom_story = normalized == "wisdom_stories"
     if is_wisdom_story:
@@ -2959,8 +2639,6 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
         result = _clean_finance_source_leaks(result).strip()
     if normalized == "life_philosophy":
         result = _apply_life_philosophy_delivery_markers(result).strip()
-    result = _rebalance_standard_longform_chapters(result, category=normalized)
-    result = _limit_internal_subheadings_per_chapter(result)
     return result + ("\n" if result else "")
 
 
@@ -2995,10 +2673,6 @@ def _get_openai_writer_client() -> OpenAI:
     client_kwargs: dict[str, Any] = {
         "base_url": official_openai_base_url(settings.OPENAI_BASE_URL),
         "timeout": request_timeout,
-        # Retries are controlled explicitly by _openai_writer_call_result.  Leaving
-        # the SDK retry loop enabled multiplies one configured attempt into several
-        # long, invisible paid waits when the production proxy is unhealthy.
-        "max_retries": 0,
     }
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     if proxy:
@@ -3018,170 +2692,49 @@ def _reset_openai_writer_client() -> None:
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
-    """Return whether a fresh paid POST can be retried without duplication."""
-
-    if isinstance(exc, OpenAIDeliveryUncertainError):
-        return False
     msg = f"{exc.__class__.__name__}: {exc}".lower()
-    # HTTP 429 is also used for an exhausted account.  Never retry that case
-    # or fall back to another service tier: the request cannot succeed until
-    # the account is funded again.
-    if paid_api_guard.is_quota_exhausted(msg):
-        return False
-    # Only a failed connection establishment is provably non-billable.
-    # Generic transport/status errors are intentionally not included.
-    return _is_flex_preflight_rejection(exc) or paid_api_guard.is_safe_preflight_error(exc) or any(
-        signature in msg
-        for signature in (
-            "distributedlimiterror",
-            "paid api concurrency limiter",
-            "concurrency limiter",
-        )
+    retryable_signatures = (
+        "apiconnectionerror",
+        "connecterror",
+        "connection error",
+        "connection refused",
+        "remoteprotocolerror",
+        "incomplete chunked read",
+        "peer closed connection",
+        "ssl",
+        "ssleoferror",
+        "wrong version number",
+        "tls",
+        "certificate verify failed",
+        "readtimeout",
+        "read timeout",
+        "timeout",
+        "模型调用超时",
+        "上游接口连接中断",
+        "openai 初稿生成连接失败",
+        "distributedlimiterror",
+        "paid api concurrency limiter",
+        "concurrency limiter",
+        "temporarily unavailable",
+        "service unavailable",
+        "gateway timeout",
+        "rate limit",
+        "ratelimit",
+        "internalservererror",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "520",
+        "521",
+        "522",
+        "524",
     )
-
-
-def _is_retryable_openai_poll_error(exc: Exception) -> bool:
-    """Retry a GET/poll against an existing response ID.
-
-    Polling never creates another generation, so transient read/HTTP failures
-    may be retried even though the same failures are unsafe for a fresh POST.
-    """
-
-    if isinstance(exc, OpenAIDeliveryUncertainError):
-        return False
-    msg = f"{exc.__class__.__name__}: {exc}".lower()
-    if paid_api_guard.is_quota_exhausted(msg):
-        return False
-    return paid_api_guard.is_safe_preflight_error(exc) or any(
-        signature in msg
-        for signature in (
-            "apiconnectionerror",
-            "connecterror",
-            "connection error",
-            "connection refused",
-            "remoteprotocolerror",
-            "incomplete chunked read",
-            "peer closed connection",
-            "ssl",
-            "ssleoferror",
-            "wrong version number",
-            "tls",
-            "certificate verify failed",
-            "readtimeout",
-            "read timeout",
-            "timeout",
-            "temporarily unavailable",
-            "service unavailable",
-            "gateway timeout",
-            "rate limit",
-            "ratelimit",
-            "internalservererror",
-            "429",
-            "500",
-            "502",
-            "503",
-            "504",
-            "520",
-            "521",
-            "522",
-            "524",
-        )
-    )
-
-
-def _is_flex_preflight_rejection(exc: Exception) -> bool:
-    """Recognize a provider response that explicitly rejected Flex preflight.
-
-    Only this narrow class of errors may switch to another service tier. A
-    generic timeout/429/connection error is delivery-uncertain once the
-    request has been submitted and must never be replayed with a new tier.
-    """
-
-    message = f"{type(exc).__name__}: {exc}".lower()
-    if paid_api_guard.is_quota_exhausted(message):
-        return False
-    if any(
-        marker in message
-        for marker in (
-            "resource unavailable for flex",
-            "flex resource unavailable",
-            "flex resource_unavailable",
-        )
-    ):
-        return True
-    has_tier_marker = "service_tier" in message or "service tier" in message
-    return has_tier_marker and any(
-        marker in message
-        for marker in ("unsupported", "invalid", "not available", "unavailable")
-    )
-
-
-def _openai_error_details(exc: BaseException) -> tuple[int | None, str | None]:
-    """Read SDK status/code without losing metadata in a chained wrapper."""
-
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    status: int | None = None
-    code: str | None = None
-    while current is not None and id(current) not in seen and len(seen) < 16:
-        seen.add(id(current))
-        for candidate in (
-            getattr(current, "status_code", None),
-            getattr(getattr(current, "response", None), "status_code", None),
-            getattr(current, "code", None),
-        ):
-            try:
-                numeric = int(candidate)
-                if status is None and 100 <= numeric <= 599:
-                    status = numeric
-            except (TypeError, ValueError):
-                pass
-        body = getattr(current, "body", None)
-        if isinstance(body, dict) and isinstance(body.get("error"), dict):
-            body = body["error"]
-        raw_code = getattr(current, "code", None) or (body.get("code") if isinstance(body, dict) else None)
-        if code is None and isinstance(raw_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", raw_code):
-            code = raw_code
-        current = current.__cause__ or current.__context__
-    return status, code
-
-
-def _is_openai_explicit_preflight_rejection(exc: BaseException) -> bool:
-    """Provider rejected request validation/auth before model execution."""
-
-    if isinstance(exc, OpenAIDeliveryUncertainError):
-        return False
-    return _openai_error_details(exc)[0] in {400, 401, 403, 404, 409, 422}
-
-
-def _openai_delivery_uncertain(
-    exc: Exception,
-    *,
-    phase: str,
-    response_id: str | None = None,
-) -> OpenAIDeliveryUncertainError:
-    """Build a stable non-retryable error for an uncertain paid delivery."""
-
-    return OpenAIDeliveryUncertainError(
-        f"OpenAI {phase} failed after the request may have been accepted; "
-        f"do not submit an automatic replacement ({type(exc).__name__}: {exc})",
-        response_id=response_id,
-    )
+    return any(signature in msg for signature in retryable_signatures)
 
 
 def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception | None = None) -> str:
-    status, code = _openai_error_details(exc)
-    if status == 401:
-        reason = "OpenAI API 密钥所属账户已停用" if code == "account_deactivated" else "OpenAI API 密钥鉴权失败"
-        return (
-            f"{reason}（HTTP 401，{code or 'authentication_failed'}）。"
-            "请求已到达 API 服务端并在鉴权阶段被拒绝，不是国外代理连接故障。"
-            "请在项目配置中更新有效账户的 OPENAI_API_KEY，并重新加载后端和写作 worker 配置，再恢复上次操作。"
-            "不要将密钥粘贴到聊天或日志中。"
-        )
-    if status in {400, 403, 404, 409, 422}:
-        advice = "请核对账户、项目和模型访问权限" if status == 403 else "请核对模型名称、请求参数与接口配置"
-        return f"OpenAI 请求被服务端拒绝（HTTP {status}，{code or 'request_rejected'}）；{advice}，修正后恢复原任务。"
     proxy = official_proxy("openai", settings.OPENAI_HTTPS_PROXY)
     parts = [
         "OpenAI 初稿生成连接失败",
@@ -3193,17 +2746,10 @@ def _openai_writer_connection_error_message(exc: Exception, first_exc: Exception
         parts.append(f"stream_error={type(first_exc).__name__}: {first_exc}")
     if proxy:
         parts.append(
-            "请确认 OPENAI_HTTPS_PROXY 是项目配置的可用国外代理服务器，且可以访问 OpenAI 官方地址。"
-            "OFFICIAL_API_DIRECT_ONLY 只锁定官方 base_url，不会禁用代理。"
+            "请确认当前 OPENAI_HTTPS_PROXY 可访问 OpenAI 官方地址；"
+            "若 OFFICIAL_API_DIRECT_ONLY=True，代理配置会被忽略。"
         )
     return "；".join(parts)
-
-
-def _openai_writer_failure(exc: Exception, first_exc: Exception | None = None) -> RuntimeError:
-    message = _openai_writer_connection_error_message(exc, first_exc)
-    if _is_openai_explicit_preflight_rejection(exc):
-        return OpenAIRequestRejectedError(message, cause=exc)
-    return RuntimeError(message)
 
 
 def _response_attr(value: Any, name: str, default: Any = None) -> Any:
@@ -3256,26 +2802,6 @@ def _extract_openai_response_text(response: Any | None) -> str:
     return ""
 
 
-def _openai_response_error_text(response: Any | None) -> str:
-    """Return the provider's own error code and message, when it sent one.
-
-    A response the provider ended as ``failed`` usually explains itself here
-    (for example ``credit_balance_exhausted``).  Without it the caller can only
-    see "status=failed" and has to treat a billing decision as an uncertain
-    delivery, which is both misleading and impossible to act on.
-    """
-
-    error = _response_attr(response, "error")
-    if error is None:
-        return ""
-    if isinstance(error, dict):
-        code, message = error.get("code"), error.get("message")
-    else:
-        code, message = _response_attr(error, "code"), _response_attr(error, "message")
-    parts = [str(part).strip() for part in (code, message) if part]
-    return ": ".join(parts)
-
-
 def _openai_response_debug_summary(response: Any | None) -> str:
     if response is None:
         return "response=None"
@@ -3291,85 +2817,12 @@ def _openai_response_debug_summary(response: Any | None) -> str:
         reason = None
 
     usage = _response_attr(response, "usage")
-    provider_error = _openai_response_error_text(response)
     return (
         f"status={_response_attr(response, 'status', 'unknown')}; "
         f"incomplete_reason={reason or 'none'}; "
         f"output_types={output_types or 'none'}; "
-        f"error={provider_error or 'none'}; "
         f"usage={usage or 'unknown'}"
     )
-
-
-def _usage_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _openai_usage_payload(response: Any | None) -> dict[str, int]:
-    usage = _response_attr(response, "usage")
-    if usage is None:
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "cached_input_tokens": 0,
-            "reasoning_tokens": 0,
-        }
-
-    input_tokens = _usage_int(
-        _response_attr(usage, "input_tokens", _response_attr(usage, "prompt_tokens", 0))
-    )
-    output_tokens = _usage_int(
-        _response_attr(usage, "output_tokens", _response_attr(usage, "completion_tokens", 0))
-    )
-    total_tokens = _usage_int(_response_attr(usage, "total_tokens", input_tokens + output_tokens))
-
-    input_details = (
-        _response_attr(usage, "input_tokens_details")
-        or _response_attr(usage, "prompt_tokens_details")
-        or {}
-    )
-    output_details = (
-        _response_attr(usage, "output_tokens_details")
-        or _response_attr(usage, "completion_tokens_details")
-        or {}
-    )
-    cached_input_tokens = _usage_int(_response_attr(input_details, "cached_tokens", 0))
-    reasoning_tokens = _usage_int(_response_attr(output_details, "reasoning_tokens", 0))
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-        "cached_input_tokens": cached_input_tokens,
-        "reasoning_tokens": reasoning_tokens,
-    }
-
-
-def _merge_openai_usage(total: dict[str, int], response: Any | None) -> None:
-    usage = _openai_usage_payload(response)
-    for key in (
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "cached_input_tokens",
-        "reasoning_tokens",
-    ):
-        total[key] = _usage_int(total.get(key)) + _usage_int(usage.get(key))
-
-
-def _apply_prompt_cache_options(kwargs: dict[str, Any], prompt_cache_key: str | None) -> None:
-    if not prompt_cache_key:
-        return
-    normalized_key = str(prompt_cache_key).strip()
-    if len(normalized_key) > 64:
-        normalized_key = f"pc:{hashlib.sha256(normalized_key.encode('utf-8')).hexdigest()[:60]}"
-    kwargs["prompt_cache_key"] = normalized_key
-    retention = str(settings.OPENAI_PROMPT_CACHE_RETENTION or "").strip()
-    if retention in {"in_memory", "24h"}:
-        kwargs["prompt_cache_retention"] = retention
 
 
 def _openai_writer_retry_efforts(current_effort: str) -> list[str]:
@@ -3393,8 +2846,6 @@ def _stream_openai_writer(
     effort: str,
     verb: str,
     max_tok: int | None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> tuple[str, Any | None]:
     client = _get_openai_writer_client()
@@ -3405,60 +2856,28 @@ def _stream_openai_writer(
         "text": {"verbosity": verb},
         "stream": True,
     }
-    _apply_prompt_cache_options(kwargs, prompt_cache_key)
-    normalized_tier = str(service_tier or "").strip().lower()
-    if normalized_tier in {"auto", "default", "flex", "priority"}:
-        kwargs["service_tier"] = normalized_tier
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
-    paid_api_guard.guard("openai")
-    try:
-        stream = client.responses.create(**kwargs)
-    except Exception as exc:
-        if paid_api_guard.trip_if_quota("openai", exc):
-            raise paid_api_guard.PaidApiQuotaExhausted(
-                f"OpenAI quota exhausted while starting stream: {exc}"
-            ) from exc
-        # A narrow Flex preflight rejection is safe for the caller to handle;
-        # all transport failures may mean the request was already accepted.
-        if _is_flex_preflight_rejection(exc) or _is_openai_explicit_preflight_rejection(exc):
-            raise
-        raise _openai_delivery_uncertain(exc, phase="stream request") from exc
+    stream = client.responses.create(**kwargs)
     chunks: list[str] = []
     final_response: Any | None = None
-    stream_completed = False
     generated_chars = 0
     last_progress_chars = 0
     last_progress_at = time.monotonic()
-    try:
-        for event in stream:
-            event_type = str(_response_attr(event, "type", "") or "")
-            if event_type.endswith("output_text.delta"):
-                delta = _response_attr(event, "delta", None)
-                if delta:
-                    chunks.append(delta)
-                    generated_chars += len(delta)
-                    if on_progress is not None:
-                        now = time.monotonic()
-                        if generated_chars - last_progress_chars >= 2000 or now - last_progress_at >= 15:
-                            on_progress(generated_chars)
-                            last_progress_chars = generated_chars
-                            last_progress_at = now
-            elif event_type.endswith("response.completed"):
-                stream_completed = True
-                final_response = _response_attr(event, "response", None) or final_response
-    except Exception as exc:
-        if paid_api_guard.trip_if_quota("openai", exc):
-            raise paid_api_guard.PaidApiQuotaExhausted(
-                f"OpenAI quota exhausted while reading stream: {exc}"
-            ) from exc
-        raise _openai_delivery_uncertain(exc, phase="stream delivery") from exc
-    if not stream_completed:
-        raise _openai_delivery_uncertain(
-            RuntimeError("stream ended before response.completed"),
-            phase="stream delivery",
-            response_id=str(_response_attr(final_response, "id", "") or "") or None,
-        )
+    for event in stream:
+        if (getattr(event, "type", "") or "").endswith("output_text.delta"):
+            delta = getattr(event, "delta", None)
+            if delta:
+                chunks.append(delta)
+                generated_chars += len(delta)
+                if on_progress is not None:
+                    now = time.monotonic()
+                    if generated_chars - last_progress_chars >= 2000 or now - last_progress_at >= 15:
+                        on_progress(generated_chars)
+                        last_progress_chars = generated_chars
+                        last_progress_at = now
+        elif (getattr(event, "type", "") or "").endswith("response.completed"):
+            final_response = getattr(event, "response", None) or final_response
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
     return "".join(chunks).strip(), final_response
@@ -3470,388 +2889,17 @@ def _create_openai_writer_response(
     effort: str,
     verb: str,
     max_tok: int | None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    background_timeout_seconds: int | None = None,
-    background_poll_interval_seconds: float | None = None,
-    background_response_id: str | None = None,
-    on_background_response_id: Callable[[str], None] | None = None,
-    tools: list[dict[str, Any]] | None = None,
-    text_format: dict[str, Any] | None = None,
 ) -> Any:
     client = _get_openai_writer_client()
-    persisted_response_id = str(background_response_id or "").strip()
-    # A persisted response id is an idempotency checkpoint. Honour it even if
-    # a caller lost the original background flag; creating a fresh response
-    # here could charge the same prompt twice.
-    if persisted_response_id:
-        retrieve_failures = 0
-        while True:
-            try:
-                response = client.responses.retrieve(persisted_response_id)
-                break
-            except Exception as exc:
-                if paid_api_guard.trip_if_quota("openai", exc):
-                    raise paid_api_guard.PaidApiQuotaExhausted(
-                        f"OpenAI quota exhausted while resuming response {persisted_response_id}: {exc}"
-                    ) from exc
-                retrieve_failures += 1
-                if not _is_retryable_openai_poll_error(exc) or retrieve_failures >= 8:
-                    raise _openai_delivery_uncertain(
-                        exc,
-                        phase="background response resume",
-                        response_id=persisted_response_id,
-                    ) from exc
-                time.sleep(min(float(retrieve_failures) * 2.0, 30.0))
-        return _wait_for_openai_background_response(
-            client,
-            response,
-            timeout_seconds=background_timeout_seconds,
-            poll_interval_seconds=background_poll_interval_seconds,
-        )
-
-    text_config: dict[str, Any] = {"verbosity": verb}
-    if text_format:
-        # Optional structured output is used by callers that need a durable
-        # transport contract.  It is deliberately absent for every existing
-        # writing route, so their request/response behavior is unchanged.
-        text_config["format"] = dict(text_format)
     kwargs: dict[str, Any] = {
         "model": settings.OPENAI_WRITER_MODEL,
         "input": rendered_prompt,
         "reasoning": {"effort": effort},
-        "text": text_config,
+        "text": {"verbosity": verb},
     }
-    _apply_prompt_cache_options(kwargs, prompt_cache_key)
-    normalized_tier = str(service_tier or "").strip().lower()
-    if normalized_tier in {"auto", "default", "flex", "priority"}:
-        kwargs["service_tier"] = normalized_tier
-    if background:
-        kwargs["background"] = True
-        kwargs["store"] = True
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
-    if tools:
-        # Hosted Responses API tools are opt-in per request.  Keep this
-        # argument absent for every existing writing route, and expose it only
-        # to the classical custom-prompt route when the user's exact prompt
-        # explicitly asks for online lookup/verification.
-        kwargs["tools"] = [dict(tool) for tool in tools]
-    paid_api_guard.guard("openai")
-    try:
-        response = client.responses.create(**kwargs)
-    except Exception as exc:
-        if paid_api_guard.trip_if_quota("openai", exc):
-            raise paid_api_guard.PaidApiQuotaExhausted(
-                f"OpenAI quota exhausted while creating response: {exc}"
-            ) from exc
-        if (
-            not _is_flex_preflight_rejection(exc)
-            and not paid_api_guard.is_safe_preflight_error(exc)
-            and not _is_openai_explicit_preflight_rejection(exc)
-        ):
-            raise _openai_delivery_uncertain(exc, phase="response creation") from exc
-        raise
-    if not background:
-        return response
-    response_id = str(_response_attr(response, "id", "") or "").strip()
-    if response_id and on_background_response_id is not None:
-        # Recording the id is telemetry/checkpoint work.  A database or file
-        # hiccup must never make the caller submit a second paid request after
-        # the provider has already accepted the first one.
-        try:
-            on_background_response_id(response_id)
-        except Exception:
-            logger.warning(
-                "failed to persist OpenAI background response id=%s; continuing to poll the same response",
-                response_id,
-                exc_info=True,
-            )
-    return _wait_for_openai_background_response(
-        client,
-        response,
-        timeout_seconds=background_timeout_seconds,
-        poll_interval_seconds=background_poll_interval_seconds,
-    )
-
-
-def _wait_for_openai_background_response(
-    client: Any,
-    response: Any,
-    *,
-    timeout_seconds: int | None,
-    poll_interval_seconds: float | None,
-) -> Any:
-    """Poll one persisted response ID so transient reads never duplicate a generation."""
-
-    response_id = str(_response_attr(response, "id", "") or "").strip()
-    if not response_id:
-        raise _openai_delivery_uncertain(
-            RuntimeError("background response did not return an id"),
-            phase="background response delivery",
-        )
-    timeout = max(60, int(timeout_seconds or 3600))
-    poll_interval = max(1.0, float(poll_interval_seconds or 5.0))
-    deadline = time.monotonic() + timeout
-    current = response
-    retrieve_failures = 0
-
-    while str(_response_attr(current, "status", "") or "").lower() in {"queued", "in_progress"}:
-        if time.monotonic() >= deadline:
-            try:
-                client.responses.cancel(response_id)
-            except Exception:
-                logger.warning("Failed to cancel timed-out OpenAI background response %s", response_id)
-            raise _openai_delivery_uncertain(
-                TimeoutError(f"background response timed out after {timeout}s"),
-                phase="background response delivery",
-                response_id=response_id,
-            )
-        time.sleep(poll_interval)
-        try:
-            current = client.responses.retrieve(response_id)
-            retrieve_failures = 0
-        except Exception as exc:
-            if paid_api_guard.trip_if_quota("openai", exc):
-                raise paid_api_guard.PaidApiQuotaExhausted(
-                    f"OpenAI quota exhausted while polling response {response_id}: {exc}"
-                ) from exc
-            retrieve_failures += 1
-            if not _is_retryable_openai_poll_error(exc):
-                raise
-            if retrieve_failures >= 8:
-                raise _openai_delivery_uncertain(
-                    exc,
-                    phase="background response retrieval",
-                    response_id=response_id,
-                ) from exc
-            sleep_for = min(poll_interval * retrieve_failures, 30.0)
-            logger.warning(
-                "OpenAI background response poll failed; retrying same response id=%s attempt=%d sleep=%.1fs error=%s",
-                response_id,
-                retrieve_failures,
-                sleep_for,
-                str(exc)[:300],
-            )
-            time.sleep(sleep_for)
-
-    status = str(_response_attr(current, "status", "") or "").lower()
-    if status != "completed":
-        provider_error = _openai_response_error_text(current)
-        if provider_error and paid_api_guard.is_quota_exhausted(provider_error):
-            # The provider produced no output and billed nothing; this is a
-            # billing decision, not a delivery whose fate is unknown.  Trip the
-            # shared breaker so every worker reports the real reason instead of
-            # asking the author to confirm a delivery that never existed.
-            paid_api_guard.trip("openai", provider_error)
-            raise paid_api_guard.PaidApiQuotaExhausted(
-                f"OpenAI refused response {response_id} before generating anything: {provider_error}"
-            )
-        raise _openai_delivery_uncertain(
-            RuntimeError(
-                f"background response ended with status={status or 'unknown'}; "
-                f"{_openai_response_debug_summary(current)}"
-            ),
-            phase="background response delivery",
-            response_id=response_id,
-        )
-    return current
-
-
-def _can_fallback_from_flex(exc: Exception) -> bool:
-    return _is_flex_preflight_rejection(exc)
-
-
-def _openai_writer_call_result(
-    rendered_prompt: str,
-    *,
-    reasoning_effort: str | None = None,
-    verbosity: str | None = None,
-    max_output_tokens: int | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    background_timeout_seconds: int | None = None,
-    background_poll_interval_seconds: float | None = None,
-    background_response_id: str | None = None,
-    on_background_response_id: Callable[[str], None] | None = None,
-    fallback_service_tier: str | None = None,
-    on_progress: Callable[[int], None] | None = None,
-    retry_on_failure: bool = True,
-    tools: list[dict[str, Any]] | None = None,
-    text_format: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
-    verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
-    raw_max_tok = settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
-    max_tok = _positive_max_tokens(raw_max_tok)
-
-    response: Any | None = None
-    text = ""
-    total_usage = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "cached_input_tokens": 0,
-        "reasoning_tokens": 0,
-    }
-    first_stream_exc: Exception | None = None
-    attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1)) if retry_on_failure else 1
-    backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
-
-    requested_tier = str(service_tier or "").strip().lower() or None
-    fallback_tier = str(fallback_service_tier or "").strip().lower() or None
-    service_tiers = [requested_tier]
-    if fallback_tier and fallback_tier != requested_tier:
-        service_tiers.append(fallback_tier)
-    used_tier = requested_tier
-    last_exc: Exception | None = None
-    active_background_response_id = str(background_response_id or "").strip() or None
-    if active_background_response_id and not background:
-        # A checkpoint always wins over the caller's stale mode flag. Never
-        # turn a known response into a new paid POST after a worker restart.
-        background = True
-
-    def _remember_background_response_id(response_id: str) -> None:
-        """Keep retries/polling bound to the already-created paid response."""
-
-        nonlocal active_background_response_id
-        active_background_response_id = str(response_id or "").strip() or active_background_response_id
-        if on_background_response_id is not None:
-            on_background_response_id(response_id)
-
-    for tier_index, current_tier in enumerate(service_tiers):
-        for attempt in range(1, attempts + 1):
-            try:
-                with distributed_semaphore(
-                    "openai-writer",
-                    limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
-                ):
-                    if settings.OPENAI_WRITER_STREAM and not background and not tools and not text_format:
-                        try:
-                            text, response = _stream_openai_writer(
-                                rendered_prompt,
-                                effort=effort,
-                                verb=verb,
-                                max_tok=max_tok,
-                                prompt_cache_key=prompt_cache_key,
-                                service_tier=current_tier,
-                                on_progress=on_progress,
-                            )
-                            _merge_openai_usage(total_usage, response)
-                        except Exception as stream_exc:
-                            if paid_api_guard.trip_if_quota("openai", stream_exc):
-                                raise paid_api_guard.PaidApiQuotaExhausted(
-                                    f"OpenAI quota exhausted during stream: {stream_exc}"
-                                ) from stream_exc
-                            if first_stream_exc is None:
-                                first_stream_exc = stream_exc
-                            # The stream POST may already have been billed. Do
-                            # not switch to non-streaming or submit a second
-                            # request with another tier/effort.
-                            if isinstance(stream_exc, OpenAIDeliveryUncertainError):
-                                raise
-                            if _is_openai_explicit_preflight_rejection(stream_exc):
-                                raise
-                            raise _openai_delivery_uncertain(
-                                stream_exc,
-                                phase="stream delivery",
-                            ) from stream_exc
-                    else:
-                        response = _create_openai_writer_response(
-                            rendered_prompt,
-                            effort=effort,
-                            verb=verb,
-                            max_tok=max_tok,
-                            prompt_cache_key=prompt_cache_key,
-                            service_tier=current_tier,
-                            background=background,
-                            background_timeout_seconds=background_timeout_seconds,
-                            background_poll_interval_seconds=background_poll_interval_seconds,
-                            background_response_id=active_background_response_id,
-                            on_background_response_id=(
-                                _remember_background_response_id if background else None
-                            ),
-                            tools=tools,
-                            text_format=text_format,
-                        )
-                        _merge_openai_usage(total_usage, response)
-                        text = _extract_openai_response_text(response)
-                used_tier = str(_response_attr(response, "service_tier", current_tier or "default") or "default")
-                break
-            except Exception as exc:
-                last_exc = exc
-                _reset_openai_writer_client()
-                if paid_api_guard.trip_if_quota("openai", exc):
-                    raise paid_api_guard.PaidApiQuotaExhausted(
-                        f"OpenAI quota exhausted during writer call: {exc}"
-                    ) from exc
-                if isinstance(exc, OpenAIDeliveryUncertainError):
-                    raise
-                if active_background_response_id and _is_retryable_openai_poll_error(exc):
-                    # A background response already has a durable provider
-                    # ID. Retry only the GET/poll, never a fresh POST.
-                    if attempt < attempts:
-                        sleep_for = min(backoff_seconds * attempt, 30.0)
-                        if sleep_for > 0:
-                            time.sleep(sleep_for)
-                        continue
-                    raise _openai_delivery_uncertain(
-                        exc,
-                        phase="background response resume",
-                        response_id=active_background_response_id,
-                    ) from exc
-                retryable = _is_retryable_openai_error(exc)
-                if attempt < attempts and retryable:
-                    sleep_for = min(backoff_seconds * attempt, 30.0)
-                    logger.warning(
-                        "OpenAI Writer 调用失败，准备重试 tier=%s attempt=%d/%d sleep=%.1fs error=%s: %s",
-                        current_tier or "default",
-                        attempt,
-                        attempts,
-                        sleep_for,
-                        exc.__class__.__name__,
-                        str(exc)[:500],
-                    )
-                    if sleep_for > 0:
-                        time.sleep(sleep_for)
-                    continue
-                has_fallback = tier_index + 1 < len(service_tiers)
-                if has_fallback and current_tier == "flex" and _can_fallback_from_flex(exc):
-                    logger.warning(
-                        "OpenAI Flex unavailable after retries; falling back with identical model/prompt/reasoning params: %s",
-                        str(exc)[:500],
-                    )
-                    break
-                raise _openai_writer_failure(exc, first_stream_exc) from exc
-        if text:
-            break
-    else:
-        if last_exc is not None:
-            raise _openai_writer_failure(last_exc, first_stream_exc) from last_exc
-
-    if not text:
-        text = _extract_openai_response_text(response)
-
-    if not text or not text.strip():
-        logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
-        # An empty response is still a completed provider interaction (or an
-        # interrupted stream). Retrying with a new reasoning effort would
-        # create a second billable request, so require an explicit resume or
-        # operator decision instead.
-        raise OpenAIDeliveryUncertainError(
-            "OpenAI returned no usable text; automatic reasoning/fallback retry is disabled",
-            response_id=str(_response_attr(response, "id", "") or "") or active_background_response_id,
-        )
-
-    if not text or not text.strip():
-        raise ValueError("OpenAI Writer 返回空响应")
-
-    total_usage["service_tier"] = used_tier or "default"
-    total_usage["requested_service_tier"] = requested_tier or "default"
-    total_usage["response_id"] = str(_response_attr(response, "id", "") or "")
-    return text.strip(), total_usage
+    return client.responses.create(**kwargs)
 
 
 def _openai_writer_call(
@@ -3860,32 +2908,107 @@ def _openai_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    background_timeout_seconds: int | None = None,
-    background_poll_interval_seconds: float | None = None,
-    fallback_service_tier: str | None = None,
-    on_background_response_id: Callable[[str], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
-    text, _usage = _openai_writer_call_result(
-        rendered_prompt,
-        reasoning_effort=reasoning_effort,
-        verbosity=verbosity,
-        max_output_tokens=max_output_tokens,
-        prompt_cache_key=prompt_cache_key,
-        service_tier=service_tier,
-        background=background,
-        background_timeout_seconds=background_timeout_seconds,
-        background_poll_interval_seconds=background_poll_interval_seconds,
-        fallback_service_tier=fallback_service_tier,
-        on_background_response_id=on_background_response_id,
-        on_progress=on_progress,
-        retry_on_failure=retry_on_failure,
-    )
-    return text
+    effort = reasoning_effort or settings.OPENAI_WRITER_REASONING_EFFORT
+    verb = verbosity or settings.OPENAI_WRITER_VERBOSITY
+    raw_max_tok = settings.OPENAI_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
+    max_tok = _positive_max_tokens(raw_max_tok)
+
+    response: Any | None = None
+    text = ""
+    first_stream_exc: Exception | None = None
+    attempts = max(1, int(settings.OPENAI_WRITER_MAX_RETRIES or 1)) if retry_on_failure else 1
+    backoff_seconds = max(0.0, float(settings.OPENAI_WRITER_RETRY_BACKOFF_SECONDS or 0.0))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with distributed_semaphore(
+                "openai-writer",
+                limit=settings.OPENAI_WRITER_MAX_CONCURRENT_CALLS,
+            ):
+                if settings.OPENAI_WRITER_STREAM:
+                    try:
+                        text, response = _stream_openai_writer(
+                            rendered_prompt,
+                            effort=effort,
+                            verb=verb,
+                            max_tok=max_tok,
+                            on_progress=on_progress,
+                        )
+                    except Exception as stream_exc:
+                        if not retry_on_failure:
+                            raise
+                        if first_stream_exc is None:
+                            first_stream_exc = stream_exc
+                        _reset_openai_writer_client()
+                        response = _create_openai_writer_response(
+                            rendered_prompt,
+                            effort=effort,
+                            verb=verb,
+                            max_tok=max_tok,
+                        )
+                        text = _extract_openai_response_text(response)
+                else:
+                    response = _create_openai_writer_response(
+                        rendered_prompt,
+                        effort=effort,
+                        verb=verb,
+                        max_tok=max_tok,
+                    )
+                    text = _extract_openai_response_text(response)
+            break
+        except Exception as exc:
+            _reset_openai_writer_client()
+            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                raise RuntimeError(
+                    _openai_writer_connection_error_message(exc, first_stream_exc)
+                ) from exc
+            sleep_for = min(backoff_seconds * attempt, 30.0)
+            logger.warning(
+                "OpenAI Writer 调用失败，准备重试 attempt=%d/%d sleep=%.1fs error=%s: %s",
+                attempt,
+                attempts,
+                sleep_for,
+                exc.__class__.__name__,
+                str(exc)[:500],
+            )
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    if not text:
+        text = _extract_openai_response_text(response)
+
+    if not text or not text.strip():
+        logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
+        if retry_on_failure:
+            for retry_effort in _openai_writer_retry_efforts(effort):
+                logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
+                try:
+                    response = _create_openai_writer_response(
+                        rendered_prompt,
+                        effort=retry_effort,
+                        verb=verb,
+                        max_tok=max_tok,
+                    )
+                except Exception as exc:
+                    _reset_openai_writer_client()
+                    raise RuntimeError(
+                        _openai_writer_connection_error_message(exc, first_stream_exc)
+                    ) from exc
+                text = _extract_openai_response_text(response)
+                if text.strip():
+                    break
+                logger.warning(
+                    "OpenAI Writer retry returned empty response: %s",
+                    _openai_response_debug_summary(response),
+                )
+
+    if not text or not text.strip():
+        raise ValueError("OpenAI Writer 返回空响应")
+
+    return text.strip()
 
 
 async def _route_writer_call(
@@ -3894,13 +3017,6 @@ async def _route_writer_call(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     max_output_tokens: int | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    background_timeout_seconds: int | None = None,
-    background_poll_interval_seconds: float | None = None,
-    fallback_service_tier: str | None = None,
-    on_background_response_id: Callable[[str], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
@@ -3910,47 +3026,6 @@ async def _route_writer_call(
         reasoning_effort=reasoning_effort,
         verbosity=verbosity,
         max_output_tokens=max_output_tokens,
-        prompt_cache_key=prompt_cache_key,
-        service_tier=service_tier,
-        background=background,
-        background_timeout_seconds=background_timeout_seconds,
-        background_poll_interval_seconds=background_poll_interval_seconds,
-        fallback_service_tier=fallback_service_tier,
-        on_background_response_id=on_background_response_id,
-        on_progress=on_progress,
-        retry_on_failure=retry_on_failure,
-    )
-
-
-async def _route_writer_call_with_usage(
-    rendered_prompt: str,
-    *,
-    reasoning_effort: str | None = None,
-    verbosity: str | None = None,
-    max_output_tokens: int | None = None,
-    prompt_cache_key: str | None = None,
-    service_tier: str | None = None,
-    background: bool = False,
-    background_timeout_seconds: int | None = None,
-    background_poll_interval_seconds: float | None = None,
-    fallback_service_tier: str | None = None,
-    on_background_response_id: Callable[[str], None] | None = None,
-    on_progress: Callable[[int], None] | None = None,
-    retry_on_failure: bool = True,
-) -> tuple[str, dict[str, Any]]:
-    return await asyncio.to_thread(
-        _openai_writer_call_result,
-        rendered_prompt,
-        reasoning_effort=reasoning_effort,
-        verbosity=verbosity,
-        max_output_tokens=max_output_tokens,
-        prompt_cache_key=prompt_cache_key,
-        service_tier=service_tier,
-        background=background,
-        background_timeout_seconds=background_timeout_seconds,
-        background_poll_interval_seconds=background_poll_interval_seconds,
-        fallback_service_tier=fallback_service_tier,
-        on_background_response_id=on_background_response_id,
         on_progress=on_progress,
         retry_on_failure=retry_on_failure,
     )
@@ -3959,62 +3034,11 @@ async def _route_writer_call_with_usage(
 _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES = {
     "《百喻经》章节覆盖不足",
     "《百喻经》章节数量异常",
-    "常规长文章节过短",
-    "常规长文相邻短章疑似拆章",
-    "常规长文章节长度严重失衡",
 }
-
-
-_DETERMINISTIC_FINAL_FORMAT_ERROR_NAMES = frozenset(
-    {
-        "Markdown 粗体残留",
-        "# 标题残留",
-        "非法正文 @ 段首",
-        "正文内编号伪标题",
-        "裸短小标题",
-    }
-)
 
 
 def _has_non_repairable_final_hard_errors(issues: dict[str, list[str]]) -> bool:
     return any(name in issues for name in _NON_REPAIRABLE_FINAL_HARD_ERROR_NAMES)
-
-
-_REPAIR_FAILURE_NOTICE_MARKERS = (
-    "待修复终稿",
-    "无法在不新增内容的前提下",
-    "请补充缺失部分",
-    "provider returned an empty body",
-)
-
-
-def _repair_output_is_unusable(original: str, repaired: str, *, category: str) -> bool:
-    """Reject a repair-provider notice/short response as if it were a manuscript.
-
-    Older runs persisted a model's refusal/diagnostic sentence as
-    ``04_format.md``.  A repair response is only allowed to replace the
-    manuscript when it preserves the long-form structure and a reasonable
-    amount of content.
-    """
-
-    original_text = (original or "").strip()
-    repaired_text = (repaired or "").strip()
-    if not repaired_text:
-        return True
-    lowered = repaired_text.lower()
-    if len(repaired_text) < 2_000 and any(marker.lower() in lowered for marker in _REPAIR_FAILURE_NOTICE_MARKERS):
-        return True
-    original_compact = len(re.sub(r"\s+", "", original_text))
-    repaired_compact = len(re.sub(r"\s+", "", repaired_text))
-    if original_compact >= 2_000 and repaired_compact < max(1_000, int(original_compact * 0.5)):
-        return True
-    if _is_finance_longform_category(category) and _finance_stage_looks_compressed(
-        original_text,
-        repaired_text,
-        category=category,
-    ):
-        return True
-    return False
 
 
 async def _repair_final_hard_errors_once(
@@ -4023,54 +3047,17 @@ async def _repair_final_hard_errors_once(
     category: str | None,
     output_dir: Path | None,
     stage: str = "format",
-    prompt_cache_key: str | None = None,
 ) -> str:
     from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
 
     normalized_category = normalize_category(category or "")
-    original_markdown = markdown or ""
-    issues = detect_final_hard_errors(original_markdown, category=normalized_category)
+    issues = detect_final_hard_errors(markdown, category=normalized_category)
     if not issues:
         return markdown
 
     issue_text = format_final_hard_error_hits(issues)
     logger.warning("终稿硬伤闸门触发 stage=%s category=%s: %s", stage, normalized_category, issue_text)
     _dump_stage(output_dir, "final_hard_error_issues.txt", issue_text)
-
-    # Most format-only failures are deterministic artifacts of the final
-    # normalizer (a stray @, a numbered pseudo-heading, or a Markdown heading
-    # marker that should be removed). Repair those before spending a
-    # second paid model call.  This also lets a worker finish an already
-    # generated 04_format.md after a restart, instead of turning a harmless
-    # formatting false positive into a permanent failed task.
-    normalized_markdown = normalize_final_markdown(
-        original_markdown,
-        category=normalized_category,
-    )
-    if normalized_markdown != original_markdown:
-        format_only_before = set(issues).issubset(_DETERMINISTIC_FINAL_FORMAT_ERROR_NAMES)
-        normalized_issues = detect_final_hard_errors(
-            normalized_markdown,
-            category=normalized_category,
-        )
-        _dump_stage(
-            output_dir,
-            "final_hard_error_deterministic_repaired.md",
-            normalized_markdown,
-        )
-        if format_only_before and not normalized_issues:
-            logger.info(
-                "终稿硬伤闸门由确定性格式修复通过 stage=%s category=%s",
-                stage,
-                normalized_category,
-            )
-            return normalized_markdown
-        # Keep any semantic issue, but do not ask the repair model to fix
-        # format violations that normalization already removed.
-        markdown = normalized_markdown
-        issues = normalized_issues
-        issue_text = format_final_hard_error_hits(issues)
-
     if _has_non_repairable_final_hard_errors(issues):
         raise RuntimeError(f"终稿硬伤质检失败，需重跑完整生成链路: {issue_text}")
 
@@ -4082,11 +3069,7 @@ async def _repair_final_hard_errors_once(
 【修复规则】
 - 只修复上面列出的语义搭配、伪小标题、残留提示词、重复标题或空块硬伤。
 - 语义搭配要按中文常识修正，例如“菜/饭菜/菜肴好喝”应改成“好吃”或“味道好”，“汤/茶/水好吃”应改成“好喝”或等价自然表达。
-- 古文误译硬伤只修正被点名的误译，不改其它段落；“便觉、始觉、方觉、乃觉、忽觉”里的“觉”应改成“觉得、感到、发觉”一类表达，不得写成“导致、造成、引发、致使”。
-- 古文参照译写版如果命中“直译腔”或“意象处理不当”，不要只替换几个同义词。必须先保留权威译本锁定的意思，再保留古典比喻的核心意象和比喻方向：例如“精金美玉、烈火、如履薄冰”等意象应保留并补成清楚现代白话，而不是全部抹成抽象概念。不得改义、改轻重、改比喻方向。
-- 古文参照译写版如果命中“讲义解释腔”“教材总结腔”，只修对应（翻译）段：去掉“这句话的意思是、这说明、由此可见、我们可以看出、所谓”等讲义口吻，改成顺口、有气口、耐读的大白话；不得改动相邻（原文）段，不得新增注释或点评。
-- 古文白话小说风格版如果命中“只有翻译解释没有故事推进”或“抽象格言没有转成故事载体”，必须把正文改成小故事式白话叙事：叙事型古文保留原人物、事件、因果和顺序，只补动作、过渡、反应和短对白；格言/议论型古文要安排无名人物、普通处境、一次选择或心理转折，让道理从故事里显出来。不得只解释句义，不得改成另一件事。
-- 正文不设置内部小标题，不得输出任何 `###`；如输入中已有，只删除标记并保留必要文字。
+- 正文内部小标题只能使用“###短标题”单独占一行；不能保留“@短标题”、编号伪标题、裸短标题或“短标题，正文内容”这种混排。
 - 如果命中佛经白话章节过短、故事和寓意被拆章或《百喻经》章节数量异常，必须把同一则譬喻的“故事章”和“道理章/寓意章/启示章”合并为一个正式章节；每章内部先讲完整故事，再在同章末尾自然收束道理，不得保留只有一句道理的独立章节。
 - 如果是《百喻经》全本，正文正式章节应按九十八则譬喻组织，不能生成一百九十多章、二百章或二百零四章。
 - 删除任务说明、审稿批注、提示词残留和模型解释语。
@@ -4102,23 +3085,9 @@ async def _repair_final_hard_errors_once(
         repair_prompt,
         max_output_tokens=0,
         retry_on_failure=False,
-        prompt_cache_key=prompt_cache_key,
     )
     repaired = normalize_final_markdown(repaired, category=normalized_category)
     _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
-
-    if _repair_output_is_unusable(
-        original_markdown,
-        repaired,
-        category=normalized_category,
-    ):
-        _dump_stage(output_dir, "semantic_quality_repaired_rejected.md", repaired)
-        logger.error(
-            "终稿硬伤修复返回不可用短文本，保留原稿并交由上层完整性闸门处理 stage=%s category=%s",
-            stage,
-            normalized_category,
-        )
-        return original_markdown
 
     remaining = detect_final_hard_errors(repaired, category=normalized_category)
     if remaining:
@@ -4145,31 +3114,6 @@ def _classical_gemini_chunk_request_timeout(
     request_timeout: int | float | None,
 ) -> int:
     return int(_effective_gemini_chunk_timeout(0, request_timeout))
-
-
-def _is_paid_polish_blocking_failure(exc: BaseException) -> bool:
-    """Return true when a paid polish failure must stop instead of degrading.
-
-    A quota/billing denial is an operator boundary, and an uncertain delivery
-    may already have been charged. Neither case may be converted to raw text or
-    sent through another provider.
-    """
-
-    if isinstance(
-        exc,
-        (
-            paid_api_guard.PaidApiQuotaExhausted,
-            GeminiDeliveryUncertainError,
-            ClaudeDeliveryUncertainError,
-            ClaudeRequestRejectedError,
-        ),
-    ):
-        return True
-    message = f"{type(exc).__name__}: {exc}".lower()
-    return ("gemini" in message or "claude" in message) and (
-        paid_api_guard.is_quota_exhausted(exc)
-        or "paid_call_delivery_uncertain" in message
-    )
 
 
 def _polish_book_text_without_output_cap(text: str, *, system_instruction: str | None = None) -> str:
@@ -4317,66 +3261,6 @@ def _split_text_for_max_tokens_retry(text: str, *, target_chars: int) -> list[st
     return _split_text_by_paragraph(text, target_chars=retry_target)
 
 
-def _split_standard_longform_by_chapters(
-    text: str,
-    *,
-    target_chars: int = 4_000,
-) -> list[str]:
-    """Keep ordinary-book polish chunks aligned to formal chapter boundaries."""
-
-    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    body_match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", normalized)
-    if not body_match:
-        return [text] if text and text.strip() else []
-    prefix = normalized[: body_match.end()].strip()
-    body = normalized[body_match.end() :]
-    matches = list(
-        re.finditer(
-            r"(?m)^\s*(?:(?:！！！)?@|！！！)\s*\d+[.．、]\s*.+?\s*$",
-            body,
-        )
-    )
-    if not matches:
-        return [text] if text and text.strip() else []
-    chunks: list[str] = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        chapter = body[match.start() : end].strip()
-        if not chapter:
-            continue
-        chunks.append((prefix + "\n" + chapter) if index == 0 else chapter)
-    return chunks or ([text] if text and text.strip() else [])
-
-
-def _standard_longform_chunk_issues(
-    source_chunk: str,
-    output_chunk: str,
-) -> list[str]:
-    source_parts = _stage_formal_chapter_parts(source_chunk)
-    output_parts = _stage_formal_chapter_parts(output_chunk)
-    if not source_parts:
-        return []
-    source_numbers = [number for number, _title, _body in source_parts]
-    output_numbers = [number for number, _title, _body in output_parts]
-    if output_numbers != source_numbers:
-        return [
-            "章节分块输出改变了章节边界: "
-            f"source={source_numbers} candidate={output_numbers}"
-        ]
-    issues: list[str] = []
-    for (number, _title, source_body), (_out_number, _out_title, output_body) in zip(
-        source_parts,
-        output_parts,
-    ):
-        source_chars = sum(1 for char in source_body if "\u3400" <= char <= "\u9fff")
-        output_chars = sum(1 for char in output_body if "\u3400" <= char <= "\u9fff")
-        if source_chars >= 700 and output_chars < max(500, int(source_chars * 0.6)):
-            issues.append(
-                f"第 {number} 章分块疑似压缩: source={source_chars} candidate={output_chars}"
-            )
-    return issues
-
-
 def _classical_chunk_marker_issues(source_chunk: str, output_chunk: str) -> list[str]:
     source_markers = [int(item) for item in CLASSICAL_PARAGRAPH_MARKER_RE.findall(source_chunk or "")]
     if not source_markers:
@@ -4406,8 +3290,8 @@ async def _polish_by_paragraph_chunks(
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
     （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
 
-    健壮性原则：一润是质量增强层，普通单块故障可用原 chunk 兜底；
-    但费用/账单拒绝和交付不确定异常必须停止，不能降级或换供应商。
+    健壮性原则：一润是质量增强层，不是必经任务。任何单块失败都不应让整个任务挂掉。
+    每块独立 try：成功用润色稿；失败或超时则用原 chunk 兜底，继续往下走。
     最后日志统计降级数量。
     """
     if not text or not text.strip():
@@ -4419,7 +3303,6 @@ async def _polish_by_paragraph_chunks(
     total = len(chunks)
     polished: list[str | None] = [None] * total
     fallback_count = 0
-    blocking_errors: list[BaseException] = []
     completed_count = 0
     concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
     semaphore = asyncio.Semaphore(concurrency)
@@ -4462,9 +3345,6 @@ async def _polish_by_paragraph_chunks(
             try:
                 polished[idx] = await _polish_once(chunk)
             except asyncio.TimeoutError as exc:
-                if _is_paid_polish_blocking_failure(exc):
-                    blocking_errors.append(exc)
-                    return
                 first_err = f"超时（{exc.__class__.__name__}）"
                 fallback_count += 1
                 logger.error(
@@ -4473,9 +3353,6 @@ async def _polish_by_paragraph_chunks(
                 )
                 polished[idx] = chunk
             except Exception as exc:
-                if _is_paid_polish_blocking_failure(exc):
-                    blocking_errors.append(exc)
-                    return
                 first_err = f"{exc.__class__.__name__}: {exc}"
                 fallback_count += 1
                 logger.error(
@@ -4486,9 +3363,6 @@ async def _polish_by_paragraph_chunks(
             await _mark_completed(idx + 1, chunk)
 
     await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
-
-    if blocking_errors:
-        raise blocking_errors[0]
 
     if fallback_count:
         logger.warning(
@@ -4539,7 +3413,6 @@ async def _polish_by_paragraph_chunks_strict(
     total = len(chunks)
     polished: list[str | None] = [None] * total
     errors: list[str] = []
-    blocking_errors: list[BaseException] = []
     fallback_count = 0
     completed_count = 0
     concurrency = max(1, min(total, int(settings.GEMINI_POLISH_CONCURRENCY or 1)))
@@ -4576,16 +3449,6 @@ async def _polish_by_paragraph_chunks_strict(
             content = path.read_text(encoding="utf-8").strip()
             if not content:
                 return None
-            if progress_stage == "refine_chunk":
-                refine_issue = _refine_chunk_output_issue(chunk, content)
-                if refine_issue:
-                    logger.warning(
-                        "%s cache invalid chunk=%d: %s",
-                        log_label,
-                        idx + 1,
-                        refine_issue,
-                    )
-                    return None
             if chunk_validator:
                 validation_issues = chunk_validator(chunk, content)
                 if validation_issues:
@@ -4607,9 +3470,7 @@ async def _polish_by_paragraph_chunks_strict(
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # A killed worker must never leave a half-written chunk that a
-            # later retry mistakes for a completed refinement.
-            _atomic_write_stage_text(path, content.strip())
+            path.write_text(content.strip(), encoding="utf-8")
         except Exception as exc:
             logger.warning("%s cache write failed chunk=%d: %s", log_label, idx + 1, exc)
 
@@ -4771,10 +3632,6 @@ async def _polish_by_paragraph_chunks_strict(
             await _mark_started(idx + 1, chunk)
             try:
                 result = await _polish_with_max_tokens_retry(chunk, idx=idx)
-                if progress_stage == "refine_chunk":
-                    refine_issue = _refine_chunk_output_issue(chunk, result)
-                    if refine_issue:
-                        raise RuntimeError(refine_issue)
                 if chunk_validator:
                     validation_issues = chunk_validator(chunk, result)
                     if validation_issues:
@@ -4784,12 +3641,6 @@ async def _polish_by_paragraph_chunks_strict(
                 await _mark_completed(idx + 1, result)
             except GeminiMaxTokensError as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
-                if _is_paid_polish_blocking_failure(exc):
-                    async with error_lock:
-                        errors.append(f"chunk {idx + 1}/{total}: {message}")
-                        abort_event.set()
-                        blocking_errors.append(exc)
-                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4805,12 +3656,6 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except asyncio.TimeoutError as exc:
                 message = f"TimeoutError: {exc}"
-                if _is_paid_polish_blocking_failure(exc):
-                    async with error_lock:
-                        errors.append(f"chunk {idx + 1}/{total}: {message}")
-                        abort_event.set()
-                        blocking_errors.append(exc)
-                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4826,12 +3671,6 @@ async def _polish_by_paragraph_chunks_strict(
                 )
             except Exception as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
-                if _is_paid_polish_blocking_failure(exc):
-                    async with error_lock:
-                        errors.append(f"chunk {idx + 1}/{total}: {message}")
-                        abort_event.set()
-                        blocking_errors.append(exc)
-                    return
                 if allow_chunk_fallback:
                     await _fallback_chunk(idx, chunk, message=message)
                     return
@@ -4847,9 +3686,6 @@ async def _polish_by_paragraph_chunks_strict(
                 )
 
     await asyncio.gather(*(_polish_chunk(idx, chunk) for idx, chunk in enumerate(chunks)))
-
-    if blocking_errors:
-        raise blocking_errors[0]
 
     if errors:
         first = errors[0][:500]
@@ -5036,9 +3872,9 @@ def _is_finance_recommendation_category(category: str | None) -> bool:
 
 def _finance_section_content(text: str, section: str) -> str:
     pattern = re.compile(
-        r"^(?:！{3})?@?\s*"
+        r"^@?\s*"
         + re.escape(section)
-        + r"\s*$([\s\S]*?)(?=^(?:！{3})?@?\s*(?:最终书名|最终简介|目录|导言|正文)\s*$|\Z)",
+        + r"\s*$([\s\S]*?)(?=^@?\s*(?:最终书名|最终简介|目录|导言|正文)\s*$|\Z)",
         re.MULTILINE,
     )
     match = pattern.search(text or "")
@@ -5046,18 +3882,7 @@ def _finance_section_content(text: str, section: str) -> str:
 
 
 def _finance_body_text(markdown: str) -> str:
-    text = markdown or ""
-    body = _finance_section_content(text, "正文")
-    if body:
-        return body
-    # A malformed cached artifact can omit @正文 while retaining an @目录
-    # list.  Never interpret that front-matter list as manuscript chapters.
-    if re.search(
-        r"(?m)^(?:！{3})?@?\s*(?:最终书名|最终简介|目录|导言|前言)\s*$",
-        text,
-    ):
-        return ""
-    return text
+    return _finance_section_content(markdown, "正文") or (markdown or "")
 
 
 def _finance_body_chars(markdown: str) -> int:
@@ -5147,11 +3972,8 @@ def _finance_web_search_excerpt(raw_text: str, *, max_chars: int = 12_000) -> st
 
 def _finance_latest_research_prompt(raw_text: str, *, category: str) -> str:
     excerpt = _finance_web_search_excerpt(raw_text)
-    normalized_category = normalize_category(category)
     if _is_finance_recommendation_category(category):
         category_label = "财经科技（建议版）"
-    elif normalized_category == FINANCE_TECHNOLOGY_AI_OPTIMIZED_CATEGORY:
-        category_label = "财经科技（优化AI味版）"
     else:
         category_label = "财经·科技"
     recommendation_guard = ""
@@ -5228,29 +4050,24 @@ def _openai_finance_web_search_call(prompt: str) -> str:
     if not _resolve_openai_api_key():
         raise RuntimeError("财经科技联网检索需要 OPENAI_API_KEY，不能在没有联网检索的情况下生成财经科技稿件")
 
-    model = (settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.6-sol").strip()
+    model = (settings.FINANCE_WEB_SEARCH_MODEL or settings.OPENAI_WRITER_MODEL or "gpt-5.5").strip()
     context_size = (settings.FINANCE_WEB_SEARCH_CONTEXT_SIZE or "medium").strip().lower()
     if context_size not in {"low", "medium", "high"}:
         context_size = "medium"
 
-    try:
-        paid_api_guard.guard("openai")
-        response = _get_openai_writer_client().responses.create(
-            model=model,
-            input=prompt,
-            reasoning={"effort": "low"},
-            tools=[
-                {
-                    "type": "web_search",
-                    "search_context_size": context_size,
-                }
-            ],
-            tool_choice="required",
-            include=["web_search_call.action.sources"],
-        )
-    except Exception as exc:
-        paid_api_guard.trip_if_quota("openai", exc)
-        raise
+    response = _get_openai_writer_client().responses.create(
+        model=model,
+        input=prompt,
+        reasoning={"effort": "low"},
+        tools=[
+            {
+                "type": "web_search",
+                "search_context_size": context_size,
+            }
+        ],
+        tool_choice="required",
+        include=["web_search_call.action.sources"],
+    )
     text = _extract_openai_response_text(response)
     if not text.strip():
         raise RuntimeError(f"财经科技联网检索无返回内容: {_openai_response_debug_summary(response)}")
@@ -5348,7 +4165,6 @@ def _finance_stage_instruction(
 - 必须保留完整正文、完整章节、完整段落和全部参考资料信息点；不得因为篇幅长而删段、合并章节、跳过案例或压缩论证链条。
 - 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
 - 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
-- 章节结构标记是机器可读的边界：凡是与 @目录 完整对应的正式章节，即使输入中出现了裸的 `N. 章节名` 或 `N、章节名`，也必须保留并输出为 `@N. 章节名`；不属于目录章节序列的正文编号清单按普通正文保留。
 - 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
 """
 
@@ -5396,361 +4212,20 @@ def _finance_final_resume_reusable(
     )
 
 
-_FINANCE_FORMAL_CHAPTER_RE = re.compile(
-    r"^\s*(?:(?:！{3})?@|！{3})\s*(\d+)[.．、]\s*(.+?)\s*$",
-    re.MULTILINE,
-)
-_FINANCE_PLAIN_CHAPTER_RE = re.compile(
-    r"^\s*(\d+)[.．、]\s*(.+?)\s*$",
-    re.MULTILINE,
-)
-_FINANCE_CATALOG_ENTRY_RE = re.compile(
-    r"^\s*@?\s*(\d+)[.．、]\s*(.+?)\s*$",
-    re.MULTILINE,
-)
-
-
-def _finance_clean_chapter_title(value: str) -> str:
-    return _strip_title_colons(re.sub(r"^\s*[*#]+\s*", "", value or "").strip())
-
-
-def _finance_title_key(value: str) -> str:
-    return re.sub(
-        r"[\s.,．、:：;；!?！？'\"“”‘’（）()【】\[\]《》<>#*_`]+",
-        "",
-        _finance_clean_chapter_title(value),
-    )
-
-
-def _finance_titles_compatible(left: str, right: str) -> bool:
-    """Match an ambiguous plain heading to its catalog entry conservatively."""
-
-    left_key = _finance_title_key(left)
-    right_key = _finance_title_key(right)
-    if not left_key or not right_key:
-        return False
-    if left_key == right_key:
-        return True
-    shared = min(len(left_key), len(right_key))
-    return shared >= 6 and (left_key.startswith(right_key) or right_key.startswith(left_key))
-
-
-def _finance_catalog_titles(markdown: str) -> list[tuple[int, str]]:
-    catalog = _finance_section_content(markdown or "", "目录")
-    if not catalog:
-        return []
+def _finance_chapter_titles_from_body(body: str) -> list[tuple[int, str]]:
     titles: list[tuple[int, str]] = []
-    for match in _FINANCE_CATALOG_ENTRY_RE.finditer(catalog):
-        title = _finance_clean_chapter_title(match.group(2))
+    for line in (body or "").splitlines():
+        match = re.match(r"^\s*@?\s*(\d+)\.\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        title = _strip_title_colons(match.group(2).strip())
         if title:
             titles.append((int(match.group(1)), title))
     return titles
 
 
-def _finance_formal_chapter_matches(body: str) -> list[re.Match[str]]:
-    return list(_FINANCE_FORMAL_CHAPTER_RE.finditer(body or ""))
-
-
-def _finance_plain_chapter_matches(
-    body: str,
-    catalog_titles: list[tuple[int, str]],
-) -> list[re.Match[str]]:
-    """Return plain headings only when they form the complete catalog sequence."""
-
-    if not body or not catalog_titles:
-        return []
-    catalog_numbers = [number for number, _ in catalog_titles]
-    if catalog_numbers != list(range(1, len(catalog_numbers) + 1)):
-        return []
-    candidates = list(_FINANCE_PLAIN_CHAPTER_RE.finditer(body))
-    if not candidates:
-        return []
-
-    for start_index, _first in enumerate(candidates):
-        selected: list[re.Match[str]] = []
-        cursor = start_index
-        valid = True
-        for expected_number, expected_title in catalog_titles:
-            found = None
-            while cursor < len(candidates):
-                candidate = candidates[cursor]
-                cursor += 1
-                if int(candidate.group(1)) != expected_number:
-                    continue
-                if _finance_titles_compatible(candidate.group(2), expected_title):
-                    found = candidate
-                    break
-            if found is None:
-                valid = False
-                break
-            selected.append(found)
-        if valid and selected:
-            return selected
-    return []
-
-
-def _restore_catalog_chapter_markers(markdown: str) -> str:
-    """Restore formal chapter markers removed by a refinement provider.
-
-    A refinement provider may omit the ``@`` from a real chapter heading.
-    Use the complete ``@目录`` sequence as a narrow structural witness: only a
-    body sequence that accounts for every catalog chapter, in order, is
-    promoted back to ``@N. 标题``. Partial sequences and ordinary in-body lists
-    are left untouched so the refine integrity gate is not weakened.
-
-    This also repairs legacy checkpoints that were already normalized to
-    unmarked chapter titles before the chapter marker bug was fixed.
-    """
-
-    if not markdown or not markdown.strip():
-        return markdown
-
-    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    body_range = _front_section_ranges(lines).get("正文")
-    if not body_range:
-        return markdown
-
-    catalog_titles = _finance_catalog_titles(markdown)
-    if not catalog_titles:
-        return markdown
-    catalog_numbers = [number for number, _ in catalog_titles]
-    if catalog_numbers != list(range(1, len(catalog_numbers) + 1)):
-        return markdown
-
-    # (global line index, chapter number or None, title, is_formal_marker,
-    #  source kind).  A markdown heading without a number is considered only
-    # as a legacy normalized form after all explicitly numbered candidates.
-    candidates: list[tuple[int, int | None, str, bool, str]] = []
-    body_start, body_end = body_range
-    for line_index in range(body_start, body_end):
-        stripped = lines[line_index].strip()
-        if not stripped:
-            continue
-
-        formal = re.match(
-            r"^(?:(?:！！！)?@|！！！)\s*(\d+)[.．、]\s*(.+?)\s*$",
-            stripped,
-        )
-        if formal:
-            candidates.append(
-                (
-                    line_index,
-                    int(formal.group(1)),
-                    formal.group(2),
-                    True,
-                    "formal",
-                )
-            )
-            continue
-
-        plain = re.match(r"^(\d+)[.．、]\s*(.+?)\s*$", stripped)
-        if plain:
-            candidates.append(
-                (
-                    line_index,
-                    int(plain.group(1)),
-                    plain.group(2),
-                    False,
-                    "plain",
-                )
-            )
-            continue
-
-        heading = re.match(
-            r"^#{1,6}\s*(?:(\d+)[.．、]\s*)?(.+?)\s*$",
-            stripped,
-        )
-        if heading:
-            candidates.append(
-                (
-                    line_index,
-                    int(heading.group(1)) if heading.group(1) else None,
-                    heading.group(2),
-                    False,
-                    "markdown",
-                )
-            )
-
-    if not candidates:
-        return markdown
-
-    # Match the entire catalog, preferring explicit numbered candidates over
-    # unnumbered Markdown headings. Title matching is required for unmarked
-    # candidates; formal @ markers remain authoritative even if a provider
-    # shortened a title during refinement.
-    selected: list[tuple[int, int, str, bool, str]] = []
-    cursor = 0
-    for expected_number, expected_title in catalog_titles:
-        explicit_match: int | None = None
-        legacy_match: int | None = None
-        for candidate_index in range(cursor, len(candidates)):
-            _line_index, number, title, is_formal, _kind = candidates[candidate_index]
-            if number is not None:
-                if number != expected_number:
-                    continue
-                if is_formal or _finance_titles_compatible(title, expected_title):
-                    explicit_match = candidate_index
-                    break
-                continue
-            if legacy_match is None and _finance_titles_compatible(title, expected_title):
-                legacy_match = candidate_index
-
-        found = explicit_match if explicit_match is not None else legacy_match
-        if found is None:
-            # Do not partially rewrite a manuscript.  A complete sequence is
-            # the safety boundary that distinguishes chapters from lists.
-            return markdown
-        line_index, _number, title, is_formal, kind = candidates[found]
-        selected.append((line_index, expected_number, title, is_formal, kind))
-        cursor = found + 1
-
-    restored = 0
-    for line_index, expected_number, title, is_formal, _kind in reversed(selected):
-        if is_formal:
-            continue
-        clean_title = _finance_clean_chapter_title(title) or catalog_titles[
-            expected_number - 1
-        ][1]
-        lines[line_index] = f"@{expected_number}. {clean_title}"
-        restored += 1
-
-    if restored:
-        logger.info(
-            "恢复与目录完整匹配的正文章节标记 restored=%d total=%d",
-            restored,
-            len(catalog_titles),
-        )
-    return "\n".join(lines)
-
-
-def _finance_chapter_titles_from_body(
-    body: str,
-    *,
-    catalog_titles: list[tuple[int, str]] | None = None,
-) -> list[tuple[int, str]]:
-    """Parse formal markers, and plain markers only with a matching catalog.
-
-    The previous implementation counted every ``1. ...`` line, so a normal
-    numbered list inside prose could silently become a chapter.  Formal @
-    markers are authoritative; a plain format is accepted only when its full
-    sequence matches @目录.
-    """
-
-    formal = _finance_formal_chapter_matches(body)
-    if formal:
-        return [
-            (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
-            for match in formal
-            if _finance_clean_chapter_title(match.group(2))
-        ]
-    if not catalog_titles:
-        return []
-    plain = _finance_plain_chapter_matches(body, catalog_titles)
-    return [
-        (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
-        for match in plain
-        if _finance_clean_chapter_title(match.group(2))
-    ]
-
-
-def _finance_chapter_matches(markdown: str) -> list[re.Match[str]]:
-    """Return strict chapter heading matches for a complete manuscript."""
-
-    body = _finance_body_text(markdown)
-    formal = _finance_formal_chapter_matches(body)
-    if formal:
-        return formal
-    return _finance_plain_chapter_matches(body, _finance_catalog_titles(markdown))
-
-
-def _finance_chapter_titles(markdown: str) -> list[tuple[int, str]]:
-    matches = _finance_chapter_matches(markdown)
-    return [
-        (int(match.group(1)), _finance_clean_chapter_title(match.group(2)))
-        for match in matches
-        if _finance_clean_chapter_title(match.group(2))
-    ]
-
-
-def _finance_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
-    """Extract strict ``(number, title, content)`` tuples."""
-
-    body = _finance_body_text(markdown)
-    matches = _finance_chapter_matches(markdown)
-    parts: list[tuple[int, str, str]] = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        title = _finance_clean_chapter_title(match.group(2))
-        content = body[match.end() : end].strip()
-        if title:
-            parts.append((int(match.group(1)), title, content))
-    return parts
-
-
-def _finance_chapter_structure_issue(source: str, candidate: str) -> str | None:
-    """Detect a stage output that silently dropped, duplicated, or reordered chapters.
-
-    Finance books are intentionally processed as whole manuscripts, but the
-    provider may still return a shorter *structurally valid* manuscript when
-    a long response is compressed or truncated.  A character-count check is
-    not sufficient: the lost chapters can be replaced by denser prose.  The
-    writer stage is the structural baseline; every later whole-book stage
-    must preserve its formal chapter-number sequence.
-    """
-
-    source_titles = _finance_chapter_titles(source)
-    candidate_titles = _finance_chapter_titles(candidate)
-    if not source_titles:
-        # Some legacy short fixtures contain no formal chapters.  Preserve
-        # their existing behavior and let the ordinary front-matter/length
-        # checks decide whether they are usable.
-        return None
-    if not candidate_titles:
-        return f"candidate has no formal chapters; source has {len(source_titles)}"
-
-    source_numbers = [number for number, _ in source_titles]
-    candidate_numbers = [number for number, _ in candidate_titles]
-    if candidate_numbers != source_numbers:
-        missing = [number for number in source_numbers if number not in candidate_numbers]
-        extra = [number for number in candidate_numbers if number not in source_numbers]
-        return (
-            "chapter sequence changed "
-            f"source={source_numbers[:8]}.../{len(source_numbers)} "
-            f"candidate={candidate_numbers[:8]}.../{len(candidate_numbers)} "
-            f"missing={missing[:8]} extra={extra[:8]}"
-        )
-    return None
-
-
-def _finance_self_chapter_structure_issue(markdown: str) -> str | None:
-    """Validate a standalone cached finance manuscript when no prior stage exists."""
-
-    titles = _finance_chapter_titles(markdown)
-    if not titles:
-        return None
-    numbers = [number for number, _ in titles]
-    expected = list(range(1, len(numbers) + 1))
-    if numbers != expected:
-        return f"chapter numbers are not contiguous: {numbers[:12]}"
-    return None
-
-
-def _finance_reject_cached_stage(
-    output_dir: Path | None,
-    *,
-    filename: str,
-    content: str,
-    reason: str,
-) -> None:
-    """Keep a rejected provider artifact for diagnosis without reusing it."""
-
-    stem = Path(filename).stem
-    _dump_stage(output_dir, f"{stem}_rejected_structure.md", content)
-    _dump_stage(output_dir, f"{stem}_rejected_structure.txt", reason)
-
-
 def _finance_next_chapter_number(markdown: str) -> int:
-    titles = _finance_chapter_titles(markdown)
+    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
     if not titles:
         return 1
     return max(number for number, _title in titles) + 1
@@ -5852,7 +4327,7 @@ def _finance_append_continuation(markdown: str, continuation: str) -> str:
 
 
 def _finance_existing_chapter_map(markdown: str) -> str:
-    titles = _finance_chapter_titles(markdown)
+    titles = _finance_chapter_titles_from_body(_finance_body_text(markdown))
     if not titles:
         return "当前正文没有稳定章节标题。"
     return "\n".join(f"- {number}. {title}" for number, title in titles[-20:])
@@ -5942,7 +4417,6 @@ async def _finance_expand_writer_to_target(
     category: str,
     output_dir: Path | None,
     on_stage: StageCallback | None,
-    prompt_cache_key: str | None = None,
 ) -> tuple[str, bool]:
     current_markdown = normalize_final_markdown(current_markdown, category=category)
     current_body_chars = _finance_body_chars(current_markdown)
@@ -6002,7 +4476,6 @@ async def _finance_expand_writer_to_target(
                 prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
-                prompt_cache_key=prompt_cache_key,
                 on_progress=(
                     (
                         lambda chars, base=before_body_chars, round_idx=round_index: on_stage(
@@ -6064,8 +4537,6 @@ def _finance_stage_looks_compressed(source: str, candidate: str, *, category: st
         return False
     if not candidate or not candidate.strip():
         return True
-    if _finance_chapter_structure_issue(source, candidate) is not None:
-        return True
     if _front_matter_missing(candidate):
         return True
     source_body_chars = _finance_body_chars(source)
@@ -6101,7 +4572,6 @@ async def _generate_finance_longform_book(
     output_dir: Path | None,
     on_stage: StageCallback | None,
     source_duration_seconds: int | float | None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     is_advice = _is_finance_advice_category(category)
     duration_seconds = _positive_int(source_duration_seconds) or _finance_duration_seconds_from_text(raw_text)
@@ -6165,119 +4635,34 @@ async def _generate_finance_longform_book(
             encoding="utf-8",
         )
 
-    # Validate cached stages from the writer forward before considering a
-    # later artifact reusable.  A provider can return a manuscript with enough
-    # characters but fewer formal chapters; accepting that artifact would
-    # permanently lose the omitted chapters on the next retry.
     stale_final_resume = False
     final_resume_markdown = _read_stage_file(output_dir, "04_format.md")
-    resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
-    resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
-    resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
-
-    if resume_writer_markdown:
-        resume_writer_markdown = normalize_final_markdown(
-            resume_writer_markdown,
-            category=category,
-        )
-
-    effective_polished = resume_polished_markdown
-    if effective_polished:
-        effective_polished = normalize_final_markdown(effective_polished, category=category)
-        baseline = resume_writer_markdown
-        issue = (
-            _finance_chapter_structure_issue(baseline, effective_polished)
-            if baseline
-            else _finance_self_chapter_structure_issue(effective_polished)
-        )
-        if issue:
-            logger.warning("忽略不完整的财经科技 02_polish.md: %s", issue)
-            _finance_reject_cached_stage(
-                output_dir,
-                filename="02_polish.md",
-                content=effective_polished,
-                reason=issue,
-            )
-            effective_polished = None
-
-    effective_refined = resume_refined_markdown
-    if effective_refined:
-        effective_refined = normalize_final_markdown(effective_refined, category=category)
-        baseline = effective_polished or resume_writer_markdown
-        issue = _refine_stage_cache_issue(
-            output_dir,
-            effective_refined,
-            source_text=baseline,
-            system_instruction=None,
-            category=category,
-        )
-        if issue is None:
-            issue = (
-                _finance_chapter_structure_issue(baseline, effective_refined)
-                if baseline
-                else _finance_self_chapter_structure_issue(effective_refined)
-            )
-        if issue:
-            logger.warning("忽略不完整的财经科技 03_refine.md: %s", issue)
-            _finance_reject_cached_stage(
-                output_dir,
-                filename="03_refine.md",
-                content=effective_refined,
-                reason=issue,
-            )
-            effective_refined = None
-
     if final_resume_markdown:
-        final_resume_markdown = normalize_final_markdown(
-            final_resume_markdown,
-            category=category,
-        )
-        baseline = effective_refined or effective_polished or resume_writer_markdown
-        structure_issue = (
-            _finance_chapter_structure_issue(baseline, final_resume_markdown)
-            if baseline
-            else _finance_self_chapter_structure_issue(final_resume_markdown)
-        )
-        if (
-            _finance_final_resume_reusable(
-                final_resume_markdown,
-                target_words,
-                category=category,
-            )
-            and structure_issue is None
-        ):
+        if _finance_final_resume_reusable(final_resume_markdown, target_words, category=category):
             logger.info("复用已存在的财经长文 04_format.md")
+            final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=category)
             final_resume_markdown = await _repair_final_hard_errors_once(
                 final_resume_markdown,
                 category=category,
                 output_dir=output_dir,
                 stage="finance_resume",
-                prompt_cache_key=prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
             _log_stage("finance 4/4 format (resume)", final_resume_markdown)
             if on_stage:
                 on_stage("format_done", {"chars": len(final_resume_markdown)})
             return final_resume_markdown
-        reason = structure_issue or (
-            f"body_chars={_finance_body_chars(final_resume_markdown)} target={target_words}"
+        logger.warning(
+            "已有财经长文 04_format.md 不在当前质量区间内，忽略终稿并回到中间阶段处理: body_chars=%d target=%d",
+            _finance_body_chars(final_resume_markdown),
+            target_words,
         )
-        logger.warning("已有财经长文 04_format.md 不可安全复用: %s", reason)
         _dump_stage(output_dir, "04_format_stale_short.md", final_resume_markdown)
-        if structure_issue:
-            _finance_reject_cached_stage(
-                output_dir,
-                filename="04_format.md",
-                content=final_resume_markdown,
-                reason=structure_issue,
-            )
         stale_final_resume = True
 
-    # Use only the structurally compatible cache at each stage.  If a later
-    # cache was derived from a shortened earlier response, it is deliberately
-    # discarded and regenerated from the intact writer checkpoint.
-    resume_polished_markdown = effective_polished
-    resume_refined_markdown = effective_refined
+    resume_writer_markdown = _read_stage_file(output_dir, "01_writer.md")
+    resume_polished_markdown = _read_stage_file(output_dir, "02_polish.md")
+    resume_refined_markdown = _read_stage_file(output_dir, "03_refine.md")
     if stale_final_resume and resume_writer_markdown:
         resume_polished_markdown = None
         resume_refined_markdown = None
@@ -6321,7 +4706,6 @@ async def _generate_finance_longform_book(
                 writer_prompt,
                 max_output_tokens=0,
                 retry_on_failure=False,
-                prompt_cache_key=prompt_cache_key,
                 on_progress=(
                     (lambda chars: on_stage("writer_progress", {"chars": chars}))
                     if on_stage
@@ -6355,7 +4739,6 @@ async def _generate_finance_longform_book(
         category=category,
         output_dir=output_dir,
         on_stage=on_stage,
-        prompt_cache_key=prompt_cache_key,
     )
     if writer_expanded:
         resume_polished_markdown = None
@@ -6415,10 +4798,8 @@ async def _generate_finance_longform_book(
                 timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
             )
         except Exception as exc:
-            if _is_paid_polish_blocking_failure(exc):
-                raise
             logger.warning(
-                "财经科技 Gemini 一润失败，保留主稿继续后续链路: %s",
+                "财经科技 Gemini 一润失败，保留 OpenAI 完整初稿继续后续链路: %s",
                 exc,
             )
             _dump_stage(output_dir, "02_polish_error.txt", f"{exc.__class__.__name__}: {exc}")
@@ -6426,7 +4807,7 @@ async def _generate_finance_longform_book(
         polished_markdown = normalize_final_markdown(polished_markdown, category=category)
         if _finance_stage_looks_compressed(generated_markdown, polished_markdown, category=category):
             logger.warning(
-                "财经科技 Gemini 一润疑似压缩，保留主稿: source_body=%d candidate_body=%d",
+                "财经科技 Gemini 一润疑似压缩，保留 OpenAI 完整初稿: source_body=%d candidate_body=%d",
                 _finance_body_chars(generated_markdown),
                 _finance_body_chars(polished_markdown),
             )
@@ -6454,35 +4835,6 @@ async def _generate_finance_longform_book(
             category=category,
         )
         logger.info("财经科技 Gemini 二润整稿输入: chars=%d body_chars=%d", len(polished_markdown), _finance_body_chars(polished_markdown))
-
-        async def _finance_chunked_refine(reason: str) -> str:
-            """Finish二润 in bounded pieces instead of accepting a short whole-book reply."""
-
-            logger.warning("财经科技 Gemini 二润切换分块兜底: %s", reason)
-            chunked = await _refine_by_paragraph_chunks_strict(
-                polished_markdown,
-                target_chars=4_000,
-                system_instruction=refine_instruction,
-                on_stage=on_stage,
-                output_dir=output_dir,
-                chunk_func=_refine_book_text_without_output_cap,
-                allow_chunk_fallback=False,
-            )
-            chunked = normalize_final_markdown(chunked, category=category)
-            chunk_issue = _refine_output_integrity_issue(
-                polished_markdown,
-                chunked,
-                category=category,
-            )
-            if chunk_issue:
-                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", chunked)
-                raise GeminiRefineIncompleteError(
-                    f"财经科技分块二润仍未通过完整性闸门: {chunk_issue}"
-                )
-            return chunked
-
-        refine_result_kind = "generated"
-        whole_refine_issue: str | None = None
         try:
             refined_markdown = await _to_thread_with_optional_timeout(
                 refine_book_text,
@@ -6497,33 +4849,24 @@ async def _generate_finance_longform_book(
                 retries=1,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
             )
-            refined_markdown = normalize_final_markdown(refined_markdown, category=category)
-            whole_refine_issue = _refine_output_integrity_issue(
-                polished_markdown,
-                refined_markdown,
-                category=category,
-            )
-            if whole_refine_issue:
-                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
-        except (GeminiMaxTokensError, GeminiRefineIncompleteError) as exc:
-            whole_refine_issue = str(exc)
         except Exception as exc:
-            if _is_paid_polish_blocking_failure(exc):
-                raise
+            logger.warning(
+                "财经科技 Gemini 二润失败，保留上一阶段完整稿继续后续链路: %s",
+                exc,
+            )
             _dump_stage(output_dir, "03_refine_error.txt", f"{exc.__class__.__name__}: {exc}")
-            raise RuntimeError(f"retryable Gemini finance refine failure: {exc}") from exc
-        if whole_refine_issue:
-            refined_markdown = await _finance_chunked_refine(whole_refine_issue)
-            refine_result_kind = "generated_chunked_fallback"
-        _persist_refine_stage(
-            output_dir,
-            refined_markdown,
-            source_text=polished_markdown,
-            system_instruction=refine_instruction,
-            category=category,
-            result_kind=refine_result_kind,
-        )
+            refined_markdown = polished_markdown
+        refined_markdown = normalize_final_markdown(refined_markdown, category=category)
+        if _finance_stage_looks_compressed(polished_markdown, refined_markdown, category=category):
+            logger.warning(
+                "财经科技 Gemini 二润疑似压缩，保留一润完整稿: source_body=%d candidate_body=%d",
+                _finance_body_chars(polished_markdown),
+                _finance_body_chars(refined_markdown),
+            )
+            _dump_stage(output_dir, "03_refine_rejected_compressed.md", refined_markdown)
+            refined_markdown = polished_markdown
         _log_stage("finance 3/4 refine", refined_markdown, prev_chars=polish_chars)
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": len(refined_markdown)})
 
@@ -6587,7 +4930,6 @@ async def _generate_finance_longform_book(
         category=category,
         output_dir=output_dir,
         stage="finance_format",
-        prompt_cache_key=prompt_cache_key,
     )
     _log_stage("finance 4/4 format", final_markdown, prev_chars=refine_chars)
     _dump_stage(output_dir, "04_format.md", final_markdown)
@@ -6606,7 +4948,6 @@ async def _repair_front_matter(
     generated_markdown: str,
     *,
     category: str | None = None,
-    prompt_cache_key: str | None = None,
 ) -> str:
     is_finance = _is_finance_longform_category(category)
     source_label = "参考资料全文" if is_finance else "原始视频文稿"
@@ -6643,452 +4984,18 @@ async def _repair_front_matter(
         f"[{source_label}]\n{raw_text.strip()}\n\n"
         f"[当前书稿]\n{generated_markdown.strip()}\n"
     )
-    return await _route_writer_call(repair_prompt, prompt_cache_key=prompt_cache_key)
+    return await _route_writer_call(repair_prompt)
 
 
-class StageArtifactWriteError(RuntimeError):
-    """A required workflow checkpoint could not be durably written."""
-
-
-def _stage_text_sha256(content: str | None) -> str:
-    return hashlib.sha256((content or "").strip().encode("utf-8")).hexdigest()
-
-
-def _atomic_write_stage_text(path: Path, content: str) -> None:
-    """Write a stage file via a verified replace, never a partial target write."""
-
-    data = content.encode("utf-8")
-    descriptor = -1
-    temporary_path: Path | None = None
-    try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=str(path.parent),
-        )
-        temporary_path = Path(temporary_name)
-        with os.fdopen(descriptor, "wb") as stream:
-            descriptor = -1
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if temporary_path.stat().st_size != len(data):
-            raise OSError(f"temporary stage size mismatch: expected={len(data)}")
-
-        os.replace(temporary_path, path)
-        temporary_path = None
-        if not path.is_file():
-            raise OSError("stage file disappeared immediately after replace")
-        if path.read_bytes() != data:
-            raise OSError("stage file verification mismatch after replace")
-
-        # Persist the directory entry as well on Linux/Docker.  Directory fsync
-        # is not available on Windows and is intentionally best effort there.
-        if os.name != "nt":
-            try:
-                directory_fd = os.open(str(path.parent), os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                logger.debug("stage directory fsync unavailable: %s", path.parent, exc_info=True)
-    finally:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
-def _stage_metadata_path(output_dir: Path, filename: str) -> Path:
-    return output_dir / f".{Path(filename).name}.meta.json"
-
-
-def _dump_stage(
-    output_dir: Path | None,
-    filename: str,
-    content: str,
-    *,
-    required: bool = False,
-    metadata: dict[str, Any] | None = None,
-) -> bool:
-    """Persist a stage atomically; required checkpoints fail the workflow on error."""
-
-    if not content or not content.strip():
-        if required:
-            raise StageArtifactWriteError(f"中间产物 {filename} 为空，拒绝继续工作流")
-        return False
-    # Unit callers may intentionally omit an output directory.  There is no
-    # checkpoint to write in that mode, but the in-memory workflow can proceed.
-    if output_dir is None:
-        return True
+def _dump_stage(output_dir: Path | None, filename: str, content: str) -> None:
+    """把每一层的产物落盘，便于审稿和定位是哪一层吃掉了内容。"""
+    if output_dir is None or not content:
+        return
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / filename
-        _atomic_write_stage_text(path, content)
-        if metadata is not None:
-            payload = dict(metadata)
-            payload.update(
-                content_sha256=_stage_text_sha256(content),
-                content_chars=len(content),
-                status="complete",
-            )
-            _atomic_write_stage_text(
-                _stage_metadata_path(output_dir, filename),
-                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            )
-        return True
+        (output_dir / filename).write_text(content, encoding="utf-8")
     except Exception as exc:
-        logger.warning("中间产物 %s 写盘失败: %s", filename, exc, exc_info=required)
-        if required:
-            raise StageArtifactWriteError(f"中间产物 {filename} 写盘失败: {exc}") from exc
-        return False
-
-
-def _refine_stage_identity(category: str | None) -> dict[str, str]:
-    try:
-        provider = refine_provider_name()
-    except Exception:
-        provider = str(getattr(settings, "BACKEND_REFINE_PROVIDER", "gemini") or "gemini").strip().lower()
-    provider = provider or "gemini"
-    model = (
-        str(getattr(settings, "GEMINI_MODEL", "") or "").strip()
-        if provider == "gemini"
-        else str(getattr(settings, "CLAUDE_MODEL", "") or "").strip()
-    )
-    return {
-        "category": normalize_category(category or ""),
-        "provider": provider,
-        "model": model,
-    }
-
-
-def _persist_refine_stage(
-    output_dir: Path | None,
-    content: str,
-    *,
-    source_text: str | None,
-    system_instruction: str | None,
-    category: str | None,
-    result_kind: str = "generated",
-) -> None:
-    """Write the completed second-polish checkpoint before any later stage runs."""
-
-    if not content or not content.strip():
-        raise GeminiRefineIncompleteError("二润返回空稿，不能落盘或进入终稿")
-    identity = _refine_stage_identity(category)
-    metadata = {
-        "stage": "refine",
-        "result_kind": result_kind,
-        "source_sha256": _stage_text_sha256(source_text),
-        "prompt_sha256": _stage_text_sha256(system_instruction),
-        **identity,
-    }
-    _dump_stage(
-        output_dir,
-        "03_refine.md",
-        content,
-        required=True,
-        metadata=metadata,
-    )
-
-
-def _stage_body_for_integrity(markdown: str) -> str:
-    normalized = (markdown or "").replace("\r\n", "\n").replace("\r", "\n")
-    match = re.search(r"(?m)^(?:！！！)?@?\s*正文\s*$", normalized)
-    return normalized[match.end() :] if match else normalized
-
-
-def _stage_chapter_numbers(markdown: str) -> list[int]:
-    """Return distinct chapter numbers visible in the manuscript body.
-
-    The first Gemini polish is paragraph-based, so a writer draft can contain
-    repeated numbered markers at chunk boundaries or on internal subheadings.
-    The second-polish prompt is allowed to normalize those markers.  The
-    integrity gate therefore cares about numbers disappearing, not about the
-    raw occurrence order being byte-for-byte identical.
-    """
-    body = _stage_body_for_integrity(markdown)
-    return sorted(
-        {
-            int(match.group(1))
-            for match in re.finditer(
-                r"^\s*(?:！！！)?@?\s*(\d+)[.．、]\s*.+?\s*$",
-                body,
-                re.MULTILINE,
-            )
-        }
-    )
-
-
-def _stage_formal_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
-    """Extract formal body chapters in occurrence order for stage comparison."""
-
-    body = _stage_body_for_integrity(markdown)
-    matches = list(
-        re.finditer(
-            r"^\s*(?:(?:！！！)?@|！！！)?\s*(\d+)[.．、]\s*(.+?)\s*$",
-            body,
-            re.MULTILINE,
-        )
-    )
-    parts: list[tuple[int, str, str]] = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        parts.append(
-            (
-                int(match.group(1)),
-                match.group(2).strip(),
-                body[match.end() : end].strip(),
-            )
-        )
-    unique: list[tuple[int, str, str]] = []
-    seen: set[int] = set()
-    for part in parts:
-        if part[0] in seen:
-            continue
-        seen.add(part[0])
-        unique.append(part)
-    return unique
-
-
-def _standard_longform_stage_structure_issue(
-    source_text: str | None,
-    candidate_text: str | None,
-    *,
-    category: str | None,
-) -> str | None:
-    """Reject a polish/refine result that splits or swallows formal chapters."""
-
-    normalized = normalize_category(category or "")
-    if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
-        return None
-    source_parts = _stage_formal_chapter_parts(source_text or "")
-    if not source_parts:
-        return None
-    candidate_parts = _stage_formal_chapter_parts(candidate_text or "")
-    source_numbers = [number for number, _title, _body in source_parts]
-    candidate_numbers = [number for number, _title, _body in candidate_parts]
-    if candidate_numbers != source_numbers:
-        return (
-            "正式章节序列被拆分、合并、改号或遗漏: "
-            f"source={source_numbers[:20]} candidate={candidate_numbers[:20]}"
-        )
-
-    def cjk_count(value: str) -> int:
-        return sum(1 for char in value if "\u3400" <= char <= "\u9fff")
-
-    source_counts = [cjk_count(body) for _number, _title, body in source_parts]
-    candidate_counts = [cjk_count(body) for _number, _title, body in candidate_parts]
-    if sum(source_counts) < 5_000:
-        return None
-    for index, (source_count, candidate_count) in enumerate(
-        zip(source_counts, candidate_counts)
-    ):
-        chapter_number = source_parts[index][0]
-        if source_count >= 700 and candidate_count < max(500, int(source_count * 0.6)):
-            return (
-                f"第 {chapter_number} 章被压成短章: "
-                f"source={source_count} candidate={candidate_count}"
-            )
-        if candidate_count >= 1_800 and candidate_count > max(
-            int(source_count * 1.9),
-            source_count + 900,
-        ):
-            return (
-                f"第 {chapter_number} 章异常膨胀并疑似吞并相邻内容: "
-                f"source={source_count} candidate={candidate_count}"
-            )
-    return None
-
-
-_REFINE_NOTICE_MARKERS = (
-    "无法完成",
-    "无法在不新增内容的前提下",
-    "请提供",
-    "请补充缺失",
-    "作为 ai",
-    "as an ai",
-)
-
-
-def _refine_chunk_output_issue(source_chunk: str, candidate_chunk: str | None) -> str | None:
-    """Reject a partial/diagnostic response before it enters the chunk cache."""
-
-    source = (source_chunk or "").strip()
-    candidate = (candidate_chunk or "").strip()
-    if not candidate:
-        return "二润分块返回空稿"
-    if len(candidate) < 800 and any(marker in candidate.lower() for marker in _REFINE_NOTICE_MARKERS):
-        return "二润分块返回模型诊断而非稿件"
-
-    source_chars = len(re.sub(r"\s+", "", source))
-    candidate_chars = len(re.sub(r"\s+", "", candidate))
-    # A refinement is allowed to remove a little genuine repetition, but a
-    # chunk that loses nearly half its text is almost always a capped or
-    # summary response.  Keep this less strict than the whole-manuscript gate
-    # so short headings and front-matter chunks remain usable.
-    if source_chars >= 500 and candidate_chars < max(200, int(source_chars * 0.55)):
-        return f"二润分块疑似压缩或截断: source={source_chars} candidate={candidate_chars}"
-
-    source_chapters = _stage_chapter_numbers(source)
-    if source_chapters:
-        candidate_chapters = _stage_chapter_numbers(candidate)
-        missing_chapters = sorted(set(source_chapters) - set(candidate_chapters))
-        if missing_chapters:
-            return (
-                "二润分块缺少原稿章节号: "
-                f"missing={missing_chapters[:8]} source={source_chapters[:8]} "
-                f"candidate={candidate_chapters[:8]}"
-            )
-
-    for marker in ("最终书名", "最终简介", "目录", "导言", "正文"):
-        if marker in source and marker not in candidate:
-            return f"二润分块丢失前置块: {marker}"
-    return None
-
-
-def _refine_output_integrity_issue(
-    source_text: str | None,
-    candidate: str | None,
-    *,
-    category: str | None,
-) -> str | None:
-    """Reject a partial/summary response before it can become 03_refine.md."""
-
-    source = (source_text or "").strip()
-    output = (candidate or "").strip()
-    if not output:
-        return "二润返回空稿"
-    if source and not _front_matter_missing(source) and _front_matter_missing(output):
-        return "二润丢失完整前置块"
-
-    source_chars = len(re.sub(r"\s+", "", source))
-    output_chars = len(re.sub(r"\s+", "", output))
-    # The refine prompt permits only small edits.  A 25% loss is deliberately
-    # conservative and catches the provider's common summary/length-cap path
-    # without imposing a subjective prose-quality gate on short fixtures.
-    if source_chars >= 2_000 and output_chars < max(1_000, int(source_chars * 0.75)):
-        return f"二润疑似压缩或截断: source={source_chars} candidate={output_chars}"
-
-    source_chapters = _stage_chapter_numbers(source)
-    if source_chapters:
-        output_chapters = _stage_chapter_numbers(output)
-        missing_chapters = sorted(set(source_chapters) - set(output_chapters))
-        if missing_chapters:
-            return (
-                "二润缺少原稿章节号: "
-                f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
-                f"candidate={output_chapters[:12]}"
-            )
-    structure_issue = _standard_longform_stage_structure_issue(
-        source,
-        output,
-        category=category,
-    )
-    if structure_issue:
-        return structure_issue
-    if source and _is_finance_longform_category(category):
-        finance_issue = _finance_chapter_structure_issue(source, output)
-        if finance_issue:
-            return finance_issue
-    return None
-
-
-def _refine_stage_cache_issue(
-    output_dir: Path | None,
-    content: str,
-    *,
-    source_text: str | None,
-    system_instruction: str | None,
-    category: str | None,
-) -> str | None:
-    issue = _refine_output_integrity_issue(source_text, content, category=category)
-    if issue:
-        return issue
-    if output_dir is None:
-        return None
-    metadata_path = _stage_metadata_path(output_dir, "03_refine.md")
-    if not metadata_path.exists():
-        # Legacy runs predate the sidecar.  The structural/length checks above
-        # still protect resume; do not force every historical book to rerun.
-        return None
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return f"二润阶段元数据不可读: {type(exc).__name__}"
-    if not isinstance(metadata, dict) or metadata.get("status") != "complete":
-        return "二润阶段元数据未标记为 complete"
-    if metadata.get("stage") != "refine":
-        return "二润阶段元数据 stage 不匹配"
-    if metadata.get("content_sha256") != _stage_text_sha256(content):
-        return "二润阶段文件与元数据内容哈希不一致"
-
-    identity = _refine_stage_identity(category)
-    for key in ("category", "provider", "model"):
-        if metadata.get(key) != identity[key]:
-            return f"二润阶段元数据 {key} 已变化"
-    if source_text is not None and metadata.get("source_sha256") != _stage_text_sha256(source_text):
-        return "二润阶段来源稿已变化"
-    if system_instruction is not None and metadata.get("prompt_sha256") != _stage_text_sha256(system_instruction):
-        return "二润阶段 prompt 已变化"
-    return None
-
-
-def _final_resume_cache_issue(
-    source_text: str | None,
-    candidate: str | None,
-    *,
-    category: str | None,
-) -> str | None:
-    """Reject an obviously partial final artifact on a resumable task.
-
-    ``04_format.md`` used to be trusted solely because it was non-empty.  If
-    an older run persisted a truncated second-polish result and then formatted
-    it, that shortcut made every later retry skip the corrected pipeline.  The
-    final-stage check is intentionally narrower than the refine gate: normal
-    copy-editing may remove some repetition, but it must not lose the front
-    matter, chapter sequence, or roughly half of the manuscript.
-    """
-
-    source = (source_text or "").strip()
-    candidate_text = (candidate or "").strip()
-    if not candidate_text:
-        return "终稿缓存为空"
-    if source and not _front_matter_missing(source) and _front_matter_missing(candidate_text):
-        return "终稿缓存丢失完整前置块"
-
-    source_chars = len(re.sub(r"\s+", "", source))
-    candidate_chars = len(re.sub(r"\s+", "", candidate_text))
-    if source_chars >= 2_000 and candidate_chars < max(1_000, int(source_chars * 0.5)):
-        return f"终稿缓存疑似压缩或截断: source={source_chars} candidate={candidate_chars}"
-
-    source_chapters = _stage_chapter_numbers(source)
-    if source_chapters:
-        candidate_chapters = _stage_chapter_numbers(candidate_text)
-        missing_chapters = sorted(set(source_chapters) - set(candidate_chapters))
-        if missing_chapters:
-            return (
-                "终稿缓存缺少原稿章节号: "
-                f"missing={missing_chapters[:12]} source={source_chapters[:12]} "
-                f"candidate={candidate_chapters[:12]}"
-            )
-    structure_issue = _standard_longform_stage_structure_issue(
-        source,
-        candidate_text,
-        category=category,
-    )
-    if structure_issue:
-        return structure_issue
-    if source and _is_finance_longform_category(category):
-        return _finance_chapter_structure_issue(source, candidate_text)
-    return None
+        logger.warning("中间产物 %s 写盘失败: %s", filename, exc)
 
 
 def _log_stage(stage: str, content: str, prev_chars: int | None = None) -> None:
@@ -7339,246 +5246,6 @@ async def _generate_healing_comic_book(
     return final_markdown
 
 
-async def _generate_comic_variant_book(
-    raw_text: str,
-    *,
-    category: str,
-    output_dir: Path | None,
-    on_stage: StageCallback | None,
-    panel_count: int = 32,
-    character_prompt: str | None = None,
-    source_content: str | None = None,
-    should_pause: Callable[[], bool] | None = None,
-) -> str:
-    from app.services.comic_series import (
-        ComicGenerationPaused,
-        inject_comic_images,
-        parse_healing_comic_character_prompt,
-        parse_healing_comic_panel_count,
-        parse_healing_comic_source_content,
-        parse_healing_comic_title,
-    )
-    from app.services.comic_variants import (
-        COMIC_VARIANT_CATEGORIES,
-        HOMOPHONE_COMIC_CATEGORY,
-        assemble_variant_comic_markdown,
-        build_homophone_idea_prompt,
-        build_variant_writer_prompt,
-        format_homophone_joke_bank,
-        generate_variant_comic_images,
-        parse_homophone_idea_output,
-        parse_variant_writer_output,
-        variant_pipeline_version,
-    )
-
-    if category not in COMIC_VARIANT_CATEGORIES:
-        raise ValueError(f"不支持的治愈漫画分支：{category}")
-    comic_title = parse_healing_comic_title(raw_text) or (
-        "给你讲个故事" if category == "story_comic" else "今天也有好笑的事"
-    )
-    panel_count = parse_healing_comic_panel_count(panel_count)
-    character_prompt = parse_healing_comic_character_prompt(character_prompt)
-    source_content = parse_healing_comic_source_content(source_content)
-    if output_dir is None:
-        raise ValueError("漫画需要 output_dir 以保存每张配图")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    def _raise_if_paused() -> None:
-        if should_pause is not None and should_pause():
-            raise ComicGenerationPaused("漫画生成已暂停")
-
-    cached_script = _read_comic_variant_script_stage(output_dir, category=category)
-    cached_final = _read_stage_file(output_dir, "04_format.md")
-    if cached_final and cached_script is not None:
-        if on_stage:
-            on_stage("format_done", {"chars": len(cached_final), "reused_stage": True})
-        return cached_final
-
-    _raise_if_paused()
-    research_context = _read_stage_file(output_dir, "00_comic_variant_research.md")
-    if not research_context:
-        research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
-        _dump_stage(output_dir, "00_comic_variant_research.md", research_context)
-    if source_content:
-        _dump_stage(output_dir, "00_comic_variant_source_content.md", source_content)
-
-    script_reused = cached_script is not None
-    if cached_script is not None:
-        title, intro, panels, series_meta = cached_script
-        if on_stage:
-            on_stage("comic_structure_done", {"chars": len(research_context), "reused_stage": True})
-    else:
-        joke_bank = "[]"
-        if category == HOMOPHONE_COMIC_CATEGORY:
-            _raise_if_paused()
-            cached_ideas = _read_stage_file(output_dir, "01_homophone_joke_bank.json")
-            if cached_ideas:
-                joke_bank = cached_ideas
-            else:
-                idea_prompt = build_homophone_idea_prompt(
-                    comic_title,
-                    panel_count=panel_count,
-                    character_prompt=character_prompt,
-                    source_content=source_content,
-                )
-                _dump_stage(output_dir, "01_homophone_idea_prompt.md", idea_prompt)
-                try:
-                    idea_output = await _route_writer_call(
-                        idea_prompt,
-                        reasoning_effort="medium",
-                        verbosity="low",
-                        max_output_tokens=0,
-                        retry_on_failure=False,
-                    )
-                except Exception as exc:
-                    logger.warning("ChatGPT homophone ideation fallback: %s", exc)
-                    idea_output = ""
-                _dump_stage(output_dir, "01_homophone_ideas_raw.json", idea_output or "{}")
-                selected_ideas = parse_homophone_idea_output(
-                    idea_output,
-                    panel_count=panel_count,
-                )
-                joke_bank = format_homophone_joke_bank(selected_ideas)
-                _dump_stage(output_dir, "01_homophone_joke_bank.json", joke_bank)
-                if on_stage:
-                    on_stage(
-                        "comic_jokes_selected",
-                        {"selected": len(selected_ideas), "requested": panel_count},
-                    )
-
-        _raise_if_paused()
-        writer_prompt = build_variant_writer_prompt(
-            category,
-            comic_title,
-            research_context,
-            panel_count=panel_count,
-            character_prompt=character_prompt,
-            source_content=source_content,
-            joke_bank=joke_bank,
-        )
-        _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
-        try:
-            writer_output = await _route_writer_call(
-                writer_prompt,
-                reasoning_effort="medium",
-                verbosity="low",
-                max_output_tokens=0,
-                retry_on_failure=category != HOMOPHONE_COMIC_CATEGORY,
-            )
-        except Exception as exc:
-            logger.warning("ChatGPT comic variant writer fallback: %s", exc)
-            writer_output = ""
-        _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
-        title, intro, panels, series_meta = parse_variant_writer_output(
-            category,
-            writer_output,
-            comic_title,
-            panel_count=panel_count,
-        )
-        _dump_stage(
-            output_dir,
-            "02_comic_variant_script.json",
-            json.dumps(
-                {
-                    "pipeline_version": variant_pipeline_version(category),
-                    "category": category,
-                    "title": title,
-                    "intro": intro,
-                    "series_meta": series_meta,
-                    "panels": panels,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-        )
-        if on_stage:
-            on_stage("comic_structure_done", {"episodes": len(panels), "category": category})
-
-    _raise_if_paused()
-    refined_markdown = _read_stage_file(output_dir, "03_refine.md") if script_reused else ""
-    if not refined_markdown:
-        refined_markdown = assemble_variant_comic_markdown(title, intro, panels)
-        _dump_stage(output_dir, "03_refine.md", refined_markdown)
-    if on_stage:
-        card_total = sum(
-            len(panel.get("images") or [])
-            for panel in panels
-            if isinstance(panel.get("images"), list)
-        )
-        on_stage("comic_images_start", {"total": card_total + 1})
-
-    def _image_progress(index: int, total: int) -> None:
-        if on_stage:
-            on_stage("comic_image", {"idx": index, "total": total})
-
-    images = await asyncio.to_thread(
-        generate_variant_comic_images,
-        category,
-        panels,
-        output_dir,
-        title=title,
-        intro=intro,
-        series_meta=series_meta,
-        allow_uncertain=True,
-        retry_uncertain=True,
-        on_progress=_image_progress,
-        should_pause=should_pause,
-    )
-    final_markdown = inject_comic_images(refined_markdown, images)
-    final_markdown = normalize_final_markdown(final_markdown, category=category)
-    _dump_stage(output_dir, "04_format.md", final_markdown)
-    if on_stage:
-        on_stage("format_done", {"chars": len(final_markdown), "skipped_deepseek": True})
-    return final_markdown
-
-
-def _read_comic_variant_script_stage(
-    output_dir: Path | None,
-    *,
-    category: str = "story_comic",
-) -> tuple[
-    str,
-    str,
-    list[dict[str, object]],
-    dict[str, str],
-] | None:
-    raw = _read_stage_file(output_dir, "02_comic_variant_script.json")
-    if not raw:
-        return None
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("读取漫画分支脚本缓存失败: %s", exc)
-        return None
-    if not isinstance(payload, dict):
-        return None
-    from app.services.comic_variants import variant_pipeline_version
-
-    expected_version = variant_pipeline_version(category)
-    if payload.get("pipeline_version") != expected_version:
-        logger.info(
-            "漫画分支缓存版本过期，重新生成：cached=%s current=%s",
-            payload.get("pipeline_version"),
-            expected_version,
-        )
-        return None
-    panels = payload.get("panels")
-    if not isinstance(panels, list) or not panels:
-        return None
-    normalized_panels = [panel for panel in panels if isinstance(panel, dict)]
-    if not normalized_panels:
-        return None
-    series_meta = payload.get("series_meta")
-    if not isinstance(series_meta, dict):
-        series_meta = {}
-    return (
-        str(payload.get("title") or "原创治愈漫画").strip() or "原创治愈漫画",
-        str(payload.get("intro") or "一本原创治愈系短漫画。"),
-        normalized_panels,
-        {str(key): str(value) for key, value in series_meta.items()},
-    )
-
-
 def _read_healing_comic_script_stage(output_dir: Path | None) -> tuple[
     str,
     str,
@@ -7654,176 +5321,13 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
         "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
     CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
-        "这是古文白话参照译写版专用的参照译本输入项。若系统召回到当前原文对应的参考片段，必须优先用它校准释义、术语、断句、称谓、语气密度和关键字词准确性；如果召回片段来自菜根谭-中华书局参照范本或用户指定权威译本，并且覆盖当前原文，则以该译本为第一依据；不学习参照译本的注释、点评或排版体例。",
-        "必须先按当前原文、权威参考译文召回片段和古汉语词典确定语义；权威译本与词典或模型直觉冲突时，优先按权威译本处理。输出要像充分吃透权威译文后的大白话自然复写，而不是模型重新翻译；不得逐句复刻、同义替换、搬运参考译文或保留可识别连续表达。",
-        "落笔时要在权威译本释义基础上更清楚、自然、有文气；古典比喻原则上保留核心意象和比喻方向，例如“精金美玉的人品、烈火中煅、掀天揭地的事功、薄冰上履”应保留精金美玉、烈火、如履薄冰等核心意象，再补成现代读者能理解的白话；不能把意象全部抹成抽象概念。含义、轻重、比喻方向必须仍以权威译本为准。",
+        "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性；不再学习参照译本的注释、点评或排版体例。",
+        "必须回到古文原文和古汉语词典生成新的白话翻译；只能参考字词释义和断句判断，不得逐句复刻、同义替换、搬运参考译文或保留可识别表达。",
     ),
 }
 
 
 STYLE_REFERENCE_NOTES_PROMPT_CHAR_LIMIT = 8_000
-CLASSICAL_REFERENCE_MATCH_PROMPT_CHAR_LIMIT = 7_200
-CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT = 1_800
-_CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
-_CLASSICAL_REFERENCE_SHORT_HEADING_RE = re.compile(
-    r"^\s*(?:[一二三四五六七八九十百零〇两]{1,6}|\d{1,4})\s*$"
-)
-_CLASSICAL_REFERENCE_SECTION_HEADING_RE = re.compile(
-    r"^\s*(?:前言|序|跋|修省|应酬|评议|闲适|概论|上卷|下卷|前集|后集|卷[一二三四五六七八九十百零〇两\d]+)\s*$"
-)
-
-
-def _classical_reference_key(text: str) -> str:
-    cleaned = CLASSICAL_PARAGRAPH_MARKER_RE.sub("", text or "")
-    cleaned = re.sub(r"[【】（）()《》〈〉「」『』“”‘’\[\]{}]", "", cleaned)
-    cleaned = re.sub(r"(?:原文定位|参考译文|固定参照译本|来源文件|全文字数|原文|翻译|译文|注释|点评)", "", cleaned)
-    return "".join(_CJK_TEXT_RE.findall(cleaned))
-
-
-def _classical_reference_ngrams(text: str, size: int = 2) -> set[str]:
-    if len(text) < size:
-        return set()
-    return {text[idx : idx + size] for idx in range(0, len(text) - size + 1)}
-
-
-def _is_classical_reference_boundary(line: str) -> bool:
-    stripped = (line or "").strip()
-    return bool(
-        _CLASSICAL_REFERENCE_SHORT_HEADING_RE.match(stripped)
-        or _CLASSICAL_REFERENCE_SECTION_HEADING_RE.match(stripped)
-    )
-
-
-def _trim_classical_reference_window(lines: list[str]) -> str:
-    trimmed: list[str] = []
-    for line in lines:
-        stripped = (line or "").strip()
-        if stripped == "【点评】" or stripped.startswith("【点评】"):
-            break
-        trimmed.append(line)
-    block = "\n".join(line for line in trimmed if line.strip()).strip()
-    if len(block) <= CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT:
-        return block
-    return _style_reference_prompt_excerpt(
-        block,
-        max_chars=CLASSICAL_REFERENCE_MATCH_BLOCK_CHAR_LIMIT,
-    )
-
-
-def _classical_reference_window(lines: list[str], line_index: int) -> str:
-    start = max(0, line_index - 2)
-    for cursor in range(line_index - 1, -1, -1):
-        if _is_classical_reference_boundary(lines[cursor]):
-            start = cursor
-            break
-
-    end = min(len(lines), line_index + 6)
-    for cursor in range(line_index + 1, len(lines)):
-        if _is_classical_reference_boundary(lines[cursor]):
-            end = cursor
-            break
-        if cursor - line_index >= 18:
-            end = cursor + 1
-            break
-
-    return _trim_classical_reference_window(lines[start:end])
-
-
-def _classical_reference_line_score(
-    ref_key: str,
-    *,
-    source_keys: list[str],
-    source_gram_sets: list[set[str]],
-) -> float:
-    if not ref_key:
-        return 0.0
-    ref_grams = _classical_reference_ngrams(ref_key)
-    score = 0.0
-    for source_key, source_grams in zip(source_keys, source_gram_sets):
-        if not source_key:
-            continue
-        if len(source_key) >= 8 and source_key in ref_key:
-            score += 1_000 + min(len(source_key), 120)
-            continue
-        if len(ref_key) >= 8 and ref_key in source_key:
-            score += 420 + min(len(ref_key), 80)
-            continue
-        if not source_grams or not ref_grams:
-            continue
-        overlap = len(source_grams & ref_grams)
-        if overlap <= 0:
-            continue
-        ratio = overlap / max(1, min(len(source_grams), len(ref_grams)))
-        if ratio >= 0.38:
-            score += ratio * 120
-    return score
-
-
-def _matched_classical_reference_excerpt(
-    notes: str | None,
-    source_segment_text: str | None,
-    *,
-    max_chars: int = CLASSICAL_REFERENCE_MATCH_PROMPT_CHAR_LIMIT,
-) -> str:
-    text = (notes or "").strip()
-    if not text or not (source_segment_text or "").strip():
-        return ""
-
-    source_keys: list[str] = []
-    for line in classical_source_lines(source_segment_text or ""):
-        key = _classical_reference_key(line)
-        if len(key) >= 4:
-            source_keys.append(key[:260])
-    if not source_keys:
-        key = _classical_reference_key(source_segment_text or "")
-        if len(key) >= 4:
-            source_keys.append(key[:320])
-    if not source_keys:
-        return ""
-
-    source_gram_sets = [_classical_reference_ngrams(key) for key in source_keys]
-    note_lines = [line.strip() for line in text.splitlines() if line.strip()]
-    scored: list[tuple[float, int]] = []
-    for index, line in enumerate(note_lines):
-        ref_key = _classical_reference_key(line)
-        if len(ref_key) < 4:
-            continue
-        score = _classical_reference_line_score(
-            ref_key,
-            source_keys=source_keys,
-            source_gram_sets=source_gram_sets,
-        )
-        if score >= 45:
-            scored.append((score, index))
-    if not scored:
-        return ""
-
-    selected: list[str] = []
-    seen: set[str] = set()
-    used = 0
-    for _, index in sorted(scored, key=lambda item: (-item[0], item[1])):
-        block = _classical_reference_window(note_lines, index)
-        key = _classical_reference_key(block)
-        if len(key) < 4:
-            continue
-        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-        if digest in seen:
-            continue
-        projected = used + len(block) + 80
-        if projected > max_chars and selected:
-            continue
-        seen.add(digest)
-        selected.append(f"【参考片段{len(selected) + 1}】\n{block}")
-        used = projected
-        if len(selected) >= 6 or used >= max_chars:
-            break
-
-    if not selected:
-        return ""
-    body = "\n\n".join(selected)
-    return f"""【当前原文对应参考译文召回】
-以下片段是系统根据当前原文，从完整参考译本中自动检索出的最相关段落。它们用于校准字词义项、断句、称谓、语气和翻译密度；如果来自菜根谭-中华书局参照范本或用户指定权威译本，并且覆盖当前原文，必须以这些片段的释义和断句为第一依据。古汉语词典只用于核对和补足未覆盖字词，不得推翻已命中的权威释义。所有翻译落笔前还必须联网检索专业网站做交叉验证，确认疑难字词、古今异义、典故、职官制度、人名地名、虚词承接和关键句义的古汉语释义；只认可专业古籍网站、专业古汉语词典、权威注译资料、出版社/高校/学术类资料，不得用百科摘抄、论坛、营销号或现代字面拆字替代专业释义。成稿要做“权威释义定准后的大白话复写”，不要重新翻译古文；不得复制、近似改写或沿用连续表达。表达要比直译更白话一点，把古典意象落成现代读者能直接理解的说法，但不得改变权威译本锁定的含义、轻重和比喻方向。
-{body}"""
 
 
 def _style_reference_prompt_excerpt(
@@ -7850,18 +5354,10 @@ def _style_reference_notes_for_classical_segment(
     start_index: int,
     end_index: int,
     total_source_lines: int,
-    source_segment_text: str | None = None,
 ) -> str:
     text = (notes or "").strip()
     if not text:
         return ""
-    matched_excerpt = _matched_classical_reference_excerpt(
-        text,
-        source_segment_text,
-    )
-    if matched_excerpt:
-        return matched_excerpt
-
     note_lines = classical_source_lines(text)
     if not note_lines:
         return _style_reference_prompt_excerpt(text)
@@ -7924,8 +5420,7 @@ def _append_style_reference_prompt(
     if not reference and not notes:
         return writer_prompt
 
-    intro = style_copy[0]
-    boundary = "\n".join(str(part) for part in style_copy[1:] if str(part).strip())
+    intro, boundary = style_copy
     parts = [
         "\n【笔锋参考要求】",
         intro,
@@ -7937,15 +5432,9 @@ def _append_style_reference_prompt(
     if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
         parts.extend(
             [
-                "- 若补充要求里出现“当前原文对应参考译文召回”，请把它当作本段释义、断句和术语校准的优先依据；若它来自菜根谭-中华书局参照范本或用户指定权威译本，并覆盖当前原文，则以该译本为第一依据，古汉语词典只用于核对和补足。",
-                "- 所有翻译落笔前，必须联网检索专业网站交叉验证当前原文的疑难字词、古今异义、典故、职官制度、人名地名、虚词承接和关键句义；只认可专业古籍网站、专业古汉语词典、权威注译资料、出版社/高校/学术类资料。",
-                "- 不得望文生义，不得按现代汉语常见意思拆字理解原文；不得用百科摘抄、论坛、营销号或现代口语直觉替代古汉语释义。",
                 "- 请只参考对象中的字词释义、术语译法、断句、称谓和语气准确性，不要学习其注释、点评、章节讲解或排版体例。",
                 "- 最终输出只允许每个原文段后紧跟一个翻译段，不得加入注释、点评、赏析、解析或圈号说明。",
-                "- 必须生成新的白话表达，但释义、断句、逻辑关系和术语方向要贴住权威译本；不要复刻、改写或搬运任何现成译文句子，也不要在没有校准词义前按现代字面义硬翻。",
-                "- 新的白话表达要在权威译本释义基础上更清楚、自然、有文气：古典比喻原则上保留核心意象和比喻方向，如“精金美玉、烈火、如履薄冰”应保留并补成现代读者能理解的白话，不能全部抹成抽象概念，也不能改义、改轻重或改比喻方向。",
-                "- 不得自行重翻古文，不得为了顺口改变句内关系；拿不准时优先保留权威译本方向，再用联网专业资料和古汉语词典补缺。",
-                "- “便觉、始觉、方觉、乃觉、忽觉”等短语中的“觉”按“觉得、感到、发觉”处理，不得译成“导致、造成、引发、致使”。",
+                "- 必须生成新的白话翻译；不要复刻、改写或搬运任何现成译文句子。",
                 f"- {boundary}",
             ]
         )
@@ -7958,73 +5447,6 @@ def _append_style_reference_prompt(
             ]
         )
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
-
-
-async def _apply_final_aigc_gate(
-    markdown: str,
-    *,
-    category: str,
-    output_dir: Path | None,
-    on_stage: StageCallback | None,
-    required: bool,
-) -> str:
-    """Run the optional global AIGC gate after the existing final QA workflow."""
-    if not required:
-        return markdown
-    if on_stage:
-        on_stage("aigc_start", {"chars": len(markdown)})
-
-    result = await enforce_aigc_quality_gate(
-        markdown,
-        category=category,
-        output_dir=output_dir,
-        required=True,
-    )
-    final_text = result.text
-
-    from app.core.quality_metrics import detect_final_hard_errors
-
-    hard_errors = detect_final_hard_errors(final_text, category=category)
-    if hard_errors:
-        if output_dir is not None:
-            (output_dir / "05_aigc_final.md").unlink(missing_ok=True)
-            report_path = output_dir / "aigc_quality_report.json"
-            try:
-                payload = json.loads(report_path.read_text(encoding="utf-8"))
-                payload.update(
-                    status="manual_review",
-                    passed=False,
-                    qualityPassed=False,
-                    manualReviewReason="降低 AI 率后的终稿命中硬伤: " + "; ".join(hard_errors[:8]),
-                    finalSha256=None,
-                )
-                report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            except (OSError, ValueError, TypeError):
-                logger.exception("AIGC 终稿硬伤状态回写失败")
-        raise AigcManualReviewRequired(
-            "降低 AI 率后的终稿命中硬伤，已保留 04_format.md 原稿: " + "; ".join(hard_errors[:8])
-        )
-    if output_dir is not None:
-        try:
-            from app.core.quality_metrics import format_report, measure_quality
-
-            report = measure_quality(final_text, category=category)
-            (output_dir / "quality_report.txt").write_text(
-                format_report(report),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.warning("降低 AI 率后的终稿质量报告刷新失败: %s", exc)
-    if on_stage:
-        on_stage(
-            "aigc_done",
-            {
-                "chars": len(final_text),
-                "max_score": result.max_score,
-                "rounds": len(result.rounds),
-            },
-        )
-    return final_text
 
 
 async def generate_full_book(
@@ -8042,16 +5464,8 @@ async def generate_full_book(
     healing_comic_should_pause: Callable[[], bool] | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
-    aigc_required: bool | None = None,
-    aigc_policy_version: str | None = None,
 ) -> str:
     normalized_category = normalize_category(category)
-    if normalized_category == "general_longform":
-        raise ValueError("通用长篇需要经过大纲确认与逐章验收，请使用通用长篇任务工作区")
-    direct_writer_only = normalized_category in {
-        CLASSICAL_NOVEL_STYLE_CATEGORY,
-        CLASSICAL_REFERENCE_REWRITE_CATEGORY,
-    }
     if (
         (input_source or "").strip() == REFERENCE_ARTICLE_INPUT_SOURCE
         and normalized_category != "emotion_relationship"
@@ -8103,78 +5517,24 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    effective_aigc_required = (
-        settings.AIGC_GATE_ENABLED if aigc_required is None else bool(aigc_required)
-    )
-    if aigc_policy_version is not None:
-        effective_aigc_required = (
-            effective_aigc_required and aigc_policy_version == AIGC_POLICY_VERSION
-        )
-    effective_aigc_required = (
-        effective_aigc_required and aigc_category_eligible(normalized_category)
-    )
-
-    async def finish_with_aigc(markdown: str) -> str:
-        final_text = await _apply_final_aigc_gate(
-            markdown,
-            category=normalized_category,
+    if normalized_category == "healing_comic":
+        return await _generate_healing_comic_book(
+            raw_text,
             output_dir=output_dir,
             on_stage=on_stage,
-            required=effective_aigc_required,
-        )
-        # Keep the delivery contract true even when a resumed or optional
-        # post-processing stage returns body-only text after final formatting.
-        return normalize_final_markdown(final_text, category=normalized_category)
-
-    task_prompt_cache_key = _content_prompt_cache_key(
-        normalized_category,
-        writer_input_text,
-        input_source=input_source,
-        classical_variant=classical_variant,
-        classical_original_title=classical_original_title,
-        style_reference=style_reference,
-        style_notes=style_notes,
-        source_duration_seconds=source_duration_seconds,
-    )
-
-    from app.services.comic_variants import COMIC_VARIANT_CATEGORIES
-
-    if normalized_category in COMIC_VARIANT_CATEGORIES:
-        return await finish_with_aigc(
-            await _generate_comic_variant_book(
-                raw_text,
-                category=normalized_category,
-                output_dir=output_dir,
-                on_stage=on_stage,
-                panel_count=healing_comic_panel_count or 32,
-                character_prompt=healing_comic_character_prompt,
-                source_content=healing_comic_source_content,
-                should_pause=healing_comic_should_pause,
-            )
-        )
-
-    if normalized_category == "healing_comic":
-        return await finish_with_aigc(
-            await _generate_healing_comic_book(
-                raw_text,
-                output_dir=output_dir,
-                on_stage=on_stage,
-                panel_count=healing_comic_panel_count or 32,
-                character_prompt=healing_comic_character_prompt,
-                source_content=healing_comic_source_content,
-                should_pause=healing_comic_should_pause,
-            )
+            panel_count=healing_comic_panel_count or 32,
+            character_prompt=healing_comic_character_prompt,
+            source_content=healing_comic_source_content,
+            should_pause=healing_comic_should_pause,
         )
 
     if normalized_category == "comic_series":
-        return await finish_with_aigc(
-            await _generate_comic_series_book(
-                raw_text,
-                category=normalized_category,
-                prompts=prompts,
-                output_dir=output_dir,
-                on_stage=on_stage,
-            )
+        return await _generate_comic_series_book(
+            raw_text,
+            category=normalized_category,
+            prompts=prompts,
+            output_dir=output_dir,
+            on_stage=on_stage,
         )
 
     if _should_use_finance_longform(
@@ -8182,16 +5542,13 @@ async def generate_full_book(
         writer_input_text,
         source_duration_seconds=source_duration_seconds,
     ):
-        return await finish_with_aigc(
-            await _generate_finance_longform_book(
-                writer_input_text,
-                category=normalized_category,
-                prompts=prompts,
-                output_dir=output_dir,
-                on_stage=on_stage,
-                source_duration_seconds=source_duration_seconds,
-                prompt_cache_key=task_prompt_cache_key,
-            )
+        return await _generate_finance_longform_book(
+            writer_input_text,
+            category=normalized_category,
+            prompts=prompts,
+            output_dir=output_dir,
+            on_stage=on_stage,
+            source_duration_seconds=source_duration_seconds,
         )
 
     ignore_existing_stages = False
@@ -8212,45 +5569,6 @@ async def generate_full_book(
             return None
 
     final_resume_markdown = _read_stage("04_format.md")
-    if final_resume_markdown and not direct_writer_only:
-        # Do not let a legacy partial 03/04 pair permanently bypass the
-        # corrected Gemini二润 path.  Keep the intact earlier checkpoint when
-        # possible so a retry resumes without regenerating the paid writer.
-        resume_polished_markdown = _read_stage("02_polish.md")
-        resume_refined_markdown = _read_stage("03_refine.md")
-        resume_issue: str | None = None
-        if resume_refined_markdown:
-            resume_issue = _refine_stage_cache_issue(
-                output_dir,
-                resume_refined_markdown,
-                source_text=resume_polished_markdown,
-                system_instruction=gemini_fast_refine_prompt,
-                category=normalized_category,
-            )
-            if resume_issue is None:
-                resume_issue = _final_resume_cache_issue(
-                    resume_refined_markdown,
-                    final_resume_markdown,
-                    category=normalized_category,
-                )
-        elif resume_polished_markdown:
-            resume_issue = _final_resume_cache_issue(
-                resume_polished_markdown,
-                final_resume_markdown,
-                category=normalized_category,
-            )
-        if use_buddhist_story_unit_writer and resume_refined_markdown:
-            cached_story_issues = _buddhist_story_manuscript_issues(
-                resume_refined_markdown,
-                buddhist_story_units,
-            )
-            if cached_story_issues:
-                resume_issue = "; ".join(cached_story_issues)
-        if resume_issue:
-            logger.warning("忽略不可安全复用的终稿/二润缓存: %s", resume_issue)
-            _dump_stage(output_dir, "03_refine_stale.md", resume_refined_markdown or "")
-            _dump_stage(output_dir, "04_format_stale.md", final_resume_markdown)
-            final_resume_markdown = None
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
@@ -8261,7 +5579,6 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="resume",
                 original_title=classical_original_title,
-                prompt_cache_key=task_prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
         from app.core.quality_metrics import detect_final_hard_errors
@@ -8283,13 +5600,12 @@ async def generate_full_book(
                 category=normalized_category,
                 output_dir=output_dir,
                 stage="resume",
-                prompt_cache_key=task_prompt_cache_key,
             )
             _dump_stage(output_dir, "04_format.md", final_resume_markdown)
             _log_stage("4/4 format (resume fast)", final_resume_markdown)
             if on_stage:
                 on_stage("format_done", {"chars": len(final_resume_markdown)})
-            return await finish_with_aigc(final_resume_markdown)
+            return final_resume_markdown
 
     # ---- 第 1 层: OpenAI Writer ----
     generated_markdown = _read_stage("01_writer.md")
@@ -8329,7 +5645,6 @@ async def generate_full_book(
                 category=normalized_category,
                 style_reference=style_reference,
                 style_notes=style_notes,
-                prompt_cache_key=task_prompt_cache_key,
             )
         elif use_buddhist_story_unit_writer:
             generated_markdown = await _generate_buddhist_story_unit_writer(
@@ -8338,24 +5653,14 @@ async def generate_full_book(
                 original_title=classical_original_title,
                 output_dir=output_dir,
                 on_stage=on_stage,
-                prompt_cache_key=task_prompt_cache_key,
             )
         else:
             writer_prompt = full_book_writer_prompt.format(raw_text=writer_input_text)
-            effective_style_notes = style_notes
-            if normalized_category == CLASSICAL_REFERENCE_REWRITE_CATEGORY:
-                effective_style_notes = _style_reference_notes_for_classical_segment(
-                    style_notes,
-                    start_index=1,
-                    end_index=classical_expected_count,
-                    total_source_lines=classical_expected_count,
-                    source_segment_text=classical_source_text,
-                )
             writer_prompt = _append_style_reference_prompt(
                 writer_prompt,
                 category=normalized_category,
                 style_reference=style_reference,
-                style_notes=effective_style_notes,
+                style_notes=style_notes,
             )
             writer_prompt = _append_reference_article_prompt(
                 writer_prompt,
@@ -8366,7 +5671,6 @@ async def generate_full_book(
             generated_markdown = await _route_writer_call(
                 writer_prompt,
                 max_output_tokens=writer_max_output_tokens,
-                prompt_cache_key=task_prompt_cache_key,
                 on_progress=(
                     (lambda chars: on_stage("writer_progress", {"chars": chars}))
                     if on_stage
@@ -8384,7 +5688,6 @@ async def generate_full_book(
             raw_text,
             generated_markdown,
             category=normalized_category,
-            prompt_cache_key=task_prompt_cache_key,
         )
         if repaired_markdown.strip():
             generated_markdown = repaired_markdown
@@ -8400,14 +5703,13 @@ async def generate_full_book(
             stage="writer",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
-            prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
 
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
-    polished_markdown = generated_markdown if direct_writer_only else _read_stage("02_polish.md")
+    polished_markdown = _read_stage("02_polish.md")
     if polished_markdown and use_buddhist_story_unit_writer:
         cached_polish_issues = _buddhist_story_manuscript_issues(
             polished_markdown,
@@ -8419,27 +5721,13 @@ async def generate_full_book(
                 "; ".join(cached_polish_issues),
             )
             polished_markdown = None
-    if direct_writer_only:
-        logger.info("%s 使用直出模式，跳过 Gemini 一润", normalized_category)
-        _log_stage("2/4 polish (skipped: direct writer)", polished_markdown, prev_chars=writer_chars)
+    if polished_markdown:
+        logger.info("复用已存在的 02_polish.md")
+        _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
         polish_chars = len(polished_markdown)
-    elif polished_markdown:
-        polish_structure_issue = _standard_longform_stage_structure_issue(
-            generated_markdown,
-            polished_markdown,
-            category=normalized_category,
-        )
-        if polish_structure_issue:
-            logger.warning("忽略章节结构失衡的 02_polish.md: %s", polish_structure_issue)
-            _dump_stage(output_dir, "02_polish_rejected_structure.md", polished_markdown)
-            polished_markdown = None
-        else:
-            logger.info("复用已存在的 02_polish.md")
-            _log_stage("2/4 polish (resume)", polished_markdown, prev_chars=writer_chars)
-            polish_chars = len(polished_markdown)
-            if on_stage:
-                on_stage("polish_done", {"chars": polish_chars})
-    if polished_markdown is None:
+        if on_stage:
+            on_stage("polish_done", {"chars": polish_chars})
+    else:
         if on_stage:
             on_stage("polish_start", {})
         polish_chunk_func = (
@@ -8464,8 +5752,6 @@ async def generate_full_book(
                 if is_classical_category
                 else _split_buddhist_text_by_chapters
                 if use_buddhist_story_unit_writer
-                else _split_standard_longform_by_chapters
-                if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
                 else None
             ),
             chunk_validator=(
@@ -8473,28 +5759,9 @@ async def generate_full_book(
                 if is_classical_category
                 else _buddhist_chapter_marker_issues
                 if use_buddhist_story_unit_writer
-                else _standard_longform_chunk_issues
-                if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
                 else None
             ),
         )
-        if not is_classical_category and not use_buddhist_story_unit_writer:
-            polished_markdown = normalize_final_markdown(
-                polished_markdown,
-                category=normalized_category,
-            )
-        polish_structure_issue = _standard_longform_stage_structure_issue(
-            generated_markdown,
-            polished_markdown,
-            category=normalized_category,
-        )
-        if polish_structure_issue:
-            logger.warning("Gemini 一润章节结构失衡，回退到主笔章节结构: %s", polish_structure_issue)
-            _dump_stage(output_dir, "02_polish_rejected_structure.md", polished_markdown)
-            polished_markdown = normalize_final_markdown(
-                generated_markdown,
-                category=normalized_category,
-            )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -8512,11 +5779,10 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="polish",
                 original_title=classical_original_title,
-                prompt_cache_key=task_prompt_cache_key,
             )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
-    if is_classical_category and not direct_writer_only:
+    if is_classical_category:
         polished_markdown = await _repair_classical_quality_once(
             polished_markdown,
             marked_source_text=classical_marked_source_text,
@@ -8525,28 +5791,12 @@ async def generate_full_book(
             stage="polish",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
-            prompt_cache_key=task_prompt_cache_key,
         )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
-    refined_markdown = polished_markdown if direct_writer_only else None
-    if not direct_writer_only:
-        cached_refined_markdown = _read_stage("03_refine.md")
-        if cached_refined_markdown:
-            cache_issue = _refine_stage_cache_issue(
-                output_dir,
-                cached_refined_markdown,
-                source_text=polished_markdown,
-                system_instruction=gemini_fast_refine_prompt,
-                category=normalized_category,
-            )
-            if cache_issue:
-                logger.warning("忽略不可安全复用的 03_refine.md: %s", cache_issue)
-                _dump_stage(output_dir, "03_refine_stale.md", cached_refined_markdown)
-            else:
-                refined_markdown = cached_refined_markdown
+    refined_markdown = _read_stage("03_refine.md")
     if refined_markdown and use_buddhist_story_unit_writer:
         cached_refine_issues = _buddhist_story_manuscript_issues(
             refined_markdown,
@@ -8558,11 +5808,7 @@ async def generate_full_book(
                 "; ".join(cached_refine_issues),
             )
             refined_markdown = None
-    if direct_writer_only:
-        logger.info("%s 使用直出模式，跳过 Gemini 二润", normalized_category)
-        _log_stage("3/4 refine (skipped: direct writer)", refined_markdown, prev_chars=polish_chars)
-        refine_chars = len(refined_markdown)
-    elif refined_markdown:
+    if refined_markdown:
         logger.info("复用已存在的 03_refine.md")
         _log_stage("3/4 refine (resume)", refined_markdown, prev_chars=polish_chars)
         refine_chars = len(refined_markdown)
@@ -8571,12 +5817,11 @@ async def generate_full_book(
     else:
         if on_stage:
             on_stage("refine_start", {})
-        # 二润无论走整稿还是整稿失败后的分块兜底，都必须关闭输出上限。
-        # 整稿调用仍使用原始 provider 函数（由下面显式传入
-        # ``disable_max_output_tokens``），分块调用使用无上限包装器；这样
-        # 两条路径的参数一致，同时不改变一润的分块逻辑。
-        refine_func = refine_book_text
-        refine_chunk_func = _refine_book_text_without_output_cap
+        refine_func = (
+            _refine_book_text_without_output_cap
+            if is_classical_category
+            else refine_book_text
+        )
         if is_classical_category:
             logger.info("Classical Chinese refine uses chunked path to avoid whole-book Gemini stalls")
             refined_markdown = await _refine_by_paragraph_chunks_strict(
@@ -8585,7 +5830,7 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
-                chunk_func=refine_chunk_func,
+                chunk_func=refine_func,
                 allow_chunk_fallback=True,
                 splitter=_split_text_by_classical_marker_lines,
                 chunk_validator=_classical_chunk_marker_issues,
@@ -8598,82 +5843,33 @@ async def generate_full_book(
                 system_instruction=gemini_fast_refine_prompt,
                 on_stage=on_stage,
                 output_dir=output_dir,
-                chunk_func=refine_chunk_func,
                 allow_chunk_fallback=True,
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
         else:
-            candidate_refine = ""
             try:
-                candidate_refine = await _to_thread_with_optional_timeout(
+                refined_markdown = await _to_thread_with_optional_timeout(
                     refine_func,
                     polished_markdown,
                     system_instruction=gemini_fast_refine_prompt,
-                    # The second pass must not inherit a small configured
-                    # output cap.  A whole-book response that reaches the
-                    # provider limit is a partial manuscript, not a valid
-                    # refinement; the integrity gate below will route it to
-                    # the chunked fallback instead.
-                    disable_max_output_tokens=True,
-                    request_timeout_seconds=max(
-                        int(settings.GEMINI_REFINE_REQUEST_TIMEOUT or 0),
-                        int(settings.DEEPSEEK_FORMAT_CALL_TIMEOUT or 0),
-                        1800,
-                    ),
-                    retries=1,
                     timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
                 )
-                integrity_issue = _refine_output_integrity_issue(
-                    polished_markdown,
-                    candidate_refine,
-                    category=normalized_category,
-                )
-                if integrity_issue:
-                    _dump_stage(output_dir, "03_refine_rejected_incomplete.md", candidate_refine)
-                    raise GeminiRefineIncompleteError(integrity_issue)
-                refined_markdown = candidate_refine
-            except (GeminiMaxTokensError, GeminiRefineIncompleteError) as exc:
-                logger.warning("Gemini refine returned an incomplete whole-book response; falling back to chunked refine: %s", exc)
+            except GeminiMaxTokensError as exc:
+                logger.warning("Gemini refine hit MAX_TOKENS; falling back to chunked refine: %s", exc)
                 refined_markdown = await _refine_by_paragraph_chunks_strict(
                     polished_markdown,
                     target_chars=1000,
                     system_instruction=gemini_fast_refine_prompt,
                     on_stage=on_stage,
                     output_dir=output_dir,
-                    chunk_func=refine_chunk_func,
-                    splitter=(
-                        _split_standard_longform_by_chapters
-                        if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
-                        else None
-                    ),
-                    chunk_validator=(
-                        _standard_longform_chunk_issues
-                        if normalized_category in _STANDARD_LONGFORM_CATEGORY_IDS
-                        else None
-                    ),
+                    chunk_func=refine_func,
                 )
-                integrity_issue = _refine_output_integrity_issue(
-                    polished_markdown,
-                    refined_markdown,
-                    category=normalized_category,
-                )
-                if integrity_issue:
-                    _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
-                    raise RuntimeError(
-                        f"retryable Gemini refine quality gate: {integrity_issue}"
-                    ) from exc
             except Exception as exc:
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
-        _persist_refine_stage(
-            output_dir,
-            refined_markdown,
-            source_text=polished_markdown,
-            system_instruction=gemini_fast_refine_prompt,
-            category=normalized_category,
-        )
         _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
         if on_stage:
             on_stage("refine_done", {"chars": refine_chars})
@@ -8689,17 +5885,10 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="refine",
                 original_title=classical_original_title,
-                prompt_cache_key=task_prompt_cache_key,
             )
-        _persist_refine_stage(
-            output_dir,
-            refined_markdown,
-            source_text=polished_markdown,
-            system_instruction=gemini_fast_refine_prompt,
-            category=normalized_category,
-        )
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
-    if is_classical_category and not direct_writer_only:
+    if is_classical_category:
         refined_markdown = await _repair_classical_quality_once(
             refined_markdown,
             marked_source_text=classical_marked_source_text,
@@ -8708,15 +5897,8 @@ async def generate_full_book(
             stage="refine",
             output_dir=output_dir,
             interleaved=is_classical_interleaved,
-            prompt_cache_key=task_prompt_cache_key,
         )
-        _persist_refine_stage(
-            output_dir,
-            refined_markdown,
-            source_text=polished_markdown,
-            system_instruction=gemini_fast_refine_prompt,
-            category=normalized_category,
-        )
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
@@ -8819,7 +6001,6 @@ async def generate_full_book(
                     stage="format",
                     output_dir=output_dir,
                     interleaved=is_classical_interleaved,
-                    prompt_cache_key=task_prompt_cache_key,
                 )
     if use_buddhist_story_unit_writer:
         buddhist_final_issues = _buddhist_story_manuscript_issues(
@@ -8833,12 +6014,11 @@ async def generate_full_book(
                 output_dir=output_dir,
                 stage="final",
                 original_title=classical_original_title,
-                prompt_cache_key=task_prompt_cache_key,
             )
 
     if _front_matter_missing(final_markdown):
-        logger.warning("后处理丢失前置块，回退到完整的 Gemini 二润稿。")
-        final_markdown = refined_markdown
+        logger.warning("后处理丢失前置块，回退到修复后的主模型输出。")
+        final_markdown = generated_markdown
 
     if _front_matter_missing(final_markdown):
         logger.warning("前置块仍缺失，保留当前输出以避免整篇回退。")
@@ -8851,29 +6031,13 @@ async def generate_full_book(
             buddhist_scripture_final_title(classical_original_title),
         )
     final_markdown = normalize_final_markdown(final_markdown, category=normalized_category)
-    final_integrity_issue = _final_resume_cache_issue(
-        refined_markdown,
-        final_markdown,
-        category=normalized_category,
-    )
-    if final_integrity_issue:
-        logger.warning(
-            "DeepSeek 格式层破坏完整书稿，保留 Gemini 二润完整稿: %s",
-            final_integrity_issue,
-        )
-        _dump_stage(output_dir, "04_format_rejected_incomplete.md", final_markdown)
-        final_markdown = normalize_final_markdown(
-            refined_markdown,
-            category=normalized_category,
-        )
     final_markdown = await _repair_final_hard_errors_once(
         final_markdown,
         category=normalized_category,
         output_dir=output_dir,
         stage="format",
-        prompt_cache_key=task_prompt_cache_key,
     )
-    _dump_stage(output_dir, "04_format.md", final_markdown, required=True)
+    _dump_stage(output_dir, "04_format.md", final_markdown)
 
     logger.info(
         "[summary] writer=%d → polish=%d → refine=%d → final=%d 字 (整体保留 %.1f%%)",
@@ -8892,4 +6056,4 @@ async def generate_full_book(
         except Exception as exc:
             logger.warning("质量度量跳过: %s", exc)
 
-    return await finish_with_aigc(final_markdown)
+    return final_markdown

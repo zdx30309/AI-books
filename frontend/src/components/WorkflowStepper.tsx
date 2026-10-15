@@ -1,5 +1,4 @@
 import { Check, Circle, Loader2, Pause } from "lucide-react";
-import { publicTaskStep } from "@/utils/taskStatus";
 
 interface Step {
   key: string;
@@ -8,13 +7,13 @@ interface Step {
   start: number;
 }
 
-const BASE_STEPS: Step[] = [
+const STEPS: Step[] = [
   { key: "queue", label: "排队建库", start: 0 },
   { key: "fetch", label: "解析视频文案", start: 8 },
-  { key: "writer", label: "生成初稿", start: 25 },
-  { key: "polish", label: "第一轮润色", start: 50 },
-  { key: "refine", label: "第二轮润色", start: 72 },
-  { key: "format", label: "整理终稿", start: 87 },
+  { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
+  { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
+  { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
+  { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
@@ -26,48 +25,20 @@ const COMIC_STEPS: Step[] = [
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];
 
-const DIRECT_WRITER_STEPS: Step[] = [
-  { key: "queue", label: "排队建库", start: 0 },
-  { key: "fetch", label: "解析原文", start: 8 },
-  { key: "writer", label: "生成初稿", start: 25 },
-  { key: "format", label: "整理终稿", start: 87 },
-  { key: "persist", label: "章节入库 / 写终稿", start: 92 },
-];
-
-function withAigcStep(steps: Step[], required: boolean): Step[] {
-  if (!required) return steps;
-  return [
-    ...steps.filter((step) => step.key !== "persist"),
-    { key: "aigc", label: "朱雀检测 / 双模型质量审稿", start: 91 },
-    { key: "persist", label: "双达标后入库 / 写终稿", start: 94 },
-  ];
-}
-
 interface Props {
   progress: number;
   currentStep: string;
   status: string;
   category?: string | null;
-  aigcRequired?: boolean;
 }
 
-export function WorkflowStepper({ progress, currentStep, status, category, aigcRequired = false }: Props) {
+export function WorkflowStepper({ progress, currentStep, status, category }: Props) {
   const isFailed = status === "failed";
-  const isManualReview = status === "manual_review";
-  const isPaused = status === "paused" || isManualReview;
+  const isPaused = status === "paused";
   const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
-    ["comic_series", "healing_comic", "story_comic", "homophone_comic"].includes(category || "")
-    || currentStep.includes("漫画");
-  const isDirectWriterWorkflow =
-    category === "classical_chinese_novel_style" ||
-    category === "classical_chinese_reference_rewrite";
-  const steps = isComicWorkflow
-    ? COMIC_STEPS
-    : isDirectWriterWorkflow
-      ? withAigcStep(DIRECT_WRITER_STEPS, aigcRequired)
-      : withAigcStep(BASE_STEPS, aigcRequired);
-  const displayStep = publicTaskStep(currentStep, status, progress);
+    category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
+  const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
 
   return (
     <ol className="space-y-3">
@@ -124,9 +95,9 @@ export function WorkflowStepper({ progress, currentStep, status, category, aigcR
               >
                 {step.label}
               </div>
-              {(active || paused) && displayStep && (
+              {(active || paused) && currentStep && (
                 <div className="mt-1 text-[11px] tracking-wide text-warm-400">
-                  {failed ? "已停止" : isManualReview ? "正在处理" : paused ? "已暂停" : displayStep}
+                  {failed ? "已停止" : paused ? "已暂停" : currentStep}
                 </div>
               )}
             </div>

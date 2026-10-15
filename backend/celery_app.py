@@ -40,13 +40,8 @@ celery_app = Celery(
 
 import ssl
 
-# Celery rejects SSL options when a local ``redis://`` URL is used. Keep the
-# relaxed Upstash compatibility setting only for TLS-backed ``rediss://``
-# endpoints; local Docker Redis must receive no SSL transport configuration.
-if broker_url.startswith("rediss://"):
-    celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
-if backend_url.startswith("rediss://"):
-    celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+celery_app.conf.redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 celery_app.autodiscover_tasks(["app.tasks"], force=True)
 
@@ -70,15 +65,6 @@ celery_app.conf.update(
     worker_cancel_long_running_tasks_on_connection_loss=settings.CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS,
     worker_enable_remote_control=False,          # Upstash 长连接下禁用 pidbox，减少 pub/sub 断连
     worker_send_task_events=False,
-    # Keep long-running generation work and the short recovery heartbeat on
-    # separate queues.  Otherwise a busy generation worker can starve the
-    # watchdog indefinitely.
-    task_default_queue="celery",
-    task_routes={
-        "tasks.requeue_stale_processing": {
-            "queue": settings.CELERY_MAINTENANCE_QUEUE,
-        },
-    },
     broker_connection_retry_on_startup=settings.CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP,
     broker_connection_retry=True,
     broker_connection_max_retries=None,
@@ -119,16 +105,13 @@ celery_app.conf.update(
     result_expires=60 * 60 * 24,    # 24h
 )
 
-# Always register the schedule.  The task itself checks the feature flag so
-# toggling it in the environment does not require a beat-container rebuild or
-# leave an old beat process with a stale schedule.
-celery_app.conf.beat_schedule = {
-    "requeue-stale-processing-tasks": {
-        "task": "tasks.requeue_stale_processing",
-        "schedule": max(60, int(settings.STALE_TASK_WATCHDOG_INTERVAL_SECONDS or 120)),
-        "options": {"queue": settings.CELERY_MAINTENANCE_QUEUE},
-    },
-}
+if settings.STALE_TASK_WATCHDOG_ENABLED:
+    celery_app.conf.beat_schedule = {
+        "requeue-stale-processing-tasks": {
+            "task": "tasks.requeue_stale_processing",
+            "schedule": max(60, int(settings.STALE_TASK_WATCHDOG_INTERVAL_SECONDS or 120)),
+        },
+    }
 
 # 让 `from celery_app import celery_app` 与 `celery -A celery_app worker` 都能识别
 __all__ = ["celery_app"]

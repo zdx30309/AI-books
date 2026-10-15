@@ -15,21 +15,30 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from typing import Any
 
 import httpx
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from app.utils.retry_utils import network_retry
 
 from app.core.config import settings
 from app.prompts.goal_driven_templates import (
+    SCENE_CRITIC_PROMPT,
+    SUPREME_AUDITOR_PROMPT,
+    SOCIAL_SCIENCE_BLUEPRINT_ARCHITECT_PROMPT,
+    SOCIAL_SCIENCE_SCENE_WRITER_PROMPT,
     PROMPT_REGISTRY,
     SUPPORTED_CATEGORIES,
     get_prompts,
 )
-from app.services.content_engine import OpenAIDeliveryUncertainError
 from app.utils.official_api import official_deepseek_base_url, official_openai_base_url
-from app.utils import paid_api_guard
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +54,12 @@ _text_client = OpenAI(
     api_key=settings.OPENAI_API_KEY or "sk-placeholder",
     base_url=official_openai_base_url(settings.OPENAI_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
-    # Paid-call retries are controlled by the surrounding workflow.  The SDK
-    # must never silently submit a second request after a transport error.
-    max_retries=0,
 )
 
 _deepseek_client = OpenAI(
     api_key=settings.DEEPSEEK_API_KEY or "sk-placeholder",
     base_url=official_deepseek_base_url(settings.DEEPSEEK_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
-    max_retries=0,
 )
 
 _image_client = OpenAI(
@@ -65,7 +70,6 @@ _image_client = OpenAI(
     ),
     base_url=official_openai_base_url(settings.IMAGE_BASE_URL),
     timeout=httpx.Timeout(1800.0, connect=60.0),
-    max_retries=0,
 )
 
 
@@ -87,14 +91,17 @@ def count_words(text: str) -> int:
 
 
 # ============================================================
-# 私有: 通用 chat 调用
-#
-# These are paid requests.  A transport exception can happen after the
-# provider accepted and billed the request, so retrying here is unsafe.  The
-# caller can explicitly resume after checking the provider response/ledger.
+# 私有: 通用 chat 调用 (带 tenacity 指数退避重试)
 # ============================================================
 
 
+@network_retry
+@retry(
+    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    retry=retry_if_exception_type(OpenAIError),
+    reraise=True,
+)
 def _chat_with_client(
     client: OpenAI,
     model: str,
@@ -119,56 +126,8 @@ def _chat_with_client(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    provider_name = "deepseek" if client is _deepseek_client else "openai"
-    max_attempts = max(1, int(getattr(settings, "LLM_MAX_RETRIES", 1) or 1))
-    response = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            paid_api_guard.guard(provider_name)
-            response = client.chat.completions.create(**kwargs)
-            break
-        except paid_api_guard.PaidApiQuotaExhausted:
-            raise
-        except paid_api_guard.PaidApiGuardUnavailable:
-            raise
-        except Exception as exc:
-            if paid_api_guard.trip_if_quota(provider_name, exc):
-                raise paid_api_guard.PaidApiQuotaExhausted(
-                    f"{provider_name} quota exhausted; request blocked from retry: {exc}"
-                ) from exc
-            if paid_api_guard.is_safe_preflight_error(exc) and attempt < max_attempts:
-                delay = min(2 ** (attempt - 1) * 2, 20)
-                logger.warning(
-                    "%s chat preflight connection failed; retrying attempt=%d/%d in %ss: %s",
-                    provider_name,
-                    attempt,
-                    max_attempts,
-                    delay,
-                    str(exc)[:300],
-                )
-                time.sleep(delay)
-                continue
-            if paid_api_guard.is_safe_preflight_error(exc):
-                raise
-            raise OpenAIDeliveryUncertainError(
-                f"{provider_name} chat request failed after it may have been accepted; "
-                f"automatic retry is disabled ({type(exc).__name__}: {exc})"
-            ) from exc
-    if response is None:
-        raise OpenAIDeliveryUncertainError(
-            f"{provider_name} chat did not return a response; automatic retry is disabled"
-        )
-    try:
-        content = (response.choices[0].message.content or "").strip()
-    except Exception as exc:
-        raise OpenAIDeliveryUncertainError(
-            f"{provider_name} chat response could not be decoded; automatic retry is disabled "
-            f"({type(exc).__name__}: {exc})"
-        ) from exc
-    if not content:
-        raise OpenAIDeliveryUncertainError(
-            f"{provider_name} chat returned an empty body; automatic retry is disabled"
-        )
+    resp = client.chat.completions.create(**kwargs)
+    content = (resp.choices[0].message.content or "").strip()
     return content
 
 
@@ -330,6 +289,13 @@ def generate_cover_prompt(outline_summary: str) -> str:
     )
 
 
+@network_retry
+@retry(
+    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(OpenAIError),
+    reraise=True,
+)
 def generate_cover_image(image_prompt: str) -> str:
     """
     返回封面图的可访问字符串:
@@ -339,64 +305,20 @@ def generate_cover_image(image_prompt: str) -> str:
     if not image_prompt or not image_prompt.strip():
         raise ValueError("image_prompt 不能为空")
 
-    max_attempts = max(1, int(getattr(settings, "LLM_MAX_RETRIES", 1) or 1))
-    resp = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            paid_api_guard.guard("openai-image")
-            resp = _image_client.images.generate(
-                model=settings.IMAGE_MODEL,
-                prompt=image_prompt,
-                size=settings.IMAGE_SIZE,
-                n=1,
-            )
-            break
-        except paid_api_guard.PaidApiQuotaExhausted:
-            raise
-        except paid_api_guard.PaidApiGuardUnavailable:
-            raise
-        except Exception as exc:
-            if paid_api_guard.trip_if_quota("openai-image", exc):
-                raise paid_api_guard.PaidApiQuotaExhausted(
-                    f"openai-image quota exhausted; request blocked from retry: {exc}"
-                ) from exc
-            if paid_api_guard.is_safe_preflight_error(exc) and attempt < max_attempts:
-                delay = min(2 ** (attempt - 1) * 2, 20)
-                logger.warning(
-                    "openai-image preflight connection failed; retrying attempt=%d/%d in %ss: %s",
-                    attempt,
-                    max_attempts,
-                    delay,
-                    str(exc)[:300],
-                )
-                time.sleep(delay)
-                continue
-            if paid_api_guard.is_safe_preflight_error(exc):
-                raise
-            raise OpenAIDeliveryUncertainError(
-                "openai-image request failed after it may have been accepted; "
-                f"automatic retry is disabled ({type(exc).__name__}: {exc})"
-            ) from exc
-    if resp is None:
-        raise OpenAIDeliveryUncertainError(
-            "openai-image did not return a response; automatic retry is disabled"
-        )
-    try:
-        item = resp.data[0]
-    except Exception as exc:
-        raise OpenAIDeliveryUncertainError(
-            f"openai-image response could not be decoded; automatic retry is disabled "
-            f"({type(exc).__name__}: {exc})"
-        ) from exc
+    resp = _image_client.images.generate(
+        model=settings.IMAGE_MODEL,
+        prompt=image_prompt,
+        size=settings.IMAGE_SIZE,
+        n=1,
+    )
+    item = resp.data[0]
     url = getattr(item, "url", None)
     if url:
         return url
     b64 = getattr(item, "b64_json", None)
     if b64:
         return f"data:image/png;base64,{b64}"
-    raise OpenAIDeliveryUncertainError(
-        "openai-image returned neither url nor b64_json; automatic retry is disabled"
-    )
+    raise RuntimeError("image API 返回值既无 url 也无 b64_json")
 
 
 # ============================================================

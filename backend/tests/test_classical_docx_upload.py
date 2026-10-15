@@ -1,25 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 from html import escape
 from uuid import uuid4
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import UploadFile
 import pytest
 
 from app.api.routers import tasks as task_router
 from app.models import TaskStatus
 from app.services import classical_reference_templates as ref_templates
 from app.tasks import tasks as task_tasks
-from app.utils.docx_text import (
-    DocxTextError,
-    extract_classical_document_text,
-    extract_classical_docx_text,
-    extract_docx_text,
-    extract_pdf_text,
-)
+from app.utils.docx_text import DocxTextError, extract_classical_docx_text, extract_docx_text
 
 
 def _docx_bytes(paragraphs: list[str]) -> bytes:
@@ -60,43 +52,6 @@ def _docx_bytes_with_bold(paragraphs: list[tuple[str, bool]]) -> bytes:
     return buffer.getvalue()
 
 
-def _pdf_bytes(text: str) -> bytes:
-    safe_text = (
-        text.replace("\\", "\\\\")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-        .encode("latin-1", errors="replace")
-        .decode("latin-1")
-    )
-    stream = f"BT /F1 12 Tf 72 720 Td ({safe_text}) Tj ET".encode("latin-1")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
-    ]
-    data = bytearray(b"%PDF-1.4\n")
-    offsets: list[int] = [0]
-    for idx, obj in enumerate(objects, start=1):
-        offsets.append(len(data))
-        data.extend(f"{idx} 0 obj\n".encode("ascii"))
-        data.extend(obj)
-        data.extend(b"\nendobj\n")
-    xref_pos = len(data)
-    data.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
-    data.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        data.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
-    data.extend(
-        (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref_pos}\n%%EOF\n"
-        ).encode("ascii")
-    )
-    return bytes(data)
-
-
 def test_extract_docx_text_reads_paragraphs() -> None:
     text = extract_docx_text(_docx_bytes(["子曰：学而时习之。", "有朋自远方来。"]))
 
@@ -130,21 +85,6 @@ def test_extract_docx_text_rejects_invalid_file() -> None:
         extract_docx_text(b"not a docx")
 
     assert exc_info.value.status_code == 400
-
-
-def test_extract_pdf_text_reads_selectable_text() -> None:
-    text = extract_pdf_text(_pdf_bytes("Yang Jia Jiang first chapter"))
-
-    assert "Yang Jia Jiang first chapter" in text
-
-
-def test_extract_classical_document_text_routes_pdf() -> None:
-    text = extract_classical_document_text(
-        _pdf_bytes("Yang Jia Jiang classical source"),
-        "yangjiajiang.pdf",
-    )
-
-    assert "Yang Jia Jiang classical source" in text
 
 
 def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
@@ -187,105 +127,6 @@ def test_create_and_dispatch_task_returns_string_status(monkeypatch) -> None:
     )
     assert interleaved_cfg["category"] == "classical_chinese_interleaved"
     assert interleaved_cfg["classical_original_title"] == "宋定伯捉鬼"
-
-
-def test_create_classical_chinese_from_pdf_upload_externalizes_raw_text(tmp_path, monkeypatch) -> None:
-    class FakeDb:
-        def add(self, task):
-            self.task = task
-
-        def commit(self):
-            pass
-
-        def refresh(self, task):
-            if not task.id:
-                task.id = uuid4()
-
-        def query(self, *_args):
-            return self
-
-        def filter(self, *_args):
-            return self
-
-        def first(self):
-            return self.task
-
-    db = FakeDb()
-    user = type("User", (), {"id": uuid4()})()
-    monkeypatch.setattr(task_router, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(task_router, "_ensure_generation_capacity", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(task_router, "_dispatch_task", lambda task: None)
-
-    response = asyncio.run(
-        task_router.create_classical_chinese_from_docx(
-            file=UploadFile(file=BytesIO(_pdf_bytes("Yang Jia Jiang first chapter")), filename="yangjiajiang.pdf"),
-            classical_variant="novel_style",
-            category="classical_chinese_novel_style",
-            title="杨家将",
-            style_reference="",
-            style_notes="",
-            reference_file=None,
-            db=db,
-            user=user,
-        )
-    )
-
-    assert response.status == TaskStatus.PENDING
-    assert db.task.config["category"] == "classical_chinese_novel_style"
-    assert db.task.config["source_filename"] == "yangjiajiang.pdf"
-    assert db.task.config["input_source"] == "document_upload"
-    stored_path = tmp_path / db.task.config["source_text_path"]
-    assert "Yang Jia Jiang first chapter" in stored_path.read_text(encoding="utf-8")
-
-
-def test_create_reference_rewrite_from_pdf_and_reference_pdf(tmp_path, monkeypatch) -> None:
-    class FakeDb:
-        def add(self, task):
-            self.task = task
-
-        def commit(self):
-            pass
-
-        def refresh(self, task):
-            if not task.id:
-                task.id = uuid4()
-
-        def query(self, *_args):
-            return self
-
-        def filter(self, *_args):
-            return self
-
-        def first(self):
-            return self.task
-
-    db = FakeDb()
-    user = type("User", (), {"id": uuid4()})()
-    monkeypatch.setattr(task_router, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(task_router, "_ensure_generation_capacity", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(task_router, "_dispatch_task", lambda task: None)
-
-    response = asyncio.run(
-        task_router.create_classical_chinese_from_docx(
-            file=UploadFile(file=BytesIO(_pdf_bytes("Original classical source")), filename="source.pdf"),
-            reference_file=UploadFile(file=BytesIO(_pdf_bytes("Authoritative translation reference")), filename="reference.pdf"),
-            classical_variant="reference_translation",
-            category="classical_chinese_reference_rewrite",
-            title="参照译写测试",
-            style_reference="",
-            style_notes="",
-            db=db,
-            user=user,
-        )
-    )
-
-    assert response.status == TaskStatus.PENDING
-    assert db.task.config["category"] == "classical_chinese_reference_rewrite"
-    assert db.task.config["style_reference_filename"] == "reference.pdf"
-    assert "【参考译文文件：reference.pdf】" in db.task.config["style_notes"]
-    assert "Authoritative translation reference" in db.task.config["style_notes"]
-    stored_path = tmp_path / db.task.config["source_text_path"]
-    assert "Original classical source" in stored_path.read_text(encoding="utf-8")
 
 
 def test_create_classical_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
@@ -386,8 +227,6 @@ def test_default_classical_reference_template_can_attach_to_config(tmp_path, mon
     assert cfg["style_reference"] == "菜根谭-中华书局参照范本"
     assert cfg["style_notes_path"].endswith("default_reference.txt")
     assert "固定参照译本字词校准范本" in cfg["style_notes"]
-    assert "联网检索专业网站交叉验证" in cfg["style_notes"]
-    assert "不得望文生义" in cfg["style_notes"]
 
 
 def test_create_classical_interleaved_text_task_externalizes_raw_text(tmp_path, monkeypatch) -> None:
@@ -473,7 +312,5 @@ def test_default_reference_template_feeds_reference_rewrite_worker(tmp_path, mon
     )
 
     assert "固定参照译本字词校准范本" in loaded
-    assert "联网检索专业网站交叉验证" in loaded
-    assert "不得望文生义" in loaded
     assert "原文：栖守道德者" in loaded
     assert "译文：守住道德的人" in loaded

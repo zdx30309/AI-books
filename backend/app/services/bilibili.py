@@ -90,10 +90,6 @@ def extract_bilibili_text(source_url: str, *, config: dict[str, Any] | None = No
             text = transcribe_media_url(
                 audio_url,
                 request_headers=headers,
-                # Keep official OpenAI transcription on its configured proxy,
-                # but fetch Bilibili CDN media directly.  The CDN routinely
-                # resets the AI egress proxy connection before sending bytes.
-                download_proxy="",
                 download_timeout=int(
                     config.get("bilibili_media_download_timeout_seconds")
                     or settings.BILIBILI_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
