@@ -23,6 +23,14 @@ export interface CreateTaskResponse {
   status: TaskStatus;
 }
 
+export interface LengthRepairResponse {
+  status: "ready" | "missing" | "invalid";
+  result_sha256?: string;
+  chapter_number?: number;
+  body_words?: number;
+  reason?: string;
+}
+
 export interface ReferenceArticleTaskRequest {
   url: string;
   title?: string | null;

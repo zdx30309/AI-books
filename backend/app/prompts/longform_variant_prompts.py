@@ -1,5 +1,26 @@
 """Dedicated longform writer prompts for category variants."""
 
+import re
+from pathlib import Path
+
+
+def with_standard_length_contract(prompts, rule):
+    directory = Path(__file__).parent / "longform_length"
+    writer_rule = (directory / "writer_contract.md").read_text().strip().format(**rule)
+    editor_rule = (directory / "editor_contract.md").read_text().strip().format(**rule)
+    result = dict(prompts)
+    result["full_book_writer"] = re.sub(
+        r"(?m)^\s*[-•]?\s*(?:最终正文长度|正文长度可根据素材复杂度调整|正文字数不设人为上限)[^\n。]*(?:。|$)",
+        lambda match: writer_rule + ("\n" if match.group(0).endswith("\n") else ""),
+        result["full_book_writer"],
+    )
+    result["full_book_writer"] = result["full_book_writer"].replace("约12000字是明确写作目标", f"约{rule['target']}字是明确写作目标")
+    if writer_rule not in result["full_book_writer"]:
+        result["full_book_writer"] += "\n\n" + writer_rule
+    for stage in ("gemini_fast_polish", "gemini_fast_refine", "final_book_format"):
+        result[stage] += "\n\n" + editor_rule
+    return result
+
 LIFE_PHILOSOPHY_ANTI_TEMPLATE_RULES = """【人生哲学反模板约束】
 - 故事、问答、反例、短章、观点急转只是可选的节奏手段，不是固定模块；同一篇文章里只在真正需要换气、转向或压实判断时使用。
 - 生活场面不要只放在每篇开头和结尾，中段也可以自然出现；开篇不得总是写成“一个虚构人名遇到心理困难”，也可以从一次选择、一个习惯、一个关系细节、一个反常识判断或一段真实处境切入。

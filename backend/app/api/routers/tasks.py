@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -72,6 +72,7 @@ from app.schemas.task import (
     BatchRetryTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
+    LengthRepairApprovalRequest,
     ClassicalReferenceTemplateResponse,
     MarkdownResponse,
     RegenerateCoverRequest,
@@ -772,6 +773,12 @@ def _has_active_run(task: Task) -> bool:
     return bool(str((task.config or {}).get("active_run_id") or "").strip())
 
 
+def _locked_owned_task(db: Session, task_id: UUID, owner_id: UUID):
+    with db.no_autoflush:
+        return db.execute(select(Task).where(Task.id == task_id, Task.owner_id == owner_id)
+                          .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+
+
 def _prepare_task_for_retry(task: Task) -> None:
     reason = similarity_retry_reason(task.config or {})
     if reason:
@@ -784,6 +791,7 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("last_auto_retry_error", None)
     cfg.pop("auto_retry_not_before", None)
     cfg.pop("auto_retry_scheduled_by", None)
+    cfg.pop("auto_retry_exhausted_at", None)
     cfg.pop("pause_requested", None)
     cfg.pop("pause_requested_at", None)
     cfg.pop("paused_at", None)
@@ -1757,7 +1765,7 @@ def pause_comic_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TaskStatusResponse:
-    task = db.get(Task, task_id)
+    task = _locked_owned_task(db, task_id, user.id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
@@ -1800,7 +1808,7 @@ def retry_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
-    task = db.get(Task, task_id)
+    task = _locked_owned_task(db, task_id, user.id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
@@ -1895,7 +1903,7 @@ def retry_task_aigc(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     """Resume at the v2 gate without regenerating paid upstream stages."""
-    task = db.get(Task, task_id)
+    task = _locked_owned_task(db, task_id, user.id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     cfg = dict(task.config or {})
@@ -3239,6 +3247,90 @@ def download_ai_or_delivery(task_id: UUID, db: Session = Depends(get_db),
     if not path.is_file():
         raise HTTPException(status_code=404, detail="交付文件不存在")
     return FileResponse(path, filename=f"降AI纠错_{task.id}.zip", media_type="application/zip")
+
+
+@router.get("/{task_id}/corrections.xlsx", summary="请求头鉴权下载纠错Excel")
+def download_corrections_excel(task_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    root = _task_output_dir(task.id)
+    directories = (root / "editor_v05/ai_or_finalizer", root / "ai_or_finalizer")
+    for directory in directories:
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            filename = manifest.get("artifacts", {}).get("xlsx")
+            if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".xlsx"):
+                continue
+            path = (directory / filename).resolve()
+            if not path.is_relative_to(directory.resolve()) or not path.is_file():
+                continue
+        except (OSError, ValueError, TypeError):
+            continue
+        return FileResponse(path, filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    raise HTTPException(status_code=404, detail="该任务尚无可下载的纠错Excel")
+
+
+@router.get("/{task_id}/length-repair", summary="核验并读取局部篇幅待批准稿")
+def get_length_repair(task_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.length_repair_approval import candidate_summary
+
+    task = db.get(Task, task_id)
+    if task is None or task.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return candidate_summary(task, _task_output_dir(task.id))
+
+
+@router.post("/{task_id}/length-repair", response_model=CreateTaskResponse, summary="人工核验hash批准局部稿并恢复")
+def approve_length_repair(task_id: UUID, body: LengthRepairApprovalRequest,
+                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.general_short_length import LengthHold
+    from app.services.general_longform_runtime import atomic_json
+    from app.services.length_repair_approval import verified_candidate
+
+    with db.no_autoflush:
+        task = db.execute(select(Task).where(Task.id == task_id, Task.owner_id == user.id)
+                          .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    cfg = dict(task.config or {})
+    if (cfg.get("approved_length_repair_sha256") == body.result_sha256
+            and task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING}):
+        return CreateTaskResponse(task_id=task.id, status=task.status)
+    if task.status not in {TaskStatus.MANUAL_REVIEW, TaskStatus.FAILED, TaskStatus.PAUSED} or _has_active_run(task):
+        raise HTTPException(status_code=409, detail="任务仍在执行或已完成，不能批准旧稿")
+    reason = similarity_retry_reason(cfg)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    if cfg.get("paid_call_delivery_uncertain") or cfg.get("paid_call_manual_resume_required"):
+        raise HTTPException(status_code=409, detail="付费结果尚未核对，不能恢复")
+    try:
+        record = verified_candidate(task, _task_output_dir(task.id))
+    except (OSError, ValueError, KeyError, TypeError, LengthHold) as exc:
+        raise HTTPException(status_code=409, detail="局部修复稿无效或hash变化，不能批准") from exc
+    if record["result_sha256"] != body.result_sha256:
+        raise HTTPException(status_code=409, detail="页面hash已过期，请重新查看修复稿")
+    _ensure_generation_capacity(db)
+    approval = {**record, "status": "approved", "human_approval": str(user.id),
+                "approved_at": datetime.now(timezone.utc).isoformat()}
+    atomic_json(_task_output_dir(task.id) / "approved_length_repair/approval.json", approval)
+    task.config = {**cfg, "approved_length_repair_sha256": body.result_sha256}
+    _prepare_task_for_retry(task)
+    task.current_step = "人工批准局部篇幅稿，按原累计预算从断点继续"
+    db.commit()
+    db.refresh(task)
+    try:
+        _dispatch_task(task)
+    except Exception as exc:
+        _mark_dispatch_failure_pending(task, exc)
+        db.commit()
+        raise HTTPException(status_code=503, detail="批准已保存，任务投递暂时失败；请勿重复生成压缩稿") from exc
+    return CreateTaskResponse(task_id=task.id, status=task.status)
 
 
 @router.get(

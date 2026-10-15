@@ -12,6 +12,9 @@ from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_ta
 from app.services.editor_v05 import applies as editor_v05_applies
 from app.services.generation_spend import GenerationBudgetExceeded, generation_budget
 from app.services.general_short_length import LengthHold
+from app.services.task_write_guard import (
+    StaleTaskRun, TaskWriteGuard, authorize_release, check_owner, lock_pending_retry,
+)
 from app.services.polish_provider import polish_provider_name, refine_provider_name
 
 import asyncio
@@ -92,7 +95,7 @@ from app.utils.paid_api_guard import (
     is_transient_rate_limit,
 )
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
-from app.utils.task_status import public_task_step
+from app.utils.task_status import AUTO_RETRY_EXHAUSTED_STEP, public_task_step
 from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -107,10 +110,6 @@ _BOOK_TITLE_SECTION_RE = re.compile(
     re.MULTILINE,
 )
 _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
-
-
-class StaleTaskRun(RuntimeError):
-    pass
 
 
 def _classical_original_title_from_config(
@@ -320,16 +319,17 @@ def _ensure_active_run(db: Session, task: Task, run_id: str) -> None:
     if current_config.get("generation_hold"):
         raise StaleTaskRun(f"task {task.id} is held; stale run must not overwrite the hold")
     active_run_id = current_config.get("active_run_id")
-    if active_run_id and active_run_id != run_id:
+    if active_run_id != run_id:
         raise StaleTaskRun(
             f"task {task.id} owned by newer run {active_run_id}, current run {run_id} is stale"
         )
+    check_owner(task.id, current_status, current_config, run_id)
 
 
 def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
     task_uuid = uuid.UUID(task_id)
     task = db.execute(
-        select(Task).where(Task.id == task_uuid).with_for_update()
+        select(Task).where(Task.id == task_uuid).with_for_update().execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if task is None:
         raise RuntimeError(f"Task {task_id} 不存在(可能在入队前被删除)")
@@ -338,6 +338,11 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         return task
 
     cfg = dict(task.config or {})
+    active_run_id = str(cfg.get("active_run_id") or "")
+    if active_run_id and active_run_id != run_id:
+        raise StaleTaskRun(f"task {task.id} already owned by {active_run_id}")
+    if cfg.get("auto_retry_exhausted_at"):
+        raise StaleTaskRun(f"task {task.id} requires manual retry")
     if task.status == TaskStatus.PAUSED or cfg.get("pause_requested"):
         cfg["pause_requested"] = False
         cfg["paused_at"] = datetime.now(timezone.utc).isoformat()
@@ -429,6 +434,7 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
 
 
 def _clear_task_run(task: Task, run_id: str) -> None:
+    authorize_release(task, run_id)
     cfg = dict(task.config or {})
     if str(cfg.get("active_run_id") or "") != run_id:
         return
@@ -505,9 +511,16 @@ def _mark_task_paused(
     run_id: str,
     message: str = "漫画生成已暂停",
 ) -> Task | None:
-    task = db.get(Task, uuid.UUID(task_id))
+    task = db.execute(
+        select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if task is None:
         return None
+    cfg = dict(task.config or {})
+    if cfg.get("active_run_id") != run_id or task.status == TaskStatus.COMPLETED:
+        return task
+    authorize_release(task, run_id, pausing=True)
     _clear_task_run(task, run_id)
     cfg = dict(task.config or {})
     cfg["pause_requested"] = False
@@ -521,6 +534,21 @@ def _mark_task_paused(
     db.commit()
     db.refresh(task)
     return task
+
+
+def _stopped_run_result(db: Session, task_id: str, run_id: str) -> dict:
+    db.rollback()
+    with db.no_autoflush:
+        task = db.execute(
+            select(Task).where(Task.id == uuid.UUID(task_id))
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+    if task is not None and (task.status == TaskStatus.PAUSED or (task.config or {}).get("pause_requested")):
+        task = _mark_task_paused(db, task_id, run_id, "已在安全断点暂停")
+    result = {"task_id": task_id, "status": task.status if task is not None else "stale",
+              "chapters": len(task.chapters) if task is not None else 0}
+    db.rollback()
+    return result
 
 
 def extract_video_text_with_qingdou(
@@ -1314,7 +1342,7 @@ def _quarantine_terminal_input_task(task: Task) -> None:
 
 
 def _retry_exhausted_step(message: str) -> str:
-    return "暂时中断，已保留断点；系统会自动继续生成"[:255]
+    return AUTO_RETRY_EXHAUSTED_STEP
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -1373,7 +1401,10 @@ def _record_dispatch_metadata(task_id: str, **values: Any) -> None:
 
     try:
         with SessionLocal() as db:
-            task = db.get(Task, uuid.UUID(str(task_id)))
+            task = db.execute(
+                select(Task).where(Task.id == uuid.UUID(str(task_id))).with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
             if task is None:
                 return
             cfg = dict(task.config or {})
@@ -1394,6 +1425,7 @@ def _schedule_pending_task_wakeup(
     delay_seconds: int,
     *,
     reason: str,
+    expected_run_id: str | None = None,
 ) -> str | None:
     """Publish a durable, lightweight wake-up for a pending task.
 
@@ -1405,6 +1437,23 @@ def _schedule_pending_task_wakeup(
     """
 
     delay = max(1, int(delay_seconds or 1))
+    if expected_run_id is not None:
+        with SessionLocal() as dispatch_db:
+            lock_pending_retry(dispatch_db, uuid.UUID(task_id), expected_run_id)
+            result = celery_app.send_task(
+                "tasks.resume_pending_task", args=[str(task_id)], countdown=delay,
+                expires=delay + 3600, queue="celery",
+            )
+            wakeup_id = str(getattr(result, "id", "") or "") or None
+            dispatch_task = dispatch_db.get(Task, uuid.UUID(task_id))
+            _patch_config(
+                dispatch_task, pending_wakeup_task_id=wakeup_id,
+                pending_wakeup_scheduled_at=datetime.now(timezone.utc).isoformat(),
+                pending_wakeup_delay_seconds=delay, pending_wakeup_reason=str(reason)[:200],
+                pending_wakeup_last_error=None,
+            )
+            dispatch_db.commit()
+            return wakeup_id
     try:
         result = celery_app.send_task(
             "tasks.resume_pending_task",
@@ -1464,6 +1513,7 @@ def dispatch_pending_task_if_due(task_id: str) -> dict[str, Any]:
         cfg = dict(task.config or {})
         if (
             cfg.get("generation_hold")
+            or cfg.get("auto_retry_exhausted_at")
             or cfg.get("paid_call_delivery_uncertain")
             or cfg.get("paid_call_manual_resume_required")
             or cfg.get("pause_requested")
@@ -1553,6 +1603,7 @@ def _dispatch_task_ids(
                     continue
                 if (
                     cfg.get("generation_hold")
+                    or cfg.get("auto_retry_exhausted_at")
                     or cfg.get("paid_call_delivery_uncertain")
                     or cfg.get("paid_call_manual_resume_required")
                     or cfg.get("pause_requested")
@@ -1684,6 +1735,7 @@ def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
+                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1743,7 +1795,7 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 continue
             if last_recovered_at is not None and last_recovered_at > cutoff:
                 continue
-            message = task.error_message or cfg.get("last_auto_retry_error")
+            message = cfg.get("last_auto_retry_error") or task.error_message
             message_text = str(message or "")
             if terminal_input_failure:
                 _quarantine_terminal_input_task(task)
@@ -1848,6 +1900,7 @@ def revive_recoverable_terminal_input_reviews(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
+                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1957,7 +2010,7 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
                 _quarantine_terminal_input_task(task)
                 clear_task_dispatch_guard(str(task.id))
                 continue
-            message = task.error_message or cfg.get("last_auto_retry_error")
+            message = cfg.get("last_auto_retry_error") or task.error_message
             quota_backoff = _is_paid_quota_backoff_error(str(message or "")) or (
                 bool(cfg.get("paid_api_backoff"))
                 and str(cfg.get("paid_api_backoff_reason") or "")
@@ -2045,6 +2098,7 @@ def requeue_orphan_pending_tasks(*, limit: int = 500) -> int:
             terminal_input_failure = _has_terminal_input_failure(task)
             if (
                 cfg.get("generation_hold")
+                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -2447,6 +2501,9 @@ def _persist_chapters_from_markdown(
     commit: bool = True,
 ) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
+    guard = getattr(db, "info", {}).get("task_write_guard")
+    if guard is not None:
+        guard.lock()
     if _is_finance_integrity_category(category):
         parts = _finance_chapter_parts(markdown)
         numbers = [number for number, _title, _content in parts]
@@ -2528,6 +2585,7 @@ def process_video(_self, task_id: str) -> dict:
     run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    write_guard: TaskWriteGuard | None = None
 
     try:
         task = _claim_task_run(db, task_id, run_id)
@@ -2535,6 +2593,7 @@ def process_video(_self, task_id: str) -> dict:
         if task.status == TaskStatus.COMPLETED:
             return {"task_id": str(task.id), "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
 
+        write_guard = TaskWriteGuard(db, task, run_id)
         heartbeat_stop, heartbeat_thread = _start_active_run_heartbeat(task_id, run_id)
 
         _update_progress(db, task, progress=1, step="任务启动", run_id=run_id)
@@ -2742,10 +2801,13 @@ def process_video(_self, task_id: str) -> dict:
                 task, markdown, output_dir,
                 progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
             )
-        if category == "general_short" and editor_v05_applies(task):
+        from app.services.content_engine import _length_guard_category
+
+        length_guard = _length_guard_category(category, editor_v05_applies(task))
+        if length_guard:
             from app.services.general_short_length import require_length
 
-            require_length(markdown)
+            require_length(markdown, length_guard)
         integrity_issue, integrity_parts = _finance_completion_integrity_issue(
             task,
             markdown,
@@ -2859,7 +2921,6 @@ def process_video(_self, task_id: str) -> dict:
             status=TaskStatus.COMPLETED,
             run_id=run_id,
         )
-        _clear_task_run(task, run_id)
         if is_comic_category:
             comic_cover_image = output_dir / "comic_images" / "comic_cover.png"
             if not comic_cover_image.exists():
@@ -2884,6 +2945,8 @@ def process_video(_self, task_id: str) -> dict:
         db.commit()
         if not is_comic_category and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
             enqueue_cover_generation(db, task, force=False)
+        _clear_task_run(task, run_id)
+        db.commit()
 
         return {
             "task_id": str(task.id),
@@ -2893,13 +2956,7 @@ def process_video(_self, task_id: str) -> dict:
 
     except StaleTaskRun as e:
         logger.warning("[task %s] stale run skipped: %s", task_id, e)
-        db.rollback()
-        latest = db.get(Task, uuid.UUID(task_id))
-        return {
-            "task_id": task_id,
-            "status": latest.status if latest is not None else "stale",
-            "chapters": len(latest.chapters) if latest is not None else 0,
-        }
+        return _stopped_run_result(db, task_id, run_id)
 
     except ComicGenerationPaused as e:
         logger.info("[task %s] healing comic generation paused: %s", task_id, e)
@@ -2907,7 +2964,7 @@ def process_video(_self, task_id: str) -> dict:
         paused_task = _mark_task_paused(db, task_id, run_id, str(e))
         return {
             "task_id": task_id,
-            "status": TaskStatus.PAUSED,
+            "status": paused_task.status if paused_task is not None else "stale",
             "chapters": len(paused_task.chapters) if paused_task is not None else 0,
         }
 
@@ -2965,7 +3022,10 @@ def process_video(_self, task_id: str) -> dict:
                 _patch_config(review_task, **e.config_patch)
                 review_task.current_step = str(e)[:255]
             review_task.error_message = str(e)[:2000]
-            db.commit()
+            try:
+                db.commit()
+            except StaleTaskRun:
+                return _stopped_run_result(db, task_id, run_id)
         return {
             "task_id": task_id,
             "status": TaskStatus.MANUAL_REVIEW,
@@ -3034,11 +3094,13 @@ def process_video(_self, task_id: str) -> dict:
                         retries=current_retries,
                         transient_rate_limit=is_transient_rate_limit(e),
                     )
+                    _patch_config(task, auto_retry_scheduled_by=run_id)
                     db.commit()
                     _schedule_pending_task_wakeup(
                         task_id,
                         delay_seconds,
                         reason="paid provider backoff",
+                        expected_run_id=run_id,
                     )
                     return {
                         "task_id": task_id,
@@ -3081,6 +3143,7 @@ def process_video(_self, task_id: str) -> dict:
                         task_id,
                         delay_seconds,
                         reason="provider backoff retry",
+                        expected_run_id=run_id,
                     )
                     return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters) if task is not None else 0}
                 elif _is_retryable_generation_error(e) and current_retries < max_retries:
@@ -3112,10 +3175,20 @@ def process_video(_self, task_id: str) -> dict:
                     task.current_step = (
                         _retry_exhausted_step(message) if _is_retryable_generation_error(e) else f"失败：{message}"
                     )[:255]
+                    if _is_retryable_generation_error(e):
+                        task.error_message = _retry_exhausted_step(message)
                 db.commit()
+        except StaleTaskRun:
+            return _stopped_run_result(db, task_id, run_id)
         except Exception:
+            retry_countdown = None
+            db.rollback()
             logger.exception("[task %s] 写入失败状态时再次出错", task_id)
         if retry_countdown is not None:
+            try:
+                lock_pending_retry(db, uuid.UUID(task_id), run_id)
+            except StaleTaskRun:
+                return _stopped_run_result(db, task_id, run_id)
             try:
                 acquire_task_dispatch_guard(task_id, ttl_seconds=retry_countdown + 600)
             except Exception:
@@ -3133,6 +3206,8 @@ def process_video(_self, task_id: str) -> dict:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=2)
+        if write_guard is not None:
+            write_guard.close()
         db.close()
 
 

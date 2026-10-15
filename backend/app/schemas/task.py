@@ -32,6 +32,10 @@ class CreateTaskResponse(BaseModel):
     status: str
 
 
+class LengthRepairApprovalRequest(BaseModel):
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ReferenceArticleTaskRequest(BaseModel):
     url: str = Field(
         ...,

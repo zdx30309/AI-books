@@ -2649,6 +2649,16 @@ def get_category_meta(category: str | None) -> dict[str, str]:
 
 def get_prompts(category: str | None) -> dict[str, str]:
     normalized = normalize_category(category)
+    from app.core.config import settings
+
+    if getattr(settings, "LONGFORM_LENGTH_GUARD_ENABLED", False):
+        from app.services.content_engine import _length_guard_category
+
+        if _length_guard_category(normalized) is not None:
+            from app.prompts.longform_variant_prompts import with_standard_length_contract
+            from app.services.general_short_length import contract
+
+            return with_standard_length_contract(PROMPT_REGISTRY[normalized], contract(normalized))
     return PROMPT_REGISTRY[normalized]
 
 

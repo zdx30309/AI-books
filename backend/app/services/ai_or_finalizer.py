@@ -515,6 +515,8 @@ def _finalize_manuscript(text: str, output_dir: Path, *, title: str = "书稿", 
             state["stamp"] = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%-m月%-d日_%H时%M分%S秒")
             artifacts = write_delivery(directory, text, rewritten, final, issues, title, state["stamp"])
             severe_count = sum(1 for issue in issues if issue["severe"])
+            state.update(artifacts=artifacts, issue_count=len(issues), severe_issue_count=severe_count,
+                         correction_model=settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL)
             if severe_count and bool(getattr(settings, "AI_OR_SEVERE_BLOCKS_DELIVERY", False)):
                 raise FinalizerHold("双稿纠错发现严重问题，已生成标红Excel和修订Word，需人工确认后交付")
             state.update(status="completed", final_hash=digest(final), artifacts=artifacts,

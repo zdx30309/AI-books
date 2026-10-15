@@ -12,6 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 
+AUTO_RETRY_EXHAUSTED_STEP = "自动重试已用尽，已停止自动重试并保留断点；请人工点击继续生成"
+
+
 # These markers describe queue/recovery internals rather than book progress.
 # Do not include a provider name by itself: the normal workflow labels may
 # legitimately say "Gemini 一润" or "DeepSeek 终稿格式化".
@@ -73,6 +76,8 @@ def public_task_step(
     """Convert an internal step into a normal bookshelf progress label."""
 
     text = str(value or "").strip()
+    if text.startswith("自动重试已用尽"):
+        return AUTO_RETRY_EXHAUSTED_STEP
     if text and not is_internal_task_message(text):
         return text[:255]
 
@@ -112,6 +117,8 @@ def public_task_error(value: Any, *, status: Any = "") -> str | None:
     """
 
     text = str(value or "").strip()
+    if text.startswith("自动重试已用尽"):
+        return AUTO_RETRY_EXHAUSTED_STEP
     if not text:
         return None
     if not is_internal_task_message(text):

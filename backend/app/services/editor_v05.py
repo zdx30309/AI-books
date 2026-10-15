@@ -117,6 +117,13 @@ def source_text(task) -> str:
     raise FinalizerHold("0.5版缺少完整视频文案或参考原稿，不能伪造相似度报告；请补充原稿")
 
 
+def audit_token_limit(source: str, draft: str) -> int:
+    length = max(len(source), len(draft))
+    scaled = math.ceil(max(16384, length * 1.25) / 4096) * 4096
+    return min(max(settings.EDITOR_V05_AUDIT_MAX_TOKENS, scaled),
+               max(settings.EDITOR_V05_AUDIT_MAX_TOKENS, settings.EDITOR_V05_AUDIT_TOKEN_CEILING))
+
+
 def call_audit(source: str, draft: str) -> dict:
     from app.services.ai_or_finalizer import get_deepseek_client
     from app.services.generation_spend import reserve_deepseek
@@ -129,7 +136,7 @@ def call_audit(source: str, draft: str) -> dict:
     transport = (PROMPTS / "similarity_transport.md").read_text(encoding="utf-8")
     prompt = rules + "\n\n" + transport + "\n\n" + json.dumps({"原稿": source, "新稿": draft}, ensure_ascii=False)
     model = settings.AI_OR_CORRECTION_MODEL or settings.DEEPSEEK_MODEL
-    cap = settings.EDITOR_V05_AUDIT_MAX_TOKENS
+    cap = audit_token_limit(source, draft)
     cap, reservation_index = reserve_deepseek(prompt, None, model, cap, with_index=True)
     with distributed_semaphore("deepseek-format", limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS):
         paid_api_guard.guard("deepseek")
@@ -142,7 +149,7 @@ def call_audit(source: str, draft: str) -> dict:
     result = {"text": choice.message.content or "", "model": model, "finish_reason": choice.finish_reason,
               "usage": response.usage.model_dump() if response.usage else None, "cost": None,
               "budget_reservation_index": reservation_index, "response_id": getattr(response, "id", None),
-              "response_model": getattr(response, "model", None)}
+              "response_model": getattr(response, "model", None), "max_output_tokens": cap}
     logger.info("editor-v05 action=similarity model=%s cost=null status=%s", model, choice.finish_reason)
     return result
 
@@ -287,6 +294,7 @@ def audit_manuscript(source: str, draft: str, directory: Path, title: str, *, ge
             if state["status"] == "inflight":
                 raise FinalizerHold("相似度付费请求结果不确定；需人工核对，禁止重复扣费")
             state["status"] = "inflight"
+            state["max_output_tokens"] = audit_token_limit(source, draft)
             atomic_json(path, state)
             try:
                 response = call_audit(source, draft)

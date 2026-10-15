@@ -6925,6 +6925,14 @@ def _stage_formal_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
     return unique
 
 
+def _length_guard_category(normalized: str, editor_v05_delivery: bool = False) -> str | None:
+    if normalized == "general_short":
+        return normalized if editor_v05_delivery else None
+    if getattr(settings, "LONGFORM_LENGTH_GUARD_ENABLED", False) and normalized in _STANDARD_LONGFORM_CATEGORY_IDS:
+        return normalized
+    return None
+
+
 def _standard_longform_stage_structure_issue(
     source_text: str | None,
     candidate_text: str | None,
@@ -6937,11 +6945,12 @@ def _standard_longform_stage_structure_issue(
     normalized = normalize_category(category or "")
     if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
         return None
-    if normalized == "general_short" and enforce_short_length:
+    length_guard = _length_guard_category(normalized, enforce_short_length)
+    if length_guard:
         from app.services.general_short_length import issues as length_issues
 
-        if not length_issues(source_text or "") and length_issues(candidate_text or ""):
-            return "润色稿破坏已满足的2万字篇幅契约"
+        if not length_issues(source_text or "", length_guard) and length_issues(candidate_text or "", length_guard):
+            return "润色稿破坏已满足的2万字篇幅契约" if length_guard == "general_short" else "润色稿破坏已满足的标准长文篇幅契约"
     source_parts = _stage_formal_chapter_parts(source_text or "")
     if not source_parts:
         return None
@@ -7977,6 +7986,8 @@ def _append_reference_article_prompt(
         "- 如果参考文章包含独特真实故事、个人经历或可识别细节，应抽象为更通用的关系处境，另起概括性场景，不沿用原文的关键人物关系和细节组合。",
         "- 正文字数不设人为上限，以把核心关系问题讲透为准；不要为了凑篇幅重复观点。",
     ]
+    if _length_guard_category(normalize_category(category)):
+        parts.pop()
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
 
 
@@ -8124,6 +8135,7 @@ async def generate_full_book(
     editor_v05_delivery: bool = False,
 ) -> str:
     normalized_category = normalize_category(category)
+    length_guard = _length_guard_category(normalized_category, editor_v05_delivery)
     if normalized_category == "general_longform":
         raise ValueError("通用长篇需要经过大纲确认与逐章验收，请使用通用长篇任务工作区")
     direct_writer_only = normalized_category in {
@@ -8203,6 +8215,10 @@ async def generate_full_book(
     )
 
     async def finish_with_aigc(markdown: str) -> str:
+        if length_guard and length_guard != "general_short":
+            from app.services.general_short_length import require_length
+
+            require_length(markdown, length_guard)
         final_text = await _apply_final_aigc_gate(
             markdown,
             category=normalized_category,
@@ -8213,10 +8229,10 @@ async def generate_full_book(
         # Keep the delivery contract true even when a resumed or optional
         # post-processing stage returns body-only text after final formatting.
         final_text = normalize_final_markdown(final_text, category=normalized_category)
-        if normalized_category == "general_short" and editor_v05_delivery:
+        if length_guard:
             from app.services.general_short_length import require_length
 
-            require_length(final_text)
+            require_length(final_text, length_guard)
         return final_text
 
     task_prompt_cache_key = _content_prompt_cache_key(
@@ -8270,7 +8286,7 @@ async def generate_full_book(
             )
         )
 
-    if _should_use_finance_longform(
+    if not length_guard and _should_use_finance_longform(
         normalized_category,
         writer_input_text,
         source_duration_seconds=source_duration_seconds,
@@ -8297,23 +8313,33 @@ async def generate_full_book(
         path = output_dir / filename
         if not path.exists():
             return None
+        if length_guard and length_guard != "general_short" and filename != "01_writer.md":
+            from app.services.general_short_length import require_length
+
+            require_length(path.read_text(encoding="utf-8"), length_guard)
         if filename in {"02_polish.md", "04_format.md"} and not direct_writer_only and polish_provider_name() == "deepseek":
             metadata_path = _stage_metadata_path(output_dir, "02_polish.md")
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
+                if length_guard and length_guard != "general_short":
+                    raise AigcManualReviewRequired(f"已保存的{filename}缺少模型断点信息，原稿保留，不自动付费重放")
                 return None
             expected = _refine_stage_identity(normalized_category, stage="polish")
             if any(metadata.get(key) != expected[key] for key in ("provider", "model")):
+                if length_guard and length_guard != "general_short":
+                    raise AigcManualReviewRequired(f"已保存的{filename}模型断点不匹配，原稿保留，不自动付费重放")
                 return None
         try:
             content = path.read_text(encoding="utf-8").strip()
-            if normalized_category == "general_short" and editor_v05_delivery and filename != "01_writer.md":
+            if length_guard and filename != "01_writer.md":
                 from app.services.general_short_length import issues as length_issues
 
-                if length_issues(content):
+                if length_issues(content, length_guard):
                     return None
             return content or None
+        except AigcManualReviewRequired:
+            raise
         except Exception as exc:
             logger.warning("读取中间产物 %s 失败: %s", filename, exc)
             return None
@@ -8521,11 +8547,14 @@ async def generate_full_book(
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
 
-    if normalized_category == "general_short" and editor_v05_delivery:
+    if length_guard and length_guard != "general_short":
+        generated_markdown = ensure_chapter_structure(generated_markdown, normalized_category, output_dir, "writer_before_length")
+    if length_guard:
         from app.services.general_short_length import repair_length
 
         generated_markdown = await asyncio.to_thread(
             repair_length, generated_markdown, raw_text, output_dir, on_stage,
+            category=length_guard,
             approved_sha256=approved_length_repair_sha256,
         )
 
@@ -8735,7 +8764,7 @@ async def generate_full_book(
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
-        elif normalized_category == "general_short" and editor_v05_delivery:
+        elif length_guard:
             from app.services.general_short_length import require_length
 
             refined_markdown = await _refine_by_paragraph_chunks_strict(
@@ -8749,7 +8778,7 @@ async def generate_full_book(
                 chunk_validator=_standard_longform_chunk_issues,
             )
             refined_markdown = normalize_final_markdown(refined_markdown, category=normalized_category)
-            require_length(refined_markdown)
+            require_length(refined_markdown, length_guard)
             integrity_issue = _refine_output_integrity_issue(polished_markdown, refined_markdown, category=normalized_category)
             if integrity_issue:
                 from app.services.general_short_length import LengthHold
@@ -8898,7 +8927,7 @@ async def generate_full_book(
             on_stage("format_start", {})
         try:
             format_max_output_tokens = 0 if (is_classical_category or use_buddhist_story_unit_writer) else None
-            if normalized_category == "general_short" and editor_v05_delivery:
+            if length_guard:
                 format_max_output_tokens = 32768
             final_markdown = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -9014,11 +9043,11 @@ async def generate_full_book(
         final_markdown,
         category=normalized_category,
     )
-    if normalized_category == "general_short" and editor_v05_delivery:
+    if length_guard:
         from app.services.general_short_length import issues as length_issues
 
-        if length_issues(final_markdown):
-            final_integrity_issue = "格式层破坏已满足的2万字篇幅契约"
+        if length_issues(final_markdown, length_guard):
+            final_integrity_issue = "格式层破坏已满足的2万字篇幅契约" if length_guard == "general_short" else "格式层破坏已满足的标准长文篇幅契约"
     if final_integrity_issue:
         logger.warning(
             "DeepSeek 格式层破坏完整书稿，保留 Gemini 二润完整稿: %s",
@@ -9036,6 +9065,10 @@ async def generate_full_book(
         stage="format",
         prompt_cache_key=task_prompt_cache_key,
     )
+    if length_guard:
+        from app.services.general_short_length import require_length
+
+        require_length(final_markdown, length_guard)
     _dump_stage(output_dir, "04_format.md", final_markdown, required=True)
 
     logger.info(

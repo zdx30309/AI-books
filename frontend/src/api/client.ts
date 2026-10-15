@@ -37,6 +37,7 @@ import type {
   ChaptersListResponse,
   CreateTaskRequest,
   CreateTaskResponse,
+  LengthRepairResponse,
   CoverJobListResponse,
   CoverJobBatchRequest,
   CoverJobBatchResponse,
@@ -593,6 +594,13 @@ export const api = {
     request<TaskStatusResponse>(`/tasks/${id}/pause-comic`, { method: "POST" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
+  getLengthRepair: (id: string) =>
+    request<LengthRepairResponse>(`/tasks/${id}/length-repair`, { cache: "no-store" }),
+  approveLengthRepair: (id: string, resultSha256: string) =>
+    request<CreateTaskResponse>(`/tasks/${id}/length-repair`, {
+      method: "POST",
+      body: JSON.stringify({ result_sha256: resultSha256 }),
+    }),
   retryTaskAigc: (id: string, publicDomain = false) =>
     request<CreateTaskResponse>(
       publicDomain
@@ -662,6 +670,10 @@ export const api = {
   },
   downloadAiOrDelivery: async (id: string) => {
     const { blob, filename } = await download(`/tasks/${id}/ai-or-delivery`);
+    saveBlob(blob, filename);
+  },
+  downloadCorrections: async (id: string) => {
+    const { blob, filename } = await download(`/tasks/${id}/corrections.xlsx`);
     saveBlob(blob, filename);
   },
   downloadBatchFile: async (body: BatchDownloadRequest) => {

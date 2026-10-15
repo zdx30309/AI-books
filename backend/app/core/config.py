@@ -42,7 +42,12 @@ class Settings(BaseSettings):
     AI_OR_SEVERE_BLOCKS_DELIVERY: bool = False
     EDITOR_V05_ENABLED: bool = False
     EDITOR_V05_START_AT: str = ""
-    EDITOR_V05_AUDIT_MAX_TOKENS: int = 16384
+    EDITOR_V05_AUDIT_MAX_TOKENS: int = Field(default=16384, ge=4096, le=32768)
+    EDITOR_V05_AUDIT_TOKEN_CEILING: int = Field(default=32768, ge=16384, le=32768)
+    LONGFORM_LENGTH_GUARD_ENABLED: bool = False
+    LONGFORM_MIN_WORDS: int = 11000
+    LONGFORM_MAX_WORDS: int = 25000
+    LONGFORM_TARGET_WORDS: int = 14000
     EDITOR_V05_SIMILARITY_GATE_ENABLED: bool = True
     EDITOR_V05_SIMILARITY_LIMIT: float = Field(default=50.0, gt=0, le=100)
     LOG_LEVEL: str = "INFO"

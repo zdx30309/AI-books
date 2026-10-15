@@ -1006,6 +1006,45 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("finance_tech_recommendation") == "finance_technology_recommendation"
 
 
+@pytest.mark.parametrize("category", sorted(content_engine._STANDARD_LONGFORM_CATEGORY_IDS - {"general_short"}))
+def test_standard_length_prompts_are_switch_gated_without_mutating_registry(monkeypatch, category):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
+    original = dict(get_prompts(category))
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
+    guarded = get_prompts(category)
+    writer = guarded["full_book_writer"]
+    assert "11000至25000字" in writer and "约14000字为写作目标" in writer
+    assert "允许小幅度缩减" not in writer
+    assert "可以缩减到" not in writer and "正文字数不设人为上限" not in writer
+    assert "约12000字是明确写作目标" not in writer
+    assert "11000至25000字" in writer.format(raw_text="离线测试资料")
+    for stage in ("gemini_fast_polish", "gemini_fast_refine", "final_book_format"):
+        assert guarded[stage].startswith(original[stage])
+        assert "标准长文篇幅保护" in guarded[stage]
+        assert "11000至25000字" in guarded[stage]
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
+    assert get_prompts(category) == original
+
+
+@pytest.mark.parametrize("category", ["general_short", "general_longform", "classical_chinese", "comic_series", "healing_comic"])
+def test_standard_length_switch_preserves_other_prompt_contracts(monkeypatch, category):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
+    original = dict(get_prompts(category))
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
+    assert get_prompts(category) == original
+
+
+def test_standard_length_prompt_uses_configured_contract(monkeypatch):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_MIN_WORDS", 12000)
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_MAX_WORDS", 24000)
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_TARGET_WORDS", 16000)
+    prompts = get_prompts("finance_technology_recommendation")
+    assert "12000至24000字" in prompts["full_book_writer"]
+    assert "约16000字是明确写作目标" in prompts["full_book_writer"]
+    assert "这是建议版，不是资料汇编版" in prompts["full_book_writer"]
+
+
 def test_finance_dynamic_target_words_by_duration() -> None:
     assert 17_000 <= content_engine._finance_dynamic_target_words(
         "财经科技测试文稿",

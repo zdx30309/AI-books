@@ -4,7 +4,7 @@ import pytest
 
 from app.services import bilibili, content_engine, deepseek, deepseek_editor
 from app.services.aigc_quality_gate import AigcManualReviewRequired
-from app.services.general_short_length import issues, repair_length, word_count
+from app.services.general_short_length import LengthHold, contract, issues, repair_length, word_count
 from app.services.generation_spend import GenerationBudgetExceeded
 
 
@@ -138,3 +138,157 @@ def test_bad_duration_not_preserved_when_metadata_unavailable(monkeypatch):
         raise bilibili.BilibiliTranscriptError("unavailable")
     monkeypatch.setattr(bilibili, "_fetch_view", fail)
     assert bilibili.verify_transcript_duration("https://www.bilibili.com/video/BV1hN596zEas", "文" * 11000, 2) is None
+
+
+STANDARD_CATEGORY = "social_science_core_conflict"
+
+
+@pytest.mark.parametrize("size,count,valid", [(2200, 5, True), (5000, 5, True), (2199, 5, False),
+                                              (5001, 5, False), (1400, 9, True), (1000, 12, True)])
+def test_standard_longform_body_range(size, count, valid):
+    assert (not issues(book(size, count), STANDARD_CATEGORY)) == valid
+    assert not issues(book(2200, 5) + "\n@参考资料\n" + "文" * 20000, STANDARD_CATEGORY)
+    assert issues(book(2200, 5))
+
+
+def test_standard_contract_config_is_validated_and_target_clamped(monkeypatch):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_TARGET_WORDS", 90000)
+    assert contract(STANDARD_CATEGORY)["target"] == 25000
+    assert contract()["target"] == 21000
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_MIN_WORDS", 26000)
+    with pytest.raises(LengthHold, match="配置无效"):
+        contract(STANDARD_CATEGORY)
+    with pytest.raises(ValueError, match="不适用"):
+        contract("classical_chinese")
+
+
+def test_standard_draft_serial_repair_preserves_paid_responses_and_original(tmp_path, monkeypatch):
+    calls = []
+
+    def generate(payload, **kwargs):
+        data = json.loads(payload)
+        calls.append(data["chapter_number"])
+        assert "标准长文" in kwargs["system_instruction"]
+        assert data["minimum_words"] == 2800 and data["maximum_words"] == 3000
+        return "中" * 2800
+
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    draft = book(1400, 5)
+    result = repair_length(draft, "原始资料", tmp_path, category=STANDARD_CATEGORY)
+    assert not issues(result, STANDARD_CATEGORY)
+    assert calls == [1, 2, 3, 4, 5]
+    assert repair_length(draft, "原始资料", tmp_path, category=STANDARD_CATEGORY) == result
+    assert calls == [1, 2, 3, 4, 5]
+    assert next(tmp_path.glob("length_repair/*/source.md")).read_text() == draft
+    records = [json.loads(artifact.read_text()) for artifact in tmp_path.glob("length_repair/*/*_request.json")]
+    assert all(record["action"] == "longform_length_repair" and record["status"] == "response_saved"
+               and record["model"] and "cost" in record for record in records)
+
+
+@pytest.mark.parametrize("failure", ["invalid", "uncertain"])
+def test_standard_invalid_or_uncertain_paid_response_never_replayed(tmp_path, monkeypatch, failure):
+    calls = []
+
+    def generate(*args, **kwargs):
+        calls.append(1)
+        if failure == "uncertain":
+            raise deepseek.DeepSeekDeliveryUncertainError("timeout")
+        return "不足"
+
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    for attempt in range(2):
+        with pytest.raises((AigcManualReviewRequired, deepseek.DeepSeekDeliveryUncertainError)):
+            repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY)
+    assert calls == [1]
+
+
+def test_standard_supplements_are_local_bounded_and_checkpointed(tmp_path, monkeypatch):
+    calls = []
+
+    def generate(payload, **kwargs):
+        data = json.loads(payload)
+        calls.append(data)
+        assert "标准长文" in kwargs["system_instruction"]
+        if "draft" in data:
+            return "保存原段落" + "文" * 1400
+        return json.dumps({"after": data["chapter_body"], "content": "补" * data["minimum_words"]}, ensure_ascii=False)
+
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    result = repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY)
+    assert not issues(result, STANDARD_CATEGORY)
+    assert result.count("保存原段落") == 5
+    assert len(calls) == 10
+    assert repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY) == result
+    assert len(calls) == 10
+
+
+def test_standard_budget_keeps_existing_reservations_and_can_resume_before_payment(tmp_path, monkeypatch):
+    from app.services.generation_spend import generation_budget, reserve
+
+    paid = []
+
+    def generate(*args, **kwargs):
+        reserve("deepseek-text", 0.1, "deepseek-flash")
+        paid.append(1)
+        return "文" * 2800
+
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    with generation_budget({"generation_budget_cny": 1}, tmp_path):
+        reserve("previous-paid-result", 0.95, "deepseek-flash")
+        with pytest.raises(GenerationBudgetExceeded):
+            repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY)
+    assert not paid
+    with generation_budget({"generation_budget_cny": 2}, tmp_path):
+        result = repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY)
+        assert not issues(result, STANDARD_CATEGORY)
+        assert repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY) == result
+    ledger = json.loads((tmp_path / "generation_spend.json").read_text())
+    assert ledger["reserved_cny"] == 1.45 and len(ledger["calls"]) == 6 and len(paid) == 5
+    assert ledger["calls"][0]["action"] == "previous-paid-result"
+
+
+def test_standard_approved_short_repair_cannot_be_reused_for_another_contract(tmp_path):
+    with pytest.raises(LengthHold, match="不能用于标准长文"):
+        repair_length(book(1400, 5), "资料", tmp_path, category=STANDARD_CATEGORY, approved_sha256="approved")
+
+
+def test_standard_oversized_or_impossible_draft_holds_without_payment(tmp_path, monkeypatch):
+    monkeypatch.setattr(deepseek, "generate_text", lambda *args, **kwargs: pytest.fail("不得付费压缩或整篇重写"))
+    for draft in (book(5001, 5), book(2000, 3)):
+        with pytest.raises(AigcManualReviewRequired):
+            repair_length(draft, "资料", tmp_path, category=STANDARD_CATEGORY)
+
+
+def test_standard_expansion_never_compresses_an_existing_long_chapter(tmp_path, monkeypatch):
+    draft = book(1000, 5).replace("中" * 1000, "中" * 5000, 1)
+    calls = []
+
+    def generate(payload, **kwargs):
+        calls.append(json.loads(payload)["chapter_number"])
+        return "补" * 2800
+
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    result = repair_length(draft, "资料", tmp_path, category=STANDARD_CATEGORY)
+    assert not issues(result, STANDARD_CATEGORY)
+    assert "中" * 5000 in result
+    assert calls == [2, 3, 4, 5]
+
+
+def test_standard_length_guard_does_not_extend_to_other_categories(monkeypatch):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
+    assert content_engine._length_guard_category(STANDARD_CATEGORY) is None
+    assert content_engine._length_guard_category("general_short", True) == "general_short"
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
+    for category in content_engine._STANDARD_LONGFORM_CATEGORY_IDS - {"general_short"}:
+        assert content_engine._length_guard_category(category) == category
+    for category in ("general_short", "classical_chinese", "comic_series", "healing_comic", "epic_novel", "general_longform"):
+        assert content_engine._length_guard_category(category) is None
+    assert content_engine._length_guard_category("general_short", True) == "general_short"
+
+
+def test_standard_edit_gate_preserves_body_range_only_when_enabled(monkeypatch):
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
+    assert content_engine._standard_longform_stage_structure_issue(book(2400, 5), book(2000, 5), category=STANDARD_CATEGORY)
+    assert content_engine._standard_longform_stage_structure_issue(book(2400, 5), book(2300, 5), category=STANDARD_CATEGORY) is None
+    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
+    assert content_engine._standard_longform_stage_structure_issue(book(2400, 5), book(2000, 5), category=STANDARD_CATEGORY) is None

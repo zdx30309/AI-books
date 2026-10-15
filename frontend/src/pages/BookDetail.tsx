@@ -33,10 +33,12 @@ import {
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
 import { GeneralLongformPanel } from "@/components/GeneralLongformPanel";
+import { LengthRepairPanel } from "@/components/LengthRepairPanel";
 import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   AigcQualityReport,
   ChapterResponse,
+  CreateTaskResponse,
   SimilaritySummary,
   StageName,
   TaskCategoryOption,
@@ -123,6 +125,8 @@ export function BookDetail() {
   const [regenerating, setRegenerating] = useState(false);
   const [pausing, setPausing] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
+  const [correctionsDownloading, setCorrectionsDownloading] = useState(false);
+  const [correctionsMessage, setCorrectionsMessage] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
   // 轮询读取最新的编辑态，但不把它放进 refresh 的依赖：否则每敲一个字都会
@@ -166,6 +170,17 @@ export function BookDetail() {
     if (pollRef.current) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => void refresh(), 2500);
   }, [refresh]);
+
+  const handleLengthRepairApproved = useCallback(async (response: CreateTaskResponse) => {
+    setTask((previous) => previous?.id === response.task_id ? { ...previous, status: response.status } : previous);
+    setError(null);
+    restartPolling();
+    await refresh();
+  }, [refresh, restartPolling]);
+
+  useEffect(() => {
+    setCorrectionsMessage(null);
+  }, [id, task?.status, task?.ai_or_finalizer_status]);
 
   useEffect(() => {
     if (!id) return;
@@ -554,6 +569,21 @@ export function BookDetail() {
     [id],
   );
 
+  const handleDownloadCorrections = useCallback(async () => {
+    if (!id || correctionsDownloading) return;
+    setCorrectionsDownloading(true);
+    setCorrectionsMessage(null);
+    try {
+      await api.downloadCorrections(id);
+    } catch (failure) {
+      setCorrectionsMessage(failure instanceof ApiError && failure.status === 404
+        ? "暂无可下载的纠错 Excel：文件尚未生成、已失效，或当前服务尚未提供此下载接口。"
+        : `纠错 Excel 下载失败：${failure instanceof ApiError ? failure.detail : "请检查网络后重试"}`);
+    } finally {
+      setCorrectionsDownloading(false);
+    }
+  }, [id, correctionsDownloading]);
+
   // Similarity audit summary, loaded so the verdict is visible without a download.
   const [similarity, setSimilarity] = useState<SimilaritySummary | null>(null);
   useEffect(() => {
@@ -826,9 +856,9 @@ export function BookDetail() {
               {isManualReview && (
                 <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
                   <span className="font-medium text-gold-100">当前稿件已保留：</span>
-                  {failureMessage || "系统正在继续处理当前任务。"}
+                  {failureMessage || "任务已暂停，等待人工复核。"}
                   <div className="mt-1 text-warm-400">
-                    系统会从已保存的进度继续，不需要重复提交。
+                    请核对暂停原因后明确确认再继续，已保存的进度不会丢失。
                   </div>
                 </div>
               )}
@@ -879,6 +909,15 @@ export function BookDetail() {
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
               删除任务
             </button>
+            {(isCompleted || isFailed || isPaused || isManualReview) && (
+              <>
+                <button type="button" onClick={handleDownloadCorrections} disabled={correctionsDownloading} className="btn-ghost disabled:opacity-50">
+                  {correctionsDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} /> : <Download className="h-3.5 w-3.5" strokeWidth={1.5} />}
+                  {correctionsDownloading ? "纠错 Excel 下载中" : "纠错 Excel"}
+                </button>
+                {correctionsMessage ? <p className="max-w-xs text-xs leading-relaxed text-warm-300" role="status">{correctionsMessage}</p> : null}
+              </>
+            )}
             {isCompleted && (
               <>
                 <button
@@ -1001,7 +1040,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : similarityBlocked || videoRejected ? "审核未通过" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : similarityBlocked || videoRejected ? "审核未通过" : isManualReview ? "等待人工复核" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -1035,13 +1074,17 @@ export function BookDetail() {
         )}
       </section>
 
+      {id === task.id && (isFailed || isManualReview || isPaused) ? (
+        <LengthRepairPanel key={`${id}:${task.status}`} taskId={id} taskContext={`${task.current_step} ${task.error_message || ""}`} onApproved={handleLengthRepairApproved} />
+      ) : null}
+
       {isManualReview && (
         <section className="card-warm mb-8 p-6">
-          <h2 className="font-serif text-xl text-warm-50">{videoRejected ? "此视频不可用，建议更换视频" : similarityBlocked ? "相似度审核未通过，等待人工确认" : "任务正在处理"}</h2>
+          <h2 className="font-serif text-xl text-warm-50">{videoRejected ? "此视频不可用，建议更换视频" : similarityBlocked ? "相似度审核未通过，等待人工确认" : "任务已暂停，等待人工复核"}</h2>
           <p className="mt-2 text-xs leading-6 text-warm-400">
             {videoRejected ? "重新生成后相似度仍不低于50%，已停止，不再继续生成或调用降AI。"
               : similarityBlocked ? "已停在降AI之前，不会自动重写。请先下载相似度报告，再决定是否重新生成一次。"
-              : "当前已保存的稿件和进度会被保留，系统会自动从断点继续。"}
+              : "当前稿件和进度已保留，请核对暂停原因并明确确认后再继续；不会自动批准局部篇幅修复。"}
           </p>
         </section>
       )}
