@@ -84,12 +84,12 @@ class Settings(BaseSettings):
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
-    OPENAI_AUDITOR_MODEL: str = "gpt-5.5"
+    OPENAI_AUDITOR_MODEL: str = "gpt-6.1-sol"
 
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_MODEL: str = "deepseek-flash"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
@@ -104,12 +104,14 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_LOCATION: str = "global"
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_HTTPS_PROXY: str = ""
-    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
     GEMINI_MAX_RETRIES: int = 5
     GEMINI_THINKING_BUDGET: int = 0
+    # Gemini 3.6+ 用 thinking_level 取代 thinking_budget/temperature；设置后两者都不再发送
+    GEMINI_THINKING_LEVEL: str = "low"  # 空=沿用旧 thinking_budget；3.8 Flash 支持 low/medium/high
     GEMINI_MAX_CONCURRENT_CALLS: int = 8
     GEMINI_POLISH_CONCURRENCY: int = 1
     GEMINI_POLISH_CALL_TIMEOUT: int = 0
@@ -120,7 +122,7 @@ class Settings(BaseSettings):
     # --- 图像生成 ---
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = "https://api.openai.com/v1"
-    IMAGE_MODEL: str = "gpt-image-2"
+    IMAGE_MODEL: str = "gpt-image-2.5-sunburst"
     IMAGE_SIZE: str = "2450x3500"
     IMAGE_QUALITY: str = ""
     IMAGE_RESPONSE_FORMAT: str = ""
@@ -189,8 +191,8 @@ class Settings(BaseSettings):
     YOUTUBE_PO_TOKEN: str = ""
     YOUTUBE_YT_DLP_EXTRACTOR_ARGS: str = ""
     YOUTUBE_AUDIO_TRANSCRIPTION_ENABLED: bool = True
-    YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
-    AUDIO_TRANSCRIPTION_FALLBACK_MODELS: str = "whisper-1"
+    YOUTUBE_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
+    AUDIO_TRANSCRIPTION_FALLBACK_MODELS: str = "gpt-4o-mini-transcribe,whisper-1"
     AUDIO_TRANSCRIPTION_CHUNK_SECONDS: int = 600
     YOUTUBE_AUDIO_MAX_BYTES: int = 25_000_000
     YOUTUBE_CACHE_DIR: str = "backend/output/youtube_cache"
@@ -209,7 +211,7 @@ class Settings(BaseSettings):
     WECHAT_CHANNELS_TRANSCRIPTION_TIMEOUT_SECONDS: int = 600
     WECHAT_CHANNELS_MEDIA_MAX_BYTES: int = 200_000_000
     WECHAT_CHANNELS_AUDIO_MAX_BYTES: int = 25_000_000
-    WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    WECHAT_CHANNELS_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     WECHAT_CHANNELS_TRANSCRIPT_MIN_CHARS: int = 20
 
     # --- Bilibili transcript fallback ---
@@ -218,7 +220,7 @@ class Settings(BaseSettings):
     BILIBILI_TRANSCRIPTION_TIMEOUT_SECONDS: int = 900
     BILIBILI_MEDIA_MAX_BYTES: int = 300_000_000
     BILIBILI_AUDIO_MAX_BYTES: int = 80_000_000
-    BILIBILI_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-4o-mini-transcribe"
+    BILIBILI_AUDIO_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     BILIBILI_AUDIO_TRANSCRIPTION_MAX_CONCURRENT: int = 2
     BILIBILI_AUDIO_GATE_WAIT_TIMEOUT_SECONDS: int = 3600
     BILIBILI_TRANSCRIPT_MIN_CHARS: int = 20

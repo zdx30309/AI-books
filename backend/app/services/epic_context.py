@@ -41,7 +41,7 @@ def effective_context_window_tokens(selection: EpicModelSelection | None = None)
     selection = selection or resolve_model("author")
     provider = (selection.provider or "").lower()
     model = (selection.model or "").lower()
-    if "gpt-5" in model or provider.startswith("openai"):
+    if "gpt-5" in model or "gpt-6" in model or provider.startswith("openai"):
         return 400_000
     if "deepseek" in provider or "deepseek" in model:
         return 128_000

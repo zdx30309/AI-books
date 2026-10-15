@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 各厂商模型升级到最新（2026-10-15）
+
+- 用户要求GPT统一6.1，其余厂商换成当前最新模型。按官方文档核对：OpenAI文本统一gpt-6.1-sol（主笔原已是，终审默认及财经联网检索兜底从gpt-5.5改为6.1）；封面图gpt-image-2改为gpt-image-2.5-sunburst（尺寸规则与gpt-image-2相同，沿用现有16倍数与像素上限换算）；转写gpt-4o-mini-transcribe改为gpt-transcribe，回退链为gpt-4o-mini-transcribe、whisper-1。
+- Gemini润色/精修改为gemini-3.8-flash（最新Flash，稳定版）。3.6起官方弃用thinking_budget与temperature，新增GEMINI_THINKING_LEVEL（默认low）；设置后只发送thinking_level，不再发送temperature和thinking_budget，清空则恢复旧行为。google-genai最低版本提到2.0.0以支持thinking_level。费用保护新增3.8 Flash价格上界（按2027-01-01起的1.5/7.5美元每百万token保守计）。
+- DeepSeek格式化保持deepseek-flash（V4.1 Flash，2026-09-10，官方当前最新）；代码默认值从已停用的deepseek-chat改为deepseek-flash。史诗参考抽取保持deepseek-v4-pro。
+- 官方来源：https://developers.openai.com/api/docs/models/all ，https://ai.google.dev/gemini-api/docs/models ，https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8 ，https://api-docs.deepseek.com/updates/ 。
+
 ## 全部十本统一6.1及交付验收（2026-10-15，纽约）
 
 - 用户要求前四本也重新创作，十本完成后打包。已将前四本旧5.6成稿和任务/章节快照私有备份，再用原任务ID清空阶段缓存重新入队；统一6.1主笔，共享原100元账本，不重置旧费用，不在ZIP中混入旧稿。
