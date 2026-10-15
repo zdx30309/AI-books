@@ -3152,7 +3152,7 @@ async def _repair_final_hard_errors_once(
     repaired = normalize_final_markdown(repaired, category=normalized_category)
     _dump_stage(output_dir, "semantic_quality_repaired.md", repaired)
 
-    # The repair call rewrites the whole manuscript; it must not compress or renumber it.
+    # 硬伤修复由主笔整篇重写，不得压缩正文或改动章节编号/标题。
     if (
         normalized_category not in FINAL_LENGTH_GATE_EXCLUDED_CATEGORIES
         and normalized_category not in CLASSICAL_CHINESE_CATEGORY_IDS
