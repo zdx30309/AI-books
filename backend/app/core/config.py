@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_HTTPS_PROXY: str = ""
-    OPENAI_WRITER_MODEL: str = "gpt-5.5"
+    OPENAI_WRITER_MODEL: str = "gpt-6.1-sol"
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 0

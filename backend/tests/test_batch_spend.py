@@ -87,10 +87,12 @@ def test_concurrent_books_cannot_overdraw_shared_limit(batch):
     assert len(state["calls"]) == sum(result is not None for result in results)
 
 
-def test_openai_writer_uses_requested_model_with_no_hidden_sdk_retries(batch, monkeypatch):
+@pytest.mark.parametrize("model", ("gpt-5.6-sol", "gpt-6.1-sol"))
+def test_openai_writer_uses_requested_model_with_no_hidden_sdk_retries(batch, monkeypatch, model):
     config, output, owner, ledger = batch
+    monkeypatch.setattr(batch_spend.settings, "OPENAI_WRITER_MODEL", model)
     calls = []
-    response = SimpleNamespace(id="response-1", model="gpt-5.6-sol", status="completed", output_text="完整新稿", usage=SimpleNamespace(input_tokens=100, output_tokens=200))
+    response = SimpleNamespace(id="response-1", model=model, status="completed", output_text="完整新稿", usage=SimpleNamespace(input_tokens=100, output_tokens=200))
 
     class Client:
         def with_options(self, **kwargs):
@@ -109,10 +111,25 @@ def test_openai_writer_uses_requested_model_with_no_hidden_sdk_retries(batch, mo
     with batch_spend.scope(config, output, owner):
         result = content_engine._create_openai_writer_response("来源", effort="xhigh", verb="medium", max_tok=None)
     assert result is response
-    assert calls[0]["model"] == "gpt-5.6-sol"
+    assert calls[0]["model"] == model
     assert calls[0]["service_tier"] == "default"
     assert calls[0]["max_output_tokens"] == 65536
-    assert json.loads(ledger.read_text())["calls"][0]["model"] == "gpt-5.6-sol"
+    assert json.loads(ledger.read_text())["calls"][0]["model"] == model
+
+
+def test_model_switch_preserves_existing_batch_charges(batch):
+    config, output, owner, ledger = batch
+    with batch_spend.scope(config, output, owner):
+        first = batch_spend.reserve("gpt-5.6-sol", "来源", None, 1000)
+        batch_spend.settle(first, 100, 200)
+    previous = json.loads(ledger.read_text())["reserved_cny"]
+    with batch_spend.scope(config, output, owner):
+        second = batch_spend.reserve("gpt-6.1-sol", "来源", None, 1000)
+        batch_spend.settle(second, 100, 200)
+    state = json.loads(ledger.read_text())
+    assert state["limit_cny"] == 100
+    assert state["reserved_cny"] == round(previous + 0.0225, 6)
+    assert [call["model"] for call in state["calls"]] == ["gpt-5.6-sol", "gpt-6.1-sol"]
 
 
 def test_missing_usage_keeps_full_reservation(batch):

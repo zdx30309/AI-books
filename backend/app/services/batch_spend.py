@@ -16,6 +16,7 @@ from app.core.config import settings
 
 _current = ContextVar("batch_generation_spend", default=None)
 _RATES = {
+    "gpt-6.1-sol": (2.5, 10.0),
     "gpt-5.6-sol": (5.0, 20.0),
     "gemini-3.1-flash-lite": (0.25, 1.5),
     "deepseek-flash": (0.3, 1.2),
