@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_HTTPS_PROXY: str = ""
-    OPENAI_WRITER_MODEL: str = "gpt-6.1-sol"
+    OPENAI_WRITER_MODEL: str = "gpt-6-astra"
     OPENAI_WRITER_REASONING_EFFORT: str = "xhigh"  # none/low/medium/high/xhigh
     OPENAI_WRITER_VERBOSITY: str = "medium"  # low/medium/high
     OPENAI_WRITER_MAX_OUTPUT_TOKENS: int = 0
@@ -84,12 +84,12 @@ class Settings(BaseSettings):
 
     # --- OpenAI 终审配置（保留，但默认关闭，因为主笔已是 OpenAI） ---
     OPENAI_AUDITOR_ENABLED: bool = False
-    OPENAI_AUDITOR_MODEL: str = "gpt-5.5"
+    OPENAI_AUDITOR_MODEL: str = "gpt-6-astra"
 
     # --- DeepSeek V4 (OpenAI 兼容接口) ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_MODEL: str = "deepseek-v4-pro"
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
@@ -104,12 +104,16 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_LOCATION: str = "global"
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_HTTPS_PROXY: str = ""
-    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_MODEL: str = "gemini-4-argon"
     GEMINI_FALLBACK_TO_API_KEY: bool = True
     GEMINI_REQUEST_TIMEOUT: int = 180
     GEMINI_REFINE_REQUEST_TIMEOUT: int = 300
     GEMINI_MAX_RETRIES: int = 5
-    GEMINI_THINKING_BUDGET: int = 0
+    GEMINI_THINKING_BUDGET: int = -1  # <0: 不传 thinkingBudget（pro/argon 不支持 0）
+    # 终稿硬门禁：正文总字数与单章字数下限（标准品类；古文/佛经/漫画除外）
+    FINAL_LENGTH_GATE_ENABLED: bool = True
+    FINAL_MIN_BODY_CHARS: int = 11000
+    FINAL_MIN_CHAPTER_CHARS: int = 800
     GEMINI_MAX_CONCURRENT_CALLS: int = 8
     GEMINI_POLISH_CONCURRENCY: int = 1
     GEMINI_POLISH_CALL_TIMEOUT: int = 0

@@ -40,7 +40,7 @@ from app.services.comic_series import (
     parse_healing_comic_panel_count,
     parse_healing_comic_source_content,
 )
-from app.services.content_engine import generate_full_book, normalize_final_markdown
+from app.services.content_engine import final_length_gate_issues, generate_full_book, normalize_final_markdown
 from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
     QingdouDurationExceededError,
@@ -1357,6 +1357,23 @@ def process_video(_self, task_id: str) -> dict:
         report_path = output_dir / "quality_report.txt"
         report_path.write_text(report_text, encoding="utf-8")
         _patch_config(task, quality_report=str(report_path), quality_report_summary=report.total_violations)
+
+        length_issues = [] if is_comic_category else final_length_gate_issues(markdown, category=category)
+        if length_issues and not (task.config or {}).get("length_gate_accepted"):
+            reason = "；".join(length_issues)[:1000]
+            logger.warning("[task %s] 终稿篇幅门禁未通过，转人工复核: %s", task_id, reason)
+            _patch_config(
+                task,
+                manual_review=True,
+                manual_review_reason=reason,
+                manual_review_at=datetime.now(timezone.utc).isoformat(),
+            )
+            _clear_task_run(task, run_id)
+            task.status = TaskStatus.PAUSED
+            task.current_step = "篇幅质检未通过，等待人工复核"
+            task.error_message = f"篇幅质检未通过：{reason}"[:2000]
+            db.commit()
+            return {"task_id": str(task.id), "status": TaskStatus.PAUSED, "chapters": chapter_count}
 
         _update_progress(
             db,

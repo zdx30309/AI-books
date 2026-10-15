@@ -584,6 +584,11 @@ def _format_internal_subheading(title: str) -> str:
     return f"###{title}"
 
 
+def _ends_with_inline_subheading_keyword(title: str) -> bool:
+    core = title.strip().rstrip("的之")
+    return any(core.endswith(keyword) for keyword in _INLINE_SUBHEADING_KEYWORDS)
+
+
 def _split_internal_subheading_line(line: str) -> list[str] | None:
     stripped = line.strip()
     if not stripped or _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
@@ -639,6 +644,10 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
             continue
         if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
             continue
+        # A comma lead is a heading only when it ends on the keyword ("扎堆竞争的代价，…").
+        # Sentence openers such as "危机发生前，…" or "亚洲危机结束后，…" stay prose.
+        if separator in {"，", ","} and not has_marker and not _ends_with_inline_subheading_keyword(title):
+            continue
         return [_format_internal_subheading(title), body]
 
     return None
@@ -652,6 +661,14 @@ def _line_repeats_heading(heading: str, line: str) -> bool:
     if line_key.startswith(heading_key):
         return True
     return len(heading_key) >= 6 and line_key.startswith(heading_key[:4])
+
+
+def _line_repeats_marked_heading(heading: str, line: str) -> bool:
+    """An explicit ### heading is dropped only when the next line repeats it in full; sharing
+    the first few words ("资本流入的假象" / "资本流入的时候…") is normal prose under a heading."""
+    heading_key = _canonical_duplicate_text(heading)
+    line_key = _canonical_duplicate_text(line)[:80]
+    return len(heading_key) >= 4 and line_key.startswith(heading_key)
 
 
 def _strip_body_noise_line(line: str) -> str | None:
@@ -699,6 +716,7 @@ def _strip_body_noise_line(line: str) -> str | None:
 def _remove_body_format_noise(lines: list[str]) -> list[str]:
     cleaned: list[str] = []
     pending: list[str | None] = []
+    explicit_headings: set[int] = set()
     for raw_line in lines:
         split_parts = _split_internal_subheading_line(raw_line)
         source_parts = split_parts if split_parts is not None else [raw_line]
@@ -706,6 +724,8 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
             normalized = part.strip()
             if normalized.startswith("###"):
                 title = _normalize_internal_subheading_title(normalized[3:].strip())
+                if raw_line.strip().startswith("###"):
+                    explicit_headings.add(len(pending))
                 pending.append(_format_internal_subheading(title) if title else None)
                 continue
             pending.append(_strip_body_noise_line(normalized))
@@ -723,7 +743,8 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                 if candidate:
                     next_line = candidate.strip()
                     break
-            if next_line and _line_repeats_heading(heading_text, next_line):
+            repeats = _line_repeats_marked_heading if index in explicit_headings else _line_repeats_heading
+            if next_line and repeats(heading_text, next_line):
                 continue
             cleaned.append(stripped)
             continue
@@ -804,6 +825,15 @@ def _looks_like_continuation_fragment(line: str) -> bool:
     return len(core) <= 28 and core.endswith(("等", "等等", "之类", "一类", "这类"))
 
 
+def _is_short_or_unfinished_fragment(line: str) -> bool:
+    """A line after a full stop is a broken-off fragment, not a paragraph, only if it starts
+    with punctuation, is short, or has no sentence ending of its own."""
+    stripped = line.strip()
+    if stripped.startswith(("，", ",", "、", "；", ";", "：", ":", "。", ".", "）", ")", "」", "』", "”")):
+        return True
+    return len(stripped) <= 40 or not stripped.endswith(tuple(_SENTENCE_ENDINGS))
+
+
 def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: bool = False) -> list[str]:
     """Repair obvious model-introduced line breaks inside one sentence."""
     repaired: list[str] = []
@@ -835,7 +865,11 @@ def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: boo
             should_join = True
         elif not previous_stripped.endswith(tuple(_SENTENCE_ENDINGS)):
             should_join = True
-        elif previous_stripped.endswith(tuple(_HARD_LINE_ENDINGS)) and _looks_like_continuation_fragment(current):
+        elif (
+            previous_stripped.endswith(tuple(_HARD_LINE_ENDINGS))
+            and _looks_like_continuation_fragment(current)
+            and _is_short_or_unfinished_fragment(current_stripped)
+        ):
             should_join = True
             soften_previous_period = True
 
@@ -3221,6 +3255,40 @@ def _split_long_text_by_sentence(text: str, *, target_chars: int) -> list[str]:
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+_STAGE_STRUCTURE_LINE_RE = re.compile(r"^\s*@\s*(?:最终书名|最终简介|目录|导言|正文|\d+\s*[.．、])")
+
+
+def _split_text_by_chapter_then_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
+    """Chunks always start at an @ section / chapter boundary; short whole sections may share a chunk."""
+    segments: list[list[str]] = [[]]
+    for line in (text or "").replace("\r\n", "\n").split("\n"):
+        if _STAGE_STRUCTURE_LINE_RE.match(line) and any(item.strip() for item in segments[-1]):
+            segments.append([])
+        segments[-1].append(line)
+    chunks: list[str] = []
+    pending: list[str] = []
+    pending_len = 0
+    for segment in segments:
+        raw_block = "\n".join(segment)
+        block = raw_block.strip()
+        if not block:
+            continue
+        if len(block) > target_chars:
+            if pending:
+                chunks.append("\n".join(pending).strip())
+                pending, pending_len = [], 0
+            chunks.extend(_split_text_by_paragraph(block, target_chars=target_chars))
+            continue
+        if pending and pending_len + len(block) > target_chars:
+            chunks.append("\n".join(pending).strip())
+            pending, pending_len = [], 0
+        pending.append(raw_block)
+        pending_len += len(block)
+    if pending:
+        chunks.append("\n".join(pending).strip())
+    return chunks
+
+
 def _split_text_by_paragraph(text: str, *, target_chars: int = 1000) -> list[str]:
     """Split text into model-sized chunks without treating huge paragraphs as one block."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -3423,6 +3491,8 @@ async def _polish_by_paragraph_chunks_strict(
     chunk_failure_bypass_threshold: int = 2,
     splitter: Callable[..., list[str]] | None = None,
     chunk_validator: Callable[[str, str], list[str]] | None = None,
+    validation_retries: int = 0,
+    keep_source_on_validation_failure: bool = False,
 ) -> str:
     """Quality-safe Gemini polish with per-chunk resume cache.
 
@@ -3662,6 +3732,30 @@ async def _polish_by_paragraph_chunks_strict(
                 result = await _polish_with_max_tokens_retry(chunk, idx=idx)
                 if chunk_validator:
                     validation_issues = chunk_validator(chunk, result)
+                    attempts_left = max(0, int(validation_retries or 0))
+                    while validation_issues and attempts_left > 0:
+                        attempts_left -= 1
+                        logger.warning(
+                            "%s chunk %d/%d failed validation, rerunning: %s",
+                            log_label,
+                            idx + 1,
+                            total,
+                            "; ".join(validation_issues),
+                        )
+                        result = await _polish_with_max_tokens_retry(chunk, idx=idx)
+                        validation_issues = chunk_validator(chunk, result)
+                    if validation_issues and keep_source_on_validation_failure:
+                        logger.warning(
+                            "%s chunk %d/%d still invalid after rerun; keeping previous-stage text: %s",
+                            log_label,
+                            idx + 1,
+                            total,
+                            "; ".join(validation_issues),
+                        )
+                        polished[idx] = chunk
+                        _write_cache(idx, chunk, chunk)
+                        await _mark_completed(idx + 1, chunk, phase="kept_source")
+                        return
                     if validation_issues:
                         raise RuntimeError("; ".join(validation_issues))
                 polished[idx] = result
@@ -3747,6 +3841,7 @@ async def _refine_by_paragraph_chunks_strict(
     chunk_failure_bypass_threshold: int = 2,
     splitter: Callable[..., list[str]] | None = None,
     chunk_validator: Callable[[str, str], list[str]] | None = None,
+    keep_source_on_validation_failure: bool = False,
 ) -> str:
     return await _polish_by_paragraph_chunks_strict(
         text,
@@ -3764,6 +3859,8 @@ async def _refine_by_paragraph_chunks_strict(
         chunk_failure_bypass_threshold=chunk_failure_bypass_threshold,
         splitter=splitter,
         chunk_validator=chunk_validator,
+        keep_source_on_validation_failure=keep_source_on_validation_failure,
+        validation_retries=1 if keep_source_on_validation_failure else 0,
     )
 
 
@@ -4197,6 +4294,7 @@ def _finance_stage_instruction(
 - 输出应与输入篇幅基本一致，允许必要的局部润色和格式整理，但不能把长稿压成短稿。
 - 如果某些段落已经符合要求，原样保留即可，优先保证内容密度、正式书稿语感和财经科技分类规则不被破坏。
 - 不得新增任何未在原稿中出现的“当前、时下、2026年、最新、近期、前景预估”例子；不得把 2025 年及更早资料改写成当前最新例子。
+- 以 @ 开头的结构行（@最终书名、@最终简介、@目录、@导言、@正文、@N. 章节名）必须逐字原样保留；不得新增 @导言/@正文，不得把 @N. 改成 ### N.，不得修改章节编号，不得插入原稿没有的书名或一级标题。
 """
 
 
@@ -4581,6 +4679,14 @@ def _finance_stage_looks_compressed(source: str, candidate: str, *, category: st
         5000,
         int(source_body_chars * retain_ratio),
     ):
+        return True
+    structure_issues = [
+        issue
+        for issue in _standard_stage_regression_issues(source, candidate, min_retain_ratio=retain_ratio)
+        if not issue.startswith("正文被压缩")
+    ]
+    if structure_issues:
+        logger.warning("财经阶段结构护栏命中: %s", "; ".join(structure_issues))
         return True
     return False
 
@@ -4972,6 +5078,149 @@ async def _generate_finance_longform_book(
 def _front_matter_missing(text: str) -> bool:
     required_sections = ("最终书名", "最终简介", "目录", "导言", "正文")
     return not all(marker in text for marker in required_sections)
+
+
+# ---------------------------------------------------------------------------
+# 通用阶段护栏：所有标准品类的一润 / 二润 / 格式层都必须通过，
+# 否则重跑该块或保留上一阶段文本，避免压缩、错乱章节号、插入 @ 标记。
+# ---------------------------------------------------------------------------
+STANDARD_STAGE_MIN_RETAIN_RATIO = 0.85
+STANDARD_STAGE_GUARD_MIN_SOURCE_CHARS = 3000
+STANDARD_CHUNK_GUARD_MIN_SOURCE_CHARS = 200
+
+_STAGE_SECTION_MARKER_RE = re.compile(r"(?m)^\s*@\s*(最终书名|最终简介|目录|导言|正文)\s*[:：]?\s*$")
+_STAGE_CHAPTER_NUM_RE = re.compile(r"(?m)^\s*@\s*(\d+)\s*[.．、]")
+_STAGE_HASH_NUMBERED_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s*(?:第\s*)?(\d+|[一二三四五六七八九十百]+)\s*(?:[.．、章]|$)")
+_STAGE_H1_RE = re.compile(r"(?m)^\s*#\s+(\S.*)$")
+
+STAGE_FRAGMENT_GUARD_INSTRUCTION = """
+
+【片段与结构保护（违反等于任务失败）】
+- 你收到的可能只是整本书中间的一个连续片段，前后都还有内容：不要补写开头、不要写结尾总结、不要补充书名、简介或导言。
+- 以 @ 开头的结构行（@最终书名、@最终简介、@目录、@导言、@正文、@N. 章节名）必须逐字原样保留在原位置；不得新增、删除或改写这些行。
+- 不得把 @N. 章节标题改成 ### N.、# 标题或其他格式，不得修改章节编号，不得合并或拆分章节。
+- 原文没有的 @ 标记、# 标题、书名，一律不得新增；以 ### 开头的小标题原样保留。
+- 输出篇幅不得少于原文的 90%。
+"""
+
+
+def _with_stage_fragment_guard(instruction: str | None) -> str:
+    base = (instruction or "").rstrip()
+    if "【片段与结构保护" in base:
+        return base
+    return base + STAGE_FRAGMENT_GUARD_INSTRUCTION
+
+
+def _stage_visible_chars(text: str) -> int:
+    lines = [
+        line
+        for line in (text or "").splitlines()
+        if not _STAGE_SECTION_MARKER_RE.match(line) and not _STAGE_CHAPTER_NUM_RE.match(line)
+    ]
+    return len(re.sub(r"\s+", "", "\n".join(lines)))
+
+
+def _standard_chunk_structure_issues(source_chunk: str, output_chunk: str) -> list[str]:
+    """Per-chunk validator for standard categories (polish / refine)."""
+    if not output_chunk or not output_chunk.strip():
+        return ["输出为空"]
+    issues: list[str] = []
+    src_markers = _STAGE_SECTION_MARKER_RE.findall(source_chunk or "")
+    out_markers = _STAGE_SECTION_MARKER_RE.findall(output_chunk)
+    if out_markers != src_markers:
+        issues.append(
+            "结构标记被改动：原文 "
+            + ("、".join(f"@{m}" for m in src_markers) or "无")
+            + " → 输出 "
+            + ("、".join(f"@{m}" for m in out_markers) or "无")
+        )
+    src_chapters = [int(x) for x in _STAGE_CHAPTER_NUM_RE.findall(source_chunk or "")]
+    out_chapters = [int(x) for x in _STAGE_CHAPTER_NUM_RE.findall(output_chunk)]
+    if out_chapters != src_chapters:
+        issues.append(f"章节编号被改动：原文 {src_chapters} → 输出 {out_chapters}")
+    src_hash = len(_STAGE_HASH_NUMBERED_HEADING_RE.findall(source_chunk or ""))
+    out_hash = len(_STAGE_HASH_NUMBERED_HEADING_RE.findall(output_chunk))
+    if out_hash > src_hash:
+        issues.append("出现原文没有的 # 编号标题（疑似章节降级）")
+    src_h1 = set(t.strip() for t in _STAGE_H1_RE.findall(source_chunk or ""))
+    extra_h1 = [t.strip() for t in _STAGE_H1_RE.findall(output_chunk) if t.strip() not in src_h1]
+    if extra_h1:
+        issues.append("出现原文没有的一级标题：" + extra_h1[0][:40])
+    src_chars = _stage_visible_chars(source_chunk)
+    out_chars = _stage_visible_chars(output_chunk)
+    if (
+        src_chars >= STANDARD_CHUNK_GUARD_MIN_SOURCE_CHARS
+        and out_chars < int(src_chars * STANDARD_STAGE_MIN_RETAIN_RATIO)
+    ):
+        issues.append(f"本块被压缩：{out_chars}/{src_chars} 字")
+    return issues
+
+
+def _standard_chapter_sizes(markdown: str) -> dict[int, int]:
+    sizes: dict[int, int] = {}
+    for number, _title, lines in _extract_buddhist_body_chapters(markdown):
+        body = "".join(line for line in lines if not line.lstrip().startswith("#"))
+        sizes[number] = sizes.get(number, 0) + len(re.sub(r"\s+", "", body))
+    return sizes
+
+
+def _standard_stage_regression_issues(
+    source: str,
+    candidate: str,
+    *,
+    min_retain_ratio: float = STANDARD_STAGE_MIN_RETAIN_RATIO,
+    min_chapter_chars: int | None = None,
+) -> list[str]:
+    """Whole-manuscript guard between two pipeline stages."""
+    if not candidate or not candidate.strip():
+        return ["输出为空"]
+    if not source or not source.strip():
+        return []
+    min_chapter = int(min_chapter_chars if min_chapter_chars is not None else settings.FINAL_MIN_CHAPTER_CHARS)
+    issues: list[str] = []
+    if not _front_matter_missing(source) and _front_matter_missing(candidate):
+        issues.append("前置块（书名/简介/目录/导言/正文）缺失")
+    src_body = _finance_body_chars(source)
+    cand_body = _finance_body_chars(candidate)
+    if src_body >= STANDARD_STAGE_GUARD_MIN_SOURCE_CHARS and cand_body < int(src_body * min_retain_ratio):
+        issues.append(f"正文被压缩：{cand_body}/{src_body} 字（{cand_body / max(1, src_body):.0%}）")
+    for marker in ("导言", "正文"):
+        pattern = re.compile(rf"(?m)^\s*@\s*{marker}\s*[:：]?\s*$")
+        if len(pattern.findall(candidate)) > max(1, len(pattern.findall(source))):
+            issues.append(f"多出 @{marker} 标记")
+    src_sizes = _standard_chapter_sizes(source)
+    cand_sizes = _standard_chapter_sizes(candidate)
+    if src_sizes and list(cand_sizes) != list(src_sizes):
+        issues.append(f"章节编号变化：{list(src_sizes)} → {list(cand_sizes)}")
+    for number, size in cand_sizes.items():
+        if size < min_chapter and src_sizes.get(number, 0) >= min_chapter:
+            issues.append(f"第 {number} 章被压到 {size} 字（原 {src_sizes[number]} 字）")
+    return issues
+
+
+def final_length_gate_issues(markdown: str, *, category: str | None = None) -> list[str]:
+    """Hard delivery gate: total body length and minimum chapter length."""
+    if not settings.FINAL_LENGTH_GATE_ENABLED:
+        return []
+    key = (category or "").strip().lower()
+    if key in FINAL_LENGTH_GATE_EXCLUDED_CATEGORIES or key in CLASSICAL_CHINESE_CATEGORY_IDS:
+        return []
+    issues: list[str] = []
+    body_text = _finance_body_text(markdown)
+    body_chars = len(re.sub(r"\s+", "", body_text))
+    if body_chars < int(settings.FINAL_MIN_BODY_CHARS):
+        issues.append(f"正文仅 {body_chars} 字，低于 {settings.FINAL_MIN_BODY_CHARS} 字下限")
+    for number, size in _standard_chapter_sizes(markdown).items():
+        if size < int(settings.FINAL_MIN_CHAPTER_CHARS):
+            issues.append(f"第 {number} 章仅 {size} 字，低于 {settings.FINAL_MIN_CHAPTER_CHARS} 字下限")
+    return issues
+
+
+FINAL_LENGTH_GATE_EXCLUDED_CATEGORIES = {
+    "comic_series",
+    "healing_comic",
+    "buddhist_scripture_story",
+}
 
 
 async def _repair_front_matter(
@@ -5739,8 +5988,17 @@ async def generate_full_book(
 
     writer_chars = len(generated_markdown)
 
-    # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
+    # ---- 第 2 层: Gemini 一润 (按章节边界 + 完整段落 ~1000 字切块) ----
+    use_standard_stage_guards = not is_classical_category and not use_buddhist_story_unit_writer
+    if use_standard_stage_guards:
+        gemini_fast_polish_prompt = _with_stage_fragment_guard(gemini_fast_polish_prompt)
+        gemini_fast_refine_prompt = _with_stage_fragment_guard(gemini_fast_refine_prompt)
     polished_markdown = _read_stage("02_polish.md")
+    if polished_markdown and use_standard_stage_guards:
+        cached_polish_issues = _standard_stage_regression_issues(generated_markdown, polished_markdown)
+        if cached_polish_issues:
+            logger.warning("既有 02_polish.md 未通过阶段护栏，将重新一润: %s", "; ".join(cached_polish_issues))
+            polished_markdown = None
     if polished_markdown and use_buddhist_story_unit_writer:
         cached_polish_issues = _buddhist_story_manuscript_issues(
             polished_markdown,
@@ -5783,16 +6041,27 @@ async def generate_full_book(
                 if is_classical_category
                 else _split_buddhist_text_by_chapters
                 if use_buddhist_story_unit_writer
-                else None
+                else _split_text_by_chapter_then_paragraph
             ),
             chunk_validator=(
                 _classical_chunk_marker_issues
                 if is_classical_category
                 else _buddhist_chapter_marker_issues
                 if use_buddhist_story_unit_writer
-                else None
+                else _standard_chunk_structure_issues
             ),
+            keep_source_on_validation_failure=use_standard_stage_guards,
+            validation_retries=1 if use_standard_stage_guards else 0,
         )
+        if use_standard_stage_guards:
+            polish_stage_issues = _standard_stage_regression_issues(generated_markdown, polished_markdown)
+            if polish_stage_issues:
+                logger.warning(
+                    "Gemini 一润未通过阶段护栏，保留主笔稿: %s",
+                    "; ".join(polish_stage_issues),
+                )
+                _dump_stage(output_dir, "02_polish_rejected.md", polished_markdown)
+                polished_markdown = generated_markdown
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
@@ -5828,6 +6097,11 @@ async def generate_full_book(
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = _read_stage("03_refine.md")
+    if refined_markdown and use_standard_stage_guards:
+        cached_refine_issues = _standard_stage_regression_issues(polished_markdown, refined_markdown)
+        if cached_refine_issues:
+            logger.warning("既有 03_refine.md 未通过阶段护栏，将重新二润: %s", "; ".join(cached_refine_issues))
+            refined_markdown = None
     if refined_markdown and use_buddhist_story_unit_writer:
         cached_refine_issues = _buddhist_story_manuscript_issues(
             refined_markdown,
@@ -5895,12 +6169,41 @@ async def generate_full_book(
                     on_stage=on_stage,
                     output_dir=output_dir,
                     chunk_func=refine_func,
+                    splitter=_split_text_by_chapter_then_paragraph,
+                    chunk_validator=_standard_chunk_structure_issues,
+                    keep_source_on_validation_failure=True,
                 )
             except batch_spend.BatchBudgetStop:
                 raise
             except Exception as exc:
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
+            refine_stage_issues = _standard_stage_regression_issues(polished_markdown, refined_markdown)
+            if refine_stage_issues:
+                logger.warning(
+                    "Gemini 整篇二润未通过阶段护栏，改为按章节分块二润: %s",
+                    "; ".join(refine_stage_issues),
+                )
+                _dump_stage(output_dir, "03_refine_rejected_whole.md", refined_markdown)
+                refined_markdown = await _refine_by_paragraph_chunks_strict(
+                    polished_markdown,
+                    target_chars=1000,
+                    system_instruction=gemini_fast_refine_prompt,
+                    on_stage=on_stage,
+                    output_dir=output_dir,
+                    chunk_func=refine_func,
+                    splitter=_split_text_by_chapter_then_paragraph,
+                    chunk_validator=_standard_chunk_structure_issues,
+                    keep_source_on_validation_failure=True,
+                )
+                refine_stage_issues = _standard_stage_regression_issues(polished_markdown, refined_markdown)
+                if refine_stage_issues:
+                    logger.warning(
+                        "分块二润仍未通过阶段护栏，保留一润稿: %s",
+                        "; ".join(refine_stage_issues),
+                    )
+                    _dump_stage(output_dir, "03_refine_rejected_chunked.md", refined_markdown)
+                    refined_markdown = polished_markdown
         _log_stage("3/4 refine", refined_markdown, prev_chars=polish_chars)
         _dump_stage(output_dir, "03_refine.md", refined_markdown)
         refine_chars = len(refined_markdown)
@@ -5987,6 +6290,18 @@ async def generate_full_book(
                         "佛经白话 DeepSeek 格式层破坏章节或篇幅，回退到 Gemini 二润稿: %s",
                         "; ".join(buddhist_format_issues),
                     )
+                    final_markdown = refined_markdown
+            if use_standard_stage_guards:
+                format_stage_issues = _standard_stage_regression_issues(
+                    refined_markdown,
+                    normalize_final_markdown(final_markdown, category=normalized_category),
+                )
+                if format_stage_issues:
+                    logger.warning(
+                        "DeepSeek 格式层未通过阶段护栏，回退到 Gemini 二润稿: %s",
+                        "; ".join(format_stage_issues),
+                    )
+                    _dump_stage(output_dir, "04_format_rejected.md", final_markdown)
                     final_markdown = refined_markdown
         except DeepSeekMaxTokensError as exc:
             if not (is_classical_category or use_buddhist_story_unit_writer):

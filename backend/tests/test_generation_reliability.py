@@ -28,6 +28,14 @@ from app.tasks import tasks as generation_tasks
 from app.utils import distributed_limiter
 
 
+@pytest.fixture(autouse=True)
+def _disable_final_length_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 这些用例用极短的假书稿验证调度可靠性；篇幅门禁另有专门测试。
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "FINAL_LENGTH_GATE_ENABLED", False)
+
+
 @pytest.fixture
 def isolated_generation(tmp_path, monkeypatch):
     def block_network(*args, **kwargs):

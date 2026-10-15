@@ -20,6 +20,10 @@ _RATES = {
     "gpt-5.6-sol": (5.0, 20.0),
     "gemini-3.1-flash-lite": (0.25, 1.5),
     "deepseek-flash": (0.3, 1.2),
+    # 最新旗舰（保守单价，USD/百万 token）
+    "gpt-6-astra": (20.0, 75.0),
+    "gemini-4-argon": (4.0, 20.0),
+    "deepseek-v4-pro": (1.32, 3.96),
 }
 
 

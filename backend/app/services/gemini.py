@@ -37,6 +37,15 @@ _proxy_env_active_count = 0
 _proxy_env_previous: dict[str, str | None] = {}
 
 
+
+def _thinking_config(model: str | None = None) -> "types.ThinkingConfig":
+    """Pro/argon 级模型不接受 thinkingBudget=0；预算 <0 时交给模型动态思考。"""
+    budget = int(settings.GEMINI_THINKING_BUDGET)
+    name = (model or settings.GEMINI_MODEL or "").lower()
+    if budget < 0 or (budget == 0 and ("pro" in name or "argon" in name)):
+        return types.ThinkingConfig(includeThoughts=False)
+    return types.ThinkingConfig(includeThoughts=False, thinkingBudget=budget)
+
 def _configure_google_runtime() -> None:
     """Apply ADC environment expected by google-auth and Google Gen AI."""
     credentials = (settings.GOOGLE_APPLICATION_CREDENTIALS or "").strip()
@@ -226,10 +235,7 @@ def generate_text(
     """
     config_kwargs: dict[str, Any] = {
         "automaticFunctionCalling": types.AutomaticFunctionCallingConfig(disable=True),
-        "thinkingConfig": types.ThinkingConfig(
-            includeThoughts=False,
-            thinkingBudget=settings.GEMINI_THINKING_BUDGET,
-        ),
+        "thinkingConfig": _thinking_config(),
     }
     if temperature is not None:
         config_kwargs["temperature"] = temperature
