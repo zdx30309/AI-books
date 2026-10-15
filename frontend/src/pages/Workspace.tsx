@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { HeroSection } from "@/components/HeroSection";
 import { BookshelfSection } from "@/components/BookshelfSection";
 import { WorkshopSection } from "@/components/WorkshopSection";
@@ -40,15 +40,6 @@ export function Workspace() {
   useEffect(() => {
     void fetchAll();
   }, []);
-
-  // 命令面板的「新建书稿」跳到 /?create=1，这里直接打开创作面板。
-  const [searchParams, setSearchParams] = useSearchParams();
-  useEffect(() => {
-    if (searchParams.get("create") === "1") {
-      setModalOpen(true);
-      setSearchParams({}, { replace: true });
-    }
-  }, [searchParams, setSearchParams]);
 
   const handleMetadataUpdated = (
     taskId: string,

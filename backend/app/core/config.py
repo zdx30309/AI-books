@@ -4,7 +4,6 @@ Gravity Singularity - 全局配置中心
 """
 from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,33 +22,6 @@ class Settings(BaseSettings):
     # --- 应用 ---
     APP_NAME: str = "GravitySingularity"
     APP_ENV: str = "development"
-    AI_OR_FINALIZER_ENABLED: bool = False
-    AI_OR_ACCESS_KEY: str = ""
-    AI_OR_ACCESS_SECRET: str = ""
-    AI_OR_FINALIZER_START_AT: str = ""
-    AI_OR_CHUNK_CHARS: int = 6000
-    AI_OR_TIMEOUT_SECONDS: int = 1800
-    AI_OR_CORRECTION_MODEL: str = ""
-    AI_OR_CORRECTION_CHUNK_CHARS: int = 2000
-    AI_OR_CORRECTION_MAX_TOKENS: int = 8192
-    # 文本降重端点与工作模式（api.ai-or.com/c/api/open/workflow）。
-    # 官方接口 /workflow/text 必须带 workModeId 或 workMode，否则报「平台不能为空」。
-    AI_OR_REWRITE_PATH: str = "/text"
-    AI_OR_WORK_MODE_ID: int = 0
-    AI_OR_WORK_MODE: str = ""
-    # 双稿纠错发现严重问题时是否阻断交付。默认 False：仍产出标红 Excel 与
-    # 修订 Word 供编辑复核，并把严重问题数量写进 config，但不卡住下载。
-    AI_OR_SEVERE_BLOCKS_DELIVERY: bool = False
-    EDITOR_V05_ENABLED: bool = False
-    EDITOR_V05_START_AT: str = ""
-    EDITOR_V05_AUDIT_MAX_TOKENS: int = Field(default=16384, ge=4096, le=32768)
-    EDITOR_V05_AUDIT_TOKEN_CEILING: int = Field(default=32768, ge=16384, le=32768)
-    LONGFORM_LENGTH_GUARD_ENABLED: bool = False
-    LONGFORM_MIN_WORDS: int = 11000
-    LONGFORM_MAX_WORDS: int = 25000
-    LONGFORM_TARGET_WORDS: int = 14000
-    EDITOR_V05_SIMILARITY_GATE_ENABLED: bool = True
-    EDITOR_V05_SIMILARITY_LIMIT: float = Field(default=50.0, gt=0, le=100)
     LOG_LEVEL: str = "INFO"
 
     # --- 数据库 (Supabase Postgres) ---
@@ -154,9 +126,6 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
-    # 主笔走 DeepSeek 时（WRITER_PROVIDER=deepseek）使用的模型与输出上限
-    DEEPSEEK_WRITER_MODEL: str = "deepseek-flash"
-    DEEPSEEK_WRITER_MAX_OUTPUT_TOKENS: int = 0
     DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     CLASSICAL_DEEPSEEK_FORMAT_MAX_TOKENS: int = 0
     DEEPSEEK_REQUEST_TIMEOUT: int = 180
@@ -171,7 +140,6 @@ class Settings(BaseSettings):
     # backend to route them through a dedicated Claude relay.
     BACKEND_POLISH_PROVIDER: str = "gemini"
     BACKEND_REFINE_PROVIDER: str = "gemini"
-    GEMINI_TEXT_PROVIDER: str = "gemini"
     CLAUDE_API_KEY: str = ""
     CLAUDE_BASE_URL: str = "https://anyrouter.top/v1"
     # AnyRouter exposes this account's Opus model under ``claude-opus-5``.
@@ -219,16 +187,6 @@ class Settings(BaseSettings):
     GEMINI_REFINE_CALL_TIMEOUT: int = 0
     GEMINI_POLISH_MAX_OUTPUT_TOKENS: int = 0
     GEMINI_REFINE_MAX_OUTPUT_TOKENS: int = 0
-
-
-    # --- 通用短篇结构指纹与相似度审查 ---
-    # 默认只测量并写出报告；开启 strict 后最高综合相似度 ≥50% 直接拦截。
-    GENERAL_SHORT_DIFFERENTIATION_ENABLED: bool = True
-    GENERAL_SHORT_DIFFERENTIATION_STRICT: bool = False
-    # 大模型语义审查层：在原稿/新稿之间做结构判断，与本地确定性算法取高者。
-    GENERAL_SHORT_LLM_AUDIT_ENABLED: bool = True
-    # 模型层使用的模型名，留空则用 DEEPSEEK_MODEL。
-    GENERAL_SHORT_AUDIT_MODEL: str = ""
 
     # --- 全局朱雀 AI 文本检测闸门 ---
     AIGC_GATE_ENABLED: bool = False

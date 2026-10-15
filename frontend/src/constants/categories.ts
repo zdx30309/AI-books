@@ -256,13 +256,6 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     directions: "九领域选题、12—15章、十万字、双Word交付、来源与编辑记录",
     prompt_status: "ready",
   },
-  {
-    id: "general_short",
-    label: "通用短篇",
-    core_feature: "任意视频链接可用，以视频为选题灵感独立成书，8—10章约2万字",
-    directions: "九领域自动判断、写法自适应、单层章节、来源差异化、自然表达",
-    prompt_status: "ready",
-  },
 ];
 
 export const LONGFORM_VARIANT_CATEGORY_IDS = [

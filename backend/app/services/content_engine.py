@@ -17,11 +17,6 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
-from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
-from app.services.general_short_gate import (
-    build_source_fingerprint,
-    run_differentiation_gate,
-)
 from app.prompts.goal_driven_templates import (
     FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT,
     FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
@@ -50,12 +45,11 @@ from app.services.classical_chinese import (
     classical_variant_for_category,
     strip_classical_paragraph_markers,
 )
-from app.services.deepseek import DeepSeekDeliveryUncertainError, DeepSeekMaxTokensError, format_book_text
+from app.services.deepseek import DeepSeekMaxTokensError, format_book_text
 from app.services.polish_provider import (
     polish_book_text,
     refine_book_text,
     refine_provider_name,
-    polish_provider_name,
 )
 from app.services.gemini import (
     GeminiDeliveryUncertainError,
@@ -952,7 +946,6 @@ _STANDARD_LONGFORM_CATEGORY_IDS = frozenset(
         "health_wellness_daily_pain",
         "classic_interpretation",
         "masterpiece_interpretation",
-        "general_short",
     }
 )
 
@@ -3895,41 +3888,6 @@ def _openai_writer_call(
     return text
 
 
-def _writer_uses_deepseek() -> bool:
-    return (settings.WRITER_PROVIDER or "openai").strip().lower() == "deepseek"
-
-
-def _deepseek_writer_call_result(
-    rendered_prompt: str,
-    *,
-    max_output_tokens: int | None = None,
-    on_progress: Callable[[int], None] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Main writer on DeepSeek (WRITER_PROVIDER=deepseek); same contract as the OpenAI path."""
-    from app.services import deepseek
-
-    raw_max = settings.DEEPSEEK_WRITER_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
-    text = deepseek.generate_text(
-        rendered_prompt,
-        model=settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL,
-        temperature=settings.LLM_WRITING_TEMPERATURE,
-        max_output_tokens=_positive_max_tokens(raw_max),
-        on_progress=on_progress,
-    )
-    usage = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "cached_input_tokens": 0,
-        "reasoning_tokens": 0,
-        "service_tier": "default",
-        "requested_service_tier": "default",
-        "response_id": "",
-        "provider": "deepseek",
-    }
-    return text, usage
-
-
 async def _route_writer_call(
     rendered_prompt: str,
     *,
@@ -3946,14 +3904,6 @@ async def _route_writer_call(
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> str:
-    if _writer_uses_deepseek():
-        text, _usage = await asyncio.to_thread(
-            _deepseek_writer_call_result,
-            rendered_prompt,
-            max_output_tokens=max_output_tokens,
-            on_progress=on_progress,
-        )
-        return text
     return await asyncio.to_thread(
         _openai_writer_call,
         rendered_prompt,
@@ -3988,13 +3938,6 @@ async def _route_writer_call_with_usage(
     on_progress: Callable[[int], None] | None = None,
     retry_on_failure: bool = True,
 ) -> tuple[str, dict[str, Any]]:
-    if _writer_uses_deepseek():
-        return await asyncio.to_thread(
-            _deepseek_writer_call_result,
-            rendered_prompt,
-            max_output_tokens=max_output_tokens,
-            on_progress=on_progress,
-        )
     return await asyncio.to_thread(
         _openai_writer_call_result,
         rendered_prompt,
@@ -4083,10 +4026,8 @@ async def _repair_final_hard_errors_once(
     prompt_cache_key: str | None = None,
 ) -> str:
     from app.core.quality_metrics import detect_final_hard_errors, format_final_hard_error_hits
-    from app.services.standard_chapter_guard import ensure_chapter_structure
 
     normalized_category = normalize_category(category or "")
-    markdown = ensure_chapter_structure(markdown, normalized_category, output_dir, stage)
     original_markdown = markdown or ""
     issues = detect_final_hard_errors(original_markdown, category=normalized_category)
     if not issues:
@@ -4221,8 +4162,6 @@ def _is_paid_polish_blocking_failure(exc: BaseException) -> bool:
             GeminiDeliveryUncertainError,
             ClaudeDeliveryUncertainError,
             ClaudeRequestRejectedError,
-            AigcManualReviewRequired,
-            DeepSeekDeliveryUncertainError,
         ),
     ):
         return True
@@ -4492,7 +4431,6 @@ async def _polish_by_paragraph_chunks(
             chunk,
             system_instruction=system_instruction,
             timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
-            paid_provider=polish_provider_name(),
         )
 
     async def _mark_completed(chunk_idx: int, chunk: str) -> None:
@@ -4611,10 +4549,6 @@ async def _polish_by_paragraph_chunks_strict(
     abort_event = asyncio.Event()
     bypass_remaining_event = asyncio.Event()
     cache_dir = output_dir / cache_subdir if output_dir is not None else None
-    stage_provider = refine_provider_name() if progress_stage == "refine_chunk" else polish_provider_name()
-    if cache_dir is not None and stage_provider == "deepseek":
-        identity = (settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL) + (system_instruction or "")
-        cache_dir = cache_dir / ("deepseek_" + hashlib.sha256(identity.encode()).hexdigest()[:16])
     call = chunk_func or polish_book_text
     configured_timeout = (
         settings.GEMINI_POLISH_CALL_TIMEOUT
@@ -4685,7 +4619,6 @@ async def _polish_by_paragraph_chunks_strict(
             chunk,
             system_instruction=system_instruction,
             timeout_seconds=timeout,
-            paid_provider=stage_provider,
         )
 
     async def _polish_with_max_tokens_retry(
@@ -6480,7 +6413,6 @@ async def _generate_finance_longform_book(
                 ),
                 retries=1,
                 timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
-                paid_provider=polish_provider_name(),
             )
         except Exception as exc:
             if _is_paid_polish_blocking_failure(exc):
@@ -6564,7 +6496,6 @@ async def _generate_finance_longform_book(
                 ),
                 retries=1,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
-                paid_provider=refine_provider_name(),
             )
             refined_markdown = normalize_final_markdown(refined_markdown, category=category)
             whole_refine_issue = _refine_output_integrity_issue(
@@ -6603,20 +6534,21 @@ async def _generate_finance_longform_book(
     format_template = _finance_format_template(prompts["final_book_format"], category=category)
     logger.info("财经科技 DeepSeek 格式层整稿输入: chars=%d body_chars=%d", len(refined_markdown), _finance_body_chars(refined_markdown))
     try:
-        final_markdown = await _to_thread_with_optional_timeout(
-            format_book_text,
-            refined_markdown,
-            prompt_template=format_template,
-            max_output_tokens=0,
-            fail_on_max_tokens=True,
-            retries=1,
-            on_progress=(
-                (lambda chars: on_stage("format_progress", {"chars": chars}))
-                if on_stage
-                else None
+        final_markdown = await asyncio.wait_for(
+            asyncio.to_thread(
+                format_book_text,
+                refined_markdown,
+                prompt_template=format_template,
+                max_output_tokens=0,
+                fail_on_max_tokens=True,
+                retries=1,
+                on_progress=(
+                    (lambda chars: on_stage("format_progress", {"chars": chars}))
+                    if on_stage
+                    else None
+                ),
             ),
-            timeout_seconds=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
-            paid_provider="deepseek",
+            timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
         )
     except DeepSeekMaxTokensError as exc:
         _dump_stage(output_dir, "04_format_deepseek_partial.md", exc.partial_text)
@@ -6633,8 +6565,6 @@ async def _generate_finance_longform_book(
         )
         final_markdown = refined_markdown
     except Exception as exc:
-        if _is_paid_polish_blocking_failure(exc):
-            raise
         _dump_stage(output_dir, "04_format_error.txt", f"{exc.__class__.__name__}: {exc}")
         logger.warning(
             "DeepSeek 财经科技整稿格式化失败，保留 Gemini 二润完整稿继续: %s",
@@ -6821,9 +6751,9 @@ def _dump_stage(
         return False
 
 
-def _refine_stage_identity(category: str | None, *, stage: str = "refine") -> dict[str, str]:
+def _refine_stage_identity(category: str | None) -> dict[str, str]:
     try:
-        provider = polish_provider_name() if stage == "polish" else refine_provider_name()
+        provider = refine_provider_name()
     except Exception:
         provider = str(getattr(settings, "BACKEND_REFINE_PROVIDER", "gemini") or "gemini").strip().lower()
     provider = provider or "gemini"
@@ -6832,8 +6762,6 @@ def _refine_stage_identity(category: str | None, *, stage: str = "refine") -> di
         if provider == "gemini"
         else str(getattr(settings, "CLAUDE_MODEL", "") or "").strip()
     )
-    if provider == "deepseek":
-        model = settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL
     return {
         "category": normalize_category(category or ""),
         "provider": provider,
@@ -6930,32 +6858,17 @@ def _stage_formal_chapter_parts(markdown: str) -> list[tuple[int, str, str]]:
     return unique
 
 
-def _length_guard_category(normalized: str, editor_v05_delivery: bool = False) -> str | None:
-    if normalized == "general_short":
-        return normalized if editor_v05_delivery else None
-    if getattr(settings, "LONGFORM_LENGTH_GUARD_ENABLED", False) and normalized in _STANDARD_LONGFORM_CATEGORY_IDS:
-        return normalized
-    return None
-
-
 def _standard_longform_stage_structure_issue(
     source_text: str | None,
     candidate_text: str | None,
     *,
     category: str | None,
-    enforce_short_length: bool = False,
 ) -> str | None:
     """Reject a polish/refine result that splits or swallows formal chapters."""
 
     normalized = normalize_category(category or "")
     if normalized not in _STANDARD_LONGFORM_CATEGORY_IDS:
         return None
-    length_guard = _length_guard_category(normalized, enforce_short_length)
-    if length_guard:
-        from app.services.general_short_length import issues as length_issues
-
-        if not length_issues(source_text or "", length_guard) and length_issues(candidate_text or "", length_guard):
-            return "润色稿破坏已满足的2万字篇幅契约" if length_guard == "general_short" else "润色稿破坏已满足的标准长文篇幅契约"
     source_parts = _stage_formal_chapter_parts(source_text or "")
     if not source_parts:
         return None
@@ -7717,7 +7630,6 @@ async def _to_thread_with_optional_timeout(
     func,
     *args,
     timeout_seconds: int | float | None = None,
-    paid_provider: str | None = None,
     **kwargs,
 ):
     """Run blocking SDK calls without cancelling live API work by default.
@@ -7728,14 +7640,7 @@ async def _to_thread_with_optional_timeout(
     coro = asyncio.to_thread(func, *args, **kwargs)
     timeout = float(timeout_seconds or 0)
     if timeout > 0:
-        try:
-            return await asyncio.wait_for(coro, timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            if paid_provider == "deepseek":
-                raise DeepSeekDeliveryUncertainError(
-                    "outer timeout reached while the submitted SDK call may still be running; preserve budget and require manual review"
-                ) from exc
-            raise
+        return await asyncio.wait_for(coro, timeout=timeout)
     return await coro
 
 
@@ -7999,8 +7904,6 @@ def _append_reference_article_prompt(
         "- 如果参考文章包含独特真实故事、个人经历或可识别细节，应抽象为更通用的关系处境，另起概括性场景，不沿用原文的关键人物关系和细节组合。",
         "- 正文字数不设人为上限，以把核心关系问题讲透为准；不要为了凑篇幅重复观点。",
     ]
-    if _length_guard_category(normalize_category(category)):
-        parts.pop()
     return writer_prompt.rstrip() + "\n\n" + "\n".join(parts)
 
 
@@ -8141,14 +8044,8 @@ async def generate_full_book(
     source_duration_seconds: int | float | None = None,
     aigc_required: bool | None = None,
     aigc_policy_version: str | None = None,
-    general_short_sources: list[tuple[str, str]] | None = None,
-    general_short_book_title: str = "",
-    approved_final_structure_repair_sha256: str | None = None,
-    approved_length_repair_sha256: str | None = None,
-    editor_v05_delivery: bool = False,
 ) -> str:
     normalized_category = normalize_category(category)
-    length_guard = _length_guard_category(normalized_category, editor_v05_delivery)
     if normalized_category == "general_longform":
         raise ValueError("通用长篇需要经过大纲确认与逐章验收，请使用通用长篇任务工作区")
     direct_writer_only = normalized_category in {
@@ -8166,9 +8063,6 @@ async def generate_full_book(
     gemini_fast_refine_prompt = prompts["gemini_fast_refine"]
     final_book_format_prompt = prompts["final_book_format"]
     writer_input_text = raw_text.strip()
-    from app.services.standard_chapter_guard import ensure_chapter_structure, writer_contract
-
-    full_book_writer_prompt = writer_contract(full_book_writer_prompt, normalized_category)
     classical_source_text = writer_input_text
     classical_marked_source_text = ""
     classical_expected_count = 0
@@ -8209,13 +8103,6 @@ async def generate_full_book(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 通用短篇：动笔前把灵感原文抽象成结构指纹，作为主笔必须规避的对照物。
-    general_short_fingerprint = None
-    if normalized_category == "general_short":
-        general_short_fingerprint = build_source_fingerprint(
-            writer_input_text, output_dir
-        )
-
     effective_aigc_required = (
         settings.AIGC_GATE_ENABLED if aigc_required is None else bool(aigc_required)
     )
@@ -8228,10 +8115,6 @@ async def generate_full_book(
     )
 
     async def finish_with_aigc(markdown: str) -> str:
-        if length_guard and length_guard != "general_short":
-            from app.services.general_short_length import require_length
-
-            require_length(markdown, length_guard)
         final_text = await _apply_final_aigc_gate(
             markdown,
             category=normalized_category,
@@ -8241,12 +8124,7 @@ async def generate_full_book(
         )
         # Keep the delivery contract true even when a resumed or optional
         # post-processing stage returns body-only text after final formatting.
-        final_text = normalize_final_markdown(final_text, category=normalized_category)
-        if length_guard:
-            from app.services.general_short_length import require_length
-
-            require_length(final_text, length_guard)
-        return final_text
+        return normalize_final_markdown(final_text, category=normalized_category)
 
     task_prompt_cache_key = _content_prompt_cache_key(
         normalized_category,
@@ -8299,7 +8177,7 @@ async def generate_full_book(
             )
         )
 
-    if not length_guard and _should_use_finance_longform(
+    if _should_use_finance_longform(
         normalized_category,
         writer_input_text,
         source_duration_seconds=source_duration_seconds,
@@ -8326,43 +8204,15 @@ async def generate_full_book(
         path = output_dir / filename
         if not path.exists():
             return None
-        if length_guard and length_guard != "general_short" and filename != "01_writer.md":
-            from app.services.general_short_length import require_length
-
-            require_length(path.read_text(encoding="utf-8"), length_guard)
-        if filename in {"02_polish.md", "04_format.md"} and not direct_writer_only and polish_provider_name() == "deepseek":
-            metadata_path = _stage_metadata_path(output_dir, "02_polish.md")
-            try:
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                if length_guard and length_guard != "general_short":
-                    raise AigcManualReviewRequired(f"已保存的{filename}缺少模型断点信息，原稿保留，不自动付费重放")
-                return None
-            expected = _refine_stage_identity(normalized_category, stage="polish")
-            if any(metadata.get(key) != expected[key] for key in ("provider", "model")):
-                if length_guard and length_guard != "general_short":
-                    raise AigcManualReviewRequired(f"已保存的{filename}模型断点不匹配，原稿保留，不自动付费重放")
-                return None
         try:
             content = path.read_text(encoding="utf-8").strip()
-            if length_guard and filename != "01_writer.md":
-                from app.services.general_short_length import issues as length_issues
-
-                if length_issues(content, length_guard):
-                    return None
             return content or None
-        except AigcManualReviewRequired:
-            raise
         except Exception as exc:
             logger.warning("读取中间产物 %s 失败: %s", filename, exc)
             return None
 
     final_resume_markdown = _read_stage("04_format.md")
-    if approved_final_structure_repair_sha256:
-        from app.services.final_structure_repair import load_approved_structure
-
-        final_resume_markdown = load_approved_structure(output_dir, normalized_category, approved_final_structure_repair_sha256)
-    if final_resume_markdown and not direct_writer_only and not approved_final_structure_repair_sha256:
+    if final_resume_markdown and not direct_writer_only:
         # Do not let a legacy partial 03/04 pair permanently bypass the
         # corrected Gemini二润 path.  Keep the intact earlier checkpoint when
         # possible so a retry resumes without regenerating the paid writer.
@@ -8403,7 +8253,6 @@ async def generate_full_book(
             final_resume_markdown = None
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
-        final_resume_markdown = ensure_chapter_structure(final_resume_markdown, normalized_category, output_dir, "resume")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
         if is_buddhist_scripture_story and use_buddhist_story_unit_writer:
             final_resume_markdown = await _repair_buddhist_story_manuscript_against_units(
@@ -8514,11 +8363,6 @@ async def generate_full_book(
                 input_source=input_source,
             )
             writer_max_output_tokens = 0 if is_classical_category else None
-            if normalized_category == "general_short" and general_short_fingerprint is not None:
-                writer_prompt = writer_prompt.replace(
-                    FINGERPRINT_TOKEN,
-                    general_short_fingerprint.render(),
-                )
             generated_markdown = await _route_writer_call(
                 writer_prompt,
                 max_output_tokens=writer_max_output_tokens,
@@ -8560,18 +8404,6 @@ async def generate_full_book(
         )
         _dump_stage(output_dir, "01_writer.md", generated_markdown)
 
-    if length_guard and length_guard != "general_short":
-        generated_markdown = ensure_chapter_structure(generated_markdown, normalized_category, output_dir, "writer_before_length")
-    if length_guard:
-        from app.services.general_short_length import repair_length
-
-        generated_markdown = await asyncio.to_thread(
-            repair_length, generated_markdown, raw_text, output_dir, on_stage,
-            category=length_guard,
-            approved_sha256=approved_length_repair_sha256,
-        )
-
-    generated_markdown = ensure_chapter_structure(generated_markdown, normalized_category, output_dir, "writer")
     writer_chars = len(generated_markdown)
 
     # ---- 第 2 层: Gemini 一润 (按完整段落 ~1000 字切块) ----
@@ -8596,7 +8428,6 @@ async def generate_full_book(
             generated_markdown,
             polished_markdown,
             category=normalized_category,
-            enforce_short_length=editor_v05_delivery,
         )
         if polish_structure_issue:
             logger.warning("忽略章节结构失衡的 02_polish.md: %s", polish_structure_issue)
@@ -8656,7 +8487,6 @@ async def generate_full_book(
             generated_markdown,
             polished_markdown,
             category=normalized_category,
-            enforce_short_length=editor_v05_delivery,
         )
         if polish_structure_issue:
             logger.warning("Gemini 一润章节结构失衡，回退到主笔章节结构: %s", polish_structure_issue)
@@ -8666,8 +8496,7 @@ async def generate_full_book(
                 category=normalized_category,
             )
         _log_stage("2/4 polish", polished_markdown, prev_chars=writer_chars)
-        _dump_stage(output_dir, "02_polish.md", polished_markdown,
-                    metadata=_refine_stage_identity(normalized_category, stage="polish"))
+        _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
         if on_stage:
             on_stage("polish_done", {"chars": polish_chars})
@@ -8700,9 +8529,6 @@ async def generate_full_book(
         )
         _dump_stage(output_dir, "02_polish.md", polished_markdown)
         polish_chars = len(polished_markdown)
-
-    polished_markdown = ensure_chapter_structure(polished_markdown, normalized_category, output_dir, "polish")
-    polish_chars = len(polished_markdown)
 
     # ---- 第 3 层: Gemini 二润 (整篇) ----
     refined_markdown = polished_markdown if direct_writer_only else None
@@ -8777,27 +8603,6 @@ async def generate_full_book(
                 splitter=_split_buddhist_text_by_chapters,
                 chunk_validator=_buddhist_chapter_marker_issues,
             )
-        elif length_guard:
-            from app.services.general_short_length import require_length
-
-            refined_markdown = await _refine_by_paragraph_chunks_strict(
-                polished_markdown,
-                target_chars=1000,
-                system_instruction=gemini_fast_refine_prompt,
-                on_stage=on_stage,
-                output_dir=output_dir,
-                chunk_func=refine_chunk_func,
-                splitter=_split_standard_longform_by_chapters,
-                chunk_validator=_standard_longform_chunk_issues,
-            )
-            refined_markdown = normalize_final_markdown(refined_markdown, category=normalized_category)
-            require_length(refined_markdown, length_guard)
-            integrity_issue = _refine_output_integrity_issue(polished_markdown, refined_markdown, category=normalized_category)
-            if integrity_issue:
-                from app.services.general_short_length import LengthHold
-
-                _dump_stage(output_dir, "03_refine_rejected_incomplete.md", refined_markdown)
-                raise LengthHold("二润稿未通过完整性检查，付费缓存已保留：" + integrity_issue)
         else:
             candidate_refine = ""
             try:
@@ -8818,7 +8623,6 @@ async def generate_full_book(
                     ),
                     retries=1,
                     timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
-                    paid_provider=refine_provider_name(),
                 )
                 integrity_issue = _refine_output_integrity_issue(
                     polished_markdown,
@@ -8860,8 +8664,6 @@ async def generate_full_book(
                         f"retryable Gemini refine quality gate: {integrity_issue}"
                     ) from exc
             except Exception as exc:
-                if _is_paid_polish_blocking_failure(exc):
-                    raise
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
         _persist_refine_stage(
@@ -8917,9 +8719,6 @@ async def generate_full_book(
         )
         refine_chars = len(refined_markdown)
 
-    refined_markdown = ensure_chapter_structure(refined_markdown, normalized_category, output_dir, "refine")
-    refine_chars = len(refined_markdown)
-
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
     final_markdown = _read_stage("04_format.md")
     if final_markdown and use_buddhist_story_unit_writer:
@@ -8943,21 +8742,20 @@ async def generate_full_book(
             on_stage("format_start", {})
         try:
             format_max_output_tokens = 0 if (is_classical_category or use_buddhist_story_unit_writer) else None
-            if length_guard:
-                format_max_output_tokens = 32768
-            final_markdown = await _to_thread_with_optional_timeout(
-                format_book_text,
-                refined_markdown,
-                prompt_template=final_book_format_prompt,
-                max_output_tokens=format_max_output_tokens,
-                fail_on_max_tokens=(is_classical_category or use_buddhist_story_unit_writer),
-                on_progress=(
-                    (lambda chars: on_stage("format_progress", {"chars": chars}))
-                    if on_stage
-                    else None
+            final_markdown = await asyncio.wait_for(
+                asyncio.to_thread(
+                    format_book_text,
+                    refined_markdown,
+                    prompt_template=final_book_format_prompt,
+                    max_output_tokens=format_max_output_tokens,
+                    fail_on_max_tokens=(is_classical_category or use_buddhist_story_unit_writer),
+                    on_progress=(
+                        (lambda chars: on_stage("format_progress", {"chars": chars}))
+                        if on_stage
+                        else None
+                    ),
                 ),
-                timeout_seconds=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
-                paid_provider="deepseek",
+                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
             )
             if (
                 is_classical_category
@@ -9058,11 +8856,6 @@ async def generate_full_book(
         final_markdown,
         category=normalized_category,
     )
-    if length_guard:
-        from app.services.general_short_length import issues as length_issues
-
-        if length_issues(final_markdown, length_guard):
-            final_integrity_issue = "格式层破坏已满足的2万字篇幅契约" if length_guard == "general_short" else "格式层破坏已满足的标准长文篇幅契约"
     if final_integrity_issue:
         logger.warning(
             "DeepSeek 格式层破坏完整书稿，保留 Gemini 二润完整稿: %s",
@@ -9080,10 +8873,6 @@ async def generate_full_book(
         stage="format",
         prompt_cache_key=task_prompt_cache_key,
     )
-    if length_guard:
-        from app.services.general_short_length import require_length
-
-        require_length(final_markdown, length_guard)
     _dump_stage(output_dir, "04_format.md", final_markdown, required=True)
 
     logger.info(
@@ -9102,27 +8891,5 @@ async def generate_full_book(
             report_path.write_text(report_text, encoding="utf-8")
         except Exception as exc:
             logger.warning("质量度量跳过: %s", exc)
-
-    if (
-        normalized_category == "general_short"
-        and getattr(settings, "GENERAL_SHORT_DIFFERENTIATION_ENABLED", True)
-        and not editor_v05_delivery
-    ):
-        # 原稿＝本轮青豆解析出的视频文案（writer_input_text 即 raw_text）。
-        # 多来源时由调用方通过 sources= 传入列表；此处默认单来源。
-        report = run_differentiation_gate(
-            general_short_sources if general_short_sources else writer_input_text,
-            final_markdown,
-            category=normalized_category,
-            output_dir=output_dir,
-            on_stage=on_stage,
-            fingerprint=general_short_fingerprint,
-            book_title=general_short_book_title,
-            draft_name=f"{general_short_book_title or '通用短篇'}_全书正文_合并版",
-        )
-        logger.info(
-            "通用短篇相似度审查完成：适用=%s 最高综合=%.1f%% 判定=%s",
-            report.applicable, report.max_composite, report.overall_verdict,
-        )
 
     return await finish_with_aigc(final_markdown)

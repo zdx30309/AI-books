@@ -32,10 +32,6 @@ class CreateTaskResponse(BaseModel):
     status: str
 
 
-class LengthRepairApprovalRequest(BaseModel):
-    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
 class ReferenceArticleTaskRequest(BaseModel):
     url: str = Field(
         ...,
@@ -162,9 +158,6 @@ class TaskStatusResponse(BaseModel):
     aigc_quality_passed: bool | None = None
     aigc_report_available: bool = False
     aigc_manual_review_reason: str | None = None
-    ai_or_finalizer_status: str | None = None
-    editor_v05_status: str | None = None
-    editor_v05_video_rejected: bool = False
     error_message: str | None = None
     created_at: datetime
 

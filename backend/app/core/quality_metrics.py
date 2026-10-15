@@ -438,7 +438,6 @@ _STANDARD_LONGFORM_CHAPTER_CATEGORIES = frozenset(
         "health_wellness_daily_pain",
         "classic_interpretation",
         "masterpiece_interpretation",
-        "general_short",
     }
 )
 _CLASSICAL_INTERLEAVED_CATEGORY = "classical_chinese_interleaved"

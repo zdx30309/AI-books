@@ -457,37 +457,6 @@ def normalize_imported_chapter(text: str, contract: dict[str, Any], aliases: lis
     return result
 
 
-# The generation context carries the book, not the bookkeeping. Prose,
-# summaries, hooks and citations stay complete; per-chapter QA reports, tool
-# hashes and journal paths are dropped because no stage prompt uses them and a
-# thirteen-chapter book otherwise spends its window on records.
-_GENERATION_CHAPTER_FIELDS = ("number", "title", "word_count", "content")
-_GENERATION_SOURCE_FIELDS = ("id", "url", "title", "authors", "year", "publication", "doi", "bibliography",
-                             "approved_summary", "supported_claims", "limitations")
-
-
-def generation_chapters(chapters: Any) -> list[dict[str, Any]]:
-    """Return the writing view of previous chapters: full text plus the continuity fields."""
-
-    result = []
-    for item in chapters or []:
-        if not isinstance(item, dict):
-            continue
-        audit = item.get("audit") if isinstance(item.get("audit"), dict) else {}
-        result.append({**{key: item.get(key) for key in _GENERATION_CHAPTER_FIELDS},
-                       "summary": audit.get("summary"), "endingHook": audit.get("endingHook")})
-    return result
-
-
-def generation_sources(sources: Any) -> dict[str, Any]:
-    """Return the citation view of the book's sources, without tool records."""
-
-    if not isinstance(sources, dict):
-        return sources
-    return {key: ({field: value.get(field) for field in _GENERATION_SOURCE_FIELDS}
-                  if isinstance(value, dict) else value) for key, value in sources.items()}
-
-
 class GeneralLongformRunner:
     def __init__(self, directory: Path, state: dict[str, Any], request: dict[str, Any], *,
                  gateway: ModelGateway | None = None, checkpoint: Callable[[], None] | None = None,
@@ -537,20 +506,11 @@ class GeneralLongformRunner:
         return result
 
     def context(self, **values: Any) -> dict[str, Any]:
-        payload = {"current_time": self.request.get("created_at") or self.state.get("created_at"), "project_id": self.state["project_id"],
-                   "prompt_version": self.state["prompt_version"],
-                   "source_summary": self.state.get("source_summary", ""), "outline": self.state.get("outline"),
-                   "accepted_state": self.state["accepted_state"], "reference": self.state.get("reference", {}),
-                   "sources": generation_sources(self.state["sources"]), **values}
-        if "previous_chapters" in payload:
-            # A projection, never a different book: every previous chapter keeps
-            # its complete prose, title, summary and ending hook. Only the
-            # per-chapter bookkeeping (QA reports, tool hashes, journals) is left
-            # out, so the writer window is spent on the book instead of on
-            # records it cannot use. Thirteen chapters of that bookkeeping used
-            # to push a late chapter over the context guard and stop the run.
-            payload["previous_chapters"] = generation_chapters(payload["previous_chapters"])
-        return payload
+        return {"current_time": self.request.get("created_at") or self.state.get("created_at"), "project_id": self.state["project_id"],
+                "prompt_version": self.state["prompt_version"],
+                "source_summary": self.state.get("source_summary", ""), "outline": self.state.get("outline"),
+                "accepted_state": self.state["accepted_state"], "reference": self.state.get("reference", {}),
+                "sources": self.state["sources"], **values}
 
     def ensure_source_summary(self) -> None:
         text = self.state.get("source_text", "")
@@ -982,9 +942,6 @@ class GeneralLongformRunner:
                 raise GeneralLongformReview("请说明当前章的具体修订范围")
             text = self.gateway.call("repair", {**base, "candidate": original, "issues": candidate.get("issues", []), "feedback": feedback}, max_tokens=26000, slot=f"chapter-{number}-revision")["text"].strip()
             candidate["repairedContent"] = self.put(f"{folder}/revision.txt", text)
-            text = self._restore_shortened_sections(text, original, contract, base, folder, candidate)
-            if text != self.content(candidate["repairedContent"]):
-                candidate["repairedContent"] = self.put(f"{folder}/revision_balanced.txt", text)
             self.save()
         else:
             texts = []
@@ -1076,14 +1033,14 @@ class GeneralLongformRunner:
         issues += style_issues(audit, self.state["reference"], {number: text}, self.state["prompt_version"])
         return local, apply_source_policy(issues, self.state)
 
-    def _audited_chapter(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any], *, attempt: int, slot_suffix: str = "") -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    def _audited_chapter(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any], *, attempt: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
         """Get a verdict that is actually about this chapter.
 
         A reply whose own evidence does not come from the chapter under review is
         not a verdict on the prose, so it is re-asked (bounded) instead of
         triggering a paid repair of text nobody faulted.
         """
-        slot = f"chapter-{candidate['number']}-attempt-{attempt}{slot_suffix}"
+        slot = f"chapter-{candidate['number']}-attempt-{attempt}"
         verdict = None
         for index in range(AUDIT_REASK_LIMIT + 1):
             audit = self._acceptance_audit({**base, "candidate": text, "local_issues": chapter_issues(text, contract, self.state["outline"], previous)},
@@ -1098,99 +1055,11 @@ class GeneralLongformRunner:
             self.save()
         return verdict
 
-    @staticmethod
-    def _fit_extended_section(text: str, floor: int, allowed: int) -> str:
-        """Drop whole trailing paragraphs while an extension cannot fit the cap."""
-
-        paragraphs = text.split("\n\n")
-        while len(paragraphs) > 1 and documents.word_count("\n\n".join(paragraphs)) > allowed:
-            trimmed = paragraphs[:-1]
-            if documents.word_count("\n\n".join(trimmed)) < floor:
-                break
-            paragraphs = trimmed
-        return "\n\n".join(paragraphs)
-
-    def _restore_shortened_sections(self, text: str, previous_text: str, contract: dict[str, Any],
-                                    base: dict[str, Any], folder: str, candidate: dict[str, Any]) -> str:
-        """Extend sections a whole-chapter repair shortened below its own floors.
-
-        The repair reply rewrites the whole chapter, so it can satisfy the
-        auditor's "too long" verdict and still push a section under the floor the
-        gate enforces, or drop the chapter under the minimum that same gate
-        enforces.  Re-auditing that text blocks the chapter and the author pays for
-        another rewrite.  Instead the sections that were healthy before the reply
-        are extended in place with bounded continuation calls, and the chapter is
-        never allowed past its own length cap.
-        """
-
-        sections = contract["sections"]
-        parts = split_sections(text)
-        previous_parts = split_sections(previous_text or "")
-        if len(parts) != len(sections) or len(previous_parts) != len(parts):
-            return text
-        outline_target = int(self.state.get("outline", {}).get("target_words") or 0)
-        minimum = max(math.ceil(contract["target_words"] * .97),
-                      math.ceil(contract["target_words"] * 100000 / outline_target) if outline_target else 0)
-        cap = math.ceil(contract["target_words"] * 1.12)
-        bodies = [body for _name, body in parts]
-        words = [documents.word_count(body) for body in bodies]
-        floors = [int(section["target_words"] * .8) for section in sections]
-        total = documents.word_count(text)
-        # Only sections this reply shortened are fair game: a shortfall that was
-        # already there is the author's explicit revision, not a repair side effect.
-        eligible = [index for index in range(len(sections))
-                    if documents.word_count(previous_parts[index][1]) >= floors[index]]
-        needed = [index for index in eligible if words[index] < floors[index]]
-        # A chapter-level shortfall is only a repair side effect when the reply
-        # actually lost the words; an already short chapter stays the author's call.
-        chapter_shortfall_is_new = documents.word_count(previous_text or "") >= minimum
-        if not needed and not (total < minimum and chapter_shortfall_is_new):
-            return text
-        pending = needed + [index for index in sorted(eligible, key=lambda item: words[item]) if index not in needed]
-        tries: dict[int, int] = {}
-        extended: list[dict[str, Any]] = []
-        while pending:
-            index = pending.pop(0)
-            if words[index] >= floors[index] and total >= minimum:
-                continue
-            tries[index] = tries.get(index, 0) + 1
-            if tries[index] > 2:
-                candidate.setdefault("rebalance_notes", []).append({"section": sections[index]["title"], "action": "exhausted",
-                                                                  "reason": "延伸两次仍未补足小节下限", "before": words[index]})
-                continue
-            section = sections[index]
-            room = cap - (total - words[index])
-            ask = max(600, min(floors[index] - words[index] + 300, room))
-            context = {**base, "section": section, "current_chapter_sections": list(bodies)}
-            output = self.gateway.call("continue", {**context, "partial_section": bodies[index], "continuation": True},
-                                       max_tokens=min(24000, section["target_words"] * 3 + 3000, int(ask * 1.6)),
-                                       slot=f"chapter-{candidate['number']}-section-{index}")["text"].strip()
-            grown = bodies[index].rstrip() + "\n\n" + output
-            if documents.word_count(grown) > room:
-                grown = self._fit_extended_section(grown, floors[index], room)
-            after = documents.word_count(grown)
-            if after <= words[index] or after > room:
-                candidate.setdefault("rebalance_notes", []).append({"section": section["title"], "action": "skipped",
-                                                                  "reason": "延伸后超出本章篇幅上限",
-                                                                  "before": words[index], "after": after})
-                continue
-            extended.append({"section": section["title"], "before": words[index], "after": after})
-            total = total - words[index] + after
-            words[index] = after
-            bodies[index] = grown
-            if words[index] < floors[index] or total < minimum:
-                pending.append(index)
-        if not extended:
-            return text
-        candidate["section_extensions"] = extended
-        return self._assemble_sections(contract, bodies)
-
     def _check_and_accept(self, candidate: dict[str, Any], contract: dict[str, Any], text: str, previous: list[dict[str, Any]], base: dict[str, Any]) -> None:
         folder = f"chapters/{candidate['number']:02d}/v{candidate['version']:02d}"
-        slot_suffix = ""
         for attempt in range(2):
             self.progress(82, f"通用长篇：第{candidate['number']}章计划实绩对比与验收")
-            audit, local, issues = self._audited_chapter(candidate, contract, text, previous, base, attempt=attempt, slot_suffix=slot_suffix)
+            audit, local, issues = self._audited_chapter(candidate, contract, text, previous, base, attempt=attempt)
             downgraded = [{"severity": item.get("severity"), "type": item.get("type"), "description": item.get("description")}
                           for item in issues if isinstance(item, dict) and item.get("downgraded_by")]
             candidate.update(audit=audit, issues=issues)
@@ -1205,18 +1074,8 @@ class GeneralLongformRunner:
                 self.save()
                 raise GeneralLongformReview("本章高/严重问题仍未消除，未写入验收状态：" + "；".join(str(item.get("description", "")) for item in issues if isinstance(item, dict))[:1800])
             self.progress(85, f"通用长篇：第{candidate['number']}章局部修复，随后重新验收")
-            previous_text = text
             text = self.gateway.call("repair", {**base, "candidate": text, "issues": issues}, max_tokens=26000, slot=f"chapter-{candidate['number']}-qa-repair")["text"].strip()
             candidate["repairedContent"] = self.put(f"{folder}/qa_repair.txt", text)
-            balanced = self._restore_shortened_sections(text, previous_text, contract, base, folder, candidate)
-            if balanced != text:
-                candidate["repairedContent"] = self.put(f"{folder}/qa_repair_balanced.txt", balanced)
-                # The persisted verdict for this attempt was paid for against the
-                # text the repair returned.  The rebalanced chapter is a different
-                # manuscript, so it is judged under its own slot instead of
-                # inheriting a conclusion about prose nobody is looking at now.
-                slot_suffix = "-rebalanced"
-            text = balanced
             self.save()
         self.checkpoint()
         digest = sha256(text.encode()).hexdigest()

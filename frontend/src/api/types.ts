@@ -23,14 +23,6 @@ export interface CreateTaskResponse {
   status: TaskStatus;
 }
 
-export interface LengthRepairResponse {
-  status: "ready" | "missing" | "invalid";
-  result_sha256?: string;
-  chapter_number?: number;
-  body_words?: number;
-  reason?: string;
-}
-
 export interface ReferenceArticleTaskRequest {
   url: string;
   title?: string | null;
@@ -274,9 +266,6 @@ export interface TaskStatusResponse {
   aigc_rewrite_rounds: number;
   aigc_quality_passed: boolean | null;
   aigc_report_available: boolean;
-  ai_or_finalizer_status?: string | null;
-  editor_v05_status?: string | null;
-  editor_v05_video_rejected?: boolean;
   aigc_manual_review_reason: string | null;
   error_message: string | null;
   created_at: string;
@@ -2045,23 +2034,3 @@ export interface EpicExportMetadata {
   artifactRecordId?: string;
   status?: string;
 }
-
-
-/** 通用短篇文本相似度审查结果（v09 第十节 / 附录六）。 */
-export type SimilaritySummary = {
-  applicable: boolean;
-  reason?: string;
-  draft_name?: string;
-  max_composite: number;
-  overall_verdict: string;
-  overall_boundary?: string;
-  overall_fallback_notice?: string;
-  sources?: Array<{
-    source_name: string;
-    composite: number;
-    verdict: string;
-    boundary?: string;
-    structure?: Record<string, unknown>;
-    literal?: Record<string, unknown>;
-  }>;
-};

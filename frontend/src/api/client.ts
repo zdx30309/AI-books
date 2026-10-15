@@ -2,14 +2,6 @@
 // 自动从 localStorage 读 token 并加 Authorization 头。
 
 import type { GeneralLongformAction, GeneralLongformState, LongformManifest, MaterialRole } from "./generalLongformTypes";
-import type {
-  KdocsConfigResponse,
-  VideoScriptLogsResponse,
-  VideoScriptProblemsResponse,
-  VideoScriptRowsResponse,
-  VideoScriptSyncRequest,
-  VideoScriptSyncResponse,
-} from "./videoScriptTableTypes";
 
 import type {
   BatchCreateTaskRequest,
@@ -37,7 +29,6 @@ import type {
   ChaptersListResponse,
   CreateTaskRequest,
   CreateTaskResponse,
-  LengthRepairResponse,
   CoverJobListResponse,
   CoverJobBatchRequest,
   CoverJobBatchResponse,
@@ -115,7 +106,6 @@ import type {
   WeReadBookRow,
   WeReadCompanyRequest,
   WeReadExcelImportResponse,
-  SimilaritySummary,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -594,13 +584,6 @@ export const api = {
     request<TaskStatusResponse>(`/tasks/${id}/pause-comic`, { method: "POST" }),
   retryTask: (id: string) =>
     request<CreateTaskResponse>(`/tasks/${id}/retry`, { method: "POST" }),
-  getLengthRepair: (id: string) =>
-    request<LengthRepairResponse>(`/tasks/${id}/length-repair`, { cache: "no-store" }),
-  approveLengthRepair: (id: string, resultSha256: string) =>
-    request<CreateTaskResponse>(`/tasks/${id}/length-repair`, {
-      method: "POST",
-      body: JSON.stringify({ result_sha256: resultSha256 }),
-    }),
   retryTaskAigc: (id: string, publicDomain = false) =>
     request<CreateTaskResponse>(
       publicDomain
@@ -660,22 +643,6 @@ export const api = {
     if (preview) params.set("preview", "true");
     openHiddenDownload(`${BASE}/tasks/${id}/download/direct?${params.toString()}`);
   },
-  getSimilarityReportData: (id: string) =>
-    request<SimilaritySummary>(`/tasks/${id}/similarity-report/data`),
-  downloadSimilarityReport: async (id: string) => {
-    const token = tokenStore.get();
-    if (!token) throw new ApiError(401, "请先登录");
-    const params = new URLSearchParams({ token, _: String(Date.now()) });
-    openHiddenDownload(`${BASE}/tasks/${id}/similarity-report/direct?${params.toString()}`);
-  },
-  downloadAiOrDelivery: async (id: string) => {
-    const { blob, filename } = await download(`/tasks/${id}/ai-or-delivery`);
-    saveBlob(blob, filename);
-  },
-  downloadCorrections: async (id: string) => {
-    const { blob, filename } = await download(`/tasks/${id}/corrections.xlsx`);
-    saveBlob(blob, filename);
-  },
   downloadBatchFile: async (body: BatchDownloadRequest) => {
     const { blob, filename } = await downloadWithBody("/tasks/download-batch", body);
     saveBlob(blob, filename);
@@ -697,7 +664,7 @@ export const api = {
     fetchBlob(`/tasks/${id}/images/${encodeURIComponent(filename)}/preview`),
   downloadTaskImageFile: async (id: string, filename: string) => {
     const token = tokenStore.get();
-    if (!token) throw new ApiError(401, "请先登录");
+    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
     const params = new URLSearchParams({ token, _: String(Date.now()) });
     openHiddenDownload(
       `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/download/direct?${params.toString()}`,
@@ -705,7 +672,7 @@ export const api = {
   },
   downloadTaskImagePreviewFile: async (id: string, filename: string) => {
     const token = tokenStore.get();
-    if (!token) throw new ApiError(401, "请先登录");
+    if (!token) throw new ApiError(401, "璇峰厛鐧诲綍");
     const params = new URLSearchParams({ token, _: String(Date.now()) });
     openHiddenDownload(
       `${BASE}/tasks/${id}/images/${encodeURIComponent(filename)}/preview/download/direct?${params.toString()}`,
@@ -1205,37 +1172,6 @@ export const api = {
     const { blob, filename } = await uploadFilesForDownload("/data-analysis/export", files);
     saveBlob(blob, filename);
   },
-
-  // 视频文案对照表 / 金山文档同步
-  videoScriptTableRows: (params: { statuses?: string[]; limit?: number } = {}) => {
-    const query = new URLSearchParams();
-    (params.statuses ?? []).forEach((s) => query.append("statuses", s));
-    if (params.limit) query.set("limit", String(params.limit));
-    const suffix = query.toString();
-    return request<VideoScriptRowsResponse>(`/video-script-table/rows${suffix ? `?${suffix}` : ""}`);
-  },
-  videoScriptTableProblems: (limit = 100) =>
-    request<VideoScriptProblemsResponse>(`/video-script-table/problems?limit=${limit}`),
-  videoScriptTableConfig: () => request<KdocsConfigResponse>("/video-script-table/config"),
-  videoScriptTableLogs: (limit = 30) =>
-    request<VideoScriptLogsResponse>(`/video-script-table/logs?limit=${limit}`),
-  videoScriptTableRemoteSchema: () =>
-    request<Record<string, unknown>>("/video-script-table/remote-schema"),
-  videoScriptTableExport: async (
-    fmt: "csv" | "tsv" | "xlsx" | "md",
-    params: { statuses?: string[]; limit?: number } = {},
-  ) => {
-    const query = new URLSearchParams({ fmt });
-    (params.statuses ?? []).forEach((s) => query.append("statuses", s));
-    if (params.limit) query.set("limit", String(params.limit));
-    const { blob, filename } = await download(`/video-script-table/export?${query.toString()}`);
-    saveBlob(blob, filename || `video_script_table.${fmt}`);
-  },
-  videoScriptTableSync: (body: VideoScriptSyncRequest) =>
-    request<VideoScriptSyncResponse>("/video-script-table/sync", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
 
   // 鉴权
   register: (body: RegisterRequest) =>

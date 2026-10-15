@@ -14,7 +14,6 @@ if str(PROJECT_ROOT) not in sys.path:
 import pytest
 
 from app.core.quality_metrics import detect_final_hard_errors
-from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
 from app.prompts.goal_driven_templates import (
     CLASSICAL_NOVEL_STYLE_LOCK_PROMPT,
     CLASSICAL_REFERENCE_REWRITE_LITERARY_POLISH_PROMPT,
@@ -159,23 +158,7 @@ def test_generate_full_book_routes_writer_prompt_by_category(
         expected_raw_text = build_classical_prompt_source(raw_text, variant="reference_translation")
     elif category == BUDDHIST_SCRIPTURE_STORY_CATEGORY:
         expected_raw_text = build_buddhist_scripture_story_source(raw_text)
-    if category == "general_short":
-        # The fingerprint is injected between prompt assembly and the writer call,
-        # so rebuild the exact prompt the pipeline will send.
-        from app.prompts.general_short_prompts import FINGERPRINT_TOKEN
-        from app.services.general_short_fingerprint import build_fingerprint
-
-        expected_prompt = (
-            get_prompts(category)["full_book_writer"]
-            .format(raw_text=expected_raw_text)
-            .replace(FINGERPRINT_TOKEN, build_fingerprint(expected_raw_text).render())
-        )
-    else:
-        expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
-
-    from app.services.standard_chapter_guard import writer_contract
-
-    expected_prompt = writer_contract(expected_prompt, category)
+    expected_prompt = get_prompts(category)["full_book_writer"].format(raw_text=expected_raw_text)
 
     async def fake_route_writer_call(prompt: str, **_: object) -> str:
         if prompt == expected_prompt:
@@ -265,9 +248,7 @@ def test_masterpiece_interpretation_uses_requested_writer_prompt_and_generic_lat
     )
 
     assert calls == ["writer", "polish", "refine", "format"]
-    from app.services.standard_chapter_guard import writer_contract
-
-    assert writer_prompts == [writer_contract(prompts["full_book_writer"].format(raw_text=raw_text), category)]
+    assert writer_prompts == [prompts["full_book_writer"].format(raw_text=raw_text)]
     assert "\u540d\u4f5c\u89e3\u8bfb" in writer_prompts[0]
     assert "\u6210\u719f\u7684\u4eba\u6587\u8bfb\u7269\u5199\u4f5c\u8005" in writer_prompts[0]
     assert "\u76f4\u63a5\u751f\u6210\u4e00\u7bc7\u5b8c\u6574\u7684\u6df1\u5ea6\u957f\u6587" in writer_prompts[0]
@@ -1004,45 +985,6 @@ def test_finance_technology_aliases_resolve() -> None:
     assert normalize_category("财经科技建议版") == "finance_technology_recommendation"
     assert normalize_category("财经·科技（建议版）") == "finance_technology_recommendation"
     assert normalize_category("finance_tech_recommendation") == "finance_technology_recommendation"
-
-
-@pytest.mark.parametrize("category", sorted(content_engine._STANDARD_LONGFORM_CATEGORY_IDS - {"general_short"}))
-def test_standard_length_prompts_are_switch_gated_without_mutating_registry(monkeypatch, category):
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
-    original = dict(get_prompts(category))
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
-    guarded = get_prompts(category)
-    writer = guarded["full_book_writer"]
-    assert "11000至25000字" in writer and "约14000字为写作目标" in writer
-    assert "允许小幅度缩减" not in writer
-    assert "可以缩减到" not in writer and "正文字数不设人为上限" not in writer
-    assert "约12000字是明确写作目标" not in writer
-    assert "11000至25000字" in writer.format(raw_text="离线测试资料")
-    for stage in ("gemini_fast_polish", "gemini_fast_refine", "final_book_format"):
-        assert guarded[stage].startswith(original[stage])
-        assert "标准长文篇幅保护" in guarded[stage]
-        assert "11000至25000字" in guarded[stage]
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
-    assert get_prompts(category) == original
-
-
-@pytest.mark.parametrize("category", ["general_short", "general_longform", "classical_chinese", "comic_series", "healing_comic"])
-def test_standard_length_switch_preserves_other_prompt_contracts(monkeypatch, category):
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", False)
-    original = dict(get_prompts(category))
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
-    assert get_prompts(category) == original
-
-
-def test_standard_length_prompt_uses_configured_contract(monkeypatch):
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_LENGTH_GUARD_ENABLED", True)
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_MIN_WORDS", 12000)
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_MAX_WORDS", 24000)
-    monkeypatch.setattr(content_engine.settings, "LONGFORM_TARGET_WORDS", 16000)
-    prompts = get_prompts("finance_technology_recommendation")
-    assert "12000至24000字" in prompts["full_book_writer"]
-    assert "约16000字是明确写作目标" in prompts["full_book_writer"]
-    assert "这是建议版，不是资料汇编版" in prompts["full_book_writer"]
 
 
 def test_finance_dynamic_target_words_by_duration() -> None:
@@ -2909,40 +2851,3 @@ def test_long_single_paragraph_is_split_before_gemini() -> None:
     assert len(chunks) == 3
     assert max(len(chunk) for chunk in chunks) <= 1000
     assert "".join(chunks) == "A" * 2500
-
-
-def test_general_short_uses_layered_prompt_without_sample_books() -> None:
-    assert normalize_category("通用短篇") == "general_short"
-    meta = get_category_meta("general_short")
-    assert meta["label"] == "通用短篇"
-    prompt = get_prompts("general_short")["full_book_writer"]
-
-    # The adapter leads and overrides the workflow-only parts of v09.
-    assert prompt.index("【本流程适配") < prompt.index("一 执行身份与材料边界")
-    assert "不交付待确认大纲" in prompt
-    assert "本流程没有联网检索工具" in prompt
-    # v09 content rules survive.
-    assert "选题判定后的写法选择机制（强制执行）" in prompt
-    assert "来源差异化与版权风险控制（强制执行）" in prompt
-    assert "九 防重复、来源差异化与全书一致性" in prompt
-    # Workflow-only sections stay out.
-    assert "二 自动识别当前阶段" not in prompt
-    assert "附录六 文本相似度审查规则" not in prompt
-    # The audit instruction is a separate stage and must not leak into writing.
-    assert "第零部分　这份指令词要解决什么" not in prompt
-    # Every original rule section and the two designated anchors are present.
-    assert len(prompt) < 80000, len(prompt)
-    for marker in ("一 执行身份与材料边界", "三 选题分类与内容定位",
-                   "四 联网研究与证据规则", "五 书名与简介策划",
-                   "六 大纲与约 2 万字分配", "八 人工表达",
-                   "九 防重复、来源差异化", "十 最终文本相似度审查",
-                   "十一 Word 交付与文件规范", "十二 交付前验收",
-                   "附录一 微信读书选题清单",
-                   "附录二 正反写作样稿全文", "附录四 人工表达写作方法",
-                   "附录五 书名与简介风格参考"):
-        assert marker in prompt, marker
-    # The transcript stays last and the fingerprint slot is brace-free so the
-    # shared .format(raw_text=...) routing call cannot fail.
-    assert prompt.rstrip().endswith("{raw_text}\n\n请直接输出完整书稿。")
-    assert prompt.count("{raw_text}") == 1
-    assert FINGERPRINT_TOKEN in prompt

@@ -4278,18 +4278,6 @@ def export_novel(db: Session, project_id: UUID, fmt: str, user: Any | None = Non
     if not chapters:
         raise EpicNovelError("Novel artifact not ready: accepted chapters missing")
     display_title = _display_project_title(project)
-    from app.services.ai_or_finalizer import FinalizerHold, digest, enabled_for, finalize_manuscript
-
-    delivery_text = None
-    if (fmt != "json" and len(chapters) == project.target_chapters
-            and enabled_for(project.created_at)):
-        source = f"# {display_title}\n\n" + "\n\n".join(
-            f"## {chapter.title}\n\n{chapter.accepted_content or ''}" for chapter in chapters)
-        directory = epic_export_path() / f"ai_or_{project.id}" / digest(source)
-        try:
-            delivery_text = finalize_manuscript(source, directory, title=display_title)
-        except FinalizerHold as exc:
-            raise EpicNovelError(str(exc)) from exc
     if fmt == "json":
         content = json.dumps({"project": {**_asdict_model(project), "displayTitle": display_title}, "chapters": [_asdict_model(chapter) for chapter in chapters]}, ensure_ascii=False, default=str, indent=2)
         media = "application/json"
@@ -4303,8 +4291,6 @@ def export_novel(db: Session, project_id: UUID, fmt: str, user: Any | None = Non
         media = "text/markdown; charset=utf-8"
         filename = f"{_safe_export_stem(display_title)} 正文.md"
     out = epic_export_path()
-    if delivery_text is not None:
-        content = re.sub(r"(?m)^#+\s*", "", delivery_text) if fmt == "txt" else delivery_text
     out.mkdir(parents=True, exist_ok=True)
     (out / filename).write_text(content, encoding="utf-8")
     return content, media, filename

@@ -21,7 +21,6 @@ import {
   Check,
   Trash2,
   RefreshCcw,
-  ShieldCheck,
 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import {
@@ -33,13 +32,10 @@ import {
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { StuckBanner } from "@/components/StuckBanner";
 import { GeneralLongformPanel } from "@/components/GeneralLongformPanel";
-import { LengthRepairPanel } from "@/components/LengthRepairPanel";
 import { publicTaskError, publicTaskStep } from "@/utils/taskStatus";
 import type {
   AigcQualityReport,
   ChapterResponse,
-  CreateTaskResponse,
-  SimilaritySummary,
   StageName,
   TaskCategoryOption,
   TaskStatusResponse,
@@ -125,14 +121,8 @@ export function BookDetail() {
   const [regenerating, setRegenerating] = useState(false);
   const [pausing, setPausing] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
-  const [correctionsDownloading, setCorrectionsDownloading] = useState(false);
-  const [correctionsMessage, setCorrectionsMessage] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
-  // 轮询读取最新的编辑态，但不把它放进 refresh 的依赖：否则每敲一个字都会
-  // 重建 refresh、重跑加载 effect，整页切回“加载中”，输入框随之失焦。
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
 
   useEffect(() => {
     if (id && task?.source_url === "manual://public-domain-classical-vernacular") {
@@ -151,7 +141,7 @@ export function BookDetail() {
         // 仅在未编辑过时同步章节，避免覆盖用户的本地编辑
         setChapters((prev) => {
           if (prev.length === 0) return c.chapters;
-          if (Object.values(dirtyRef.current).some(Boolean)) return prev;
+          if (Object.values(dirty).some(Boolean)) return prev;
           return c.chapters;
         });
       }
@@ -164,23 +154,12 @@ export function BookDetail() {
             : "加载失败";
       setError(msg);
     }
-  }, [id]);
+  }, [id, dirty]);
 
   const restartPolling = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => void refresh(), 2500);
   }, [refresh]);
-
-  const handleLengthRepairApproved = useCallback(async (response: CreateTaskResponse) => {
-    setTask((previous) => previous?.id === response.task_id ? { ...previous, status: response.status } : previous);
-    setError(null);
-    restartPolling();
-    await refresh();
-  }, [refresh, restartPolling]);
-
-  useEffect(() => {
-    setCorrectionsMessage(null);
-  }, [id, task?.status, task?.ai_or_finalizer_status]);
 
   useEffect(() => {
     if (!id) return;
@@ -449,9 +428,7 @@ export function BookDetail() {
   const regenerateWholeTask = useCallback(async () => {
     if (!id || !task) return;
     const ok = window.confirm(
-      task.editor_v05_status === "similarity_blocked"
-        ? "确认重新生成一次整篇文稿吗？首稿和报告将保留备份，费用累计不重置；新稿若仍不低于50%，将停止并提示更换视频。重新生成会产生模型费用。"
-        : "确定从头重新生成整篇文稿吗？系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类。",
+      "确定从头重新生成整篇文稿吗？系统会清空旧正文、章节、封面和阶段产物，但保留原始素材与分类。",
     );
     if (!ok) return;
     setRegenerating(true);
@@ -569,53 +546,6 @@ export function BookDetail() {
     [id],
   );
 
-  const handleDownloadCorrections = useCallback(async () => {
-    if (!id || correctionsDownloading) return;
-    setCorrectionsDownloading(true);
-    setCorrectionsMessage(null);
-    try {
-      await api.downloadCorrections(id);
-    } catch (failure) {
-      setCorrectionsMessage(failure instanceof ApiError && failure.status === 404
-        ? "暂无可下载的纠错 Excel：文件尚未生成、已失效，或当前服务尚未提供此下载接口。"
-        : `纠错 Excel 下载失败：${failure instanceof ApiError ? failure.detail : "请检查网络后重试"}`);
-    } finally {
-      setCorrectionsDownloading(false);
-    }
-  }, [id, correctionsDownloading]);
-
-  // Similarity audit summary, loaded so the verdict is visible without a download.
-  const [similarity, setSimilarity] = useState<SimilaritySummary | null>(null);
-  useEffect(() => {
-    let live = true;
-    if (!id || !task || !["completed", "manual_review"].includes(task.status)) {
-      setSimilarity(null);
-      return;
-    }
-    api
-      .getSimilarityReportData(id)
-      .then((data) => {
-        if (live) setSimilarity(data);
-      })
-      .catch(() => {
-        if (live) setSimilarity(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [id, task?.status, task?.editor_v05_status]);
-
-  const handleDownloadSimilarityReport = useCallback(async () => {
-    if (!id) return;
-    try {
-      await api.downloadSimilarityReport(id);
-    } catch (e) {
-      const msg =
-        e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
-      alert(`审查报告下载失败：${msg}`);
-    }
-  }, [id]);
-
   const handleDownloadCover = useCallback(async () => {
     if (!id) return;
     try {
@@ -683,15 +613,13 @@ export function BookDetail() {
   const isFailed = task.status === "failed";
   const isPaused = task.status === "paused";
   const isManualReview = task.status === "manual_review";
-  const similarityBlocked = task.editor_v05_status === "similarity_blocked";
-  const videoRejected = Boolean(task.editor_v05_video_rejected);
   const isHealingComic = ["healing_comic", "story_comic", "homophone_comic"].includes(
     task.category || "",
   );
   const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
-  const canRetry = !similarityBlocked && !videoRejected && (isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100));
+  const canRetry = isFailed || isPaused || isManualReview || (task.status === "pending" && task.progress < 100);
   const isAigcOnlyRetry =
     task.aigc_required &&
     task.aigc_report_available &&
@@ -856,9 +784,9 @@ export function BookDetail() {
               {isManualReview && (
                 <div className="mt-4 rounded-lg border border-gold-400/30 bg-gold-500/8 px-4 py-3 text-xs leading-relaxed text-warm-200">
                   <span className="font-medium text-gold-100">当前稿件已保留：</span>
-                  {failureMessage || "任务已暂停，等待人工复核。"}
+                  {failureMessage || "系统正在继续处理当前任务。"}
                   <div className="mt-1 text-warm-400">
-                    请核对暂停原因后明确确认再继续，已保存的进度不会丢失。
+                    系统会从已保存的进度继续，不需要重复提交。
                   </div>
                 </div>
               )}
@@ -893,31 +821,10 @@ export function BookDetail() {
                 {isAigcOnlyRetry ? "继续检查" : "继续生成"}
               </button>
             ) : null}
-            {similarityBlocked && !videoRejected && (
-              <button type="button" onClick={regenerateWholeTask} disabled={regenerating} className="btn-ghost disabled:opacity-50">
-                <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                {regenerating ? "重新生成中" : "人工确认重新生成整篇"}
-              </button>
-            )}
-            {(similarityBlocked || videoRejected) && (
-              <button type="button" onClick={handleDownloadSimilarityReport} className="btn-ghost">
-                <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
-                相似度审查报告
-              </button>
-            )}
             <button type="button" onClick={handleDelete} className="btn-ghost">
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
               删除任务
             </button>
-            {(isCompleted || isFailed || isPaused || isManualReview) && (
-              <>
-                <button type="button" onClick={handleDownloadCorrections} disabled={correctionsDownloading} className="btn-ghost disabled:opacity-50">
-                  {correctionsDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} /> : <Download className="h-3.5 w-3.5" strokeWidth={1.5} />}
-                  {correctionsDownloading ? "纠错 Excel 下载中" : "纠错 Excel"}
-                </button>
-                {correctionsMessage ? <p className="max-w-xs text-xs leading-relaxed text-warm-300" role="status">{correctionsMessage}</p> : null}
-              </>
-            )}
             {isCompleted && (
               <>
                 <button
@@ -957,44 +864,6 @@ export function BookDetail() {
                   <FileText className="h-3.5 w-3.5" strokeWidth={1.5} />
                   Markdown
                 </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadSimilarityReport}
-                  className="btn-ghost"
-                  title="下载本轮的文本相似度审查报告 Word"
-                >
-                  <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  相似度审查报告
-                  {similarity && similarity.applicable ? (
-                    <span
-                      className={
-                        similarity.overall_verdict === "高危"
-                          ? "ml-1 text-rose-400"
-                          : "ml-1 text-emerald-400"
-                      }
-                    >
-                      {similarity.max_composite.toFixed(1)}% {similarity.overall_verdict}
-                      {similarity.overall_boundary ? similarity.overall_boundary : ""}
-                    </span>
-                  ) : null}
-                </button>
-                {task.ai_or_finalizer_status === "completed" && (
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={async () => {
-                      if (!id) return;
-                      try {
-                        await api.downloadAiOrDelivery(id);
-                      } catch (error) {
-                        alert(error instanceof ApiError ? error.detail : "降AI纠错交付包下载失败");
-                      }
-                    }}
-                  >
-                    <Download className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    降AI纠错交付包
-                  </button>
-                )}
                 {isHealingComic && (
                   <button
                     type="button"
@@ -1040,7 +909,7 @@ export function BookDetail() {
         {/* 进度条 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center justify-between text-[10px] tracking-widest text-warm-400">
-            <span>{isCompleted ? "已完成" : similarityBlocked || videoRejected ? "审核未通过" : isManualReview ? "等待人工复核" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
+            <span>{isCompleted ? "已完成" : isManualReview ? "处理中" : isFailed ? "暂时中断" : isPaused ? "已暂停" : "进行中"}</span>
             <span className="text-gold-300">{task.progress}%</span>
           </div>
           <div className="progress-track">
@@ -1074,17 +943,11 @@ export function BookDetail() {
         )}
       </section>
 
-      {id === task.id && (isFailed || isManualReview || isPaused) ? (
-        <LengthRepairPanel key={`${id}:${task.status}`} taskId={id} taskContext={`${task.current_step} ${task.error_message || ""}`} onApproved={handleLengthRepairApproved} />
-      ) : null}
-
       {isManualReview && (
         <section className="card-warm mb-8 p-6">
-          <h2 className="font-serif text-xl text-warm-50">{videoRejected ? "此视频不可用，建议更换视频" : similarityBlocked ? "相似度审核未通过，等待人工确认" : "任务已暂停，等待人工复核"}</h2>
+          <h2 className="font-serif text-xl text-warm-50">任务正在处理</h2>
           <p className="mt-2 text-xs leading-6 text-warm-400">
-            {videoRejected ? "重新生成后相似度仍不低于50%，已停止，不再继续生成或调用降AI。"
-              : similarityBlocked ? "已停在降AI之前，不会自动重写。请先下载相似度报告，再决定是否重新生成一次。"
-              : "当前稿件和进度已保留，请核对暂停原因并明确确认后再继续；不会自动批准局部篇幅修复。"}
+            当前已保存的稿件和进度会被保留，系统会自动从断点继续。
           </p>
         </section>
       )}

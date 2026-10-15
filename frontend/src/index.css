@@ -2,305 +2,53 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ==========================================================================
-   Themes
-   Every theme only sets colour tokens. Light themes invert the scales so that
-   class names written for dark surfaces (text-gold-200, bg-base-900/80 …)
-   keep their meaning: low numbers are always "strong ink", high numbers are
-   always "quiet surface".
-   ========================================================================== */
-
 :root,
 html[data-theme="dark-gold"] {
   color-scheme: dark;
-  --color-base-950: 7 6 5;
-  --color-base-900: 12 11 9;
-  --color-base-800: 20 18 16;
-  --color-base-700: 28 25 22;
-  --color-base-600: 38 34 30;
-  --color-base-500: 54 48 42;
-  --color-gold-50: 252 246 234;
-  --color-gold-100: 245 232 204;
-  --color-gold-200: 236 214 170;
-  --color-gold-300: 226 193 132;
-  --color-gold-400: 214 172 110;
-  --color-gold-500: 196 153 94;
-  --color-gold-600: 164 126 76;
-  --color-gold-700: 124 95 58;
-  --color-gold-800: 84 64 40;
-  --color-gold-900: 52 40 26;
-  --color-gold-950: 32 24 16;
-  --color-warm-50: 250 247 241;
-  --color-warm-100: 238 232 222;
-  --color-warm-200: 222 212 196;
-  --color-warm-300: 190 178 160;
-  --color-warm-400: 146 137 124;
-  --color-warm-500: 112 105 96;
-  --color-warm-600: 78 73 67;
-  --color-button-text: 20 15 9;
-  --color-overlay: 6 5 4;
-}
-
-html[data-theme="graphite"] {
-  color-scheme: dark;
-  --color-base-950: 6 7 8;
-  --color-base-900: 11 12 14;
-  --color-base-800: 18 20 23;
-  --color-base-700: 26 28 32;
-  --color-base-600: 36 39 44;
-  --color-base-500: 52 56 63;
-  --color-gold-50: 247 245 240;
-  --color-gold-100: 232 228 218;
-  --color-gold-200: 214 207 192;
-  --color-gold-300: 196 186 166;
-  --color-gold-400: 178 165 140;
-  --color-gold-500: 156 143 118;
-  --color-gold-600: 126 115 95;
-  --color-gold-700: 94 86 72;
-  --color-gold-800: 64 59 50;
-  --color-gold-900: 40 37 32;
-  --color-gold-950: 25 23 20;
-  --color-warm-50: 248 249 250;
-  --color-warm-100: 236 238 241;
-  --color-warm-200: 214 218 224;
-  --color-warm-300: 180 186 195;
-  --color-warm-400: 136 143 154;
-  --color-warm-500: 104 110 120;
-  --color-warm-600: 72 77 85;
-  --color-button-text: 12 13 15;
-  --color-overlay: 4 5 6;
-}
-
-html[data-theme="midnight"] {
-  color-scheme: dark;
-  --color-base-950: 5 7 14;
-  --color-base-900: 9 12 22;
-  --color-base-800: 14 18 32;
-  --color-base-700: 20 25 43;
-  --color-base-600: 29 36 58;
-  --color-base-500: 44 53 82;
-  --color-gold-50: 238 242 255;
-  --color-gold-100: 224 231 255;
-  --color-gold-200: 199 210 254;
-  --color-gold-300: 165 180 252;
-  --color-gold-400: 129 140 248;
-  --color-gold-500: 104 112 235;
-  --color-gold-600: 84 88 210;
-  --color-gold-700: 66 67 168;
-  --color-gold-800: 48 48 120;
-  --color-gold-900: 32 32 80;
-  --color-gold-950: 20 20 50;
-  --color-warm-50: 246 247 252;
-  --color-warm-100: 230 233 245;
-  --color-warm-200: 205 210 230;
-  --color-warm-300: 166 174 202;
-  --color-warm-400: 124 133 166;
-  --color-warm-500: 92 100 132;
-  --color-warm-600: 64 70 98;
-  --color-button-text: 10 12 30;
-  --color-overlay: 3 4 10;
-}
-
-html[data-theme="amethyst"] {
-  color-scheme: dark;
-  --color-base-950: 9 6 12;
-  --color-base-900: 15 11 20;
-  --color-base-800: 23 17 30;
-  --color-base-700: 32 24 41;
-  --color-base-600: 45 34 57;
-  --color-base-500: 66 50 82;
-  --color-gold-50: 250 245 255;
-  --color-gold-100: 243 232 255;
-  --color-gold-200: 233 213 255;
-  --color-gold-300: 216 180 254;
-  --color-gold-400: 192 142 250;
-  --color-gold-500: 168 110 235;
-  --color-gold-600: 140 84 204;
-  --color-gold-700: 108 64 160;
-  --color-gold-800: 76 45 112;
-  --color-gold-900: 50 30 74;
-  --color-gold-950: 30 18 46;
-  --color-warm-50: 251 248 252;
-  --color-warm-100: 238 232 244;
-  --color-warm-200: 218 208 230;
-  --color-warm-300: 186 172 202;
-  --color-warm-400: 146 132 164;
-  --color-warm-500: 112 100 128;
-  --color-warm-600: 78 70 92;
-  --color-button-text: 22 10 34;
-  --color-overlay: 5 3 8;
-}
-
-html[data-theme="aurora"] {
-  color-scheme: dark;
-  --color-base-950: 3 8 11;
-  --color-base-900: 6 13 18;
-  --color-base-800: 10 20 27;
-  --color-base-700: 14 29 37;
-  --color-base-600: 21 41 51;
-  --color-base-500: 32 60 72;
-  --color-gold-50: 236 254 250;
-  --color-gold-100: 204 251 241;
-  --color-gold-200: 153 246 228;
-  --color-gold-300: 94 234 212;
-  --color-gold-400: 45 212 191;
-  --color-gold-500: 20 184 166;
-  --color-gold-600: 13 148 136;
-  --color-gold-700: 15 118 110;
-  --color-gold-800: 17 94 89;
-  --color-gold-900: 19 78 74;
-  --color-gold-950: 4 47 46;
-  --color-warm-50: 240 253 250;
-  --color-warm-100: 226 244 241;
-  --color-warm-200: 200 228 225;
-  --color-warm-300: 158 199 197;
-  --color-warm-400: 116 157 158;
-  --color-warm-500: 84 120 124;
-  --color-warm-600: 55 86 92;
-  --color-button-text: 4 22 24;
-  --color-overlay: 2 6 8;
-}
-
-html[data-theme="pine"] {
-  color-scheme: dark;
-  --color-base-950: 5 9 7;
-  --color-base-900: 9 14 11;
-  --color-base-800: 15 21 17;
-  --color-base-700: 21 29 24;
-  --color-base-600: 30 41 34;
-  --color-base-500: 45 60 50;
-  --color-gold-50: 240 250 244;
-  --color-gold-100: 222 242 230;
-  --color-gold-200: 193 228 207;
-  --color-gold-300: 154 208 178;
-  --color-gold-400: 116 186 150;
-  --color-gold-500: 88 160 124;
-  --color-gold-600: 66 130 100;
-  --color-gold-700: 50 100 78;
-  --color-gold-800: 36 72 56;
-  --color-gold-900: 24 48 38;
-  --color-gold-950: 14 30 24;
-  --color-warm-50: 246 250 247;
-  --color-warm-100: 230 238 232;
-  --color-warm-200: 206 218 210;
-  --color-warm-300: 170 186 176;
-  --color-warm-400: 128 145 134;
-  --color-warm-500: 96 111 101;
-  --color-warm-600: 66 78 70;
-  --color-button-text: 8 22 15;
-  --color-overlay: 3 6 4;
-}
-
-html[data-theme="ink-red"] {
-  color-scheme: dark;
-  --color-base-950: 8 5 5;
-  --color-base-900: 13 9 9;
-  --color-base-800: 22 15 14;
-  --color-base-700: 31 21 19;
-  --color-base-600: 44 30 27;
-  --color-base-500: 64 44 39;
-  --color-gold-50: 255 244 238;
-  --color-gold-100: 254 226 212;
-  --color-gold-200: 252 196 170;
-  --color-gold-300: 246 156 120;
-  --color-gold-400: 226 104 68;
-  --color-gold-500: 200 80 50;
-  --color-gold-600: 164 60 38;
-  --color-gold-700: 124 45 30;
-  --color-gold-800: 86 32 22;
-  --color-gold-900: 56 22 16;
-  --color-gold-950: 34 14 10;
-  --color-warm-50: 253 247 242;
-  --color-warm-100: 244 234 224;
-  --color-warm-200: 228 211 196;
-  --color-warm-300: 200 176 156;
-  --color-warm-400: 158 132 114;
-  --color-warm-500: 121 98 85;
-  --color-warm-600: 86 68 60;
-  --color-button-text: 255 247 240;
-  --color-overlay: 6 3 3;
-}
-
-html[data-theme="obsidian"] {
-  color-scheme: dark;
-  --color-base-950: 0 0 0;
-  --color-base-900: 4 4 4;
-  --color-base-800: 12 12 12;
-  --color-base-700: 20 20 20;
-  --color-base-600: 31 31 31;
-  --color-base-500: 48 48 48;
-  --color-gold-50: 255 255 255;
-  --color-gold-100: 254 254 254;
-  --color-gold-200: 252 252 252;
-  --color-gold-300: 248 248 248;
-  --color-gold-400: 240 240 240;
-  --color-gold-500: 212 212 212;
-  --color-gold-600: 170 170 170;
-  --color-gold-700: 128 128 128;
-  --color-gold-800: 82 82 82;
-  --color-gold-900: 48 48 48;
-  --color-gold-950: 26 26 26;
-  --color-warm-50: 255 255 255;
-  --color-warm-100: 237 237 237;
-  --color-warm-200: 214 214 214;
-  --color-warm-300: 175 175 175;
-  --color-warm-400: 133 133 133;
-  --color-warm-500: 102 102 102;
-  --color-warm-600: 70 70 70;
-  --color-button-text: 0 0 0;
-  --color-overlay: 0 0 0;
-}
-
-html[data-theme="amber-dawn"] {
-  color-scheme: light;
-  --color-base-950: 236 231 222;
-  --color-base-900: 246 242 235;
-  --color-base-800: 255 253 249;
-  --color-base-700: 251 248 242;
-  --color-base-600: 238 231 219;
-  --color-base-500: 222 211 194;
-  --color-gold-50: 58 36 12;
-  --color-gold-100: 78 50 18;
-  --color-gold-200: 104 66 22;
-  --color-gold-300: 136 88 30;
-  --color-gold-400: 168 112 40;
-  --color-gold-500: 186 132 58;
-  --color-gold-600: 204 160 96;
-  --color-gold-700: 224 192 140;
-  --color-gold-800: 239 219 185;
-  --color-gold-900: 247 236 216;
-  --color-gold-950: 251 246 236;
-  --color-warm-50: 20 16 12;
-  --color-warm-100: 33 27 21;
-  --color-warm-200: 56 47 38;
-  --color-warm-300: 88 76 63;
-  --color-warm-400: 122 108 93;
-  --color-warm-500: 150 136 120;
-  --color-warm-600: 190 178 162;
-  --color-button-text: 255 251 244;
-  --color-overlay: 30 24 16;
+  --color-base-900: 10 9 8;
+  --color-base-800: 19 17 15;
+  --color-base-700: 26 22 20;
+  --color-base-600: 34 29 26;
+  --color-base-500: 42 36 33;
+  --color-gold-50: 250 243 230;
+  --color-gold-100: 240 226 194;
+  --color-gold-200: 232 208 154;
+  --color-gold-300: 220 188 115;
+  --color-gold-400: 212 168 116;
+  --color-gold-500: 196 165 114;
+  --color-gold-600: 168 137 89;
+  --color-gold-700: 128 104 64;
+  --color-warm-100: 245 240 232;
+  --color-warm-200: 232 221 201;
+  --color-warm-300: 201 185 161;
+  --color-warm-400: 155 146 133;
+  --color-warm-500: 122 114 105;
+  --color-warm-600: 90 84 76;
+  --color-button-text: 18 14 10;
+  --color-overlay: 10 9 8;
+  --app-bg-image:
+    radial-gradient(ellipse 90% 70% at 80% 25%, rgb(var(--color-gold-400) / 0.08), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 5% 90%, rgb(var(--color-gold-600) / 0.05), transparent 60%);
+  --shadow-gold-glow: 0 0 30px rgb(var(--color-gold-400) / 0.25);
+  --shadow-gold-soft: 0 4px 20px rgb(var(--color-gold-400) / 0.15);
+  --shadow-card-warm: 0 4px 24px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(var(--color-gold-400) / 0.08);
 }
 
 html[data-theme="paper-brown"] {
   color-scheme: light;
-  --color-base-950: 238 233 225;
   --color-base-900: 248 246 241;
   --color-base-800: 255 253 249;
   --color-base-700: 252 249 244;
   --color-base-600: 239 230 219;
   --color-base-500: 224 211 197;
-  --color-gold-50: 60 34 16;
-  --color-gold-100: 74 42 18;
-  --color-gold-200: 98 55 22;
-  --color-gold-300: 126 70 28;
+  --color-gold-50: 255 250 242;
+  --color-gold-100: 247 232 211;
+  --color-gold-200: 231 205 176;
+  --color-gold-300: 204 155 108;
   --color-gold-400: 154 86 35;
-  --color-gold-500: 172 104 52;
-  --color-gold-600: 196 140 94;
-  --color-gold-700: 218 180 144;
-  --color-gold-800: 236 214 190;
-  --color-gold-900: 246 232 215;
-  --color-gold-950: 251 244 236;
-  --color-warm-50: 40 27 18;
+  --color-gold-500: 138 76 28;
+  --color-gold-600: 113 61 22;
+  --color-gold-700: 85 44 18;
   --color-warm-100: 55 38 25;
   --color-warm-200: 82 54 36;
   --color-warm-300: 112 77 50;
@@ -309,58 +57,29 @@ html[data-theme="paper-brown"] {
   --color-warm-600: 201 163 129;
   --color-button-text: 255 250 242;
   --color-overlay: 27 18 12;
-}
-
-html[data-theme="porcelain"] {
-  color-scheme: light;
-  --color-base-950: 237 237 236;
-  --color-base-900: 247 247 246;
-  --color-base-800: 255 255 255;
-  --color-base-700: 250 250 249;
-  --color-base-600: 234 234 232;
-  --color-base-500: 214 214 211;
-  --color-gold-50: 0 0 0;
-  --color-gold-100: 6 6 6;
-  --color-gold-200: 10 10 10;
-  --color-gold-300: 15 15 17;
-  --color-gold-400: 23 23 26;
-  --color-gold-500: 64 64 70;
-  --color-gold-600: 110 110 116;
-  --color-gold-700: 160 160 166;
-  --color-gold-800: 212 212 215;
-  --color-gold-900: 236 236 238;
-  --color-gold-950: 246 246 247;
-  --color-warm-50: 0 0 0;
-  --color-warm-100: 23 23 23;
-  --color-warm-200: 45 45 45;
-  --color-warm-300: 82 82 82;
-  --color-warm-400: 115 115 115;
-  --color-warm-500: 145 145 145;
-  --color-warm-600: 190 190 190;
-  --color-button-text: 255 255 255;
-  --color-overlay: 10 10 10;
+  --app-bg-image:
+    radial-gradient(ellipse 70% 55% at 76% 20%, rgb(var(--color-gold-100) / 0.55), transparent 66%),
+    linear-gradient(180deg, rgb(255 254 251 / 0.8), rgb(248 246 241 / 0.96));
+  --shadow-gold-glow: 0 10px 36px rgb(var(--color-gold-300) / 0.24);
+  --shadow-gold-soft: 0 8px 22px rgb(var(--color-gold-400) / 0.16);
+  --shadow-card-warm: 0 10px 30px rgb(90 56 31 / 0.12), 0 0 0 1px rgb(var(--color-gold-300) / 0.18);
 }
 
 html[data-theme="mist-blue"] {
   color-scheme: light;
-  --color-base-950: 233 239 247;
   --color-base-900: 245 248 252;
   --color-base-800: 255 255 255;
   --color-base-700: 240 246 252;
   --color-base-600: 221 232 244;
   --color-base-500: 199 215 232;
-  --color-gold-50: 23 37 84;
-  --color-gold-100: 30 58 138;
-  --color-gold-200: 30 64 175;
-  --color-gold-300: 29 78 216;
-  --color-gold-400: 37 99 235;
-  --color-gold-500: 59 130 246;
-  --color-gold-600: 96 165 250;
-  --color-gold-700: 147 197 253;
-  --color-gold-800: 191 219 254;
-  --color-gold-900: 219 234 254;
-  --color-gold-950: 239 246 255;
-  --color-warm-50: 15 23 42;
+  --color-gold-50: 239 246 255;
+  --color-gold-100: 219 234 254;
+  --color-gold-200: 191 219 254;
+  --color-gold-300: 147 197 253;
+  --color-gold-400: 59 130 246;
+  --color-gold-500: 37 99 235;
+  --color-gold-600: 29 78 216;
+  --color-gold-700: 30 64 175;
   --color-warm-100: 24 37 57;
   --color-warm-200: 39 55 78;
   --color-warm-300: 71 85 105;
@@ -369,28 +88,54 @@ html[data-theme="mist-blue"] {
   --color-warm-600: 180 194 210;
   --color-button-text: 255 255 255;
   --color-overlay: 14 24 40;
+  --app-bg-image:
+    radial-gradient(ellipse 80% 60% at 72% 12%, rgb(var(--color-gold-100) / 0.6), transparent 62%),
+    radial-gradient(ellipse 55% 50% at 8% 88%, rgb(125 211 252 / 0.18), transparent 68%);
+  --shadow-gold-glow: 0 14px 38px rgb(var(--color-gold-400) / 0.18);
+  --shadow-gold-soft: 0 8px 22px rgb(var(--color-gold-500) / 0.13);
+  --shadow-card-warm: 0 12px 32px rgb(40 65 95 / 0.12), 0 0 0 1px rgb(var(--color-gold-300) / 0.14);
+}
+
+html[data-theme="graphite"] {
+  color-scheme: dark;
+  --color-base-900: 12 13 15;
+  --color-base-800: 22 24 27;
+  --color-base-700: 31 34 38;
+  --color-base-600: 45 49 55;
+  --color-base-500: 64 70 78;
+  --color-gold-50: 250 247 239;
+  --color-gold-100: 234 226 209;
+  --color-gold-200: 210 198 176;
+  --color-gold-300: 186 167 133;
+  --color-gold-400: 170 145 103;
+  --color-gold-500: 145 122 86;
+  --color-gold-600: 112 95 72;
+  --color-gold-700: 82 72 58;
+  --color-warm-100: 241 242 244;
+  --color-warm-200: 219 223 228;
+  --color-warm-300: 188 196 205;
+  --color-warm-400: 145 155 168;
+  --color-warm-500: 108 118 130;
+  --color-warm-600: 78 86 96;
+  --color-button-text: 12 13 15;
+  --color-overlay: 6 7 8;
 }
 
 html[data-theme="bay-green"] {
   color-scheme: light;
-  --color-base-950: 230 240 230;
   --color-base-900: 242 247 242;
   --color-base-800: 252 255 250;
   --color-base-700: 236 245 235;
   --color-base-600: 215 231 213;
   --color-base-500: 188 211 187;
-  --color-gold-50: 5 46 22;
-  --color-gold-100: 20 83 45;
-  --color-gold-200: 21 100 56;
-  --color-gold-300: 22 118 64;
-  --color-gold-400: 26 138 72;
-  --color-gold-500: 34 160 88;
-  --color-gold-600: 74 190 122;
-  --color-gold-700: 134 219 164;
-  --color-gold-800: 187 240 206;
-  --color-gold-900: 220 249 230;
-  --color-gold-950: 240 253 244;
-  --color-warm-50: 20 36 25;
+  --color-gold-50: 240 253 244;
+  --color-gold-100: 220 252 231;
+  --color-gold-200: 187 247 208;
+  --color-gold-300: 134 239 172;
+  --color-gold-400: 34 153 84;
+  --color-gold-500: 22 126 68;
+  --color-gold-600: 21 100 56;
+  --color-gold-700: 20 83 45;
   --color-warm-100: 30 49 35;
   --color-warm-200: 45 70 50;
   --color-warm-300: 70 96 73;
@@ -399,28 +144,26 @@ html[data-theme="bay-green"] {
   --color-warm-600: 176 194 174;
   --color-button-text: 255 255 248;
   --color-overlay: 12 28 16;
+  --app-bg-image:
+    radial-gradient(ellipse 80% 58% at 74% 16%, rgb(var(--color-gold-100) / 0.55), transparent 65%),
+    radial-gradient(ellipse 55% 50% at 10% 88%, rgb(250 204 21 / 0.13), transparent 70%);
 }
 
 html[data-theme="sakura"] {
   color-scheme: light;
-  --color-base-950: 247 235 240;
   --color-base-900: 253 247 249;
   --color-base-800: 255 252 253;
   --color-base-700: 252 239 244;
   --color-base-600: 244 218 226;
   --color-base-500: 229 194 205;
-  --color-gold-50: 76 22 38;
-  --color-gold-100: 108 31 54;
-  --color-gold-200: 136 40 66;
-  --color-gold-300: 170 50 82;
-  --color-gold-400: 198 62 93;
-  --color-gold-500: 214 84 112;
-  --color-gold-600: 232 128 150;
-  --color-gold-700: 246 172 188;
-  --color-gold-800: 252 206 215;
-  --color-gold-900: 255 228 233;
-  --color-gold-950: 255 241 243;
-  --color-warm-50: 44 24 34;
+  --color-gold-50: 255 241 242;
+  --color-gold-100: 255 228 230;
+  --color-gold-200: 254 205 211;
+  --color-gold-300: 253 164 175;
+  --color-gold-400: 225 89 116;
+  --color-gold-500: 198 62 93;
+  --color-gold-600: 164 48 78;
+  --color-gold-700: 131 39 63;
   --color-warm-100: 62 35 48;
   --color-warm-200: 90 48 67;
   --color-warm-300: 120 68 88;
@@ -429,124 +172,89 @@ html[data-theme="sakura"] {
   --color-warm-600: 216 171 183;
   --color-button-text: 255 250 252;
   --color-overlay: 38 15 24;
-}
-
-/* Shared surface language, derived from the tokens above. */
-:root {
   --app-bg-image:
-    radial-gradient(1100px 560px at 88% -12%, rgb(var(--color-gold-400) / 0.09), transparent 62%),
-    radial-gradient(900px 520px at -8% 108%, rgb(var(--color-gold-600) / 0.05), transparent 60%);
-  --hairline: rgb(var(--color-warm-100) / 0.075);
-  --hairline-strong: rgb(var(--color-warm-100) / 0.13);
-  --shadow-gold-glow: 0 0 0 1px rgb(var(--color-gold-400) / 0.18), 0 10px 34px -10px rgb(var(--color-gold-400) / 0.45);
-  --shadow-gold-soft: 0 10px 30px -14px rgb(var(--color-gold-400) / 0.4);
-  --shadow-card-warm:
-    inset 0 1px 0 rgb(255 255 255 / 0.035),
-    0 1px 2px rgb(0 0 0 / 0.25),
-    0 18px 40px -22px rgb(0 0 0 / 0.7);
-  --shadow-float:
-    0 0 0 1px rgb(var(--color-warm-100) / 0.08),
-    0 24px 60px -18px rgb(0 0 0 / 0.75),
-    0 8px 18px -8px rgb(0 0 0 / 0.5);
-  --noise-opacity: 0.035;
+    radial-gradient(ellipse 70% 52% at 78% 14%, rgb(var(--color-gold-100) / 0.58), transparent 64%),
+    radial-gradient(ellipse 50% 45% at 8% 88%, rgb(251 191 36 / 0.12), transparent 68%);
 }
 
-html[data-mode="light"] {
+html[data-theme="aurora"] {
+  color-scheme: dark;
+  --color-base-900: 7 12 18;
+  --color-base-800: 11 21 29;
+  --color-base-700: 15 32 42;
+  --color-base-600: 24 49 61;
+  --color-base-500: 36 70 82;
+  --color-gold-50: 236 254 255;
+  --color-gold-100: 207 250 254;
+  --color-gold-200: 165 243 252;
+  --color-gold-300: 103 232 249;
+  --color-gold-400: 45 212 191;
+  --color-gold-500: 20 184 166;
+  --color-gold-600: 14 148 136;
+  --color-gold-700: 15 118 110;
+  --color-warm-100: 237 252 249;
+  --color-warm-200: 204 236 233;
+  --color-warm-300: 161 211 208;
+  --color-warm-400: 120 169 171;
+  --color-warm-500: 85 128 134;
+  --color-warm-600: 53 89 98;
+  --color-button-text: 5 20 23;
+  --color-overlay: 3 8 12;
   --app-bg-image:
-    radial-gradient(1100px 560px at 88% -12%, rgb(var(--color-gold-600) / 0.14), transparent 62%),
-    radial-gradient(900px 520px at -8% 108%, rgb(var(--color-gold-700) / 0.12), transparent 60%);
-  --hairline: rgb(var(--color-warm-100) / 0.085);
-  --hairline-strong: rgb(var(--color-warm-100) / 0.15);
-  --shadow-gold-glow: 0 0 0 1px rgb(var(--color-gold-400) / 0.2), 0 12px 30px -12px rgb(var(--color-gold-400) / 0.45);
-  --shadow-gold-soft: 0 12px 28px -16px rgb(var(--color-gold-400) / 0.45);
-  --shadow-card-warm:
-    0 1px 2px rgb(var(--color-overlay) / 0.05),
-    0 16px 36px -24px rgb(var(--color-overlay) / 0.28);
-  --shadow-float:
-    0 0 0 1px rgb(var(--color-warm-100) / 0.08),
-    0 24px 60px -20px rgb(var(--color-overlay) / 0.32),
-    0 8px 18px -10px rgb(var(--color-overlay) / 0.18);
-  --noise-opacity: 0;
+    radial-gradient(ellipse 70% 55% at 78% 20%, rgb(45 212 191 / 0.18), transparent 64%),
+    radial-gradient(ellipse 60% 48% at 8% 88%, rgb(168 85 247 / 0.11), transparent 66%);
 }
 
-/* ==========================================================================
-   Base
-   ========================================================================== */
+html[data-theme="ink-red"] {
+  color-scheme: dark;
+  --color-base-900: 12 8 8;
+  --color-base-800: 22 14 14;
+  --color-base-700: 32 20 18;
+  --color-base-600: 50 31 27;
+  --color-base-500: 73 44 38;
+  --color-gold-50: 255 247 237;
+  --color-gold-100: 255 237 213;
+  --color-gold-200: 254 215 170;
+  --color-gold-300: 253 186 116;
+  --color-gold-400: 205 92 49;
+  --color-gold-500: 178 70 42;
+  --color-gold-600: 145 52 36;
+  --color-gold-700: 112 39 30;
+  --color-warm-100: 252 242 232;
+  --color-warm-200: 238 217 200;
+  --color-warm-300: 211 176 153;
+  --color-warm-400: 177 132 110;
+  --color-warm-500: 137 96 82;
+  --color-warm-600: 96 67 60;
+  --color-button-text: 255 247 237;
+  --color-overlay: 9 5 5;
+  --app-bg-image:
+    radial-gradient(ellipse 75% 58% at 80% 18%, rgb(var(--color-gold-400) / 0.13), transparent 64%),
+    radial-gradient(ellipse 54% 50% at 10% 90%, rgb(120 18 18 / 0.2), transparent 66%);
+}
 
 @layer base {
   html,
   body,
   #root {
-    min-height: 100%;
+    height: 100%;
     margin: 0;
     padding: 0;
   }
 
-  html {
-    -webkit-text-size-adjust: 100%;
-    text-rendering: optimizeLegibility;
-  }
-
   body {
-    @apply bg-base-900 font-sans text-warm-100 antialiased;
-    font-feature-settings: "kern", "liga", "calt";
+    @apply bg-base-900 text-warm-100 antialiased;
+    font-feature-settings: "kern", "liga";
     background-image: var(--app-bg-image);
     background-attachment: fixed;
     transition:
-      background-color 240ms ease,
-      color 240ms ease;
-  }
-
-  /* Film grain: gives the dark surfaces depth instead of flat black. */
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: 70;
-    pointer-events: none;
-    opacity: var(--noise-opacity);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-
-  h1,
-  h2,
-  h3 {
-    text-wrap: balance;
-  }
-
-  a,
-  button,
-  summary,
-  [role="button"] {
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  a:focus-visible,
-  button:focus-visible,
-  summary:focus-visible,
-  [role="button"]:focus-visible {
-    outline: 2px solid rgb(var(--color-gold-400) / 0.75);
-    outline-offset: 2px;
-  }
-
-  input,
-  select,
-  textarea {
-    accent-color: rgb(var(--color-gold-400));
-  }
-
-  ::placeholder {
-    color: rgb(var(--color-warm-500));
-  }
-
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: rgb(var(--color-warm-100) / 0.14) transparent;
+      background-color 180ms ease,
+      color 180ms ease;
   }
 
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
 
   ::-webkit-scrollbar-track {
@@ -554,123 +262,74 @@ html[data-mode="light"] {
   }
 
   ::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
-    border-radius: 999px;
-    background: rgb(var(--color-warm-100) / 0.14);
-    background-clip: content-box;
+    background: rgb(var(--color-gold-400) / 0.15);
+    border-radius: 4px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgb(var(--color-warm-100) / 0.28);
-    background-clip: content-box;
+    background: rgb(var(--color-gold-400) / 0.3);
   }
 
+  /* 文字选中色 */
   ::selection {
-    background: rgb(var(--color-gold-400) / 0.32);
-    color: rgb(var(--color-warm-50));
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      transition-duration: 0.01ms !important;
-      scroll-behavior: auto !important;
-    }
+    background: rgb(var(--color-gold-400) / 0.3);
+    color: rgb(var(--color-warm-100));
   }
 }
 
-/* ==========================================================================
-   Components
-   ========================================================================== */
-
 @layer components {
-  /* 卡片：实底 + 发丝描边 + 顶部微高光 */
+  /* 卡片基础样式：深色 + 金色细描边 + 内部微反光 */
   .card-warm {
-    @apply relative rounded-2xl;
-    border: 1px solid var(--hairline);
-    background-color: rgb(var(--color-base-800) / 0.78);
-    background-image: linear-gradient(180deg, rgb(var(--color-warm-100) / 0.03) 0%, transparent 38%);
+    @apply relative rounded-2xl border border-gold-500/10 bg-base-700/60 backdrop-blur-md;
+    background-image: linear-gradient(
+      135deg,
+      rgb(255 255 255 / 0.02) 0%,
+      rgb(var(--color-gold-400) / 0.03) 50%,
+      rgb(255 255 255 / 0.01) 100%
+    );
   }
 
-  .surface-muted {
-    @apply rounded-xl;
-    border: 1px solid var(--hairline);
-    background-color: rgb(var(--color-base-900) / 0.55);
-  }
-
-  .hairline-b {
-    border-bottom: 1px solid var(--hairline);
-  }
-
-  .hairline-t {
-    border-top: 1px solid var(--hairline);
-  }
-
-  /* 主按钮 */
+  /* 主按钮：金色渐变 */
   .btn-gold {
-    @apply relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-medium transition duration-200 ease-out-expo;
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3 text-base-900 font-medium transition-all;
     color: rgb(var(--color-button-text));
-    background: linear-gradient(180deg, rgb(var(--color-gold-300)) 0%, rgb(var(--color-gold-400)) 100%);
+    background: linear-gradient(
+      135deg,
+      rgb(var(--color-gold-200)) 0%,
+      rgb(var(--color-gold-400)) 50%,
+      rgb(var(--color-gold-600)) 100%
+    );
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.28),
-      inset 0 -1px 0 rgb(0 0 0 / 0.08),
-      0 10px 26px -12px rgb(var(--color-gold-400) / 0.7);
+      0 4px 20px rgb(var(--color-gold-400) / 0.3),
+      inset 0 1px 0 rgb(255 255 255 / 0.3);
   }
 
   .btn-gold:hover {
-    filter: brightness(1.06);
-    transform: translateY(-1px);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.32),
-      inset 0 -1px 0 rgb(0 0 0 / 0.08),
-      0 14px 32px -12px rgb(var(--color-gold-400) / 0.8);
+      0 6px 28px rgb(var(--color-gold-400) / 0.45),
+      inset 0 1px 0 rgb(255 255 255 / 0.4);
+    transform: translateY(-1px);
   }
 
   .btn-gold:active {
-    transform: translateY(0) scale(0.985);
+    transform: translateY(0);
   }
 
   .btn-gold:disabled {
-    cursor: not-allowed;
-    filter: saturate(0.6);
     opacity: 0.5;
+    cursor: not-allowed;
     transform: none;
   }
 
-  /* 次按钮 */
+  /* 次按钮：描边款 */
   .btn-ghost {
-    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-medium text-warm-200 transition duration-200;
-    border: 1px solid var(--hairline-strong);
-    background-color: rgb(var(--color-warm-100) / 0.02);
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-gold-500/30 px-5 py-2 text-warm-200 text-sm font-medium transition-all hover:border-gold-400/60 hover:bg-gold-500/5 hover:text-warm-100;
   }
 
-  .btn-ghost:hover {
-    @apply text-warm-50;
-    border-color: rgb(var(--color-gold-400) / 0.45);
-    background-color: rgb(var(--color-gold-400) / 0.07);
-  }
-
-  .btn-ghost:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .btn-icon {
-    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-warm-400 transition-colors duration-150;
-  }
-
-  .btn-icon:hover {
-    @apply text-warm-100;
-    background-color: rgb(var(--color-warm-100) / 0.06);
-  }
-
-  /* 统计大数字 */
+  /* 数字大字号样式 (统计卡用) */
   .stat-number {
-    @apply font-serif text-3xl font-semibold tracking-tight tabular-nums;
-    background: linear-gradient(180deg, rgb(var(--color-gold-100)) 0%, rgb(var(--color-gold-400)) 100%);
+    @apply font-serif text-3xl font-semibold tracking-tight;
+    background: linear-gradient(135deg, rgb(var(--color-gold-200)) 0%, rgb(var(--color-gold-400)) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -679,85 +338,60 @@ html[data-mode="light"] {
 
   /* 主标题：大号衬线 */
   .hero-title {
-    @apply font-serif text-warm-50;
-    font-weight: 500;
-    letter-spacing: 0.01em;
+    @apply font-serif text-warm-100;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-shadow: 0 2px 24px rgb(var(--color-gold-400) / 0.15);
   }
 
-  /* 西文衬底：克制的斜体衬线 */
+  /* 西文衬底花体字 */
   .hero-overlay {
-    @apply pointer-events-none select-none font-cursive italic text-gold-400/20;
-  }
-
-  .eyebrow {
-    @apply text-[11px] font-medium uppercase tracking-[0.22em] text-gold-400;
+    @apply font-cursive text-gold-400/30 select-none pointer-events-none;
+    font-style: italic;
   }
 
   /* 进度条 */
   .progress-track {
-    @apply h-1 w-full overflow-hidden rounded-full;
-    background-color: rgb(var(--color-warm-100) / 0.08);
+    @apply h-1 w-full overflow-hidden rounded-full bg-warm-600/30;
   }
 
   .progress-fill {
-    @apply h-full rounded-full transition-all duration-500 ease-out-expo;
-    background: linear-gradient(90deg, rgb(var(--color-gold-500)) 0%, rgb(var(--color-gold-300)) 100%);
-    box-shadow: 0 0 12px rgb(var(--color-gold-400) / 0.35);
+    @apply h-full rounded-full transition-all duration-500;
+    background: linear-gradient(90deg, rgb(var(--color-gold-400)) 0%, rgb(var(--color-gold-200)) 100%);
+    box-shadow: 0 0 10px rgb(var(--color-gold-400) / 0.4);
   }
 
-  /* 侧边栏导航 */
+  /* 侧边栏激活态导航项 */
   .nav-item {
-    @apply relative flex items-center gap-3 rounded-lg px-3 py-2 text-[13.5px] text-warm-300 transition-colors duration-150;
+    @apply flex items-center gap-3 rounded-xl px-4 py-3 text-warm-300 transition-all;
   }
 
   .nav-item:hover {
-    @apply text-warm-50;
-    background-color: rgb(var(--color-warm-100) / 0.05);
+    @apply bg-gold-500/5 text-warm-100;
   }
 
   .nav-item-active {
-    @apply text-warm-50;
-    background-color: rgb(var(--color-gold-400) / 0.1);
-    box-shadow: inset 0 0 0 1px rgb(var(--color-gold-400) / 0.14);
-  }
-
-  .nav-item-active::before {
-    content: "";
-    @apply absolute -left-3 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-gold-400;
+    @apply bg-gold-500/10 text-warm-100;
+    box-shadow: inset 0 0 0 1px rgb(var(--color-gold-400) / 0.2);
   }
 
   /* 标签 */
   .badge-gold {
-    @apply inline-flex items-center rounded-full bg-gold-400/12 px-2 py-0.5 text-[10px] font-medium tracking-wider text-gold-300;
-    box-shadow: inset 0 0 0 1px rgb(var(--color-gold-400) / 0.25);
+    @apply inline-flex items-center rounded-full bg-gold-500/15 px-2 py-0.5 text-[10px] font-medium tracking-wider text-gold-300 border border-gold-500/25;
   }
 
-  .kbd {
-    @apply inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 font-mono text-[10.5px] font-medium text-warm-400;
-    border: 1px solid var(--hairline-strong);
-    background-color: rgb(var(--color-warm-100) / 0.04);
-  }
-
-  /* 输入框 */
+  /* 鉴权页输入框 */
   .auth-input {
-    @apply w-full rounded-xl px-3.5 py-2.5 text-sm text-warm-100 outline-none transition duration-150 placeholder:text-warm-500;
-    border: 1px solid var(--hairline-strong);
-    background-color: rgb(var(--color-base-900) / 0.6);
+    @apply w-full rounded-lg border border-gold-500/15 bg-base-700/60 px-4 py-2.5 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/50;
   }
 
-  .auth-input:focus {
-    border-color: rgb(var(--color-gold-400) / 0.6);
-    box-shadow: 0 0 0 4px rgb(var(--color-gold-400) / 0.12);
-  }
-
-  /* 书籍封面占位 */
+  /* 书籍封面占位 (无封面图时使用) */
   .cover-placeholder {
     background:
-      linear-gradient(90deg, rgb(0 0 0 / 0.22) 0%, rgb(255 255 255 / 0.05) 5%, transparent 9%),
-      radial-gradient(ellipse at 28% 16%, rgb(var(--color-gold-400) / 0.34), transparent 58%),
-      linear-gradient(160deg, rgb(var(--color-base-600)) 0%, rgb(var(--color-base-700)) 48%, rgb(var(--color-base-900)) 100%);
+      radial-gradient(ellipse at 30% 20%, rgb(var(--color-gold-400) / 0.4), transparent 60%),
+      linear-gradient(135deg, rgb(var(--color-base-700)) 0%, rgb(var(--color-base-600)) 50%, rgb(var(--color-base-800)) 100%);
     box-shadow:
-      inset 0 0 36px rgb(0 0 0 / 0.35),
+      inset 0 0 40px rgb(0 0 0 / 0.45),
       inset 0 0 0 1px rgb(var(--color-gold-400) / 0.1);
   }
 
@@ -766,20 +400,7 @@ html[data-mode="light"] {
   }
 
   .app-overlay {
-    background: rgb(var(--color-overlay) / 0.62);
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-  }
-
-  .skeleton {
-    background-image: linear-gradient(
-      90deg,
-      rgb(var(--color-warm-100) / 0.04) 0%,
-      rgb(var(--color-warm-100) / 0.09) 50%,
-      rgb(var(--color-warm-100) / 0.04) 100%
-    );
-    background-size: 200% 100%;
-    @apply animate-shimmer;
+    background: rgb(var(--color-overlay) / 0.72);
   }
 }
 
@@ -787,7 +408,7 @@ html[data-mode="light"] {
 @keyframes fade-in-up {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -796,5 +417,5 @@ html[data-mode="light"] {
 }
 
 .animate-fade-in-up {
-  animation: fade-in-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fade-in-up 0.4s ease-out both;
 }

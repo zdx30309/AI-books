@@ -220,16 +220,7 @@ class ModelGateway:
         if len(prompt) > 350_000:
             raise GeneralLongformReview(f"本节点上下文为 {len(prompt)} 字符，超过 350000 限额；未截断原文或前文")
         response_id = existing.get("response_id")
-        # WRITER_PROVIDER=deepseek moves fresh writer calls to DeepSeek; a call that
-        # already has an OpenAI response id keeps reading that paid response back.
-        use_deepseek = provider == "openai" and not web and not response_id and content_engine._writer_uses_deepseek()
-        if use_deepseek:
-            provider = "deepseek"
-        model = (existing.get("model") if response_id else None) or (
-            settings.GEMINI_MODEL if provider == "gemini"
-            else (settings.DEEPSEEK_WRITER_MODEL or settings.DEEPSEEK_MODEL) if provider == "deepseek"
-            else settings.OPENAI_WRITER_MODEL
-        )
+        model = (existing.get("model") if response_id else None) or (settings.GEMINI_MODEL if provider == "gemini" else settings.OPENAI_WRITER_MODEL)
         if existing.get("status") in {"started", "uncertain"} and not response_id and not self.retry_uncertain:
             raise GeneralLongformReview("上次付费调用交付状态待核对；已保留断点，请明确确认后重试，避免重复扣费")
         if existing.get("response_status") in {"incomplete", "failed", "cancelled"}:
@@ -273,9 +264,6 @@ class ModelGateway:
             elif provider == "gemini":
                 text = gemini.generate_text(prompt, model=model, max_output_tokens=max_tokens, retries=1)
                 usage = {"input_tokens": math.ceil(len(prompt) / 2), "output_tokens": math.ceil(len(text) / 2), "estimated": True}
-            elif provider == "deepseek":
-                text, _usage = content_engine._deepseek_writer_call_result(prompt, max_output_tokens=max_tokens)
-                usage = {"input_tokens": math.ceil(len(prompt) / 2), "output_tokens": math.ceil(len(text) / 2), "estimated": True}
             else:
                 # This is the same short-form Chapter Draft Writer, not another
                 # SDK stack. Background response IDs survive worker restarts.
@@ -288,9 +276,8 @@ class ModelGateway:
             if not str(text or "").strip():
                 raise GeneralLongformReview("模型未返回有效内容，未推进下一阶段")
             record.update(text=text, usage=usage, status="completed", finished_at=now_iso())
-            rate_prefix = {"gemini": "LONG_NOVEL_GEMINI_", "deepseek": "LONG_NOVEL_DEEPSEEK_"}.get(provider, "LONG_NOVEL_")
-            input_rate = float(getattr(settings, rate_prefix + "INPUT_COST_PER_1M", 0) or 0)
-            output_rate = float(getattr(settings, rate_prefix + "OUTPUT_COST_PER_1M", 0) or 0)
+            input_rate = float(getattr(settings, "LONG_NOVEL_GEMINI_INPUT_COST_PER_1M" if provider == "gemini" else "LONG_NOVEL_INPUT_COST_PER_1M", 0) or 0)
+            output_rate = float(getattr(settings, "LONG_NOVEL_GEMINI_OUTPUT_COST_PER_1M" if provider == "gemini" else "LONG_NOVEL_OUTPUT_COST_PER_1M", 0) or 0)
             record["estimated_cost"] = round((int(usage.get("input_tokens", 0)) * input_rate + int(usage.get("output_tokens", 0)) * output_rate) / 1_000_000, 8) if input_rate or output_rate else None
             record["cost_status"] = "estimated" if record["estimated_cost"] is not None else "rate_not_configured"
             record["cost_scope"] = "configured_model_token_estimate_excludes_web_tool_charges"
@@ -562,68 +549,11 @@ def evidence_failure_message(pages_read: int, dropped: list[dict[str, Any]], exh
     return f"实际读取材料未形成可靠的来源摘要，未开始正文（已实际读取 {pages_read} 个页面{detail}）{tail}"
 
 
-def research_signature(payload: Any, prompt_version: str | None = None) -> str:
-    """Fingerprint the paid question a research slot answers.
-
-    The signature is deliberately narrow: the chapter contract, the outline and
-    the author feedback are the only inputs that can change what counts as
-    evidence for the same slot. Everything else in the render context (how much
-    prose exists today, which chapters were accepted) must never invalidate an
-    answer this book already paid for.
-    """
-
-    parts: dict[str, Any] = {"payload": payload, "prompt_version": prompt_version or ""}
-    return sha256(json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def _slot_inputs(context: dict[str, Any]) -> dict[str, Any]:
-    source = context if isinstance(context, dict) else {}
-    return {key: source.get(key) for key in ("chapter", "outline", "feedback")}
-
-
-def reusable_research(gateway: ModelGateway, slot: str, signature: str) -> dict[str, Any] | None:
-    """Return the newest approved research this book already paid for, if it answers the same question.
-
-    Every request id owns its own folder, so a failed attempt used to throw away
-    a web search the book had already paid for: the next attempt paid again for
-    the same chapter. Reuse is byte-exact: only a stored result whose slot and
-    signature match is returned, and the local page files it points at are still
-    on disk, so nothing is re-read from the network.
-    """
-
-    if not slot or not signature:
-        return None
-    root = gateway.directory / "research"
-    if not root.is_dir():
-        return None
-    folder = sha256(slot.encode()).hexdigest()[:16]
-    newest: tuple[float, dict[str, Any]] | None = None
-    for candidate in root.glob(f"*/{folder}/approved.json"):
-        if len(candidate.parts) < 3 or candidate.parts[-3] == gateway.request_id:
-            continue
-        stored = read_json(candidate, {})
-        if not isinstance(stored, dict) or stored.get("slot_signature") != signature or not stored.get("sources"):
-            continue
-        try:
-            stamp = candidate.stat().st_mtime
-        except OSError:
-            continue
-        if newest is None or stamp > newest[0]:
-            newest = (stamp, {**stored, "reused_from_request": candidate.parts[-3]})
-    return None if newest is None else newest[1]
-
-
 def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[[str], dict[str, Any]] = fetch_public_page, slot: str = "") -> dict[str, Any]:
     directory = gateway.directory / "research" / gateway.request_id / (sha256(slot.encode()).hexdigest()[:16] if slot else "plan")
     cached = read_json(directory / "approved.json")
     if cached:
         return cached
-    signature = research_signature(_slot_inputs(context), getattr(gateway, "prompt_version", None))
-    reused = reusable_research(gateway, slot, signature)
-    if reused is not None:
-        # A retry of the same question never pays a second web search.
-        atomic_json(directory / "approved.json", reused)
-        return reused
     call = gateway.call("research", context, web=True, max_tokens=8000, slot=slot)
     proposed = parse_json(call["text"])
     allowed = _tool_source_urls(call)
@@ -704,7 +634,6 @@ def research(gateway: ModelGateway, context: dict[str, Any], *, fetch: Callable[
         raise GeneralLongformReview(evidence_failure_message(len(pages), dropped, budget == 0 or used + budget >= _EVIDENCE_ATTEMPT_CAP))
     result = {"topic": proposed.get("topic", ""), "domain": proposed.get("domain", ""), "sources": approved,
               "gaps": abstracted.get("gaps", []), "errors": errors, "web_call_completed": True,
-              "rawTextIncluded": False, "retrieved_at": now_iso(), "slot": slot,
-              "slot_signature": signature}
+              "rawTextIncluded": False, "retrieved_at": now_iso()}
     atomic_json(directory / "approved.json", result)
     return result

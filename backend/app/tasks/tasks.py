@@ -8,15 +8,6 @@ Gravity Singularity - Celery 流水线任务
 """
 from __future__ import annotations
 
-from app.services.ai_or_finalizer import FinalizerHold, enabled_for, finalize_task_manuscript
-from app.services.editor_v05 import applies as editor_v05_applies
-from app.services.generation_spend import GenerationBudgetExceeded, generation_budget
-from app.services.general_short_length import LengthHold
-from app.services.task_write_guard import (
-    StaleTaskRun, TaskWriteGuard, authorize_release, check_owner, lock_pending_retry,
-)
-from app.services.polish_provider import polish_provider_name, refine_provider_name
-
 import asyncio
 import json
 import logging
@@ -45,7 +36,7 @@ from app.services.classical_chinese import (
     classical_final_title,
 )
 from app.services.classical_reference_templates import DEFAULT_REFERENCE_STYLE_GUIDE, default_reference_template_status
-from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text, verify_transcript_duration
+from app.services.bilibili import BilibiliTranscriptError, extract_bilibili_text
 from app.services.comic_series import (
     ComicGenerationPaused,
     parse_healing_comic_character_prompt,
@@ -95,7 +86,7 @@ from app.utils.paid_api_guard import (
     is_transient_rate_limit,
 )
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard, clear_task_dispatch_guard
-from app.utils.task_status import AUTO_RETRY_EXHAUSTED_STEP, public_task_step
+from app.utils.task_status import public_task_step
 from celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -110,6 +101,10 @@ _BOOK_TITLE_SECTION_RE = re.compile(
     re.MULTILINE,
 )
 _BOOK_TITLE_LINE_RE = re.compile(r"^\s*(?:\d+[\.、]\s*|[-*]\s*)?(.+?)\s*$")
+
+
+class StaleTaskRun(RuntimeError):
+    pass
 
 
 def _classical_original_title_from_config(
@@ -316,20 +311,17 @@ def _ensure_active_run(db: Session, task: Task, run_id: str) -> None:
     current_status, current_config = _read_task_run_state(db, task)
     if current_status == TaskStatus.COMPLETED:
         raise StaleTaskRun(f"task {task.id} already completed")
-    if current_config.get("generation_hold"):
-        raise StaleTaskRun(f"task {task.id} is held; stale run must not overwrite the hold")
     active_run_id = current_config.get("active_run_id")
-    if active_run_id != run_id:
+    if active_run_id and active_run_id != run_id:
         raise StaleTaskRun(
             f"task {task.id} owned by newer run {active_run_id}, current run {run_id} is stale"
         )
-    check_owner(task.id, current_status, current_config, run_id)
 
 
 def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
     task_uuid = uuid.UUID(task_id)
     task = db.execute(
-        select(Task).where(Task.id == task_uuid).with_for_update().execution_options(populate_existing=True)
+        select(Task).where(Task.id == task_uuid).with_for_update()
     ).scalar_one_or_none()
     if task is None:
         raise RuntimeError(f"Task {task_id} 不存在(可能在入队前被删除)")
@@ -338,11 +330,6 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         return task
 
     cfg = dict(task.config or {})
-    active_run_id = str(cfg.get("active_run_id") or "")
-    if active_run_id and active_run_id != run_id:
-        raise StaleTaskRun(f"task {task.id} already owned by {active_run_id}")
-    if cfg.get("auto_retry_exhausted_at"):
-        raise StaleTaskRun(f"task {task.id} requires manual retry")
     if task.status == TaskStatus.PAUSED or cfg.get("pause_requested"):
         cfg["pause_requested"] = False
         cfg["paused_at"] = datetime.now(timezone.utc).isoformat()
@@ -394,17 +381,6 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
         raise StaleTaskRun(
             f"task {task.id} already owned by active run {active_run_id}, current run {run_id} is duplicate"
         )
-    if task.status == TaskStatus.PROCESSING and active_run_id == run_id:
-        # A broker redelivery reuses the same run id (acks_late, connection loss,
-        # visibility timeout).  While the original execution still heartbeats it
-        # is alive, and taking the claim again would pay for the same book twice.
-        # Only a silent run (worker gone) may be taken over.
-        heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at"))
-        live_window = max(180, 3 * int(settings.TASK_RUN_HEARTBEAT_INTERVAL_SECONDS or 60))
-        if heartbeat is not None and (now - heartbeat).total_seconds() < live_window:
-            raise StaleTaskRun(
-                f"task {task.id} run {run_id} is still heartbeating; redelivered message is a duplicate"
-            )
 
     cfg["active_run_id"] = run_id
     cfg["active_run_started_at"] = datetime.now(timezone.utc).isoformat()
@@ -434,7 +410,6 @@ def _claim_task_run(db: Session, task_id: str, run_id: str) -> Task:
 
 
 def _clear_task_run(task: Task, run_id: str) -> None:
-    authorize_release(task, run_id)
     cfg = dict(task.config or {})
     if str(cfg.get("active_run_id") or "") != run_id:
         return
@@ -511,16 +486,9 @@ def _mark_task_paused(
     run_id: str,
     message: str = "漫画生成已暂停",
 ) -> Task | None:
-    task = db.execute(
-        select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
+    task = db.get(Task, uuid.UUID(task_id))
     if task is None:
         return None
-    cfg = dict(task.config or {})
-    if cfg.get("active_run_id") != run_id or task.status == TaskStatus.COMPLETED:
-        return task
-    authorize_release(task, run_id, pausing=True)
     _clear_task_run(task, run_id)
     cfg = dict(task.config or {})
     cfg["pause_requested"] = False
@@ -534,21 +502,6 @@ def _mark_task_paused(
     db.commit()
     db.refresh(task)
     return task
-
-
-def _stopped_run_result(db: Session, task_id: str, run_id: str) -> dict:
-    db.rollback()
-    with db.no_autoflush:
-        task = db.execute(
-            select(Task).where(Task.id == uuid.UUID(task_id))
-            .execution_options(populate_existing=True)
-        ).scalar_one_or_none()
-    if task is not None and (task.status == TaskStatus.PAUSED or (task.config or {}).get("pause_requested")):
-        task = _mark_task_paused(db, task_id, run_id, "已在安全断点暂停")
-    result = {"task_id": task_id, "status": task.status if task is not None else "stale",
-              "chapters": len(task.chapters) if task is not None else 0}
-    db.rollback()
-    return result
 
 
 def extract_video_text_with_qingdou(
@@ -779,8 +732,6 @@ def _fetch_video_text_with_duration(source_url: str, config: dict[str, Any]) -> 
         "轻抖解析完成: batch_id=%s task_id=%s duration=%s",
         result.batch_id, result.task_id, duration,
     )
-    if source_platform == "bilibili":
-        return text, verify_transcript_duration(parser_url, text, duration or config_duration)
     return text, duration or config_duration
 
 
@@ -823,7 +774,9 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
     source_text_path = str(config.get("source_text_path") or "").strip()
     if not source_text_path:
         return ""
-    path = _task_input_file(source_text_path)
+    path = Path(source_text_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
@@ -832,19 +785,6 @@ def _source_text_from_config(config: dict[str, Any], *, task_label: str) -> str:
         raise ValueError("上传的 Word 正文文件为空，请重新上传")
     logger.info("[%s] 使用 source_text_path 提供的预解析文案 (%d 字): %s", task_label, len(text), source_text_path)
     return text
-
-
-
-def _task_input_file(raw_path: str) -> Path:
-    """Resolve a stored input path, refusing anything outside the backend tree."""
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    resolved = path.resolve()
-    allowed_root = (PROJECT_ROOT / "backend").resolve()
-    if not resolved.is_relative_to(allowed_root):
-        raise ValueError(f"输入文件路径不在允许的目录内：{raw_path}")
-    return resolved
 
 
 def _has_usable_cached_source_text(task: Task) -> bool:
@@ -898,7 +838,9 @@ def _style_notes_from_config(config: dict[str, Any], *, task_label: str) -> str:
             return inline_notes
     if not style_notes_path:
         return inline_notes
-    path = _task_input_file(style_notes_path)
+    path = Path(style_notes_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
@@ -1342,7 +1284,7 @@ def _quarantine_terminal_input_task(task: Task) -> None:
 
 
 def _retry_exhausted_step(message: str) -> str:
-    return AUTO_RETRY_EXHAUSTED_STEP
+    return "暂时中断，已保留断点；系统会自动继续生成"[:255]
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -1401,10 +1343,7 @@ def _record_dispatch_metadata(task_id: str, **values: Any) -> None:
 
     try:
         with SessionLocal() as db:
-            task = db.execute(
-                select(Task).where(Task.id == uuid.UUID(str(task_id))).with_for_update()
-                .execution_options(populate_existing=True)
-            ).scalar_one_or_none()
+            task = db.get(Task, uuid.UUID(str(task_id)))
             if task is None:
                 return
             cfg = dict(task.config or {})
@@ -1425,7 +1364,6 @@ def _schedule_pending_task_wakeup(
     delay_seconds: int,
     *,
     reason: str,
-    expected_run_id: str | None = None,
 ) -> str | None:
     """Publish a durable, lightweight wake-up for a pending task.
 
@@ -1437,23 +1375,6 @@ def _schedule_pending_task_wakeup(
     """
 
     delay = max(1, int(delay_seconds or 1))
-    if expected_run_id is not None:
-        with SessionLocal() as dispatch_db:
-            lock_pending_retry(dispatch_db, uuid.UUID(task_id), expected_run_id)
-            result = celery_app.send_task(
-                "tasks.resume_pending_task", args=[str(task_id)], countdown=delay,
-                expires=delay + 3600, queue="celery",
-            )
-            wakeup_id = str(getattr(result, "id", "") or "") or None
-            dispatch_task = dispatch_db.get(Task, uuid.UUID(task_id))
-            _patch_config(
-                dispatch_task, pending_wakeup_task_id=wakeup_id,
-                pending_wakeup_scheduled_at=datetime.now(timezone.utc).isoformat(),
-                pending_wakeup_delay_seconds=delay, pending_wakeup_reason=str(reason)[:200],
-                pending_wakeup_last_error=None,
-            )
-            dispatch_db.commit()
-            return wakeup_id
     try:
         result = celery_app.send_task(
             "tasks.resume_pending_task",
@@ -1513,7 +1434,6 @@ def dispatch_pending_task_if_due(task_id: str) -> dict[str, Any]:
         cfg = dict(task.config or {})
         if (
             cfg.get("generation_hold")
-            or cfg.get("auto_retry_exhausted_at")
             or cfg.get("paid_call_delivery_uncertain")
             or cfg.get("paid_call_manual_resume_required")
             or cfg.get("pause_requested")
@@ -1603,7 +1523,6 @@ def _dispatch_task_ids(
                     continue
                 if (
                     cfg.get("generation_hold")
-                    or cfg.get("auto_retry_exhausted_at")
                     or cfg.get("paid_call_delivery_uncertain")
                     or cfg.get("paid_call_manual_resume_required")
                     or cfg.get("pause_requested")
@@ -1735,7 +1654,6 @@ def requeue_stale_processing_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
-                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1784,7 +1702,6 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
-                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1796,7 +1713,7 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 continue
             if last_recovered_at is not None and last_recovered_at > cutoff:
                 continue
-            message = cfg.get("last_auto_retry_error") or task.error_message
+            message = task.error_message or cfg.get("last_auto_retry_error")
             message_text = str(message or "")
             if terminal_input_failure:
                 _quarantine_terminal_input_task(task)
@@ -1901,7 +1818,6 @@ def revive_recoverable_terminal_input_reviews(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
-                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1998,7 +1914,6 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
-                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -2012,7 +1927,7 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
                 _quarantine_terminal_input_task(task)
                 clear_task_dispatch_guard(str(task.id))
                 continue
-            message = cfg.get("last_auto_retry_error") or task.error_message
+            message = task.error_message or cfg.get("last_auto_retry_error")
             quota_backoff = _is_paid_quota_backoff_error(str(message or "")) or (
                 bool(cfg.get("paid_api_backoff"))
                 and str(cfg.get("paid_api_backoff_reason") or "")
@@ -2100,7 +2015,6 @@ def requeue_orphan_pending_tasks(*, limit: int = 500) -> int:
             terminal_input_failure = _has_terminal_input_failure(task)
             if (
                 cfg.get("generation_hold")
-                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -2500,12 +2414,8 @@ def _persist_chapters_from_markdown(
     markdown: str,
     *,
     category: str | None = None,
-    commit: bool = True,
 ) -> int:
     """从新引擎生成的 Markdown 中拆出章节并落库，维持旧 API 可观测性。"""
-    guard = getattr(db, "info", {}).get("task_write_guard")
-    if guard is not None:
-        guard.lock()
     if _is_finance_integrity_category(category):
         parts = _finance_chapter_parts(markdown)
         numbers = [number for number, _title, _content in parts]
@@ -2523,8 +2433,7 @@ def _persist_chapters_from_markdown(
                     word_count=len(content),
                 )
             )
-        if commit:
-            db.commit()
+        db.commit()
         return len(parts)
 
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
@@ -2547,8 +2456,7 @@ def _persist_chapters_from_markdown(
     if not matches:
         chapter = Chapter(task_id=task.id, chapter_num=1, title="全文", content=markdown, word_count=len(markdown))
         db.add(chapter)
-        if commit:
-            db.commit()
+        db.commit()
         return 1
 
     for idx, match in enumerate(matches):
@@ -2565,8 +2473,7 @@ def _persist_chapters_from_markdown(
             word_count=len(content or markdown),
         )
         db.add(chapter)
-    if commit:
-        db.commit()
+    db.commit()
     return len(matches)
 
 
@@ -2587,7 +2494,6 @@ def process_video(_self, task_id: str) -> dict:
     run_id = str(getattr(getattr(_self, "request", None), "id", "") or uuid.uuid4())
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
-    write_guard: TaskWriteGuard | None = None
 
     try:
         task = _claim_task_run(db, task_id, run_id)
@@ -2595,7 +2501,6 @@ def process_video(_self, task_id: str) -> dict:
         if task.status == TaskStatus.COMPLETED:
             return {"task_id": str(task.id), "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
 
-        write_guard = TaskWriteGuard(db, task, run_id)
         heartbeat_stop, heartbeat_thread = _start_active_run_heartbeat(task_id, run_id)
 
         _update_progress(db, task, progress=1, step="任务启动", run_id=run_id)
@@ -2661,11 +2566,11 @@ def process_video(_self, task_id: str) -> dict:
             "comic_structure_done": (45, f"{comic_label}短语结构已生成"),
             "comic_images_start": (86, f"{comic_label}配图启动"),
             "comic_image": (88, f"{comic_label}配图生成中"),
-            "writer_start": (28, f"{settings.WRITER_PROVIDER} 主模型生成初稿中"),
+            "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
-            "polish_start": (50, f"{polish_provider_name()} 一润启动"),
-            "polish_done": (70, f"{polish_provider_name()} 一润完成"),
-            "refine_start": (72, f"{refine_provider_name()} 二润中"),
+            "polish_start": (50, "Gemini 一润启动"),
+            "polish_done": (70, "Gemini 一润完成"),
+            "refine_start": (72, "Gemini 二润中"),
             "refine_done": (85, "二润完成"),
             "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
@@ -2682,7 +2587,7 @@ def process_video(_self, task_id: str) -> dict:
                         db,
                         task,
                         progress=prog,
-                        step=f"{settings.WRITER_PROVIDER} 主模型生成初稿中（已生成 {chars:,} 字）",
+                        step=f"OpenAI 主模型生成初稿中（已生成 {chars:,} 字）",
                         run_id=run_id,
                     )
                     return
@@ -2693,14 +2598,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 70),
-                        step=f"{polish_provider_name()} 一润 {idx}/{total} 块",
-                        run_id=run_id,
-                    )
-                    return
-                if stage == "length_repair_chapter":
-                    _update_progress(
-                        db, task, progress=48,
-                        step=f"DeepSeek 局部补足正文 {info.get('idx')}/{info.get('total')} 章",
+                        step=f"Gemini 一润 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return
@@ -2711,7 +2609,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 85),
-                        step=f"{refine_provider_name()} 二润 {idx}/{total} 块",
+                        step=f"Gemini 二润 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return
@@ -2756,8 +2654,7 @@ def process_video(_self, task_id: str) -> dict:
         db.flush()
         _ensure_active_run(db, task, run_id)
         db.commit()
-        with generation_budget(task.config or {}, output_dir):
-            markdown = asyncio.run(
+        markdown = asyncio.run(
             generate_full_book(
                 video_text,
                 category=category,
@@ -2789,27 +2686,12 @@ def process_video(_self, task_id: str) -> dict:
                 ),
                 input_source=input_source,
                 source_duration_seconds=_duration_seconds_from_config(task.config or {}),
-                aigc_required=False if enabled_for(task.created_at) else bool((task.config or {}).get("aigc_required")),
+                aigc_required=bool((task.config or {}).get("aigc_required")),
                 aigc_policy_version=str((task.config or {}).get("aigc_policy_version") or "") or None,
-                approved_final_structure_repair_sha256=(task.config or {}).get("approved_final_structure_repair_sha256"),
-                approved_length_repair_sha256=(task.config or {}).get("approved_length_repair_sha256"),
-                editor_v05_delivery=editor_v05_applies(task),
             )
         )
         _ensure_active_run(db, task, run_id)
         markdown = normalize_final_markdown(markdown, category=category)
-        with generation_budget(task.config or {}, output_dir):
-            markdown = finalize_task_manuscript(
-                task, markdown, output_dir,
-                progress=lambda label: _update_progress(db, task, progress=94, step=label, run_id=run_id),
-            )
-        from app.services.content_engine import _length_guard_category
-
-        length_guard = _length_guard_category(category, editor_v05_applies(task))
-        if length_guard:
-            from app.services.general_short_length import require_length
-
-            require_length(markdown, length_guard)
         integrity_issue, integrity_parts = _finance_completion_integrity_issue(
             task,
             markdown,
@@ -2923,6 +2805,7 @@ def process_video(_self, task_id: str) -> dict:
             status=TaskStatus.COMPLETED,
             run_id=run_id,
         )
+        _clear_task_run(task, run_id)
         if is_comic_category:
             comic_cover_image = output_dir / "comic_images" / "comic_cover.png"
             if not comic_cover_image.exists():
@@ -2947,8 +2830,6 @@ def process_video(_self, task_id: str) -> dict:
         db.commit()
         if not is_comic_category and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
             enqueue_cover_generation(db, task, force=False)
-        _clear_task_run(task, run_id)
-        db.commit()
 
         return {
             "task_id": str(task.id),
@@ -2958,7 +2839,13 @@ def process_video(_self, task_id: str) -> dict:
 
     except StaleTaskRun as e:
         logger.warning("[task %s] stale run skipped: %s", task_id, e)
-        return _stopped_run_result(db, task_id, run_id)
+        db.rollback()
+        latest = db.get(Task, uuid.UUID(task_id))
+        return {
+            "task_id": task_id,
+            "status": latest.status if latest is not None else "stale",
+            "chapters": len(latest.chapters) if latest is not None else 0,
+        }
 
     except ComicGenerationPaused as e:
         logger.info("[task %s] healing comic generation paused: %s", task_id, e)
@@ -2966,7 +2853,7 @@ def process_video(_self, task_id: str) -> dict:
         paused_task = _mark_task_paused(db, task_id, run_id, str(e))
         return {
             "task_id": task_id,
-            "status": paused_task.status if paused_task is not None else "stale",
+            "status": TaskStatus.PAUSED,
             "chapters": len(paused_task.chapters) if paused_task is not None else 0,
         }
 
@@ -3000,34 +2887,10 @@ def process_video(_self, task_id: str) -> dict:
             review_task.config = cfg
             _clear_task_run(review_task, run_id)
             review_task.status = TaskStatus.MANUAL_REVIEW
-            review_task.progress = int(review_task.progress or 0) if isinstance(e, LengthHold) else max(93, int(review_task.progress or 0))
-            review_task.current_step = (
-                str(e) if isinstance(e, (GenerationBudgetExceeded, LengthHold)) else
-                "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
-                if isinstance(e, FinalizerHold)
-                else "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
-            )
-            if isinstance(e, FinalizerHold):
-                _patch_config(review_task, ai_or_finalizer_status="manual_review", generation_hold=True,
-                              generation_hold_reason=str(e), generation_hold_step=review_task.current_step)
-                if editor_v05_applies(review_task):
-                    _patch_config(review_task, editor_v05_status="manual_review")
-            from app.services.editor_v05 import SimilarityGateHold
-            from app.services.standard_chapter_guard import ChapterStructureHold
-
-            if isinstance(e, ChapterStructureHold):
-                cfg = dict(review_task.config or {})
-                cfg.update(chapter_structure_status="manual_review", generation_hold=True,
-                           generation_hold_reason=str(e), generation_hold_step=str(e)[:255])
-                review_task.config = cfg
-            if isinstance(e, SimilarityGateHold):
-                _patch_config(review_task, **e.config_patch)
-                review_task.current_step = str(e)[:255]
+            review_task.progress = max(93, int(review_task.progress or 0))
+            review_task.current_step = "朱雀与文稿质量未能同时达标，已保留 04_format.md 原稿，等待人工复核"
             review_task.error_message = str(e)[:2000]
-            try:
-                db.commit()
-            except StaleTaskRun:
-                return _stopped_run_result(db, task_id, run_id)
+            db.commit()
         return {
             "task_id": task_id,
             "status": TaskStatus.MANUAL_REVIEW,
@@ -3096,13 +2959,11 @@ def process_video(_self, task_id: str) -> dict:
                         retries=current_retries,
                         transient_rate_limit=is_transient_rate_limit(e),
                     )
-                    _patch_config(task, auto_retry_scheduled_by=run_id)
                     db.commit()
                     _schedule_pending_task_wakeup(
                         task_id,
                         delay_seconds,
                         reason="paid provider backoff",
-                        expected_run_id=run_id,
                     )
                     return {
                         "task_id": task_id,
@@ -3145,7 +3006,6 @@ def process_video(_self, task_id: str) -> dict:
                         task_id,
                         delay_seconds,
                         reason="provider backoff retry",
-                        expected_run_id=run_id,
                     )
                     return {"task_id": task_id, "status": TaskStatus.PENDING, "chapters": len(task.chapters) if task is not None else 0}
                 elif _is_retryable_generation_error(e) and current_retries < max_retries:
@@ -3177,20 +3037,10 @@ def process_video(_self, task_id: str) -> dict:
                     task.current_step = (
                         _retry_exhausted_step(message) if _is_retryable_generation_error(e) else f"失败：{message}"
                     )[:255]
-                    if _is_retryable_generation_error(e):
-                        task.error_message = _retry_exhausted_step(message)
                 db.commit()
-        except StaleTaskRun:
-            return _stopped_run_result(db, task_id, run_id)
         except Exception:
-            retry_countdown = None
-            db.rollback()
             logger.exception("[task %s] 写入失败状态时再次出错", task_id)
         if retry_countdown is not None:
-            try:
-                lock_pending_retry(db, uuid.UUID(task_id), run_id)
-            except StaleTaskRun:
-                return _stopped_run_result(db, task_id, run_id)
             try:
                 acquire_task_dispatch_guard(task_id, ttl_seconds=retry_countdown + 600)
             except Exception:
@@ -3208,8 +3058,6 @@ def process_video(_self, task_id: str) -> dict:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=2)
-        if write_guard is not None:
-            write_guard.close()
         db.close()
 
 
@@ -3407,13 +3255,6 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
         active_run = str(cfg.get("active_run_id") or "")
         if active_run and active_run != run_id and task.status == TaskStatus.PROCESSING:
             return {"task_id": task_id, "status": "already_running"}
-        if active_run == run_id and task.status == TaskStatus.PROCESSING:
-            # Same guard as _claim_task_run: a redelivered message for a run that
-            # is still heartbeating must not start a second paid execution.
-            heartbeat = _parse_iso_datetime(cfg.get("active_run_heartbeat_at"))
-            live_window = max(180, 3 * int(settings.TASK_RUN_HEARTBEAT_INTERVAL_SECONDS or 60))
-            if heartbeat is not None and (datetime.now(timezone.utc) - heartbeat).total_seconds() < live_window:
-                return {"task_id": task_id, "status": "already_running"}
         cfg.update(
             active_run_id=run_id,
             active_run_started_at=datetime.now(timezone.utc).isoformat(),
@@ -3544,7 +3385,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             else "长篇质量终审通过，正在执行最终交付闸门",
         )
 
-        if bool(cfg.get("aigc_required")) and not enabled_for(task.created_at):
+        if bool(cfg.get("aigc_required")):
             try:
                 gate_result = asyncio.run(
                     enforce_aigc_quality_gate(
@@ -3589,14 +3430,6 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             cfg.update(aigc_status="not_required", aigc_passed=True, aigc_quality_passed=True)
             task.config = cfg
 
-        final_markdown = finalize_task_manuscript(
-            task, final_markdown, output_dir,
-            progress=lambda label: update(96, label),
-        )
-        if enabled_for(task.created_at):
-            _, _, final_chapters = parse_final_markdown(final_markdown)
-            if len(final_chapters) != len(result.chapters):
-                raise FinalizerHold("双稿纠错后章节数不一致，需要人工确认")
         db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
         for chapter in final_chapters:
             db.add(
@@ -3671,13 +3504,7 @@ def process_public_domain_longform(_self, task_id: str) -> dict:
             clear_run()
             task.status = TaskStatus.MANUAL_REVIEW
             task.progress = 96
-            task.current_step = (
-                "降AI或双稿纠错已暂停；原稿和付费断点已保留，等待人工核对"
-                if isinstance(exc, FinalizerHold)
-                else "高质量公版长篇原稿已保留；朱雀候选未通过全部终稿闸门"
-            )
-            if isinstance(exc, FinalizerHold):
-                _patch_config(task, ai_or_finalizer_status="manual_review")
+            task.current_step = "高质量公版长篇原稿已保留；朱雀候选未通过全部终稿闸门"
             task.error_message = str(exc)[:2000]
             db.commit()
         return {"task_id": task_id, "status": TaskStatus.MANUAL_REVIEW}

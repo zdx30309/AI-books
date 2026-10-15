@@ -14,8 +14,6 @@ import {
   type ThemeOption,
 } from "./themes";
 
-// index.html reads the same key before React boots, so the first paint already
-// uses the stored theme.
 const STORAGE_KEY = "video-plan-ui-theme";
 
 type ThemeContextValue = {
@@ -39,12 +37,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const root = document.documentElement;
-    const theme = getThemeById(themeId);
     root.dataset.theme = themeId;
-    root.dataset.mode = theme.mode;
-    document
-      .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme.preview.bg);
     window.localStorage.setItem(STORAGE_KEY, themeId);
   }, [themeId]);
 

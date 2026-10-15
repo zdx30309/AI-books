@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
-from uuid import UUID, uuid4
+from uuid import UUID
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -72,7 +72,6 @@ from app.schemas.task import (
     BatchRetryTaskResponse,
     CreateTaskRequest,
     CreateTaskResponse,
-    LengthRepairApprovalRequest,
     ClassicalReferenceTemplateResponse,
     MarkdownResponse,
     RegenerateCoverRequest,
@@ -88,7 +87,6 @@ from app.schemas.task import (
     TaskStatusResponse,
 )
 from app.services.gemini import regenerate_selected_text
-from app.services.editor_v05 import VIDEO_REJECTED, similarity_retry_reason
 from app.services.video_sources import (
     canonical_source_url,
     detect_video_source_platform,
@@ -143,7 +141,6 @@ _RETRY_STAGE_PROGRESS: tuple[tuple[str, int, str], ...] = (
     ("01_writer.md", 50, "排队中（断点续跑：从一润继续）"),
 )
 _REGENERATE_CONFIG_DROP_KEYS = {
-    "approved_length_repair_sha256",
     "active_run_id",
     "active_run_started_at",
     "active_run_heartbeat_at",
@@ -233,54 +230,8 @@ def _ensure_generation_capacity(db: Session, *, requested: int = 1) -> None:
         )
 
 
-#: Keys the server owns. A client-supplied value would let a request read files
-#: on the server (``*_path``), override worker limits or forge run/hold state.
-_SERVER_OWNED_CONFIG_KEYS = frozenset(
-    {
-        "source_text_path",
-        "style_notes_path",
-        "poll_timeout_seconds",
-        "max_video_duration",
-        "public_domain_longform_v2",
-        "generation_hold",
-        "generation_complete",
-        "pause_requested",
-        "editor_v05_status",
-        "editor_v05_similarity",
-        "editor_v05_verdict",
-        "editor_v05_similarity_history",
-        "editor_v05_similarity_attempt",
-        "editor_v05_generation_attempt",
-        "editor_v05_video_rejected",
-        "editor_v05_previous_generation_path",
-        "approved_length_repair_sha256",
-    }
-)
-_SERVER_OWNED_CONFIG_PREFIXES = (
-    "active_run_",
-    "paid_api_",
-    "paid_call_",
-    "generation_hold",
-    "auto_retry_",
-    "dispatch_",
-    "pending_wakeup_",
-    "failed_auto_recovery_",
-    "orphan_requeue_",
-    "terminal_input_",
-    "aigc_",
-)
-
-
-def _strip_server_owned_config(cfg: dict) -> dict:
-    return {
-        key: value
-        for key, value in cfg.items()
-        if key not in _SERVER_OWNED_CONFIG_KEYS and not str(key).startswith(_SERVER_OWNED_CONFIG_PREFIXES)
-    }
-
-
 def _normalize_task_config(config: dict | None) -> dict:
-    cfg = _strip_server_owned_config(dict(config or {}))
+    cfg = dict(config or {})
     try:
         category = normalize_category(str(cfg.get("category") or "social_science"))
         category_meta = get_category_meta(category)
@@ -773,16 +724,7 @@ def _has_active_run(task: Task) -> bool:
     return bool(str((task.config or {}).get("active_run_id") or "").strip())
 
 
-def _locked_owned_task(db: Session, task_id: UUID, owner_id: UUID):
-    with db.no_autoflush:
-        return db.execute(select(Task).where(Task.id == task_id, Task.owner_id == owner_id)
-                          .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
-
-
 def _prepare_task_for_retry(task: Task) -> None:
-    reason = similarity_retry_reason(task.config or {})
-    if reason:
-        raise HTTPException(status_code=409, detail=reason)
     cfg = dict(task.config or {})
     cfg.pop("active_run_id", None)
     cfg.pop("active_run_started_at", None)
@@ -791,7 +733,6 @@ def _prepare_task_for_retry(task: Task) -> None:
     cfg.pop("last_auto_retry_error", None)
     cfg.pop("auto_retry_not_before", None)
     cfg.pop("auto_retry_scheduled_by", None)
-    cfg.pop("auto_retry_exhausted_at", None)
     cfg.pop("pause_requested", None)
     cfg.pop("pause_requested_at", None)
     cfg.pop("paused_at", None)
@@ -856,40 +797,10 @@ def _clear_task_output_dir(task_id: UUID) -> None:
 def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
     if task.category == "general_longform":
         raise HTTPException(status_code=409, detail="通用长篇保留版本与验收状态，请在专属工作区局部修订或恢复断点")
-    cfg = dict(task.config or {})
-    if cfg.get("editor_v05_video_rejected"):
-        raise HTTPException(status_code=409, detail=VIDEO_REJECTED)
-    similarity_regeneration = cfg.get("editor_v05_status") == "similarity_blocked"
-    if similarity_regeneration:
-        if cfg.get("paid_call_delivery_uncertain") or cfg.get("paid_call_manual_resume_required"):
-            raise HTTPException(status_code=409, detail="付费结果尚未核对，不能重新生成")
-        import shutil
-
-        output_dir = _task_output_dir(task.id)
-        if output_dir.exists():
-            archive = output_dir.parent / "_regeneration_history" / str(task.id) / str(uuid4())
-            archive.parent.mkdir(parents=True, exist_ok=True)
-            output_dir.rename(archive)
-            try:
-                output_dir.mkdir()
-                ledger = archive / "generation_spend.json"
-                if ledger.exists():
-                    shutil.copy2(ledger, output_dir / ledger.name)
-            except Exception:
-                shutil.rmtree(output_dir, ignore_errors=True)
-                archive.rename(output_dir)
-                raise
-            cfg["editor_v05_previous_generation_path"] = str(archive)
-        for key in ("generation_hold", "generation_hold_reason", "generation_hold_step", "generation_hold_at"):
-            cfg.pop(key, None)
-        cfg["editor_v05_generation_attempt"] = int(cfg.get("editor_v05_generation_attempt") or
-                                                    cfg.get("editor_v05_similarity_attempt") or 1) + 1
-        cfg["editor_v05_status"] = "pending"
-        cfg.pop("ai_or_finalizer_status", None)
-    else:
-        _clear_task_output_dir(task.id)
+    _clear_task_output_dir(task.id)
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
 
+    cfg = dict(task.config or {})
     for key in _REGENERATE_CONFIG_DROP_KEYS:
         cfg.pop(key, None)
     cfg = _stamp_aigc_policy(cfg)
@@ -1546,10 +1457,6 @@ def retry_failed_tasks(
                 )
             )
             continue
-        reason = similarity_retry_reason(task.config or {})
-        if reason:
-            skipped.append(BatchRetryTaskItem(task_id=task.id, status="skipped", reason=reason))
-            continue
         if bool((task.config or {}).get("public_domain_longform_v2")):
             if bool((task.config or {}).get("generation_complete")):
                 skipped.append(
@@ -1662,15 +1569,6 @@ def regenerate_tasks(
                 )
             )
             continue
-        if (task.config or {}).get("editor_v05_video_rejected"):
-            skipped.append(
-                BatchRegenerateTaskItem(
-                    task_id=task.id,
-                    status="skipped",
-                    reason=f"{VIDEO_REJECTED}：两次生成与原视频相似度均不低于50%，不再重新生成",
-                )
-            )
-            continue
         regeneratable.append(task)
 
     if regeneratable:
@@ -1765,7 +1663,7 @@ def pause_comic_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TaskStatusResponse:
-    task = _locked_owned_task(db, task_id, user.id)
+    task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
@@ -1808,13 +1706,10 @@ def retry_task(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     _ensure_generation_capacity(db)
-    task = _locked_owned_task(db, task_id, user.id)
+    task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-    reason = similarity_retry_reason(task.config or {})
-    if reason:
-        raise HTTPException(status_code=409, detail=reason)
     if task.status == TaskStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="任务已完成，不能重新投递，避免重复消耗 API。")
     if task.status == TaskStatus.PROCESSING or _has_active_run(task):
@@ -1829,7 +1724,6 @@ def retry_task(
             cfg.get(key)
             for key in (
                 "generation_hold",
-                "auto_retry_exhausted_at",
                 "paid_call_delivery_uncertain",
                 "paid_call_manual_resume_required",
                 "paid_api_backoff",
@@ -1904,13 +1798,10 @@ def retry_task_aigc(
     user: User = Depends(get_current_user),
 ) -> CreateTaskResponse:
     """Resume at the v2 gate without regenerating paid upstream stages."""
-    task = _locked_owned_task(db, task_id, user.id)
+    task = db.get(Task, task_id)
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     cfg = dict(task.config or {})
-    reason = similarity_retry_reason(cfg)
-    if reason:
-        raise HTTPException(status_code=409, detail=reason)
     if bool(cfg.get("public_domain_rewrite")):
         raise HTTPException(
             status_code=409,
@@ -3121,31 +3012,6 @@ def download_batch_direct(
     return _build_batch_download_response(ids, fmt=fmt, db=db, user=user)
 
 
-def _build_similarity_report_response(task: Task) -> Response:
-    """Serve the newest valid Word similarity report for a task."""
-    from urllib.parse import quote
-
-    report_dir = _task_output_dir(task.id) / "04_文本相似度审查报告"
-    if not report_dir.is_dir():
-        raise HTTPException(
-            status_code=404,
-            detail="该任务未生成文本相似度审查报告（0.5版或通用短篇需要完整原稿）",
-        )
-    reports = sorted(report_dir.glob("*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not reports:
-        raise HTTPException(status_code=404, detail="审查报告目录中没有 .docx 文件")
-    path = reports[0]
-    return FileResponse(
-        path,
-        filename=path.name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}",
-        },
-    )
-
-
 def _build_single_download_response(
     db: Session,
     task: Task,
@@ -3163,16 +3029,6 @@ def _build_single_download_response(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = str((task.config or {}).get("category") or "")
-    if ((task.config or {}).get("ai_or_finalizer_status") == "completed" and fmt == "docx"
-            and category != "comic_series" and not is_healing_comic_family(category)):
-        directory = _task_output_dir(task.id) / "ai_or_finalizer"
-        if (task.config or {}).get("editor_v05_status") == "completed":
-            directory = _task_output_dir(task.id) / "editor_v05/ai_or_finalizer"
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        filename = manifest["artifacts"]["docx"]
-        return FileResponse(directory / filename, filename=filename,
-                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            headers={"Cache-Control": "no-store"})
     if category == "general_longform" and fmt == "docx":
         path, filename = _general_longform_book_file(task)
         return FileResponse(path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Cache-Control": "no-store"})
@@ -3233,107 +3089,6 @@ def download_markdown(
     return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
 
 
-@router.get("/{task_id}/ai-or-delivery", summary="下载降AI与双稿纠错交付包")
-def download_ai_or_delivery(task_id: UUID, db: Session = Depends(get_db),
-                           user: User = Depends(get_current_user)):
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if task.status != TaskStatus.COMPLETED or (task.config or {}).get("ai_or_finalizer_status") != "completed":
-        raise HTTPException(status_code=409, detail="降AI纠错交付尚未完成")
-    directory = _task_output_dir(task.id) / "ai_or_finalizer"
-    if (task.config or {}).get("editor_v05_status") == "completed":
-        directory = _task_output_dir(task.id) / "editor_v05/ai_or_finalizer"
-    path = directory / "delivery.zip"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="交付文件不存在")
-    return FileResponse(path, filename=f"降AI纠错_{task.id}.zip", media_type="application/zip")
-
-
-@router.get("/{task_id}/corrections.xlsx", summary="请求头鉴权下载纠错Excel")
-def download_corrections_excel(task_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    root = _task_output_dir(task.id)
-    directories = (root / "editor_v05/ai_or_finalizer", root / "ai_or_finalizer")
-    for directory in directories:
-        manifest_path = directory / "manifest.json"
-        if not manifest_path.is_file():
-            continue
-        try:
-            manifest = json.loads(manifest_path.read_text())
-            filename = manifest.get("artifacts", {}).get("xlsx")
-            if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".xlsx"):
-                continue
-            path = (directory / filename).resolve()
-            if not path.is_relative_to(directory.resolve()) or not path.is_file():
-                continue
-        except (OSError, ValueError, TypeError):
-            continue
-        return FileResponse(path, filename=filename,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-    raise HTTPException(status_code=404, detail="该任务尚无可下载的纠错Excel")
-
-
-@router.get("/{task_id}/length-repair", summary="核验并读取局部篇幅待批准稿")
-def get_length_repair(task_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    from app.services.length_repair_approval import candidate_summary
-
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return candidate_summary(task, _task_output_dir(task.id))
-
-
-@router.post("/{task_id}/length-repair", response_model=CreateTaskResponse, summary="人工核验hash批准局部稿并恢复")
-def approve_length_repair(task_id: UUID, body: LengthRepairApprovalRequest,
-                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    from app.services.general_short_length import LengthHold
-    from app.services.general_longform_runtime import atomic_json
-    from app.services.length_repair_approval import verified_candidate
-
-    with db.no_autoflush:
-        task = db.execute(select(Task).where(Task.id == task_id, Task.owner_id == user.id)
-                          .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    cfg = dict(task.config or {})
-    if (cfg.get("approved_length_repair_sha256") == body.result_sha256
-            and task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING}):
-        return CreateTaskResponse(task_id=task.id, status=task.status)
-    if task.status not in {TaskStatus.MANUAL_REVIEW, TaskStatus.FAILED, TaskStatus.PAUSED} or _has_active_run(task):
-        raise HTTPException(status_code=409, detail="任务仍在执行或已完成，不能批准旧稿")
-    reason = similarity_retry_reason(cfg)
-    if reason:
-        raise HTTPException(status_code=409, detail=reason)
-    if cfg.get("paid_call_delivery_uncertain") or cfg.get("paid_call_manual_resume_required"):
-        raise HTTPException(status_code=409, detail="付费结果尚未核对，不能恢复")
-    try:
-        record = verified_candidate(task, _task_output_dir(task.id))
-    except (OSError, ValueError, KeyError, TypeError, LengthHold) as exc:
-        raise HTTPException(status_code=409, detail="局部修复稿无效或hash变化，不能批准") from exc
-    if record["result_sha256"] != body.result_sha256:
-        raise HTTPException(status_code=409, detail="页面hash已过期，请重新查看修复稿")
-    _ensure_generation_capacity(db)
-    approval = {**record, "status": "approved", "human_approval": str(user.id),
-                "approved_at": datetime.now(timezone.utc).isoformat()}
-    atomic_json(_task_output_dir(task.id) / "approved_length_repair/approval.json", approval)
-    task.config = {**cfg, "approved_length_repair_sha256": body.result_sha256}
-    _prepare_task_for_retry(task)
-    task.current_step = "人工批准局部篇幅稿，按原累计预算从断点继续"
-    db.commit()
-    db.refresh(task)
-    try:
-        _dispatch_task(task)
-    except Exception as exc:
-        _mark_dispatch_failure_pending(task, exc)
-        db.commit()
-        raise HTTPException(status_code=503, detail="批准已保存，任务投递暂时失败；请勿重复生成压缩稿") from exc
-    return CreateTaskResponse(task_id=task.id, status=task.status)
-
-
 @router.get(
     "/{task_id}/download/direct",
     summary="下载最终稿 (md/docx/txt, browser-native)",
@@ -3355,62 +3110,6 @@ def download_markdown_direct(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return _build_single_download_response(db, task, fmt, comic_preview_images=preview)
-
-
-@router.get(
-    "/{task_id}/similarity-report",
-    summary="下载文本相似度审查报告 Word（通用短篇）",
-)
-def download_similarity_report(
-    task_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> Response:
-    """Return the v09 section-ten Word report for this task, if one exists."""
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    return _build_similarity_report_response(task)
-
-
-@router.get(
-    "/{task_id}/similarity-report/direct",
-    summary="下载文本相似度审查报告 Word（浏览器直下）",
-)
-def download_similarity_report_direct(
-    task_id: UUID,
-    token: str | None = Query(None),
-    authorization: str | None = Header(None),
-    db: Session = Depends(get_db),
-) -> Response:
-    user = _get_current_user_from_download_token(
-        db, authorization=authorization, token=token
-    )
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    return _build_similarity_report_response(task)
-
-
-@router.get(
-    "/{task_id}/similarity-report/data",
-    summary="读取文本相似度审查数据 JSON（通用短篇）",
-)
-def get_similarity_report_data(
-    task_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict:
-    task = db.get(Task, task_id)
-    if task is None or task.owner_id != user.id:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    path = _task_output_dir(task.id) / "05_differentiation_report.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="该任务未生成相似度审查数据")
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"审查数据无法解析：{exc}") from exc
 
 
 @router.get(

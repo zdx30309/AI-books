@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from app.prompts.general_longform_prompts import registry_prompts as _general_longform_prompts
-from app.prompts.general_short_prompts import writer_template as _general_short_writer_template
 
 from app.services.comic_prompts import (
     COMIC_COPYRIGHT_RULE,
@@ -421,13 +420,6 @@ CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "通用长篇",
         "core_feature": "完整十万字创作指令，先确认大纲，再逐章研究、写作与验收",
         "directions": "九领域选题、12—15章、十万字、双Word交付、来源与编辑记录",
-        "prompt_status": "ready",
-    },
-    {
-        "id": "general_short",
-        "label": "通用短篇",
-        "core_feature": "任意视频链接可用，以视频为选题灵感独立成书，8—10章约2万字",
-        "directions": "九领域自动判断、写法自适应、单层章节、来源差异化、自然表达",
         "prompt_status": "ready",
     },
 )
@@ -2321,11 +2313,6 @@ MASTERPIECE_INTERPRETATION_PROMPT_SET = _prompt_set(
     MASTERPIECE_INTERPRETATION_FULL_BOOK_WRITER_PROMPT
 )
 
-# 通用短篇：v09 主规则已拆成分层资产（app/prompts/general_short/）。
-# 写作节点只加载写作规则；结构抽取与差异化审查是独立阶段，绝不进 writer。
-# 两篇成品样稿、三份检测报告与附录六审查规则已从 writer 上下文中移除。
-GENERAL_SHORT_FULL_BOOK_WRITER_PROMPT = _general_short_writer_template()
-
 
 COMIC_SERIES_GEMINI_FAST_POLISH_PROMPT = """请把下面的插画绘本书稿润色得更自然、温柔、短句化，像日本日常治愈插画与文创绘本的正文。
 
@@ -2518,7 +2505,6 @@ PROMPT_REGISTRY: dict[str, dict[str, str]] = {
     "masterpiece_interpretation": MASTERPIECE_INTERPRETATION_PROMPT_SET,
     # 历史测试版：保留原 category id，前后端入口不变；prompt 与历史小说端口严格同步。
     "web_short_story": HISTORY_CULTURE_PROMPT_SET,
-    "general_short": _prompt_set(GENERAL_SHORT_FULL_BOOK_WRITER_PROMPT),
 }
 
 SUPPORTED_CATEGORIES: tuple[str, ...] = tuple(PROMPT_REGISTRY.keys())
@@ -2619,8 +2605,6 @@ CATEGORY_ALIASES: dict[str, str] = {
     "masterpiece": "masterpiece_interpretation",
     "masterpiece_interpretation": "masterpiece_interpretation",
     "名著解读": "masterpiece_interpretation",
-    "general_short_book": "general_short",
-    "通用短篇书稿": "general_short",
 }
 for _category in CATEGORY_OPTIONS:
     CATEGORY_ALIASES[_category["id"]] = _category["id"]
@@ -2649,16 +2633,6 @@ def get_category_meta(category: str | None) -> dict[str, str]:
 
 def get_prompts(category: str | None) -> dict[str, str]:
     normalized = normalize_category(category)
-    from app.core.config import settings
-
-    if getattr(settings, "LONGFORM_LENGTH_GUARD_ENABLED", False):
-        from app.services.content_engine import _length_guard_category
-
-        if _length_guard_category(normalized) is not None:
-            from app.prompts.longform_variant_prompts import with_standard_length_contract
-            from app.services.general_short_length import contract
-
-            return with_standard_length_contract(PROMPT_REGISTRY[normalized], contract(normalized))
     return PROMPT_REGISTRY[normalized]
 
 

@@ -169,21 +169,6 @@ def _fetch_view(client: httpx.Client, bvid: str) -> dict[str, Any]:
     return view
 
 
-def verify_transcript_duration(source_url: str, text: str, duration: int | None) -> int | None:
-    if duration and duration > 0 and len(text) / duration <= 20:
-        return duration
-    try:
-        bvid = extract_bilibili_video_id(source_url)
-        with httpx.Client(timeout=15, follow_redirects=True, headers=_request_headers(bvid)) as client:
-            verified = _safe_int(_fetch_view(client, bvid).get("duration"))
-        if verified and verified > 0:
-            logger.info("Bilibili duration verified: parsed=%s official=%s", duration, verified)
-            return verified
-    except Exception:
-        logger.warning("Bilibili duration verification unavailable", exc_info=True)
-    return None
-
-
 def _fetch_subtitle_text(client: httpx.Client, *, bvid: str, cid: int, headers: dict[str, str]) -> str:
     response = client.get(
         "https://api.bilibili.com/x/player/v2",

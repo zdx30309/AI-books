@@ -42,17 +42,6 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-_DEFAULT_JWT_SECRET = "change-me-please-very-long-random-secret-key-for-jwt-signing-only"
-
-
-def _jwt_secret() -> str:
-    """The default secret is public in the repository; production must not sign with it."""
-    secret = settings.JWT_SECRET
-    if settings.APP_ENV.strip().lower() == "production" and (not secret or secret == _DEFAULT_JWT_SECRET):
-        raise RuntimeError("JWT_SECRET 未配置：生产环境拒绝使用仓库里的默认密钥签发或校验登录令牌")
-    return secret
-
-
 def create_access_token(user_id: UUID | str, *, extra: dict[str, Any] | None = None) -> str:
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
@@ -62,7 +51,7 @@ def create_access_token(user_id: UUID | str, *, extra: dict[str, Any] | None = N
     }
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, _jwt_secret(), algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 class JWTDecodeError(Exception):
@@ -71,7 +60,7 @@ class JWTDecodeError(Exception):
 
 def decode_token(token: str) -> dict[str, Any]:
     try:
-        return jwt.decode(token, _jwt_secret(), algorithms=[settings.JWT_ALGORITHM])
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
         raise JWTDecodeError("token 已过期") from exc
     except jwt.InvalidTokenError as exc:
