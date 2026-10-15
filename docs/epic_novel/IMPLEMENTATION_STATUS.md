@@ -1,5 +1,15 @@
 # Epic Novel Engine Implementation Status
 
+## 线上重新启动与无付费验收（2026-10-15，纽约）
+
+- 用户授权启动服务，明确选择「暂不付费，只启动并做离线检查」。backend、worker、web已启动，健康检查200且Celery存活；仅恢复这三个服务的自动重启。beat/maintenance及历史任务自动恢复仍关闭，Redis原DB1/DB2不消费，工作队列仍为DB3/DB4，并发4不扩大。
+- 新增16项离线可靠性回归：4本同时执行真实任务函数、阶段文件与章节隔离、MD/Word导出、单本失败不拖垮其他任务、缓存续跑不重复初稿、已完成重复投递、暂停/其他运行持有/费用锁/人工审核保护、重试耗尽不假完成、Redis故障关闭付费入口，以及历史类别读取/导出兼容和新任务类别严格校验。模型全部替身，SQLite测试库和临时输出目录隔离，禁止测试外部网络；不等于真实多本付费出书验收。
+- 实际发现回滚后general_short历史书籍的全文接口500：旧版normalize_category不认识新类别。仅在读取和导出时复用安全类别解析，支持general_short、standard_long及未知历史类别按通用格式预览、单本/批量MD和Word导出；不修改原书配置，不把这些类别重新加入生成入口，不修改7月4日生成提示词及流程。已先复现失败、再验证回归通过；线上热修发布结果另记。
+- 验证命令：backend/.venv/bin/python -m pytest -q backend/tests（在backend目录执行时路径为./.venv/bin/python -m pytest -q tests）：452 passed、1 skipped、3项既有警告；frontend npm run typecheck及npm run build通过。误用根目录旧venv时曾因缺openpyxl收集失败，改用项目backend/.venv后全量通过，不修改依赖绕过。
+- 线上无模型生成检查：24个Celery ping全部成功；Redis分布式限流16次竞争，实测峰值2且无遗留占位；鉴权及书籍列表/章节只读接口正常。DeepSeek /models鉴权通过且deepseek-flash在列表；Gemini模型元数据GET通过，配置gemini-3.1-flash-lite。以上均未发送生成请求，不能据此确认推理配额或承诺永不失败。回滚版仍是DeepSeek初稿、Gemini润色、DeepSeek格式化，不恢复10月新增工作流。
+- 按用户另行明确批准，停止唯一写入/tmp/live2.pcap的tcpdump进程并删除该临时文件，释放约12.12GiB；磁盘从98%降至82%，可用约15GiB。未删除书籍、数据库、数据卷或回滚备份。
+- 浏览器可视化验收被保存的站点访问权限阻止，未绕过，尚不能宣称完成浏览器点击验收。付费端到端生成及真实多本验收按用户选择未执行；不宣称完整Epic验收或批量生成零失败保证。
+
 ## 用户确认回退到2026年7月4日（2026-10-15，纽约）
 
 - 最终目标为北京时间2026-07-04 22:27:21的92f69ea；此前9月23日回退提交只更新过Git，未部署服务器，本次以用户新目标覆盖。业务源码与前端恢复7月4日，不夹带9月及10月新增流程，不宣称完整Epic验收完成。

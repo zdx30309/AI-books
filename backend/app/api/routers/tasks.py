@@ -1731,9 +1731,10 @@ def _cleanup_expired_tasks(db: Session, user: User) -> int:
 
 def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
+    category = _docx_category(str(cfg.get("category") or ""))
     md = cfg.get("markdown")
     if md:
-        return normalize_final_markdown(str(md), category=str(cfg.get("category") or ""))
+        return normalize_final_markdown(str(md), category=category)
 
     chapters = (
         db.query(Chapter)
@@ -1743,7 +1744,7 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     )
     return normalize_final_markdown(
         "\n".join(f"@{c.title}\n{c.content}" for c in chapters),
-        category=str(cfg.get("category") or ""),
+        category=category,
     )
 
 
@@ -1913,7 +1914,7 @@ def _markdown_to_docx(
     ):
         docx_lines = _classical_chinese_docx_lines(markdown, category=normalized_category)
     else:
-        docx_lines = normalize_final_markdown(markdown, category=category).splitlines()
+        docx_lines = normalize_final_markdown(markdown, category=normalized_category).splitlines()
     for line in docx_lines:
         image_filename = image_filename_from_markdown(line)
         image_path = None
@@ -2560,7 +2561,7 @@ def _build_batch_download_response(
             md = _read_task_markdown(db, task)
             if not md:
                 continue
-            category = str((task.config or {}).get("category") or "")
+            category = _docx_category(str((task.config or {}).get("category") or ""))
             if fmt == "docx":
                 content = _markdown_to_docx(
                     md,
@@ -2668,7 +2669,7 @@ def _build_single_download_response(
     if not md:
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
-    category = str((task.config or {}).get("category") or "")
+    category = _docx_category(str((task.config or {}).get("category") or ""))
     use_preview_docx = bool(comic_preview_images and category == "healing_comic" and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
