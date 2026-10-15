@@ -574,6 +574,9 @@ def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) 
         title = match.group(1).strip().lstrip("@").strip()
         if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
             continue
+        separator = line[len(match.group(1))]
+        if separator in "，," and not line.startswith("@") and len(title) > 12:
+            continue
         if (
             title
             and _cjk_ratio(title) >= 0.55

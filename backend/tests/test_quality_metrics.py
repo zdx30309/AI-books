@@ -176,6 +176,26 @@ def test_final_hard_error_gate_allows_standard_internal_subheading() -> None:
     assert not hits
 
 
+def test_comma_gate_matches_formatter_long_prose_limit() -> None:
+    paragraphs = (
+        "对某些恶性心律失常高风险患者，医生还可能评估植入式心律转复除颤器。适应证和长期管理都有要求。",
+        "规范治疗能显著降低许多患者的风险，但谁也无法给出永远不会猝死的保证。",
+    )
+    for paragraph in paragraphs:
+        markdown = "@最终书名\n测试书\n@正文\n@1. 健康知识\n" + paragraph
+        assert not detect_final_hard_errors(markdown, category="popular_science")
+
+
+def test_comma_gate_still_blocks_short_inline_headings_and_colons() -> None:
+    paragraphs = (
+        "扎堆竞争的代价，临床资源十分有限，患者招募也会变得更加困难。",
+        "规范治疗能显著降低许多患者的风险：这里仍保留显式冒号标题的原有检测行为。",
+    )
+    for paragraph in paragraphs:
+        markdown = "@最终书名\n测试书\n@正文\n@1. 测试章节\n" + paragraph
+        assert detect_final_hard_errors(markdown, category="popular_science")["正文内小标题未标准化为 ###"]
+
+
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
     markdown = """@最终书名
 盐铁论（白话版）
