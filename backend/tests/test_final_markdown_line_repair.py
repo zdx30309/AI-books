@@ -594,3 +594,32 @@ def test_buddhist_story_targeted_repair_reuses_cached_chapters_across_batch_chan
     assert repaired_body in result
     assert (tmp_path / "buddhist_story_resume_targeted_cache_reuse.txt").exists()
     assert list(tmp_path.glob("buddhist_story_resume_targeted_repair_*_U*.md"))
+
+
+def test_final_gate_ignores_long_comma_lead_sentences_left_by_repair() -> None:
+    from app.core.quality_metrics import detect_final_hard_errors
+
+    markdown = """@正文
+@4. 固定汇率代价
+很多发展中国家选择固定汇率，确实有现实考量。稳定汇率能降低进出口企业的交易成本。
+将九十年代危机全部归因于索罗斯，会忽略绝大多数资金的实际来源。
+"""
+    assert normalize_final_markdown(markdown, category="social_science") == normalize_final_markdown(
+        markdown, category="social_science")
+    normalized = normalize_final_markdown(markdown, category="social_science")
+    assert "很多发展中国家选择固定汇率，确实有现实考量" in normalized
+    assert "正文内小标题未标准化为 ###" not in detect_final_hard_errors(normalized, category="social_science")
+
+
+def test_final_gate_still_flags_short_comma_and_colon_pseudo_headings() -> None:
+    from app.core.quality_metrics import detect_final_hard_errors
+
+    markdown = """@正文
+@1. 新药中国路
+扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
+这次危机的真正根源：短期外债和长期资产的错配越来越严重。
+"""
+    hits = detect_final_hard_errors(markdown, category="social_science")["正文内小标题未标准化为 ###"]
+    assert any(line.startswith("扎堆竞争的代价") for line in hits)
+    assert any(line.startswith("这次危机的真正根源") for line in hits)
+

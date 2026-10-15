@@ -574,6 +574,12 @@ def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) 
         title = match.group(1).strip().lstrip("@").strip()
         if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
             continue
+        # Same limit as the repair step (content_engine._split_inline_pseudo_subheading): a comma
+        # split only reads as a pseudo-heading when the lead is at most 12 characters. Longer
+        # leads are ordinary sentences such as "很多发展中国家选择固定汇率，确实有现实考量".
+        separator = line[len(match.group(1))]
+        if separator in "，," and not line.startswith("@") and len(title) > 12:
+            continue
         if (
             title
             and _cjk_ratio(title) >= 0.55
