@@ -583,6 +583,11 @@ def _format_internal_subheading(title: str) -> str:
     return f"###{title}"
 
 
+def _ends_with_inline_subheading_keyword(title: str) -> bool:
+    core = title.strip().rstrip("的之")
+    return any(core.endswith(keyword) for keyword in _INLINE_SUBHEADING_KEYWORDS)
+
+
 def _split_internal_subheading_line(line: str) -> list[str] | None:
     stripped = line.strip()
     if not stripped or _is_image_markdown_line(stripped) or _is_body_chapter_heading(stripped):
@@ -638,6 +643,10 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
             continue
         if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
             continue
+        # A comma lead is a heading only when it ends on the keyword ("扎堆竞争的代价，…").
+        # Sentence openers such as "危机发生前，…" or "亚洲危机结束后，…" stay prose.
+        if separator in {"，", ","} and not has_marker and not _ends_with_inline_subheading_keyword(title):
+            continue
         return [_format_internal_subheading(title), body]
 
     return None
@@ -651,6 +660,14 @@ def _line_repeats_heading(heading: str, line: str) -> bool:
     if line_key.startswith(heading_key):
         return True
     return len(heading_key) >= 6 and line_key.startswith(heading_key[:4])
+
+
+def _line_repeats_marked_heading(heading: str, line: str) -> bool:
+    """An explicit ### heading is dropped only when the next line repeats it in full; sharing
+    the first few words ("资本流入的假象" / "资本流入的时候…") is normal prose under a heading."""
+    heading_key = _canonical_duplicate_text(heading)
+    line_key = _canonical_duplicate_text(line)[:80]
+    return len(heading_key) >= 4 and line_key.startswith(heading_key)
 
 
 def _strip_body_noise_line(line: str) -> str | None:
@@ -698,6 +715,7 @@ def _strip_body_noise_line(line: str) -> str | None:
 def _remove_body_format_noise(lines: list[str]) -> list[str]:
     cleaned: list[str] = []
     pending: list[str | None] = []
+    explicit_headings: set[int] = set()
     for raw_line in lines:
         split_parts = _split_internal_subheading_line(raw_line)
         source_parts = split_parts if split_parts is not None else [raw_line]
@@ -705,6 +723,8 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
             normalized = part.strip()
             if normalized.startswith("###"):
                 title = _normalize_internal_subheading_title(normalized[3:].strip())
+                if raw_line.strip().startswith("###"):
+                    explicit_headings.add(len(pending))
                 pending.append(_format_internal_subheading(title) if title else None)
                 continue
             pending.append(_strip_body_noise_line(normalized))
@@ -722,7 +742,8 @@ def _remove_body_format_noise(lines: list[str]) -> list[str]:
                 if candidate:
                     next_line = candidate.strip()
                     break
-            if next_line and _line_repeats_heading(heading_text, next_line):
+            repeats = _line_repeats_marked_heading if index in explicit_headings else _line_repeats_heading
+            if next_line and repeats(heading_text, next_line):
                 continue
             cleaned.append(stripped)
             continue
@@ -803,6 +824,15 @@ def _looks_like_continuation_fragment(line: str) -> bool:
     return len(core) <= 28 and core.endswith(("等", "等等", "之类", "一类", "这类"))
 
 
+def _is_short_or_unfinished_fragment(line: str) -> bool:
+    """A line after a full stop is a broken-off fragment, not a paragraph, only if it starts
+    with punctuation, is short, or has no sentence ending of its own."""
+    stripped = line.strip()
+    if stripped.startswith(("，", ",", "、", "；", ";", "：", ":", "。", ".", "）", ")", "」", "』", "”")):
+        return True
+    return len(stripped) <= 40 or not stripped.endswith(tuple(_SENTENCE_ENDINGS))
+
+
 def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: bool = False) -> list[str]:
     """Repair obvious model-introduced line breaks inside one sentence."""
     repaired: list[str] = []
@@ -834,7 +864,11 @@ def _join_broken_body_lines(lines: list[str], *, preserve_short_subheadings: boo
             should_join = True
         elif not previous_stripped.endswith(tuple(_SENTENCE_ENDINGS)):
             should_join = True
-        elif previous_stripped.endswith(tuple(_HARD_LINE_ENDINGS)) and _looks_like_continuation_fragment(current):
+        elif (
+            previous_stripped.endswith(tuple(_HARD_LINE_ENDINGS))
+            and _looks_like_continuation_fragment(current)
+            and _is_short_or_unfinished_fragment(current_stripped)
+        ):
             should_join = True
             soften_previous_period = True
 

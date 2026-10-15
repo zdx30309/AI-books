@@ -623,3 +623,36 @@ def test_final_gate_still_flags_short_comma_and_colon_pseudo_headings() -> None:
     assert any(line.startswith("扎堆竞争的代价") for line in hits)
     assert any(line.startswith("这次危机的真正根源") for line in hits)
 
+
+
+def test_normalize_keeps_sentence_openers_paragraphs_and_headings_intact() -> None:
+    markdown = """@正文
+@2. 墨西哥预演
+危机发生前，墨西哥一度被视为拉美改革的成功案例。政府推进私有化和贸易开放，通货膨胀下降。
+经济学家称其为道德风险。
+这种判断不能无限推广。救助通常伴随紧缩政策，债券价格也会在危机期间下跌，投资者依旧可能承担损失。
+###资本流入的假象
+资本流入的时候，这套制度看起来稳如泰山。央行买入外资带来的美元，外汇储备增加。
+"""
+    result = normalize_final_markdown(markdown, category="social_science")
+
+    assert "###危机发生前" not in result
+    assert "危机发生前，墨西哥一度被视为拉美改革的成功案例" in result
+    assert "经济学家称其为道德风险。\n这种判断不能无限推广。" in result
+    assert "###资本流入的假象\n资本流入的时候" in result
+
+
+def test_normalize_still_repairs_real_fragments_and_repeated_headings() -> None:
+    markdown = """@正文
+@1. 新药中国路
+扎堆竞争的代价，临床资源就那么多，愿意参加试验的患者也有限。
+企业会优先考虑成本。
+以及人才。
+###监管与制度完善
+监管与制度完善是危机后的重点工作。
+"""
+    result = normalize_final_markdown(markdown, category="social_science")
+
+    assert "###扎堆竞争的代价\n临床资源就那么多" in result
+    assert "企业会优先考虑成本，以及人才。" in result
+    assert "###监管与制度完善\n" not in result

@@ -580,6 +580,9 @@ def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) 
         separator = line[len(match.group(1))]
         if separator in "，," and not line.startswith("@") and len(title) > 12:
             continue
+        if separator in "，," and not line.startswith("@") and not any(
+                title.rstrip("的之").endswith(keyword) for keyword in _INLINE_SUBHEADING_KEYWORDS):
+            continue
         if (
             title
             and _cjk_ratio(title) >= 0.55
