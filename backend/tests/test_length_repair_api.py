@@ -67,6 +67,21 @@ def test_client_hash_is_not_trusted(fixture):
     assert response.status_code == 409 and not current.dispatched
 
 
+def test_explicit_retry_releases_exhausted_pending_once_without_resetting_budget(fixture):
+    current = fixture
+    current.task.status = TaskStatus.PENDING
+    current.task.config = {"category": "social_science", "generation_budget_cny": 10,
+                           "auto_retry_exhausted_at": "2026-09-02T18:01:54+00:00", "auto_retry_attempts": 7}
+    current.session.commit()
+    for _ in range(2):
+        response = current.client.post(f"/api/v1/tasks/{current.task.id}/retry")
+        assert response.status_code == 200
+    assert current.dispatched == [current.task.id]
+    assert "auto_retry_exhausted_at" not in current.task.config
+    assert current.task.config["generation_budget_cny"] == 10
+    assert (current.directory / "generation_spend.json").read_text() == current.ledger
+
+
 def test_failed_compression_is_not_a_ready_candidate(fixture):
     current = fixture
     current.task.config = {"category": "general_short", "raw_text": "资料"}

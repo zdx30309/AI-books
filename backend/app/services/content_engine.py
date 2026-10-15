@@ -4492,6 +4492,7 @@ async def _polish_by_paragraph_chunks(
             chunk,
             system_instruction=system_instruction,
             timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
+            paid_provider=polish_provider_name(),
         )
 
     async def _mark_completed(chunk_idx: int, chunk: str) -> None:
@@ -4684,6 +4685,7 @@ async def _polish_by_paragraph_chunks_strict(
             chunk,
             system_instruction=system_instruction,
             timeout_seconds=timeout,
+            paid_provider=stage_provider,
         )
 
     async def _polish_with_max_tokens_retry(
@@ -6478,6 +6480,7 @@ async def _generate_finance_longform_book(
                 ),
                 retries=1,
                 timeout_seconds=settings.GEMINI_POLISH_CALL_TIMEOUT,
+                paid_provider=polish_provider_name(),
             )
         except Exception as exc:
             if _is_paid_polish_blocking_failure(exc):
@@ -6561,6 +6564,7 @@ async def _generate_finance_longform_book(
                 ),
                 retries=1,
                 timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+                paid_provider=refine_provider_name(),
             )
             refined_markdown = normalize_final_markdown(refined_markdown, category=category)
             whole_refine_issue = _refine_output_integrity_issue(
@@ -6599,21 +6603,20 @@ async def _generate_finance_longform_book(
     format_template = _finance_format_template(prompts["final_book_format"], category=category)
     logger.info("财经科技 DeepSeek 格式层整稿输入: chars=%d body_chars=%d", len(refined_markdown), _finance_body_chars(refined_markdown))
     try:
-        final_markdown = await asyncio.wait_for(
-            asyncio.to_thread(
-                format_book_text,
-                refined_markdown,
-                prompt_template=format_template,
-                max_output_tokens=0,
-                fail_on_max_tokens=True,
-                retries=1,
-                on_progress=(
-                    (lambda chars: on_stage("format_progress", {"chars": chars}))
-                    if on_stage
-                    else None
-                ),
+        final_markdown = await _to_thread_with_optional_timeout(
+            format_book_text,
+            refined_markdown,
+            prompt_template=format_template,
+            max_output_tokens=0,
+            fail_on_max_tokens=True,
+            retries=1,
+            on_progress=(
+                (lambda chars: on_stage("format_progress", {"chars": chars}))
+                if on_stage
+                else None
             ),
-            timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+            timeout_seconds=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+            paid_provider="deepseek",
         )
     except DeepSeekMaxTokensError as exc:
         _dump_stage(output_dir, "04_format_deepseek_partial.md", exc.partial_text)
@@ -6630,6 +6633,8 @@ async def _generate_finance_longform_book(
         )
         final_markdown = refined_markdown
     except Exception as exc:
+        if _is_paid_polish_blocking_failure(exc):
+            raise
         _dump_stage(output_dir, "04_format_error.txt", f"{exc.__class__.__name__}: {exc}")
         logger.warning(
             "DeepSeek 财经科技整稿格式化失败，保留 Gemini 二润完整稿继续: %s",
@@ -7712,6 +7717,7 @@ async def _to_thread_with_optional_timeout(
     func,
     *args,
     timeout_seconds: int | float | None = None,
+    paid_provider: str | None = None,
     **kwargs,
 ):
     """Run blocking SDK calls without cancelling live API work by default.
@@ -7722,7 +7728,14 @@ async def _to_thread_with_optional_timeout(
     coro = asyncio.to_thread(func, *args, **kwargs)
     timeout = float(timeout_seconds or 0)
     if timeout > 0:
-        return await asyncio.wait_for(coro, timeout=timeout)
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            if paid_provider == "deepseek":
+                raise DeepSeekDeliveryUncertainError(
+                    "outer timeout reached while the submitted SDK call may still be running; preserve budget and require manual review"
+                ) from exc
+            raise
     return await coro
 
 
@@ -8805,6 +8818,7 @@ async def generate_full_book(
                     ),
                     retries=1,
                     timeout_seconds=settings.GEMINI_REFINE_CALL_TIMEOUT,
+                    paid_provider=refine_provider_name(),
                 )
                 integrity_issue = _refine_output_integrity_issue(
                     polished_markdown,
@@ -8846,6 +8860,8 @@ async def generate_full_book(
                         f"retryable Gemini refine quality gate: {integrity_issue}"
                     ) from exc
             except Exception as exc:
+                if _is_paid_polish_blocking_failure(exc):
+                    raise
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc
         _persist_refine_stage(
@@ -8929,20 +8945,19 @@ async def generate_full_book(
             format_max_output_tokens = 0 if (is_classical_category or use_buddhist_story_unit_writer) else None
             if length_guard:
                 format_max_output_tokens = 32768
-            final_markdown = await asyncio.wait_for(
-                asyncio.to_thread(
-                    format_book_text,
-                    refined_markdown,
-                    prompt_template=final_book_format_prompt,
-                    max_output_tokens=format_max_output_tokens,
-                    fail_on_max_tokens=(is_classical_category or use_buddhist_story_unit_writer),
-                    on_progress=(
-                        (lambda chars: on_stage("format_progress", {"chars": chars}))
-                        if on_stage
-                        else None
-                    ),
+            final_markdown = await _to_thread_with_optional_timeout(
+                format_book_text,
+                refined_markdown,
+                prompt_template=final_book_format_prompt,
+                max_output_tokens=format_max_output_tokens,
+                fail_on_max_tokens=(is_classical_category or use_buddhist_story_unit_writer),
+                on_progress=(
+                    (lambda chars: on_stage("format_progress", {"chars": chars}))
+                    if on_stage
+                    else None
                 ),
-                timeout=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+                timeout_seconds=settings.DEEPSEEK_FORMAT_CALL_TIMEOUT,
+                paid_provider="deepseek",
             )
             if (
                 is_classical_category

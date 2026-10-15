@@ -1784,6 +1784,7 @@ def recover_retryable_failed_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
+                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")
@@ -1997,6 +1998,7 @@ def requeue_due_pending_retry_tasks(*, limit: int = 500) -> int:
                 continue
             if (
                 cfg.get("generation_hold")
+                or cfg.get("auto_retry_exhausted_at")
                 or cfg.get("paid_call_delivery_uncertain")
                 or cfg.get("paid_call_manual_resume_required")
                 or cfg.get("pause_requested")

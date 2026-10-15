@@ -1829,6 +1829,7 @@ def retry_task(
             cfg.get(key)
             for key in (
                 "generation_hold",
+                "auto_retry_exhausted_at",
                 "paid_call_delivery_uncertain",
                 "paid_call_manual_resume_required",
                 "paid_api_backoff",

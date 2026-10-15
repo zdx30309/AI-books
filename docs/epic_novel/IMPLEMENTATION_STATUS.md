@@ -1,5 +1,14 @@
 # Epic Novel Engine Implementation Status
 
+## 编辑交付可靠性上线与真实续跑（2026-10-15，纽约，进行中）
+
+- 40f8f99已推送origin/main并部署北京ECS，回滚源码/环境/镜像保留于/opt/video-plan-release-backups/reliability-40f8f99；健康、Celery、公网前端与index-CuVajeKx.js构建一致，固定preflight核对342份backend/app源码与标记版本一致。四个Python服务已启用标准长文11000—25000及审查最高32768；不是整个Epic验收完成。
+- 实际部署镜像重新执行PG approve/pause/replace_owner并发验证，三项通过；随机schema清理完成，未写public.tasks或调用模型。发布前后最新5本配置、章节、全部文件与费用账本一致，总任务1181；不能声称全部状态不变，原恢复器选择了另外3个历史failed，两本缓存安全hold、51bd耗尽但pending被派发屏障挡住。全库config大查询及旧completed恢复批量查询出现statement timeout，轻量状态＋最新5本完整核对成功，未调整数据库/限流。
+- 0dd779ff真实hash批准GET/POST均HTTP200，采用21660词、8章2626词的核验稿，原hash 4940719b8e21099b8fa578966abf7beb0e9bf5b9438a9cc40857289569324ad4；原13笔账本前缀与10元累计预算不变，已进入DeepSeek一润，尚未交付。新标准长文验收d7280ad4-4219-446c-9216-4ca0ac08e405经正常HTTP201创建，social_science_core_conflict，从新初稿开始，另累计10元，复用完整已解析资料避免重复转写收费；仍须真实跑到两Word或明确门禁断点。
+- 针对线上暴露的旧耗尽循环补齐最小修复：failed恢复、due-pending扫描均在任何状态/计数写入前跳过耗尽标记；显式人工retry可释放只有耗尽标记的pending，普通重试第二次不重复投递。不放松claim/派发屏障、不自动批准或解除历史hold。强化回归断言数据库status/config/次数完全不变，专项78 passed、3 skipped；真实运行期间不强制重启付费调用，补丁发布待安全边界。
+- 实测断点（不是交付成功）：0dd已完成一润、二润、格式，94%相似度响应完整结束，输出13100/32768 token，容量没有截断；9处原稿引用无法唯一核验，manual_review并保留完整响应，未伪造分数或进入降AI。35笔预算核算上界2.126244元/10元，非实际账单。标准长文d728上游900秒未开始处理、无初稿，正确交付未知hold并保留0.340131元预留，已询问用户是否同预算人工重试一次；收到答复前不再调用。两本均未产出双Word，真实全交付验收仍未完成。
+- 上游排队同时揭示分块SDK外层async timeout可被错误包装为普通重试；补DeepSeek一润/二润（分块及整稿）和格式层的paid_provider归类与blocking透传，超时保留未知费用、阻止自动替换和付费降级，不伪称未计费。专项91 passed、3 skipped；最终pytest -q tests为1510 passed、4 skipped、同5项旧失败，根目录pytest旧重复模块名冲突不混作新失败。真实新Header Excel下载200（74776字节、no-store），匿名与仅查询串token均401。
+
 ## 编辑交付可靠性分阶段补齐（2026-10-14，纽约，进行中）
 
 - 固定计划见docs/RELIABILITY_ACCEPTANCE_PLAN.md；每阶段及发布前fetch并核对ECS版本，初始origin/main=2bc631f、线上fa61f84，仅文档提交差异，原主目录四项既有未提交改动不发布。

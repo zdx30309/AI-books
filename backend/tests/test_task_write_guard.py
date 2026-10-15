@@ -351,6 +351,29 @@ def test_recovery_prefers_internal_error_to_display_message(worker, monkeypatch)
     assert tasks.recover_retryable_failed_tasks() == 1
 
 
+@pytest.mark.parametrize("status", [TaskStatus.FAILED, TaskStatus.PENDING])
+@pytest.mark.parametrize("message", ["RuntimeError: 429 rate limit", "PaidApiQuotaExhausted: Gemini quota exhausted"])
+def test_exhausted_recovery_never_mutates_or_selects_task(worker, monkeypatch, status, message):
+    factory, task_id, *_ = worker
+    config = {"auto_retry_exhausted_at": "2026-09-02T18:01:54+00:00", "auto_retry_attempts": 7,
+              "last_auto_retry_error": message, "auto_retry_not_before": "2026-09-02T18:00:00+00:00"}
+    human_update(factory, task_id, config, status=status)
+    with factory() as reader:
+        saved = reader.get(Task, task_id)
+        before = (saved.status, saved.progress, saved.current_step, saved.error_message, deepcopy(saved.config))
+    selected = []
+    monkeypatch.setattr(tasks.settings, "FAILED_TASK_AUTO_RECOVERY_ENABLED", True)
+    monkeypatch.setattr(tasks.settings, "STALE_TASK_WATCHDOG_ENABLED", True)
+    monkeypatch.setattr(tasks, "_dispatch_task_ids", lambda identifiers, **kwargs: selected.extend(identifiers) or len(identifiers))
+    for _ in range(2):
+        assert tasks.recover_retryable_failed_tasks() == 0
+        assert tasks.requeue_due_pending_retry_tasks() == 0
+    with factory() as reader:
+        saved = reader.get(Task, task_id)
+        assert (saved.status, saved.progress, saved.current_step, saved.error_message, saved.config) == before
+    assert not selected
+
+
 def test_pending_retry_transition_requires_matching_run(worker):
     factory, task_id, *_ = worker
     human_update(factory, task_id, {"auto_retry_scheduled_by": "new-run"})

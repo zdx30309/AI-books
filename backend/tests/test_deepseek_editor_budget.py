@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -40,6 +41,30 @@ def test_delivery_uncertainty_is_blocking_without_fallback(monkeypatch):
     with pytest.raises(deepseek.DeepSeekDeliveryUncertainError):
         polish_provider.polish_book_text("正文")
     assert content_engine._is_paid_polish_blocking_failure(error)
+
+
+@pytest.mark.parametrize("stage", ["polish_chunk", "refine_chunk"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_outer_deepseek_chunk_timeout_preserves_budget_and_blocks_replacement(tmp_path, monkeypatch, stage, fallback):
+    monkeypatch.setattr(settings, "BACKEND_POLISH_PROVIDER", "deepseek")
+    monkeypatch.setattr(settings, "BACKEND_REFINE_PROVIDER", "deepseek")
+    monkeypatch.setattr(settings, "GEMINI_POLISH_CONCURRENCY", 1)
+    monkeypatch.setattr(content_engine, "_effective_gemini_chunk_timeout", lambda *args: 0.001)
+    calls = []
+    def slow_call(text, **kwargs):
+        calls.append(text)
+        reserve("test", 1, "test")
+        time.sleep(0.02)
+        return text
+    with generation_budget({"generation_budget_cny": 10}, tmp_path):
+        with pytest.raises(deepseek.DeepSeekDeliveryUncertainError, match="outer timeout"):
+            asyncio.run(content_engine._polish_by_paragraph_chunks_strict(
+                "第一块\n\n第二块", output_dir=tmp_path, chunk_func=slow_call,
+                splitter=lambda *args, **kwargs: ["第一块", "第二块"],
+                progress_stage=stage, allow_chunk_fallback=fallback))
+    assert calls == ["第一块"]
+    ledger = json.loads((tmp_path / "generation_spend.json").read_text())
+    assert ledger["reserved_cny"] == 1 and len(ledger["calls"]) == 1
 
 
 def test_budget_persists_and_propagates_to_async_thread(tmp_path):
