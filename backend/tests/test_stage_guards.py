@@ -50,6 +50,39 @@ def test_final_length_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ce.final_length_gate_issues(short, category="healing_comic") == []
 
 
+def test_stage_guards_reject_changed_title_with_unchanged_number() -> None:
+    source = _book({1: _para(30)})
+    polluted = source.replace("@1. 第1章标题", "@1. 名校仍有价值，但终极目标需要重排")
+    assert "章节标题被改动" in ce._standard_chunk_structure_issues(source, polluted)
+    assert "章节标题被改动" in ce._standard_stage_regression_issues(source, polluted)
+
+
+def test_final_length_gate_rejects_long_body_without_chapters() -> None:
+    source = _book({1: _para(180)}).replace("@1. 第1章标题", "")
+    assert "正文缺少可识别的正文章节" in ce.final_length_gate_issues(source, category="popular_science")
+
+
+def test_resume_rejects_compressed_final_without_rewriting_draft(tmp_path, monkeypatch) -> None:
+    source = _book({1: _para(30), 2: _para(30), 3: _para(30)})
+    for filename in ("01_writer.md", "02_polish.md", "03_refine.md"):
+        (tmp_path / filename).write_text(source)
+    (tmp_path / "04_format.md").write_text(_book({1: _para(2), 2: _para(2), 3: _para(2)}))
+    calls = []
+
+    async def no_writer(*args, **kwargs):
+        raise AssertionError("saved draft must not be regenerated")
+
+    def format_text(text, **kwargs):
+        calls.append(text)
+        return text
+
+    monkeypatch.setattr(ce, "_route_writer_call", no_writer)
+    monkeypatch.setattr(ce, "format_book_text", format_text)
+    result = asyncio.run(ce.generate_full_book("原始资料", category="popular_science", output_dir=tmp_path))
+    assert len(calls) == 1
+    assert len(result) > len(source) * 0.9
+
+
 def test_chapter_splitter_starts_chunks_at_boundaries_and_roundtrips() -> None:
     text = _book({1: _para(10), 2: _para(1), 3: _para(1)})
     chunks = ce._split_text_by_chapter_then_paragraph(text, target_chars=1000)

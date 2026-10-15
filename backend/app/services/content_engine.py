@@ -22,6 +22,7 @@ from app.prompts.goal_driven_templates import (
     FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
     INTRO_BODY_SEPARATION_PROMPT,
     SECTION_TITLE_REQUIREMENT_PROMPT,
+    STAGE_FRAGMENT_GUARD_INSTRUCTION,
     get_prompts,
     normalize_category,
 )
@@ -5093,17 +5094,6 @@ _STAGE_CHAPTER_NUM_RE = re.compile(r"(?m)^\s*@\s*(\d+)\s*[.．、]")
 _STAGE_HASH_NUMBERED_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s*(?:第\s*)?(\d+|[一二三四五六七八九十百]+)\s*(?:[.．、章]|$)")
 _STAGE_H1_RE = re.compile(r"(?m)^\s*#\s+(\S.*)$")
 
-STAGE_FRAGMENT_GUARD_INSTRUCTION = """
-
-【片段与结构保护（违反等于任务失败）】
-- 你收到的可能只是整本书中间的一个连续片段，前后都还有内容：不要补写开头、不要写结尾总结、不要补充书名、简介或导言。
-- 以 @ 开头的结构行（@最终书名、@最终简介、@目录、@导言、@正文、@N. 章节名）必须逐字原样保留在原位置；不得新增、删除或改写这些行。
-- 不得把 @N. 章节标题改成 ### N.、# 标题或其他格式，不得修改章节编号，不得合并或拆分章节。
-- 原文没有的 @ 标记、# 标题、书名，一律不得新增；以 ### 开头的小标题原样保留。
-- 输出篇幅不得少于原文的 90%。
-"""
-
-
 def _with_stage_fragment_guard(instruction: str | None) -> str:
     base = (instruction or "").rstrip()
     if "【片段与结构保护" in base:
@@ -5138,6 +5128,10 @@ def _standard_chunk_structure_issues(source_chunk: str, output_chunk: str) -> li
     out_chapters = [int(x) for x in _STAGE_CHAPTER_NUM_RE.findall(output_chunk)]
     if out_chapters != src_chapters:
         issues.append(f"章节编号被改动：原文 {src_chapters} → 输出 {out_chapters}")
+    source_titles = re.findall(r"(?m)^\s*@\s*\d+\s*[.．、][^\n]*", source_chunk or "")
+    output_titles = re.findall(r"(?m)^\s*@\s*\d+\s*[.．、][^\n]*", output_chunk)
+    if [title.strip() for title in source_titles] != [title.strip() for title in output_titles]:
+        issues.append("章节标题被改动")
     src_hash = len(_STAGE_HASH_NUMBERED_HEADING_RE.findall(source_chunk or ""))
     out_hash = len(_STAGE_HASH_NUMBERED_HEADING_RE.findall(output_chunk))
     if out_hash > src_hash:
@@ -5192,6 +5186,8 @@ def _standard_stage_regression_issues(
     cand_sizes = _standard_chapter_sizes(candidate)
     if src_sizes and list(cand_sizes) != list(src_sizes):
         issues.append(f"章节编号变化：{list(src_sizes)} → {list(cand_sizes)}")
+    if "章节标题被改动" in _standard_chunk_structure_issues(source, candidate):
+        issues.append("章节标题被改动")
     for number, size in cand_sizes.items():
         if size < min_chapter and src_sizes.get(number, 0) >= min_chapter:
             issues.append(f"第 {number} 章被压到 {size} 字（原 {src_sizes[number]} 字）")
@@ -5210,7 +5206,10 @@ def final_length_gate_issues(markdown: str, *, category: str | None = None) -> l
     body_chars = len(re.sub(r"\s+", "", body_text))
     if body_chars < int(settings.FINAL_MIN_BODY_CHARS):
         issues.append(f"正文仅 {body_chars} 字，低于 {settings.FINAL_MIN_BODY_CHARS} 字下限")
-    for number, size in _standard_chapter_sizes(markdown).items():
+    chapter_sizes = _standard_chapter_sizes(markdown)
+    if not chapter_sizes:
+        issues.append("正文缺少可识别的正文章节")
+    for number, size in chapter_sizes.items():
         if size < int(settings.FINAL_MIN_CHAPTER_CHARS):
             issues.append(f"第 {number} 章仅 {size} 字，低于 {settings.FINAL_MIN_CHAPTER_CHARS} 字下限")
     return issues
@@ -5848,7 +5847,15 @@ async def generate_full_book(
             logger.warning("读取中间产物 %s 失败: %s", filename, exc)
             return None
 
+    rejected_final_cache = False
     final_resume_markdown = _read_stage("04_format.md")
+    if final_resume_markdown and not is_classical_category and not use_buddhist_story_unit_writer:
+        cached_writer = _read_stage("01_writer.md")
+        cached_final_issues = _standard_stage_regression_issues(cached_writer or "", final_resume_markdown)
+        if cached_final_issues:
+            logger.warning("既有终稿未通过阶段护栏，重新检查各阶段: %s", "; ".join(cached_final_issues))
+            rejected_final_cache = True
+            final_resume_markdown = None
     if final_resume_markdown:
         logger.info("复用已存在的 04_format.md，跳过 writer/polish/refine/format")
         final_resume_markdown = normalize_final_markdown(final_resume_markdown, category=normalized_category)
@@ -6238,7 +6245,7 @@ async def generate_full_book(
         refine_chars = len(refined_markdown)
 
     # ---- 第 4 层: DeepSeek 格式 (整篇) ----
-    final_markdown = _read_stage("04_format.md")
+    final_markdown = None if rejected_final_cache else _read_stage("04_format.md")
     if final_markdown and use_buddhist_story_unit_writer:
         cached_format_issues = _buddhist_story_manuscript_issues(
             final_markdown,
