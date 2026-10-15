@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.api.routers import tasks as task_router
 from app.models import Chapter, Task, TaskStatus, User
 from app.services import content_engine
+from app.services.batch_spend import BatchBudgetStop
 from app.tasks import tasks as generation_tasks
 from app.utils import distributed_limiter
 
@@ -269,3 +270,21 @@ def test_unknown_categories_still_rejected_for_new_generation(category):
     with pytest.raises(HTTPException) as result:
         task_router._normalize_task_config({"category": category})
     assert result.value.status_code == 400
+
+
+def test_budget_stop_pauses_task_without_retrying_or_completing(isolated_generation, monkeypatch):
+    sessions, create_task, _, _, markers, _ = isolated_generation
+
+    def stop_format(*args, **kwargs):
+        raise BatchBudgetStop("100元批次预算保护测试")
+
+    monkeypatch.setattr(content_engine, "format_book_text", stop_format)
+    task_id = create_task(markers[0])
+    result = generation_tasks.process_video.run(str(task_id))
+    assert result["status"] == TaskStatus.PAUSED
+    with sessions() as database:
+        task = database.get(Task, task_id)
+        assert task.status == TaskStatus.PAUSED
+        assert task.config["generation_hold"]
+        assert "active_run_id" not in task.config
+        assert not task.chapters

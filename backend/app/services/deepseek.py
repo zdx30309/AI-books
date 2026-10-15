@@ -11,6 +11,7 @@ from openai import OpenAI, OpenAIError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.services import batch_spend
 from app.prompts.goal_driven_templates import FINAL_BOOK_FORMAT_PROMPT
 from app.utils.distributed_limiter import distributed_semaphore
 from app.utils.official_api import official_deepseek_base_url
@@ -73,17 +74,28 @@ def generate_text(
     }
     if max_output_tokens is not None and int(max_output_tokens) > 0:
         kwargs["max_tokens"] = int(max_output_tokens)
+    index = None
+    if batch_spend.active():
+        kwargs.setdefault("max_tokens", 65536)
+        kwargs["stream_options"] = {"include_usage": True}
+        client = client.with_options(max_retries=0)
 
     chunks: list[str] = []
     generated_chars = 0
     stopped_by_max_tokens = False
+    usage = None
+    response_id = None
     try:
         with distributed_semaphore(
             "deepseek-format",
             limit=settings.DEEPSEEK_FORMAT_MAX_CONCURRENT_CALLS,
         ):
+            if batch_spend.active():
+                index = batch_spend.reserve(kwargs["model"], prompt, system_instruction, kwargs["max_tokens"])
             stream = client.chat.completions.create(**kwargs, stream=True)
             for event in stream:
+                usage = getattr(event, "usage", None) or usage
+                response_id = getattr(event, "id", None) or response_id
                 if not event.choices:
                     continue
                 delta = event.choices[0].delta
@@ -97,6 +109,9 @@ def generate_text(
                 if finish_reason in {"length", "max_tokens"}:
                     stopped_by_max_tokens = True
     except (httpx.RemoteProtocolError, httpx.ReadError, OpenAIError) as exc:
+        if index is not None:
+            batch_spend.failed(index, exc)
+            raise batch_spend.BatchBudgetStop("DeepSeek请求未完整返回，保留费用预留并暂停，不自动重放") from exc
         partial = "".join(chunks).strip()
         if _looks_like_complete_format_output(partial):
             logger.warning(
@@ -107,7 +122,17 @@ def generate_text(
             return partial
         get_deepseek_client.cache_clear()
         raise
+    except Exception as exc:
+        if index is not None and not isinstance(exc, batch_spend.BatchBudgetStop):
+            batch_spend.failed(index, exc)
+            raise batch_spend.BatchBudgetStop("DeepSeek请求中断，批次暂停，不自动重放") from exc
+        raise
+    batch_spend.settle(index, getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None), response_id)
     content = "".join(chunks).strip()
+    batch_spend.store_result(index, {"response_id": response_id, "model": kwargs["model"], "text": content,
+                                   "input_tokens": getattr(usage, "prompt_tokens", None), "output_tokens": getattr(usage, "completion_tokens", None)})
+    if index is not None and stopped_by_max_tokens:
+        raise batch_spend.BatchBudgetStop("DeepSeek达到输出上限，响应已保存，暂停批次，未将截断稿标为成功")
     if on_progress is not None and generated_chars:
         on_progress(generated_chars)
     if not content:

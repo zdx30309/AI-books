@@ -1,4 +1,13 @@
 __pycache__/
+.DS_Store
+.codex_work/
+.claude/
+.mihomo-test/
+docx_fix/
+docx_review/
+docx_work/
+.env.*.bak*
+.env.bak*
 *.pyc
 *.pyo
 *.pyd

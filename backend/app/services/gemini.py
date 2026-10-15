@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.services import batch_spend
 from app.prompts.goal_driven_templates import (
     GEMINI_FAST_POLISH_PROMPT,
     GEMINI_FAST_REFINE_PROMPT,
@@ -240,6 +241,10 @@ def generate_text(
     if system_instruction:
         config_kwargs["systemInstruction"] = system_instruction
 
+    if batch_spend.active():
+        config_kwargs.setdefault("maxOutputTokens", 65536)
+        config_kwargs["httpOptions"] = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1))
+
     config = types.GenerateContentConfig(**config_kwargs)
     primary_backend = "vertex" if settings.GOOGLE_GENAI_USE_VERTEXAI else "api_key"
     backends = [primary_backend]
@@ -256,14 +261,27 @@ def generate_text(
     for backend in backends:
         client = _get_vertex_client(timeout) if backend == "vertex" else _get_api_key_client(timeout)
         for attempt in range(1, attempts + 1):
+            index = None
             try:
                 with _gemini_call_gate():
                     with _google_proxy_env():
+                        if batch_spend.active():
+                            index = batch_spend.reserve(model or settings.GEMINI_MODEL, contents, system_instruction, config.max_output_tokens)
                         response = client.models.generate_content(
                             model=model or settings.GEMINI_MODEL,
                             contents=contents,
                             config=config,
                         )
+                if index is not None:
+                    usage = getattr(response, "usage_metadata", None)
+                    candidate_tokens = getattr(usage, "candidates_token_count", None)
+                    thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
+                    output_tokens = candidate_tokens + thought_tokens if type(candidate_tokens) is int else None
+                    batch_spend.settle(index, getattr(usage, "prompt_token_count", None), output_tokens, getattr(response, "response_id", None))
+                    batch_spend.store_result(index, {"response_id": getattr(response, "response_id", None), "model": model or settings.GEMINI_MODEL,
+                                                   "text": response.text, "input_tokens": getattr(usage, "prompt_token_count", None), "output_tokens": output_tokens})
+                    if response.candidates and "MAX_TOKENS" in str(response.candidates[0].finish_reason):
+                        raise batch_spend.BatchBudgetStop("Gemini达到输出上限，响应已保存，暂停批次，未将截断稿标为成功")
                 text = (response.text or "").strip()
                 if text:
                     if backend != primary_backend:
@@ -285,7 +303,12 @@ def generate_text(
                 if "MAX_TOKENS" in str(finish_reason or "").upper():
                     raise GeminiMaxTokensError(message)
                 raise ValueError(message)
+            except batch_spend.BatchBudgetStop:
+                raise
             except Exception as exc:
+                if index is not None:
+                    batch_spend.failed(index, exc)
+                    raise batch_spend.BatchBudgetStop("Gemini请求失败，费用已记录，批次暂停，不自动重放") from exc
                 last_exc = exc
                 retryable = _is_retryable_error(exc)
                 logger.warning(

@@ -16,6 +16,7 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
+from app.services import batch_spend
 from app.prompts.goal_driven_templates import (
     FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT,
     FINANCE_SOURCE_ATTRIBUTION_GUARD_PROMPT,
@@ -2848,6 +2849,8 @@ def _stream_openai_writer(
     max_tok: int | None,
     on_progress: Callable[[int], None] | None = None,
 ) -> tuple[str, Any | None]:
+    if batch_spend.active():
+        raise batch_spend.BatchBudgetStop("批次预算模式请使用非流式OpenAI响应，未发起付费请求")
     client = _get_openai_writer_client()
     kwargs: dict[str, Any] = {
         "model": settings.OPENAI_WRITER_MODEL,
@@ -2899,7 +2902,24 @@ def _create_openai_writer_response(
     }
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
-    return client.responses.create(**kwargs)
+    if not batch_spend.active():
+        return client.responses.create(**kwargs)
+    kwargs["max_output_tokens"] = max_tok or 65536
+    kwargs["service_tier"] = "default"
+    index = batch_spend.reserve(settings.OPENAI_WRITER_MODEL, rendered_prompt, None, kwargs["max_output_tokens"])
+    try:
+        response = client.with_options(max_retries=0).responses.create(**kwargs)
+    except Exception as error:
+        batch_spend.failed(index, error)
+        raise batch_spend.BatchBudgetStop("OpenAI请求失败，费用已记录，批次暂停，不自动重放") from error
+    usage = _response_attr(response, "usage")
+    batch_spend.settle(index, _response_attr(usage, "input_tokens"), _response_attr(usage, "output_tokens"), _response_attr(response, "id"))
+    batch_spend.store_result(index, {"response_id": _response_attr(response, "id"), "model": _response_attr(response, "model"),
+                                   "status": _response_attr(response, "status"), "text": _extract_openai_response_text(response),
+                                   "input_tokens": _response_attr(usage, "input_tokens"), "output_tokens": _response_attr(usage, "output_tokens")})
+    if _response_attr(response, "status") != "completed":
+        raise batch_spend.BatchBudgetStop("OpenAI未完整完成，响应已保存，暂停批次，未将截断稿标为成功")
+    return response
 
 
 def _openai_writer_call(
@@ -2937,6 +2957,8 @@ def _openai_writer_call(
                             max_tok=max_tok,
                             on_progress=on_progress,
                         )
+                    except batch_spend.BatchBudgetStop:
+                        raise
                     except Exception as stream_exc:
                         if not retry_on_failure:
                             raise
@@ -2959,6 +2981,8 @@ def _openai_writer_call(
                     )
                     text = _extract_openai_response_text(response)
             break
+        except batch_spend.BatchBudgetStop:
+            raise
         except Exception as exc:
             _reset_openai_writer_client()
             if attempt >= attempts or not _is_retryable_openai_error(exc):
@@ -2982,6 +3006,8 @@ def _openai_writer_call(
 
     if not text or not text.strip():
         logger.warning("OpenAI Writer empty response: %s", _openai_response_debug_summary(response))
+        if batch_spend.active():
+            raise batch_spend.BatchBudgetStop("OpenAI未返回成稿，付费响应已保存，暂停批次，不自动重放")
         if retry_on_failure:
             for retry_effort in _openai_writer_retry_efforts(effort):
                 logger.warning("Retrying OpenAI Writer with reasoning_effort=%s", retry_effort)
@@ -2992,6 +3018,8 @@ def _openai_writer_call(
                         verb=verb,
                         max_tok=max_tok,
                     )
+                except batch_spend.BatchBudgetStop:
+                    raise
                 except Exception as exc:
                     _reset_openai_writer_client()
                     raise RuntimeError(
@@ -3639,6 +3667,9 @@ async def _polish_by_paragraph_chunks_strict(
                 polished[idx] = result
                 _write_cache(idx, chunk, result)
                 await _mark_completed(idx + 1, result)
+            except batch_spend.BatchBudgetStop:
+                abort_event.set()
+                raise
             except GeminiMaxTokensError as exc:
                 message = f"{exc.__class__.__name__}: {exc}"
                 if allow_chunk_fallback:
@@ -5306,7 +5337,7 @@ async def _to_thread_with_optional_timeout(
     """
     coro = asyncio.to_thread(func, *args, **kwargs)
     timeout = float(timeout_seconds or 0)
-    if timeout > 0:
+    if timeout > 0 and not batch_spend.active():
         return await asyncio.wait_for(coro, timeout=timeout)
     return await coro
 
@@ -5865,6 +5896,8 @@ async def generate_full_book(
                     output_dir=output_dir,
                     chunk_func=refine_func,
                 )
+            except batch_spend.BatchBudgetStop:
+                raise
             except Exception as exc:
                 logger.error("Gemini refine failed; task will retry instead of degrading: %s", exc)
                 raise RuntimeError(f"retryable Gemini refine quality gate: {exc}") from exc

@@ -41,6 +41,7 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
 )
 from app.services.content_engine import generate_full_book, normalize_final_markdown
+from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
     QingdouDurationExceededError,
     extract_video_text_with_qingdou as _extract_video_text_with_qingdou_once,
@@ -1152,6 +1153,9 @@ def process_video(_self, task_id: str) -> dict:
         if task.status == TaskStatus.COMPLETED:
             return {"task_id": str(task.id), "status": TaskStatus.COMPLETED, "chapters": len(task.chapters)}
 
+        if (task.config or {}).get("generation_batch_id") and not _source_text_from_config(task.config, task_label=str(task.id)):
+            raise BatchBudgetStop("本批次需使用缓存的视频文稿，未发起未核定费用的视频解析")
+
         heartbeat_stop, heartbeat_thread = _start_active_run_heartbeat(task_id, run_id)
 
         _update_progress(db, task, progress=1, step="任务启动", run_id=run_id)
@@ -1297,7 +1301,8 @@ def process_video(_self, task_id: str) -> dict:
         db.flush()
         _ensure_active_run(db, task, run_id)
         db.commit()
-        markdown = asyncio.run(
+        markdown = run_generation(
+            task.config or {}, output_dir, task.owner_id,
             generate_full_book(
                 video_text,
                 category=category,
@@ -1384,7 +1389,7 @@ def process_video(_self, task_id: str) -> dict:
                 )
                 task.cover_url = f"/api/v1/tasks/{task.id}/cover"
         db.commit()
-        if not is_comic_category and settings.COVER_BOOK_TASK_GENERATION_ENABLED:
+        if not is_comic_category and settings.COVER_BOOK_TASK_GENERATION_ENABLED and not (task.config or {}).get("generation_batch_id"):
             enqueue_cover_generation(db, task, force=False)
 
         return {
@@ -1392,6 +1397,20 @@ def process_video(_self, task_id: str) -> dict:
             "status": TaskStatus.COMPLETED,
             "chapters": chapter_count,
         }
+
+    except BatchBudgetStop as error:
+        db.rollback()
+        current = db.get(Task, uuid.UUID(task_id))
+        if current is not None:
+            cfg = dict(current.config or {})
+            cfg.update(generation_hold=True, generation_hold_reason=str(error), generation_hold_step="批次费用保护暂停，断点已保存")
+            current.config = cfg
+            _clear_task_run(current, run_id)
+            current.status = TaskStatus.PAUSED
+            current.current_step = "批次费用保护暂停，断点已保存"
+            current.error_message = str(error)[:2000]
+            db.commit()
+        return {"task_id": task_id, "status": TaskStatus.PAUSED, "chapters": 0}
 
     except StaleTaskRun as e:
         logger.warning("[task %s] stale run skipped: %s", task_id, e)
