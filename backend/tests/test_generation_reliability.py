@@ -161,6 +161,12 @@ def test_classic_task_persists_historical_delivery_and_keeps_new_gate_out(isolat
         assert "！！！" not in task.config["markdown"]
         assert len(task.chapters) == 2
         assert marker in task.config["markdown"]
+        assert "！！！" not in task_router._read_task_markdown(database, task)
+        response = task_router._build_single_download_response(database, task, "md")
+        assert "！！！" not in Path(response.path).read_text()
+        response = task_router._build_single_download_response(database, task, "docx")
+        with ZipFile(response.path) as archive:
+            assert marker in archive.read("word/document.xml").decode("utf-8")
     assert all(calls[stage, marker] == 1 for stage in ("writer", "polish", "refine", "format"))
 
 

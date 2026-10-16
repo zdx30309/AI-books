@@ -29,7 +29,7 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
-from app.prompts.classic_text import COMIC_CATEGORIES, pin_new_task
+from app.prompts.classic_text import COMIC_CATEGORIES, VERSION as CLASSIC_TEXT_VERSION, pin_new_task
 from app.services.comic_variants import is_healing_comic_family
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
@@ -1746,6 +1746,10 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     category = _docx_category(str(cfg.get("category") or ""))
     md = cfg.get("markdown")
+    if cfg.get("text_workflow_version") == CLASSIC_TEXT_VERSION:
+        from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
+        if md:
+            return normalize_classic(str(md), category=category)
     if md:
         return normalize_final_markdown(str(md), category=category)
 
@@ -1916,12 +1920,16 @@ def _markdown_to_docx(
     image_base_dir: Path | None = None,
     category: str | None = None,
     comic_preview_images: bool = False,
+    text_workflow_version: str | None = None,
 ) -> bytes:
     """Build a minimal .docx, embedding comic images when markdown references them."""
     paragraphs: list[str] = []
     image_entries: list[tuple[str, Path, str]] = []
     normalized_category = _docx_category(category)
-    if (
+    if text_workflow_version == CLASSIC_TEXT_VERSION:
+        from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
+        docx_lines = normalize_classic(markdown, category=normalized_category).splitlines()
+    elif (
         normalized_category in CLASSICAL_CHINESE_CATEGORY_IDS
         and normalized_category != BUDDHIST_SCRIPTURE_STORY_CATEGORY
     ):
@@ -2580,10 +2588,11 @@ def _build_batch_download_response(
                     md,
                     image_base_dir=_task_output_dir(task.id),
                     category=category,
+                    text_workflow_version=(task.config or {}).get("text_workflow_version"),
                 )
                 filename = _safe_download_name(task, "docx")
             else:
-                content = normalize_final_markdown(md, category=category)
+                content = md
                 filename = _safe_download_name(task, "md")
             archive.writestr(_unique_zip_name(filename, used_names), content)
             written += 1
@@ -2693,13 +2702,14 @@ def _build_single_download_response(
             image_base_dir=output_dir,
             category=category,
             comic_preview_images=use_preview_docx,
+            text_workflow_version=(task.config or {}).get("text_workflow_version"),
         )
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(task, "docx", suffix="预览") if use_preview_docx else _safe_download_name(task, "docx")
         file_path = download_dir / ("final_preview.docx" if use_preview_docx else "final.docx")
         file_path.write_bytes(content)
     else:
-        content = normalize_final_markdown(md, category=category)
+        content = md
         media_type = "text/markdown; charset=utf-8"
         filename = _safe_download_name(task, "md")
         file_path = download_dir / "final.md"
