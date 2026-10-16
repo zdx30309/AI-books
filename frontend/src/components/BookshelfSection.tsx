@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { bookshelfPath, type BookshelfVersion } from "@/constants/bookshelfVersions";
 import { Link } from "react-router-dom";
 import { BookCard } from "./BookCard";
 import { EmptyState } from "./EmptyState";
@@ -6,6 +6,7 @@ import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
 interface Props {
+  bookshelfVersion?: BookshelfVersion;
   tasks: TaskListItem[];
   categories?: TaskCategoryOption[];
   loading: boolean;
@@ -23,40 +24,19 @@ interface Props {
 
 export function BookshelfSection({
   tasks,
+  bookshelfVersion = "1.0",
   categories = DEFAULT_CATEGORIES,
   loading,
   onCreate,
   onMetadataUpdated,
 }: Props) {
   return (
-    <section className="mt-16">
-      <header className="mb-6 flex items-center justify-between">
-        <h2 className="flex items-center gap-3 font-serif text-xl tracking-widest text-warm-100">
-          <span className="h-4 w-[3px] rounded-full bg-gradient-to-b from-gold-300 to-gold-600" />
-          1.0书架
-        </h2>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            aria-label="上一页"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-gold-500/15 text-warm-400 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            aria-label="下一页"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-gold-500/15 text-warm-400 transition-colors hover:border-gold-400/40 hover:text-warm-100"
-          >
-            <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </button>
-          <Link
-            to="/bookshelf"
-            className="ml-2 text-xs tracking-widest text-warm-300 transition-colors hover:text-warm-100"
-          >
-            查看1.0书架
-          </Link>
-        </div>
+    <section className="mt-5">
+      <header className="mb-5 flex items-center justify-between">
+        <p className="text-sm text-warm-300">{bookshelfVersion}书架 · 最近更新</p>
+        <Link to={bookshelfPath(bookshelfVersion)} className="text-sm text-gold-300 hover:text-warm-100">
+          查看全部
+        </Link>
       </header>
 
       {loading ? (
