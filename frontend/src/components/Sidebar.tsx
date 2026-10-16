@@ -13,7 +13,8 @@ import { useAuth } from "@/auth/AuthContext";
 
 const navItems = [
   { to: "/", label: "工作台", icon: LayoutGrid, end: true },
-  { to: "/bookshelf", label: "书架", icon: BookMarked, end: true },
+  { to: "/bookshelf", label: "1.0书架", icon: BookMarked, end: true },
+  { to: "/bookshelf/v2", label: "2.0书架", icon: BookMarked, end: true },
   { to: "/bookshelf/longform-variants", label: "长文新版书架", icon: BookOpenCheck, end: false },
   { to: "/long-novel", label: "长篇小说", icon: BookOpenCheck, end: false },
   { to: "/epic-novel", label: "史诗长篇", icon: BookOpenCheck, end: false },

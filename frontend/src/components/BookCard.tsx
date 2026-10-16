@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckSquare, ChevronRight, Loader2, Pencil, Save, Square, Trash2, X } from "lucide-react";
+import { bookPath, taskShelfVersion } from "@/constants/bookshelfVersions";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "@/api/client";
 import { categoryIdForLabel, categoryLabelFor, normalizeCategoryLabel } from "@/constants/categories";
@@ -246,7 +247,7 @@ export function BookCard({
         </button>
       ) : (
         <Link
-          to={`/book/${task.id}`}
+          to={bookPath(task.id, taskShelfVersion(task))}
           className="relative aspect-[3/4] overflow-hidden rounded-xl border border-gold-500/10 transition-transform duration-300 group-hover:-translate-y-1"
           aria-label={`查看《${title}》`}
         >
@@ -328,7 +329,7 @@ export function BookCard({
               </button>
             )}
             <Link
-              to={`/book/${task.id}`}
+              to={bookPath(task.id, taskShelfVersion(task))}
               className="inline-flex flex-1 items-center justify-between rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-xs tracking-widest text-warm-300 transition-colors hover:border-gold-400/40 hover:text-warm-100"
             >
               <span>{isCompleted ? "继续阅读" : "查看详情"}</span>
@@ -360,7 +361,7 @@ export function BookCard({
                 htmlFor={`book-bookshelf-${task.id}`}
                 className="mb-1.5 block text-[10px] tracking-widest text-warm-500"
               >
-                书架分类
+                书籍类别
               </label>
               <select
                 id={`book-bookshelf-${task.id}`}
@@ -368,7 +369,7 @@ export function BookCard({
                 onChange={(e) => setEditCategory(e.target.value)}
                 className="w-full rounded-md border border-gold-500/15 bg-base-700/70 px-2.5 py-2 text-xs text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
               >
-                <option value="">未分类</option>
+                {taskShelfVersion(task) === "1.0" && <option value="">未分类</option>}
                 {categories.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.label}

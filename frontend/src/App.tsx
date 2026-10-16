@@ -52,9 +52,19 @@ export default function App() {
           element={
             <ProtectedRoute>
               <AppShell>
-                <Bookshelf />
+                <Bookshelf key="shelf-v1" title="1.0书架" bookshelfVersion="1.0" />
               </AppShell>
             </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/bookshelf/v2"
+          element={
+            <ProtectedRoute><AppShell>
+              <Bookshelf key="shelf-v2" title="2.0书架" bookshelfVersion="2.0"
+                subtitle="社科2610 · GPT-6 Astra Pro 直出"
+                emptyDescription="使用社科2610创建书稿，成稿会收纳在2.0书架" />
+            </AppShell></ProtectedRoute>
           }
         />
         <Route
@@ -152,6 +162,12 @@ export default function App() {
                 <DataAnalysis />
               </AppShell>
             </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/book/v2/:id"
+          element={
+            <ProtectedRoute><AppShell><BookDetail bookshelfVersion="2.0" /></AppShell></ProtectedRoute>
           }
         />
         <Route

@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { bookPath, bookshelfPath, taskShelfVersion, categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   Download,
@@ -85,7 +86,9 @@ interface PolishTrigger {
   y: number;
 }
 
-export function BookDetail() {
+export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: BookshelfVersion }) {
+  const navigate = useNavigate();
+  const returnShelf = bookshelfPath(bookshelfVersion);
   const { id } = useParams<{ id: string }>();
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [chapters, setChapters] = useState<ChapterResponse[]>([]);
@@ -98,7 +101,7 @@ export function BookDetail() {
   const [metaBookshelf, setMetaBookshelf] = useState("");
   const [metaCategory, setMetaCategory] = useState("");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
-    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+    categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion),
   );
   const [metaDirty, setMetaDirty] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
@@ -127,6 +130,10 @@ export function BookDetail() {
     if (!id) return;
     try {
       const t = await api.getTask(id);
+      if (taskShelfVersion(t) !== bookshelfVersion) {
+        navigate(bookPath(t.id, taskShelfVersion(t)), { replace: true });
+        return;
+      }
       setTask(t);
       if (t.status === "completed") {
         const c = await api.getChapters(id);
@@ -146,7 +153,7 @@ export function BookDetail() {
             : "加载失败";
       setError(msg);
     }
-  }, [id, dirty]);
+  }, [id, dirty, bookshelfVersion, navigate]);
 
   const restartPolling = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);
@@ -166,19 +173,19 @@ export function BookDetail() {
   useEffect(() => {
     let cancelled = false;
     api
-      .getTaskCategories()
+      .getTaskCategories(bookshelfVersion)
       .then((res) => {
         if (!cancelled && res.items.length > 0) {
-          setCategories(normalizeCategoryOptions(res.items));
+          setCategories(categoriesForShelf(normalizeCategoryOptions(res.items), bookshelfVersion));
         }
       })
       .catch(() => {
-        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+        if (!cancelled) setCategories(categoriesForShelf(categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion), bookshelfVersion));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bookshelfVersion]);
 
   // 任务完成或失败：停止轮询
   useEffect(() => {
@@ -367,7 +374,7 @@ export function BookDetail() {
       setMetaDirty(false);
     } catch (e) {
       const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "保存失败";
-      alert(`保存书名/书架失败：${msg}`);
+      alert(`保存书名/类别失败：${msg}`);
     } finally {
       setSavingMeta(false);
     }
@@ -420,12 +427,12 @@ export function BookDetail() {
     if (!ok) return;
     try {
       await api.deleteTask(id);
-      window.location.href = "/bookshelf";
+      window.location.href = returnShelf;
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "删除失败";
       alert(`删除失败：${msg}`);
     }
-  }, [id, task, chapters]);
+  }, [id, task, chapters, returnShelf]);
 
   const handleRetry = useCallback(async () => {
     if (!id || !task) return;
@@ -532,9 +539,9 @@ export function BookDetail() {
       <div className="card-warm p-8 text-warm-300">
         <h2 className="font-serif text-xl text-warm-100">无法加载任务</h2>
         <p className="mt-2 text-xs">{error}</p>
-        <Link to="/bookshelf" className="btn-ghost mt-6 inline-flex">
+        <Link to={returnShelf} className="btn-ghost mt-6 inline-flex">
           <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-          返回书架
+          返回{bookshelfVersion}书架
         </Link>
       </div>
     );
@@ -567,11 +574,11 @@ export function BookDetail() {
     <div className="relative">
       <div className="mb-6 flex items-center justify-between gap-3">
         <Link
-          to="/bookshelf"
+          to={returnShelf}
           className="inline-flex items-center gap-2 text-xs tracking-widest text-warm-400 transition-colors hover:text-warm-100"
         >
           <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-          返回书架
+          返回{bookshelfVersion}书架
         </Link>
       </div>
 
@@ -634,7 +641,7 @@ export function BookDetail() {
                       htmlFor="book-bookshelf"
                       className="mb-2 block text-[10px] tracking-widest text-warm-500"
                     >
-                      书架
+                      书籍类别
                     </label>
                     <select
                       id="book-bookshelf"
@@ -645,7 +652,10 @@ export function BookDetail() {
                       }}
                       className="w-full rounded-lg border border-gold-500/15 bg-base-700/50 px-3 py-2 text-sm text-warm-100 placeholder:text-warm-500 outline-none transition-colors focus:border-gold-400/45"
                     >
-                      <option value="">未分类</option>
+                      {bookshelfVersion === "1.0" && <option value="">未分类</option>}
+                      {metaCategory && !categories.some((item) => item.id === metaCategory) && (
+                        <option value={metaCategory}>{task.category_label || metaCategory}（历史稿）</option>
+                      )}
                       {categories.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.label}
@@ -654,7 +664,7 @@ export function BookDetail() {
                       ))}
                     </select>
                     <p className="mt-1 text-[10px] tracking-widest text-warm-500">
-                      当前书架：{normalizeCategoryLabel(metaBookshelf) || "未分类"}
+                      当前类别：{normalizeCategoryLabel(metaBookshelf) || "未分类"}
                     </p>
                   </div>
                   <div className="flex items-end">
@@ -883,7 +893,7 @@ export function BookDetail() {
                   onContentChange={handleChapterChange(c.id)}
                   onTitleChange={handleTitleChange(c.id)}
                   onSave={() => saveChapter(c)}
-                  onSelect={handleTextareaSelect(c)}
+                  onSelect={bookshelfVersion === "1.0" ? handleTextareaSelect(c) : undefined}
                 />
               ))}
             </section>
@@ -905,7 +915,7 @@ export function BookDetail() {
       )}
 
       {/* 浮动润色按钮 */}
-      {polishTrigger && editing && activeView === "final" && (
+      {bookshelfVersion === "1.0" && polishTrigger && editing && activeView === "final" && (
         <div
           className="fixed z-40 -translate-y-full"
           style={{ left: polishTrigger.x, top: polishTrigger.y }}
@@ -1077,7 +1087,7 @@ interface ChapterCardProps {
   onContentChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   onTitleChange: (e: ChangeEvent<HTMLInputElement>) => void;
   onSave: () => void;
-  onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) => void;
+  onSelect?: (e: React.SyntheticEvent<HTMLTextAreaElement>) => void;
 }
 
 function ChapterCard({

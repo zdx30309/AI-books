@@ -365,9 +365,9 @@ function openHiddenDownload(url: string) {
 
 export const api = {
   // 任务
-  listTasks: (page = 1, pageSize = 20) =>
-    request<TaskListResponse>(`/tasks?page=${page}&page_size=${pageSize}`),
-  getTaskCategories: () => request<TaskCategoryListResponse>("/tasks/categories"),
+  listTasks: (page = 1, pageSize = 20, bookshelfVersion?: "1.0" | "2.0") =>
+    request<TaskListResponse>(`/tasks?page=${page}&page_size=${pageSize}${bookshelfVersion ? `&bookshelf_version=${bookshelfVersion}` : ""}`),
+  getTaskCategories: (bookshelfVersion?: "1.0" | "2.0") => request<TaskCategoryListResponse>(`/tasks/categories${bookshelfVersion ? `?bookshelf_version=${bookshelfVersion}` : ""}`),
   getClassicalReferenceTemplate: () =>
     request<ClassicalReferenceTemplateResponse>("/tasks/classical-reference-rewrite/default-reference"),
   getCoverCategories: () => request<TaskCategoryListResponse>("/covers/categories"),

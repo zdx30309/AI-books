@@ -21,7 +21,10 @@ import {
   createStoryComicForm,
 } from "@/components/ComicVariantCreator";
 
+import { categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
+
 interface Props {
+  bookshelfVersion?: BookshelfVersion;
   open: boolean;
   onClose: () => void;
   onCreated: (taskId: string) => void;
@@ -140,7 +143,7 @@ function formatChineseCharCount(value: number) {
   return `${value.toLocaleString("zh-CN")} 字`;
 }
 
-export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, defaultCategoryId }: Props) {
+export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, defaultCategoryId, bookshelfVersion = "1.0" }: Props) {
   const [mode, setMode] = useState<CreateMode>("single");
   const [url, setUrl] = useState("");
   const [rawText, setRawText] = useState("");
@@ -178,11 +181,23 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [comicPhraseInput, setComicPhraseInput] = useState("");
   const [storyComicForm, setStoryComicForm] = useState(createStoryComicForm);
   const [homophoneComicForm, setHomophoneComicForm] = useState(createHomophoneComicForm);
-  const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
+  const availableDefaults = categoriesForShelf(DEFAULT_CATEGORIES, bookshelfVersion);
+  const initialCategory = availableDefaults.some((item) => item.id === defaultCategoryId)
+    ? defaultCategoryId!
+    : availableDefaults[0].id;
+  const [category, setCategory] = useState(initialCategory);
+  const scopedApi = {
+    createTask: (body: Parameters<typeof api.createTask>[0]) => api.createTask({
+      ...body, config: { ...body.config, bookshelf_version: bookshelfVersion },
+    }),
+    createTaskBatch: (body: Parameters<typeof api.createTaskBatch>[0]) => api.createTaskBatch({
+      ...body, config: { ...body.config, bookshelf_version: bookshelfVersion },
+    }),
+  };
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
-    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+    categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion),
   );
   const [classicalReferenceTemplate, setClassicalReferenceTemplate] =
     useState<ClassicalReferenceTemplateResponse | null>(null);
@@ -253,24 +268,24 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setComicPhraseInput("");
       setStoryComicForm(createStoryComicForm());
       setHomophoneComicForm(createHomophoneComicForm());
-      setCategory(defaultCategoryId ?? "social_science");
+      setCategory(initialCategory);
       setStyleReference("");
       setStyleNotes("");
-      setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+      setCategories(categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion));
       setClassicalReferenceTemplate(null);
       setError(null);
       setSubmitting(false);
     }
-  }, [defaultCategoryId, open]);
+  }, [initialCategory, bookshelfVersion, open]);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     api
-      .getTaskCategories()
+      .getTaskCategories(bookshelfVersion)
       .then((res) => {
         if (!cancelled && res.items.length > 0) {
-          const normalizedItems = normalizeCategoryOptions(res.items);
+          const normalizedItems = categoriesForShelf(normalizeCategoryOptions(res.items), bookshelfVersion);
           setCategories(normalizedItems);
           setCategory((prev) =>
             normalizedItems.some((item) => item.id === prev) ? prev : normalizedItems[0].id,
@@ -278,12 +293,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         }
       })
       .catch(() => {
-        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+        if (!cancelled) setCategories(categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion));
       });
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, bookshelfVersion]);
 
   useEffect(() => {
     if (!open) return;
@@ -299,7 +314,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, bookshelfVersion]);
 
   useEffect(() => {
     if (category === "classical_chinese_reference_rewrite") {
@@ -505,7 +520,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
                 comic_humor_edge: homophoneComicForm.edge,
                 comic_avoid_topics: homophoneComicForm.avoidTopics.trim() || undefined,
               };
-          const res = await api.createTask({
+          const res = await scopedApi.createTask({
             url: `manual://${comicCategory}`,
             config: {
               category: comicCategory,
@@ -558,7 +573,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           .join("\n");
         setSubmitting(true);
         try {
-          const res = await api.createTask({
+          const res = await scopedApi.createTask({
             url: "manual://healing_comic",
             config: {
               category: "healing_comic",
@@ -609,7 +624,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           comic_phrases: comicPhrases,
           raw_text: comicPhrases.join("\n"),
         };
-        const res = await api.createTask({
+        const res = await scopedApi.createTask({
           url: `manual://${comicCategory}`,
           config,
         });
@@ -714,7 +729,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           if (styleReference.trim()) config.style_reference = styleReference.trim();
           if (styleNotes.trim()) config.style_notes = styleNotes.trim();
         }
-        const res = await api.createTaskBatch({ urls, config });
+        const res = await scopedApi.createTaskBatch({ urls, config });
         const first = res.created.find((item) => item.task_id)?.task_id;
         if (!first) {
           const duplicateHint =
@@ -797,7 +812,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         if (styleNotes.trim()) config.style_notes = styleNotes.trim();
       }
       if (rawText.trim()) config.raw_text = rawText.trim();
-      const res = await api.createTask({
+      const res = await scopedApi.createTask({
         url: isClassicalChinese ? `manual://${category}` : url.trim() || "manual://raw_text",
         config,
       });
@@ -836,10 +851,12 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         </button>
 
         <h2 className="font-serif text-2xl tracking-wide text-warm-100">
-          开始创作
+          {bookshelfVersion}书架 · 开始创作
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
-          选择书籍方向后，粘贴 YouTube、小红书、微信视频号等视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库
+          {bookshelfVersion === "2.0"
+            ? "社科2610：粘贴视频链接或已有文稿，由 GPT-6 Astra Pro 一次生成完整书稿"
+            : "选择书籍方向后，粘贴视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库"}
         </p>
 
         <div className="mt-6 space-y-4">
@@ -870,6 +887,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               <ListPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
               候选库
             </button>
+            {bookshelfVersion === "1.0" && <>
             <button
               type="button"
               onClick={() => switchMode("article")}
@@ -1005,6 +1023,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
               谐音梗
             </button>
+            </>}
           </div>
 
           {mode !== "longNovel" ? (

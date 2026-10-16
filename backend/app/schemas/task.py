@@ -147,6 +147,7 @@ class TaskStatusResponse(BaseModel):
     bookshelf: str | None = None
     category: str | None = None
     category_label: str | None = None
+    bookshelf_version: str = "1.0"
     error_message: str | None = None
     created_at: datetime
 
@@ -166,6 +167,7 @@ class TaskListItem(BaseModel):
     bookshelf: str | None = None   # 用户手动维护的书架 / 分类
     category: str | None = None
     category_label: str | None = None
+    bookshelf_version: str = "1.0"
     word_count: int = 0            # 全文字数 (config.markdown_chars 或章节累加)
     chapter_count: int = 0
 

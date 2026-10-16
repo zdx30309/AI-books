@@ -11,6 +11,7 @@ import {
   normalizeCategoryLabel,
   normalizeCategoryOptions,
 } from "@/constants/categories";
+import { bookPath, categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
 import type { TaskCategoryOption, TaskListItem, TaskStatus } from "@/api/types";
 
 const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
@@ -36,9 +37,9 @@ type CategoryChip =
 
 const CATEGORY_ORDER_STORAGE_KEY = "scriptbook.bookshelf.categoryOrder";
 
-function readStoredCategoryOrder() {
+function readStoredCategoryOrder(key = CATEGORY_ORDER_STORAGE_KEY) {
   try {
-    const raw = localStorage.getItem(CATEGORY_ORDER_STORAGE_KEY);
+    const raw = localStorage.getItem(key) ?? (key.endsWith(".1.0") ? localStorage.getItem(CATEGORY_ORDER_STORAGE_KEY) : null);
     const parsed = raw ? JSON.parse(raw) : null;
     return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
       ? parsed
@@ -114,6 +115,7 @@ function inDateFilter(task: TaskListItem, filter: DateFilter) {
 }
 
 interface BookshelfProps {
+  bookshelfVersion?: BookshelfVersion;
   title?: string;
   subtitle?: string;
   categoryScopeIds?: readonly string[];
@@ -123,7 +125,8 @@ interface BookshelfProps {
 }
 
 export function Bookshelf({
-  title = "我的书架",
+  title = "1.0书架",
+  bookshelfVersion = "1.0",
   subtitle,
   categoryScopeIds,
   allCategoryLabel = "全部分类",
@@ -133,7 +136,7 @@ export function Bookshelf({
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [categories, setCategories] = useState<TaskCategoryOption[]>(
-    normalizeCategoryOptions(DEFAULT_CATEGORIES),
+    categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion),
   );
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["value"]>("all");
@@ -146,14 +149,14 @@ export function Bookshelf({
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
   const [batchRegenerating, setBatchRegenerating] = useState(false);
-  const [categoryOrder, setCategoryOrder] = useState<string[]>(readStoredCategoryOrder);
+  const [categoryOrder, setCategoryOrder] = useState<string[]>(() => readStoredCategoryOrder(`${CATEGORY_ORDER_STORAGE_KEY}.${bookshelfVersion}`));
   const [draggingCategoryId, setDraggingCategoryId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api
-      .listTasks(1, 0)
+      .listTasks(1, 0, bookshelfVersion)
       .then((r) => {
         if (!cancelled) setTasks(r.items);
       })
@@ -164,28 +167,28 @@ export function Bookshelf({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bookshelfVersion]);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .getTaskCategories()
+      .getTaskCategories(bookshelfVersion)
       .then((res) => {
         if (!cancelled && res.items.length > 0) {
-          setCategories(normalizeCategoryOptions(res.items));
+          setCategories(categoriesForShelf(normalizeCategoryOptions(res.items), bookshelfVersion));
         }
       })
       .catch(() => {
-        if (!cancelled) setCategories(normalizeCategoryOptions(DEFAULT_CATEGORIES));
+        if (!cancelled) setCategories(categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bookshelfVersion]);
 
   useEffect(() => {
-    localStorage.setItem(CATEGORY_ORDER_STORAGE_KEY, JSON.stringify(categoryOrder));
-  }, [categoryOrder]);
+    localStorage.setItem(`${CATEGORY_ORDER_STORAGE_KEY}.${bookshelfVersion}`, JSON.stringify(categoryOrder));
+  }, [categoryOrder, bookshelfVersion]);
 
   const isScopedShelf = Boolean(categoryScopeIds?.length);
   const categoryScopeSet = useMemo(() => new Set(categoryScopeIds ?? []), [categoryScopeIds]);
@@ -376,7 +379,7 @@ export function Bookshelf({
     setBatchRetrying(true);
     try {
       const res = await api.retryFailedTasks({ task_ids: targetIds });
-      const refreshed = await api.listTasks(1, 0);
+      const refreshed = await api.listTasks(1, 0, bookshelfVersion);
       setTasks(refreshed.items);
       setSelectedTaskIds((prev) => {
         const next = new Set(prev);
@@ -411,7 +414,7 @@ export function Bookshelf({
     setBatchRegenerating(true);
     try {
       const res = await api.regenerateTasks({ task_ids: targetIds });
-      const refreshed = await api.listTasks(1, 0);
+      const refreshed = await api.listTasks(1, 0, bookshelfVersion);
       const regeneratedIds = new Set(res.regenerated.map((item) => item.task_id));
       setTasks(refreshed.items);
       setSelectedTaskIds((prev) => {
@@ -513,7 +516,7 @@ export function Bookshelf({
             {title}
           </h1>
           <p className="mt-2 text-xs tracking-widest text-warm-400">
-            {subtitle ?? `共 ${scopedTasks.length} 本书稿`}
+            {subtitle ? `${subtitle} · 共 ${scopedTasks.length} 本书稿` : `共 ${scopedTasks.length} 本书稿`}
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-3">
@@ -574,7 +577,7 @@ export function Bookshelf({
 
       <div className="mb-6">
         <div className="mb-2 text-[10px] tracking-widest text-warm-500">
-          书架分类
+          书籍类别
         </div>
         <div className="flex flex-wrap gap-2">
           {categoryChips.map((item) => (
@@ -775,11 +778,12 @@ export function Bookshelf({
       )}
 
       <CreateTaskModal
+        bookshelfVersion={bookshelfVersion}
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         onCreated={(taskId) => {
           setModalOpen(false);
-          navigate(`/book/${taskId}`);
+          navigate(bookPath(taskId, bookshelfVersion));
         }}
         onLongNovelCreated={(projectId) => {
           setModalOpen(false);

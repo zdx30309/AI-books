@@ -107,6 +107,11 @@ class Task(Base):
         return category_label if isinstance(category_label, str) and category_label.strip() else None
 
     @property
+    def bookshelf_version(self) -> str:
+        from app.services.bookshelf_versions import task_shelf_version
+        return task_shelf_version(self.config or {})
+
+    @property
     def text_workflow_version(self) -> str | None:
         return (self.config or {}).get("text_workflow_version")
 

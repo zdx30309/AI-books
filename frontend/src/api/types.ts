@@ -175,6 +175,7 @@ export interface ClassicalReferenceTemplateResponse {
 }
 
 export interface TaskStatusResponse {
+  bookshelf_version?: string;
   text_workflow_version?: string | null;
   id: string;
   source_url: string;
@@ -197,6 +198,7 @@ export interface DeleteTaskResponse {
 }
 
 export interface TaskListItem {
+  bookshelf_version?: string;
   id: string;
   source_url: string;
   status: TaskStatus;

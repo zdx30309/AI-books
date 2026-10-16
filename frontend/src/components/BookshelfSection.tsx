@@ -33,7 +33,7 @@ export function BookshelfSection({
       <header className="mb-6 flex items-center justify-between">
         <h2 className="flex items-center gap-3 font-serif text-xl tracking-widest text-warm-100">
           <span className="h-4 w-[3px] rounded-full bg-gradient-to-b from-gold-300 to-gold-600" />
-          我的书架
+          1.0书架
         </h2>
         <div className="flex items-center gap-2">
           <button
@@ -54,7 +54,7 @@ export function BookshelfSection({
             to="/bookshelf"
             className="ml-2 text-xs tracking-widest text-warm-300 transition-colors hover:text-warm-100"
           >
-            查看全部
+            查看1.0书架
           </Link>
         </div>
       </header>

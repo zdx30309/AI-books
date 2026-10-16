@@ -5,6 +5,7 @@ import { BookshelfSection } from "@/components/BookshelfSection";
 import { WorkshopSection } from "@/components/WorkshopSection";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { api } from "@/api/client";
+import { categoriesForShelf } from "@/constants/bookshelfVersions";
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { StatsResponse, TaskCategoryOption, TaskListItem } from "@/api/types";
 
@@ -13,7 +14,7 @@ export function Workspace() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
-  const [categories, setCategories] = useState<TaskCategoryOption[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<TaskCategoryOption[]>(categoriesForShelf(DEFAULT_CATEGORIES, "1.0"));
   const [tasksLoading, setTasksLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -23,12 +24,12 @@ export function Workspace() {
     try {
       const [s, t, c] = await Promise.all([
         api.getStats(),
-        api.listTasks(1, 12),
-        api.getTaskCategories().catch(() => ({ items: DEFAULT_CATEGORIES })),
+        api.listTasks(1, 12, "1.0"),
+        api.getTaskCategories("1.0").catch(() => ({ items: categoriesForShelf(DEFAULT_CATEGORIES, "1.0") })),
       ]);
       setStats(s);
       setTasks(t.items);
-      setCategories(c.items.length > 0 ? c.items : DEFAULT_CATEGORIES);
+      setCategories(categoriesForShelf(c.items.length > 0 ? c.items : DEFAULT_CATEGORIES, "1.0"));
     } catch (e) {
       console.error("workspace fetch failed", e);
     } finally {

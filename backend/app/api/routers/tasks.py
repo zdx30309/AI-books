@@ -55,6 +55,9 @@ from app.schemas.chapter import (
     ChapterUpdateRequest,
     ChaptersListResponse,
 )
+from app.services.bookshelf_versions import (
+    ShelfVersion, category_shelf_version, task_shelf_version, shelf_version_expression,
+)
 from app.schemas.task import (
     BatchCreateTaskItem,
     BatchCreateTaskRequest,
@@ -210,6 +213,9 @@ def _normalize_task_config(config: dict | None) -> dict:
         category_label=category_meta["label"],
         category_prompt_status=category_meta["prompt_status"],
     )
+    requested_version = cfg.get("bookshelf_version")
+    if requested_version is not None and requested_version != category_shelf_version(category):
+        raise HTTPException(status_code=400, detail="该类别不属于所选版本书架，请从对应书架创建")
     pin_new_task(cfg)
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
@@ -1197,8 +1203,11 @@ def get_classical_reference_rewrite_default_reference() -> ClassicalReferenceTem
     response_model=TaskCategoryListResponse,
     summary="获取可选书籍方向分类",
 )
-def get_task_categories() -> TaskCategoryListResponse:
-    return TaskCategoryListResponse(items=list_categories())
+def get_task_categories(bookshelf_version: ShelfVersion | None = None) -> TaskCategoryListResponse:
+    items = list_categories()
+    if bookshelf_version is not None:
+        items = [item for item in items if category_shelf_version(item["id"]) == bookshelf_version]
+    return TaskCategoryListResponse(items=items)
 
 
 @router.post(
@@ -1227,7 +1236,8 @@ def create_task_batch(
     existing_urls = {
         row[0]
         for row in db.query(Task.source_url)
-        .filter(Task.owner_id == user.id, Task.source_url.in_(urls))
+        .filter(Task.owner_id == user.id, Task.source_url.in_(urls),
+                shelf_version_expression(Task.config) == cfg["bookshelf_version"])
         .all()
     }
     createable_count = sum(1 for url in urls if url not in existing_urls)
@@ -1655,6 +1665,7 @@ def _build_list_item(db: Session, task: Task) -> TaskListItem:
         bookshelf=str(cfg.get("bookshelf")).strip() if cfg.get("bookshelf") else category_label,
         category=category,
         category_label=category_label,
+        bookshelf_version=task_shelf_version(cfg),
         word_count=int(word_count),
         chapter_count=int(chapter_count),
     )
@@ -1701,6 +1712,7 @@ def _build_list_item_from_row(row) -> TaskListItem:
         bookshelf=bookshelf,
         category=category,
         category_label=category_label,
+        bookshelf_version=task_shelf_version(cfg),
         word_count=word_count,
         chapter_count=chapter_count,
     )
@@ -2044,6 +2056,7 @@ def list_tasks(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=0),
     status_filter: str | None = Query(None, alias="status"),
+    bookshelf_version: ShelfVersion | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TaskListResponse:
@@ -2068,6 +2081,8 @@ def list_tasks(
     )
 
     filters = [Task.owner_id == user.id]
+    if bookshelf_version is not None:
+        filters.append(shelf_version_expression(Task.config) == bookshelf_version)
     if status_filter:
         filters.append(Task.status == status_filter)
 
@@ -2154,11 +2169,15 @@ def update_task_metadata(
                 category_meta = get_category_meta(category)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if category != cfg.get("category") and category_shelf_version(category) != task_shelf_version(cfg):
+                raise HTTPException(status_code=400, detail="不能通过修改分类跨版本迁移成稿，请在目标书架新建任务")
             cfg["category"] = category
             cfg["category_label"] = category_meta["label"]
             cfg["category_prompt_status"] = category_meta["prompt_status"]
             cfg["bookshelf"] = category_meta["label"]
         else:
+            if task_shelf_version(cfg) == "2.0":
+                raise HTTPException(status_code=400, detail="2.0书架的成稿必须保留所属类别")
             cfg.pop("category", None)
             cfg.pop("category_label", None)
             cfg.pop("category_prompt_status", None)

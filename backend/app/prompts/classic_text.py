@@ -59,6 +59,8 @@ def load_auxiliary_template(name: str) -> str:
 
 def pin_new_task(config: dict) -> None:
     category = config.get("category", "social_science")
+    from app.services.bookshelf_versions import category_shelf_version
+    config["bookshelf_version"] = category_shelf_version(category)
     if category in COMIC_CATEGORIES:
         config.pop("text_workflow_version", None)
         config.pop("text_prompt_base_category", None)
