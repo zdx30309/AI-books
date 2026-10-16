@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 前端修复分支上线（2026-10-16，已发布）
+
+- 用户授权将fix/frontend-review-2026-10-16更新服务器；78c3ddf已快进合并个人AI-books/main。范围仅前端：编辑态ref修复、401登录失效处理、认证网络错误重试、本地字体、轻提示、生成中书架每15秒刷新、隐藏页停止轮询及关闭生产sourcemap。
+- 前端typecheck/build通过；隔离fetch替身验证版本查询参数、创建请求原样传递、认证头和401清理/回调通过，无真实创建请求。线上工作台、2.0成稿详情及未保存编辑输入验收通过，测试输入刷新丢弃，未写入书稿。
+- 仅更新web，backend/worker容器ID保持一致，Celery健康；公网首页、index-CZw_zc0P.js、index-xoCUB_fH.css及本地字体SHA256与构建一致。静态目录重新构建，避免保留旧sourcemap。备份：/opt/video-plan-release-backups/frontend-review-78c3ddf。
+- 社科2610提示词、Astra Pro直出、封面漫画业务代码未变，无模型调用或数据库迁移。本次是分支更新验收，不表示前端review所列全部问题已修复；Epic整体仍PARTIAL。
+
 ## 工作台简化（2026-10-16，已发布）
 
 - 首页改为1.0与2.0双书架入口，各自直接新建；最近书稿默认2.0，可切换1.0。移除首页重复创作区、大幅宣传和无操作翻页按钮，保留侧栏其他功能。
