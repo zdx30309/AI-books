@@ -805,6 +805,7 @@ export function BookDetail() {
               currentStep={task.current_step}
               status={task.status}
               category={task.category}
+              textWorkflowVersion={task.text_workflow_version}
             />
             {isActive && !isPaused && (
               <p className="mt-4 flex items-center gap-2 text-[10px] tracking-widest text-warm-500">
@@ -827,7 +828,9 @@ export function BookDetail() {
               >
                 终稿（章节视图）
               </ViewTab>
-              {STAGES.map((s) => (
+              {(task.text_workflow_version === "sheke2610_astra_pro_20261016"
+                ? [{ name: "writer" as StageName, label: "Astra Pro 直出" }]
+                : STAGES).map((s) => (
                 <ViewTab
                   key={s.name}
                   active={activeView === s.name}

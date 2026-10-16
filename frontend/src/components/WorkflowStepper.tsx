@@ -30,15 +30,23 @@ interface Props {
   currentStep: string;
   status: string;
   category?: string | null;
+  textWorkflowVersion?: string | null;
 }
 
-export function WorkflowStepper({ progress, currentStep, status, category }: Props) {
+export function WorkflowStepper({ progress, currentStep, status, category, textWorkflowVersion }: Props) {
   const isFailed = status === "failed";
   const isPaused = status === "paused";
   const isCompleted = status === "completed" || (!isFailed && !isPaused && progress >= 100);
   const isComicWorkflow =
     category === "comic_series" || category === "healing_comic" || currentStep.includes("漫画");
-  const steps = isComicWorkflow ? COMIC_STEPS : STEPS;
+  const steps = textWorkflowVersion === "sheke2610_astra_pro_20261016"
+    ? [
+        { key: "queue", label: "排队建库", start: 0 },
+        { key: "fetch", label: "读取视频文稿", start: 8 },
+        { key: "writer", label: "GPT-6 Astra Pro 直出", start: 25 },
+        { key: "persist", label: "保存书稿与章节", start: 92 },
+      ]
+    : isComicWorkflow ? COMIC_STEPS : STEPS;
 
   return (
     <ol className="space-y-3">

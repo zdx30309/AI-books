@@ -218,7 +218,6 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         : "插画";
   const supportsStyleReference =
     category === "web_short_story"
-    || category === "social_science_test"
     || category === "classical_chinese_reference_rewrite";
   const articleLinkStats = normalizeCandidateLinks(articleLinks);
 

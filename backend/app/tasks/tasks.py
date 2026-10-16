@@ -42,6 +42,7 @@ from app.services.comic_series import (
 )
 from app.services.content_engine import final_length_gate_issues, generate_full_book, normalize_final_markdown
 from app.prompts.classic_text import COMIC_CATEGORIES, VERSION as CLASSIC_TEXT_VERSION, workflow_for_existing_task
+from app.prompts.sheke2610 import VERSION as DIRECT_TEXT_VERSION
 from app.services.comic_variants import is_healing_comic_family
 from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
@@ -989,6 +990,7 @@ def _user_facing_generation_error(exc: Exception) -> str:
 
 def _extract_book_title(markdown: str) -> str:
     """Pick the first generated title candidate as the book title."""
+    markdown = re.sub(r"^#(?=最终书名|最终简介|目录|导言|正文|\d+\.)", "@", markdown or "", flags=re.MULTILINE)
     section = _BOOK_TITLE_SECTION_RE.search(markdown or "")
     if section:
         for line in section.group(1).splitlines():
@@ -1093,6 +1095,8 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
     db.flush()
 
+    if (task.config or {}).get("text_workflow_version") == DIRECT_TEXT_VERSION:
+        markdown = re.sub(r"^#(?=最终书名|最终简介|目录|导言|正文|\d+\.)", "@", markdown, flags=re.MULTILINE)
     body_match = _BODY_SECTION_RE.search(markdown or "")
     body_offset = body_match.end() if body_match else 0
     body_text = markdown[body_offset:] if body_match else markdown
@@ -1219,6 +1223,8 @@ def process_video(_self, task_id: str) -> dict:
             "comic_image": (88, f"{comic_label}配图生成中"),
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
+            "direct_start": (28, "GPT-6 Astra Pro 直出书稿中"),
+            "direct_done": (90, "社科2610直出终稿就绪"),
             "polish_start": (50, "Gemini 一润启动"),
             "polish_done": (70, "Gemini 一润完成"),
             "refine_start": (72, "Gemini 二润中"),
@@ -1341,7 +1347,8 @@ def process_video(_self, task_id: str) -> dict:
         )
         _ensure_active_run(db, task, run_id)
         is_classic_text = (not is_comic_category and workflow_for_existing_task(task.config or {}) == CLASSIC_TEXT_VERSION)
-        if not is_classic_text:
+        is_direct_text = workflow_for_existing_task(task.config or {}) == DIRECT_TEXT_VERSION
+        if not (is_classic_text or is_direct_text):
             markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))
         _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节", run_id=run_id)
@@ -1363,7 +1370,7 @@ def process_video(_self, task_id: str) -> dict:
         report_path.write_text(report_text, encoding="utf-8")
         _patch_config(task, quality_report=str(report_path), quality_report_summary=report.total_violations)
 
-        length_issues = [] if (is_comic_category or is_classic_text) else final_length_gate_issues(markdown, category=category)
+        length_issues = [] if (is_comic_category or is_classic_text or is_direct_text) else final_length_gate_issues(markdown, category=category)
         if length_issues and not (task.config or {}).get("length_gate_accepted"):
             reason = "；".join(length_issues)[:1000]
             logger.warning("[task %s] 终稿篇幅门禁未通过，转人工复核: %s", task_id, reason)

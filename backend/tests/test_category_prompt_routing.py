@@ -284,7 +284,7 @@ def test_social_science_test_uses_own_prompt() -> None:
     assert "【参照视频文稿】\n原始视频文稿" in rendered
     for marker in ("@最终书名", "@最终简介", "@目录", "@导言", "@正文"):
         assert marker in writer
-    assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
+    assert get_category_meta("social_science_test")["label"] == "社科2610"
 
 
 def test_popular_science_uses_cognitive_thinking_prompt() -> None:

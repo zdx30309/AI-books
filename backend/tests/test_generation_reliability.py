@@ -353,3 +353,35 @@ def test_stale_budget_stop_preserves_newer_run(isolated_generation, monkeypatch)
         assert task.config["approved"]
         assert not task.config.get("generation_hold")
         assert task.status != TaskStatus.PAUSED
+
+
+def test_sheke2610_task_persists_direct_result_without_editorial_passes(isolated_generation, monkeypatch):
+    from contextlib import nullcontext
+    from app.prompts.sheke2610 import VERSION, MODEL
+    from app.services import sheke2610_workflow as direct
+    from app.schemas.task import TaskStatusResponse
+    sessions, create_task, calls, _, markers, root = isolated_generation
+    book = '#最终书名\n直出的书名\n#最终简介\n简介\n#目录\n#1. 起点\n#2. 后来\n#导言\n导言\n#正文\n#1. 起点\n原样的正文。\n#2. 后来\n另外的正文。'
+    paid = []
+    def create(**kwargs):
+        paid.append(kwargs)
+        return SimpleNamespace(status='completed', output_text=book, id='offline', model=MODEL)
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    client.with_options = lambda **kwargs: client
+    monkeypatch.setattr(content_engine, '_get_openai_writer_client', lambda: client)
+    monkeypatch.setattr(direct, 'distributed_semaphore', lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(generation_tasks.settings, 'FINAL_LENGTH_GATE_ENABLED', True)
+    task_id = create_task(markers[0], category='social_science_test', text_workflow_version=VERSION)
+    result = generation_tasks.process_video.run(str(task_id))
+    assert result['status'] == TaskStatus.COMPLETED and result['chapters'] == 2
+    assert len(paid) == 1 and not calls
+    with sessions() as database:
+        task = database.get(Task, task_id)
+        assert task.config['markdown'] == book
+        assert task.config['title'] == '直出的书名'
+        assert [c.title for c in task.chapters] == ['起点', '后来']
+        assert [c.content for c in task.chapters] == ['原样的正文。', '另外的正文。']
+        assert TaskStatusResponse.model_validate(task).text_workflow_version == VERSION
+        assert task_router._read_task_markdown(database, task) == book
+        response = task_router._build_single_download_response(database, task, 'md')
+        assert Path(response.path).read_text() == book

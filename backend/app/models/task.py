@@ -107,6 +107,10 @@ class Task(Base):
         return category_label if isinstance(category_label, str) and category_label.strip() else None
 
     @property
+    def text_workflow_version(self) -> str | None:
+        return (self.config or {}).get("text_workflow_version")
+
+    @property
     def cover_status(self) -> str | None:
         cfg = self.config or {}
         status = cfg.get("cover_status")

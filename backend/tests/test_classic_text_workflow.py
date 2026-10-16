@@ -20,7 +20,7 @@ from app.services.batch_spend import BatchBudgetStop
 BOOK = "@最终书名\n测试书\n@最终简介\n简介\n@目录\n1. 起点\n@导言\n导言内容\n@正文\n@1. 起点\n正文内容。"
 
 
-@pytest.mark.parametrize("category", [c for c in SUPPORTED_CATEGORIES if c not in COMIC_CATEGORIES])
+@pytest.mark.parametrize("category", [c for c in SUPPORTED_CATEGORIES if c not in COMIC_CATEGORIES and c != "social_science_test"])
 def test_new_task_pins_classic_subject_but_old_tasks_keep_workflow(category):
     cfg = _normalize_task_config({"category": category})
     assert cfg["text_workflow_version"] == VERSION

@@ -24,8 +24,8 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   },
   {
     id: "social_science_test",
-    label: "社会痛点测试版",
-    core_feature: "社科书稿创作提示词（融合降AI终审），用于现实议题测试",
+    label: "社科2610",
+    core_feature: "GPT-6 Astra Pro 单次直出，使用2610版Word提示词，无后续润色",
     directions: "教育、婚姻、住房、职场压力、养老",
     prompt_status: "ready",
   },
@@ -313,6 +313,7 @@ export const DEFAULT_COVER_CATEGORIES: TaskCategoryOption[] = [
 
 export function normalizeCategoryLabel(label: string | null | undefined) {
   if (!label) return label ?? null;
+  if (label === "社会痛点测试版") return "社科2610";
   return CATEGORY_LABEL_RENAMES[label] ?? label;
 }
 

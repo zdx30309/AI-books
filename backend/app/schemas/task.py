@@ -140,6 +140,7 @@ class TaskStatusResponse(BaseModel):
     progress: int                  # 0-100
     current_step: str
     cover_url: str | None = None
+    text_workflow_version: str | None = None
     cover_status: str | None = None
     cover_error: str | None = None
     title: str | None = None

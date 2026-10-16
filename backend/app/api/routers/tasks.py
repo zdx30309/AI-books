@@ -213,7 +213,7 @@ def _normalize_task_config(config: dict | None) -> dict:
     pin_new_task(cfg)
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
-    if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
+    if category in {"web_short_story", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
         style_reference = str(cfg.get("style_reference") or "").strip()[:200]
         style_notes = str(cfg.get("style_notes") or "").strip()[:STYLE_NOTES_INLINE_LIMIT]
         if style_reference:
@@ -1746,6 +1746,9 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     cfg = task.config or {}
     category = _docx_category(str(cfg.get("category") or ""))
     md = cfg.get("markdown")
+    from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
+    if cfg.get("text_workflow_version") == DIRECT_VERSION and md:
+        return str(md)
     if cfg.get("text_workflow_version") == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
         if md:
@@ -1926,7 +1929,10 @@ def _markdown_to_docx(
     paragraphs: list[str] = []
     image_entries: list[tuple[str, Path, str]] = []
     normalized_category = _docx_category(category)
-    if text_workflow_version == CLASSIC_TEXT_VERSION:
+    from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
+    if text_workflow_version == DIRECT_VERSION:
+        docx_lines = markdown.splitlines()
+    elif text_workflow_version == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
         docx_lines = normalize_classic(markdown, category=normalized_category).splitlines()
     elif (

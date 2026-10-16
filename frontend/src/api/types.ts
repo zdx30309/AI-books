@@ -175,6 +175,7 @@ export interface ClassicalReferenceTemplateResponse {
 }
 
 export interface TaskStatusResponse {
+  text_workflow_version?: string | null;
   id: string;
   source_url: string;
   status: TaskStatus;

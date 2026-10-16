@@ -5770,6 +5770,12 @@ async def generate_full_book(
 ) -> str:
     normalized_category = normalize_category(category)
     from app.prompts.classic_text import COMIC_CATEGORIES, VERSION
+    from app.prompts.sheke2610 import CATEGORY as DIRECT_CATEGORY, VERSION as DIRECT_VERSION
+    if text_workflow_version == DIRECT_VERSION:
+        if normalized_category != DIRECT_CATEGORY:
+            raise ValueError("社科2610工作流类别不一致")
+        from app.services.sheke2610_workflow import generate_full_book as generate_direct
+        return await generate_direct(raw_text, output_dir=output_dir, on_stage=on_stage)
     if text_workflow_version not in {VERSION, "legacy_20260704"}:
         raise ValueError(f"Unknown text workflow: {text_workflow_version!r}")
     if text_workflow_version == VERSION and normalized_category not in COMIC_CATEGORIES:

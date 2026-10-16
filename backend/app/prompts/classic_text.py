@@ -63,12 +63,22 @@ def pin_new_task(config: dict) -> None:
         config.pop("text_workflow_version", None)
         config.pop("text_prompt_base_category", None)
         return
+    from app.prompts.sheke2610 import CATEGORY, VERSION as DIRECT_VERSION
+    if category == CATEGORY:
+        config.pop("text_prompt_base_category", None)
+        config["text_workflow_version"] = DIRECT_VERSION
+        return
     config["text_prompt_base_category"] = base_category(category)
     config["text_workflow_version"] = VERSION
 
 
 def workflow_for_existing_task(config: dict) -> str:
     version = config.get("text_workflow_version") or "legacy_20260704"
+    from app.prompts.sheke2610 import CATEGORY, VERSION as DIRECT_VERSION
+    if version == DIRECT_VERSION:
+        if config.get("category") != CATEGORY:
+            raise ValueError("社科2610工作流仅支持social_science_test")
+        return version
     if version not in {VERSION, "legacy_20260704"}:
         raise ValueError(f"Unknown text workflow: {version!r}")
     return version
