@@ -1,12 +1,13 @@
 # Epic Novel Engine Implementation Status
 
-## 社科2610单次直出（2026-10-16，纽约，待发布）
+## 社科2610单次直出（2026-10-16，纽约，已发布）
 
 - 用户要求将“社会痛点测试版”改名“社科2610”，使用提供的Word全文提示词，GPT-6 Astra Pro直出。保留social_science_test类别ID；新建和明确重新生成任务固定sheke2610_astra_pro_20261016，已固定旧版本的任务不混用新产物。其他文字、封面、漫画及Epic流程不变。
 - 完整Word正文归档为sheke2610_writer.md，仅替换raw_text，不追加文风参考或改写指令。官方Pro为Responses的gpt-6-astra + reasoning.mode=pro，使用xhigh；当前凭据只读查询模型成功，未发起付费推理。实现计划与提示词SHA256见SHEKE2610_PLAN.md。
 - 单次非流式调用，禁止SDK自动重试，未完成/空稿/不确定请求暂停并保留响应；成功响应可恢复阶段文件，不重新扣费。记录模型、动作、状态、用量、估算费用和错误；不把估算当账单。保留服务原并发护栏。
 - 原样保存输出，跳过Gemini润色、精修、DeepSeek排版及自动长度改写；章节解析识别Word要求的#标记，预览、Markdown和Word导出不改写正文。流程界面仅展示Astra Pro直出，删除该品类附加文风入口。
 - backend全量551 passed、1 skipped、3项既有警告；覆盖一次请求Pro参数、精确提示词、超时/截断不重放、缓存恢复、完整任务章节入库及导出。frontend typecheck/build通过。尚未进行真实付费生成或浏览器点击验收；Epic总体仍为PARTIAL。
+- 96c37e4已推送个人AI-books/main并发布服务器；backend/worker各138份运行文件hash通过，公网index及JS与构建产物一致，Celery健康。部署前后1205条任务/13216条章节元数据hash一致，25738个输出及账本文件的大小和mtime不变，队列空。原模型环境与并发不变，Astra Pro只在新专属路由显式选择。备份：/opt/video-plan-release-backups/sheke2610-96c37e4；无付费请求。
 
 ## 经典文字与最新封面漫画整合（2026-10-16，纽约，已发布）
 
