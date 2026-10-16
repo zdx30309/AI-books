@@ -48,6 +48,36 @@ def test_budget_blocks_before_paid_request(batch):
     assert not json.loads(ledger.read_text())["calls"]
 
 
+def test_unlimited_requires_saved_human_approval(batch):
+    config, output, owner, ledger = batch
+    with pytest.raises(batch_spend.BatchBudgetStop, match="人工批准"):
+        with batch_spend.scope({**config, "generation_batch_budget_unlimited": True}, output, owner):
+            pass
+
+
+def test_unlimited_keeps_history_and_uncertain_charge_protection(batch):
+    config, output, owner, ledger = batch
+    with batch_spend.scope(config, output, owner):
+        batch_spend.reserve("gpt-5.6-sol", "来源", None, 1000)
+    state = json.loads(ledger.read_text())
+    original_call = state["calls"][0].copy()
+    state.update(limit_cny=None, unlimited_approved_at="2026-10-15T23:00:00Z")
+    ledger.write_text(json.dumps(state))
+    unlimited = {**config, "generation_batch_budget_unlimited": True}
+    with batch_spend.scope(unlimited, output, owner):
+        for number in range(10):
+            index = batch_spend.reserve("gpt-5.6-sol", "来源", None, 65536)
+        batch_spend.failed(index, TimeoutError("unknown charge"))
+        with pytest.raises(batch_spend.BatchBudgetStop, match="避免重复扣费"):
+            batch_spend.reserve("gpt-5.6-sol", "来源", None, 1000)
+    saved = json.loads(ledger.read_text())
+    assert saved["limit_cny"] is None and saved["reserved_cny"] > 100
+    assert saved["calls"][0] == original_call
+    with pytest.raises(batch_spend.BatchBudgetStop, match="禁止重置"):
+        with batch_spend.scope(config, output, owner):
+            pass
+
+
 def test_usage_refunds_only_unused_upper_bound_and_rejects_double_settlement(batch):
     config, output, owner, ledger = batch
     with batch_spend.scope(config, output, owner):

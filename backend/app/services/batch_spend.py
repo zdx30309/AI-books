@@ -45,8 +45,9 @@ def scope(config, output_dir, owner_id=None):
         raise BatchBudgetStop("本批次费用保护只核定了科普读物流程，未发起付费请求")
     if settings.WRITER_PROVIDER != "openai" or settings.OPENAI_WRITER_STREAM:
         raise BatchBudgetStop("本批次须使用OpenAI非流式主笔，配置不一致，未发起付费请求")
-    limit = float(config.get("generation_batch_budget_cny") or 0)
-    if not math.isfinite(limit) or limit <= 0:
+    unlimited = config.get("generation_batch_budget_unlimited") is True
+    limit = None if unlimited else float(config.get("generation_batch_budget_cny") or 0)
+    if limit is not None and (not math.isfinite(limit) or limit <= 0):
         raise BatchBudgetStop("批次预算无效，未调用付费模型")
     directory = Path(output_dir).parent / "generation_batches" / str(uuid.UUID(str(owner_id))) / str(uuid.UUID(str(batch_id)))
     directory.mkdir(parents=True, exist_ok=True)
@@ -74,6 +75,8 @@ def _ledger():
     with (directory / "spend.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = json.loads(path.read_text()) if path.exists() else {"limit_cny": limit, "reserved_cny": 0.0, "calls": []}
+        if limit is None and not state.get("unlimited_approved_at"):
+            raise BatchBudgetStop("无上限批次尚未记录人工批准，未调用付费模型")
         if state["limit_cny"] != limit:
             raise BatchBudgetStop("批次预算与已保存账本不一致，禁止重置或自动加预算")
         yield state
@@ -103,7 +106,7 @@ def reserve(model, prompt, system, max_tokens):
         if state.get("hold_reason"):
             raise BatchBudgetStop(state["hold_reason"])
         reserved = round(state["reserved_cny"] + amount, 6)
-        if reserved > state["limit_cny"]:
+        if state["limit_cny"] is not None and reserved > state["limit_cny"]:
             raise BatchBudgetStop(f"后续请求将超过批次{state['limit_cny']:g}元预算，已保存断点，未发起付费请求")
         index = len(state["calls"])
         state["reserved_cny"] = reserved

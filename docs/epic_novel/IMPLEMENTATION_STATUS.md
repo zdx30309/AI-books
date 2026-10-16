@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 本轮十本科普书取消费用上限（2026-10-15，纽约）
+
+- 用户明确要求本轮费用不设上限。新增显式generation_batch_budget_unlimited模式，仅允许已在私有账本记录unlimited_approved_at的批次使用；None表示无限预算，不以伪造大数字或清空费用模拟。
+- 原有100元及其他有限预算行为不变。全部历史费用、逐次预留、用量与响应留痕继续保留，未知扣费暂停、输出截断暂停、并发限制、质量门禁不变。
+- 新增人工批准必需、累计费用可超过旧限额、历史记录不丢失及无上限模式仍阻断未知扣费的回归；test_batch_spend.py：16 passed。部署采用worker温和退出后切换，不能杀死在途付费请求或自动重放未知结果。
+- 仅对science_regeneration_0213bca3-45bc-55ee-a55e-5285ea5afddf十条新任务授权；旧十本及其他书籍不得自动续跑。发布及线上授权核验结果待记录。
+
 ## 封面与转写模型升级、合并旗舰分支（2026-10-15）
 
 - 用户要求GPT统一6.1，其余厂商用最新模型，并确认保留旗舰版：Gemini gemini-4-argon、DeepSeek deepseek-v4-pro、OpenAI文本gpt-6.1-sol（沿用feat/latest-models-and-stage-guards及其阶段护栏）。
