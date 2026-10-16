@@ -121,10 +121,22 @@ export const tokenStore = {
   },
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// 登录失效（401）时通知 AuthContext 退出登录，否则界面仍显示已登录
+let unauthorizedHandler: (() => void) | null = null;
+
+export function onUnauthorized(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
+function withCacheBuster(path: string) {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}_=${Date.now()}`;
+}
+
+// 所有请求的公共部分：带 token、解析错误信息、401 统一处理
+async function baseFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((init?.headers as Record<string, string>) ?? {}),
+    ...((init.headers as Record<string, string>) ?? {}),
   };
   const token = tokenStore.get();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -140,40 +152,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     if (res.status === 401) {
       tokenStore.clear();
+      unauthorizedHandler?.();
     }
     throw new ApiError(res.status, detail);
   }
+  return res;
+}
+
+function filenameFromResponse(res: Response, fallback: string) {
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? fallback;
+  return decodeURIComponent(rawName);
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await baseFetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...((init?.headers as Record<string, string>) ?? {}),
+    },
+  });
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 async function download(path: string): Promise<{ blob: Blob; filename: string }> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const separator = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${BASE}${path}${separator}_=${Date.now()}`, {
-    headers,
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = errorMessageFromBody(body, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-
-  const disposition = res.headers.get("Content-Disposition") ?? "";
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "book.md";
-  const filename = decodeURIComponent(rawName);
+  const res = await baseFetch(withCacheBuster(path), { cache: "no-store" });
+  const filename = filenameFromResponse(res, "book.md");
   return { blob: await res.blob(), filename };
 }
 
@@ -183,10 +191,6 @@ async function uploadFile<T>(
   fields?: Record<string, string>,
   extraFiles?: Record<string, File | null | undefined>,
 ): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const form = new FormData();
   form.append("file", file);
   Object.entries(extraFiles ?? {}).forEach(([key, value]) => {
@@ -195,22 +199,7 @@ async function uploadFile<T>(
   Object.entries(fields ?? {}).forEach(([key, value]) => {
     form.append(key, value);
   });
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers,
-    body: form,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = errorMessageFromBody(body, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
+  const res = await baseFetch(path, { method: "POST", body: form });
   return (await res.json()) as T;
 }
 
@@ -218,58 +207,17 @@ async function downloadWithBody(
   path: string,
   body: unknown,
 ): Promise<{ blob: Blob; filename: string }> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await baseFetch(path, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const errorBody = await res.json();
-      detail = errorMessageFromBody(errorBody, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-
-  const disposition = res.headers.get("Content-Disposition") ?? "";
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "books.zip";
-  const filename = decodeURIComponent(rawName);
+  const filename = filenameFromResponse(res, "books.zip");
   return { blob: await res.blob(), filename };
 }
 
 async function fetchBlob(path: string): Promise<Blob> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const separator = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${BASE}${path}${separator}_=${Date.now()}`, {
-    headers,
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = errorMessageFromBody(body, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
+  const res = await baseFetch(withCacheBuster(path), { cache: "no-store" });
   return res.blob();
 }
 
@@ -278,28 +226,9 @@ async function uploadFiles<T>(
   files: File[],
   fieldName = "files",
 ): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const body = new FormData();
   files.forEach((file) => body.append(fieldName, file));
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers,
-    body,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const errorBody = await res.json();
-      detail = errorMessageFromBody(errorBody, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
+  const res = await baseFetch(path, { method: "POST", body });
   return (await res.json()) as T;
 }
 
@@ -308,34 +237,11 @@ async function uploadFilesForDownload(
   files: File[],
   fieldName = "files",
 ): Promise<{ blob: Blob; filename: string }> {
-  const headers: Record<string, string> = {};
-  const token = tokenStore.get();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const body = new FormData();
   files.forEach((file) => body.append(fieldName, file));
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers,
-    body,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const errorBody = await res.json();
-      detail = errorMessageFromBody(errorBody, detail);
-    } catch {
-      /* ignore */
-    }
-    if (res.status === 401) tokenStore.clear();
-    throw new ApiError(res.status, detail);
-  }
-
-  const disposition = res.headers.get("Content-Disposition") ?? "";
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
-  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? "data-analysis.xlsx";
-  return { blob: await res.blob(), filename: decodeURIComponent(rawName) };
+  const res = await baseFetch(path, { method: "POST", body });
+  const filename = filenameFromResponse(res, "data-analysis.xlsx");
+  return { blob: await res.blob(), filename };
 }
 
 function saveBlob(blob: Blob, filename: string) {

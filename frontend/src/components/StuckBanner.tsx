@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { SystemHealth } from "@/api/types";
+import { toast } from "@/components/Toaster";
 
 interface Props {
   taskId: string;
@@ -98,7 +99,7 @@ export function StuckBanner({
       onRetried?.();
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "重试失败";
-      alert(`重试失败：${msg}`);
+      toast.error(`重试失败：${msg}`);
     } finally {
       setRetrying(false);
     }

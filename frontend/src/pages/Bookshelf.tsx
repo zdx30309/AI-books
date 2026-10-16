@@ -14,6 +14,7 @@ import {
 } from "@/constants/categories";
 import { bookPath, categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
 import type { TaskCategoryOption, TaskListItem, TaskStatus } from "@/api/types";
+import { toast } from "@/components/Toaster";
 
 const FILTERS: { label: string; value: TaskStatus | "all" }[] = [
   { label: "全部", value: "all" },
@@ -35,6 +36,17 @@ type CategoryChip =
   | { id: string; label: string; filterValue: "all"; type: "all" }
   | { id: string; label: string; filterValue: string; type: "category" }
   | { id: string; label: string; filterValue: "uncategorized"; type: "uncategorized" };
+
+const PROCESSING_STATUSES = new Set<string>([
+  "pending",
+  "processing",
+  "fetching_topics",
+  "filtering_topics",
+  "generating_outline",
+  "writing_chapters",
+  "fact_checking",
+]);
+const AUTO_REFRESH_MS = 15000;
 
 const CATEGORY_ORDER_STORAGE_KEY = "scriptbook.bookshelf.categoryOrder";
 
@@ -174,6 +186,26 @@ export function Bookshelf({
     };
   }, [bookshelfVersion, refreshAttempt]);
 
+  // 有书稿在生成时，定时静默刷新状态（页面不可见时跳过）
+  const hasProcessing = tasks.some((task) => PROCESSING_STATUSES.has(task.status));
+  useEffect(() => {
+    if (!hasProcessing) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      api
+        .listTasks(1, 0, bookshelfVersion)
+        .then((r) => {
+          if (!cancelled) setTasks(r.items);
+        })
+        .catch(() => undefined);
+    }, AUTO_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hasProcessing, bookshelfVersion]);
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -240,11 +272,7 @@ export function Bookshelf({
     filter === "all"
       ? scopedTasks
       : filter === "processing"
-        ? scopedTasks.filter((t) =>
-            ["pending", "processing", "fetching_topics", "filtering_topics", "generating_outline", "writing_chapters", "fact_checking"].includes(
-              t.status,
-            ),
-          )
+        ? scopedTasks.filter((t) => PROCESSING_STATUSES.has(t.status))
         : scopedTasks.filter((t) => t.status === filter);
 
   const filtered = statusFiltered
@@ -348,7 +376,7 @@ export function Bookshelf({
 
   const handleBatchDownload = async (fmt: "md" | "docx") => {
     if (selectedCompletedTaskIds.length === 0) {
-      alert("请先选择已完成的书稿");
+      toast.info("请先选择已完成的书稿");
       return;
     }
     try {
@@ -366,14 +394,14 @@ export function Bookshelf({
           : e instanceof Error
             ? e.message
             : "批量下载失败";
-      alert(`批量下载失败：${msg}`);
+      toast.error(`批量下载失败：${msg}`);
     }
   };
 
   const handleRetryFailed = async (ids?: string[]) => {
     const targetIds = ids?.length ? ids : failedTaskIds;
     if (targetIds.length === 0) {
-      alert("当前没有失败任务需要继续生成");
+      toast.info("当前没有失败任务需要继续生成");
       return;
     }
     const ok = window.confirm(
@@ -391,7 +419,7 @@ export function Bookshelf({
         targetIds.forEach((id) => next.delete(id));
         return next;
       });
-      alert(`已重新入队 ${res.total_retried} 本，跳过 ${res.total_skipped} 本。`);
+      toast.success(`已重新入队 ${res.total_retried} 本，跳过 ${res.total_skipped} 本。`);
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -399,7 +427,7 @@ export function Bookshelf({
           : e instanceof Error
             ? e.message
             : "继续生成失败";
-      alert(`继续生成失败：${msg}`);
+      toast.error(`继续生成失败：${msg}`);
     } finally {
       setBatchRetrying(false);
     }
@@ -408,7 +436,7 @@ export function Bookshelf({
   const handleBatchRegenerate = async () => {
     const targetIds = selectedRegeneratableTaskIds;
     if (targetIds.length === 0) {
-      alert("请先选择已完成或失败的书稿");
+      toast.info("请先选择已完成或失败的书稿");
       return;
     }
     const ok = window.confirm(
@@ -427,7 +455,7 @@ export function Bookshelf({
         regeneratedIds.forEach((id) => next.delete(id));
         return next;
       });
-      alert(`已重新生成入队 ${res.total_regenerated} 本，跳过 ${res.total_skipped} 本。`);
+      toast.success(`已重新生成入队 ${res.total_regenerated} 本，跳过 ${res.total_skipped} 本。`);
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -435,7 +463,7 @@ export function Bookshelf({
           : e instanceof Error
             ? e.message
             : "重新生成失败";
-      alert(`重新生成失败：${msg}`);
+      toast.error(`重新生成失败：${msg}`);
     } finally {
       setBatchRegenerating(false);
     }
@@ -444,7 +472,7 @@ export function Bookshelf({
   const handleBatchDelete = async () => {
     const ids = [...selectedTaskIds];
     if (ids.length === 0) {
-      alert("请先选择要删除的书稿");
+      toast.info("请先选择要删除的书稿");
       return;
     }
     const ok = window.confirm(
@@ -466,7 +494,7 @@ export function Bookshelf({
     setBatchDeleting(false);
 
     if (failed.length > 0) {
-      alert(`有 ${failed.length} 本删除失败，已保留在选择中，请稍后重试。`);
+      toast.error(`有 ${failed.length} 本删除失败，已保留在选择中，请稍后重试。`);
     }
   };
 
@@ -485,7 +513,7 @@ export function Bookshelf({
       });
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "删除失败";
-      alert(`删除失败：${msg}`);
+      toast.error(`删除失败：${msg}`);
     }
   };
 

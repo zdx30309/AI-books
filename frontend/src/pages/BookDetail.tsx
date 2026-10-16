@@ -38,6 +38,7 @@ import type {
   TaskCategoryOption,
   TaskStatusResponse,
 } from "@/api/types";
+import { toast } from "@/components/Toaster";
 
 const STAGES: { name: StageName; label: string }[] = [
   { name: "writer", label: "1. 初稿" },
@@ -124,6 +125,9 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
   const [coverSrc, setCoverSrc] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
+  // refresh 通过 ref 读取编辑态，避免每次输入都重建 refresh 而触发整页重新加载
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   // 拉任务状态 + 章节
   const refresh = useCallback(async () => {
@@ -140,7 +144,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
         // 仅在未编辑过时同步章节，避免覆盖用户的本地编辑
         setChapters((prev) => {
           if (prev.length === 0) return c.chapters;
-          if (Object.values(dirty).some(Boolean)) return prev;
+          if (Object.values(dirtyRef.current).some(Boolean)) return prev;
           return c.chapters;
         });
       }
@@ -153,18 +157,22 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
             : "加载失败";
       setError(msg);
     }
-  }, [id, dirty, bookshelfVersion, navigate]);
+  }, [id, bookshelfVersion, navigate]);
 
   const restartPolling = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(() => void refresh(), 2500);
+    pollRef.current = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 2500);
   }, [refresh]);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
     void refresh().finally(() => setLoading(false));
-    pollRef.current = window.setInterval(() => void refresh(), 2500);
+    pollRef.current = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 2500);
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
@@ -313,7 +321,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
           e instanceof ApiError
             ? `[${e.status}] ${e.detail}`
             : "保存失败";
-        alert(`保存失败: ${msg}`);
+        toast.error(`保存失败: ${msg}`);
       } finally {
         setSavingId(null);
       }
@@ -354,7 +362,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
         e instanceof ApiError
           ? `[${e.status}] ${e.detail}`
           : "润色失败";
-      alert(`润色失败: ${msg}`);
+      toast.error(`润色失败: ${msg}`);
     } finally {
       setPolishing(false);
     }
@@ -374,7 +382,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
       setMetaDirty(false);
     } catch (e) {
       const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "保存失败";
-      alert(`保存书名/类别失败：${msg}`);
+      toast.error(`保存书名/类别失败：${msg}`);
     } finally {
       setSavingMeta(false);
     }
@@ -391,7 +399,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
       const res = await api.regenerateTasks({ task_ids: [id] });
       const skipped = res.skipped.find((item) => item.task_id === id);
       if (res.total_regenerated === 0 || skipped) {
-        alert(`重新生成未入队：${skipped?.reason || "当前任务暂不能重新生成"}`);
+        toast.error(`重新生成未入队：${skipped?.reason || "当前任务暂不能重新生成"}`);
         return;
       }
       setDirty({});
@@ -408,7 +416,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
         e instanceof ApiError
           ? `[${e.status}] ${e.detail}`
           : "重新生成失败";
-      alert(`重新生成失败：${msg}`);
+      toast.error(`重新生成失败：${msg}`);
     } finally {
       setRegenerating(false);
     }
@@ -430,7 +438,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
       window.location.href = returnShelf;
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "删除失败";
-      alert(`删除失败：${msg}`);
+      toast.error(`删除失败：${msg}`);
     }
   }, [id, task, chapters, returnShelf]);
 
@@ -446,7 +454,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
       await refresh();
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "重试失败";
-      alert(`继续生成失败：${msg}`);
+      toast.error(`继续生成失败：${msg}`);
     } finally {
       setLoading(false);
     }
@@ -467,7 +475,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
       await refresh();
     } catch (e) {
       const msg = e instanceof ApiError ? e.detail : "暂停失败";
-      alert(`暂停生成失败：${msg}`);
+      toast.error(`暂停生成失败：${msg}`);
     } finally {
       setPausing(false);
     }
@@ -483,7 +491,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
           e instanceof ApiError
             ? `[${e.status}] ${e.detail}`
             : "下载失败";
-        alert(`下载失败：${msg}`);
+        toast.error(`下载失败：${msg}`);
       }
     },
     [id],
@@ -498,7 +506,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
         e instanceof ApiError
           ? `[${e.status}] ${e.detail}`
           : "下载失败";
-      alert(`下载封面失败：${msg}`);
+      toast.error(`下载封面失败：${msg}`);
     }
   }, [id]);
 
@@ -517,7 +525,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
         await refresh();
       } catch (e) {
         const msg = e instanceof ApiError ? e.detail : "重新生成封面失败";
-        alert(`重新生成封面失败：${msg}`);
+        toast.error(`重新生成封面失败：${msg}`);
       } finally {
         setLoading(false);
       }
@@ -1019,7 +1027,7 @@ function TaskInlineImage({
       await api.downloadTaskImageFile(taskId, filename);
     } catch (e) {
       const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
-      alert(`下载原图失败：${msg}`);
+      toast.error(`下载原图失败：${msg}`);
     } finally {
       setDownloading(null);
     }
@@ -1031,7 +1039,7 @@ function TaskInlineImage({
       await api.downloadTaskImagePreviewFile(taskId, filename);
     } catch (e) {
       const msg = e instanceof ApiError ? `[${e.status}] ${e.detail}` : "下载失败";
-      alert(`下载预览版失败：${msg}`);
+      toast.error(`下载预览版失败：${msg}`);
     } finally {
       setDownloading(null);
     }

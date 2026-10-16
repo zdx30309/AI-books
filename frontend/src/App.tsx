@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar";
 import { UserBadge } from "./components/UserBadge";
+import { Toaster } from "./components/Toaster";
 import { AuthProvider } from "./auth/AuthContext";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { Workspace } from "./pages/Workspace";
@@ -31,6 +32,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <AuthProvider>
+      <Toaster />
       <Routes>
         {/* 公共路由 */}
         <Route path="/login" element={<LoginPage />} />

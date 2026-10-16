@@ -22,6 +22,7 @@ import {
 } from "@/components/ComicVariantCreator";
 
 import { categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
+import { toast } from "@/components/Toaster";
 
 interface Props {
   bookshelfVersion?: BookshelfVersion;
@@ -667,7 +668,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           const parts = [`已创建 ${res.total_created} 个公众号任务`];
           if (duplicateCount > 0) parts.push(`自动合并 ${duplicateCount} 条重复链接`);
           if (res.total_skipped > 0) parts.push(`跳过 ${res.total_skipped} 条`);
-          window.alert(`${parts.join("，")}。`);
+          toast.success(`${parts.join("，")}。`);
         }
         onCreated(first);
       } catch (e) {
@@ -741,7 +742,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
           const parts = [`已创建 ${res.total_created} 个任务`];
           if (duplicateCount > 0) parts.push(`自动合并 ${duplicateCount} 个重复链接`);
           if (res.total_skipped > 0) parts.push(`跳过 ${res.total_skipped} 个已存在任务`);
-          window.alert(`${parts.join("，")}。`);
+          toast.success(`${parts.join("，")}。`);
         }
         onCreated(first);
       } catch (e) {

@@ -9,9 +9,9 @@ import { bookPath, bookshelfPath, categoriesForShelf, type BookshelfVersion } fr
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
-const shelves = [
-  { version: "1.0" as const, title: "经典创作", description: "社会痛点、人生哲学、科普等原有类别", detail: "沿用经典创作流程，管理原有书稿。" },
-  { version: "2.0" as const, title: "社科2610", description: "你的专属提示词 · GPT-6 Astra Pro 直出", detail: "生成后直接成稿，不经过额外润色。" },
+const shelves: { version: BookshelfVersion; title: string; description?: string; detail: string }[] = [
+  { version: "1.0", title: "经典创作", description: "社会痛点、人生哲学、科普等原有类别", detail: "沿用经典创作流程，管理原有书稿。" },
+  { version: "2.0", title: "社科2610", detail: "生成后直接成稿，不经过额外润色。" },
 ];
 
 export function Workspace() {
@@ -58,8 +58,8 @@ export function Workspace() {
               <h2 className="font-serif text-2xl text-warm-100">{shelf.version}书架</h2>
               <span className="rounded-full border border-gold-500/20 px-3 py-1 text-xs text-gold-300">{shelf.title}</span>
             </div>
-            <p className="mt-5 text-sm text-warm-100">{shelf.description}</p>
-            <p className="mt-2 text-sm text-warm-300">{shelf.detail}</p>
+            {shelf.description && <p className="mt-5 text-sm text-warm-100">{shelf.description}</p>}
+            <p className={`${shelf.description ? "mt-2" : "mt-5"} text-sm text-warm-300`}>{shelf.detail}</p>
             <div className="mt-7 flex flex-wrap items-center gap-5">
               <button type="button" className="btn-gold" onClick={() => setModalVersion(shelf.version)}>
                 <Plus className="h-4 w-4" />新建{shelf.version}书稿

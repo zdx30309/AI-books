@@ -21,3 +21,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# tsc -b 生成的产物
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo

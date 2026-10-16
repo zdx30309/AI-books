@@ -7,12 +7,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError, tokenStore } from "@/api/client";
+import { api, ApiError, onUnauthorized, tokenStore } from "@/api/client";
 import type { LoginRequest, RegisterRequest, UserPublic } from "@/api/types";
 
 interface AuthState {
   user: UserPublic | null;
   loading: boolean;
+  /** 有 token 但因网络/服务器错误没能确认登录状态 */
+  connectionError: boolean;
   login: (body: LoginRequest) => Promise<void>;
   register: (body: RegisterRequest) => Promise<void>;
   logout: () => void;
@@ -24,6 +26,7 @@ const AuthCtx = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserPublic | null>(null);
   const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!tokenStore.get()) {
@@ -34,10 +37,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const me = await api.me();
       setUser(me);
+      setConnectionError(false);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         tokenStore.clear();
         setUser(null);
+        setConnectionError(false);
+      } else {
+        // 网络或服务器错误：token 可能仍有效，不要当成未登录
+        setConnectionError(true);
       }
     } finally {
       setLoading(false);
@@ -47,6 +55,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    onUnauthorized(() => setUser(null));
+    return () => onUnauthorized(null);
+  }, []);
 
   const login = useCallback(async (body: LoginRequest) => {
     const res = await api.login(body);
@@ -66,8 +79,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({ user, loading, login, register, logout, refresh }),
-    [user, loading, login, register, logout, refresh],
+    () => ({ user, loading, connectionError, login, register, logout, refresh }),
+    [user, loading, connectionError, login, register, logout, refresh],
   );
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
