@@ -4,7 +4,7 @@ import { ArrowRight, Plus } from "lucide-react";
 import { BookshelfSection } from "@/components/BookshelfSection";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { api } from "@/api/client";
-import { readWithRetry } from "@/api/readWithRetry";
+import { readWithTransientRetry } from "@/api/readWithRetry";
 import { bookPath, bookshelfPath, categoriesForShelf, type BookshelfVersion } from "@/constants/bookshelfVersions";
 import { DEFAULT_CATEGORIES } from "@/constants/categories";
 import type { TaskCategoryOption, TaskListItem } from "@/api/types";
@@ -30,7 +30,7 @@ export function Workspace() {
     setError(false);
     setTasks([]);
     void Promise.all([
-      readWithRetry(() => api.listTasks(1, 6, version)),
+      readWithTransientRetry(() => api.listTasks(1, 6, version)),
       api.getTaskCategories(version).catch(() => ({ items: categoriesForShelf(DEFAULT_CATEGORIES, version) })),
     ]).then(([result, options]) => {
       if (cancelled) return;
