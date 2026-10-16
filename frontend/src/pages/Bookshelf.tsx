@@ -5,6 +5,7 @@ import { CheckSquare, FileArchive, FileText, Loader2, Plus, RefreshCcw, Trash2, 
 import { BookCard } from "@/components/BookCard";
 import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { EmptyState } from "@/components/EmptyState";
+import { readWithTransientRetry } from "@/api/readWithRetry";
 import { api, ApiError } from "@/api/client";
 import {
   DEFAULT_CATEGORIES,
@@ -139,6 +140,8 @@ export function Bookshelf({
     categoriesForShelf(normalizeCategoryOptions(DEFAULT_CATEGORIES), bookshelfVersion),
   );
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshAttempt, setRefreshAttempt] = useState(0);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["value"]>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
@@ -155,19 +158,21 @@ export function Bookshelf({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api
-      .listTasks(1, 0, bookshelfVersion)
+    setLoadError(null);
+    readWithTransientRetry(() => api.listTasks(1, 0, bookshelfVersion))
       .then((r) => {
         if (!cancelled) setTasks(r.items);
       })
-      .catch((e) => console.error("bookshelf fetch failed", e))
+      .catch((e) => {
+        if (!cancelled) setLoadError(e instanceof ApiError ? e.detail : "网络连接失败，请重新加载书架");
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [bookshelfVersion]);
+  }, [bookshelfVersion, refreshAttempt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -214,7 +219,7 @@ export function Bookshelf({
         type: "category" as const,
       })),
     ];
-    if (!isScopedShelf) {
+    if (!isScopedShelf && bookshelfVersion === "1.0") {
       chips.push({
         id: "filter:uncategorized",
         label: "未分类",
@@ -223,7 +228,7 @@ export function Bookshelf({
       });
     }
     return orderCategoryChips(chips, categoryOrder);
-  }, [allCategoryLabel, categoryOrder, isScopedShelf, scopedCategories]);
+  }, [allCategoryLabel, categoryOrder, isScopedShelf, scopedCategories, bookshelfVersion]);
 
   useEffect(() => {
     if (categoryFilter !== "all" && !categoryChips.some((item) => item.filterValue === categoryFilter)) {
@@ -516,7 +521,7 @@ export function Bookshelf({
             {title}
           </h1>
           <p className="mt-2 text-xs tracking-widest text-warm-400">
-            {subtitle ? `${subtitle} · 共 ${scopedTasks.length} 本书稿` : `共 ${scopedTasks.length} 本书稿`}
+            {loading ? "正在加载书稿…" : loadError ? "书稿列表暂未加载" : subtitle ? `${subtitle} · 共 ${scopedTasks.length} 本书稿` : `共 ${scopedTasks.length} 本书稿`}
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-3">
@@ -730,6 +735,12 @@ export function Bookshelf({
             />
           ))}
         </div>
+      ) : loadError ? (
+        <EmptyState title="书架加载失败" description={loadError} action={
+          <button type="button" onClick={() => setRefreshAttempt((value) => value + 1)} className="btn-gold">
+            <RefreshCcw className="h-4 w-4" />重新加载
+          </button>
+        } />
       ) : filtered.length === 0 ? (
         <EmptyState
           title={filter === "all" && categoryFilter === "all" && dateFilter === "all" ? emptyTitle : "暂无相关书稿"}
