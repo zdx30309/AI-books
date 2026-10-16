@@ -10,6 +10,13 @@ from app.services import content_engine
 from app.services.content_engine import normalize_final_markdown
 
 
+def test_normalize_keeps_explanatory_medical_sentence_intact() -> None:
+    paragraph = "还有一个容易被忽视的风险，就是成分重复。有些人同时吃两种非甾体抗炎药，会增加不良反应的风险。"
+    result = normalize_final_markdown("@最终书名\n测试书\n@正文\n@1. 用药知识\n" + paragraph, category="popular_science")
+    assert paragraph in result
+    assert "###还有一个" not in result
+
+
 def test_normalize_final_markdown_joins_comma_broken_body_line() -> None:
     markdown = """@最终书名
 测试书

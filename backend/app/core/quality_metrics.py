@@ -551,6 +551,13 @@ def _detect_format_noise(text: str, *, category: str | None = None) -> dict[str,
     return results
 
 
+def is_explanatory_sentence_lead(title: str, body: str) -> bool:
+    return (
+        title.startswith(("还有一个", "还有一种", "另一个", "另一种", "有一个", "有一种"))
+        and body.lstrip().startswith(("就是", "是指", "在于", "是"))
+    )
+
+
 def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) -> dict[str, list[str]]:
     results: dict[str, list[str]] = {}
     in_body = False
@@ -575,6 +582,8 @@ def _detect_inline_pseudo_subheading(text: str, *, category: str | None = None) 
         if title.startswith(("这个", "这则", "这一", "这种", "这类", "那则", "那个")):
             continue
         separator = line[len(match.group(1))]
+        if separator in "，," and not line.startswith("@") and is_explanatory_sentence_lead(title, match.group(2)):
+            continue
         if separator in "，," and not line.startswith("@") and len(title) > 12:
             continue
         if separator in "，," and not line.startswith("@") and not any(

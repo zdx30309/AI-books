@@ -196,6 +196,14 @@ def test_comma_gate_still_blocks_short_inline_headings_and_colons() -> None:
         assert detect_final_hard_errors(markdown, category="popular_science")["正文内小标题未标准化为 ###"]
 
 
+def test_explanatory_medical_sentence_is_not_an_inline_heading() -> None:
+    paragraph = "还有一个容易被忽视的风险，就是成分重复。有些人同时吃两种非甾体抗炎药，会增加不良反应的风险。"
+    prefix = "@最终书名\n测试书\n@正文\n@1. 用药知识\n"
+    assert not detect_final_hard_errors(prefix + paragraph, category="popular_science")
+    assert detect_final_hard_errors(prefix + "@" + paragraph, category="popular_science")
+    assert detect_final_hard_errors(prefix + paragraph.replace("，", "：", 1), category="popular_science")
+
+
 def test_final_hard_error_gate_allows_classical_interleaved_original_labels() -> None:
     markdown = """@最终书名
 盐铁论（白话版）

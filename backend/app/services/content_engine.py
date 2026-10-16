@@ -16,6 +16,7 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
+from app.core.quality_metrics import is_explanatory_sentence_lead
 from app.services import batch_spend
 from app.prompts.goal_driven_templates import (
     FINANCE_CURRENT_WEB_EVIDENCE_GUARD_PROMPT,
@@ -644,6 +645,8 @@ def _split_internal_subheading_line(line: str) -> list[str] | None:
         if not has_marker and not any(keyword in title for keyword in _INLINE_SUBHEADING_KEYWORDS):
             continue
         if separator in {"，", ",", "。"} and not has_marker and len(title) > 12:
+            continue
+        if separator in {"，", ","} and not has_marker and is_explanatory_sentence_lead(title, body):
             continue
         # A comma lead is a heading only when it ends on the keyword ("扎堆竞争的代价，…").
         # Sentence openers such as "危机发生前，…" or "亚洲危机结束后，…" stay prose.
