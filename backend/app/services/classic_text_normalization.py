@@ -333,5 +333,3 @@ def normalize_final_markdown(markdown: str, *, category: str | None = None) -> s
     result_lines = front_lines + body_lines
     result = "\n".join(result_lines).strip()
     return result + ("\n" if result else "")
-
-
