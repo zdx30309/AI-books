@@ -270,12 +270,31 @@ def test_web_short_story_is_history_test_prompt_sync() -> None:
     assert get_category_meta("web_short_story")["label"] == "历史测试版"
 
 
-def test_social_science_test_prompt_sync() -> None:
+def test_social_science_test_uses_own_prompt() -> None:
     social_prompts = get_prompts("social_science")
     social_test_prompts = get_prompts("social_science_test")
+    writer = social_test_prompts["full_book_writer"]
+    rendered = writer.format(raw_text="原始视频文稿")
 
-    assert social_test_prompts == social_prompts
+    assert social_test_prompts["full_book_writer"] != social_prompts["full_book_writer"]
+    assert writer.startswith("社科书稿创作提示词（融合降AI终审）")
+    assert "终审后的正文总量为11000—15000字" in writer
+    assert "【参照视频文稿】\n原始视频文稿" in rendered
+    for marker in ("@最终书名", "@最终简介", "@目录", "@导言", "@正文"):
+        assert marker in writer
     assert get_category_meta("social_science_test")["label"] == "社会痛点测试版"
+
+
+def test_popular_science_uses_cognitive_thinking_prompt() -> None:
+    writer = get_prompts("popular_science")["full_book_writer"]
+    rendered = writer.format(raw_text="原始视频文稿")
+
+    assert writer.startswith("认知思维类图书创作提示词")
+    assert "框架相似度与核心观点相似度分别控制在75%以内" in writer
+    assert "视频／字幕／转写稿：\n原始视频文稿" in rendered
+    for marker in ("@最终书名", "@最终简介", "@目录", "@导言", "@正文"):
+        assert marker in writer
+    assert get_prompts("popular_science_cognitive_upgrade")["full_book_writer"] != writer
 
 
 def test_life_philosophy_category_uses_three_alternative_prompt_flow() -> None:
@@ -1917,7 +1936,7 @@ def test_web_short_story_style_reference_keeps_history_prompt_sync(
     assert "不要复刻、改写或搬运任何现成作品句子" in writer_prompts[0]
 
 
-def test_social_science_test_style_reference_keeps_social_prompt_sync(
+def test_social_science_test_style_reference_appends_to_own_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1944,12 +1963,12 @@ def test_social_science_test_style_reference_keeps_social_prompt_sync(
     )
 
     assert writer_prompts[0].startswith(
-        get_prompts("social_science")["full_book_writer"].format(raw_text=raw_text)
+        get_prompts("social_science_test")["full_book_writer"].format(raw_text=raw_text)
     )
     assert "笔锋参考要求" in writer_prompts[0]
     assert "参考对象：冷峻非虚构笔法" in writer_prompts[0]
     assert "补充要求：多一点现实细节和判断锋利度。" in writer_prompts[0]
-    assert "仍要严格遵守社会痛点类当前 prompt" in writer_prompts[0]
+    assert "仍要严格遵守社会痛点测试版当前 prompt" in writer_prompts[0]
 
 
 def test_style_reference_only_applies_to_test_categories(

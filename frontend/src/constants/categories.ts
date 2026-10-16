@@ -25,7 +25,7 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   {
     id: "social_science_test",
     label: "社会痛点测试版",
-    core_feature: "与社会痛点端口同步，用于现实议题测试",
+    core_feature: "社科书稿创作提示词（融合降AI终审），用于现实议题测试",
     directions: "教育、婚姻、住房、职场压力、养老",
     prompt_status: "ready",
   },

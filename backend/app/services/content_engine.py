@@ -5620,7 +5620,7 @@ _STYLE_REFERENCE_CATEGORY_COPY: dict[str, tuple[str, str]] = {
     ),
     "social_science_test": (
         "这是社会痛点测试版专用的文风控制项，只影响论述笔法，不改变题材 prompt、结构要求和原始素材事实边界。",
-        "仍要严格遵守社会痛点类当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
+        "仍要严格遵守社会痛点测试版当前 prompt，不要改成鸡汤、爽文或情绪煽动稿，不要偏离现实议题。",
     ),
     CLASSICAL_REFERENCE_REWRITE_CATEGORY: (
         "这是古文白话参照译写版专用的参照译本输入项，只用于判断释义、术语、断句、称谓、语言密度和关键字词准确性；不再学习参照译本的注释、点评或排版体例。",
