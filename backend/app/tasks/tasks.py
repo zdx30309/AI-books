@@ -41,6 +41,8 @@ from app.services.comic_series import (
     parse_healing_comic_source_content,
 )
 from app.services.content_engine import final_length_gate_issues, generate_full_book, normalize_final_markdown
+from app.prompts.classic_text import COMIC_CATEGORIES, VERSION as CLASSIC_TEXT_VERSION, workflow_for_existing_task
+from app.services.comic_variants import is_healing_comic_family
 from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
     QingdouDurationExceededError,
@@ -1206,7 +1208,7 @@ def process_video(_self, task_id: str) -> dict:
             category_prompt_status=category_meta["prompt_status"],
         )
 
-        is_comic_category = category in {"comic_series", "healing_comic"}
+        is_comic_category = category in COMIC_CATEGORIES
         comic_label = category_meta["label"]
         start_step = f"即将生成{comic_label}短语结构" if is_comic_category else "即将启动主模型"
         _update_progress(db, task, progress=25, step=start_step, run_id=run_id)
@@ -1306,6 +1308,7 @@ def process_video(_self, task_id: str) -> dict:
             generate_full_book(
                 video_text,
                 category=category,
+                text_workflow_version=workflow_for_existing_task(task.config or {}),
                 output_dir=output_dir,
                 on_stage=_on_stage,
                 style_reference=str((task.config or {}).get("style_reference") or "").strip() or None,
@@ -1329,7 +1332,7 @@ def process_video(_self, task_id: str) -> dict:
                 ),
                 healing_comic_should_pause=(
                     (lambda: _healing_comic_pause_requested(task_id, run_id))
-                    if category == "healing_comic"
+                    if is_healing_comic_family(category)
                     else None
                 ),
                 input_source=input_source,
@@ -1337,7 +1340,9 @@ def process_video(_self, task_id: str) -> dict:
             )
         )
         _ensure_active_run(db, task, run_id)
-        markdown = normalize_final_markdown(markdown, category=category)
+        is_classic_text = (not is_comic_category and workflow_for_existing_task(task.config or {}) == CLASSIC_TEXT_VERSION)
+        if not is_classic_text:
+            markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))
         _update_progress(db, task, progress=92, step="全文生成完成，正在写入章节", run_id=run_id)
 
@@ -1358,7 +1363,7 @@ def process_video(_self, task_id: str) -> dict:
         report_path.write_text(report_text, encoding="utf-8")
         _patch_config(task, quality_report=str(report_path), quality_report_summary=report.total_violations)
 
-        length_issues = [] if is_comic_category else final_length_gate_issues(markdown, category=category)
+        length_issues = [] if (is_comic_category or is_classic_text) else final_length_gate_issues(markdown, category=category)
         if length_issues and not (task.config or {}).get("length_gate_accepted"):
             reason = "；".join(length_issues)[:1000]
             logger.warning("[task %s] 终稿篇幅门禁未通过，转人工复核: %s", task_id, reason)

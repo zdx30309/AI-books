@@ -59,6 +59,8 @@ WRITER_ROUTING_CATEGORIES = [
     not in {
         "comic_series",
         "healing_comic",
+        "story_comic",
+        "homophone_comic",
         "finance_technology",
         "finance_technology_recommendation",
     }
@@ -1078,6 +1080,10 @@ def test_all_category_generation_prompts_include_section_title_rules() -> None:
         assert SECTION_TITLE_REQUIREMENT_PROMPT in prompts["gemini_fast_polish"]
         assert SECTION_TITLE_REFINE_GUARD_PROMPT in prompts["gemini_fast_refine"]
         if prompts["final_book_format"]:
+            if category in {"story_comic", "homophone_comic"}:
+                # These variants assemble their delivery locally and never use
+                # the standard long-form formatter (covered by variant tests).
+                continue
             if category == "life_philosophy":
                 assert "每个章节的标题统一格式为：！！！N. 章节名" in prompts["final_book_format"]
                 assert "不得改写、增删、合并、拆分、改序、重述任何正文内容" in prompts["final_book_format"]

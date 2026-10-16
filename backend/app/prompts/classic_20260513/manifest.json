@@ -1,0 +1,108 @@
+{
+  "workflow_version": "classic_20260513",
+  "source_commit": "70c7ad81dca81c14966c39c574b6bb5797da99ac",
+  "source_file": "backend/app/prompts/goal_driven_templates.py",
+  "registry": {
+    "social_science": {
+      "full_book_writer": "social_science_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "life_philosophy": {
+      "full_book_writer": "life_philosophy_full_book_writer.md",
+      "gemini_fast_polish": "life_philosophy_gemini_fast_polish.md",
+      "gemini_fast_refine": "life_philosophy_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "popular_science": {
+      "full_book_writer": "popular_science_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "wisdom_stories": {
+      "full_book_writer": "wisdom_stories_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "biography": {
+      "full_book_writer": "biography_full_book_writer.md",
+      "gemini_fast_polish": "biography_gemini_fast_polish.md",
+      "gemini_fast_refine": "biography_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "history_culture": {
+      "full_book_writer": "history_culture_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "emotion_relationship": {
+      "full_book_writer": "emotion_relationship_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "psychology_self_help": {
+      "full_book_writer": "psychology_self_help_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "suspense_micro_reasoning": {
+      "full_book_writer": "suspense_micro_reasoning_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "classical_chinese": {
+      "full_book_writer": "classical_chinese_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "health_wellness": {
+      "full_book_writer": "health_wellness_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "classic_interpretation": {
+      "full_book_writer": "classic_interpretation_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    },
+    "web_short_story": {
+      "full_book_writer": "history_culture_full_book_writer.md",
+      "gemini_fast_polish": "social_science_gemini_fast_polish.md",
+      "gemini_fast_refine": "social_science_gemini_fast_refine.md",
+      "final_book_format": "social_science_final_book_format.md"
+    }
+  },
+  "sha256": {
+    "social_science_full_book_writer.md": "cd1e66ea183a9c2b2d6cce0f8887664894dc8e81e2f9d32e2015a74816759ccd",
+    "social_science_gemini_fast_polish.md": "049f3c19280c2fde18f7ad0039ee6d13b12d7d6f52d0892e2b84987d50c0f8a0",
+    "social_science_gemini_fast_refine.md": "f956b651aa87ac62dd2362da65dd68024c864b19c18e79174ac6b8ad54c2a72f",
+    "social_science_final_book_format.md": "3d29263a3d563b845f06ef1bad9110d9e3de5aa9241da0ec9ccacbf6d4d2af15",
+    "life_philosophy_full_book_writer.md": "b10a1c67ba218234b0671368ef3f4dcabe7841342990435d09fc0bcc9a2bca11",
+    "life_philosophy_gemini_fast_polish.md": "cd92a9d82ce692572846afdbd16f8f654ae9fe1e02345c2d66fdfd5124ed651c",
+    "life_philosophy_gemini_fast_refine.md": "8d33f1e369b0394e6e814b39ecf61504fe5b102ea5efc0795f20277744aa9ee0",
+    "popular_science_full_book_writer.md": "6a47d87176d7018b503f1befdcd6a512f542def94cadbf83456c3253e38d7a62",
+    "wisdom_stories_full_book_writer.md": "998e223b14b307784f95e5697a6c2ce6d14d481c9b9084a366ae8856beb8dda1",
+    "biography_full_book_writer.md": "6a769ce20b49be487e81f8fce16e78165118786b75df0f8fef14775b35bc5e97",
+    "biography_gemini_fast_polish.md": "3c1e353a5dff18445580555601ee204950a4c021605f45670ac81010e102f56d",
+    "biography_gemini_fast_refine.md": "246e8bda7ba83b010c9ebc7501c3c4a0fb9bdc270b61357b0be4bbdbe941d537",
+    "history_culture_full_book_writer.md": "82f8dee4cfbb30f546f0382710769065a0120a3949d060d03d0e7a672d1443d7",
+    "emotion_relationship_full_book_writer.md": "88becf9cb2cd2e379f3c08444a284fc38d05f39856f5c108d2dc1f5b1bcba940",
+    "psychology_self_help_full_book_writer.md": "c5809da63f6204b0fa36f7a9eed0586afdc0e3c897f1394eac7b7139cba7de13",
+    "suspense_micro_reasoning_full_book_writer.md": "8b715dc5835ffe73473a04912e91b7ad9475bd4c717328ea13720d494c976ef5",
+    "classical_chinese_full_book_writer.md": "a737bdddec0d549537a71f4c1dc472aafb42f0c78da8f7366a6139a9b5b3ca9c",
+    "health_wellness_full_book_writer.md": "fe90bccfb488254ec7718684a74e9f8440dc674a3ed60c5ce3f3c97779ca554a",
+    "classic_interpretation_full_book_writer.md": "75cd61a077e35e8d032864d1ad7ea8e0c27d52993bab9629c9e363fa25d2f32b",
+    "repair_front_matter.md": "b63db84262d5b5f81336bd9188594897c5f9ac63e470d6916345b56eaf3f347b",
+    "history_style.md": "a6c2e42ab36af75e464dbc76f88b09e00545e38b7cb8e0b0aaa5fedec7b7b238"
+  }
+}

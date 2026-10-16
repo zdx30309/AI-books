@@ -5766,8 +5766,15 @@ async def generate_full_book(
     healing_comic_should_pause: Callable[[], bool] | None = None,
     input_source: str | None = None,
     source_duration_seconds: int | float | None = None,
+    text_workflow_version: str = "legacy_20260704",
 ) -> str:
     normalized_category = normalize_category(category)
+    from app.prompts.classic_text import COMIC_CATEGORIES, VERSION
+    if text_workflow_version not in {VERSION, "legacy_20260704"}:
+        raise ValueError(f"Unknown text workflow: {text_workflow_version!r}")
+    if text_workflow_version == VERSION and normalized_category not in COMIC_CATEGORIES:
+        from app.services.classic_text_workflow import generate_full_book as generate_classic
+        return await generate_classic(raw_text, category=normalized_category, output_dir=output_dir, on_stage=on_stage, style_reference=style_reference, style_notes=style_notes)
     if (
         (input_source or "").strip() == REFERENCE_ARTICLE_INPUT_SOURCE
         and normalized_category != "emotion_relationship"
@@ -5818,6 +5825,15 @@ async def generate_full_book(
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
+
+    if normalized_category in {"story_comic", "homophone_comic"}:
+        return await _generate_comic_variant_book(
+            raw_text, category=normalized_category, output_dir=output_dir, on_stage=on_stage,
+            panel_count=healing_comic_panel_count or 32,
+            character_prompt=healing_comic_character_prompt,
+            source_content=healing_comic_source_content,
+            should_pause=healing_comic_should_pause,
+        )
 
     if normalized_category == "healing_comic":
         return await _generate_healing_comic_book(
@@ -6435,3 +6451,243 @@ async def generate_full_book(
             logger.warning("质量度量跳过: %s", exc)
 
     return final_markdown
+
+
+async def _generate_comic_variant_book(
+    raw_text: str,
+    *,
+    category: str,
+    output_dir: Path | None,
+    on_stage: StageCallback | None,
+    panel_count: int = 32,
+    character_prompt: str | None = None,
+    source_content: str | None = None,
+    should_pause: Callable[[], bool] | None = None,
+) -> str:
+    from app.services.comic_series import (
+        ComicGenerationPaused,
+        inject_comic_images,
+        parse_healing_comic_character_prompt,
+        parse_healing_comic_panel_count,
+        parse_healing_comic_source_content,
+        parse_healing_comic_title,
+    )
+    from app.services.comic_variants import (
+        COMIC_VARIANT_CATEGORIES,
+        HOMOPHONE_COMIC_CATEGORY,
+        assemble_variant_comic_markdown,
+        build_homophone_idea_prompt,
+        build_variant_writer_prompt,
+        format_homophone_joke_bank,
+        generate_variant_comic_images,
+        parse_homophone_idea_output,
+        parse_variant_writer_output,
+        variant_pipeline_version,
+    )
+
+    if category not in COMIC_VARIANT_CATEGORIES:
+        raise ValueError(f"不支持的治愈漫画分支：{category}")
+    comic_title = parse_healing_comic_title(raw_text) or (
+        "给你讲个故事" if category == "story_comic" else "今天也有好笑的事"
+    )
+    panel_count = parse_healing_comic_panel_count(panel_count)
+    character_prompt = parse_healing_comic_character_prompt(character_prompt)
+    source_content = parse_healing_comic_source_content(source_content)
+    if output_dir is None:
+        raise ValueError("漫画需要 output_dir 以保存每张配图")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _raise_if_paused() -> None:
+        if should_pause is not None and should_pause():
+            raise ComicGenerationPaused("漫画生成已暂停")
+
+    cached_script = _read_comic_variant_script_stage(output_dir, category=category)
+    cached_final = _read_stage_file(output_dir, "04_format.md")
+    if cached_final and cached_script is not None:
+        if on_stage:
+            on_stage("format_done", {"chars": len(cached_final), "reused_stage": True})
+        return cached_final
+
+    _raise_if_paused()
+    research_context = _read_stage_file(output_dir, "00_comic_variant_research.md")
+    if not research_context:
+        research_context = await asyncio.to_thread(_healing_comic_research_context, comic_title)
+        _dump_stage(output_dir, "00_comic_variant_research.md", research_context)
+    if source_content:
+        _dump_stage(output_dir, "00_comic_variant_source_content.md", source_content)
+
+    script_reused = cached_script is not None
+    if cached_script is not None:
+        title, intro, panels, series_meta = cached_script
+        if on_stage:
+            on_stage("comic_structure_done", {"chars": len(research_context), "reused_stage": True})
+    else:
+        joke_bank = "[]"
+        if category == HOMOPHONE_COMIC_CATEGORY:
+            _raise_if_paused()
+            cached_ideas = _read_stage_file(output_dir, "01_homophone_joke_bank.json")
+            if cached_ideas:
+                joke_bank = cached_ideas
+            else:
+                idea_prompt = build_homophone_idea_prompt(
+                    comic_title,
+                    panel_count=panel_count,
+                    character_prompt=character_prompt,
+                    source_content=source_content,
+                )
+                _dump_stage(output_dir, "01_homophone_idea_prompt.md", idea_prompt)
+                try:
+                    idea_output = await _route_writer_call(
+                        idea_prompt,
+                        reasoning_effort="medium",
+                        verbosity="low",
+                        max_output_tokens=0,
+                        retry_on_failure=False,
+                    )
+                except Exception as exc:
+                    logger.warning("ChatGPT homophone ideation fallback: %s", exc)
+                    idea_output = ""
+                _dump_stage(output_dir, "01_homophone_ideas_raw.json", idea_output or "{}")
+                selected_ideas = parse_homophone_idea_output(
+                    idea_output,
+                    panel_count=panel_count,
+                )
+                joke_bank = format_homophone_joke_bank(selected_ideas)
+                _dump_stage(output_dir, "01_homophone_joke_bank.json", joke_bank)
+                if on_stage:
+                    on_stage(
+                        "comic_jokes_selected",
+                        {"selected": len(selected_ideas), "requested": panel_count},
+                    )
+
+        _raise_if_paused()
+        writer_prompt = build_variant_writer_prompt(
+            category,
+            comic_title,
+            research_context,
+            panel_count=panel_count,
+            character_prompt=character_prompt,
+            source_content=source_content,
+            joke_bank=joke_bank,
+        )
+        _dump_stage(output_dir, "01_writer_prompt.md", writer_prompt)
+        try:
+            writer_output = await _route_writer_call(
+                writer_prompt,
+                reasoning_effort="medium",
+                verbosity="low",
+                max_output_tokens=0,
+                retry_on_failure=category != HOMOPHONE_COMIC_CATEGORY,
+            )
+        except Exception as exc:
+            logger.warning("ChatGPT comic variant writer fallback: %s", exc)
+            writer_output = ""
+        _dump_stage(output_dir, "01_writer.md", writer_output or "(fallback)")
+        title, intro, panels, series_meta = parse_variant_writer_output(
+            category,
+            writer_output,
+            comic_title,
+            panel_count=panel_count,
+        )
+        _dump_stage(
+            output_dir,
+            "02_comic_variant_script.json",
+            json.dumps(
+                {
+                    "pipeline_version": variant_pipeline_version(category),
+                    "category": category,
+                    "title": title,
+                    "intro": intro,
+                    "series_meta": series_meta,
+                    "panels": panels,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        if on_stage:
+            on_stage("comic_structure_done", {"episodes": len(panels), "category": category})
+
+    _raise_if_paused()
+    refined_markdown = _read_stage_file(output_dir, "03_refine.md") if script_reused else ""
+    if not refined_markdown:
+        refined_markdown = assemble_variant_comic_markdown(title, intro, panels)
+        _dump_stage(output_dir, "03_refine.md", refined_markdown)
+    if on_stage:
+        card_total = sum(
+            len(panel.get("images") or [])
+            for panel in panels
+            if isinstance(panel.get("images"), list)
+        )
+        on_stage("comic_images_start", {"total": card_total + 1})
+
+    def _image_progress(index: int, total: int) -> None:
+        if on_stage:
+            on_stage("comic_image", {"idx": index, "total": total})
+
+    images = await asyncio.to_thread(
+        generate_variant_comic_images,
+        category,
+        panels,
+        output_dir,
+        title=title,
+        intro=intro,
+        series_meta=series_meta,
+        allow_uncertain=True,
+        retry_uncertain=True,
+        on_progress=_image_progress,
+        should_pause=should_pause,
+    )
+    final_markdown = inject_comic_images(refined_markdown, images)
+    final_markdown = normalize_final_markdown(final_markdown, category=category)
+    _dump_stage(output_dir, "04_format.md", final_markdown)
+    if on_stage:
+        on_stage("format_done", {"chars": len(final_markdown), "skipped_deepseek": True})
+    return final_markdown
+
+
+def _read_comic_variant_script_stage(
+    output_dir: Path | None,
+    *,
+    category: str = "story_comic",
+) -> tuple[
+    str,
+    str,
+    list[dict[str, object]],
+    dict[str, str],
+] | None:
+    raw = _read_stage_file(output_dir, "02_comic_variant_script.json")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("读取漫画分支脚本缓存失败: %s", exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    from app.services.comic_variants import variant_pipeline_version
+
+    expected_version = variant_pipeline_version(category)
+    if payload.get("pipeline_version") != expected_version:
+        logger.info(
+            "漫画分支缓存版本过期，重新生成：cached=%s current=%s",
+            payload.get("pipeline_version"),
+            expected_version,
+        )
+        return None
+    panels = payload.get("panels")
+    if not isinstance(panels, list) or not panels:
+        return None
+    normalized_panels = [panel for panel in panels if isinstance(panel, dict)]
+    if not normalized_panels:
+        return None
+    series_meta = payload.get("series_meta")
+    if not isinstance(series_meta, dict):
+        series_meta = {}
+    return (
+        str(payload.get("title") or "原创治愈漫画").strip() or "原创治愈漫画",
+        str(payload.get("intro") or "一本原创治愈系短漫画。"),
+        normalized_panels,
+        {str(key): str(value) for key, value in series_meta.items()},
+    )

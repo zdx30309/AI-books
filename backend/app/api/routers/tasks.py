@@ -29,6 +29,8 @@ from app.prompts.goal_driven_templates import (
     normalize_category,
 )
 from app.services.content_engine import normalize_final_markdown
+from app.prompts.classic_text import COMIC_CATEGORIES, pin_new_task
+from app.services.comic_variants import is_healing_comic_family
 from app.services.comic_series import (
     comic_raw_text_from_phrases,
     image_filename_from_markdown,
@@ -208,6 +210,7 @@ def _normalize_task_config(config: dict | None) -> dict:
         category_label=category_meta["label"],
         category_prompt_status=category_meta["prompt_status"],
     )
+    pin_new_task(cfg)
     if not str(cfg.get("bookshelf") or "").strip():
         cfg["bookshelf"] = category_meta["label"]
     if category in {"web_short_story", "social_science_test", CLASSICAL_REFERENCE_REWRITE_CATEGORY}:
@@ -242,7 +245,7 @@ def _normalize_task_config(config: dict | None) -> dict:
         cfg.pop("classical_variant", None)
         cfg.pop("classical_variant_label", None)
         cfg.pop("classical_original_title", None)
-    if category == "healing_comic":
+    if is_healing_comic_family(category):
         title = parse_comic_title(
             cfg.get("comic_title")
             or cfg.get("title")
@@ -681,12 +684,13 @@ def _clear_task_output_dir(task_id: UUID) -> None:
 
 
 def _prepare_task_for_regeneration(db: Session, task: Task) -> None:
-    _clear_task_output_dir(task.id)
-    db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
-
     cfg = dict(task.config or {})
     for key in _REGENERATE_CONFIG_DROP_KEYS:
         cfg.pop(key, None)
+    pin_new_task(cfg)
+    # Validate the target workflow before touching any paid manuscript output.
+    _clear_task_output_dir(task.id)
+    db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
     cfg["regenerated_at"] = datetime.now(timezone.utc).isoformat()
     cfg["regenerated_from_bookshelf"] = True
     task.config = cfg
@@ -1217,7 +1221,7 @@ def create_task_batch(
     cfg = _normalize_task_config(req.config)
     if cfg.get("category") in CLASSICAL_CHINESE_CATEGORY_IDS:
         raise HTTPException(status_code=400, detail="古文白话不支持候选链接库，请单条粘贴文言文原文")
-    if cfg.get("category") in {"comic_series", "healing_comic"}:
+    if cfg.get("category") in COMIC_CATEGORIES:
         label = str(cfg.get("category_label") or "插画")
         raise HTTPException(status_code=400, detail=f"{label}不支持候选链接库，请使用{label}入口输入 5 或 6 条短语")
     existing_urls = {
@@ -1524,7 +1528,7 @@ def pause_comic_task(
 
     cfg = dict(task.config or {})
     category = str(cfg.get("category") or "").strip()
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=409, detail="当前任务不是漫画分类，不能使用漫画暂停")
     if task.status == TaskStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="任务已完成，不能暂停")
@@ -1931,7 +1935,7 @@ def _markdown_to_docx(
             candidate = image_base_dir / "comic_images" / image_filename
             if candidate.exists():
                 image_path = candidate
-            if comic_preview_images and normalized_category == "healing_comic":
+            if comic_preview_images and is_healing_comic_family(normalized_category):
                 preview_path = _comic_image_preview_path_from_output_dir(image_base_dir, image_filename)
                 if preview_path is not None:
                     image_path = preview_path
@@ -2287,7 +2291,7 @@ def get_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     image_path = _task_comic_image_preview_path(task_id, filename)
     if image_path is None:
@@ -2316,7 +2320,7 @@ def download_task_image_preview(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2341,7 +2345,7 @@ def download_task_image_preview_direct(
     if task is None or task.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     category = str((task.config or {}).get("category") or "")
-    if category != "healing_comic":
+    if not is_healing_comic_family(category):
         raise HTTPException(status_code=404, detail=f"image preview of task {task_id} not found")
     return _build_task_image_download_response(task_id, filename, preview=True)
 
@@ -2679,7 +2683,7 @@ def _build_single_download_response(
         raise HTTPException(status_code=404, detail="任务尚未产出任何内容")
 
     category = _docx_category(str((task.config or {}).get("category") or ""))
-    use_preview_docx = bool(comic_preview_images and category == "healing_comic" and fmt == "docx")
+    use_preview_docx = bool(comic_preview_images and is_healing_comic_family(category) and fmt == "docx")
     output_dir = _task_output_dir(task.id)
     download_dir = output_dir / "downloads"
     download_dir.mkdir(parents=True, exist_ok=True)

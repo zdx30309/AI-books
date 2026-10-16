@@ -12,6 +12,15 @@ import { api, ApiError } from "@/api/client";
 import { DEFAULT_CATEGORIES, normalizeCategoryOptions } from "@/constants/categories";
 import type { ClassicalReferenceTemplateResponse, TaskCategoryOption } from "@/api/types";
 
+import {
+  HomophoneComicCreator,
+  StoryComicCreator,
+  buildHomophoneComicBrief,
+  buildStoryComicBrief,
+  createHomophoneComicForm,
+  createStoryComicForm,
+} from "@/components/ComicVariantCreator";
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -21,7 +30,8 @@ interface Props {
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；;、（）()【】\[\]{}]+/gi;
-const COMIC_CATEGORY_IDS = new Set(["comic_series", "healing_comic"]);
+const HEALING_COMIC_FAMILY_IDS = new Set(["healing_comic", "story_comic", "homophone_comic"]);
+const COMIC_CATEGORY_IDS = new Set(["comic_series", ...HEALING_COMIC_FAMILY_IDS]);
 const HEALING_COMIC_DEFAULT_PANEL_COUNT = 32;
 const HEALING_COMIC_MIN_PANEL_COUNT = 1;
 const CLASSICAL_VARIANTS = [
@@ -166,6 +176,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
   const [comicSourceContent, setComicSourceContent] = useState("");
   const [comicPrefacePhrase, setComicPrefacePhrase] = useState("");
   const [comicPhraseInput, setComicPhraseInput] = useState("");
+  const [storyComicForm, setStoryComicForm] = useState(createStoryComicForm);
+  const [homophoneComicForm, setHomophoneComicForm] = useState(createHomophoneComicForm);
   const [category, setCategory] = useState(defaultCategoryId ?? "social_science");
   const [styleReference, setStyleReference] = useState("");
   const [styleNotes, setStyleNotes] = useState("");
@@ -194,7 +206,16 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       ? "reference_translation"
       : classicalVariant;
   const isComicCategory = mode === "comic" || COMIC_CATEGORY_IDS.has(category);
-  const comicCategoryLabel = category === "healing_comic" ? "漫画" : "插画";
+  const isHealingComicFamily = HEALING_COMIC_FAMILY_IDS.has(category);
+  const isComicVariantWorkbench = mode === "comic"
+    && (category === "story_comic" || category === "homophone_comic");
+  const comicCategoryLabel = category === "story_comic"
+    ? "图文故事"
+    : category === "homophone_comic"
+      ? "谐音梗"
+      : category === "healing_comic"
+        ? "漫画"
+        : "插画";
   const supportsStyleReference =
     category === "web_short_story"
     || category === "social_science_test"
@@ -231,6 +252,8 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
       setComicSourceContent("");
       setComicPrefacePhrase("");
       setComicPhraseInput("");
+      setStoryComicForm(createStoryComicForm());
+      setHomophoneComicForm(createHomophoneComicForm());
       setCategory(defaultCategoryId ?? "social_science");
       setStyleReference("");
       setStyleNotes("");
@@ -444,6 +467,73 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
     }
     if (mode === "comic") {
       const comicCategory = COMIC_CATEGORY_IDS.has(category) ? category : "comic_series";
+      if (comicCategory === "story_comic" || comicCategory === "homophone_comic") {
+        const isStory = comicCategory === "story_comic";
+        const variantForm = isStory ? storyComicForm : homophoneComicForm;
+        const cleanedTitle = variantForm.title.trim();
+        if (!cleanedTitle) {
+          setError(`${comicCategoryLabel}需要输入系列名`);
+          return;
+        }
+        const panelCount = parsePanelCount(variantForm.episodeCount);
+        if (!Number.isInteger(panelCount) || panelCount < HEALING_COMIC_MIN_PANEL_COUNT) {
+          setError(`${comicCategoryLabel}故事数量需要不小于 ${HEALING_COMIC_MIN_PANEL_COUNT}`);
+          return;
+        }
+        const characterPrompt = variantForm.character.trim();
+        const sourceContent = isStory
+          ? buildStoryComicBrief(storyComicForm)
+          : buildHomophoneComicBrief(homophoneComicForm);
+        const rawText = [
+          `书名：${cleanedTitle}`,
+          characterPrompt ? `固定角色：${characterPrompt}` : "",
+          sourceContent,
+        ].filter(Boolean).join("\n");
+
+        setSubmitting(true);
+        try {
+          const variantConfig = isStory
+            ? {
+                comic_story_premise: storyComicForm.premise.trim() || undefined,
+                comic_story_setting: storyComicForm.setting,
+                comic_story_mood: storyComicForm.mood,
+                comic_story_ending: storyComicForm.ending,
+              }
+            : {
+                comic_homophone_seed: homophoneComicForm.seed.trim() || undefined,
+                comic_humor_scene: homophoneComicForm.scene,
+                comic_humor_flavor: homophoneComicForm.flavor,
+                comic_humor_edge: homophoneComicForm.edge,
+                comic_avoid_topics: homophoneComicForm.avoidTopics.trim() || undefined,
+              };
+          const res = await api.createTask({
+            url: `manual://${comicCategory}`,
+            config: {
+              category: comicCategory,
+              comic_interface_version: "variant-workbench-v1",
+              comic_title: cleanedTitle,
+              comic_panel_count: panelCount,
+              comic_character_prompt: characterPrompt || undefined,
+              comic_source_content: sourceContent,
+              title: cleanedTitle,
+              raw_text: rawText,
+              ...variantConfig,
+            },
+          });
+          onCreated(res.task_id);
+        } catch (e) {
+          const msg =
+            e instanceof ApiError
+              ? `[${e.status}] ${e.detail}`
+              : e instanceof Error
+                ? e.message
+                : "创建任务失败";
+          setError(msg);
+        } finally {
+          setSubmitting(false);
+        }
+        return;
+      }
       if (comicCategory === "healing_comic") {
         const cleanedTitle = comicTitle.trim();
         if (!cleanedTitle) {
@@ -891,6 +981,30 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             >
               <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
               漫画
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic", "story_comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic" && category === "story_comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              图文故事
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("comic", "homophone_comic")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-xs tracking-widest transition-colors ${
+                mode === "comic" && category === "homophone_comic"
+                  ? "border-gold-400/60 bg-gold-500/10 text-warm-100"
+                  : "border-gold-500/15 text-warm-400 hover:border-gold-400/30 hover:text-warm-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+              谐音梗
             </button>
           </div>
 
@@ -1468,7 +1582,11 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
             </>
           ) : mode === "comic" ? (
             <div className="space-y-4">
-              {category === "healing_comic" ? (
+              {category === "story_comic" ? (
+                <StoryComicCreator value={storyComicForm} onChange={setStoryComicForm} />
+              ) : category === "homophone_comic" ? (
+                <HomophoneComicCreator value={homophoneComicForm} onChange={setHomophoneComicForm} />
+              ) : isHealingComicFamily ? (
                 <>
                 <div>
                   <label

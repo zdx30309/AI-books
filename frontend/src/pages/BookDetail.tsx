@@ -544,7 +544,7 @@ export function BookDetail() {
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const isPaused = task.status === "paused";
-  const isHealingComic = task.category === "healing_comic";
+  const isHealingComic = ["healing_comic", "story_comic", "homophone_comic"].includes(task.category || "");
   const canPauseComic = isHealingComic && isActive;
   const coverInFlight =
     task.cover_status === "queued" || task.cover_status === "generating";
@@ -1091,7 +1091,7 @@ function ChapterCard({
   onSelect,
 }: ChapterCardProps) {
   const recentlySaved = savedAt && Date.now() - savedAt < 4000;
-  const useComicPreview = taskCategory === "healing_comic";
+  const useComicPreview = ["healing_comic", "story_comic", "homophone_comic"].includes(taskCategory || "");
 
   return (
     <article className="card-warm p-8" id={`chapter-${chapter.chapter_num}`}>

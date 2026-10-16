@@ -221,6 +221,27 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     directions: "历史故事、制度缝隙、人物命运、时代暗流",
     prompt_status: "ready",
   },
+  {
+    id: "story_comic",
+    label: "图文故事",
+    core_feature: "原创滑动图文小故事，每章 6 至 10 张单拍卡片，以生活观察、停顿和晚揭示制造趣味",
+    directions: "普通生活、单卡单拍、文字留白页、小涂鸦、自然误会、晚一点揭示",
+    prompt_status: "ready",
+  },
+  {
+    id: "homophone_comic",
+    label: "谐音梗",
+    core_feature: "故事先行的滑动谐音漫画，前六成藏住答案，末三张完成声音回扣",
+    directions: "干巴荒诞、自嘲互损、生活观察、向上讽刺、延迟揭示、无需解释",
+    prompt_status: "ready",
+  },
+  {
+    id: "finance_technology_ai_optimized",
+    label: "财经科技（优化AI味版）",
+    core_feature: "把钱、产业、公司、技术、政策和周期讲清楚",
+    directions: "宏观经济、产业周期、公司动作、技术变革、资产价格、政策影响、普通人机会误判",
+    prompt_status: "ready",
+  },
 ];
 
 export const LONGFORM_VARIANT_CATEGORY_IDS = [

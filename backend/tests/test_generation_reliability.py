@@ -147,6 +147,36 @@ def test_four_books_keep_stages_and_persisted_chapters_isolated(isolated_generat
                 assert all(other not in document for other in markers if other != marker)
 
 
+def test_classic_task_persists_historical_delivery_and_keeps_new_gate_out(isolated_generation, monkeypatch):
+    sessions, create_task, calls, _, markers, root = isolated_generation
+    from app.prompts.classic_text import VERSION
+    marker = markers[0]
+    task_id = create_task(marker, category="life_philosophy", text_workflow_version=VERSION)
+    monkeypatch.setattr(generation_tasks.settings, "FINAL_LENGTH_GATE_ENABLED", True)
+    result = generation_tasks.process_video.run(str(task_id))
+    assert result["status"] == TaskStatus.COMPLETED
+    with sessions() as database:
+        task = database.get(Task, task_id)
+        assert task.config["text_workflow_version"] == VERSION
+        assert "！！！" not in task.config["markdown"]
+        assert len(task.chapters) == 2
+        assert marker in task.config["markdown"]
+    assert all(calls[stage, marker] == 1 for stage in ("writer", "polish", "refine", "format"))
+
+
+def test_unknown_regeneration_subject_preserves_existing_files(isolated_generation):
+    sessions, create_task, _, _, markers, root = isolated_generation
+    task_id = create_task(markers[0], category="unknown_historical_subject")
+    output = root / "backend/output" / ("task_" + str(task_id))
+    output.mkdir(parents=True)
+    (output / "04_format.md").write_text("已付费书稿")
+    with sessions() as database:
+        task = database.get(Task, task_id)
+        with pytest.raises(ValueError, match="No historical"):
+            task_router._prepare_task_for_regeneration(database, task)
+    assert (output / "04_format.md").read_text() == "已付费书稿"
+
+
 def test_transient_failure_resumes_without_regenerating_saved_draft(isolated_generation):
     sessions, create_task, calls, failures, markers, root = isolated_generation
     marker = markers[0]
