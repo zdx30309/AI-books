@@ -4,6 +4,9 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 import pytest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.prompts.social_pain2610 import CATEGORY, VERSION, MODEL, PROMPT_PATH
 from app.services import social_pain2610_workflow as workflow, openai_manuscript_audit as audit, content_engine
 from app.services.batch_spend import BatchBudgetStop
@@ -62,3 +65,17 @@ def test_classic_writer_is_audited_only_in_scope(tmp_path,monkeypatch):
         for _ in range(2):content_engine._create_openai_writer_response('test',effort='xhigh',verb='high',max_tok=None)
     assert client.responses.create.call_count==1
     assert client.responses.create.call_args.kwargs['model']==content_engine.settings.OPENAI_WRITER_MODEL
+
+@pytest.mark.parametrize('model,inputs,outputs,cached,writes,expected', [
+    ('gpt-6.1-sol',3243,14861,0,3240,.156716),
+    ('gpt-6.1-sol',1000,2000,100,0,.02181),
+    ('gpt-6-astra',1000,2000,100,500,.11035),
+])
+def test_usage_cost_includes_cache_writes_without_double_counting_reasoning(tmp_path,model,inputs,outputs,cached,writes,expected):
+    client=client_response()
+    client.responses.create.return_value.usage=SimpleNamespace(input_tokens=inputs,output_tokens=outputs,
+        input_tokens_details=SimpleNamespace(cached_tokens=cached,cache_write_tokens=writes),
+        output_tokens_details=SimpleNamespace(reasoning_tokens=1000))
+    with audit.scope(tmp_path):audit.create(client,{'model':model,'input':'cost test'})
+    receipt=json.loads(next(tmp_path.glob('*.json')).read_text())
+    assert receipt['cost_usd_estimate']==pytest.approx(expected)

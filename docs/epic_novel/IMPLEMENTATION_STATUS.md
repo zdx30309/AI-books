@@ -2,10 +2,20 @@
 
 ## 2026-10-17 社会痛点2610（独立短篇工作流）
 
+### 部署与真实验收
+
+- 个人GitHub main已同步8909c81。服务器从78c3ddf发布至8909c81，backend/worker各143个运行文件哈希通过，前端入口哈希及健康检查通过；1209个既有任务、13257个章节及25800个输出文件元数据保持一致。备份位于服务器 `/opt/video-plan-release-backups/social-pain2610-8909c81`。
+- 用户授权的抖音测试复用此前1401字符视频原稿，新建任务5a27331a-412d-4e2e-8950-37861ca4e9ba，五阶段全部重新生成；无旧书覆盖、无重复转写、无封面/漫画付费调用。
+- 成书《认真生活不必苛责自己》，13章、18916字符；排除前置内容及章节标题后的正文计数15977，超过Word提示词11000要求。阶段字符数15372→18497→18447→18247→18916；旧流程日志无错误、降级或回退。
+- Word模板全部50段逐字提取，3445字符，SHA256 d43eefb7c864ddb778e86f8daaa7b46d416d9167cee41fbd56f3e2f0b9cbca1e。渲染提示词仅替换raw_text为第四阶段成稿；Astra原始响应、05_astra、数据库markdown、预览读取完全一致。Word导出ZIP有效，XML每段与终稿逐行相同；未做Word视觉排版验收或全文事实审校。
+- OpenAI实际返回用量：Sol初稿input3243/output14861（reasoning4142已包含在output，cache_write3240）；Astra润色input16994/output15364（reasoning2033已包含，cache_write16991）；cached均0。按官方标准USD费率含缓存写入加价估算0.156716+0.9806175=1.1373335美元。仅OpenAI费用，不含Gemini/DeepSeek；不是账单实扣证明。
+- 补充费用回归测试覆盖Sol缓存读取5%、Astra缓存读取10%、缓存写入1.25倍及不重复计推理token；`python -m pytest backend/tests/test_social_pain2610.py -q` 7 passed，书架隔离专项5 passed。真实验收脚本与用量凭据存放私有.local/任务输出目录，不提交书籍正文或响应凭据到Git。
+- Chrome实测2.0新建选项、生成进度、13章终稿和第五阶段独立预览通过。测试及记录补充不改运行代码，无需重启服务。Epic整体仍为PARTIAL。
+
 - 2.0新增社会痛点2610，复用1.0社会痛点五月四阶段及现有模型，在第四阶段后使用用户Word原文模板调用gpt-6-astra standard/high润色；单独保存05_astra.md，原有1.0、社科2610 Pro直出、封面和漫画逻辑保留。
 - 新增任务级OpenAI响应与用量记录，成功响应本地恢复，失败/不确定请求暂停避免自动重放；费用按标准USD费率估算，不等同供应商账单。
 - 前端支持智能体选择、五阶段进度和阶段稿，最终稿及Word导出保留Astra原始文本；2.0智能体之间禁止仅改分类切换工作流。
-- 验证：backend pytest tests 560 passed/1 skipped；frontend npm run build通过。根目录pytest收集受既有同名test_supabase_connection模块冲突影响，改为正式tests目录执行。部署和真实抖音测试待执行；Epic整体仍为PARTIAL。
+- 验证：backend pytest tests 560 passed/1 skipped；frontend npm run build通过。根目录pytest收集受既有同名test_supabase_connection模块冲突影响，改为正式tests目录执行。运行版本8909c81已部署；真实抖音测试已完成（见下）；Epic整体仍为PARTIAL。
 
 ## 前端修复分支上线（2026-10-16，已发布）
 
