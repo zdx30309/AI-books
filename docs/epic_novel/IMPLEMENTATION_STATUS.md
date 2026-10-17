@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 2026-10-17 社会痛点2610（独立短篇工作流）
+
+- 2.0新增社会痛点2610，复用1.0社会痛点五月四阶段及现有模型，在第四阶段后使用用户Word原文模板调用gpt-6-astra standard/high润色；单独保存05_astra.md，原有1.0、社科2610 Pro直出、封面和漫画逻辑保留。
+- 新增任务级OpenAI响应与用量记录，成功响应本地恢复，失败/不确定请求暂停避免自动重放；费用按标准USD费率估算，不等同供应商账单。
+- 前端支持智能体选择、五阶段进度和阶段稿，最终稿及Word导出保留Astra原始文本；2.0智能体之间禁止仅改分类切换工作流。
+- 验证：backend pytest tests 560 passed/1 skipped；frontend npm run build通过。根目录pytest收集受既有同名test_supabase_connection模块冲突影响，改为正式tests目录执行。部署和真实抖音测试待执行；Epic整体仍为PARTIAL。
+
 ## 前端修复分支上线（2026-10-16，已发布）
 
 - 用户授权将fix/frontend-review-2026-10-16更新服务器；78c3ddf已快进合并个人AI-books/main。范围仅前端：编辑态ref修复、401登录失效处理、认证网络错误重试、本地字体、轻提示、生成中书架每15秒刷新、隐藏页停止轮询及关闭生产sourcemap。

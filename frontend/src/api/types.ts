@@ -256,7 +256,8 @@ export type StageName =
   | "writer_repaired"
   | "polish"
   | "refine"
-  | "format";
+  | "format"
+  | "astra";
 
 export interface StageContentResponse {
   task_id: string;

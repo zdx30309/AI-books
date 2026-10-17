@@ -43,6 +43,7 @@ from app.services.comic_series import (
 from app.services.content_engine import final_length_gate_issues, generate_full_book, normalize_final_markdown
 from app.prompts.classic_text import COMIC_CATEGORIES, VERSION as CLASSIC_TEXT_VERSION, workflow_for_existing_task
 from app.prompts.sheke2610 import VERSION as DIRECT_TEXT_VERSION
+from app.prompts.social_pain2610 import VERSION as HYBRID_TEXT_VERSION
 from app.services.comic_variants import is_healing_comic_family
 from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
@@ -1231,6 +1232,8 @@ def process_video(_self, task_id: str) -> dict:
             "refine_done": (85, "二润完成"),
             "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
+            "astra_start": (90, "GPT-6 Astra 按Word指令词润色中"),
+            "astra_done": (91, "Astra 润色完成"),
         }
 
         def _on_stage(stage: str, info: dict[str, Any]) -> None:
@@ -1347,7 +1350,7 @@ def process_video(_self, task_id: str) -> dict:
         )
         _ensure_active_run(db, task, run_id)
         is_classic_text = (not is_comic_category and workflow_for_existing_task(task.config or {}) == CLASSIC_TEXT_VERSION)
-        is_direct_text = workflow_for_existing_task(task.config or {}) == DIRECT_TEXT_VERSION
+        is_direct_text = workflow_for_existing_task(task.config or {}) in {DIRECT_TEXT_VERSION, HYBRID_TEXT_VERSION}
         if not (is_classic_text or is_direct_text):
             markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))

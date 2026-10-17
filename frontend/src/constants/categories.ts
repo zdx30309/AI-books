@@ -23,6 +23,13 @@ export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
     prompt_status: "ready",
   },
   {
+    id: "social_pain_2610",
+    label: "社会痛点2610",
+    core_feature: "旧版社会痛点四阶段成稿，再用GPT-6 Astra按Word指令词润色",
+    directions: "教育、婚姻、住房、职场压力、养老",
+    prompt_status: "ready",
+  },
+  {
     id: "social_science_test",
     label: "社科2610",
     core_feature: "GPT-6 Astra Pro 单次直出，使用2610版Word提示词，无后续润色",

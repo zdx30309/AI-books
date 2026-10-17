@@ -50,7 +50,7 @@ def test_legacy_inference_new_creation_and_category_options():
     assert task_shelf_version({'text_workflow_version':DIRECT})=='2.0'
     assert router._normalize_task_config({'category':'social_science_test'})['bookshelf_version']=='2.0'
     assert router._normalize_task_config({'category':'social_science'})['bookshelf_version']=='1.0'
-    assert [c.id for c in router.get_task_categories('2.0').items]==['social_science_test']
+    assert {c.id for c in router.get_task_categories('2.0').items}=={'social_science_test', 'social_pain_2610'}
     assert 'social_science_test' not in {c.id for c in router.get_task_categories('1.0').items}
     with pytest.raises(HTTPException) as error:
         router._normalize_task_config({'category':'social_science_test','bookshelf_version':'1.0'})
@@ -99,3 +99,10 @@ def test_relabel_cannot_change_chain_but_regeneration_pins_target(database):
     legacy=add_task(db,owner,{'category':'social_science_test','bookshelf_version':'1.0','text_workflow_version':CLASSIC})
     router._prepare_task_for_regeneration(db,legacy)
     assert legacy.config['bookshelf_version']=='2.0' and legacy.config['text_workflow_version']==DIRECT
+
+
+def test_v2_agents_cannot_relabel_each_other(database):
+    db,owner,_=database
+    direct=add_task(db,owner,{'category':'social_science_test','text_workflow_version':DIRECT})
+    with pytest.raises(HTTPException):
+        router.update_task_metadata(direct.id,TaskMetadataUpdateRequest(category='social_pain_2610'),db=db,user=owner)

@@ -856,7 +856,7 @@ export function CreateTaskModal({ open, onClose, onCreated, onLongNovelCreated, 
         </h2>
         <p className="mt-2 text-xs tracking-wide text-warm-400">
           {bookshelfVersion === "2.0"
-            ? "社科2610：粘贴视频链接或已有文稿，由 GPT-6 Astra Pro 一次生成完整书稿"
+            ? "选择智能体，粘贴视频链接或已有文稿，按所选流程生成完整书稿"
             : "选择书籍方向后，粘贴视频链接、公众号文章链接、已有文稿，或把候选链接批量放入自动生成库"}
         </p>
 

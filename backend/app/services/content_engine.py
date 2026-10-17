@@ -2940,6 +2940,10 @@ def _create_openai_writer_response(
     }
     if max_tok is not None:
         kwargs["max_output_tokens"] = max_tok
+    from app.services import openai_manuscript_audit
+    if openai_manuscript_audit.active():
+        kwargs["max_output_tokens"] = max_tok or 65536
+        return openai_manuscript_audit.create(client, kwargs)
     if not batch_spend.active():
         return client.responses.create(**kwargs)
     kwargs["max_output_tokens"] = max_tok or 65536
@@ -5771,6 +5775,12 @@ async def generate_full_book(
     normalized_category = normalize_category(category)
     from app.prompts.classic_text import COMIC_CATEGORIES, VERSION
     from app.prompts.sheke2610 import CATEGORY as DIRECT_CATEGORY, VERSION as DIRECT_VERSION
+    from app.prompts.social_pain2610 import CATEGORY as HYBRID_CATEGORY, VERSION as HYBRID_VERSION
+    if text_workflow_version == HYBRID_VERSION:
+        if normalized_category != HYBRID_CATEGORY:
+            raise ValueError("社会痛点2610工作流类别不一致")
+        from app.services.social_pain2610_workflow import generate_full_book as generate_hybrid
+        return await generate_hybrid(raw_text, output_dir=output_dir, on_stage=on_stage)
     if text_workflow_version == DIRECT_VERSION:
         if normalized_category != DIRECT_CATEGORY:
             raise ValueError("社科2610工作流类别不一致")

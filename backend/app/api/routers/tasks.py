@@ -102,6 +102,7 @@ from app.utils.docx_text import DocxTextError, extract_classical_docx_text
 from app.utils.task_dispatch_guard import acquire_task_dispatch_guard
 
 _STAGE_FILES = {
+    "astra": "05_astra.md",
     "writer": "01_writer.md",
     "writer_repaired": "01b_writer_repaired.md",
     "polish": "02_polish.md",
@@ -1759,7 +1760,8 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     category = _docx_category(str(cfg.get("category") or ""))
     md = cfg.get("markdown")
     from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
-    if cfg.get("text_workflow_version") == DIRECT_VERSION and md:
+    from app.prompts.social_pain2610 import VERSION as HYBRID_VERSION
+    if cfg.get("text_workflow_version") in {DIRECT_VERSION, HYBRID_VERSION} and md:
         return str(md)
     if cfg.get("text_workflow_version") == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
@@ -1942,7 +1944,8 @@ def _markdown_to_docx(
     image_entries: list[tuple[str, Path, str]] = []
     normalized_category = _docx_category(category)
     from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
-    if text_workflow_version == DIRECT_VERSION:
+    from app.prompts.social_pain2610 import VERSION as HYBRID_VERSION
+    if text_workflow_version in {DIRECT_VERSION, HYBRID_VERSION}:
         docx_lines = markdown.splitlines()
     elif text_workflow_version == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
@@ -2169,8 +2172,8 @@ def update_task_metadata(
                 category_meta = get_category_meta(category)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if category != cfg.get("category") and category_shelf_version(category) != task_shelf_version(cfg):
-                raise HTTPException(status_code=400, detail="不能通过修改分类跨版本迁移成稿，请在目标书架新建任务")
+            if category != cfg.get("category") and (category_shelf_version(category) != task_shelf_version(cfg) or task_shelf_version(cfg) == "2.0"):
+                raise HTTPException(status_code=400, detail="不能通过修改分类切换书架或2.0智能体工作流，请新建任务")
             cfg["category"] = category
             cfg["category_label"] = category_meta["label"]
             cfg["category_prompt_status"] = category_meta["prompt_status"]

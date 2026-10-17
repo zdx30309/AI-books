@@ -188,6 +188,9 @@ FINAL_BOOK_FORMAT_PROMPT = """你是格式整理器，负责把书稿整理成�
 
 
 CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
+    {"id": "social_pain_2610", "label": "社会痛点2610",
+     "core_feature": "旧版社会痛点四阶段成稿，再用GPT-6 Astra按Word指令词润色",
+     "directions": "教育、婚姻、住房、职场压力、养老", "prompt_status": "ready"},
     {
         "id": "social_science",
         "label": "社会痛点",
@@ -1830,6 +1833,7 @@ HISTORY_CULTURE_PROMPT_SET = _prompt_set(
 
 
 PROMPT_REGISTRY: dict[str, dict[str, str]] = {
+    "social_pain_2610": SOCIAL_SCIENCE_PROMPT_SET,
     "social_science": SOCIAL_SCIENCE_PROMPT_SET,
     # 社会痛点测试版：社科书稿创作提示词（融合降AI终审），前端可追加笔锋参考。
     "social_science_test": _prompt_set(SOCIAL_SCIENCE_TEST_FULL_BOOK_WRITER_PROMPT),

@@ -11,7 +11,7 @@ import type { TaskCategoryOption, TaskListItem } from "@/api/types";
 
 const shelves: { version: BookshelfVersion; title: string; description?: string; detail: string }[] = [
   { version: "1.0", title: "经典创作", description: "社会痛点、人生哲学、科普等原有类别", detail: "沿用经典创作流程，管理原有书稿。" },
-  { version: "2.0", title: "社科2610", detail: "生成后直接成稿，不经过额外润色。" },
+  { version: "2.0", title: "选择创作智能体", detail: "社科2610直接成稿；社会痛点2610沿用旧流程，再经Astra润色。" },
 ];
 
 export function Workspace() {

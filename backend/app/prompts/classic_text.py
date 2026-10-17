@@ -12,6 +12,7 @@ MANIFEST = json.loads((PROMPT_DIR / "manifest.json").read_text(encoding="utf-8")
 # Categories introduced after May retain their bookshelf identity but use the
 # closest historical subject contract. There was no dedicated finance prompt.
 CATEGORY_MAP = {
+    "social_pain_2610": "social_science",
     "social_science_test": "social_science",
     "social_science_core_conflict": "social_science",
     "life_philosophy_self_rescue": "life_philosophy",
@@ -70,6 +71,11 @@ def pin_new_task(config: dict) -> None:
         config.pop("text_prompt_base_category", None)
         config["text_workflow_version"] = DIRECT_VERSION
         return
+    from app.prompts.social_pain2610 import CATEGORY as HYBRID_CATEGORY, VERSION as HYBRID_VERSION
+    if category == HYBRID_CATEGORY:
+        config["text_prompt_base_category"] = "social_science"
+        config["text_workflow_version"] = HYBRID_VERSION
+        return
     config["text_prompt_base_category"] = base_category(category)
     config["text_workflow_version"] = VERSION
 
@@ -77,6 +83,11 @@ def pin_new_task(config: dict) -> None:
 def workflow_for_existing_task(config: dict) -> str:
     version = config.get("text_workflow_version") or "legacy_20260704"
     from app.prompts.sheke2610 import CATEGORY, VERSION as DIRECT_VERSION
+    from app.prompts.social_pain2610 import CATEGORY as HYBRID_CATEGORY, VERSION as HYBRID_VERSION
+    if version == HYBRID_VERSION:
+        if config.get("category") != HYBRID_CATEGORY:
+            raise ValueError("社会痛点2610工作流类别不一致")
+        return version
     if version == DIRECT_VERSION:
         if config.get("category") != CATEGORY:
             raise ValueError("社科2610工作流仅支持social_science_test")
