@@ -1226,9 +1226,9 @@ def process_video(_self, task_id: str) -> dict:
             "writer_done": (45, "主模型初稿完成"),
             "direct_start": (28, "GPT-6 Astra Pro 直出书稿中"),
             "direct_done": (90, "社科2610直出终稿就绪"),
-            "polish_start": (50, "Gemini 一润启动"),
-            "polish_done": (70, "Gemini 一润完成"),
-            "refine_start": (72, "Gemini 二润中"),
+            "polish_start": (50, "一轮润色启动"),
+            "polish_done": (70, "一轮润色完成"),
+            "refine_start": (72, "二轮润色中"),
             "refine_done": (85, "二润完成"),
             "format_start": (87, "DeepSeek 终稿格式化中"),
             "format_done": (90, "终稿就绪"),
@@ -1256,7 +1256,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 70),
-                        step=f"Gemini 一润 {idx}/{total} 块",
+                        step=f"一轮润色 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return
@@ -1267,7 +1267,7 @@ def process_video(_self, task_id: str) -> dict:
                     _update_progress(
                         db, task,
                         progress=min(prog, 85),
-                        step=f"Gemini 二润 {idx}/{total} 块",
+                        step=f"二轮润色 {idx}/{total} 块",
                         run_id=run_id,
                     )
                     return

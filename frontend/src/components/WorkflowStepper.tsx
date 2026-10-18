@@ -11,8 +11,8 @@ const STEPS: Step[] = [
   { key: "queue", label: "排队建库", start: 0 },
   { key: "fetch", label: "解析视频文案", start: 8 },
   { key: "writer", label: "OpenAI 主模型生成初稿", start: 25 },
-  { key: "polish", label: "Gemini 一润（按段落分块）", start: 50 },
-  { key: "refine", label: "Gemini 二润（整篇微调）", start: 72 },
+  { key: "polish", label: "一轮润色（按段落分块）", start: 50 },
+  { key: "refine", label: "二轮润色（整篇微调）", start: 72 },
   { key: "format", label: "DeepSeek 终稿格式化", start: 87 },
   { key: "persist", label: "章节入库 / 写终稿", start: 92 },
 ];

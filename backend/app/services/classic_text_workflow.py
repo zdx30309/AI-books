@@ -26,13 +26,24 @@ async def _route_writer_call(prompt: str) -> str:
     from app.services import content_engine
     return await content_engine._route_writer_call(prompt)
 
-def polish_book_text(text: str, **kwargs) -> str:
-    from app.services import content_engine
-    return content_engine.polish_book_text(text, **kwargs)
+def _polish_call(text: str, *, provider: str, temperature: float, system_instruction: str | None) -> str:
+    if provider == "gemini":
+        from app.services import content_engine
+        call = content_engine.polish_book_text if temperature == 0.3 else content_engine.refine_book_text
+        return call(text, system_instruction=system_instruction)
+    if provider != "deepseek":
+        raise ValueError(f"Unknown classic polish provider: {provider}")
+    from app.services.deepseek import generate_text
+    logger.info("DeepSeek 润色调用 model=%s input_chars=%d", settings.DEEPSEEK_MODEL, len(text))
+    return generate_text(text, model=settings.DEEPSEEK_MODEL, temperature=temperature,
+                         system_instruction=system_instruction, max_output_tokens=65536,
+                         fail_on_max_tokens=True, allow_partial_format=False)
 
-def refine_book_text(text: str, **kwargs) -> str:
-    from app.services import content_engine
-    return content_engine.refine_book_text(text, **kwargs)
+def polish_book_text(text: str, *, provider: str = "deepseek", system_instruction: str | None = None) -> str:
+    return _polish_call(text, provider=provider, temperature=0.3, system_instruction=system_instruction)
+
+def refine_book_text(text: str, *, provider: str = "deepseek", system_instruction: str | None = None) -> str:
+    return _polish_call(text, provider=provider, temperature=0.2, system_instruction=system_instruction)
 
 def format_book_text(text: str, **kwargs) -> str:
     from app.services import content_engine
@@ -97,7 +108,7 @@ def _split_text_by_paragraph(text: str, *, target_chars: int=1000) -> list[str]:
         chunks.append('\n\n'.join(current))
     return chunks
 
-async def _polish_by_paragraph_chunks(text: str, *, target_chars: int=1000, system_instruction: str | None=None, on_stage: StageCallback | None=None, output_dir: Path | None=None) -> str:
+async def _polish_by_paragraph_chunks(text: str, *, target_chars: int=1000, system_instruction: str | None=None, on_stage: StageCallback | None=None, output_dir: Path | None=None, provider: str="deepseek") -> str:
     """第一层润色：按完整段落切成 ~1000 字一块，每块独立调用 polish_book_text
     （都走同一份 GEMINI_FAST_POLISH_PROMPT），最终用空行拼接还原段落分隔。
 
@@ -115,9 +126,9 @@ async def _polish_by_paragraph_chunks(text: str, *, target_chars: int=1000, syst
     fallback_count = 0
 
     async def _polish_once(chunk: str) -> str:
-        return await asyncio.to_thread(polish_book_text, chunk, system_instruction=system_instruction)
+        return await asyncio.to_thread(polish_book_text, chunk, system_instruction=system_instruction, provider=provider)
     for idx, chunk in enumerate(chunks, 1):
-        logger.info('Gemini 一润 块 %d/%d (%d 字)', idx, total, len(chunk))
+        logger.info('文稿一润 块 %d/%d (%d 字)', idx, total, len(chunk))
         if on_stage:
             on_stage('polish_chunk', {'idx': idx, 'total': total, 'chars': len(chunk)})
         digest = hashlib.sha256(((system_instruction or '') + '\0' + chunk).encode()).hexdigest()
@@ -138,13 +149,15 @@ async def _polish_by_paragraph_chunks(text: str, *, target_chars: int=1000, syst
         except asyncio.TimeoutError as exc:
             first_err = f'超时（{exc.__class__.__name__}）'
         except Exception as exc:
+            if provider == 'deepseek':
+                raise
             first_err = f'{exc.__class__.__name__}: {exc}'
         fallback_count += 1
-        logger.error('Gemini 一润 块 %d/%d 失败 [%s]，回退到原文继续', idx, total, first_err)
+        logger.error('文稿一润 块 %d/%d 失败 [%s]，回退到原文继续', idx, total, first_err)
         polished.append(chunk)
         _dump_stage(output_dir, cache_name, chunk)
     if fallback_count:
-        logger.warning('Gemini 一润完成但有降级 [成功 %d / 总 %d / 降级 %d 块]', total - fallback_count, total, fallback_count)
+        logger.warning('文稿一润完成但有降级 [成功 %d / 总 %d / 降级 %d 块]', total - fallback_count, total, fallback_count)
     return '\n\n'.join((p.strip() for p in polished if p and p.strip()))
 
 def _front_matter_missing(text: str) -> bool:
@@ -180,6 +193,19 @@ async def generate_full_book(raw_text: str, category: str='social_science', outp
     normalized_category = normalize_category(category)
     identity = {"version": VERSION, "base_category": normalized_category, "source_sha256": hashlib.sha256(raw_text.strip().encode()).hexdigest(), "prompt_sha256": hashlib.sha256(json.dumps(get_prompts(category), sort_keys=True).encode()).hexdigest(), "style_sha256": hashlib.sha256(json.dumps([style_reference, style_notes]).encode()).hexdigest()}
     identity["auxiliary_sha256"] = hashlib.sha256((load_auxiliary_template("repair_front_matter.md") + load_auxiliary_template("history_style.md")).encode()).hexdigest()
+    # Pin existing jobs to their original transport; never mix paid stage caches.
+    cached_identity = output_dir / "00_text_workflow.json" if output_dir is not None else None
+    if cached_identity is not None and cached_identity.is_file():
+        previous = json.loads(cached_identity.read_text(encoding="utf-8"))
+        provider = previous.get("polish_provider", "gemini")
+        if "polish_provider" in previous:
+            identity["polish_provider"] = provider
+            identity["polish_model"] = settings.DEEPSEEK_MODEL
+    else:
+        provider = "deepseek"
+        identity.update(polish_provider=provider, polish_model=settings.DEEPSEEK_MODEL)
+    if provider not in {"deepseek", "gemini"}:
+        raise ValueError(f"Unknown classic polish provider: {provider}")
     _prepare_cache(output_dir, identity)
     prompts = get_prompts(normalized_category)
     full_book_writer_prompt = prompts['full_book_writer']
@@ -237,7 +263,7 @@ async def generate_full_book(raw_text: str, category: str='social_science', outp
     else:
         if on_stage:
             on_stage('polish_start', {})
-        polished_markdown = await _polish_by_paragraph_chunks(generated_markdown, target_chars=1000, system_instruction=gemini_fast_polish_prompt, on_stage=on_stage, output_dir=output_dir)
+        polished_markdown = await _polish_by_paragraph_chunks(generated_markdown, target_chars=1000, system_instruction=gemini_fast_polish_prompt, on_stage=on_stage, output_dir=output_dir, provider=provider)
         _log_stage('2/4 polish', polished_markdown, prev_chars=writer_chars)
         _dump_stage(output_dir, '02_polish.md', polished_markdown)
         polish_chars = len(polished_markdown)
@@ -254,11 +280,13 @@ async def generate_full_book(raw_text: str, category: str='social_science', outp
         if on_stage:
             on_stage('refine_start', {})
         try:
-            refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown, system_instruction=gemini_fast_refine_prompt)
+            refined_markdown = await asyncio.to_thread(refine_book_text, polished_markdown, system_instruction=gemini_fast_refine_prompt, provider=provider)
         except STOP_ERRORS:
             raise
         except Exception as exc:
-            logger.error('Gemini 二润失败，回退到一润结果继续: %s', exc)
+            if provider == 'deepseek':
+                raise
+            logger.error('文稿二润失败，回退到一润结果继续: %s', exc)
             refined_markdown = polished_markdown
         _log_stage('3/4 refine', refined_markdown, prev_chars=polish_chars)
         _dump_stage(output_dir, '03_refine.md', refined_markdown)

@@ -101,6 +101,9 @@ def isolated_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(generation_tasks, "acquire_task_dispatch_guard", lambda *args, **kwargs: True)
     monkeypatch.setattr(generation_tasks.settings, "COVER_BOOK_TASK_GENERATION_ENABLED", False)
     monkeypatch.setattr(content_engine, "_route_writer_call", writer)
+    from app.services import classic_text_workflow
+    monkeypatch.setattr(classic_text_workflow, "polish_book_text", polish)
+    monkeypatch.setattr(classic_text_workflow, "refine_book_text", refine)
     monkeypatch.setattr(content_engine, "polish_book_text", polish)
     monkeypatch.setattr(content_engine, "refine_book_text", refine)
     monkeypatch.setattr(content_engine, "format_book_text", format_text)

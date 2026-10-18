@@ -60,6 +60,7 @@ def generate_text(
     system_instruction: str | None = None,
     fail_on_max_tokens: bool = False,
     on_progress: Callable[[int], None] | None = None,
+    allow_partial_format: bool = True,
 ) -> str:
     client = get_deepseek_client()
     messages: list[dict[str, str]] = []
@@ -113,7 +114,7 @@ def generate_text(
             batch_spend.failed(index, exc)
             raise batch_spend.BatchBudgetStop("DeepSeek请求未完整返回，保留费用预留并暂停，不自动重放") from exc
         partial = "".join(chunks).strip()
-        if _looks_like_complete_format_output(partial):
+        if allow_partial_format and _looks_like_complete_format_output(partial):
             logger.warning(
                 "DeepSeek 流式连接提前关闭，但已收到结构完整输出，继续使用: chars=%d error=%s",
                 len(partial),

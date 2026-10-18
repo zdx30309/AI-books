@@ -45,8 +45,8 @@ def install_clients(monkeypatch, calls, *, stop_polish=False):
         calls.append(("format", kwargs["prompt_template"]))
         return text
     monkeypatch.setattr(content_engine, "_route_writer_call", writer)
-    monkeypatch.setattr(content_engine, "polish_book_text", polish)
-    monkeypatch.setattr(content_engine, "refine_book_text", refine)
+    monkeypatch.setattr(classic, "polish_book_text", polish)
+    monkeypatch.setattr(classic, "refine_book_text", refine)
     monkeypatch.setattr(content_engine, "format_book_text", formatter)
 
 
@@ -110,7 +110,7 @@ def test_mid_polish_budget_pause_reuses_completed_chunks(tmp_path, monkeypatch):
         if text == "乙" * 900 and blocked:
             raise BatchBudgetStop("budget stopped mid-book")
         return text
-    monkeypatch.setattr(content_engine, "polish_book_text", polish)
+    monkeypatch.setattr(classic, "polish_book_text", polish)
     source = "甲" * 900 + "\n\n" + "乙" * 900
     with pytest.raises(BatchBudgetStop):
         asyncio.run(classic._polish_by_paragraph_chunks(source, output_dir=tmp_path))
@@ -140,3 +140,47 @@ def test_latest_comics_never_enter_historical_text_pipeline(category, tmp_path, 
         "书名：测试漫画", category=category, output_dir=tmp_path, text_workflow_version=VERSION,
     )) == "漫画产物"
     assert calls == [category]
+
+
+def test_deepseek_polish_uses_original_prompt_and_rejects_truncation(monkeypatch):
+    from app.services import deepseek
+    calls = []
+    def generate(text, **kwargs):
+        calls.append((text, kwargs))
+        return text
+    monkeypatch.setattr(deepseek, "generate_text", generate)
+    for call in (classic.polish_book_text, classic.refine_book_text):
+        assert call("原文", system_instruction="原提示词") == "原文"
+    assert [kw["temperature"] for _, kw in calls] == [0.3, 0.2]
+    for text, kw in calls:
+        assert kw["system_instruction"] == "原提示词"
+        assert kw["model"] == classic.settings.DEEPSEEK_MODEL
+        assert kw["max_output_tokens"] == 65536 and kw["fail_on_max_tokens"]
+
+
+def test_existing_gemini_cache_stays_pinned(tmp_path, monkeypatch):
+    calls = []
+    install_clients(monkeypatch, calls)
+    asyncio.run(classic.generate_full_book("素材", output_dir=tmp_path))
+    path = tmp_path / "00_text_workflow.json"
+    identity = json.loads(path.read_text())
+    assert identity.pop("polish_provider") == "deepseek"
+    identity.pop("polish_model")
+    path.write_text(json.dumps(identity))
+    (tmp_path / "03_refine.md").unlink()
+    providers = []
+    def refine(text, **kw):
+        providers.append(kw["provider"])
+        return text
+    monkeypatch.setattr(classic, "refine_book_text", refine)
+    asyncio.run(classic.generate_full_book("素材", output_dir=tmp_path))
+    assert providers == ["gemini"]
+
+
+def test_deepseek_failure_does_not_cache_unpolished_text(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ConnectionError("upstream unavailable")
+    monkeypatch.setattr(classic, "polish_book_text", fail)
+    with pytest.raises(ConnectionError):
+        asyncio.run(classic._polish_by_paragraph_chunks("原文", output_dir=tmp_path))
+    assert not list(tmp_path.rglob("*.md"))

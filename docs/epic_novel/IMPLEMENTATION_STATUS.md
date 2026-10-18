@@ -1,5 +1,12 @@
 # Epic Novel Engine Implementation Status
 
+## 2026-10-17 普通书稿改用 DeepSeek 润色
+
+- 新建1.0普通书稿及2.0社会痛点2610的两轮润色改用现有DEEPSEEK_MODEL（线上deepseek-v4-pro），原提示词、温度0.3/0.2、约1000字段落切块与串行顺序保留。复用现有DeepSeek共享并发门禁，不再受Gemini单并发门禁限制。
+- 新任务缓存记录润色供应商/模型；既有无供应商标记缓存继续使用Gemini，避免混合付费产物。DeepSeek润色拒绝截断稿及流中断的部分格式稿，调用失败不缓存原文冒充润色成功。
+- 工作流进度标签改为模型中立名称；社科2610 Astra直出、社会痛点2610末尾Astra步骤、封面漫画及Epic引擎逻辑保留。
+- 验证：润色路由、旧缓存恢复、失败保护、普通书稿隔离及Astra专项65 passed，backend/tests全量567 passed/1 skipped；frontend npm run build通过。尚未进行100本压力测试或真实整书效果对比；Epic整体仍PARTIAL。
+
 ## 2026-10-17 社会痛点2610（独立短篇工作流）
 
 ### 部署与真实验收
