@@ -1761,7 +1761,8 @@ def _read_task_markdown(db: Session, task: Task) -> str:
     md = cfg.get("markdown")
     from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
     from app.prompts.social_pain2610 import VERSION as HYBRID_VERSION
-    if cfg.get("text_workflow_version") in {DIRECT_VERSION, HYBRID_VERSION} and md:
+    from app.prompts.astra_agents2610 import VERSIONS as ASTRA_AGENT_VERSIONS
+    if cfg.get("text_workflow_version") in {DIRECT_VERSION, HYBRID_VERSION, *ASTRA_AGENT_VERSIONS} and md:
         return str(md)
     if cfg.get("text_workflow_version") == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic
@@ -1945,7 +1946,8 @@ def _markdown_to_docx(
     normalized_category = _docx_category(category)
     from app.prompts.sheke2610 import VERSION as DIRECT_VERSION
     from app.prompts.social_pain2610 import VERSION as HYBRID_VERSION
-    if text_workflow_version in {DIRECT_VERSION, HYBRID_VERSION}:
+    from app.prompts.astra_agents2610 import VERSIONS as ASTRA_AGENT_VERSIONS
+    if text_workflow_version in {DIRECT_VERSION, HYBRID_VERSION, *ASTRA_AGENT_VERSIONS}:
         docx_lines = markdown.splitlines()
     elif text_workflow_version == CLASSIC_TEXT_VERSION:
         from app.services.classic_text_normalization import normalize_final_markdown as normalize_classic

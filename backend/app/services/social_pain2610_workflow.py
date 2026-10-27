@@ -9,10 +9,10 @@ from app.services.batch_spend import BatchBudgetStop
 from app.core.config import settings
 from app.utils.distributed_limiter import distributed_semaphore
 
-def _rewrite(manuscript, output_dir):
+def _rewrite(manuscript, output_dir, *, rendered_prompt=None, workflow_version=VERSION):
     from app.services import content_engine as engine
-    prompt = render_prompt(manuscript)
-    identity = {'version': VERSION, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
+    prompt = render_prompt(manuscript) if rendered_prompt is None else rendered_prompt
+    identity = {'version': workflow_version, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
                 'model': MODEL, 'reasoning_mode': 'standard', 'reasoning_effort': 'high'}
     manifest = output_dir / '05_astra_manifest.json'
     if manifest.exists() and json.loads(manifest.read_text()) != identity:

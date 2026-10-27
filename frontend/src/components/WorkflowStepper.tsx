@@ -1,3 +1,4 @@
+import { ASTRA_AGENT_VERSIONS } from "@/constants/bookshelfVersions";
 import { Check, Circle, Loader2, Pause } from "lucide-react";
 
 interface Step {
@@ -46,7 +47,7 @@ export function WorkflowStepper({ progress, currentStep, status, category, textW
         { key: "writer", label: "GPT-6 Astra Pro 直出", start: 25 },
         { key: "persist", label: "保存书稿与章节", start: 92 },
       ]
-    : textWorkflowVersion === "social_pain2610_classic_astra_20261017"
+    : (textWorkflowVersion === "social_pain2610_classic_astra_20261017" || ASTRA_AGENT_VERSIONS.includes(textWorkflowVersion ?? ""))
       ? [...STEPS.slice(0, -1), { key: "astra", label: "GPT-6 Astra 润色", start: 90 }, STEPS[STEPS.length - 1]]
       : isComicWorkflow ? COMIC_STEPS : STEPS;
 

@@ -15,6 +15,11 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
+  ...[
+    { id: "finance_technology_2610", label: "财经·科技2610" },
+    { id: "psychology_emotion_2610", label: "心理情感2610" },
+    { id: "health_wellness_2610", label: "健康养生2610" },
+  ].map((agent) => ({ ...agent, core_feature: "1.0原类别流程，DeepSeek两轮润色，再由Astra按1027通用Word提示词润色", directions: "对应原类别内容方向", prompt_status: "ready" })),
   {
     id: "social_science",
     label: "社会痛点",

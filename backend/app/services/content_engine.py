@@ -5776,6 +5776,12 @@ async def generate_full_book(
     from app.prompts.classic_text import COMIC_CATEGORIES, VERSION
     from app.prompts.sheke2610 import CATEGORY as DIRECT_CATEGORY, VERSION as DIRECT_VERSION
     from app.prompts.social_pain2610 import CATEGORY as HYBRID_CATEGORY, VERSION as HYBRID_VERSION
+    from app.prompts.astra_agents2610 import AGENTS as ASTRA_AGENTS, VERSIONS as ASTRA_VERSIONS
+    if text_workflow_version in ASTRA_VERSIONS:
+        if ASTRA_AGENTS.get(normalized_category, {}).get("version") != text_workflow_version:
+            raise ValueError("2610智能体工作流类别不一致")
+        from app.services.astra_agents2610_workflow import generate_full_book as generate_astra_agent
+        return await generate_astra_agent(raw_text, category=normalized_category, output_dir=output_dir, on_stage=on_stage)
     if text_workflow_version == HYBRID_VERSION:
         if normalized_category != HYBRID_CATEGORY:
             raise ValueError("社会痛点2610工作流类别不一致")

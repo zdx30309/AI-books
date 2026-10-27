@@ -12,6 +12,9 @@ MANIFEST = json.loads((PROMPT_DIR / "manifest.json").read_text(encoding="utf-8")
 # Categories introduced after May retain their bookshelf identity but use the
 # closest historical subject contract. There was no dedicated finance prompt.
 CATEGORY_MAP = {
+    "finance_technology_2610": "social_science",
+    "psychology_emotion_2610": "emotion_relationship",
+    "health_wellness_2610": "health_wellness",
     "social_pain_2610": "social_science",
     "social_science_test": "social_science",
     "social_science_core_conflict": "social_science",
@@ -76,6 +79,11 @@ def pin_new_task(config: dict) -> None:
         config["text_prompt_base_category"] = "social_science"
         config["text_workflow_version"] = HYBRID_VERSION
         return
+    from app.prompts.astra_agents2610 import AGENTS
+    if category in AGENTS:
+        config["text_prompt_base_category"] = base_category(AGENTS[category]["base_category"])
+        config["text_workflow_version"] = AGENTS[category]["version"]
+        return
     config["text_prompt_base_category"] = base_category(category)
     config["text_workflow_version"] = VERSION
 
@@ -91,6 +99,11 @@ def workflow_for_existing_task(config: dict) -> str:
     if version == DIRECT_VERSION:
         if config.get("category") != CATEGORY:
             raise ValueError("社科2610工作流仅支持social_science_test")
+        return version
+    from app.prompts.astra_agents2610 import AGENTS, VERSIONS
+    if version in VERSIONS:
+        if AGENTS.get(config.get("category"), {}).get("version") != version:
+            raise ValueError("2610智能体工作流类别不一致")
         return version
     if version not in {VERSION, "legacy_20260704"}:
         raise ValueError(f"Unknown text workflow: {version!r}")

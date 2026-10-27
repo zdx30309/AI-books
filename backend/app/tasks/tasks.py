@@ -44,6 +44,7 @@ from app.services.content_engine import final_length_gate_issues, generate_full_
 from app.prompts.classic_text import COMIC_CATEGORIES, VERSION as CLASSIC_TEXT_VERSION, workflow_for_existing_task
 from app.prompts.sheke2610 import VERSION as DIRECT_TEXT_VERSION
 from app.prompts.social_pain2610 import VERSION as HYBRID_TEXT_VERSION
+from app.prompts.astra_agents2610 import VERSIONS as ASTRA_AGENT_VERSIONS
 from app.services.comic_variants import is_healing_comic_family
 from app.services.batch_spend import BatchBudgetStop, run_generation
 from app.services.qingdou import (
@@ -1096,7 +1097,7 @@ def _persist_chapters_from_markdown(db: Session, task: Task, markdown: str) -> i
     db.query(Chapter).filter(Chapter.task_id == task.id).delete(synchronize_session=False)
     db.flush()
 
-    if (task.config or {}).get("text_workflow_version") == DIRECT_TEXT_VERSION:
+    if (task.config or {}).get("text_workflow_version") in {DIRECT_TEXT_VERSION, *ASTRA_AGENT_VERSIONS}:
         markdown = re.sub(r"^#(?=最终书名|最终简介|目录|导言|正文|\d+\.)", "@", markdown, flags=re.MULTILINE)
     body_match = _BODY_SECTION_RE.search(markdown or "")
     body_offset = body_match.end() if body_match else 0
@@ -1350,7 +1351,7 @@ def process_video(_self, task_id: str) -> dict:
         )
         _ensure_active_run(db, task, run_id)
         is_classic_text = (not is_comic_category and workflow_for_existing_task(task.config or {}) == CLASSIC_TEXT_VERSION)
-        is_direct_text = workflow_for_existing_task(task.config or {}) in {DIRECT_TEXT_VERSION, HYBRID_TEXT_VERSION}
+        is_direct_text = workflow_for_existing_task(task.config or {}) in {DIRECT_TEXT_VERSION, HYBRID_TEXT_VERSION, *ASTRA_AGENT_VERSIONS}
         if not (is_classic_text or is_direct_text):
             markdown = normalize_final_markdown(markdown, category=category)
         _patch_config(task, markdown_chars=len(markdown))

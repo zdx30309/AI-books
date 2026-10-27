@@ -1,3 +1,4 @@
+import { ASTRA_AGENT_VERSIONS } from "@/constants/bookshelfVersions";
 import {
   ChangeEvent,
   useCallback,
@@ -848,7 +849,7 @@ export function BookDetail({ bookshelfVersion = "1.0" }: { bookshelfVersion?: Bo
               </ViewTab>
               {(task.text_workflow_version === "sheke2610_astra_pro_20261016"
                 ? [{ name: "writer" as StageName, label: "Astra Pro 直出" }]
-                : task.text_workflow_version === "social_pain2610_classic_astra_20261017"
+                : (task.text_workflow_version === "social_pain2610_classic_astra_20261017" || ASTRA_AGENT_VERSIONS.includes(task.text_workflow_version ?? ""))
                   ? [...STAGES.map((s) => s.name === "format" ? { ...s, label: "4.旧流程成稿" } : s), { name: "astra" as StageName, label: "5.Astra 润色" }]
                   : STAGES).map((s) => (
                 <ViewTab

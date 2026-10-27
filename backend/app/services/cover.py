@@ -651,6 +651,9 @@ _CATEGORY_STYLE_PROFILES: dict[str, dict[str, Any]] = {
 
 _CATEGORY_STYLE_PROFILES["web_short_story"] = _CATEGORY_STYLE_PROFILES["history_culture"]
 _CATEGORY_STYLE_PROFILES["social_pain_2610"] = _CATEGORY_STYLE_PROFILES["social_science"]
+from app.prompts.astra_agents2610 import AGENTS as ASTRA_AGENTS
+for _agent_id, _agent in ASTRA_AGENTS.items():
+    _CATEGORY_STYLE_PROFILES[_agent_id] = _CATEGORY_STYLE_PROFILES[_agent["base_category"]]
 _CATEGORY_STYLE_PROFILES["social_science_test"] = _CATEGORY_STYLE_PROFILES["social_science"]
 _CATEGORY_STYLE_PROFILES["finance_technology_ai_optimized"] = _CATEGORY_STYLE_PROFILES["finance_technology"]
 _CATEGORY_STYLE_PROFILES["finance_technology_recommendation"] = _CATEGORY_STYLE_PROFILES["finance_technology"]

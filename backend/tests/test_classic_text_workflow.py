@@ -16,11 +16,12 @@ from app.prompts.classic_text import (
 from app.prompts.goal_driven_templates import SUPPORTED_CATEGORIES
 from app.services import classic_text_workflow as classic, content_engine
 from app.services.batch_spend import BatchBudgetStop
+from app.prompts.astra_agents2610 import AGENTS
 
 BOOK = "@最终书名\n测试书\n@最终简介\n简介\n@目录\n1. 起点\n@导言\n导言内容\n@正文\n@1. 起点\n正文内容。"
 
 
-@pytest.mark.parametrize("category", [c for c in SUPPORTED_CATEGORIES if c not in COMIC_CATEGORIES and c not in {"social_science_test", "social_pain_2610"}])
+@pytest.mark.parametrize("category", [c for c in SUPPORTED_CATEGORIES if c not in COMIC_CATEGORIES and c not in {"social_science_test", "social_pain_2610", *AGENTS}])
 def test_new_task_pins_classic_subject_but_old_tasks_keep_workflow(category):
     cfg = _normalize_task_config({"category": category})
     assert cfg["text_workflow_version"] == VERSION
