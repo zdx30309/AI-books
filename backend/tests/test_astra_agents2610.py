@@ -14,14 +14,17 @@ from app.services import astra_agents2610_workflow as workflow, social_pain2610_
 from app.api.routers import tasks
 from app.services.bookshelf_versions import task_shelf_version
 
+@pytest.mark.parametrize('prompt_date', ['20261027', '20261028'])
 @pytest.mark.parametrize('category', AGENTS)
-def test_each_agent_pins_and_routes_correct_subject(category,tmp_path,monkeypatch):
+def test_each_agent_pins_and_routes_correct_subject(category,prompt_date,tmp_path,monkeypatch):
     agent=AGENTS[category]
     cfg=tasks._normalize_task_config({'category':category,'bookshelf_version':'2.0'})
     assert cfg['text_workflow_version']==agent['version']
     assert cfg['text_prompt_base_category']==base_category(agent['base_category'])
     assert task_shelf_version(cfg)=='2.0'
     assert workflow_for_existing_task(cfg)==agent['version']
+    pinned_version = agent['version'].replace('20261028',prompt_date)
+    assert workflow_for_existing_task({**cfg,'text_workflow_version':pinned_version})==pinned_version
     for other in AGENTS:
         if other!=category:
             with pytest.raises(ValueError):workflow_for_existing_task({**cfg,'category':other})
@@ -37,7 +40,7 @@ def test_each_agent_pins_and_routes_correct_subject(category,tmp_path,monkeypatc
     def create(**kw):
         assert kw['model']=='gpt-6-astra'
         assert kw['reasoning']=={'mode':'standard','effort':'high'}
-        assert kw['input']==render_prompt(manuscript)
+        assert kw['input']==render_prompt(manuscript,workflow_version=pinned_version)
         calls.append('astra')
         return SimpleNamespace(id='offline',model='gpt-6-astra',status='completed',output_text=final,usage=None)
     client=SimpleNamespace(responses=SimpleNamespace(create=create))
@@ -47,7 +50,7 @@ def test_each_agent_pins_and_routes_correct_subject(category,tmp_path,monkeypatc
     monkeypatch.setattr(content_engine,'_get_openai_writer_client',lambda:client)
     monkeypatch.setattr(workflow.settings,'OPENAI_WRITER_STREAM',False)
     for _ in range(2):
-        assert asyncio.run(content_engine.generate_full_book('视频原文',category=category,text_workflow_version=agent['version'],output_dir=tmp_path))==final
+        assert asyncio.run(content_engine.generate_full_book('视频原文',category=category,text_workflow_version=pinned_version,output_dir=tmp_path))==final
     assert calls.count('astra')==1
     assert (tmp_path/'05_astra.md').read_text()==final
     data=tasks._markdown_to_docx(final,category=category,text_workflow_version=agent['version'])
@@ -61,4 +64,11 @@ def test_each_agent_pins_and_routes_correct_subject(category,tmp_path,monkeypatc
 def test_template_is_frozen_word_text():
     import hashlib
     assert PROMPT_PATH.read_text().count('{raw_text}')==1
-    assert hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest()== '0a36cdadf88ffaa980fadd7c5656f4bb9b1d2ba6e492f05f27552e769d92f6cb'
+    assert hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest()== 'c3b174ba519917cd0a187da71ad7a95382a1fece8987c3283913e4477ebf593c'
+
+
+def test_previous_prompt_remains_frozen():
+    import hashlib
+    from app.prompts.astra_agents2610 import PREVIOUS_PROMPT_PATH
+    assert hashlib.sha256(PREVIOUS_PROMPT_PATH.read_bytes()).hexdigest()=='0a36cdadf88ffaa980fadd7c5656f4bb9b1d2ba6e492f05f27552e769d92f6cb'
+    assert render_prompt('底稿',workflow_version='finance2610_classic_astra_20261027') != render_prompt('底稿')

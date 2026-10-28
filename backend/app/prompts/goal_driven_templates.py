@@ -190,7 +190,7 @@ FINAL_BOOK_FORMAT_PROMPT = """你是格式整理器，负责把书稿整理成�
 from app.prompts.astra_agents2610 import AGENTS as ASTRA_AGENTS
 
 CATEGORY_OPTIONS: tuple[dict[str, str], ...] = (
-    *({"id": key, "label": agent["label"], "core_feature": "1.0对应类别四阶段成稿，DeepSeek两轮润色，再由Astra按1027通用Word提示词润色", "directions": "对应原类别内容方向", "prompt_status": "ready"} for key, agent in ASTRA_AGENTS.items()),
+    *({"id": key, "label": agent["label"], "core_feature": "1.0对应类别四阶段成稿，DeepSeek两轮润色，再由Astra按1028通用Word提示词润色", "directions": "对应原类别内容方向", "prompt_status": "ready"} for key, agent in ASTRA_AGENTS.items()),
     {"id": "social_pain_2610", "label": "社会痛点2610",
      "core_feature": "旧版社会痛点四阶段成稿，再用GPT-6 Astra按Word指令词润色",
      "directions": "教育、婚姻、住房、职场压力、养老", "prompt_status": "ready"},

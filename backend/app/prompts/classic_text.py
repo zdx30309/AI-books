@@ -100,10 +100,9 @@ def workflow_for_existing_task(config: dict) -> str:
         if config.get("category") != CATEGORY:
             raise ValueError("社科2610工作流仅支持social_science_test")
         return version
-    from app.prompts.astra_agents2610 import AGENTS, VERSIONS
+    from app.prompts.astra_agents2610 import AGENTS, VERSIONS, validate_workflow
     if version in VERSIONS:
-        if AGENTS.get(config.get("category"), {}).get("version") != version:
-            raise ValueError("2610智能体工作流类别不一致")
+        validate_workflow(config.get("category"), version)
         return version
     if version not in {VERSION, "legacy_20260704"}:
         raise ValueError(f"Unknown text workflow: {version!r}")
