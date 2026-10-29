@@ -16,10 +16,11 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
   ...[
-    { id: "finance_technology_2610", label: "财经·科技2610" },
-    { id: "psychology_emotion_2610", label: "心理情感2610" },
-    { id: "health_wellness_2610", label: "健康养生2610" },
-  ].map((agent) => ({ ...agent, core_feature: "1.0原类别流程，DeepSeek两轮润色，再由Astra按1028通用Word提示词润色", directions: "对应原类别内容方向", prompt_status: "ready" })),
+    { id: "finance_technology_2610", label: "财经·科技2610", promptDate: "1028" },
+    { id: "psychology_emotion_2610", label: "心理情感2610", promptDate: "1029" },
+    { id: "health_wellness_2610", label: "健康养生2610", promptDate: "1029" },
+    { id: "social_pain_2610_2", label: "社会痛点2610-2", promptDate: "1029" },
+  ].map(({ promptDate, ...agent }) => ({ ...agent, core_feature: `1.0原类别流程，DeepSeek两轮润色，再由Astra按${promptDate}通用Word提示词润色`, directions: "对应原类别内容方向", prompt_status: "ready" })),
   {
     id: "social_science",
     label: "社会痛点",

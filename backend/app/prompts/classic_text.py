@@ -12,6 +12,7 @@ MANIFEST = json.loads((PROMPT_DIR / "manifest.json").read_text(encoding="utf-8")
 # Categories introduced after May retain their bookshelf identity but use the
 # closest historical subject contract. There was no dedicated finance prompt.
 CATEGORY_MAP = {
+    "social_pain_2610_2": "social_science",
     "finance_technology_2610": "social_science",
     "psychology_emotion_2610": "emotion_relationship",
     "health_wellness_2610": "health_wellness",

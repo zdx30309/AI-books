@@ -50,7 +50,7 @@ def test_legacy_inference_new_creation_and_category_options():
     assert task_shelf_version({'text_workflow_version':DIRECT})=='2.0'
     assert router._normalize_task_config({'category':'social_science_test'})['bookshelf_version']=='2.0'
     assert router._normalize_task_config({'category':'social_science'})['bookshelf_version']=='1.0'
-    assert {c.id for c in router.get_task_categories('2.0').items}=={'social_science_test', 'social_pain_2610', 'finance_technology_2610', 'psychology_emotion_2610', 'health_wellness_2610'}
+    assert {c.id for c in router.get_task_categories('2.0').items}=={'social_science_test', 'social_pain_2610', 'social_pain_2610_2', 'finance_technology_2610', 'psychology_emotion_2610', 'health_wellness_2610'}
     assert 'social_science_test' not in {c.id for c in router.get_task_categories('1.0').items}
     with pytest.raises(HTTPException) as error:
         router._normalize_task_config({'category':'social_science_test','bookshelf_version':'1.0'})

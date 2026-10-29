@@ -1,8 +1,8 @@
 import type { TaskCategoryOption } from "@/api/types";
 
 export type BookshelfVersion = "1.0" | "2.0";
-export const ASTRA_AGENT_VERSIONS = ["finance2610_classic_astra_20261028", "psychology2610_classic_astra_20261028", "health2610_classic_astra_20261028", "finance2610_classic_astra_20261027", "psychology2610_classic_astra_20261027", "health2610_classic_astra_20261027"];
-export const V2_CATEGORY_IDS = new Set(["social_science_test", "social_pain_2610", "finance_technology_2610", "psychology_emotion_2610", "health_wellness_2610"]);
+export const ASTRA_AGENT_VERSIONS = ["social_pain2610_2_classic_astra_20261029", "psychology2610_classic_astra_20261029", "health2610_classic_astra_20261029", "finance2610_classic_astra_20261028", "psychology2610_classic_astra_20261028", "health2610_classic_astra_20261028", "finance2610_classic_astra_20261027", "psychology2610_classic_astra_20261027", "health2610_classic_astra_20261027"];
+export const V2_CATEGORY_IDS = new Set(["social_science_test", "social_pain_2610", "social_pain_2610_2", "finance_technology_2610", "psychology_emotion_2610", "health_wellness_2610"]);
 export function categoriesForShelf(items: TaskCategoryOption[], version: BookshelfVersion) {
   return items.filter((item) => V2_CATEGORY_IDS.has(item.id) === (version === "2.0"));
 }
