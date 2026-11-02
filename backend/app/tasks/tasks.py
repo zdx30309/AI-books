@@ -1226,6 +1226,8 @@ def process_video(_self, task_id: str) -> dict:
             "writer_start": (28, "OpenAI 主模型生成初稿中"),
             "writer_done": (45, "主模型初稿完成"),
             "direct_start": (28, "GPT-6 Astra Pro 直出书稿中"),
+            "astra_direct_start": (28, "GPT-6 Astra standard/high 直出书稿中"),
+            "astra_direct_done": (90, "Astra直出终稿就绪"),
             "direct_done": (90, "社科2610直出终稿就绪"),
             "polish_start": (50, "一轮润色启动"),
             "polish_done": (70, "一轮润色完成"),

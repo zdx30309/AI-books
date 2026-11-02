@@ -15,11 +15,12 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
+  { id: "social_pain_2611_astra_direct", label: "社会痛点2611(Astra直出)", core_feature: "GPT-6 Astra standard/high，视频原稿加1102版Word提示词，单次直出", directions: "社会议题、生活选择", prompt_status: "ready" },
   ...[
     { id: "finance_technology_2610", label: "财经·科技2610", promptDate: "1028" },
-    { id: "psychology_emotion_2610", label: "心理情感2610", promptDate: "1029" },
-    { id: "health_wellness_2610", label: "健康养生2610", promptDate: "1029" },
-    { id: "social_pain_2610_2", label: "社会痛点2610-2", promptDate: "1029" },
+    { id: "psychology_emotion_2610", label: "心理情感2610", promptDate: "1102" },
+    { id: "health_wellness_2610", label: "健康养生2610", promptDate: "1102" },
+    { id: "social_pain_2610_2", label: "社会痛点2610-2", promptDate: "1102" },
   ].map(({ promptDate, ...agent }) => ({ ...agent, core_feature: `1.0原类别流程，DeepSeek两轮润色，再由Astra按${promptDate}通用Word提示词润色`, directions: "对应原类别内容方向", prompt_status: "ready" })),
   {
     id: "social_science",

@@ -8,13 +8,13 @@ from xml.etree import ElementTree as ET
 import sys
 import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from app.prompts.astra_agents2610 import AGENTS, PROMPT_PATH, PROMPT_PATHS, VERSION_CATEGORIES, render_prompt
+from app.prompts.astra_agents2610 import AGENTS, PROMPT_PATH, PROMPT_PATHS, VERSION_CATEGORIES, DIRECT_VERSIONS, render_prompt
 from app.prompts.classic_text import base_category, get_prompts, workflow_for_existing_task
 from app.services import astra_agents2610_workflow as workflow, social_pain2610_workflow as shared, content_engine
 from app.api.routers import tasks
 from app.services.bookshelf_versions import task_shelf_version
 
-@pytest.mark.parametrize('pinned_version,category', VERSION_CATEGORIES.items())
+@pytest.mark.parametrize('pinned_version,category', [(v,c) for v,c in VERSION_CATEGORIES.items() if v not in DIRECT_VERSIONS])
 def test_each_agent_pins_and_routes_correct_subject(category,pinned_version,tmp_path,monkeypatch):
     agent=AGENTS[category]
     cfg=tasks._normalize_task_config({'category':category,'bookshelf_version':'2.0'})
@@ -62,7 +62,7 @@ def test_each_agent_pins_and_routes_correct_subject(category,pinned_version,tmp_
 def test_template_is_frozen_word_text():
     import hashlib
     assert PROMPT_PATH.read_text().count('{raw_text}')==1
-    assert hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest()== 'c83390f822efb3e756f56c9e46eb591665872910a94a3007778487eca66d9c26'
+    assert hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest()== 'f947144299c2d31525dfb1bf0e7916fa3e563324c5ae413536622a5b7572c4ef'
 
 
 def test_previous_prompt_remains_frozen():
@@ -75,6 +75,7 @@ def test_previous_prompt_remains_frozen():
 def test_prompt_upgrade_is_scoped_and_historical_versions_stay_frozen():
     import hashlib
     assert hashlib.sha256(PROMPT_PATHS['20261028'].read_bytes()).hexdigest()=='c3b174ba519917cd0a187da71ad7a95382a1fece8987c3283913e4477ebf593c'
+    assert hashlib.sha256(PROMPT_PATHS['20261029'].read_bytes()).hexdigest()=='c83390f822efb3e756f56c9e46eb591665872910a94a3007778487eca66d9c26'
     assert AGENTS['finance_technology_2610']['version'].endswith('20261028')
     assert render_prompt('材料',workflow_version=AGENTS['finance_technology_2610']['version'])==PROMPT_PATHS['20261028'].read_text().replace('{raw_text}','材料')
     assert 'social_pain2610_2_classic_astra_20261028' not in VERSION_CATEGORIES
