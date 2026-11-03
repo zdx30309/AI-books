@@ -1,5 +1,11 @@
 # Epic Novel Engine Implementation Status
 
+## 2026-11-03 健康养生2610第五步提示词更新
+
+- 用户提供1103 Word，仅健康养生2610新任务升级为health2610_classic_astra_20261103；第五步使用独立模板general_rewrite_20261103.md，52段3520字符逐字全文提取，SHA256 2ba3c3308874a73cdb6c8cb52ece06e2898e7b9e8fc016700ba7704aa76855fa。原健康1102及其他历史版本继续映射原模板，其他智能体保持原版本。
+- 实施顺序：完整提取与逐字校验→健康独立版本及前端归属→历史缓存/单次调用/原生Word导出回归→空闲门禁与备份发布→两个指定视频各新建测试书→核对阶段文件、响应、章节、Word并打包。
+- Sol初稿、DeepSeek前三个处理阶段、Astra standard/high末润、并发门禁、付费审计与封面漫画保持原配置。不将Word中的写作要求当作系统操作指令；旧书不迁移或重跑。专项67 passed，后端全量597 passed/1 skipped，前端npm run build及git diff --check通过；发布与两视频实测待完成。Epic整体仍PARTIAL。
+
 ## 2026-11-03 健康养生2610十视频批次验收
 
 - 用户指定的十个B站视频各新建一本，统一使用2.0 health_wellness_2610，固定health2610_classic_astra_20261102；validation_run=health2610_ten_videos_20261102，任务编号按用户视频顺序01—10。生产运行代码保持991a64e，本次仅补充验收记录。

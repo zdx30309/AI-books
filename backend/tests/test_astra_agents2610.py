@@ -81,3 +81,15 @@ def test_prompt_upgrade_is_scoped_and_historical_versions_stay_frozen():
     assert 'social_pain2610_2_classic_astra_20261028' not in VERSION_CATEGORIES
     from app.prompts.social_pain2610 import VERSION
     assert VERSION=='social_pain2610_classic_astra_20261017'
+
+
+def test_november3_upgrade_only_changes_health_new_tasks():
+    import hashlib
+    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261103'
+    assert VERSION_CATEGORIES['health2610_classic_astra_20261102']=='health_wellness_2610'
+    assert hashlib.sha256(PROMPT_PATHS['20261103'].read_bytes()).hexdigest()=='2ba3c3308874a73cdb6c8cb52ece06e2898e7b9e8fc016700ba7704aa76855fa'
+    assert render_prompt('第四阶段完整稿',workflow_version=AGENTS['health_wellness_2610']['version'])==PROMPT_PATHS['20261103'].read_text().replace('{raw_text}','第四阶段完整稿')
+    assert render_prompt('旧书',workflow_version='health2610_classic_astra_20261102')==PROMPT_PATHS['20261102'].read_text().replace('{raw_text}','旧书')
+    for category in ('psychology_emotion_2610','social_pain_2610_2','social_pain_2611_astra_direct'):
+        assert AGENTS[category]['version'].endswith('20261102')
+    assert not any(v.endswith('20261103') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
