@@ -4,7 +4,17 @@
 
 - 用户提供1103 Word，仅健康养生2610新任务升级为health2610_classic_astra_20261103；第五步使用独立模板general_rewrite_20261103.md，52段3520字符逐字全文提取，SHA256 2ba3c3308874a73cdb6c8cb52ece06e2898e7b9e8fc016700ba7704aa76855fa。原健康1102及其他历史版本继续映射原模板，其他智能体保持原版本。
 - 实施顺序：完整提取与逐字校验→健康独立版本及前端归属→历史缓存/单次调用/原生Word导出回归→空闲门禁与备份发布→两个指定视频各新建测试书→核对阶段文件、响应、章节、Word并打包。
-- Sol初稿、DeepSeek前三个处理阶段、Astra standard/high末润、并发门禁、付费审计与封面漫画保持原配置。不将Word中的写作要求当作系统操作指令；旧书不迁移或重跑。专项67 passed，后端全量597 passed/1 skipped，前端npm run build及git diff --check通过；发布与两视频实测待完成。Epic整体仍PARTIAL。
+- Sol初稿、DeepSeek前三个处理阶段、Astra standard/high末润、并发门禁、付费审计与封面漫画保持原配置。不将Word中的写作要求当作系统操作指令；旧书不迁移或重跑。专项67 passed，后端全量597 passed/1 skipped，前端npm run build及git diff --check通过；发布与两视频实测全部完成，见下。Epic整体仍PARTIAL。
+
+### 发布与两个视频真实验收
+
+- 2a5ae38已推送个人AI-books/main并发布服务器。backend/worker各150份运行文件哈希、前端入口及健康检查通过；发布前后1338个旧任务、14874个章节和29112个输出文件元数据一致，运行环境、模型、并发和卷保持一致；备份/opt/video-plan-release-backups/astra-prompt-2a5ae38。离线检查无付费调用。
+- 按用户顺序各新建一本，validation_run=health2610_two_videos_20261103，均为health_wellness_2610 / health2610_classic_astra_20261103。Sol xhigh初稿、DeepSeek V4 Pro三个处理阶段、Astra standard/high末润，五阶段文件齐全；四份OpenAI实际响应均completed，Astra完整请求指纹与1103 Word模板及第四阶段完整稿匹配，未混入其他改写要求。
+- 01 BV1ywhq6sEYM《脑子总累怎么办》：11101042-6173-408e-abd2-ccced7ba28ec，16章、19955字符、正文计数17051、空行0；原视频文稿SHA256 6480cb15d0d68e622a51c69941587281003b265bdc3c166263e0b8d6a461451f。
+- 02 BV1voba6xEs4《别把力气减掉了》：bda5e437-b64d-4251-bf59-095324ab77e7，14章、18868字符、正文计数16158、空行0；原视频文稿SHA256 93f03eaa72d6040fad948c928823e48d94cbf014dda3543e52b3c3d014599dbb。
+- Astra原响应、第五阶段、数据库markdown、预览和原生Word段落逐行一致；章节连续、正文非空、入库字符数一致。正文计数排除前置块、章节标题、标点及空白。两本均达到11000要求。
+- 两份原生Word渲染32页并逐页检查，无裁切或缺字；ZIP恰好两份DOCX，内外CRC、逐文件SHA256、本地和服务器归档哈希通过。归档SHA256 53872d2aebe09708f16eef6b08d2838138189e767e21c65b303bb94dc7735bbc。
+- 保留模型原始终稿，不在导出后另作润色。未做全文医学专业审校、第三方人工率或相似度检测；不对检测分数作出承诺。脚本、用量、响应和书稿仅保留私有输出，不提交Git。Epic整体仍PARTIAL。
 
 ## 2026-11-03 健康养生2610十视频批次验收
 
