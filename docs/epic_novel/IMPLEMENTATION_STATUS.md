@@ -4,7 +4,17 @@
 
 - 仅健康养生2610新任务升级为health2610_classic_astra_20261104，完整提取用户1104 Word的52段3384字符，SHA256 c045487b28adf5dbec7cbb9b9adac7865e4e3a719f33d0c839ca56a09c1e3cd1。与1029模板相比，改为要求明确判断及可执行建议、删除70%相似度要求段落，文档标题由社科改为通用；其余全文一致。
 - 实施顺序：全文逐字/1029差异验证→健康独立版本及历史1103兼容→路由、缓存和Word导出回归→空闲门禁及备份发布→同两视频各新建一本→核对原始响应、五阶段、章节和Word后打包。
-- 保留Sol初稿、DeepSeek三个处理阶段及Astra standard/high末润，沿用并发、审计、封面和漫画配置。此前1103书稿不覆盖、不重跑。专项69 passed、后端全量599 passed/1 skipped、前端构建和git diff --check通过；发布与两视频实测待完成。Epic整体仍PARTIAL。
+- 保留Sol初稿、DeepSeek三个处理阶段及Astra standard/high末润，沿用并发、审计、封面和漫画配置。此前1103书稿不覆盖、不重跑。专项69 passed、后端全量599 passed/1 skipped、前端构建和git diff --check通过；发布与两视频实测全部完成，见下。Epic整体仍PARTIAL。
+
+### 发布与两个视频真实验收
+
+- d07acae已推送个人AI-books/main并发布服务器。backend/worker各151份运行文件哈希、前端入口及健康检查通过；发布前后1340个旧任务、14904个章节和29170个输出文件元数据一致，运行环境、模型、并发和卷保持一致；备份/opt/video-plan-release-backups/astra-prompt-d07acae。离线检查无付费调用。
+- 按用户顺序各新建一本，validation_run=health2610_two_videos_20261104，均为health_wellness_2610 / health2610_classic_astra_20261104。Sol xhigh初稿、DeepSeek V4 Pro三个处理阶段、Astra standard/high末润，五阶段文件齐全；四份OpenAI实际响应均completed，Astra完整请求指纹与1104 Word模板及第四阶段完整稿匹配，未混入其他改写要求。
+- 01 BV1ywhq6sEYM《脑子累了怎么缓过来》：e49fc373-2283-4e19-bc32-be1b538712ad，15章、19699字符、正文计数16979、空行0；原视频文稿SHA256 6480cb15d0d68e622a51c69941587281003b265bdc3c166263e0b8d6a461451f。
+- 02 BV1voba6xEs4《让身体留住力气》：f042da5f-1af7-4360-beb8-30cb789ef725，12章、17939字符、正文计数15446、空行0；原视频文稿SHA256 93f03eaa72d6040fad948c928823e48d94cbf014dda3543e52b3c3d014599dbb。
+- Astra原响应、第五阶段、数据库markdown、预览和原生Word段落逐行一致；章节连续、正文非空、入库字符数一致。正文计数排除前置块、章节标题、标点及空白。两本均达到11000要求。
+- 两份原生Word渲染32页并逐页检查，无裁切或缺字；ZIP恰好两份DOCX，内外CRC、逐文件SHA256、本地和服务器归档哈希通过。归档SHA256 ca8fb594f91bb67a991ae4662a2ded0b6eeaebb2bdc46e59204a4e24939d9ebb。
+- 保留模型原始终稿，不在导出后另作润色。未做全文医学专业审校、第三方人工率或相似度检测；不对检测分数作出承诺。脚本、用量、响应和书稿仅保留私有输出，不提交Git。Epic整体仍PARTIAL。
 
 ## 2026-11-03 健康养生2610第五步提示词更新
 
