@@ -4,18 +4,29 @@
 
 - 按用户要求新建2.0通用书稿（general_manuscript），固定general_manuscript_astra_direct_20261105；完整采用新Word的52段3628字符，SHA256 6ab1c752afd4c39cddacc28ee1c75abb531a3218488d42a357566fed19f649ca。
 - 复用现有Astra直出执行器：视频原文填入唯一{raw_text}，单次gpt-6-astra standard/high，不追加旧类别提示词/文风/多轮润色；三轮终审是同一Word中的内部写作要求。保留请求/响应/用量审计、并发、缓存和不确定响应暂停保护。通用类型不限视频题材，基础popular_science映射仅用于既有类别兼容与封面元数据，不进入直出模型输入。
-- 实施顺序：全文提取及独立版本→2.0创建/列表/详情/导出和原样交付回归→空闲备份发布→两个新视频各新建一本→实际请求、响应、章节及Word检查后打包。健康养生及其他智能体版本/封面/漫画保持原状，不提交书稿或密钥。专项41 passed，后端全量609 passed/1 skipped，前端构建通过。发布已完成；首次测试曾因OpenAI API额度耗尽暂停，现已按用户授权更换密钥并恢复两本，最终书稿仍在生成。Epic整体仍PARTIAL。
+- 实施顺序：全文提取及独立版本→2.0创建/列表/详情/导出和原样交付回归→空闲备份发布→两个新视频各新建一本→实际请求、响应、章节及Word检查后打包。健康养生及其他智能体版本/封面/漫画保持原状，不提交书稿或密钥。专项41 passed，后端全量609 passed/1 skipped，前端构建通过。发布及两本测试全部完成，见最终验收。Epic整体仍PARTIAL。
 
-### 发布完成与实测受阻记录
+### 首次测试受阻及恢复记录
 
 - 174968a已推送个人AI-books/main并发布；backend/worker各153份运行文件哈希、前端入口及健康检查通过。1344个旧任务、14961个章节及29283个输出文件元数据一致；模型、并发、运行环境及卷保持原状；备份/opt/video-plan-release-backups/astra-prompt-174968a。
 - 线上分类接口确认通用书稿属于2.0且不在1.0。两本validation_run=general_manuscript_two_videos_20261105，各只投递一次，固定general_manuscript_astra_direct_20261105；未更改健康养生和其他智能体。
 - 测试1：4672d6dc-9baf-4aec-bbbe-9aba73359d0a；视频原文已缓存3561字符、视频694秒，SHA256 f854dbfd0b8a6b1d44e49454f344999817462986465a1c7dd3e82dcd9e3ac812。单次astra_direct请求模型gpt-6-astra，HTTP429后paused，章节0；未生成Word/ZIP。
 - 测试2：13f04494-d940-48de-af51-0c5d01fe3d83；视频原文已缓存8994字符、视频1468秒，SHA256 0284034fe93ae44e4cb0ff941da861c53fe422136bcc0df34a81d165cdee71da。单次astra_direct请求模型gpt-6-astra，HTTP429后paused，章节0；未生成Word/ZIP。
-- 两次上游错误均明确为insufficient_quota / credit_balance_exhausted（API可用额度耗尽），不是普通并发限速。保留failed_or_uncertain请求凭据，未删除或重放；自动重试0，不换模型、不重启worker、不影响其他批次。两本原文及请求记录已保存，界面显示等待充值。
+- 两次上游错误均明确为insufficient_quota / credit_balance_exhausted（API可用额度耗尽），不是普通并发限速。保留failed_or_uncertain请求凭据，未删除或重放；自动重试0，不换模型、不重启worker、不影响其他批次。两本原文及请求记录已保存，首次请求后界面显示等待充值；本次已使用用户提供的新密钥恢复，见最终验收。
 - 用户提供新密钥并授权继续后，已在空闲门禁通过时更新服务器私有环境文件、刷新backend/worker，镜像与其他环境变量保持一致；非付费gpt-6-astra模型鉴权通过，密钥不写入Git或输出。
-- 已核对两条429额度拒绝记录无成功响应，归档到各任务的openai_rejected_before_key_rotation；通过现有retry_task接口仅恢复此两本各一次，原文SHA与暂停前一致，无重新解析、无模型/提示词修改。两本均processing，实际请求指纹与1105 Word及各视频原文一致。最终输出尚待验收，不宣称质量或人工率达标。
+- 已核对两条429额度拒绝记录无成功响应，归档到各任务的openai_rejected_before_key_rotation；通过现有retry_task接口仅恢复此两本各一次，原文SHA与暂停前一致，无重新解析、无模型/提示词修改。恢复时两本均processing，实际请求指纹与1105 Word及各视频原文一致；最终结果见末尾验收。
 - 私有日志、源视频原文与请求记录不提交Git。Epic整体仍PARTIAL。
+
+### 密钥恢复与两视频最终验收
+
+- 174968a已推送个人AI-books/main并发布服务器；backend/worker各153份运行文件哈希、前端入口及健康检查通过。1344个旧任务、14961个章节及29283个输出文件元数据不变；环境、并发、卷和封面漫画保持一致；备份/opt/video-plan-release-backups/astra-prompt-174968a。
+- 线上分类接口确认通用书稿只属于2.0。两个指定视频各新建一本，validation_run=general_manuscript_two_videos_20261105，general_manuscript / general_manuscript_astra_direct_20261105。两份实际Astra响应均completed，返回模型gpt-6-astra，standard/high；完整请求指纹匹配1105 Word全文加对应视频原文，未混入旧类别或文风要求。无Sol/DeepSeek文本改写阶段，未重放成功或不确定付费响应。
+- 01 BV1sjJn6DE8c《抗衰之前先看证据》：4672d6dc-9baf-4aec-bbbe-9aba73359d0a，8章、16992字符、正文计数14728、空行0；原视频文稿SHA256 f854dbfd0b8a6b1d44e49454f344999817462986465a1c7dd3e82dcd9e3ac812。
+- 02 BV1MMAQzSEsn《上班族的疲惫与疼痛》：13f04494-d940-48de-af51-0c5d01fe3d83，11章、18218字符、正文计数15756、空行0；原视频文稿SHA256 0284034fe93ae44e4cb0ff941da861c53fe422136bcc0df34a81d165cdee71da。
+- 模型原响应、01_writer.md、04_format.md、数据库markdown、预览和Word段落逐行一致；两个阶段文件只是同一响应的交付别名，非额外生成/润色。章节连续、内容非空且入库字符数一致。两本正文均达到11000计数要求。
+- 两份原生Word渲染28页并逐页检查；ZIP恰好两份DOCX，内外CRC、逐文件SHA256、本地和服务器归档哈希通过。归档SHA256 c8f89fac4d6bff351a4b99dcbf62e75810731fe75dc0138dcf8e70c9b6122896。
+- 用户授权更换OpenAI API密钥后，空闲检查通过，安全更新服务器私有环境文件并刷新backend/worker；镜像、其他环境变量、模型、并发与卷保持一致。非付费模型鉴权通过；两条已确认额度拒绝的429旧请求保留在openai_rejected_before_key_rotation；仅指定两本通过现有retry_task接口各恢复一次，视频原文SHA与暂停前一致。密钥不写入Git或验收输出。
+- 未做第三方人工率、相似度检测或全文医学专业审校；技术验收不等同于人工率/专业内容质量达标，由用户与编辑审核实际效果。脚本、原文、响应、用量与书稿保留私有输出，不提交Git。健康养生和其他智能体版本未变，Epic整体仍PARTIAL。
 
 ## 2026-11-04 健康养生2610采用1104 v2 Word提示词
 
