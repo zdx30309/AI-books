@@ -18,6 +18,12 @@ CATEGORY='social_pain_2611_astra_direct'
 VERSION=AGENTS[CATEGORY]['version']
 BOOK='#最终书名\n新的书名\n#最终简介\n简介\n#目录\n#1. 起点\n#导言\n导言\n#正文\n#1. 起点\n完整正文。'
 
+@pytest.fixture(autouse=True,params=['social_pain_2611_astra_direct','general_manuscript'])
+def selected_agent(request,monkeypatch):
+    monkeypatch.setitem(globals(),'CATEGORY',request.param)
+    monkeypatch.setitem(globals(),'VERSION',AGENTS[request.param]['version'])
+
+
 def install(monkeypatch,calls,mode='completed'):
     def create(**kw):
         calls.append(kw)
@@ -41,7 +47,7 @@ def run(path):
 def test_standard_high_exact_prompt_single_call_recovery_and_delivery(monkeypatch,tmp_path):
     calls=[];install(monkeypatch,calls)
     cfg=tasks._normalize_task_config({'category':CATEGORY,'bookshelf_version':'2.0'})
-    assert cfg['category_label']=='社会痛点2611(Astra直出)' and cfg['text_workflow_version']==VERSION
+    assert cfg['category_label']==AGENTS[CATEGORY]['label'] and cfg['text_workflow_version']==VERSION
     assert workflow_for_existing_task(cfg) in DIRECT_VERSIONS
     assert run(tmp_path)==run(tmp_path)==BOOK and len(calls)==1
     assert calls[0]['model']=='gpt-6-astra' and calls[0]['reasoning']=={'mode':'standard','effort':'high'}

@@ -15,6 +15,7 @@ const CATEGORY_LABEL_RENAMES: Record<string, string> = {
 };
 
 export const DEFAULT_CATEGORIES: TaskCategoryOption[] = [
+  { id: "general_manuscript", label: "通用书稿", core_feature: "GPT-6 Astra standard/high，视频原文加1105版Word指令词，单次直出", directions: "不限题材，以视频原文为准", prompt_status: "ready" },
   { id: "social_pain_2611_astra_direct", label: "社会痛点2611(Astra直出)", core_feature: "GPT-6 Astra standard/high，视频原稿加1102版Word提示词，单次直出", directions: "社会议题、生活选择", prompt_status: "ready" },
   ...[
     { id: "finance_technology_2610", label: "财经·科技2610", promptDate: "1028" },

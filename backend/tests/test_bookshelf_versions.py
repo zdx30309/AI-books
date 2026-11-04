@@ -50,7 +50,7 @@ def test_legacy_inference_new_creation_and_category_options():
     assert task_shelf_version({'text_workflow_version':DIRECT})=='2.0'
     assert router._normalize_task_config({'category':'social_science_test'})['bookshelf_version']=='2.0'
     assert router._normalize_task_config({'category':'social_science'})['bookshelf_version']=='1.0'
-    assert {c.id for c in router.get_task_categories('2.0').items}=={'social_pain_2611_astra_direct', 'social_science_test', 'social_pain_2610', 'social_pain_2610_2', 'finance_technology_2610', 'psychology_emotion_2610', 'health_wellness_2610'}
+    assert {c.id for c in router.get_task_categories('2.0').items}=={'general_manuscript', 'social_pain_2611_astra_direct', 'social_science_test', 'social_pain_2610', 'social_pain_2610_2', 'finance_technology_2610', 'psychology_emotion_2610', 'health_wellness_2610'}
     assert 'social_science_test' not in {c.id for c in router.get_task_categories('1.0').items}
     with pytest.raises(HTTPException) as error:
         router._normalize_task_config({'category':'social_science_test','bookshelf_version':'1.0'})
@@ -108,7 +108,7 @@ def test_v2_agents_cannot_relabel_each_other(database):
         router.update_task_metadata(direct.id,TaskMetadataUpdateRequest(category='social_pain_2610'),db=db,user=owner)
 
 
-@pytest.mark.parametrize("category", ["finance_technology_2610", "psychology_emotion_2610", "health_wellness_2610"])
+@pytest.mark.parametrize("category", ["finance_technology_2610", "psychology_emotion_2610", "health_wellness_2610", "general_manuscript"])
 def test_new_agents_preserve_final_and_parse_hash_chapters(database,category):
     from app.prompts.astra_agents2610 import AGENTS
     from app.tasks.tasks import _persist_chapters_from_markdown

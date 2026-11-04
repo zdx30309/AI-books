@@ -1,5 +1,11 @@
 # Epic Novel Engine Implementation Status
 
+## 通用书稿1105 Word独立直出智能体
+
+- 按用户要求新建2.0通用书稿（general_manuscript），固定general_manuscript_astra_direct_20261105；完整采用新Word的52段3628字符，SHA256 6ab1c752afd4c39cddacc28ee1c75abb531a3218488d42a357566fed19f649ca。
+- 复用现有Astra直出执行器：视频原文填入唯一{raw_text}，单次gpt-6-astra standard/high，不追加旧类别提示词/文风/多轮润色；三轮终审是同一Word中的内部写作要求。保留请求/响应/用量审计、并发、缓存和不确定响应暂停保护。通用类型不限视频题材，基础popular_science映射仅用于既有类别兼容与封面元数据，不进入直出模型输入。
+- 实施顺序：全文提取及独立版本→2.0创建/列表/详情/导出和原样交付回归→空闲备份发布→两个新视频各新建一本→实际请求、响应、章节及Word检查后打包。健康养生及其他智能体版本/封面/漫画保持原状，不提交书稿或密钥。专项41 passed，后端全量609 passed/1 skipped，前端构建通过。发布与两视频实测待完成。Epic整体仍PARTIAL。
+
 ## 2026-11-04 健康养生2610采用1104 v2 Word提示词
 
 - 仅健康养生2610新任务使用health2610_classic_astra_20261104v2；原1104和其他日期版本保留。完整提取新Word的53段3548字符，SHA256 6edeff82a7053e993f9dd136e3a1dc42e00423d7988785723876889becfb5b11，保留唯一{raw_text}及末尾空段。

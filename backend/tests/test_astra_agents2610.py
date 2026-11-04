@@ -116,3 +116,17 @@ def test_november4_v2_health_prompt_is_frozen_and_scoped():
     assert not any(v.endswith('20261104v2') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
     assert render_prompt('第四阶段完整稿',workflow_version=AGENTS['health_wellness_2610']['version'])==current.replace('{raw_text}','第四阶段完整稿')
     assert render_prompt('历史稿',workflow_version='health2610_classic_astra_20261104')==PROMPT_PATHS['20261104'].read_text().replace('{raw_text}','历史稿')
+
+
+def test_general_manuscript_is_independent_exact_word_direct_agent():
+    import hashlib
+    current=PROMPT_PATHS['20261105'].read_text()
+    assert hashlib.sha256(current.encode()).hexdigest()=='6ab1c752afd4c39cddacc28ee1c75abb531a3218488d42a357566fed19f649ca'
+    assert current.count('{raw_text}')==1
+    agent=AGENTS['general_manuscript']
+    assert agent['label']=='通用书稿' and agent['direct']
+    assert agent['version']=='general_manuscript_astra_direct_20261105'
+    assert render_prompt('视频原文',workflow_version=agent['version'])==current.replace('{raw_text}','视频原文')
+    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261104v2'
+    assert AGENTS['social_pain_2611_astra_direct']['version']=='social_pain2611_astra_direct_20261102'
+    assert not any(v.endswith('20261105') and c!='general_manuscript' for v,c in VERSION_CATEGORIES.items())
