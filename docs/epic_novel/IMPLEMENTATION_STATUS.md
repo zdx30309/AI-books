@@ -1,5 +1,11 @@
 # Epic Novel Engine Implementation Status
 
+## 2026-11-04 健康养生2610采用1104 v2 Word提示词
+
+- 仅健康养生2610新任务使用health2610_classic_astra_20261104v2；原1104和其他日期版本保留。完整提取新Word的53段3548字符，SHA256 6edeff82a7053e993f9dd136e3a1dc42e00423d7988785723876889becfb5b11，保留唯一{raw_text}及末尾空段。
+- 相比1104，新增Word中完整90%相似度要求段落，其他内容及末尾空段按Word原样采用，不自行修订其中措辞。仅替换第五步模板，Sol初稿、DeepSeek三个处理阶段及Astra standard/high末润、封面和漫画配置保持原状。
+- 顺序：逐字提取与历史版本隔离→路由/缓存/导出回归→空闲备份发布→同两视频各新建一本→五阶段/响应/章节/Word核对并打包。专项21 passed，后端全量601 passed/1 skipped，前端构建通过。发布与两视频实测待完成。Epic整体仍PARTIAL。
+
 ## 健康养生2610采用1104 Word提示词
 
 - 仅健康养生2610新任务升级为health2610_classic_astra_20261104，完整提取用户1104 Word的52段3384字符，SHA256 c045487b28adf5dbec7cbb9b9adac7865e4e3a719f33d0c839ca56a09c1e3cd1。与1029模板相比，改为要求明确判断及可执行建议、删除70%相似度要求段落，文档标题由社科改为通用；其余全文一致。

@@ -97,11 +97,22 @@ def test_november3_health_prompt_remains_frozen():
 
 def test_november4_health_prompt_is_october29_with_only_requested_changes():
     import hashlib
-    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261104'
+    assert VERSION_CATEGORIES['health2610_classic_astra_20261104']=='health_wellness_2610'
     current=PROMPT_PATHS['20261104'].read_text()
     assert hashlib.sha256(current.encode()).hexdigest()=='c045487b28adf5dbec7cbb9b9adac7865e4e3a719f33d0c839ca56a09c1e3cd1'
     expected=PROMPT_PATHS['20261029'].read_text().replace('社科书稿洗稿提示词','通用书稿洗稿提示词',1).replace('以及作者据此作出什么判断。','最终给出明确的判断和可执行的建议。',1)
     expected='\n'.join(line for line in expected.splitlines() if not line.startswith('相似度要求：'))+'\n'
     assert current==expected
     assert not any(v.endswith('20261104') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
+    assert render_prompt('第四阶段完整稿',workflow_version='health2610_classic_astra_20261104')==current.replace('{raw_text}','第四阶段完整稿')
+
+
+def test_november4_v2_health_prompt_is_frozen_and_scoped():
+    import hashlib
+    current=PROMPT_PATHS['20261104v2'].read_text()
+    assert hashlib.sha256(current.encode()).hexdigest()=='6edeff82a7053e993f9dd136e3a1dc42e00423d7988785723876889becfb5b11'
+    assert current.count('{raw_text}')==1
+    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261104v2'
+    assert not any(v.endswith('20261104v2') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
     assert render_prompt('第四阶段完整稿',workflow_version=AGENTS['health_wellness_2610']['version'])==current.replace('{raw_text}','第四阶段完整稿')
+    assert render_prompt('历史稿',workflow_version='health2610_classic_astra_20261104')==PROMPT_PATHS['20261104'].read_text().replace('{raw_text}','历史稿')
