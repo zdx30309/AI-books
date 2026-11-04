@@ -83,13 +83,25 @@ def test_prompt_upgrade_is_scoped_and_historical_versions_stay_frozen():
     assert VERSION=='social_pain2610_classic_astra_20261017'
 
 
-def test_november3_upgrade_only_changes_health_new_tasks():
+def test_november3_health_prompt_remains_frozen():
     import hashlib
-    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261103'
+    assert VERSION_CATEGORIES['health2610_classic_astra_20261103']=='health_wellness_2610'
     assert VERSION_CATEGORIES['health2610_classic_astra_20261102']=='health_wellness_2610'
     assert hashlib.sha256(PROMPT_PATHS['20261103'].read_bytes()).hexdigest()=='2ba3c3308874a73cdb6c8cb52ece06e2898e7b9e8fc016700ba7704aa76855fa'
-    assert render_prompt('第四阶段完整稿',workflow_version=AGENTS['health_wellness_2610']['version'])==PROMPT_PATHS['20261103'].read_text().replace('{raw_text}','第四阶段完整稿')
+    assert render_prompt('第四阶段完整稿',workflow_version='health2610_classic_astra_20261103')==PROMPT_PATHS['20261103'].read_text().replace('{raw_text}','第四阶段完整稿')
     assert render_prompt('旧书',workflow_version='health2610_classic_astra_20261102')==PROMPT_PATHS['20261102'].read_text().replace('{raw_text}','旧书')
     for category in ('psychology_emotion_2610','social_pain_2610_2','social_pain_2611_astra_direct'):
         assert AGENTS[category]['version'].endswith('20261102')
     assert not any(v.endswith('20261103') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
+
+
+def test_november4_health_prompt_is_october29_with_only_requested_changes():
+    import hashlib
+    assert AGENTS['health_wellness_2610']['version']=='health2610_classic_astra_20261104'
+    current=PROMPT_PATHS['20261104'].read_text()
+    assert hashlib.sha256(current.encode()).hexdigest()=='c045487b28adf5dbec7cbb9b9adac7865e4e3a719f33d0c839ca56a09c1e3cd1'
+    expected=PROMPT_PATHS['20261029'].read_text().replace('社科书稿洗稿提示词','通用书稿洗稿提示词',1).replace('以及作者据此作出什么判断。','最终给出明确的判断和可执行的建议。',1)
+    expected='\n'.join(line for line in expected.splitlines() if not line.startswith('相似度要求：'))+'\n'
+    assert current==expected
+    assert not any(v.endswith('20261104') and c!='health_wellness_2610' for v,c in VERSION_CATEGORIES.items())
+    assert render_prompt('第四阶段完整稿',workflow_version=AGENTS['health_wellness_2610']['version'])==current.replace('{raw_text}','第四阶段完整稿')
