@@ -4,7 +4,17 @@
 
 - 仅健康养生2610新任务使用health2610_classic_astra_20261104v2；原1104和其他日期版本保留。完整提取新Word的53段3548字符，SHA256 6edeff82a7053e993f9dd136e3a1dc42e00423d7988785723876889becfb5b11，保留唯一{raw_text}及末尾空段。
 - 相比1104，新增Word中完整90%相似度要求段落，其他内容及末尾空段按Word原样采用，不自行修订其中措辞。仅替换第五步模板，Sol初稿、DeepSeek三个处理阶段及Astra standard/high末润、封面和漫画配置保持原状。
-- 顺序：逐字提取与历史版本隔离→路由/缓存/导出回归→空闲备份发布→同两视频各新建一本→五阶段/响应/章节/Word核对并打包。专项21 passed，后端全量601 passed/1 skipped，前端构建通过。发布与两视频实测待完成。Epic整体仍PARTIAL。
+- 顺序：逐字提取与历史版本隔离→路由/缓存/导出回归→空闲备份发布→同两视频各新建一本→五阶段/响应/章节/Word核对并打包。专项21 passed，后端全量601 passed/1 skipped，前端构建通过。发布与两视频实测全部完成，见下。Epic整体仍PARTIAL。
+
+### 发布与两个视频真实验收
+
+- 99038c0已推送个人AI-books/main并发布服务器。backend/worker各152份运行文件哈希、前端入口及健康检查通过；发布前后1342个旧任务、14931个章节和29228个输出文件元数据一致，运行环境、模型、并发和卷保持一致；备份/opt/video-plan-release-backups/astra-prompt-99038c0。离线检查无付费调用。
+- 按用户顺序各新建一本，validation_run=health2610_two_videos_20261104v2，均为health_wellness_2610 / health2610_classic_astra_20261104v2。Sol xhigh初稿、DeepSeek V4 Pro三个处理阶段、Astra standard/high末润，五阶段文件齐全；四份OpenAI实际响应均completed，Astra完整请求指纹与1104 v2 Word模板及第四阶段完整稿匹配，未混入其他改写要求。
+- 01 BV1ywhq6sEYM《忙碌日子里的大脑健康》：ee87700f-f881-4721-b5ab-686f79b7771a，16章、20142字符、正文计数17302、空行0；原视频文稿SHA256 6480cb15d0d68e622a51c69941587281003b265bdc3c166263e0b8d6a461451f。
+- 02 BV1voba6xEs4《把日常的力气留下来》：f8fedd09-a0a8-4eba-b3e2-bd1983cbc53a，14章、19027字符、正文计数16381、空行0；原视频文稿SHA256 93f03eaa72d6040fad948c928823e48d94cbf014dda3543e52b3c3d014599dbb。
+- Astra原响应、第五阶段、数据库markdown、预览和原生Word段落逐行一致；章节连续、正文非空、入库字符数一致。正文计数排除前置块、章节标题、标点及空白。两本均达到11000要求。
+- 两份原生Word渲染32页并逐页检查，无裁切或缺字；ZIP恰好两份DOCX，内外CRC、逐文件SHA256、本地和服务器归档哈希通过。归档SHA256 6a6f37a71f8165caffce8c095d3253b6bbefd0f83e756fb5fc646df99566f0d4。
+- 保留模型原始终稿，不在导出后另作润色。未做全文医学专业审校、第三方人工率或相似度检测；不对检测分数作出承诺。脚本、用量、响应和书稿仅保留私有输出，不提交Git。Epic整体仍PARTIAL。
 
 ## 健康养生2610采用1104 Word提示词
 
