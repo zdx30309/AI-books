@@ -1,5 +1,44 @@
 # Epic Novel Engine Implementation Status
 
+## 2026-11-05 通用书稿30视频批次
+
+- 用户指定30个B站视频，按原顺序01—30各新建一本；category=general_manuscript，bookshelf_version=2.0，text_workflow_version=general_manuscript_astra_direct_20261105，validation_run=general_manuscript_thirty_videos_20261105。
+- 沿用1105 Word全文，SHA256 6ab1c752afd4c39cddacc28ee1c75abb531a3218488d42a357566fed19f649ca；gpt-6-astra standard/high单次直出，不混入其他类别提示词或多轮润色。保持原worker并发4、OpenAI门禁4、现有缓存和最新封面漫画代码，本批按现有配置不自动生成封面。运行代码174968a不变。
+- 已通过现有创建接口幂等创建30个新任务，复用其中3份已有视频原文；不复用旧书稿，不重新提交活跃/完成任务。当前生成中，尚未完成全批验收或交付。记录、脚本和输出位于私有.local/general-manuscript-thirty-20261105，密钥不进入Git。
+
+- 01 BV1vK5EzwExf：bb568426-4214-4a2b-acd7-740d35639834。
+- 02 BV1tzg36rEcJ：01dc64d6-991a-4170-b3af-38dadc285358。
+- 03 BV1SzBsBjEQm：ce866087-8d20-49cb-a7ed-4868ce16d292。
+- 04 BV1vi421r79V：e012eae2-a002-4ba0-a411-7309a62fa7bf。
+- 05 BV1bg8X6GEnG：743e1e4a-db16-49a8-bcfb-6cf02f3f5582。
+- 06 BV1hh411Y7uR：53083ada-9cbd-49f7-aa5b-b18a3879cf3e。
+- 07 BV1PLxv6gEKW：cd0e8087-9c9c-427b-97ae-a7f79748496d。
+- 08 BV1yZQmBzEbg：da1d1c4d-e8af-4cd4-a9b2-1cc6bd98d20c。
+- 09 BV1G34y1W7E2：07293c98-2339-40da-803d-f7994595bb3b。
+- 10 BV1ib411L726：aebc4854-2b59-4921-bf26-9cccbd1a882f。
+- 11 BV1sK411e7DB：832d94a3-5da0-4609-9387-0f71938f7a1c。
+- 12 BV1J84y117Dp：0505422e-d5d2-4e4a-840b-55c62608741f。
+- 13 BV1KRxv6CEWn：46ce17fd-cce4-4b97-819f-bddbc5cd3af4。
+- 14 BV17mw3etEfp：43987c3c-27d0-4fbe-905c-4f5d19d310c5。
+- 15 BV12v4y1s76a：abe005be-9a89-4061-be2f-dd8d80b628ce。
+- 16 BV1TUwHeqEhn：e8c58c13-8c3f-413a-be1f-3c9548a2b54f。
+- 17 BV1zJ411a7Hv：240137a3-57cf-473b-bda9-933ba7987409。
+- 18 BV1GR4y1e7CJ：08983e5c-2bf4-4795-87bc-0018c3c57f29。
+- 19 BV1tiUaBZEzZ：fb98566f-6934-4d14-b3b0-97c145dafbf4。
+- 20 BV1xSoHBmEVa：315a1043-d010-4960-88d2-068d5ffbc990。
+- 21 BV1Wn4y197TS：ae113e31-e408-437d-854b-d523c7d13deb。
+- 22 BV12g4y1W7c8：435f1f72-2b47-49f5-a233-beeddf5ed973。
+- 23 BV19r4y1q7t9：93363395-6403-4e67-954c-bb9328da596c。
+- 24 BV1F5MgzAEpg：d4b5f03a-8eb8-4c01-8115-dc9a1455ff3e。
+- 25 BV1av4y1f714：65794945-5988-4e7d-af7c-3f14ab3feeb3。
+- 26 BV1ET4y1D7h6：e982147e-db89-40f4-8214-17ab9e8c5de5。
+- 27 BV1AzbF6mENq：08acf542-e426-40e4-9cc5-b407534651f3。
+- 28 BV1cs4y197mw：588f789c-64e2-4928-b339-b9123faff1c0。
+- 29 BV1vdoxYSEdu：1e4b479c-531c-4f9a-879c-831ee1f3ebb4。
+- 30 BV1jF411e7fi：5c1a1359-b86a-4f64-812a-137fdc2bb9ab。
+
+- 下一步：核对全部请求、响应、章节、视频映射、原生Word及ZIP完整性后交付。遇额度不足、响应不确定、截断或人工复核时停止盲目重试，保留付费凭据和原文并报告。当前不能宣称人工率、专业内容或全批生成通过。Epic整体仍PARTIAL。
+
 ## 通用书稿1105 Word独立直出智能体
 
 - 按用户要求新建2.0通用书稿（general_manuscript），固定general_manuscript_astra_direct_20261105；完整采用新Word的52段3628字符，SHA256 6ab1c752afd4c39cddacc28ee1c75abb531a3218488d42a357566fed19f649ca。
